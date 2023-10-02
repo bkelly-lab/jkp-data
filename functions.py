@@ -68,7 +68,7 @@ def populate_own(inset, idvar, datevar, datename, forward_max, period):
 
 
 
-        def compustat_fx(exrt_dly):
+def compustat_fx(exrt_dly):
     usd_curcdd = pl.DataFrame({
         'curcdd': ['USD'],
         'datadate': [19500101],
@@ -106,3 +106,36 @@ def populate_own(inset, idvar, datevar, datename, forward_max, period):
     output = fx3.sort(['curcdd', 'datadate']).unique(['curcdd', 'datadate'])
 
     return output
+
+
+def parse_dates(df, column_name="datadate", specified_format=None):
+    """
+    Parse a date column in the given DataFrame using Polars API with a specified format or multiple default formats.
+    
+    Parameters:
+    - df: The input Polars DataFrame.
+    - column_name: The name of the column to parse. Default is "datadate".
+    - specified_format: A specific date format to try first. If not provided, defaults will be used.
+    
+    Returns:
+    - A Polars DataFrame with the parsed date column.
+    """
+    formats = ["%Y%m%d", "%Y-%m-%d", "%d-%m-%Y"]
+    
+    # If a specified format is provided, prioritize it
+    if specified_format:
+        formats.insert(0, specified_format)
+    
+    for fmt in formats:
+        try:
+            # Attempt to parse the date column with the current format
+            df = df.with_columns(
+                pl.col(column_name).cast(pl.Utf8).str.strptime(pl.Date, format=fmt).alias(column_name)
+            )
+            # If parsing succeeds without errors, break out of the loop
+            break
+        except:
+            # If parsing fails, continue to the next format
+            continue
+    
+    return df
