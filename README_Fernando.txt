@@ -42,6 +42,6 @@ comp_exchanges
 add_primary_sec
 prepare_crsp_sf
 
-To do: Comment code and put some references. Rest of the functions.
+To do: Comment code and put some references. Test against SAS. Rest of the functions.
 ================================================================================
 
