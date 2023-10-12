@@ -489,3 +489,393 @@ def comp_industry():
     out = join12.sort(["gvkey", "date"])
 
     return out
+
+
+
+def ff_ind_class(data, ff_grps):
+    if ff_grps==38:
+        df1 =   data.with_columns(pl.when(pl.col("sic").is_between(100, 999)).then(1)
+        .when(pl.col("sic").is_between(1000, 1299)).then(2)
+        .when(pl.col("sic").is_between(1300, 1399)).then(3)
+        .when(pl.col("sic").is_between(1400, 1499)).then(4)
+        .when(pl.col("sic").is_between(1500, 1799)).then(5)
+        .when(pl.col("sic").is_between(2000, 2099)).then(6)
+        .when(pl.col("sic").is_between(2100, 2199)).then(7)
+        .when(pl.col("sic").is_between(2200, 2299)).then(8)
+        .when(pl.col("sic").is_between(2300, 2399)).then(9)
+        .when(pl.col("sic").is_between(2400, 2499)).then(10)
+        .when(pl.col("sic").is_between(2500, 2599)).then(11)
+        .when(pl.col("sic").is_between(2600, 2661)).then(12)
+        .when(pl.col("sic").is_between(2700, 2799)).then(13)
+        .when(pl.col("sic").is_between(2800, 2899)).then(14)
+        .when(pl.col("sic").is_between(2900, 2999)).then(15)
+        .when(pl.col("sic").is_between(3000, 3099)).then(16)
+        .when(pl.col("sic").is_between(3100, 3199)).then(17)
+        .when(pl.col("sic").is_between(3200, 3299)).then(18)
+        .when(pl.col("sic").is_between(3300, 3399)).then(19)
+        .when(pl.col("sic").is_between(3400, 3499)).then(20)
+        .when(pl.col("sic").is_between(3500, 3599)).then(21)
+        .when(pl.col("sic").is_between(3600, 3699)).then(22)
+        .when(pl.col("sic").is_between(3700, 3799)).then(23)
+        .when(pl.col("sic").is_between(3800, 3879)).then(24)
+        .when(pl.col("sic").is_between(3900, 3999)).then(25)
+        .when(pl.col("sic").is_between(4000, 4799)).then(26)
+        .when(pl.col("sic").is_between(4800, 4829)).then(27)
+        .when(pl.col("sic").is_between(4830, 4899)).then(28)
+        .when(pl.col("sic").is_between(4900, 4949)).then(29)
+        .when(pl.col("sic").is_between(4950, 4959)).then(30)
+        .when(pl.col("sic").is_between(4960, 4969)).then(31)
+        .when(pl.col("sic").is_between(4970, 4979)).then(32)
+        .when(pl.col("sic").is_between(5000, 5199)).then(33)
+        .when(pl.col("sic").is_between(5200, 5999)).then(34)
+        .when(pl.col("sic").is_between(6000, 6999)).then(35)
+        .when(pl.col("sic").is_between(7000, 8999)).then(36)
+        .when(pl.col("sic").is_between(9000, 9999)).then(37)
+        .otherwise(pl.lit(None)) # If you have a default value, put it here. I've added 38 assuming it's the next number.
+        .alias("ff38")
+    )
+        return df1
+        
+    else:
+        df1= data.with_columns(pl.when(pl.col("sic").is_in([2048, 
+                                *range(100, 299+1), 
+                                *range(700, 799+1), 
+                                *range(910, 919+1)])
+           ).then(1)
+    
+    .when(pl.col("sic").is_in([2095, 2098, 2099, 
+                               *range(2000, 2046+1), 
+                               *range(2050, 2063+1), 
+                               *range(2070, 2079+1), 
+                               *range(2090, 2092+1)])
+          ).then(2)
+    
+    .when(pl.col("sic").is_in([2086, 2087, 2096, 2097, 
+                               *range(2064, 2068+1)])
+          ).then(3)
+
+    .when(pl.col("sic").is_in([2080, 
+                               *range(2082, 2085+1)])
+          ).then(4)
+
+    .when(pl.col("sic").is_in([*range(2100, 2199+1)])
+          ).then(5)
+
+    .when(pl.col("sic").is_in([3732, 3930, 3931, 
+                               *range(920, 999+1),
+                               *range(3650, 3652+1),
+                               *range(3940, 3949+1)])
+          ).then(6)
+
+    .when(pl.col("sic").is_in([7840, 7841, 7900, 7910, 7911, 7980,
+                               *range(7800, 7833+1),
+                               *range(7920, 7933+1),
+                               *range(7940, 7949+1),
+                               *range(7990, 7999+1)])
+          ).then(7)
+
+    .when(pl.col("sic").is_in([2770, 2771,
+                               *range(2700, 2749+1),
+                               *range(2780, 2799+1)])
+          ).then(8)
+
+    .when(pl.col("sic").is_in([2047, 2391, 2392, 3160, 3161, 3229, 3260, 3262, 3263, 3269, 3230, 3231, 3750, 3751, 3800, 3860, 
+                               3861, 3910, 3911, 3914, 3915, 3991, 3995,
+                               *range(2510, 2519+1),
+                               *range(2590, 2599+1),
+                               *range(2840, 2844+1),
+                               *range(3170, 3172+1),
+                               *range(3190, 3199+1),
+                               *range(3630, 3639+1),
+                               *range(3870, 3873+1),
+                               *range(3960, 3962+1)])
+          ).then(9)
+
+    .when(pl.col("sic").is_in([3020, 3021, 3130, 3131, 3150, 3151,
+                               *range(2300, 2390+1),
+                               *range(3100, 3111+1),
+                               *range(3140, 3149+1),
+                               *range(3963, 3965+1)])
+          ).then(10)
+
+     .when(pl.col("sic").is_in([*range(8000, 8099+1)])
+          ).then(11)
+
+    .when(pl.col("sic").is_in([3693, 3850, 3851,
+                               *range(3840, 3849+1)])
+          ).then(12)
+
+    .when(pl.col("sic").is_in([2830, 2831,
+                               *range(2833, 2836+1)])
+          ).then(13)
+
+    .when(pl.col("sic").is_in([*range(2800, 2829+1),
+                               *range(2850, 2879+1),
+                               *range(2890, 2899+1)])
+          ).then(14)
+
+    .when(pl.col("sic").is_in([3031, 3041,
+                               *range(3050, 3053+1),
+                               *range(3060, 3099+1)])
+          ).then(15)
+
+    .when(pl.col("sic").is_in([*range(2200, 2284+1),
+                               *range(2290, 2295+1),
+                               *range(2297, 2299+1),
+                               *range(2393, 2395+1),
+                               *range(2397, 2399+1)])
+          ).then(16)
+
+    .when(pl.col("sic").is_in([2660, 2661, 3200, 3210, 3211, 3240, 3241, 3261, 3264, 3280, 3281, 3446, 3996,
+                               *range(800, 899+1),
+                               *range(2400, 2439+1),
+                               *range(2450, 2459+1),
+                               *range(2490, 2499+1),
+                               *range(2950, 2952+1),
+                               *range(3250, 3259+1),
+                               *range(3270, 3275+1),
+                               *range(3290, 3293+1),
+                               *range(3295, 3299+1),
+                               *range(3420, 3429+1),
+                               *range(3430, 3433+1),
+                               *range(3440, 3442+1),
+                               *range(3448, 3452+1),
+                               *range(3490, 3499+1)])
+          ).then(17)
+
+    .when(pl.col("sic").is_in([*range(1500, 1511+1),
+                               *range(1520, 1549+1),
+                               *range(1600, 1799+1)])
+          ).then(18)
+
+    .when(pl.col("sic").is_in([3300, 
+                               *range(3310, 3317+1),
+                               *range(3320, 3325+1),
+                               *range(3330, 3341+1),
+                               *range(3350, 3357+1),
+                               *range(3360, 3379+1),
+                               *range(3390, 3399+1)])
+          ).then(19)
+
+    .when(pl.col("sic").is_in([3400, 3443, 3444,
+                               *range(3460, 3479+1)])
+          ).then(20).when(pl.col("sic").is_in([3538, 3585, 3586,
+                               *range(3510, 3536+1),
+                               *range(3540, 3569+1),
+                               *range(3580, 3582+1),
+                               *range(3589, 3599+1)])
+          ).then(21)
+
+    .when(pl.col("sic").is_in([3600, 3620, 3621, 3648, 3649, 3660, 3699,
+                               *range(3610, 3613+1),
+                               *range(3623, 3629+1),
+                               *range(3640, 3646+1),
+                               *range(3690, 3692+1)])
+          ).then(22)
+
+    .when(pl.col("sic").is_in([2296, 2396, 3010, 3011, 3537, 3647, 3694, 3700, 3710, 3711, 3799,
+                               *range(3713, 3716+1),
+                               *range(3790, 3792+1)])
+          ).then(23)
+
+    .when(pl.col("sic").is_in([3720, 3721, 3728, 3729,
+                               *range(3723, 3725+1)])
+          ).then(24)
+
+    .when(pl.col("sic").is_in([3730, 3731,
+                               *range(3740, 3743+1)])
+          ).then(25)
+
+    .when(pl.col("sic").is_in([3795,
+                               *range(3760, 3769+1),
+                               *range(3480, 3489+1)])
+          ).then(26)
+
+    .when(pl.col("sic").is_in([*range(1040, 1049+1)])
+          ).then(27)
+
+    .when(pl.col("sic").is_in([*range(1000, 1039+1),
+                               *range(1050, 1119+1),
+                               *range(1400, 1499+1)])
+          ).then(28)
+
+    .when(pl.col("sic").is_in([*range(1200, 1299+1)])
+          ).then(29)
+
+    .when(pl.col("sic").is_in([1300, 1389,
+                               *range(1310, 1339+1),
+                               *range(1370, 1382+1),
+                               *range(2900, 2912+1),
+                               *range(2990, 2999+1)])
+          ).then(30)
+
+    .when(pl.col("sic").is_in([4900, 4910, 4911, 4939,
+                               *range(4920, 4925+1),
+                               *range(4930, 4932+1),
+                               *range(4940, 4942+1)])
+          ).then(31)
+
+    .when(pl.col("sic").is_in([4800, 4899,
+                               *range(4810, 4813+1),
+                               *range(4820, 4822+1),
+                               *range(4830, 4841+1),
+                               *range(4880, 4892+1)])
+          ).then(32)
+
+    .when(pl.col("sic").is_in([7020, 7021, 7200, 7230, 7231, 7240, 7241, 7250, 7251, 7395, 7500, 7600, 7620, 7622, 7623, 7640, 
+                               7641,
+                               *range(7030, 7033+1),
+                               *range(7210, 7212+1),
+                               *range(7214, 7217+1),
+                               *range(7219, 7221+1),
+                               *range(7260, 7299+1),
+                               *range(7520, 7549+1),
+                               *range(7629, 7631+1),
+                               *range(7690, 7699+1),
+                               *range(8100, 8499+1),
+                               *range(8600, 8699+1),
+                               *range(8800, 8899+1),
+                               *range(7510, 7515+1)])
+          ).then(33)
+
+    .when(pl.col("sic").is_in([3993, 7218, 7300, 7374, 7396, 7397, 7399, 7519, 8700, 8720, 8721,
+                               *range(2750, 2759+1),
+                               *range(7310, 7342+1),
+                               *range(7349, 7353+1),
+                               *range(7359, 7369+1),
+                               *range(7376, 7385+1),
+                               *range(7389, 7394+1),
+                               *range(8710, 8713+1),
+                               *range(8730, 8734+1),
+                               *range(8740, 8748+1),
+                               *range(8900, 8911+1),
+                               *range(8920, 8999+1),
+                               *range(4220, 4229+1)])
+          ).then(34)
+
+    .when(pl.col("sic").is_in([3695,
+                               *range(3570, 3579+1),
+                               *range(3680, 3689+1)])
+          ).then(35)
+
+    .when(pl.col("sic").is_in([7375,
+                               *range(7370, 7373+1)])
+          ).then(36)
+
+    .when(pl.col("sic").is_in([3622, 3810, 3812,
+                               *range(3661, 3666+1),
+                               *range(3669, 3679+1)])
+          ).then(37)
+
+    .when(pl.col("sic").is_in([3811,
+                               *range(3820, 3827+1),
+                               *range(3829, 3839+1)])
+          ).then(38)
+
+    .when(pl.col("sic").is_in([2760, 2761,
+                               *range(2520, 2549+1),
+                               *range(2600, 2639+1),
+                               *range(2670, 2699+1),
+                               *range(3950, 3955+1)])
+          ).then(39)
+
+    .when(pl.col("sic").is_in([3220, 3221,
+                               *range(2440, 2449+1),
+                               *range(2640, 2659+1),
+                               *range(3410, 3412+1)])
+          ).then(40)
+
+    .when(pl.col("sic").is_in([4100, 4130, 4131, 4150, 4151, 4230, 4231, 4780, 4789,
+                               *range(4000, 4013+1),
+                               *range(4040, 4049+1),
+                               *range(4110, 4121+1),
+                               *range(4140, 4142+1),
+                               *range(4170, 4173+1),
+                               *range(4190, 4200+1),
+                               *range(4210, 4219+1),
+                               *range(4240, 4249+1),
+                               *range(4400, 4700+1),
+                               *range(4710, 4712+1),
+                               *range(4720, 4749+1),
+                               *range(4782, 4785+1)])
+          ).then(41)
+
+    .when(pl.col("sic").is_in([5000, 5099, 5100,
+                               *range(5010, 5015+1),
+                               *range(5020, 5023+1),
+                               *range(5030, 5060+1),
+                               *range(5063, 5065+1),
+                               *range(5070, 5078+1),
+                               *range(5080, 5088+1),
+                               *range(5090, 5094+1),
+                               *range(5110, 5113+1),
+                               *range(5120, 5122+1),
+                               *range(5130, 5172+1),
+                               *range(5180, 5182+1),
+                               *range(5190, 5199+1)])
+          ).then(42)
+
+    .when(pl.col("sic").is_in([5200, 5250, 5251, 5260, 5261, 5270, 5271, 5300, 5310, 5311, 5320, 5330, 5331, 5334, 5900, 5999,
+                               *range(5210, 5231+1),
+                               *range(5340, 5349+1),
+                               *range(5390, 5400+1),
+                               *range(5410, 5412+1),
+                               *range(5420, 5469+1),
+                               *range(5490, 5500+1),
+                               *range(5510, 5579+1),
+                               *range(5590, 5700+1),
+                               *range(5710, 5722+1),
+                               *range(5730, 5736+1),
+                               *range(5750, 5799+1),
+                               *range(5910, 5912+1),
+                               *range(5920, 5932+1),
+                               *range(5940, 5990+1),
+                               *range(5992, 5995+1)])
+          ).then(43)
+
+    .when(pl.col("sic").is_in([7000, 7213,
+                               *range(5800, 5829+1),
+                               *range(5890, 5899+1),
+                               *range(7010, 7019+1),
+                               *range(7040, 7049+1)])
+          ).then(44)
+
+    .when(pl.col("sic").is_in([6000,
+                               *range(6010, 6036+1),
+                               *range(6040, 6062+1),
+                               *range(6080, 6082+1),
+                               *range(6090, 6100+1),
+                               *range(6110, 6113+1),
+                               *range(6120, 6179+1),
+                               *range(6190, 6199+1)])
+          ).then(45)
+
+    .when(pl.col("sic").is_in([6300, 6350, 6351, 6360, 6361,
+                               *range(6310, 6331+1),
+                               *range(6370, 6379+1),
+                               *range(6390, 6411+1)])
+          ).then(46)
+
+    .when(pl.col("sic").is_in([6500, 6510, 6540, 6541, 6610, 6611,
+                               *range(6512, 6515+1),
+                               *range(6517, 6532+1),
+                               *range(6550, 6553+1),
+                               *range(6590, 6599+1)])
+          ).then(47)
+                           
+    .when(pl.col("sic").is_in([6700, 6798, 6799,
+                               *range(6200, 6299+1),
+                               *range(6710, 6726+1),
+                               *range(6730, 6733+1),
+                               *range(6740, 6779+1),
+                               *range(6790, 6795+1)])
+          ).then(48)
+
+    .when(pl.col("sic").is_in([4970, 4971, 4990, 4991,
+                               *range(4950, 4961+1)])
+          ).then(49)
+    .otherwise(pl.lit(None)) 
+        .alias("ff49")
+    )
+
+        return df1
