@@ -879,3 +879,155 @@ def ff_ind_class(data, ff_grps):
     )
 
         return df1
+
+
+
+def nyse_size_cutoffs(data):
+    """
+    Computes the 1st, 20th, 50th, and 80th percentiles of the market equity'me 'column based on NYSE stocks.
+    The percentiles are calculated using the SAS percentile method 5.
+
+    Parameters:
+    - data: Input dataset containing stock information.
+
+    Returns:
+    - A DataFrame with columns 'eom' (end of month), 'n' (number of observations), and percentiles of 'me' column.
+    """
+    
+    def sas_percentile_method_5(series, p):
+        """
+        Calculates the given percentile using the SAS 5th method, which is the default SAS method and was used in our SAS code.
+
+        """
+        n = len(series)
+        rank = p * n
+    
+        if rank.is_integer():
+             return (series[int(rank) - 1] + series[int(rank)]) / 2
+        else:
+            return series[int(rank)]
+
+    
+    # Filter the data for NYSE stocks based on specific criteria
+    nyse_stocks = data.filter(
+        (pl.col('crsp_exchcd') == 1) &         # NYSE exchange code
+        (pl.col('obs_main') == 1) &            # Main observation flag
+        (pl.col('exch_main') == 1) &           # Main exchange flag
+        (pl.col('primary_sec') == 1) &         # Primary security flag
+        (pl.col('common') == 1) &              # Common stock flag
+        pl.col('me').is_not_null()             # Ensure market equity (me) is not null
+    )
+
+    # Sort the filtered data by 'eom' (end of month) for grouping
+    nyse_stocks = nyse_stocks.sort('eom')
+
+    # Group the data by 'eom' and calculate percentiles on the 'me' column
+    grouped = nyse_stocks.group_by('eom').agg(
+        [
+            pl.col('me').sort().count().alias('n'),   # Count of 'me' values
+            pl.col('me').sort().apply(lambda series: sas_percentile_method_5(series, 0.01)).alias('nyse_p1'),   # 1st percentile
+            pl.col('me').sort().apply(lambda series: sas_percentile_method_5(series, 0.20)).alias('nyse_p20'),  # 20th percentile
+            pl.col('me').sort().apply(lambda series: sas_percentile_method_5(series, 0.50)).alias('nyse_p50'),  # 50th percentile
+            pl.col('me').sort().apply(lambda series: sas_percentile_method_5(series, 0.80)).alias('nyse_p80')   # 80th percentile
+        ]
+    )
+
+    return grouped
+
+
+
+
+def return_cutoffs(data, freq, crsp_only):
+    """
+    Computes various percentiles of the 'ret', 'ret_local', and 'ret_exc' columns based on specific criteria.
+    Can be used for both monthly or daily data.
+
+    Parameters:
+    - data: Input dataset containing stock return information.
+    - freq (str): The frequency at which to group data, either 'm' (monthly) or 'd' (daily).
+    - crsp_only (int): A flag to filter data based on the "source_crsp" column. 1 means use CRSP data only, 0 means use all data.
+
+    Returns:
+    - A DataFrame with date, 'n' (number of observations), and percentiles of 'me' columns.
+    """
+
+    def sas_percentile_method_5(series, p):
+        """
+        Calculates the given percentile using the SAS 5th method, which is the default SAS method and was used in our SAS code.
+        
+        """
+        n = len(series)
+        rank = p * n
+    
+        if rank.is_integer():
+            return (series[int(rank) - 1] + series[int(rank)]) / 2
+        else:
+            return series[int(rank)]
+
+    # Filter data based on provided criteria. If 'crsp_only' is 1, filter for CRSP data only.
+    if crsp_only == 1:
+        base = (data.filter(
+                    (pl.col("source_crsp") == 1) & 
+                    (pl.col("common") == 1) & 
+                    (pl.col("obs_main") == 1) & 
+                    (pl.col("exch_main") == 1) & 
+                    (pl.col("primary_sec") == 1) & 
+                    (pl.col("excntry") != 'ZWE') & 
+                    (pl.col("ret_exc").is_not_null()))
+                .sort("eom"))
+    else:
+        base = (data.filter(
+                    (pl.col("common") == 1) & 
+                    (pl.col("obs_main") == 1) & 
+                    (pl.col("exch_main") == 1) & 
+                    (pl.col("primary_sec") == 1) & 
+                    (pl.col("excntry") != 'ZWE') & 
+                    (pl.col("ret_exc").is_not_null()))
+                .sort("eom"))
+
+    # If frequency is monthly, group by 'eom' (end of month)
+    if freq == 'm':
+        grouped = base.group_by('eom').agg(
+            [
+            pl.col("ret").sort().count().alias('n'),
+            pl.col('ret').sort().apply(lambda series: sas_percentile_method_5(series, 0.001)).alias('ret_0_1'),
+            pl.col('ret').sort().apply(lambda series: sas_percentile_method_5(series, 0.01)).alias('ret_1'),
+            pl.col('ret').sort().apply(lambda series: sas_percentile_method_5(series, 0.99)).alias('ret_99'),
+            pl.col('ret').sort().apply(lambda series: sas_percentile_method_5(series, 0.999)).alias('ret_99_9'),
+            pl.col('ret_local').sort().apply(lambda series: sas_percentile_method_5(series, 0.001)).alias('ret_local_0_1'),
+            pl.col('ret_local').sort().apply(lambda series: sas_percentile_method_5(series, 0.01)).alias('ret_local_1'),
+            pl.col('ret_local').sort().apply(lambda series: sas_percentile_method_5(series, 0.99)).alias('ret_local_99'),
+            pl.col('ret_local').sort().apply(lambda series: sas_percentile_method_5(series, 0.999)).alias('ret_local_99_9'),
+            pl.col('ret_exc').sort().apply(lambda series: sas_percentile_method_5(series, 0.001)).alias('ret_exc_0_1'),
+            pl.col('ret_exc').sort().apply(lambda series: sas_percentile_method_5(series, 0.01)).alias('ret_exc_1'),
+            pl.col('ret_exc').sort().apply(lambda series: sas_percentile_method_5(series, 0.99)).alias('ret_exc_99'),
+            pl.col('ret_exc').sort().apply(lambda series: sas_percentile_method_5(series, 0.999)).alias('ret_exc_99_9')
+            ]
+        )
+    # If frequency is daily, group by year and month. We get one output per unique year and month combination considering all the relevant observations
+    else:
+        # Extract year and month from the 'date' column for grouping
+        base = base.with_columns([
+            pl.col("date").dt.year().alias("year"),
+            pl.col("date").dt.month().alias("month")
+        ])
+
+        grouped = base.group_by(["year", "month"]).agg(
+            [
+            pl.col("ret").sort().count().alias('n'),
+            pl.col('ret').sort().apply(lambda series: sas_percentile_method_5(series, 0.001)).alias('ret_0_1'),
+            pl.col('ret').sort().apply(lambda series: sas_percentile_method_5(series, 0.01)).alias('ret_1'),
+            pl.col('ret').sort().apply(lambda series: sas_percentile_method_5(series, 0.99)).alias('ret_99'),
+            pl.col('ret').sort().apply(lambda series: sas_percentile_method_5(series, 0.999)).alias('ret_99_9'),
+            pl.col('ret_local').sort().apply(lambda series: sas_percentile_method_5(series, 0.001)).alias('ret_local_0_1'),
+            pl.col('ret_local').sort().apply(lambda series: sas_percentile_method_5(series, 0.01)).alias('ret_local_1'),
+            pl.col('ret_local').sort().apply(lambda series: sas_percentile_method_5(series, 0.99)).alias('ret_local_99'),
+            pl.col('ret_local').sort().apply(lambda series: sas_percentile_method_5(series, 0.999)).alias('ret_local_99_9'),
+            pl.col('ret_exc').sort().apply(lambda series: sas_percentile_method_5(series, 0.001)).alias('ret_exc_0_1'),
+            pl.col('ret_exc').sort().apply(lambda series: sas_percentile_method_5(series, 0.01)).alias('ret_exc_1'),
+            pl.col('ret_exc').sort().apply(lambda series: sas_percentile_method_5(series, 0.99)).alias('ret_exc_99'),
+            pl.col('ret_exc').sort().apply(lambda series: sas_percentile_method_5(series, 0.999)).alias('ret_exc_99_9')
+            ]
+        )
+
+    return grouped
