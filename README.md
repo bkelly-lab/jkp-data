@@ -28,7 +28,7 @@ This document provides instructions for creating a dataset based on the paper "I
 
    - Download the 'Build_database' folder to your local machine by running the following command:
      ```sh
-     git clonehttps://github.com/bkelly-lab/SAS-Python-Migrate.git
+     git clone https://github.com/bkelly-lab/SAS-Python-Migrate.git
      ```
 
 3. **Input WRDS Credentials**
