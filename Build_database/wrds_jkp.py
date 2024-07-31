@@ -1,9 +1,11 @@
 import getpass
 import os
 import sys
+import re
 import stat
 import pandas as pd
 import sqlalchemy as sa
+from sqlalchemy import Numeric, Float, DECIMAL, REAL, DOUBLE_PRECISION
 import urllib.parse
 import polars as pl
 from packaging import version
@@ -15,13 +17,17 @@ appname = "{0} python {1}.{2}.{3}/wrds {4}".format(
     sys.platform, version_info[0], version_info[1], version_info[2], wrds_version
 )
 
-
 # Sane defaults
 WRDS_POSTGRES_HOST = "wrds-pgdata.wharton.upenn.edu"
 WRDS_POSTGRES_PORT = 9737
 WRDS_POSTGRES_DB = "wrds"
 WRDS_CONNECT_ARGS = {"sslmode": "require", "application_name": appname}
 
+def find_tables(sql):
+    pattern = r"(?i)\bFROM\s+([^\s,;]+)|\bJOIN\s+([^\s,;]+)"
+    matches = re.findall(pattern, sql)
+    table_names = [match[0] or match[1] for match in matches if match[0] or match[1]]
+    return table_names
 
 class NotSubscribedError(PermissionError):
     pass
@@ -309,7 +315,7 @@ ORDER BY 1;
               5    fname     true  VARCHAR
         """
         rows = self.get_row_count(library, table)
-        print("Approximately {} rows in {}.{}.".format(rows, library, table))
+        # print("Approximately {} rows in {}.{}.".format(rows, library, table))
         table_info_dict = self.insp.get_columns(table, schema=library)
         table_info = pl.DataFrame(table_info_dict)
         return table_info.select(['name', 'nullable', 'type', 'comment'])
@@ -349,8 +355,8 @@ ORDER BY 1;
         sql,
         iter_batches=False,
         batch_size=None,
-        schema_overrides=None,
-        infer_schema_length=100_000,
+        schema_overrides={},
+        infer_schema_length=None,
     ):
         """
         Queries the database using a raw SQL string.
@@ -412,6 +418,14 @@ ORDER BY 1;
         """  # noqa
 
         try:
+            
+            for name in find_tables(sql):
+                lib, table = name.split('.')
+                dtypes = self.describe_table(lib, table).select(['name', 'type']).to_numpy()
+                for i in dtypes:
+                    if isinstance(i[1], (Numeric, Float, DECIMAL, REAL, DOUBLE_PRECISION)): schema_overrides[i[0]] = pl.Float64
+            if not schema_overrides: schema_overrides = None
+                
             df = pl.read_database(
                 sql,
                 self.connection,
@@ -420,6 +434,7 @@ ORDER BY 1;
                 schema_overrides=schema_overrides,
                 infer_schema_length=infer_schema_length
             )
-            return df
+            if iter_batches or batch_size is None: return df
+            else: return pl.concat(list(df))
         except sa.exc.ProgrammingError as e:
             raise e
