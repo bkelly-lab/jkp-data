@@ -32,7 +32,7 @@ def setup_folder_structure():
 def download_full_table(wrds_session, table_name, cols = '*'):
     print('Downloading table:' , table_name)
     file_name = table_name.replace('.', '_')
-    df = wrds_session.raw_sql_polars_uri(
+    df = wrds_session.raw_sql(
                 f"""
                 SELECT {cols}
                 FROM {table_name}
@@ -183,7 +183,7 @@ def gen_raw_data_dfs(wrds_session):
               .unique()
               .sort(['datadate', 'curcdd']))
     collect_and_write(__fx1, 'Raw_data_dfs/__fx1.ft')
-    __crsp_sf_m = wrds_session.raw_sql_polars_uri("""
+    __crsp_sf_m = wrds_session.raw_sql("""
                 SELECT a.permno, a.permco, a.date, (a.prc < 0) AS bidask, abs(a.prc) AS prc, a.shrout/1000 AS shrout, abs(a.prc) * a.shrout/1000 AS me,
                     a.ret, a.retx, a.cfacshr, a.vol,
                     CASE WHEN a.prc > 0 AND a.askhi > 0 THEN a.askhi ELSE NULL END AS prc_high,
@@ -200,7 +200,7 @@ def gen_raw_data_dfs(wrds_session):
     __crsp_sf_m = __crsp_sf_m.with_columns([pl.col('permno').cast(pl.Int64).alias('permno'),pl.col('permco').cast(pl.Int64).alias('permco')])
     __crsp_sf_m.write_ipc('Raw_data_dfs/__crsp_sf_m.ft')
     del __crsp_sf_m
-    __crsp_sf_d = wrds_session.raw_sql_polars_uri("""
+    __crsp_sf_d = wrds_session.raw_sql("""
                 SELECT a.permno, a.permco, a.date, (a.prc < 0) AS bidask, abs(a.prc) AS prc, a.shrout/1000 AS shrout, abs(a.prc) * a.shrout/1000 AS me,
                     a.ret, a.retx, a.cfacshr, a.vol,
                     CASE WHEN a.prc > 0 AND a.askhi > 0 THEN a.askhi ELSE NULL END AS prc_high,
