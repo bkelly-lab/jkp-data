@@ -38,17 +38,8 @@ def setup_folder_structure():
 def collect_and_write(df, filename, collect_streaming = False):
     df.collect(streaming = collect_streaming).write_ipc(filename)
 
-def write_feather_batches(data, output_path, chunk_size=100_000, verbose=False):
-    for batch in data.to_pyarrow_batches(chunk_size=chunk_size):
-        table = pa.Table.from_batches([batch])
-        
-        pf.write_feather(table, output_path)
-        
-        if verbose:print(f"Written {len(batch)} rows to {output_path}")
-
-    if verbose: print(f'Finished writing file to {output_path}')
-
 def write_parquet_batches(data, output_path, chunk_size = 100_000, verbose = False):
+    
     writer = None
     
     for batch in data.to_pyarrow_batches(chunk_size = chunk_size):
@@ -60,17 +51,6 @@ def write_parquet_batches(data, output_path, chunk_size = 100_000, verbose = Fal
         
     if verbose: print(f'Finished writing file to {output_path}')
         
-def gen_wrds_connection_object(user, password):
-    
-    # Connect to WRDS using Ibis
-    con = ibis.postgres.connect(
-        host="wrds-pgdata.wharton.upenn.edu",
-        port=9737,
-        user=user,
-        password=password,
-        database="wrds")
-    return con
-
 def load_firmshares_aux(filename):
     csho_var = 'cshoq' if 'fundq' in filename else 'csho'
     ajex_var = 'ajexq' if 'fundq' in filename else 'ajex'
@@ -248,6 +228,16 @@ def gen_crsp_sf(freq):
                                 'exchcd' ,'gvkey' ,'iid'    ,'exch_main','shrcd'   ,'me'      ]))
     return result
 
+def gen_wrds_connection_object(user, password):
+    # Connect to WRDS using Ibis
+    con = ibis.postgres.connect(
+        host="wrds-pgdata.wharton.upenn.edu",
+        port=9737,
+        user=user,
+        password=password,
+        database="wrds")
+    return con
+
 def download_wrds_table(conn_obj, table_name, filename, cols = None):
     print('Downloading table:' , table_name)
 
@@ -262,8 +252,21 @@ def download_wrds_table(conn_obj, table_name, filename, cols = None):
     del t
     print('Finished')
     
+def check_and_reset_connection(wrds_session, start_time, username, password):
+        elapsed_time = time.time() - start_time
+        if elapsed_time >= 45*60:
+            wrds_session.disconnect()
+            print('The connection to WRDS server needs to be reset due to avoid exceeding time limits.')
+            for remaining in range(60, 0, -10):
+                print(f"Connection will be reset in {remaining} seconds. You might be sent a Duo authentication request.")
+                time.sleep(10)
+            wrds_session = gen_wrds_connection_object(username, password)
+            print('Connection established. Continuing downloads...')
+            start_time = time.time()
+        return wrds_session, start_time
+
 @measure_time
-def download_raw_data_tables(wrds_session):
+def download_raw_data_tables(username, password):
     table_names = ['comp.exrt_dly'  , 'ff.factors_monthly', 'comp.g_security' , 'comp.security'      ,
                    'comp.r_ex_codes', 'comp.g_sec_history', 'comp.sec_history', 'comp.company'       ,
                    'comp.g_company' , 'crsp.msenames'     , 'crsp.dsenames'   , 'crsp.ccmxpf_lnkhist',
@@ -271,11 +274,21 @@ def download_raw_data_tables(wrds_session):
                    'comp.secm'      , 'crsp.mcti'         , 'crsp.msf'        , 'comp.g_co_hgic'     ,
                    'crsp.dsf'       , 'comp.g_funda'      , 'comp.co_hgic'    , 'comp.g_fundq']
     
-    for table in table_names: download_wrds_table(wrds_session, table, 'Raw_tables/' + table.replace('.', '_') + '.parquet')
+    wrds_session = gen_wrds_connection_object(username, password)
+    start_time = time.time()
+
+    for table in table_names: 
+        download_wrds_table(wrds_session, table, 'Raw_tables/' + table.replace('.', '_') + '.parquet')
+        wrds_session, start_time = check_and_reset_connection(wrds_session, start_time, username, password)
+
     cols_comp_secd = ['gvkey','iid', 'datadate', 'tpci', 'exchg', 'prcstd', 'curcdd', 'prccd', 'ajexdi', 'cshoc', 'prchd', 'prcld', 'cshtrd', 'trfd', 'curcddv', 'div', 'divd', 'divsp']
     cols_comp_g_secd = ['gvkey', 'iid', 'datadate', 'tpci', 'exchg', 'prcstd','curcdd', 'prccd', 'qunit', 'ajexdi', 'cshoc', 'prchd', 'prcld', 'cshtrd','trfd', 'curcddv', 'div', 'divd', 'divsp', 'monthend']
+
     download_wrds_table(wrds_session, 'comp.secd', 'Raw_tables/comp_secd.parquet', cols_comp_secd)
+    check_and_reset_connection(wrds_session, start_time, username, password)
     download_wrds_table(wrds_session, 'comp.g_secd', 'Raw_tables/comp_g_secd.parquet', cols_comp_g_secd)
+
+    wrds_session.disconnect()
 
 @measure_time
 def prepare_comp_sf(freq):
@@ -2159,7 +2172,6 @@ def prepare_daily(data_path, fcts_path):
                         .with_columns(mktrf_ld1 = col('mktrf').shift(-1).over(['excntry','eom']),
                                       mktrf_lg1 = col('mktrf').shift(1).over(['excntry'])))
     mkt_lead_lag.collect(streaming=True).write_ipc('mkt_lead_lag.ft')
-    mkt_lead_lag.collect(streaming=True).write_parquet('mkt_lead_lag.parquet')
 
     corr_data = (pl.scan_ipc('dsf1.ft')
                    .select(['ret_exc', 'id', 'id_int', 'date', 'mktrf', 'eom', 'zero_obs'])
