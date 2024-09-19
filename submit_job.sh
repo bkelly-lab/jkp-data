@@ -8,13 +8,13 @@
 
 #SBATCH --ntasks=1                      # Number of tasks (processes)
 
-#SBATCH --cpus-per-task=96              # Number of CPU cores per task
+#SBATCH --cpus-per-task=40              # Number of CPU cores per task
 
 #SBATCH --mem=200G                      # Memory per node (450 GB)
 
-#SBATCH --partition=bigmem
+#SBATCH --partition=day
 
-#SBATCH --time=24:00:00                # HH:MM:SS
+#SBATCH --time=15:00:00                # HH:MM:SS
 
 #SBATCH --mail-type=ALL                 # Send email on start, end and fail
 
