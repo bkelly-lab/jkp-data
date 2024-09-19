@@ -7,3 +7,4 @@ ibis-framework[duckdb]==9.4.0
 ibis-framework[postgres]==9.4.0
 SQLAlchemy==1.4.49
 tqdm==4.66.5
+polars_ols==0.3.5
