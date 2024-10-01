@@ -2830,7 +2830,9 @@ def mktcorr(df, sfx, __min):
     return df
 
 def dimsonbeta(df, sfx, __min):
-    b1_col, b2_col, b3_col = regression_3vars_total('ret_exc', 'mktrf', 'mktrf_ld1', 'mktrf_lg1')
     df = (df.group_by(['id_int', 'group_number'])
-            .agg((b1_col + b2_col + b3_col).alias(f'beta_dimson{sfx}')))
+            .agg(coeffs = pl.col('ret_exc').least_squares.ols('mktrf', 'mktrf_ld1', 'mktrf_lg1', add_intercept = True, mode = 'coefficients'))
+            .unnest('coeffs')
+            .with_columns(pl.sum_horizontal('mktrf', 'mktrf_ld1', 'mktrf_lg1').alias(f'beta_dimson{sfx}'))
+            .select(['id_int', 'group_number', f'beta_dimson{sfx}']))
     return df
