@@ -2227,7 +2227,6 @@ def mispricing_factors(data_path, min_stks, min_fcts = 3):
                             .select(['id', 'eom', 'mispricing_perf', 'mispricing_mgmt']))
     chars['1'].collect().write_parquet('mp_factors.parquet')
 
-@measure_time
 def regression_3vars(y, x1, x2, x3, __n, __min):
     den = (-((col(x1).rolling_var(window_size=__n, min_periods=__min)) * (col(x2).rolling_var(window_size=__n, min_periods=__min)) * (col(x3).rolling_var(window_size=__n, min_periods=__min))) +
        (col(x1).rolling_var(window_size=__n, min_periods=__min)) * (pl.rolling_cov(x2, x3, window_size=__n, min_periods=__min))**2 +
@@ -2255,6 +2254,7 @@ def regression_3vars(y, x1, x2, x3, __n, __min):
     alpha = col(y).rolling_mean(window_size=__n, min_periods = __min) - beta1 * col(x1).rolling_mean(window_size=__n, min_periods = __min) - beta2 * col(x2).rolling_mean(window_size=__n, min_periods = __min) - beta3 * col(x3).rolling_mean(window_size=__n, min_periods = __min)
     return alpha, beta1, beta2, beta3
 
+@measure_time
 def residual_momentum(output_path, data_path, fcts_path, __n, __min, incl, skip):
     w = incl - skip
     alpha_exp, beta1_exp, beta2_exp, beta3_exp = regression_3vars('ret_exc', 'mktrf', 'smb_ff', 'hml', __n, __min)
