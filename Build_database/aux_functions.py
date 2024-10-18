@@ -5,7 +5,7 @@ import time
 import datetime
 import ibis
 import pyarrow as pa
-import pyarrow.parquet as pq
+import pyarrow.parquet as pq 
 import pyarrow.feather as pf
 import os
 from datetime import date
@@ -34,24 +34,24 @@ def measure_time(func):
 
 @measure_time
 def setup_folder_structure():
-    os.system('mkdir -p Raw_tables Raw_data_dfs Characteristics World_Ret_Monthly Daily_Returns World_Data Accounting_Data')
+    os.system('mkdir -p Raw_tables Raw_data_dfs Characteristics World_Ret_Monthly Daily_Returns World_Data Accounting_Data Output')
 
 def collect_and_write(df, filename, collect_streaming = False):
-    df.collect(streaming = collect_streaming).write_ipc(filename)
+    df.collect(streaming = collect_streaming).write_parquet(filename)
 
 def write_parquet_batches(data, output_path, chunk_size = 100_000, verbose = False):
-
+    
     writer = None
-
+    
     for batch in data.to_pyarrow_batches(chunk_size = chunk_size):
         table = pa.Table.from_batches([batch])
         if writer == None: writer = pq.ParquetWriter(output_path, table.schema)
         writer.write_table(table)
-
+    
     if writer is not None: writer.close()
-
+        
     if verbose: print(f'Finished writing file to {output_path}')
-
+        
 def load_firmshares_aux(filename):
     csho_var = 'cshoq' if 'fundq' in filename else 'csho'
     ajex_var = 'ajexq' if 'fundq' in filename else 'ajex'
@@ -117,78 +117,78 @@ def comp_dsf_aux(filename):
 @measure_time
 def gen_raw_data_dfs():
     __firm_shares1 = pl.concat([load_firmshares_aux('Raw_tables/comp_funda.parquet'), load_firmshares_aux('Raw_tables/comp_fundq.parquet')])
-    collect_and_write(__firm_shares1, 'Raw_data_dfs/__firm_shares1.ft')
+    collect_and_write(__firm_shares1, 'Raw_data_dfs/__firm_shares1.parquet')
     sic_naics_na = sic_naics_aux('Raw_tables/comp_funda.parquet')
-    collect_and_write(sic_naics_na, 'Raw_data_dfs/sic_naics_na.ft')
+    collect_and_write(sic_naics_na, 'Raw_data_dfs/sic_naics_na.parquet')
     sic_naics_gl = sic_naics_aux('Raw_tables/comp_g_funda.parquet')
-    collect_and_write(sic_naics_gl, 'Raw_data_dfs/sic_naics_gl.ft')
+    collect_and_write(sic_naics_gl, 'Raw_data_dfs/sic_naics_gl.parquet')
     comp_acc_age = pl.concat([load_age_aux('Raw_tables/comp_funda.parquet'), load_age_aux('Raw_tables/comp_g_funda.parquet')])
-    collect_and_write(comp_acc_age, 'Raw_data_dfs/comp_acc_age.ft')
+    collect_and_write(comp_acc_age, 'Raw_data_dfs/comp_acc_age.parquet')
     comp_ret_age = pl.concat([load_age_aux('Raw_tables/comp_secm.parquet'), load_age_aux('Raw_tables/comp_g_secd.parquet', True)])
-    collect_and_write(comp_ret_age, 'Raw_data_dfs/comp_ret_age.ft')
+    collect_and_write(comp_ret_age, 'Raw_data_dfs/comp_ret_age.parquet')
     permno0 = (pl.scan_parquet('Raw_tables/crsp_dsenames.parquet')
                 .select([col('permno').cast(pl.Int64), col('permco').cast(pl.Int64), 'namedt',
                          'nameendt', col('siccd').cast(pl.Int64).alias('sic'), col('naics').cast(pl.Int64)])
                 .unique()
                 .sort(['permno', 'namedt', 'nameendt']))
-    collect_and_write(permno0, 'Raw_data_dfs/permno0.ft')
+    collect_and_write(permno0, 'Raw_data_dfs/permno0.parquet')
     comp_hgics_na = comp_hgics_aux('Raw_tables/comp_co_hgic.parquet')
-    collect_and_write(comp_hgics_na, 'Raw_data_dfs/comp_hgics_na.ft')
+    collect_and_write(comp_hgics_na, 'Raw_data_dfs/comp_hgics_na.parquet')
     comp_hgics_gl = comp_hgics_aux('Raw_tables/comp_g_co_hgic.parquet')
-    collect_and_write(comp_hgics_gl, 'Raw_data_dfs/comp_hgics_gl.ft')
+    collect_and_write(comp_hgics_gl, 'Raw_data_dfs/comp_hgics_gl.parquet')
     crsp_dsedelist = (pl.scan_parquet('Raw_tables/crsp_dsedelist.parquet')
                         .select(['dlret', 'dlstcd', col('permno').cast(pl.Int64), 'dlstdt']))
-    collect_and_write(crsp_dsedelist, 'Raw_data_dfs/crsp_dsedelist.ft')
+    collect_and_write(crsp_dsedelist, 'Raw_data_dfs/crsp_dsedelist.parquet')
     crsp_msedelist = (pl.scan_parquet('Raw_tables/crsp_msedelist.parquet')
                         .select(['dlret', 'dlstcd', col('permno').cast(pl.Int64), 'dlstdt']))
-    collect_and_write(crsp_msedelist, 'Raw_data_dfs/crsp_msedelist.ft')
+    collect_and_write(crsp_msedelist, 'Raw_data_dfs/crsp_msedelist.parquet')
     __sec_info = pl.concat([sec_info_aux('Raw_tables/comp_security.parquet'), sec_info_aux('Raw_tables/comp_g_security.parquet')])
-    collect_and_write(__sec_info, 'Raw_data_dfs/__sec_info.ft')
+    collect_and_write(__sec_info, 'Raw_data_dfs/__sec_info.parquet')
     crsp_age = (pl.scan_parquet('Raw_tables/crsp_msf.parquet')
                 .with_columns(col('permco').cast(pl.Int64))
                 .group_by('permco')
                 .agg(crsp_first = pl.min('date')))
-    collect_and_write(crsp_age, 'Raw_data_dfs/crsp_age.ft')
+    collect_and_write(crsp_age, 'Raw_data_dfs/crsp_age.parquet')
     crsp_mcti_t30ret = (pl.scan_parquet('Raw_tables/crsp_mcti.parquet')
                         .select(['caldt','t30ret']))
-    collect_and_write(crsp_mcti_t30ret, 'Raw_data_dfs/crsp_mcti_t30ret.ft')
+    collect_and_write(crsp_mcti_t30ret, 'Raw_data_dfs/crsp_mcti_t30ret.parquet')
     ff_factors_monthly = (pl.scan_parquet('Raw_tables/ff_factors_monthly.parquet')
                             .select(['date', 'rf']))
-    collect_and_write(ff_factors_monthly, 'Raw_data_dfs/ff_factors_monthly.ft')
+    collect_and_write(ff_factors_monthly, 'Raw_data_dfs/ff_factors_monthly.parquet')
     comp_r_ex_codes = (pl.scan_parquet('Raw_tables/comp_r_ex_codes.parquet')
                             .select(['exchgdesc', 'exchgcd']))
-    collect_and_write(comp_r_ex_codes, 'Raw_data_dfs/comp_r_ex_codes.ft')
+    collect_and_write(comp_r_ex_codes, 'Raw_data_dfs/comp_r_ex_codes.parquet')
     __ex_country1 = pl.concat([ex_country_aux('Raw_tables/comp_g_security.parquet'), ex_country_aux('Raw_tables/comp_security.parquet')])
-    collect_and_write(__ex_country1, 'Raw_data_dfs/__ex_country1.ft')
+    collect_and_write(__ex_country1, 'Raw_data_dfs/__ex_country1.parquet')
     __header = pl.concat([header_aux('Raw_tables/comp_company.parquet'), header_aux('Raw_tables/comp_g_company.parquet')])
-    collect_and_write(__header, 'Raw_data_dfs/__header.ft')
+    collect_and_write(__header, 'Raw_data_dfs/__header.parquet')
     __prihistcan = prihist_aux('Raw_tables/comp_sec_history.parquet', 'prihistcan')
-    collect_and_write(__prihistcan, 'Raw_data_dfs/__prihistcan.ft')
+    collect_and_write(__prihistcan, 'Raw_data_dfs/__prihistcan.parquet')
     __prihistusa = prihist_aux('Raw_tables/comp_sec_history.parquet', 'prihistusa')
-    collect_and_write(__prihistusa, 'Raw_data_dfs/__prihistusa.ft')
+    collect_and_write(__prihistusa, 'Raw_data_dfs/__prihistusa.parquet')
     __prihistrow = prihist_aux('Raw_tables/comp_g_sec_history.parquet', 'prihistrow')
-    collect_and_write(__prihistrow, 'Raw_data_dfs/__prihistrow.ft')
+    collect_and_write(__prihistrow, 'Raw_data_dfs/__prihistrow.parquet')
     __comp_secm1 = (pl.scan_parquet('Raw_tables/comp_secm.parquet')
                     .select(['gvkey', 'iid', 'datadate', 'tpci', 'exchg', col('curcdm').alias('curcdd'),
                             col('prccm').alias('prc_local'), col('prchm').alias('prc_high'), col('prclm').alias('prc_low'),
                             col('ajexm').alias('ajexdi'), 'cshom', 'csfsm', 'cshoq', 'ajexm', 'dvpsxm', 'cshtrm', 'curcddvm',
                             pl.when(col('trfm') != 0).then(col('prccm') / col('ajexm') * col('trfm')).otherwise(fl_none()).alias('ri_local')]))
-    collect_and_write(__comp_secm1, 'Raw_data_dfs/__comp_secm1.ft')
+    collect_and_write(__comp_secm1, 'Raw_data_dfs/__comp_secm1.parquet')
     __comp_dsf_na = comp_dsf_aux('Raw_tables/comp_secd.parquet')
-    collect_and_write(__comp_dsf_na, 'Raw_data_dfs/__comp_dsf_na.ft')
+    collect_and_write(__comp_dsf_na, 'Raw_data_dfs/__comp_dsf_na.parquet')
     __comp_dsf_global = comp_dsf_aux('Raw_tables/comp_g_secd.parquet')
-    collect_and_write(__comp_dsf_global, 'Raw_data_dfs/__comp_dsf_global.ft')
+    collect_and_write(__comp_dsf_global, 'Raw_data_dfs/__comp_dsf_global.parquet')
     a = pl.scan_parquet('Raw_tables/comp_exrt_dly.parquet').filter(col('fromcurd') == 'GBP')
     b = pl.scan_parquet('Raw_tables/comp_exrt_dly.parquet').filter(col('tocurd') == 'USD')
     __fx1 = (a.join(b, how = 'inner', on = ['fromcurd', 'datadate'], suffix = '_b')
               .select([col('tocurd').alias('curcdd'), 'datadate', (col('exratd_b')/col('exratd')).alias('fx')])
               .unique()
               .sort(['datadate', 'curcdd']))
-    collect_and_write(__fx1, 'Raw_data_dfs/__fx1.ft')
+    collect_and_write(__fx1, 'Raw_data_dfs/__fx1.parquet')
     write_parquet_batches(gen_crsp_sf('m'), 'Raw_data_dfs/aux.parquet')
-    pl.scan_parquet('Raw_data_dfs/aux.parquet').collect(streaming=True).write_ipc('Raw_data_dfs/__crsp_sf_m.ft')
+    pl.scan_parquet('Raw_data_dfs/aux.parquet').collect(streaming=True).write_parquet('Raw_data_dfs/__crsp_sf_m.parquet')
     write_parquet_batches(gen_crsp_sf('d'), 'Raw_data_dfs/aux.parquet')
-    pl.scan_parquet('Raw_data_dfs/aux.parquet').collect(streaming=True).write_ipc('Raw_data_dfs/__crsp_sf_d.ft')
+    pl.scan_parquet('Raw_data_dfs/aux.parquet').collect(streaming=True).write_parquet('Raw_data_dfs/__crsp_sf_d.parquet')
     os.system('rm Raw_data_dfs/aux.parquet')
 
 def gen_crsp_sf(freq):
@@ -196,20 +196,20 @@ def gen_crsp_sf(freq):
     sf = con.read_parquet(f'Raw_tables/crsp_{freq}sf.parquet')
     senames = con.read_parquet(f'Raw_tables/crsp_{freq}senames.parquet')
     ccmxpf_lnkhist = con.read_parquet('Raw_tables/crsp_ccmxpf_lnkhist.parquet')
-    sf_senames_join = sf.join(senames,
+    sf_senames_join = sf.join(senames, 
                               how = 'left',
-                              predicates = [(sf.permno == senames.permno  ),
+                              predicates = [(sf.permno == senames.permno  ), 
                                             (sf.date   >= senames.namedt  ),
                                             (sf.date   <= senames.nameendt)])
-
+    
     full_join = sf_senames_join.join(ccmxpf_lnkhist,
                                      how='left',
                                      predicates=[(sf.permno == ccmxpf_lnkhist.lpermno  ),
                                                  ((sf.date  >= ccmxpf_lnkhist.linkdt   ) | ccmxpf_lnkhist.linkdt.isnull()   ),
                                                  ((sf.date  <= ccmxpf_lnkhist.linkenddt) | ccmxpf_lnkhist.linkenddt.isnull()),
                                                  ccmxpf_lnkhist.linktype.isin(['LC', 'LU', 'LS'])])
-
-
+    
+    
     result = (full_join.mutate(bidask    = (sf.prc < 0).cast('int32'),
                                prc       = sf.prc.abs(),
                                shrout    = (sf.shrout / 1000),
@@ -248,7 +248,7 @@ def download_wrds_table(conn_obj, table_name, filename, cols = None):
 
     casting_cols = [t[var].cast('int64').name(var) for var in ['permno', 'permco', 'sic', 'sich'] if var in t.columns]
     if casting_cols: t = t.mutate(*casting_cols)
-
+        
     write_parquet_batches(t, filename)
     del t
     print('Finished')
@@ -278,33 +278,33 @@ def check_and_reset_connection(wrds_session, start_time, username, password):
     return wrds_session, start_time
 
 @measure_time
-def download_raw_data_tables(username, password, reset_connection_iter = False):
+def download_raw_data_tables(username, password):
     table_names = ['comp.exrt_dly'  , 'ff.factors_monthly', 'comp.g_security' , 'comp.security'      ,
                    'comp.r_ex_codes', 'comp.g_sec_history', 'comp.sec_history', 'comp.company'       ,
                    'comp.g_company' , 'crsp.msenames'     , 'crsp.dsenames'   , 'crsp.ccmxpf_lnkhist',
                    'comp.funda'     , 'comp.fundq'        , 'crsp.dsedelist'  , 'crsp.msedelist'     ,
                    'comp.secm'      , 'crsp.mcti'         , 'crsp.msf'        , 'comp.g_co_hgic'     ,
                    'crsp.dsf'       , 'comp.g_funda'      , 'comp.co_hgic'    , 'comp.g_fundq']
-
+    
     wrds_session = gen_wrds_connection_object(username, password)
     start_time = time.time()
 
-    for table in table_names:
+    for table in table_names: 
         download_wrds_table(wrds_session, table, 'Raw_tables/' + table.replace('.', '_') + '.parquet')
-        if reset_connection_iter: wrds_session, start_time = check_and_reset_connection(wrds_session, start_time, username, password)
+        wrds_session, start_time = check_and_reset_connection(wrds_session, start_time, username, password)
 
     cols_comp_secd = ['gvkey','iid', 'datadate', 'tpci', 'exchg', 'prcstd', 'curcdd', 'prccd', 'ajexdi', 'cshoc', 'prchd', 'prcld', 'cshtrd', 'trfd', 'curcddv', 'div', 'divd', 'divsp']
     cols_comp_g_secd = ['gvkey', 'iid', 'datadate', 'tpci', 'exchg', 'prcstd','curcdd', 'prccd', 'qunit', 'ajexdi', 'cshoc', 'prchd', 'prcld', 'cshtrd','trfd', 'curcddv', 'div', 'divd', 'divsp', 'monthend']
 
     download_wrds_table(wrds_session, 'comp.secd', 'Raw_tables/comp_secd.parquet', cols_comp_secd)
-    if reset_connection_iter: wrds_session, start_time = check_and_reset_connection(wrds_session, start_time, username, password)
+    wrds_session, start_time = check_and_reset_connection(wrds_session, start_time, username, password)
     download_wrds_table(wrds_session, 'comp.g_secd', 'Raw_tables/comp_g_secd.parquet', cols_comp_g_secd)
 
     wrds_session.disconnect()
 
 @measure_time
 def prepare_comp_sf(freq):
-    populate_own('Raw_data_dfs/__firm_shares1.ft', 'gvkey', 'datadate', 'ddate')
+    populate_own('Raw_data_dfs/__firm_shares1.parquet', 'gvkey', 'datadate', 'ddate')
     gen_comp_dsf()
     if freq == 'both':
         process_comp_sf1('d')
@@ -313,7 +313,7 @@ def prepare_comp_sf(freq):
 
 @measure_time
 def populate_own(inset_path, idvar, datevar, datename):
-    inset = (pl.scan_ipc(inset_path)
+    inset = (pl.scan_parquet(inset_path)
                .unique([idvar, datevar])
                .with_columns(col(datevar).alias(datename))
                .sort([idvar, datevar])
@@ -322,10 +322,10 @@ def populate_own(inset_path, idvar, datevar, datename):
                .explode('ddate')
                .select(['ddate','gvkey','datadate', 'csho_fund', 'ajex_fund'])
                .sort(['gvkey','datadate']))
-    inset.collect().write_ipc('__firm_shares2.ft')
+    inset.collect().write_parquet('__firm_shares2.parquet')
 def compustat_fx():
     aux = pl.DataFrame({'curcdd': 'USD','datadate': '1950-01-01','fx': 1.0}).with_columns(col('datadate').str.to_date('%Y-%m-%d')).lazy()
-    __fx1 = pl.scan_ipc('Raw_data_dfs/__fx1.ft')
+    __fx1 = pl.scan_parquet('Raw_data_dfs/__fx1.parquet')
     __fx1 = (pl.concat([aux, __fx1], how = 'vertical_relaxed')
                .sort(['curcdd', 'datadate'])
                .with_columns(aux = col('datadate').shift(-1).over('curcdd'))
@@ -340,9 +340,9 @@ def compustat_fx():
 def gen_comp_dsf():
     fx = compustat_fx().lazy()
     fx_div = fx.clone().rename({'fx': 'fx_div'}).lazy()
-    __comp_dsf_global = pl.scan_ipc('Raw_data_dfs/__comp_dsf_global.ft')
-    aux = pl.scan_ipc('__firm_shares2.ft').select(['ddate','gvkey','csho_fund','ajex_fund'])
-    __comp_dsf = (pl.scan_ipc('Raw_data_dfs/__comp_dsf_na.ft')
+    __comp_dsf_global = pl.scan_parquet('Raw_data_dfs/__comp_dsf_global.parquet')
+    aux = pl.scan_parquet('__firm_shares2.parquet').select(['ddate','gvkey','csho_fund','ajex_fund'])
+    __comp_dsf = (pl.scan_parquet('Raw_data_dfs/__comp_dsf_na.parquet')
                     .join(aux, how = 'left', left_on = ['gvkey', 'datadate'], right_on = ['gvkey', 'ddate'])
                     .with_columns(cshoc  = pl.coalesce(['cshoc', pl.when(col('ajexdi') != 0).then(col('csho_fund')*col('ajex_fund')/col('ajexdi')).otherwise(fl_none())]),
                                   cshtrd = adj_trd_vol_NASDAQ('datadate', 'cshtrd', 'exchg', 14))
@@ -361,7 +361,7 @@ def gen_comp_dsf():
                                   div_spc  = pl.coalesce(['divsp', 0]) * col('fx_div'),
                                   eom      = col('datadate').dt.month_end())
                     .drop(['div', 'divd', 'divsp', 'fx_div', 'curcddv', 'prc_high_lcl', 'prc_low_lcl']))
-    __comp_dsf.collect(streaming=True).write_ipc('__comp_dsf.ft')
+    __comp_dsf.collect(streaming=True).write_parquet('__comp_dsf.parquet')
 def adj_trd_vol_NASDAQ(datevar, col_to_adjust, exchg_var, exchg_val):
     c1 = col(exchg_var) == exchg_val
     c2 = col(datevar)   <  pl.datetime(2001, 2, 1)
@@ -385,7 +385,7 @@ def gen_comp_msf():
     set_aux_cols3 += [(col(f'aux{j+1}') * col('ajexdi')).alias(i) for i, j in zip(col_names_aux, range(6))]
     cols_to_drop_aux = ['cshtrd', 'div_tot', 'div_cash','div_spc', 'dolvol', 'prc_high', 'prc_low']  + [f'aux{i+1}' for i in range(6)]
     dict_aux = {'div_totm': 'div_tot', 'div_cashm': 'div_cash', 'div_spcm': 'div_spc', 'dolvolm': 'dolvol', 'prc_highm': 'prc_high', 'prc_lowm': 'prc_low'}
-    __comp_msf = (pl.scan_ipc('__comp_dsf.ft')
+    __comp_msf = (pl.scan_parquet('__comp_dsf.parquet')
                     .with_columns(set_aux_cols)
                     .with_columns(set_aux_cols2)
                     .with_columns(set_aux_cols3)
@@ -398,10 +398,10 @@ def gen_comp_msf():
                                   exchg     = col('exchg').cast(pl.Int32),
                                   prcstd    = col('prcstd').cast(pl.Int32)))
     aux_ajexm_exp = pl.when(col('ajexm') != 0).then(col('csho_fund') * col('ajex_fund') / col('ajexm')).otherwise(fl_none())
-    __comp_secm = pl.scan_ipc('Raw_data_dfs/__comp_secm1.ft')
+    __comp_secm = pl.scan_parquet('Raw_data_dfs/__comp_secm1.parquet')
     fx = compustat_fx().lazy()
     fx_div = fx.clone().with_columns(col('fx').alias('fx_div')).drop('fx')
-    aux = pl.scan_ipc('__firm_shares2.ft')
+    aux = pl.scan_parquet('__firm_shares2.parquet')
     __comp_secm = (__comp_secm.join(aux, how = 'left', left_on = ['gvkey', 'datadate'], right_on = ['gvkey', 'ddate'])
                               .join(fx, how = 'left', on = ['datadate', 'curcdd']) #fx datadate in our terminology is the same as date in Theis' code
                               .join(fx_div, how = 'left', left_on = ['datadate', 'curcddvm'], right_on = ['datadate', 'curcdd'])
@@ -428,7 +428,7 @@ def gen_comp_msf():
                     .unique(subset = ['gvkey', 'iid', 'eom'], keep = 'first')
                     .drop('source')
                     .sort(['gvkey', 'iid', 'eom']))
-    __comp_msf.collect().write_ipc('__comp_msf.ft')
+    __comp_msf.collect().write_parquet('__comp_msf.parquet')
 
 @measure_time
 def comp_exchanges():
@@ -454,8 +454,8 @@ def comp_exchanges():
                  .then(pl.lit(1))\
                  .otherwise(pl.lit(0))\
                  .alias('exch_main')
-    comp_r_ex_codes = pl.read_ipc('Raw_data_dfs/comp_r_ex_codes.ft')
-    __ex_country = pl.read_ipc('Raw_data_dfs/__ex_country1.ft')
+    comp_r_ex_codes = pl.read_parquet('Raw_data_dfs/comp_r_ex_codes.parquet')
+    __ex_country = pl.read_parquet('Raw_data_dfs/__ex_country1.parquet')
     __ex_country = (pl.SQLContext(frame = __ex_country)
                       .execute(SQL_query)
                       .collect()
@@ -468,8 +468,8 @@ def gen_prihist_df(path_aux_data, geo, datevar):
     c1 = col(datevar) >= col('effdate')
     c2 = col(datevar) <= col('thrudate')
     c3 = col('thrudate').is_null()
-    aux_data = pl.read_ipc(path_aux_data, columns = ['gvkey', datevar]).unique()
-    prihistr = pl.read_ipc(f'Raw_data_dfs/__prihist{geo}.ft')
+    aux_data = pl.read_parquet(path_aux_data, columns = ['gvkey', datevar]).unique()
+    prihistr = pl.read_parquet(f'Raw_data_dfs/__prihist{geo}.parquet')
     prihistr = (aux_data.join(prihistr, how = 'left', on = 'gvkey')
                         .filter(c1 & (c2|c3))
                         .drop(['effdate','thrudate']))
@@ -477,29 +477,29 @@ def gen_prihist_df(path_aux_data, geo, datevar):
 @measure_time
 def add_primary_sec(data_path, datevar, file_name):
     c1 = (col('iid').is_not_null()) & ((col('iid') == col('prihistrow')) | (col('iid') == col('prihistusa')) | (col('iid') == col('prihistcan')))
-    data = pl.read_ipc(data_path)
+    data = pl.read_parquet(data_path)
     for df in [gen_prihist_df(data_path, 'row', datevar), gen_prihist_df(data_path, 'usa', datevar), gen_prihist_df(data_path, 'can', datevar)]:
         data = data.join(df, how = 'left', on = ['gvkey', datevar])
-    data = (data.join(pl.read_ipc('Raw_data_dfs/__header.ft').unique('gvkey', keep = 'first'), how = 'left', on = 'gvkey')#Header has duplicates
+    data = (data.join(pl.read_parquet('Raw_data_dfs/__header.parquet').unique('gvkey', keep = 'first'), how = 'left', on = 'gvkey')#Header has duplicates
                 .with_columns(prihistrow  = pl.coalesce(['prihistrow', 'prirow']),
                               prihistusa  = pl.coalesce(['prihistusa', 'priusa']),
                               prihistcan  = pl.coalesce(['prihistcan', 'prican']))
                 .with_columns(primary_sec = pl.when(c1).then(pl.lit(1)).otherwise(pl.lit(0)))
                 .drop(['prihistrow','prihistusa','prihistcan', 'prirow', 'priusa', 'prican'])
                 .unique(['gvkey', 'iid', 'datadate']))
-    data.write_ipc(file_name)
+    data.write_parquet(file_name)
 def load_rf_and_exchange_data():
-    crsp_mcti = (pl.read_ipc('Raw_data_dfs/crsp_mcti_t30ret.ft')
+    crsp_mcti = (pl.read_parquet('Raw_data_dfs/crsp_mcti_t30ret.parquet')
                    .with_columns(merge_aux = gen_MMYY_column('caldt'))
                    .drop('caldt'))
-    ff_factors_monthly = (pl.read_ipc('Raw_data_dfs/ff_factors_monthly.ft')
+    ff_factors_monthly = (pl.read_parquet('Raw_data_dfs/ff_factors_monthly.parquet')
                             .with_columns(merge_aux = gen_MMYY_column('date'))
                             .drop('date'))
     __exchanges = comp_exchanges()
     return crsp_mcti, ff_factors_monthly, __exchanges
 def gen_returns_df(freq):
     ret_lag_dif_exp = (gen_MMYY_column('datadate') - gen_MMYY_column('datadate', 1)).over(['gvkey','iid']) if freq == 'm' else (col('datadate') -col('datadate').shift(1)).over(['gvkey','iid'])
-    base = pl.scan_ipc(f'__comp_{freq}sf.ft')
+    base = pl.scan_parquet(f'__comp_{freq}sf.parquet')
     __returns = (base.filter((col('ri').is_not_null()) & (col('prcstd').is_in([3, 4, 10])))
                      .select(['gvkey','iid','datadate','ri','ri_local','prcstd','curcdd'])
                      .unique(['gvkey','iid','datadate'])
@@ -512,7 +512,7 @@ def gen_returns_df(freq):
                      .with_columns(ret_local = pl.when((col('iid') == col('lagged_iid')) & (col('curcdd') != col('lagged_curcdd'))).then(col('ret')).otherwise(col('ret_local'))))
     return __returns.collect()
 def gen_delist_df(__returns):
-    __sec_info = pl.read_ipc('Raw_data_dfs/__sec_info.ft')
+    __sec_info = pl.read_parquet('Raw_data_dfs/__sec_info.parquet')
     __delist = (__returns.filter((col('ret_local').is_not_null()) & (col('ret_local') != 0.))
                          .select(['gvkey', 'iid', 'datadate'])
                          .sort(['gvkey', 'iid', 'datadate'])
@@ -524,7 +524,7 @@ def gen_delist_df(__returns):
                          .select(['gvkey','iid','date_delist','dlret']))
     return __delist
 def gen_temporary_sf(freq, __returns, __delist):
-    base = pl.read_ipc(f'__comp_{freq}sf.ft')
+    base = pl.read_parquet(f'__comp_{freq}sf.parquet')
     temp_sf = (base.join(__returns, how = 'left', on = ['gvkey','iid', 'datadate'])
                    .join(__delist, how = 'left', on = ['gvkey', 'iid'])
                    .filter((col('datadate') <= col('date_delist')) | (col('date_delist').is_null()))
@@ -552,9 +552,9 @@ def process_comp_sf1(freq):
     __delist   = gen_delist_df(__returns)
     __comp_sf2 = gen_temporary_sf(freq, __returns, __delist)
     __comp_sf2 = add_rf_and_exchange_data_to_temporary_sf(freq, __comp_sf2)
-    __comp_sf2.write_ipc('__comp_sf2.ft')
+    __comp_sf2.write_parquet('__comp_sf2.parquet')
     del __comp_sf2
-    add_primary_sec('__comp_sf2.ft', 'datadate',f'comp_{freq}sf.ft')
+    add_primary_sec('__comp_sf2.parquet', 'datadate',f'comp_{freq}sf.parquet')
 
 def gen_MMYY_column(var, shift = None):
     if shift == None:
@@ -566,7 +566,7 @@ def add_MMYY_column_drop_original(df, var): return df.with_columns(merge_aux = g
 @measure_time
 def prepare_crsp_sf(freq):
     merge_vars = ['permno', 'merge_aux'] if (freq == 'm') else ['permno', 'date']
-    __crsp_sf = (pl.scan_ipc(f'Raw_data_dfs/__crsp_sf_{freq}.ft')
+    __crsp_sf = (pl.scan_parquet(f'Raw_data_dfs/__crsp_sf_{freq}.parquet')
                    .with_columns(adj_trd_vol_NASDAQ('date', 'vol', 'exchcd', 3))
                    .sort(['permno', 'date'])
                    .with_columns(dolvol = col('prc').abs() * col('vol'),
@@ -581,9 +581,9 @@ def prepare_crsp_sf(freq):
     c6 = col('dlret').is_not_null()
     c7 = (c5 & c6)
     crsp_sedelist_aux_col = [gen_MMYY_column('dlstdt').alias('merge_aux')] if (freq == 'm') else [col('dlstdt').alias('date')]
-    crsp_sedelist = pl.scan_ipc(f'Raw_data_dfs/crsp_{freq}sedelist.ft').with_columns(crsp_sedelist_aux_col)
-    crsp_mcti = add_MMYY_column_drop_original(pl.scan_ipc('Raw_data_dfs/crsp_mcti_t30ret.ft'), 'caldt')
-    ff_factors_monthly = add_MMYY_column_drop_original(pl.scan_ipc('Raw_data_dfs/ff_factors_monthly.ft'), 'date')
+    crsp_sedelist = pl.scan_parquet(f'Raw_data_dfs/crsp_{freq}sedelist.parquet').with_columns(crsp_sedelist_aux_col)
+    crsp_mcti = add_MMYY_column_drop_original(pl.scan_parquet('Raw_data_dfs/crsp_mcti_t30ret.parquet'), 'caldt')
+    ff_factors_monthly = add_MMYY_column_drop_original(pl.scan_parquet('Raw_data_dfs/ff_factors_monthly.parquet'), 'date')
     me_company_exp = (pl.when(pl.count('me').over(['permco', 'date']) != 0)
                         .then(pl.coalesce(['me',0.]).sum().over(['permco', 'date']))
                         .otherwise(fl_none()))
@@ -601,10 +601,10 @@ def prepare_crsp_sf(freq):
     __crsp_sf = (__crsp_sf.drop(['rf', 't30ret','merge_aux','dlret', 'dlstcd', 'dlstdt'])
                           .unique(['permno', 'date'])
                           .sort(['permno', 'date']))
-    __crsp_sf.collect(streaming=True).write_ipc(f'crsp_{freq}sf.ft')
+    __crsp_sf.collect(streaming=True).write_parquet(f'crsp_{freq}sf.parquet')
 
 def prepare_crsp_sfs_for_merging():
-    crsp_msf = (pl.scan_ipc('crsp_msf.ft')
+    crsp_msf = (pl.scan_parquet('crsp_msf.parquet')
                   .with_columns(exch_main   = col('exch_main').cast(pl.Int32),
                                 bidask      = col('bidask').cast(pl.Int32),
                                 id          = col('permno'),
@@ -628,7 +628,7 @@ def prepare_crsp_sfs_for_merging():
                            'cfacshr': 'adjfct',
                            'shrout' : 'shares'}))
 
-    crsp_dsf = (pl.scan_ipc('crsp_dsf.ft')
+    crsp_dsf = (pl.scan_parquet('crsp_dsf.parquet')
                   .with_columns(id          = col('permno'),
                                 excntry     = pl.lit('USA'),
                                 common      = (col('shrcd').is_in([10, 11, 12]).fill_null(bo_false())).cast(pl.Int32),
@@ -650,7 +650,7 @@ def prepare_comp_sfs_for_merging():
                 .when(col('iid').str.contains('C')).then(pl.lit('2') + col('gvkey') + col('iid').str.slice(0,2))
                 .otherwise(pl.lit('1') + col('gvkey') + col('iid').str.slice(0,2))).cast(pl.Int64)
 
-    comp_msf = (pl.scan_ipc('comp_msf.ft')
+    comp_msf = (pl.scan_parquet('comp_msf.parquet')
                   .with_columns(id          = id_exp,
                                 permno      = pl.lit(None).cast(pl.Int64),
                                 permco      = pl.lit(None).cast(pl.Int64),
@@ -669,7 +669,7 @@ def prepare_comp_sfs_for_merging():
                            'cshoc'   : 'shares',
                            'cshtrm'  : 'tvol'}))
 
-    comp_dsf = (pl.scan_ipc('comp_dsf.ft')
+    comp_dsf = (pl.scan_parquet('comp_dsf.parquet')
                   .with_columns(id          = id_exp,
                                 common      = pl.when(col('tpci') == '0').then(pl.lit(1)).otherwise(pl.lit(0)),
                                 bidask      = pl.when(col('prcstd') == 4).then(pl.lit(1)).otherwise(pl.lit(0)),
@@ -697,17 +697,18 @@ def gen_temp_sf(freq, crsp_df, comp_df):
                             .with_columns(ret_exc_lead1m     = col('ret_exc').shift(-1).over('id'),
                                           id_lead1m          = col('id').shift(-1),
                                           ret_lag_dif_lead1m = col('ret_lag_dif').shift(-1).over('id'))
-                            .with_columns(ret_exc_lead1m     = pl.when(c1).then(col('ret_exc_lead1m')).otherwise(fl_none())))
+                            .with_columns(ret_exc_lead1m     = pl.when(c1).then(col('ret_exc_lead1m')).otherwise(fl_none()))
+                            .drop(['id_lead1m', 'ret_lag_dif_lead1m']))
     return sf_world
 def add_obs_main_to_sf_and_write_file(freq, sf_df, obs_main):
-    file_path = '__msf_world.ft' if freq == 'm' else 'world_dsf.ft'
+    file_path = '__msf_world.parquet' if freq == 'm' else 'world_dsf.parquet'
     sort_vars = ['id','eom'] if freq == 'm' else ['id','date']
     (sf_df.join(obs_main, on = ['id','eom'], how = 'left')
           .unique(sort_vars)
           #.sort(sort_vars)
           .collect(streaming = True)
-          .write_ipc(file_path))
-
+          .write_parquet(file_path))
+    
 @measure_time
 def combine_crsp_comp_sf():
     crsp_msf, crsp_dsf = prepare_crsp_sfs_for_merging()
@@ -723,20 +724,20 @@ def combine_crsp_comp_sf():
 
 @measure_time
 def crsp_industry():
-    permno0 = pl.scan_ipc('Raw_data_dfs/permno0.ft')
+    permno0 = pl.scan_parquet('Raw_data_dfs/permno0.parquet')
     permno0 = (permno0.with_columns(sic = pl.when(col('sic') == 0).then(pl.lit(None).cast(pl.Int64)).otherwise(col('sic')))
                       .with_columns(date = pl.date_ranges('namedt', 'nameendt'))
                       .explode('date')
                       .select(['permno', 'permco', 'date', 'sic', 'naics'])
                       .unique(['permno', 'date'])
                       .sort(['permno', 'date']))
-    permno0.collect().write_ipc('crsp_ind.ft')
+    permno0.collect().write_parquet('crsp_ind.parquet')
 
 @measure_time
 def comp_hgics(lib):
-    paths = {'raw data': {'national': 'Raw_data_dfs/comp_hgics_na.ft', 'global': 'Raw_data_dfs/comp_hgics_gl.ft'},
-             'output' : {'national': 'na_hgics.ft', 'global': 'g_hgics.ft'}}
-    data = pl.read_ipc(paths['raw data'][lib]).sort(['gvkey', 'indfrom'])
+    paths = {'raw data': {'national': 'Raw_data_dfs/comp_hgics_na.parquet', 'global': 'Raw_data_dfs/comp_hgics_gl.parquet'},
+             'output' : {'national': 'na_hgics.parquet', 'global': 'g_hgics.parquet'}}
+    data = pl.read_parquet(paths['raw data'][lib]).sort(['gvkey', 'indfrom'])
     data = data.with_columns(gics = pl.when(col('gics').is_null()).then(-999).otherwise(col('gics')),
                              n = pl.len().over('gvkey'),
                              n_aux = pl.cum_count('gvkey').over('gvkey'))
@@ -748,25 +749,25 @@ def comp_hgics(lib):
                 .explode('date')
                 .unique(subset = ['gvkey', 'date'])
                 .sort(['gvkey', 'date']))
-    data.write_ipc(paths['output'][lib])
+    data.write_parquet(paths['output'][lib])
 
 @measure_time
 def hgics_join():
     comp_hgics('global')
     comp_hgics('national')
-    global_data = pl.scan_ipc('g_hgics.ft')
-    local_data = pl.scan_ipc('na_hgics.ft')
+    global_data = pl.scan_parquet('g_hgics.parquet')
+    local_data = pl.scan_parquet('na_hgics.parquet')
     gjoin = local_data.join(global_data, on = ['gvkey', 'date'], how = 'outer_coalesce')
     gjoin = (gjoin.with_columns(gics = pl.coalesce(['gics', 'gics_right']))
                   .select(['gvkey', 'date', 'gics'])
                   .unique(['gvkey','date'])
                   .sort(['gvkey','date']))
-    gjoin.collect().write_ipc('comp_hgics.ft')
-
+    gjoin.collect().write_parquet('comp_hgics.parquet')
+    
 @measure_time
 def comp_sic_naics():
-    funda_data  = pl.scan_ipc('Raw_data_dfs/sic_naics_na.ft')
-    gfunda_data = pl.scan_ipc('Raw_data_dfs/sic_naics_gl.ft')
+    funda_data  = pl.scan_parquet('Raw_data_dfs/sic_naics_na.parquet')
+    gfunda_data = pl.scan_parquet('Raw_data_dfs/sic_naics_gl.parquet')
     funda_data = funda_data.filter(~( (col('gvkey') == '175650') & (col('datadate') == pl.date(2005,12,31)) & (col('naics').is_null() )))
     comp = funda_data.join(gfunda_data, on = ['gvkey', 'datadate'], how = 'outer_coalesce').sort(['gvkey','datadate'])
     comp = (comp.with_columns(sic = pl.coalesce(['sic', 'sic_right']), naics = pl.coalesce(['naics', 'naics_right']), end_date = col('datadate').shift(-1).over('gvkey'))
@@ -777,14 +778,14 @@ def comp_sic_naics():
                 .select(['gvkey', 'date', 'sic', 'naics'])
                 .unique(['gvkey', 'date'])
                 .sort(['gvkey', 'date']))
-    comp.collect().write_ipc('comp_other.ft')
+    comp.collect().write_parquet('comp_other.parquet')
 
 @measure_time
 def comp_industry():
     comp_sic_naics()
     hgics_join()
-    comp_other = pl.read_ipc('comp_other.ft')
-    comp_gics = pl.read_ipc('comp_hgics.ft')
+    comp_other = pl.read_parquet('comp_other.parquet')
+    comp_gics = pl.read_parquet('comp_hgics.parquet')
     join = comp_gics.join(comp_other, on=['gvkey', 'date'], how='outer_coalesce').sort(['gvkey', 'date'])
     join = (join.with_columns(aux_date = (col('date').shift(-1).dt.offset_by('-1d')).over('gvkey'))
                 .with_columns(aux_date = pl.when(col('aux_date').is_null()).then(col('date')).otherwise('aux_date')))
@@ -793,11 +794,11 @@ def comp_industry():
                 .explode('date'))
     join = join.filter(col('date') == col('aux_date')).drop('aux_date')
     join = pl.concat([join, gaps], how = 'diagonal').unique(['gvkey', 'date']).sort(['gvkey', 'date'])
-    join.write_ipc('comp_ind.ft')
+    join.write_parquet('comp_ind.parquet')
 
 @measure_time
 def ff_ind_class(data_path, ff_grps):
-    data = pl.scan_ipc(data_path)
+    data = pl.scan_parquet(data_path)
     if ff_grps==38:
         lower_bounds = [1000, 1300, 1400, 1500, 2000, 2100, 2200, 2300, 2400, 2500, 2600, 2700, 2800, 2900, 3000, 3100, 3200, 3300, 3400, 3500, 3600, 3700, 3800, 3900, 4000, 4800, 4830, 4900, 4950, 4960, 4970, 5000, 5200, 6000, 7000, 9000]
         upper_bounds = [1299, 1399, 1499, 1799, 2099, 2199, 2299, 2399, 2499, 2599, 2661, 2799, 2899, 2999, 3099, 3199, 3299, 3399, 3499, 3599, 3699, 3799, 3879, 3999, 4799, 4829, 4899, 4949, 4959, 4969, 4979, 5199, 5999, 6999, 8999, 9999]
@@ -860,7 +861,7 @@ def ff_ind_class(data_path, ff_grps):
                                 .otherwise(pl.lit(None)).alias("ff49")
                                 )
 
-    data.collect().write_ipc('__msf_world3.ft')
+    data.collect().write_parquet('__msf_world3.parquet')
 def perc_method(series, p):
     """
     Calculates the given percentile using the SAS 5th method, which is the default SAS method and was used in our SAS code.
@@ -887,7 +888,7 @@ def winsorize_var(df, sort_vars, wins_var, perc_low, perc_high):
 
 @measure_time
 def nyse_size_cutoffs(data_path):
-    nyse_sf = (pl.scan_ipc(data_path)
+    nyse_sf = (pl.scan_parquet(data_path)
                  .filter((col('crsp_exchcd') == 1) &         # NYSE exchange code
                          (col('obs_main') == 1)    &         # Main observation flag
                          (col('exch_main') == 1)   &         # Main exchange flag
@@ -900,28 +901,28 @@ def nyse_size_cutoffs(data_path):
                       nyse_p20 = perc_exp('me', lambda x: perc_method(x, 0.20)),
                       nyse_p50 = perc_exp('me', lambda x: perc_method(x, 0.50)),
                       nyse_p80 = perc_exp('me', lambda x: perc_method(x, 0.80))))
-    nyse_sf.collect().write_ipc('nyse_cutoffs.ft')
+    nyse_sf.collect().write_parquet('nyse_cutoffs.parquet')
 
 @measure_time
 def classify_stocks_size_groups():
-    nyse_cutoffs = pl.scan_ipc('nyse_cutoffs.ft')
-    __msf_world = pl.scan_ipc('__msf_world3.ft')
-    world_msf = __msf_world.join(nyse_cutoffs, how = 'left', on = 'eom')
-    size_grp_column = (pl.when(col('me').is_null()).then(pl.lit(''))
-                       .when(col('me') >= col('nyse_p80')).then(pl.lit('mega'))
-                       .when(col('me') >= col('nyse_p50')).then(pl.lit('large'))
-                       .when(col('me') >= col('nyse_p20')).then(pl.lit('small'))
-                       .when(col('me') >= col('nyse_p1')).then(pl.lit('micro'))
-                       .otherwise(pl.lit('nano')))
-    world_msf = world_msf.with_columns(size_grp = size_grp_column).drop([i for i in nyse_cutoffs.collect_schema().names() if i not in ['eom', 'n']])
-    world_msf.collect().write_ipc('world_msf.ft')
+    nyse_cutoffs = pl.scan_parquet('nyse_cutoffs.parquet')
+    __msf_world = pl.scan_parquet('__msf_world3.parquet')
+    world_msf = (__msf_world.join(nyse_cutoffs, how = 'left', on = 'eom')
+                            .with_columns(size_grp = pl.when(col('me').is_null()).then(pl.lit(''))
+                                                       .when(col('me') >= col('nyse_p80')).then(pl.lit('mega'))
+                                                       .when(col('me') >= col('nyse_p50')).then(pl.lit('large'))
+                                                       .when(col('me') >= col('nyse_p20')).then(pl.lit('small'))
+                                                       .when(col('me') >= col('nyse_p1')).then(pl.lit('micro'))
+                                                       .otherwise(pl.lit('nano')))
+                            .drop([i for i in nyse_cutoffs.collect_schema().names() if i not in ['eom']]))#['eom', 'n']])
+    world_msf.collect().write_parquet('world_msf.parquet')
 
 @measure_time
 def return_cutoffs(freq, crsp_only):
     # Filter data based on provided criteria. If 'crsp_only' is 1, filter for CRSP data only.
     group_vars = ['eom'] if freq == 'm' else ['year', 'month']
-    res_path = 'return_cutoffs.ft' if freq == 'm' else 'return_cutoffs_daily.ft'
-    data = pl.scan_ipc(f'world_{freq}sf.ft')
+    res_path = 'return_cutoffs.parquet' if freq == 'm' else 'return_cutoffs_daily.parquet'
+    data = pl.scan_parquet(f'world_{freq}sf.parquet')
     if crsp_only == 1: data = data.filter(col('source_crsp') == 1)
     data = data.filter((col('common')      == 1     ) &
                        (col('obs_main')    == 1     ) &
@@ -945,7 +946,7 @@ def return_cutoffs(freq, crsp_only):
                      ret_exc_1      = perc_exp('ret_exc'  , lambda x: perc_method(x, 0.01)),
                      ret_exc_99     = perc_exp('ret_exc'  , lambda x: perc_method(x, 0.99)),
                      ret_exc_99_9   = perc_exp('ret_exc'  , lambda x: perc_method(x, 0.999))))
-    data.sort(group_vars).collect().write_ipc(res_path)
+    data.sort(group_vars).collect().write_parquet(res_path)
 def winsorize_mkt_ret(var, cutoff, comparison):
     if comparison == '>': c1 = (col(var) > col(cutoff)) & (col('source_crsp') == 0) & (col(var).is_not_null())
     else: c1 = ((col(var) < col(cutoff)).fill_null(bo_false())) & (col('source_crsp') == 0) & (col(var).is_not_null())
@@ -958,7 +959,7 @@ def load_mkt_returns_params(freq):
     comm_stocks_cols = ['source_crsp', 'id', 'date', 'eom', 'excntry', 'obs_main', 'exch_main', 'primary_sec', 'common', 'ret_lag_dif', 'me', 'dolvol', 'ret', 'ret_local', 'ret_exc']
     return dt_col, max_date_lag, path_aux, group_vars, comm_stocks_cols
 def add_cutoffs_and_winsorize(df, wins_data_path, group_vars, dt_col):
-    wins_data = (pl.scan_ipc(wins_data_path)
+    wins_data = (pl.scan_parquet(wins_data_path)
                    .select(group_vars + ['ret_exc_0_1', 'ret_exc_99_9', 'ret_0_1', 'ret_99_9', 'ret_local_0_1', 'ret_local_99_9']))
     df = (df.with_columns(year   = col(dt_col).dt.year(),
                           month  = col(dt_col).dt.month())
@@ -994,7 +995,7 @@ def drop_non_trading_days(df, n_col, dt_col, over_vars, thresh_fraction):
 @measure_time
 def market_returns(data_path, freq, wins_comp, wins_data_path):
     dt_col, max_date_lag, path_aux, group_vars, comm_stocks_cols = load_mkt_returns_params(freq)
-    __common_stocks = (pl.scan_ipc(data_path)
+    __common_stocks = (pl.scan_parquet(data_path)
                          .select(comm_stocks_cols)
                          .unique()
                          .sort(['id', dt_col])
@@ -1003,7 +1004,7 @@ def market_returns(data_path, freq, wins_comp, wins_data_path):
     if wins_comp == 1: __common_stocks = add_cutoffs_and_winsorize(__common_stocks, wins_data_path, group_vars, dt_col)
     __common_stocks = apply_stock_filter_and_compute_indexes(__common_stocks, dt_col, max_date_lag)
     if freq == 'd': __common_stocks = drop_non_trading_days(__common_stocks, 'stocks', dt_col, ['excntry','year','month'], 0.25)
-    __common_stocks.sort(['excntry', dt_col]).collect(streaming = True).write_ipc(f'market_returns{path_aux}.ft')
+    __common_stocks.sort(['excntry', dt_col]).collect(streaming = True).write_parquet(f'market_returns{path_aux}.parquet')
 
 @measure_time
 def quarterize(df, var_list):
@@ -1065,7 +1066,7 @@ def add_fx_and_convert_vars(df, fx_df, vars, freq):
     return aux
 def load_mkt_equity_data(filename, alias = True):
     col_name = 'me_fiscal' if alias else 'me_company'
-    df = (pl.scan_ipc(filename)
+    df = (pl.scan_parquet(filename)
             .filter((col('gvkey').is_not_null())      &
                     (col('primary_sec') == 1)         &
                     (col('me_company').is_not_null()) &
@@ -1182,8 +1183,8 @@ def standardized_accounting_data(coverage,convert_to_usd, me_data_path,include_h
         __compq = add_helper_vars(__compq)
         __compa = add_helper_vars(__compa)
     #Do not use streaming here, gives an error. Normal collect
-    __compa.unique(['gvkey', 'datadate']).sort(['gvkey', 'datadate']).collect().write_ipc('acc_std_ann.ft')
-    __compq.unique(['gvkey', 'datadate']).sort(['gvkey', 'datadate']).collect().write_ipc('acc_std_qtr.ft')
+    __compa.unique(['gvkey', 'datadate']).sort(['gvkey', 'datadate']).collect().write_parquet('acc_std_ann.parquet')
+    __compq.unique(['gvkey', 'datadate']).sort(['gvkey', 'datadate']).collect().write_parquet('acc_std_qtr.parquet')
 
 @measure_time
 def expand(data, id_vars, start_date, end_date, freq='day', new_date_name='date'):
@@ -1379,9 +1380,9 @@ def earnings_variability(df, esm_h = 5):
             .with_columns(earnings_variability = pl.when(c1).then(col('earnings_variability')).otherwise(fl_none()))
             .drop(['__roa', '__croa', '__roa_n', '__croa_n', '__roa_std', '__croa_std','aux1','aux2']))
     return df
-def roe_and_g_exps(i, g_c, g_ar1, roe_c, roe_ar1):
+def roe_and_g_exps(i, g_c, g_ar1, roe_c, roe_ar1): 
     return [(g_c + g_ar1 * col(f'__g{i-1}')).alias(f'__g{i}'), (roe_c + roe_ar1 * col(f'__roe{i-1}')).alias(f'__roe{i}')]
-def be_and_cd_exps(i):
+def be_and_cd_exps(i): 
     return [(col(f'__be{i-1}') * (1 + col(f'__g{i}'))).alias(f'__be{i}'), (col(f'__be{i-1}') * (col(f'__roe{i}') - col(f'__g{i}'))).alias(f'__cd{i}')]
 
 @measure_time
@@ -1512,7 +1513,7 @@ def chg_var1_to_var2(df, name, var1, var2, horizon):
     return df
 
 @measure_time
-def earnings_persistence(data, __n, __min, ):
+def earnings_persistence(data, __n, __min):
     x, y = '__ni_at_l1', '__ni_at'
     beta = pl.rolling_cov(x,y,window_size = __n, min_periods = __min)/col(x).rolling_var(window_size = __n, min_periods = __min)
     alpha_exp = col(y).rolling_mean(window_size = __n, min_periods = __min) - beta * col(x).rolling_mean(window_size = __n, min_periods = __min)
@@ -1641,7 +1642,7 @@ def tangibility():
     div_exp = (col('che') + 0.715 * col('rect') + 0.547 * col('invt') + 0.535 * col('ppegt'))/ col('at_x')
     return pl.when(c1).then(div_exp).otherwise(fl_none()).alias('tangibility')
 def emp_gr(path):
-    if path == 'acc_std_qtr.ft':
+    if path == 'acc_std_qtr.parquet':
         col_expr = fl_none().alias('emp_gr1')
     else:
         c1 = (col('count') > 12)
@@ -1828,7 +1829,7 @@ def create_acc_chars(data_path, output_path, lag_to_public, max_data_lag, __keep
     #adding and filtering market return data
     me_data = load_mkt_equity_data(me_data_path, False)
 
-    chars_df = pl.scan_ipc(data_path)
+    chars_df = pl.scan_parquet(data_path)
 
     chars_df = (chars_df.sort(['gvkey', 'curcd', 'datadate'])
                         .with_columns(count       = col('gvkey').cum_count().over(['gvkey', 'curcd']),
@@ -1898,27 +1899,21 @@ def create_acc_chars(data_path, output_path, lag_to_public, max_data_lag, __keep
                                     .unique(['gvkey', 'public_date'],keep = 'first')\
                                     .sort(['gvkey', 'public_date'])\
                                     .collect()\
-                                    .write_ipc(output_path)
-
+                                    .write_parquet(output_path)
+def combine_qtr_ann_vars(var, suffix):
+    c1 = col(var).is_null()
+    c2 = (col(f"{var}{suffix}").is_not_null()) & (col(f"datadate{suffix}") > col('datadate'))
+    return pl.when(c1|c2).then(col(f"{var}{suffix}")).otherwise(col(var)).alias(var)
 @measure_time
 def combine_ann_qtr_chars(ann_df_path, qtr_df_path, char_vars, q_suffix):
-    ann_df = pl.scan_ipc(ann_df_path)
-    qtr_df = pl.scan_ipc(qtr_df_path)
-    combined_df = ann_df.join(qtr_df, on=['gvkey', 'public_date'], how='left', suffix=q_suffix)
-    updated_cols = []
-    drop_cols = ['datadate', f'datadate{q_suffix}']
-    for char_var in char_vars:
-        c1 = col(char_var).is_null()
-        c2 = (col(f"{char_var}{q_suffix}").is_not_null()) & (col(f"datadate{q_suffix}") > col('datadate'))
-        updated_cols.append(pl.when(c1|c2).then(col(f"{char_var}{q_suffix}")).otherwise(col(char_var)).alias(char_var))
-        drop_cols.append(f"{char_var}{q_suffix}")
-    combined_df = (combined_df.with_columns(updated_cols)
-                              .drop(drop_cols)
-                              .unique(['gvkey', 'public_date'])
-                              .sort(['gvkey', 'public_date']))
-    combined_df.collect(streaming = True).write_ipc('acc_chars_world.ft')
-
-@measure_time
+    ann_df = pl.scan_parquet(ann_df_path)
+    qtr_df = pl.scan_parquet(qtr_df_path)
+    combined_df = (ann_df.join(qtr_df, on=['gvkey', 'public_date'], how='left', suffix=q_suffix)
+                        .select(['source', 'gvkey', 'public_date'] + 
+                                [combine_qtr_ann_vars(char_var, q_suffix) for char_var in char_vars])
+                        .unique(['gvkey', 'public_date'])
+                        .sort(['gvkey', 'public_date']))
+    combined_df.collect().write_parquet('acc_chars_world.parquet')
 def seasonality(data, ret_x, start_year, end_year):
     all_r = pl.lit(0.)
     ann_r = pl.lit(0.)
@@ -1958,8 +1953,8 @@ def market_chars_monthly(data_path, market_ret_path, local_currency):
     eqnpo_lags = [1,3,6,12]
     mom_rev_lags = [[0, 1],[0, 2],[0, 3],[1, 3],[0, 6],[1, 6],[0, 9],[1, 9],[0, 12],[1, 12],[7, 12],[1, 18],[1, 24],[12, 24],[1, 36],[12, 36],[12, 48],[1, 48],[1, 60],[12, 60],[36, 60]]
     ret_var = 'ret_local' if (local_currency == 1) else 'ret'
-    market_ret = pl.scan_ipc(market_ret_path)
-    data = (pl.scan_ipc(data_path)
+    market_ret = pl.scan_parquet(market_ret_path)
+    data = (pl.scan_parquet(data_path)
               .join(market_ret, how = 'left', on = ['excntry', 'eom'])
               .with_columns(pl.when(col('ret_local') == 0).then(pl.lit(1)).otherwise(pl.lit(0)).alias('ret_zero'))
               .select(['id','date','eom','me','shares','adjfct','prc','ret','ret_local', 'div_tot', 'div_cash', 'div_spc', 'dolvol','ret_lag_dif','ret_zero','ret_exc','mkt_vw_exc', col(ret_var).alias('ret_x')]))
@@ -1992,9 +1987,9 @@ def market_chars_monthly(data_path, market_ret_path, local_currency):
     data = (data.drop(['me','shares','adjfct', 'adjfct', 'prc', 'ret','ret_local','ret_x', 'div_tot', 'div_cash', 'div_spc', 'dolvol', 'ret_exc', 'mkt_vw_exc','ret_miss', 'ri_x', 'ri', 'count', 'aux'])
                 .sort(['id','eom']))
     #DO NOT USE STREAMING HERE
-    data.collect().write_ipc('market_chars_m.ft')
+    data.collect().write_parquet('market_chars_m.parquet')
 def load_age_data_and_process_dates(mode):
-    df = (pl.scan_ipc(f'Raw_data_dfs/comp_{mode}_age.ft')
+    df = (pl.scan_parquet(f'Raw_data_dfs/comp_{mode}_age.parquet')
             .group_by('gvkey')
             .agg(col('datadate').min().alias(f'comp_{mode}_first'))
             .sort('gvkey')
@@ -2004,10 +1999,10 @@ def load_age_data_and_process_dates(mode):
 
 @measure_time
 def firm_age(data_path):
-    crsp_age = pl.scan_ipc('Raw_data_dfs/crsp_age.ft')
+    crsp_age = pl.scan_parquet('Raw_data_dfs/crsp_age.parquet')
     comp_acc_age = load_age_data_and_process_dates('acc')
     comp_ret_age = load_age_data_and_process_dates('ret')
-    data = (pl.scan_ipc(data_path)
+    data = (pl.scan_parquet(data_path)
               .select(['permco','gvkey','id','eom'])
               .join(crsp_age, on = 'permco', how = 'left')
               .join(comp_acc_age, on = 'gvkey', how = 'left')
@@ -2019,7 +2014,7 @@ def firm_age(data_path):
               .with_columns(age = gen_MMYY_column('eom') - gen_MMYY_column('aux'))
               .drop('aux')
               .sort(['id','eom']))
-    data.collect(streaming = True).write_ipc('firm_age.ft')
+    data.collect(streaming = True).write_parquet('firm_age.parquet')
 def char_pf_rets():
     lms = ((col('small_high') + col('big_high')) / 2 - (col('small_low') + col('big_low')) / 2).alias('lms')
     smb = ((col('small_high') + col('small_mid') + col('small_low')) / 3 - (col('big_high') + col('big_mid') + col('big_low')) / 3).alias('smb')
@@ -2071,14 +2066,14 @@ def ap_factors(output_path, freq, sf_path, mchars_path, mkt_path, min_stocks_bp,
     lagged_cols = [col(i).shift(1).over(['id', 'source_crsp']).alias(i + '_l') for i in lag_vars]
 
     print(f'Executing AP factors with frequency {freq}', flush=True)
-    world_sf1 = (pl.scan_ipc(sf_path)
+    world_sf1 = (pl.scan_parquet(sf_path)
                    .select(pl.all().shrink_dtype())
                    .select(sf_cols[freq])
                    .filter(sf_cond[freq])
                    .drop('ret_lag_dif'))
     world_sf2 =  winsorize_var(world_sf1, ['eom'], 'ret_exc', 0.1/100, 99.9/100)
 
-    base = (pl.scan_ipc(mchars_path)
+    base = (pl.scan_parquet(mchars_path)
               .select(pl.all().shrink_dtype())
               .sort(['id', 'eom'])
               .select(copied_cols + lagged_cols)
@@ -2105,21 +2100,21 @@ def ap_factors(output_path, freq, sf_path, mchars_path, mkt_path, min_stocks_bp,
                                 .select(['excntry', date_col, (-1*col('at_gr1_lms')).alias('inv'),\
                                          col('niq_be_lms').alias('roe'), ((col('at_gr1_smb') + col('niq_be_smb'))/2).alias('smb_hxz')]))
 
-    output = (pl.scan_ipc(mkt_path)
+    output = (pl.scan_parquet(mkt_path)
                 .select(['excntry', date_col, col('mkt_vw_exc').alias('mktrf')])
                 .collect()
                 .join(ff , how = 'left', on = ['excntry', date_col])
                 .join(hxz, how = 'left', on = ['excntry', date_col]))
-    output.write_ipc(output_path)
+    output.write_parquet(output_path)
 def get_beta_and_ivol_exp(x, y, __n, __min, beta_var):
     beta_exp  = pl.rolling_cov(x,y,window_size=__n, min_periods = __min)/col(x).rolling_var(window_size=__n, min_periods = __min)
     ivol_exp  = ((col(y).rolling_var(window_size=__n, min_periods = __min) - (col(beta_var) ** 2) * col(x).rolling_var(window_size=__n, min_periods = __min)) ** (1/2)).fill_nan(None)
     return beta_exp, ivol_exp
 def merge_sf_and_fcts(data_path, fcts_path):
-    fcts = (pl.scan_ipc(fcts_path)
+    fcts = (pl.scan_parquet(fcts_path)
               .filter(col('mktrf').is_not_null())
               .select(['excntry', 'eom','mktrf', 'hml', 'smb_ff']))
-    data = (pl.scan_ipc(data_path)
+    data = (pl.scan_parquet(data_path)
               .filter((col('ret_local') != 0) & (col('ret_exc').is_not_null()) & (col('ret_lag_dif') == 1))
               .select(['excntry','id','eom','ret_exc']))
     sf = (data.join(fcts, how = 'left', on = ['excntry', 'eom'])
@@ -2155,12 +2150,12 @@ def market_beta(output_path, data_path, fcts_path, __n , __min):
                   .sort(['id','eom'])
                   .with_columns([col(beta_var).fill_null(strategy = 'forward').over('id').alias(beta_var),
                                  col(ivol_var).fill_null(strategy = 'forward').over('id').alias(ivol_var)]))
-    __msf.sort(['id','eom']).collect().write_ipc(output_path)
-
+    __msf.sort(['id','eom']).collect().write_parquet(output_path)
+    
 @measure_time
 def prepare_daily(data_path, fcts_path):
-    data = pl.scan_ipc(data_path)
-    fcts = pl.scan_ipc(fcts_path)
+    data = pl.scan_parquet(data_path)
+    fcts = pl.scan_parquet(fcts_path)
     dsf1 = (data.select(['excntry', 'id', 'date', 'eom', 'prc', 'adjfct', 'ret', 'ret_exc', 'dolvol', 'shares', 'tvol', 'ret_lag_dif', 'ret_local'])
                 .join(fcts, how = 'left', on = ['excntry', 'date'])
                 .filter(col('mktrf').is_not_null())
@@ -2172,26 +2167,26 @@ def prepare_daily(data_path, fcts_path):
                               dolvol_d = col('dolvol'),
                               prc_adj  = safe_div('prc', 'adjfct', 'prc_adj'))
                 .drop(['ret_lag_dif', 'ret_local', 'adjfct','prc', 'dolvol']))
-    dsf1.select(pl.all().shrink_dtype()).sort('eom').collect(streaming=True).write_ipc('dsf1.ft')
+    dsf1.select(pl.all().shrink_dtype()).sort('eom').collect(streaming=True).write_parquet('dsf1.parquet')
 
-    id_int_key = (pl.scan_ipc('dsf1.ft')
+    id_int_key = (pl.scan_parquet('dsf1.parquet')
                     .select(['id', 'id_int'])
                     .unique())
-    id_int_key.collect(streaming=True).write_ipc('id_int_key.ft')
+    id_int_key.collect(streaming=True).write_parquet('id_int_key.parquet')
 
     mkt_lead_lag = (fcts.select(['excntry', 'date', 'mktrf', col('date').dt.month_end().alias('eom')])
                         .sort(['excntry','date'])
                         .with_columns(mktrf_ld1 = col('mktrf').shift(-1).over(['excntry','eom']),
                                       mktrf_lg1 = col('mktrf').shift(1).over(['excntry'])))
-    mkt_lead_lag.collect(streaming=True).write_ipc('mkt_lead_lag.ft')
+    mkt_lead_lag.collect(streaming=True).write_parquet('mkt_lead_lag.parquet')
 
-    corr_data = (pl.scan_ipc('dsf1.ft')
+    corr_data = (pl.scan_parquet('dsf1.parquet')
                    .select(['ret_exc', 'id', 'id_int', 'date', 'mktrf', 'eom', 'zero_obs'])
                    .sort(['id_int','date'])
                    .with_columns(ret_exc_3l = (col('ret_exc') + col('ret_exc').shift(1) + col('ret_exc').shift(2)).over(['id_int']),
                                  mkt_exc_3l = (col('mktrf')   + col('mktrf').shift(1)   + col('mktrf').shift(2)).over(['id_int']))
                    .select(['id_int', 'eom', 'zero_obs', 'ret_exc_3l', 'mkt_exc_3l']))
-    corr_data.collect(streaming = True).write_ipc('corr_data.ft')
+    corr_data.collect(streaming = True).write_parquet('corr_data.parquet')
 
 def gen_ranks_and_normalize(df, id_vars, geo_vars, time_vars, desc_flag, var, min_stks):
     by_vars = geo_vars + time_vars
@@ -2215,7 +2210,7 @@ def mispricing_factors(data_path, min_stks, min_fcts = 3):
     vars_perf = ['o_score','ret_12_1','gp_at','niq_at']
     direction = [True, False, True, True, True, True, True, False, False, False]
     index = [1,2,3,4,5,6,7,8,9,10]
-    aux_df = (pl.scan_ipc(data_path)
+    aux_df = (pl.scan_parquet(data_path)
                 .filter((col('common')      == 1)      &\
                         (col('primary_sec') == 1)      &\
                         (col('obs_main')    == 1)      &\
@@ -2231,7 +2226,7 @@ def mispricing_factors(data_path, min_stks, min_fcts = 3):
     chars['1'] = (chars['1'].with_columns(mispricing_mgmt = gen_misp_exp(vars_mgmt, min_fcts),
                                           mispricing_perf = gen_misp_exp(vars_perf, min_fcts))
                             .select(['id', 'eom', 'mispricing_perf', 'mispricing_mgmt']))
-    chars['1'].collect().write_ipc('mp_factors.ft')
+    chars['1'].collect().write_parquet('mp_factors.parquet')
 
 @measure_time
 def regression_3vars(y, x1, x2, x3, __n, __min):
@@ -2281,7 +2276,7 @@ def residual_momentum(output_path, data_path, fcts_path, __n, __min, incl, skip)
                   .with_columns((pl.when(col('den') != 0).then(col('std_res')).otherwise(fl_none())).alias(res_var))
                   .select(['id','eom', res_var])
                   .sort(['id','eom']))
-    __msf.collect().write_ipc(output_path + f'_{incl}_{skip}.ft')
+    __msf.collect().write_parquet(output_path + f'_{incl}_{skip}.parquet')
     del __msf
 
 @measure_time
@@ -2300,8 +2295,8 @@ def bidask_hl(output_path, data_path, market_returns_daily_path, __min_obs):
     c5 = (col('prc_low')!= 0.) & (col('prc_high')/col('prc_low') > 8)
     c6 = (col('prc_l1') < col('prc_low')) & (col('prc_l1') > 0)
     c7 = (col('prc_l1') > col('prc_high')) & (col('prc_l1') > 0)
-    market_returns_daily = pl.scan_ipc(market_returns_daily_path)
-    __dsf = (pl.scan_ipc(data_path)
+    market_returns_daily = pl.scan_parquet(market_returns_daily_path)
+    __dsf = (pl.scan_parquet(data_path)
                .join(market_returns_daily, how = 'left', on=['excntry', 'date'])
                .filter(col('mkt_vw_exc').is_not_null())
                .with_columns([safe_div(var, 'adjfct', var) for var in ['prc', 'prc_high', 'prc_low']])
@@ -2357,19 +2352,19 @@ def bidask_hl(output_path, data_path, market_returns_daily_path, __min_obs):
                .filter(col('count') > __min_obs)
                .drop('count')
                .sort(['id','eom']))
-    __dsf.collect().write_ipc(output_path)
+    __dsf.collect().write_parquet(output_path)
 
 @measure_time
 def create_world_data_prelim(msf_path, market_chars_monthly_path, acc_chars_world_path, output_path):
-    a = pl.scan_ipc(msf_path)
-    b = pl.scan_ipc(market_chars_monthly_path)
-    c = pl.scan_ipc(acc_chars_world_path)
+    a = pl.scan_parquet(msf_path)
+    b = pl.scan_parquet(market_chars_monthly_path)
+    c = pl.scan_parquet(acc_chars_world_path)
     world_data_prelim = (a.join(b, how = 'left', on = ['id','eom'])
                           .join(c, how = 'left', left_on = ['gvkey','eom'], right_on = ['gvkey', 'public_date'])
                           .drop(['div_tot', 'div_cash', 'div_spc', 'source']))
-    world_data_prelim.collect().write_ipc(output_path)
+    world_data_prelim.collect().write_parquet(output_path)
     #Streaming can be used here if needed
-    #world_data_prelim.collect(streaming = True).write_ipc('world_data_prelim.ft')
+    #world_data_prelim.collect(streaming = True).write_parquet('world_data_prelim.parquet')
 def acc_chars_list():
     acc_chars = [
     # Accounting Based Size Measures
@@ -2445,7 +2440,7 @@ def acc_chars_list():
     "op_at", "pi_nix", "op_atl1", "gp_atl1", "ope_bel1", "cop_atl1",
     "at_be", "ocfq_saleq_std", "aliq_at", "aliq_mat", "tangibility",
     "eq_dur", "f_score", "o_score", "z_score", "kz_index", "intrinsic_value", "ival_me",
-    "sale_emp_gr1", "emp_gr1", "cash_at", "earnings_variability",
+    "sale_emp_gr1", "emp_gr1", "cash_at", "earnings_variability", "ni_ar1", "ni_ivol",
     # New Variables not in HXZ
     "niq_saleq_std", "ni_emp", "sale_emp", "ni_at", "ocf_at", "ocf_at_chg1",
     "roeq_be_std", "roe_be_std", "gpoa_ch5", "roe_ch5", "roa_ch5", "cfoa_ch5", "gmar_ch5"
@@ -2454,11 +2449,11 @@ def acc_chars_list():
 
 @measure_time
 def finish_daily_chars(output_path):
-    bidask = pl.scan_ipc('corwin_schultz.ft')
-    r1 = pl.scan_ipc('roll_apply_daily.ft').with_columns(col('id').cast(pl.Int64))
+    bidask = pl.scan_parquet('corwin_schultz.parquet')
+    r1 = pl.scan_parquet('roll_apply_daily.parquet').with_columns(col('id').cast(pl.Int64))
     daily_chars = bidask.join(r1, how = 'outer_coalesce', on=['id','eom'])
     daily_chars = daily_chars.with_columns(betabab_1260d = col('corr_1260d') * col('rvol_252d')/ col('__mktvol_252d'), rmax5_rvol_21d = col('rmax5_21d') / col('rvol_252d')).drop('__mktvol_252d')
-    daily_chars.collect().write_ipc(output_path)
+    daily_chars.collect().write_parquet(output_path)
 
 def z_ranks(data, var, min, sort):
     order = False if sort == 'ascending' else True
@@ -2478,7 +2473,7 @@ def quality_minus_junk(data_path, min_stks):
     direction = ['ascending', 'ascending', 'ascending', 'ascending', 'ascending', 'descending','ascending', 'ascending', 'ascending', 'ascending', 'ascending','descending', 'descending', 'descending', 'ascending', 'descending']
     cols = ['id', 'eom', 'excntry', 'gp_at', 'ni_be', 'ni_at', 'ocf_at', 'gp_sale', 'oaccruals_at', 'gpoa_ch5', 'roe_ch5', 'roa_ch5', 'cfoa_ch5', 'gmar_ch5', 'betabab_1260d', 'debt_at', 'o_score', 'z_score', 'roeq_be_std', 'roe_be_std']
     c1 = (col('common') == 1) & (col('primary_sec') == 1) & (col('obs_main') == 1) & (col('exch_main') == 1) & (col('ret_exc').is_not_null()) & (col('me').is_not_null())
-    qmj = (pl.read_ipc(data_path, columns = cols + ['common', 'primary_sec', 'obs_main', 'exch_main', 'ret_exc', 'me'])
+    qmj = (pl.read_parquet(data_path, columns = cols + ['common', 'primary_sec', 'obs_main', 'exch_main', 'ret_exc', 'me'])
              .filter(c1)
              .select(cols)
              .with_columns(__evol = pl.coalesce(2 * col('roeq_be_std'), 'roe_be_std'))
@@ -2498,12 +2493,12 @@ def quality_minus_junk(data_path, min_stks):
               .with_columns(__qmj = col('qmj_prof') + col('qmj_growth') + col('qmj_safety')))
     __qmj = z_ranks(qmj, '__qmj', min_stks, 'ascending').rename({'z___qmj': 'qmj'})
     qmj = qmj.join(__qmj, how = 'left', on = ['excntry', 'id', 'eom']).drop('__qmj')
-    qmj.write_ipc('qmj.ft')
+    qmj.write_parquet('qmj.parquet')
 
 @measure_time
 def save_main_data(end_date):
     months_exp = (col('eom').dt.year() * 12 + col('eom').dt.month()).cast(pl.Int64)
-    data = (pl.scan_ipc('world_data.ft')
+    data = (pl.scan_parquet('world_data.parquet')
               .with_columns(dif_aux = months_exp)
               .sort(['id','eom'])
               .with_columns(me_lag1 = col('me').shift(1).over('id'),
@@ -2511,17 +2506,25 @@ def save_main_data(end_date):
               .with_columns(me_lag1 = pl.when(col('dif_aux') == 1).then(col('me_lag1')).otherwise(fl_none()))
               .drop('dif_aux')
               .filter((col('primary_sec') == 1) & (col('common') == 1) & (col('obs_main') == 1) & (col('exch_main') == 1) & (col('eom') <= end_date)))
-    data.select(pl.all().shrink_dtype()).collect(streaming=True).write_ipc('world_data_filtered.ft')
-    countries = pl.scan_ipc('world_data_filtered.ft').select('excntry').unique().collect().to_numpy().flatten()
+    data.select(pl.all().shrink_dtype()).collect(streaming=True).write_parquet('world_data_filtered.parquet')
+    countries = pl.scan_parquet('world_data_filtered.parquet').select('excntry').unique().collect().to_numpy().flatten()
     for i in countries:
         print(f'Filtering data for country {i}', flush=True)
-        data = pl.scan_ipc('world_data_filtered.ft').filter(col('excntry') == i)
+        data = pl.scan_parquet('world_data_filtered.parquet').filter(col('excntry') == i)
         data.collect().write_parquet(f'Characteristics/{i}.parquet', compression='zstd', compression_level = 11, statistics = False)
 
 @measure_time
+def save_output_files():
+    os.system('mv market_returns.parquet Output/')
+    os.system('mv market_returns_daily.parquet Output/')
+    os.system('mv nyse_cutoffs.parquet Output/')
+    os.system('mv return_cutoffs.parquet Output/')
+    os.system('mv return_cutoffs_daily.parquet Output/')
+
+@measure_time
 def save_daily_ret():
-    data = pl.scan_ipc('world_dsf.ft').select(['excntry', 'id', 'date', 'me', 'ret', 'ret_exc'])
-    countries = pl.scan_ipc('world_dsf.ft').select('excntry').unique().collect().to_numpy().flatten()
+    data = pl.scan_parquet('world_dsf.parquet').select(['excntry', 'id', 'date', 'me', 'ret', 'ret_exc'])
+    countries = pl.scan_parquet('world_dsf.parquet').select('excntry').unique().collect().to_numpy().flatten()
     for i in countries:
         if i == None:
             print(f'Filtering data for null country', flush=True)
@@ -2531,21 +2534,21 @@ def save_daily_ret():
             data.select(pl.all().shrink_dtype()).filter(col('excntry') == i).collect().write_parquet(f'Daily_Returns/{i}.parquet', compression='zstd', compression_level = 11, statistics = False)
 @measure_time
 def save_accounting_data():
-    pl.scan_ipc('acc_std_qtr.ft').filter(col('source').is_not_null()).collect().write_parquet('Accounting_Data/Quarterly.parquet')
-    pl.scan_ipc('acc_std_ann.ft').filter(col('source').is_not_null()).collect().write_parquet('Accounting_Data/Annual.parquet')
+    pl.scan_parquet('acc_std_qtr.parquet').filter(col('source').is_not_null()).collect().write_parquet('Accounting_Data/Quarterly.parquet')
+    pl.scan_parquet('acc_std_ann.parquet').filter(col('source').is_not_null()).collect().write_parquet('Accounting_Data/Annual.parquet')
 
 @measure_time
 def save_full_files_and_cleanup():
-    pl.scan_ipc('world_dsf.ft').select(pl.all().shrink_dtype()).collect(streaming = True).write_parquet(f'Daily_Returns/world_dsf.parquet', compression='zstd', compression_level = 11, statistics = False)
-    pl.scan_ipc('world_data.ft').select(pl.all().shrink_dtype()).collect(streaming = True).write_parquet(f'World_Data/world_data.parquet', compression='zstd', compression_level = 11, statistics = False)
-    pl.scan_ipc('world_data_filtered.ft').select(pl.all().shrink_dtype()).collect(streaming = True).write_parquet(f'World_Data/world_data_filtered.parquet', compression='zstd', compression_level = 11, statistics = False)
-    os.system('rm *.ft')
+    pl.scan_parquet('world_dsf.parquet').select(pl.all().shrink_dtype()).collect(streaming = True).write_parquet(f'Daily_Returns/world_dsf.parquet', compression='zstd', compression_level = 11, statistics = False)
+    pl.scan_parquet('world_data.parquet').select(pl.all().shrink_dtype()).collect(streaming = True).write_parquet(f'World_Data/world_data.parquet', compression='zstd', compression_level = 11, statistics = False)
+    pl.scan_parquet('world_data_filtered.parquet').select(pl.all().shrink_dtype()).collect(streaming = True).write_parquet(f'World_Data/world_data_filtered.parquet', compression='zstd', compression_level = 11, statistics = False)
+    os.system('rm *.parquet')
     os.system('rm -rf Raw_tables')
     os.system('rm -rf Raw_data_dfs')
 
 @measure_time
 def save_monthly_ret():
-    data = pl.scan_ipc('world_msf.ft').select(['excntry', 'id', 'source_crsp', 'eom', 'me', 'ret_exc', 'ret', 'ret_local'])
+    data = pl.scan_parquet('world_msf.parquet').select(['excntry', 'id', 'source_crsp', 'eom', 'me', 'ret_exc', 'ret', 'ret_local'])
     data.select(pl.all().shrink_dtype()).collect().write_parquet(f'World_Ret_Monthly/world_ret_monthly.parquet', compression='zstd', compression_level = 11, statistics = False)
 
 @measure_time
@@ -2553,65 +2556,65 @@ def merge_roll_apply_daily_results():
     date_idx = datetime.datetime.today().month + datetime.datetime.today().year * 12
     df_dates = pl.DataFrame({'aux_date': [i+1 for i in range(23112, date_idx+1)],'eom': [f'{i//12}-{i%12+1}-1' for i in range(23112, date_idx+1)]})
     df_dates = df_dates.with_columns(col('eom').str.strptime(pl.Date, "%Y-%m-%d").dt.month_end().alias('eom'), col('aux_date').cast(pl.Int64))
-    df_id    = pl.scan_ipc('id_int_key.ft')
+    df_id    = pl.scan_parquet('id_int_key.parquet')
     file_paths = [i for i in os.listdir() if i.startswith('__roll')]
     if len(file_paths) != 1:
-        joint_file = pl.scan_ipc(file_paths[0])
+        joint_file = pl.scan_parquet(file_paths[0])
         for i in file_paths[1:]:
-            df_aux = pl.scan_ipc(i)
+            df_aux = pl.scan_parquet(i)
             joint_file = joint_file.join(df_aux, how = 'outer_coalesce', on = ['id_int','aux_date'])
         joint_file.with_columns(col('aux_date').cast(pl.Int64))\
                   .join(df_dates.lazy(), how = 'left', on = 'aux_date')\
                   .join(df_id, how = 'left', on = 'id_int')\
                   .drop(['aux_date', 'id_int'])\
                   .collect()\
-                  .write_ipc('roll_apply_daily.ft')
-    else: joint_file = pl.scan_ipc(file_paths[0])
+                  .write_parquet('roll_apply_daily.parquet')
+    else: joint_file = pl.scan_parquet(file_paths[0])
 
     joint_file.with_columns(col('aux_date').cast(pl.Int64))\
               .join(df_dates.lazy().with_columns(col('aux_date').cast(pl.Int64)), how = 'left', on = 'aux_date')\
               .join(df_id, how = 'left', on = 'id_int')\
               .drop(['aux_date', 'id_int'])\
               .collect()\
-              .write_ipc('roll_apply_daily.ft')
+              .write_parquet('roll_apply_daily.parquet')
 
 @measure_time
 def merge_world_data_prelim():
-    a = pl.scan_ipc('world_data_prelim.ft')
-    b = pl.scan_ipc('beta_60m.ft')
-    c = pl.scan_ipc('resmom_ff3_12_1.ft')
-    d = pl.scan_ipc('resmom_ff3_6_1.ft')
-    e = pl.scan_ipc('mp_factors.ft')
-    f = pl.scan_ipc('market_chars_d.ft')
-    g = pl.scan_ipc('firm_age.ft').select(['id','eom','age'])
+    a = pl.scan_parquet('world_data_prelim.parquet')
+    b = pl.scan_parquet('beta_60m.parquet')
+    c = pl.scan_parquet('resmom_ff3_12_1.parquet')
+    d = pl.scan_parquet('resmom_ff3_6_1.parquet')
+    e = pl.scan_parquet('mp_factors.parquet')
+    f = pl.scan_parquet('market_chars_d.parquet')
+    g = pl.scan_parquet('firm_age.parquet').select(['id','eom','age'])
     world_data = (a.join(b, how = 'left', on = ['id','eom'])
                    .join(c, how = 'left', on = ['id','eom'])
                    .join(d, how = 'left', on = ['id','eom'])
                    .join(e, how = 'left', on = ['id','eom'])
                    .join(f, how = 'left', on = ['id','eom'])
                    .join(g, how = 'left', on = ['id','eom']))
-    world_data.collect().write_ipc('world_data_-1.ft')
+    world_data.collect().write_parquet('world_data_-1.parquet')
 
 @measure_time
 def merge_qmj_to_world_data():
-    a = pl.scan_ipc('world_data_-1.ft')
-    b = pl.scan_ipc('qmj.ft')
+    a = pl.scan_parquet('world_data_-1.parquet')
+    b = pl.scan_parquet('qmj.parquet')
     result = (a.join(b, how = 'left', on = ['excntry','id','eom'])
                .unique(['id','eom'])
                .sort(['id','eom']))
-    result.collect(streaming=True).write_ipc('world_data.ft')
+    result.collect(streaming=True).write_parquet('world_data.parquet')
 
 @measure_time
 def merge_industry_to_world_msf():
-    __msf_world = pl.scan_ipc('__msf_world.ft')
-    comp_ind = pl.scan_ipc('comp_ind.ft')
-    crsp_ind = pl.scan_ipc('crsp_ind.ft').rename({'sic': 'sic_crsp', 'naics': 'naics_crsp'})
+    __msf_world = pl.scan_parquet('__msf_world.parquet')
+    comp_ind = pl.scan_parquet('comp_ind.parquet')
+    crsp_ind = pl.scan_parquet('crsp_ind.parquet').rename({'sic': 'sic_crsp', 'naics': 'naics_crsp'})
     __msf_world = (__msf_world.join(comp_ind, how = 'left', left_on = ['gvkey', 'eom'], right_on = ['gvkey','date'])
                               .join(crsp_ind, how = 'left', left_on = ['permco', 'permno', 'eom'], right_on = ['permco','permno','date'])
                               .with_columns(sic   = pl.coalesce(['sic','sic_crsp']),
                                             naics = pl.coalesce(['naics','naics_crsp']))
                               .drop(['sic_crsp','naics_crsp']))
-    __msf_world.collect(streaming = True).write_ipc('__msf_world2.ft')
+    __msf_world.collect(streaming = True).write_parquet('__msf_world2.parquet')
 
 @measure_time
 def roll_apply_daily(stats, sfx, __min):
@@ -2619,19 +2622,19 @@ def roll_apply_daily(stats, sfx, __min):
     aux_maps = gen_aux_maps(sfx)
     base_data = prepare_base_data(stat = stats)
     results = pl.concat([process_map_chunks(base_data, mapping, stats, sfx, __min) for mapping in aux_maps])
-    results.collect().write_ipc(f'__roll{sfx}_{stats}.ft')
+    results.collect().write_parquet(f'__roll{sfx}_{stats}.parquet')
 
 def gen_consecutive_lists(input_list, k): return [input_list[i:i+k] for i in range(0, len(input_list), k) if len(input_list[i:i+k]) == k]
-
+    
 def build_groups(input_list, k): return [gen_consecutive_lists(input_list[offset:], k) for offset in range(k)]
-
+    
 def group_mapping_dfs(input_list, k):
     groups =  build_groups(input_list, k)
     dfs = [pl.DataFrame({'aux_date': group})
-             .with_columns(group_number = pl.cum_count('aux_date'),
+             .with_columns(group_number = pl.cum_count('aux_date'), 
                            new_date     = col('aux_date').list.max())
               for group in groups]
-    return [{'group_map': df.explode('aux_date').select([col('aux_date').cast(pl.Int32), 'group_number']).lazy(),
+    return [{'group_map': df.explode('aux_date').select([col('aux_date').cast(pl.Int32), 'group_number']).lazy(), 
              'date_map' : df.select(['group_number', col('new_date').alias('aux_date')]).unique().sort(['group_number']).lazy()}for df in dfs]
 
 def base_data_filter_exp(stat):
@@ -2642,26 +2645,26 @@ def base_data_filter_exp(stat):
     else                      : return (col('ret_exc').is_not_null()) & (col('zero_obs') < 10)
 
 def prepare_base_data(stat):
-    base_data_path = 'corr_data.ft' if stat == 'mktcorr' else 'dsf1.ft'
-    base_data = (pl.scan_ipc(base_data_path)
+    base_data_path = 'corr_data.parquet' if stat == 'mktcorr' else 'dsf1.parquet'
+    base_data = (pl.scan_parquet(base_data_path)
                 .with_columns(aux_date = gen_MMYY_column('eom'))
                 .filter(base_data_filter_exp(stat)))
 
     if stat == 'dimsonbeta':
-        lead_lag = pl.scan_ipc('mkt_lead_lag.ft').drop(['eom', 'mktrf'])
+        lead_lag = pl.scan_parquet('mkt_lead_lag.parquet').drop(['eom', 'mktrf'])
         base_data = base_data.join(lead_lag, how = 'inner', on = ['excntry', 'date'])
-
+        
     return base_data
 
 def apply_group_filter(df, stat, min_obs):
-    if stat == 'turnover' or stat == 'mktcorr':
+    if stat == 'turnover' or stat == 'mktcorr': 
         pass
     elif stat == 'dimsonbeta':
         df = (df.with_columns(n1 = pl.len().over(['id_int','eom']),
                             n2 = pl.count('ret_exc').over(['id_int', 'group_number']))
                 .filter((col('n1') >= min_obs - 1) & (col('n2') >= min_obs) & (col('mktrf_lg1').is_not_null()) & (col('mktrf_ld1').is_not_null())))
     else:
-        if stat == 'zero_trades': filter_var = 'tvol'
+        if stat == 'zero_trades': filter_var = 'tvol' 
         elif stat == 'dolvol':  filter_var = 'dolvol_d'
         else: filter_var = 'ret_exc'
         df = (df.with_columns(n = pl.count(filter_var).over(['id_int', 'group_number']))
@@ -2670,32 +2673,32 @@ def apply_group_filter(df, stat, min_obs):
 
 def process_map_chunks(base_data, mapping, stats, sfx, __min):
 
-    funcs = {'rvol'       : rvol,
-             'rmax'       : rmax,
-             'skew'       : skew,
-             'prc_to_high': prc_to_high,
-             'capm'       : capm,
-             'ami'        : ami,
-             'downbeta'   : downbeta,
-             'mktrf_vol'  : mktrf_vol,
-             'capm_ext'   : capm_ext,
-             'ff3'        : ff3,
-             'hxz4'       : hxz4,
-             'zero_trades': zero_trades,
-             'dolvol'     : dolvol,
-             'turnover'   : turnover,
-             'mktcorr'    : mktcorr,
+    funcs = {'rvol'       : rvol, 
+             'rmax'       : rmax, 
+             'skew'       : skew, 
+             'prc_to_high': prc_to_high, 
+             'capm'       : capm, 
+             'ami'        : ami, 
+             'downbeta'   : downbeta, 
+             'mktrf_vol'  : mktrf_vol, 
+             'capm_ext'   : capm_ext, 
+             'ff3'        : ff3, 
+             'hxz4'       : hxz4, 
+             'zero_trades': zero_trades, 
+             'dolvol'     : dolvol, 
+             'turnover'   : turnover, 
+             'mktcorr'    : mktcorr, 
              'mktvol'     : mktrf_vol,
              'dimsonbeta' : dimsonbeta}
-
+    
     df = (base_data.join(mapping['group_map'], how = 'inner', on = 'aux_date')
                 .pipe(apply_group_filter, stat = stats, min_obs = __min)
                 .pipe(funcs[stats], sfx = sfx, __min = __min)
                 .join(mapping['date_map'], how = 'left', on = 'group_number')
                 .drop('group_number'))
-
+    
     return df
-
+    
 def gen_aux_maps(sfx):
     parameter_mapping = {"_21d": 1,"_126d": 6,"_252d": 12,"_1260d": 60}
     date_aux = datetime.datetime.today().month + datetime.datetime.today().year * 12
@@ -2710,7 +2713,7 @@ def rvol(df, sfx, __min):
 
 def rmax(df, sfx, __min):
     df = (df.group_by(['id_int', 'group_number'])
-            .agg([col('ret').top_k(5).mean().alias(f'rmax5{sfx}'),
+            .agg([col('ret').top_k(5).mean().alias(f'rmax5{sfx}'), 
                   col('ret').max().alias(f'rmax1{sfx}')]))
     return df
 
@@ -2722,7 +2725,7 @@ def skew(df, sfx, __min):
 def prc_to_high(df, sfx, __min):
     df = (df.sort(['id_int', 'date'])
             .group_by(['id_int', 'group_number'])
-            .agg([(col('prc_adj').last()/ col('prc_adj').max()).alias(f'prc_highprc{sfx}'),
+            .agg([(col('prc_adj').last()/ col('prc_adj').max()).alias(f'prc_highprc{sfx}'), 
                 pl.count('prc_adj').alias('n')])
             .filter(col('n') >= __min)
             .drop('n'))
@@ -2736,7 +2739,7 @@ def capm(df, sfx, __min):
 def ami(df, sfx, __min):
     aux_1 = pl.when(col('dolvol_d') == 0).then(fl_none()).otherwise(col('dolvol_d'))
     df = (df.group_by(['id_int', 'group_number'])
-            .agg([(col('ret').abs()/aux_1 * 1e6).mean().alias(f'ami{sfx}'),
+            .agg([(col('ret').abs()/aux_1 * 1e6).mean().alias(f'ami{sfx}'), 
                   pl.count('dolvol_d').alias('n')])
             .filter(col('n') >= __min)
             .drop('n'))
@@ -2745,7 +2748,7 @@ def ami(df, sfx, __min):
 def downbeta(df, sfx, __min):
     df = (df.filter(col('mktrf') < 0)
             .group_by(['id_int', 'group_number'])
-            .agg([(pl.cov('ret_exc', 'mktrf')/pl.var('mktrf')).alias(f'betadown{sfx}'),
+            .agg([(pl.cov('ret_exc', 'mktrf')/pl.var('mktrf')).alias(f'betadown{sfx}'), 
                 pl.count('ret_exc').alias('n')])
             .filter(col('n')>=__min/2)
             .drop('n'))
@@ -2765,9 +2768,9 @@ def capm_ext(df, sfx, __min):
     exp_coskew2  = (residual_col**2).mean()**0.5 * (exp_mkt**2).mean()
 
     df = (df.group_by(['id_int', 'group_number'])
-            .agg([beta_col.cast(pl.Float64).alias(f'beta_capm{sfx}'),
+            .agg([beta_col.cast(pl.Float64).alias(f'beta_{sfx}'),
                   residual_col.std().alias(f'ivol_capm{sfx}'),
-                  residual_col.skew(bias = False).alias(f'iskew_capm{sfx}'),
+                  residual_col.skew(bias = False).alias(f'iskew_capm{sfx}'), 
                   (exp_coskew1/exp_coskew2).alias(f'coskew{sfx}')]))
     return df
 
@@ -2783,7 +2786,7 @@ def hxz4(df, sfx, __min):
     res_exp = pl.col('ret_exc').least_squares.ols('mktrf', 'smb_hxz', 'roe', 'inv', add_intercept = True, mode = 'residuals')
     df = (df.filter(col('smb_hxz').is_not_null() & col('roe').is_not_null() & col('inv').is_not_null())
             .group_by(['id_int', 'group_number'])
-            .agg(res_exp.std(ddof = 4).alias(f'ivol_hxz4{sfx}'),
+            .agg(res_exp.std(ddof = 4).alias(f'ivol_hxz4{sfx}'), 
                 res_exp.skew(bias = False).alias(f'iskew_hxz4{sfx}')))
     return df
 
@@ -2813,8 +2816,8 @@ def turnover(df, sfx, __min):
     aux_1 = pl.when(col('turnover_d').list.mean() != 0).then(col('turnover_d').list.std()/col('turnover_d').list.mean()).otherwise(fl_none())
     df = (df.group_by(['id_int', 'group_number'])
             .agg([pl.when(col('shares') != 0).then(col('tvol')/(col('shares')*1e6)).otherwise(fl_none()).alias('turnover_d')])
-            .with_columns([col('turnover_d').list.mean().alias(f'turnover{sfx}'),
-                        aux_1.alias(f'turnover_var{sfx}'),
+            .with_columns([col('turnover_d').list.mean().alias(f'turnover{sfx}'), 
+                        aux_1.alias(f'turnover_var{sfx}'), 
                         (col('turnover_d').list.len()).alias('n')])
             .filter(col('n') >= __min)
             .drop(['n', 'turnover_d']))
@@ -2822,17 +2825,15 @@ def turnover(df, sfx, __min):
 
 def mktcorr(df, sfx, __min):
     df = (df.group_by(['id_int', 'group_number'])
-            .agg([pl.count('ret_exc_3l').alias('n1'),
-                pl.count('mkt_exc_3l').alias('n2'),
+            .agg([pl.count('ret_exc_3l').alias('n1'), 
+                pl.count('mkt_exc_3l').alias('n2'), 
                 pl.corr('ret_exc_3l', 'mkt_exc_3l').alias(f'corr{sfx}')])
             .filter((col('n1')>=__min) & (col('n2')>=__min))
             .drop(['n1', 'n2']))
     return df
 
 def dimsonbeta(df, sfx, __min):
+    b1_col, b2_col, b3_col = regression_3vars_total('ret_exc', 'mktrf', 'mktrf_ld1', 'mktrf_lg1')
     df = (df.group_by(['id_int', 'group_number'])
-            .agg(coeffs = pl.col('ret_exc').least_squares.ols('mktrf', 'mktrf_ld1', 'mktrf_lg1', add_intercept = True, mode = 'coefficients'))
-            .unnest('coeffs')
-            .with_columns(pl.sum_horizontal('mktrf', 'mktrf_ld1', 'mktrf_lg1').alias(f'beta_dimson{sfx}'))
-            .select(['id_int', 'group_number', f'beta_dimson{sfx}']))
+            .agg((b1_col + b2_col + b3_col).alias(f'beta_dimson{sfx}')))
     return df
