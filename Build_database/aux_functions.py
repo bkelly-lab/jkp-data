@@ -88,11 +88,12 @@ def ex_country_aux(filename):
             .select(['exchg', 'excntry'])
             .unique())
     return df
-def header_aux(filename):
-    df = (pl.scan_parquet(filename)
-            .select(['gvkey', 'prirow', 'priusa', 'prican'])
-            .unique())
-    return df
+def header_aux(comp_path, gcomp_path, output_path):
+    con = ibis.duckdb.connect(threads = os.cpu_count())
+    comp   = con.read_parquet(comp_path).select(['gvkey', 'prirow', 'priusa', 'prican'])
+    g_comp = con.read_parquet(gcomp_path).select(['gvkey', 'prirow', 'priusa', 'prican'])
+    comp.union(g_comp).distinct(on = 'gvkey', keep = 'first').to_parquet(output_path)
+    con.disconnect()
 def prihist_aux(filename, alias_itemvalue):
     df = (pl.scan_parquet(filename)
             .filter(col('item') == alias_itemvalue.upper())
@@ -160,8 +161,7 @@ def gen_raw_data_dfs():
     collect_and_write(comp_r_ex_codes, 'Raw_data_dfs/comp_r_ex_codes.parquet')
     __ex_country1 = pl.concat([ex_country_aux('Raw_tables/comp_g_security.parquet'), ex_country_aux('Raw_tables/comp_security.parquet')])
     collect_and_write(__ex_country1, 'Raw_data_dfs/__ex_country1.parquet')
-    __header = pl.concat([header_aux('Raw_tables/comp_company.parquet'), header_aux('Raw_tables/comp_g_company.parquet')])
-    collect_and_write(__header, 'Raw_data_dfs/__header.parquet')
+    header_aux('Raw_tables/comp_company.parquet', 'Raw_tables/comp_g_company.parquet', 'Raw_data_dfs/__header.parquet')
     __prihistcan = prihist_aux('Raw_tables/comp_sec_history.parquet', 'prihistcan')
     collect_and_write(__prihistcan, 'Raw_data_dfs/__prihistcan.parquet')
     __prihistusa = prihist_aux('Raw_tables/comp_sec_history.parquet', 'prihistusa')
@@ -464,30 +464,56 @@ def comp_exchanges():
                       .with_columns(col('exchg').cast(pl.Int64))
                       .with_columns(exch_exp))
     return __ex_country
-def gen_prihist_df(path_aux_data, geo, datevar):
-    c1 = col(datevar) >= col('effdate')
-    c2 = col(datevar) <= col('thrudate')
-    c3 = col('thrudate').is_null()
-    aux_data = pl.read_parquet(path_aux_data, columns = ['gvkey', datevar]).unique()
-    prihistr = pl.read_parquet(f'Raw_data_dfs/__prihist{geo}.parquet')
-    prihistr = (aux_data.join(prihistr, how = 'left', on = 'gvkey')
-                        .filter(c1 & (c2|c3))
-                        .drop(['effdate','thrudate']))
-    return prihistr
+
 @measure_time
 def add_primary_sec(data_path, datevar, file_name):
-    c1 = (col('iid').is_not_null()) & ((col('iid') == col('prihistrow')) | (col('iid') == col('prihistusa')) | (col('iid') == col('prihistcan')))
-    data = pl.read_parquet(data_path)
-    for df in [gen_prihist_df(data_path, 'row', datevar), gen_prihist_df(data_path, 'usa', datevar), gen_prihist_df(data_path, 'can', datevar)]:
-        data = data.join(df, how = 'left', on = ['gvkey', datevar])
-    data = (data.join(pl.read_parquet('Raw_data_dfs/__header.parquet').unique('gvkey', keep = 'first'), how = 'left', on = 'gvkey')#Header has duplicates
-                .with_columns(prihistrow  = pl.coalesce(['prihistrow', 'prirow']),
-                              prihistusa  = pl.coalesce(['prihistusa', 'priusa']),
-                              prihistcan  = pl.coalesce(['prihistcan', 'prican']))
-                .with_columns(primary_sec = pl.when(c1).then(pl.lit(1)).otherwise(pl.lit(0)))
-                .drop(['prihistrow','prihistusa','prihistcan', 'prirow', 'priusa', 'prican'])
-                .unique(['gvkey', 'iid', 'datadate']))
-    data.write_parquet(file_name)
+    con = ibis.duckdb.connect(threads = os.cpu_count())
+    
+    data       = con.read_parquet(data_path)
+    prihistrow = con.read_parquet('Raw_data_dfs/__prihistrow.parquet')
+    prihistusa = con.read_parquet('Raw_data_dfs/__prihistusa.parquet')
+    prihistcan = con.read_parquet('Raw_data_dfs/__prihistcan.parquet')
+    header     = con.read_parquet('Raw_data_dfs/__header.parquet')
+    
+    data = (data.join(prihistrow, how = 'left',
+                      predicates = [
+                                    data.gvkey == prihistrow.gvkey,
+                                    data[datevar] >= prihistrow.effdate,
+                                    ((data[datevar] <= prihistrow.thrudate) | prihistrow.thrudate.isnull())
+                                   ])
+                 .drop(['effdate', 'thrudate', 'gvkey_right'])
+                 .join(prihistusa, how = 'left',
+                       predicates = [
+                                     _.gvkey == prihistusa.gvkey,
+                                     _[datevar] >= prihistusa.effdate,
+                                    ((_[datevar] <= prihistusa.thrudate) | prihistusa.thrudate.isnull())
+                                    ])
+                 .drop(['effdate', 'thrudate', 'gvkey_right'])
+                 .join(prihistcan, how = 'left',
+                       predicates = [
+                                     _.gvkey == prihistcan.gvkey,
+                                     _[datevar] >= prihistcan.effdate,
+                                     ((_[datevar] <= prihistcan.thrudate) | prihistcan.thrudate.isnull())
+                                    ])
+                 .drop(['effdate', 'thrudate', 'gvkey_right'])
+                 .join(header, how = 'left', predicates = [_.gvkey == header.gvkey])
+                 .drop(['gvkey_right'])
+                 .mutate(
+                         prihistrow = _.prihistrow.coalesce(_.prirow),
+                         prihistusa = _.prihistusa.coalesce(_.priusa),
+                         prihistcan = _.prihistcan.coalesce(_.prican)
+                        )
+                 .distinct()
+                 .mutate(
+                         primary_sec = (~(_.iid.isnull()) & ((_.iid == _.prihistrow) | (_.iid == _.prihistusa) | (_.iid == _.prihistcan)))
+                         )
+                 .cast({'primary_sec': 'int'})
+    )
+    
+    write_parquet_batches(data, file_name)
+    con.disconnect()
+
+    
 def load_rf_and_exchange_data():
     crsp_mcti = (pl.read_parquet('Raw_data_dfs/crsp_mcti_t30ret.parquet')
                    .with_columns(merge_aux = gen_MMYY_column('caldt'))
