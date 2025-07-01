@@ -2984,4 +2984,3 @@ def dimsonbeta(df, sfx, __min):
             .with_columns(pl.sum_horizontal('mktrf', 'mktrf_ld1', 'mktrf_lg1').alias(f'beta_dimson{sfx}'))
             .select(['id_int', 'group_number', f'beta_dimson{sfx}']))
     return df
-
