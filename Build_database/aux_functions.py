@@ -174,10 +174,6 @@ def gen_crsp_sf(freq):
                                prc       = sf.prc.abs(),
                                shrout    = (sf.shrout / 1000),
                                me        = (sf.prc.abs() * (sf.shrout / 1000)),
-                            #    prc_high  = ibis.cases()
-                            #                    .when((sf.prc > 0) & (sf.askhi > 0), sf.askhi)
-                            #                    .else_(ibis.null())
-                            #                    .end(),
                                 prc_high = ibis.cases(
                                                 ((sf.prc > 0) & (sf.askhi > 0), sf.askhi),
                                                 else_=ibis.null()
@@ -186,10 +182,6 @@ def gen_crsp_sf(freq):
                                                 ((sf.prc > 0) & (sf.bidlo > 0), sf.bidlo),
                                                 else_=ibis.null()
                                             ),          
-                            #    prc_low   = ibis.cases()
-                            #                    .when((sf.prc > 0) & (sf.bidlo > 0), sf.bidlo)
-                            #                    .else_(ibis.null())
-                            #                    .end(),
                                iid       = ccmxpf_lnkhist.liid,
                                exch_main = senames.exchcd.isin([1, 2, 3]).cast('int32'))
                         .select(['permno','permco','date'   ,'bidask'   ,'prc'     ,'shrout' ,
@@ -632,7 +624,7 @@ def add_MMYY_column_drop_original(df, var): return df.with_columns(merge_aux = g
 @measure_time
 def prepare_crsp_sf(freq):
     merge_vars = ['permno', 'merge_aux'] if (freq == 'm') else ['permno', 'date']
-    __crsp_sf = (pl.scan_parquet(f'Raw_data_dfs/__crsp_sf_{freq}.parquet')
+    __crsp_sf = (pl.scan_parquet(f'WRDS_files/__crsp_sf_{freq}.parquet')
                    .with_columns([col(var).cast(pl.Float64) for var in ['prc', 'ret', 'retx', 'prc_high', 'prc_low']] +\
                                  [col('vol').cast(pl.Int64)])
                    .with_columns(adj_trd_vol_NASDAQ('date', 'vol', 'exchcd', 3))
@@ -649,17 +641,18 @@ def prepare_crsp_sf(freq):
     c6 = col('dlret').is_not_null()
     c7 = (c5 & c6)
     crsp_sedelist_aux_col = [gen_MMYY_column('dlstdt').alias('merge_aux')] if (freq == 'm') else [col('dlstdt').alias('date')]
-    crsp_sedelist = pl.scan_parquet(f'Raw_data_dfs/crsp_{freq}sedelist.parquet').with_columns(crsp_sedelist_aux_col)
-    crsp_mcti = add_MMYY_column_drop_original(pl.scan_parquet('Raw_data_dfs/crsp_mcti_t30ret.parquet'), 'caldt')
-    ff_factors_monthly = add_MMYY_column_drop_original(pl.scan_parquet('Raw_data_dfs/ff_factors_monthly.parquet'), 'date')
+    crsp_sedelist = pl.scan_parquet(f'WRDS_files/crsp_{freq}sedelist.parquet').with_columns(crsp_sedelist_aux_col)
+    crsp_mcti = add_MMYY_column_drop_original(pl.scan_parquet('WRDS_files/crsp_mcti_t30ret.parquet'), 'caldt')
+    ff_factors_monthly = add_MMYY_column_drop_original(pl.scan_parquet('WRDS_files/ff_factors_monthly.parquet'), 'date')
+
     me_company_exp = (pl.when(pl.count('me').over(['permco', 'date']) != 0)
                         .then(pl.coalesce(['me',0.]).sum().over(['permco', 'date']))
                         .otherwise(fl_none()))
     scale = 1 if (freq == 'm') else 21
     ret_exc_exp = col('ret') - pl.coalesce(['t30ret','rf'])/scale
     __crsp_sf = (__crsp_sf.join(crsp_sedelist, how = 'left', on = merge_vars)
-                          .with_columns(dlret = pl.when(c4).then(pl.lit(-0.3)).otherwise(col('dlret')),
-                                        ret = pl.when(c7).then(pl.lit(0.)).otherwise(col('ret')))
+                          .with_columns(dlret = pl.when(c4).then(pl.lit(-0.3)).otherwise(col('dlret')))
+                          .with_columns(ret = pl.when(c7).then(pl.lit(0.)).otherwise(col('ret')))
                           .with_columns(ret = (((col('ret') + 1) * (pl.coalesce(['dlret', 0.]) + 1)) -1))
                           .join(crsp_mcti, how = 'left', on = 'merge_aux')
                           .join(ff_factors_monthly, how = 'left', on = 'merge_aux')
