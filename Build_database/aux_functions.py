@@ -1234,18 +1234,15 @@ def quarterize(df, var_list):
             .sort(['gvkey','fyr','fyearq','fqtr', 'n']))
     return df
 def ttm(var): return col(var) + col(var).shift(1) + col(var).shift(2) + col(var).shift(3)
-def cumulate_4q(var_yrl, mode = 'add'):
-    var_yrl_name = var_yrl[:-1]
-    c1 = (col('gvkey')  != col('gvkey').shift(3)).fill_null(pl.lit(True).cast(pl.Boolean))
-    c2 = (col('fyr')    != col('fyr').shift(3)).fill_null(pl.lit(True).cast(pl.Boolean))
-    c3 = (col('curcdq') != col('curcdq').shift(3)).fill_null(pl.lit(True).cast(pl.Boolean))
-    c4 = (ttm('fqtr')   != 10).fill_null(pl.lit(True).cast(pl.Boolean))
-    c5 = (c1 | c2 | c3 | c4)
-    c6 = ttm(var_yrl).is_null()
-    c7 = col('fqtr') == 4
-    c8 = (c6 & c7)
-    if mode == 'add': return pl.when(c5).then(fl_none()).when(c8).then(col(f'{var_yrl_name}y')).otherwise(ttm(var_yrl)).alias(var_yrl_name)
-    else: return [var_yrl, f'{var_yrl_name}y']
+def cumulate_4q(df, var_list):
+    var_yrl_name_list = [var[:-1] for var in var_list]
+    df = (df.with_columns([ttm(var_yrl).alias(var_yrl_name) for var_yrl, var_yrl_name in zip(var_list, var_yrl_name_list)] + 
+                          [((col('gvkey') == col('gvkey').shift(3)) & (col('fyr') == col('fyr').shift(3)) & (col('curcdq') == col('curcdq').shift(3)) & (ttm('fqtr') == 10)).alias('not_null_flag')])
+            .with_columns([pl.when(col('not_null_flag')).then(col(var_yrl_name)).otherwise(fl_none()).alias(var_yrl_name) for var_yrl_name in var_yrl_name_list])
+            .with_columns([pl.when(col(var_yrl_name).is_null() & (col('fqtr') == 4)).then(col(f'{var_yrl_name}y')).otherwise(col(var_yrl_name)).alias(var_yrl_name) for var_yrl_name in var_yrl_name_list])
+            .drop(['not_null_flag'] + var_list + [f'{var_yrl_name}y' for var_yrl_name in var_yrl_name_list])
+    )
+    return df
 def load_raw_fund_table_and_filter(filename, start_date, source_str, mode):
     c1 = (col('indfmt').is_in(['INDL', 'FS'])) if mode == 1 else (col('indfmt') == 'INDL')
     datafmt_val = 'HIST_STD' if mode == 1 else 'STD'
@@ -1354,11 +1351,10 @@ def standardized_accounting_data(coverage, convert_to_usd, me_data_path, include
 
     yrl_vars = ['cogsq', 'xsgaq', 'xintq', 'dpq', 'txtq', 'xrdq', 'dvq', 'spiq', 'saleq', 'revtq', 'xoprq', 'oibdpq', 'oiadpq', 'ibq', 'niq', 'xidoq', 'nopiq', 'miiq', 'piq', 'xiq','xidocq', 'capxq', 'oancfq', 'ibcq', 'dpcq', 'wcaptq','prstkcq', 'sstkq', 'purtshrq','dsq', 'dltrq', 'ltdchq', 'dlcchq','fincfq', 'fiaoq', 'txbcofq', 'dvtq']
     bs_vars = ['seqq', 'ceqq', 'pstkq', 'icaptq', 'mibq', 'gdwlq', 'req','atq', 'actq', 'invtq', 'rectq', 'ppegtq', 'ppentq', 'aoq', 'acoq', 'intanq', 'cheq', 'ivaoq', 'ivstq', 'ltq', 'lctq', 'dlttq', 'dlcq', 'txpq', 'apq', 'lcoq', 'loq', 'txditcq', 'txdbq']
-    __compq = (__compq.with_columns([col(var).cast(pl.Int64) for var in ['fyr', 'fyearq', 'fqtr'] if var in __compq.collect_schema().names()])
-                      .pipe(quarterize, var_list = qvars_y)
-              )
+    __compq = __compq.with_columns([col(var).cast(pl.Int64) for var in ['fyr', 'fyearq', 'fqtr'] if var in __compq.collect_schema().names()])
 
-    __compq = (__compq.with_columns([pl.coalesce([f'{var[:-1]}q', f'{var[:-1]}y_q']).alias(f'{var[:-1]}q') for var in qvars_y if f'{var[:-1]}q' in __compq.collect_schema().names()] +\
+    __compq = (__compq.pipe(quarterize, var_list = qvars_y)
+                      .with_columns([pl.coalesce([f'{var[:-1]}q', f'{var[:-1]}y_q']).alias(f'{var[:-1]}q') for var in qvars_y if f'{var[:-1]}q' in __compq.collect_schema().names()] +\
                                     [col(f'{var[:-1]}y_q').alias(f'{var[:-1]}q') for var in qvars_y if f'{var[:-1]}q' not in __compq.collect_schema().names()])
                       .drop([f'{var[:-1]}y_q' for var in qvars_y])
                       .with_columns(ni_qtr   = col('ibq'),
@@ -1367,24 +1363,27 @@ def standardized_accounting_data(coverage, convert_to_usd, me_data_path, include
                                     dsy      = fl_none(),
                                     dsq      = fl_none())
                       .sort(['gvkey', 'fyr', 'fyearq', 'fqtr', 'n'])
-                      .with_columns([cumulate_4q(var_yrl) for var_yrl in yrl_vars])
-                      .drop([a for b in [cumulate_4q(var_yrl, 'drop_cols') for var_yrl in yrl_vars] for a in b])
+                      .pipe(cumulate_4q, var_list = yrl_vars)
                       .rename({**dict(zip(bs_vars, list(aux[:-1] for aux in bs_vars))), **{'curcdq': 'curcd'}})
                       .sort(['gvkey', 'datadate', 'fyr', 'n'])
                       .unique(['gvkey','datadate', 'fyr'], keep='first')
-                      .sort(['gvkey', 'datadate', 'n'])
+                      .sort(['gvkey', 'datadate', 'fyr', 'n'])
                       .unique(['gvkey', 'datadate'], keep='last')
                       .drop(['fyr', 'fyearq', 'fqtr'])
                       .join(__me_data, how = 'left', left_on = ['gvkey', 'datadate'], right_on = ['gvkey', 'eom'])
-                      .with_columns([fl_none().alias(i) for i in ['gp', 'dltis', 'do', 'dvc', 'ebit', 'ebitda', 'itcb', 'pstkl', 'pstkrv', 'xad', 'xlr', 'emp']]))
+                      .with_columns([fl_none().alias(i) for i in ['gp', 'dltis', 'do', 'dvc', 'ebit', 'ebitda', 'itcb', 'pstkl', 'pstkrv', 'xad', 'xlr', 'emp']])
+                      .sort(['gvkey', 'curcd', 'datadate', 'source', 'n'])
+                      )
+                      
     
     __compa = (__compa.with_columns(ni_qtr   = fl_none(),
                                     sale_qtr = fl_none(),
                                     ocf_qtr  = fl_none(),
-                                    fqtr     = pl.lit(None),
-                                    fyearq   = pl.lit(None),
-                                    fyr      = pl.lit(None))
-                       .join(__me_data, how = 'left', left_on = ['gvkey', 'datadate'], right_on = ['gvkey', 'eom']))
+                                    fqtr     = pl.lit(None).cast(pl.Int64),
+                                    fyearq   = pl.lit(None).cast(pl.Int64),
+                                    fyr      = pl.lit(None).cast(pl.Int64))
+                       .join(__me_data, how = 'left', left_on = ['gvkey', 'datadate'], right_on = ['gvkey', 'eom'])
+                       .sort(['gvkey', 'curcd', 'datadate', 'source', 'n']))
 
     if include_helpers_vars==1:
         __compq = add_helper_vars(__compq)
@@ -1411,23 +1410,91 @@ def sub_sas(col1, col2):
     c2 = col(col2).is_not_null()
     return pl.when(c1 | c2).then(pl.coalesce([col1, 0.]) - pl.coalesce([col2, 0.])).otherwise(fl_none())
 def add_helper_vars(data):
+
+    os.system('rm -f aux_add_helpers.ddb')
+    con = ibis.duckdb.connect('aux_add_helpers.ddb', threads = os.cpu_count())
+    con.create_table('data', data.rename({'at': 'at_var'}).collect(), overwrite=True)
+    con.raw_sql("""
+        CREATE OR REPLACE TABLE comp_dates1 AS
+        SELECT
+            gvkey,
+            curcd,
+            MIN(datadate) AS start_date,
+            MAX(datadate) AS end_date
+        FROM data
+        GROUP BY gvkey, curcd
+        ;
+                
+        CREATE OR REPLACE TABLE comp_dates2 AS
+        SELECT
+        c.gvkey,
+        c.curcd,
+        (gs.month_start
+            + INTERVAL '1 month'
+            - INTERVAL '1 day'
+        )::DATE AS datadate
+        FROM comp_dates1 AS c
+        CROSS JOIN LATERAL
+        generate_series(
+            date_trunc('month', c.start_date),
+            date_trunc('month', c.end_date),
+            INTERVAL '1 month'
+        ) AS gs(month_start)
+        ORDER BY c.gvkey, c.curcd, datadate
+        ;
+                
+        CREATE OR REPLACE TABLE helpers1_base AS
+        SELECT
+        a.gvkey,
+        a.curcd,
+        a.datadate,
+        b.*,
+        (b.gvkey IS NOT NULL)::INTEGER AS data_available
+        FROM comp_dates2 AS a
+        LEFT JOIN data AS b
+        USING (gvkey, curcd, datadate)
+        ;
+                
+        CREATE OR REPLACE TABLE helpers1 AS
+        SELECT
+        *
+        FROM (
+        SELECT
+            *,
+            ROW_NUMBER() OVER (
+            PARTITION BY gvkey, curcd, datadate
+            ORDER   BY datadate
+            ) AS rn
+        FROM helpers1_base
+        ) t
+        WHERE rn = 1
+        ORDER BY gvkey, curcd, datadate
+        ;
+
+        CREATE OR REPLACE TABLE helpers2 AS
+        SELECT
+        *,
+        ROW_NUMBER() OVER (
+            PARTITION BY gvkey, curcd
+            ORDER BY datadate
+        ) AS count
+        FROM helpers1
+        ORDER BY gvkey, curcd, datadate
+        ;
+
+        ALTER TABLE helpers2 DROP COLUMN gvkey_1;
+        ALTER TABLE helpers2 DROP COLUMN curcd_1;
+        ALTER TABLE helpers2 DROP COLUMN datadate_1;
+        ALTER TABLE helpers2 DROP COLUMN rn;
+    """)
+
     c1 = (col('dltis').is_null()) & (col('dltr').is_null()) & (col('ltdch').is_null()) & (col('count') <= 12)
     c2 = (col('dlcch').is_null()) & (col('count') <= 12)
     sort_vars = ['gvkey', 'curcd', 'datadate']
     over_vars = ['gvkey', 'curcd']
-    dates_df = (data.select(sort_vars)
-                    .group_by(over_vars)
-                    .agg(start_date = col('datadate').min(),
-                         end_date   = col('datadate').max()))
-    dates_df = expand(dates_df, ['gvkey'], 'start_date', 'end_date', 'month', 'datadate')
-    temp_data = data.with_columns(data_available = (col('gvkey').is_not_null()).cast(pl.Float64))
-    base = (dates_df.join(temp_data, left_on = sort_vars, right_on = sort_vars, how = 'left')
-                    .with_columns(col('data_available').fill_null(strategy = 'zero'))
-                    .select(temp_data.collect_schema().names())
-                    .sort(sort_vars + ['n'])
-                    .unique(sort_vars, keep = 'first')
-                    .sort(sort_vars)
-                    .with_columns(count = col('curcd').cum_count().over(over_vars))
+
+    base = con.table('helpers2').to_polars().rename({'at_var': 'at'}).lazy()
+    base = (base.sort(sort_vars)
                     .with_columns([pl.when(col(var) >= 0).then(col(var)).otherwise(fl_none()).alias(var) for var in ['at', 'sale', 'revt', 'dv', 'che']]))
     helpers = (base.with_columns(sale_x     = pl.coalesce(['sale', 'revt']),
                                  debt_x     = sum_sas('dltt', 'dlc'),
@@ -1964,7 +2031,6 @@ def add_earnings_persistence_and_expand(df, lag_to_pub, max_lag):
             .with_columns(next_start_date = col('start_date').shift(-1).over(['gvkey']))
             .with_columns(end_date = pl.min_horizontal((col('next_start_date').dt.offset_by('-1mo').dt.month_end()),(col('datadate').dt.offset_by(f'{max_lag}mo').dt.month_end())))
             .drop('next_start_date'))
-    print('Executing new version of expand')
     df.collect().write_parquet('expand_input.parquet')
     return expand(data=df, id_vars=['gvkey'], start_date='start_date', end_date='end_date', freq='month', new_date_name='public_date')
 def add_me_data_and_compute_me_mev_mat_eqdur_vars(df, me_df):
@@ -2024,7 +2090,6 @@ def financial_soundness_and_misc_ratios_exps():
 
 @measure_time
 def create_acc_chars(data_path, output_path, lag_to_public, max_data_lag, __keep_vars, me_data_path, suffix):
-    print('Creating accounting characteristics. New version.')
     #adding and filtering market return data
     me_data = load_mkt_equity_data(me_data_path, False)
 
@@ -2479,8 +2544,11 @@ def prepare_daily(data_path, fcts_path):
                               ret      = pl.when(col('ret_lag_dif') <= 14).then(col('ret')).otherwise(fl_none()),
                               dolvol_d = col('dolvol'),
                               prc_adj  = safe_div('prc', 'adjfct', 'prc_adj'))
-                .drop(['ret_lag_dif', 'ret_local', 'adjfct','prc', 'dolvol']))
-    dsf1.select(pl.all().shrink_dtype()).sort('eom').collect().write_parquet('dsf1.parquet')
+                .drop(['ret_lag_dif', 'ret_local', 'adjfct','prc', 'dolvol'])
+                .sort(['id_int', 'date'])
+                #.select(pl.all().shrink_dtype()) #For computers without enough memory, use this line to apply dtype shrinking 
+                )
+    dsf1.collect().write_parquet('dsf1.parquet')
 
     id_int_key = (pl.scan_parquet('dsf1.parquet')
                     .select(['id', 'id_int'])
@@ -2490,7 +2558,9 @@ def prepare_daily(data_path, fcts_path):
     mkt_lead_lag = (fcts.select(['excntry', 'date', 'mktrf', col('date').dt.month_end().alias('eom')])
                         .sort(['excntry','date'])
                         .with_columns(mktrf_ld1 = col('mktrf').shift(-1).over(['excntry','eom']),
-                                      mktrf_lg1 = col('mktrf').shift(1).over(['excntry'])))
+                                      mktrf_lg1 = col('mktrf').shift(1).over(['excntry']))
+                        .sort(['excntry','date'])
+    )
     mkt_lead_lag.collect().write_parquet('mkt_lead_lag.parquet')
 
     corr_data = (pl.scan_parquet('dsf1.parquet')
@@ -2498,7 +2568,9 @@ def prepare_daily(data_path, fcts_path):
                    .sort(['id_int','date'])
                    .with_columns(ret_exc_3l = (col('ret_exc') + col('ret_exc').shift(1) + col('ret_exc').shift(2)).over(['id_int']),
                                  mkt_exc_3l = (col('mktrf')   + col('mktrf').shift(1)   + col('mktrf').shift(2)).over(['id_int']))
-                   .select(['id_int', 'eom', 'zero_obs', 'ret_exc_3l', 'mkt_exc_3l']))
+                   .select(['id_int', 'eom', 'zero_obs', 'ret_exc_3l', 'mkt_exc_3l'])
+                   .sort(['id_int','eom'])
+                   )
     corr_data.collect().write_parquet('corr_data.parquet')
 
 def gen_ranks_and_normalize(df, id_vars, geo_vars, time_vars, desc_flag, var, min_stks):
@@ -2715,42 +2787,46 @@ def finish_daily_chars(output_path):
     daily_chars = daily_chars.with_columns(betabab_1260d = col('corr_1260d') * col('rvol_252d')/ col('__mktvol_252d'), rmax5_rvol_21d = col('rmax5_21d') / col('rvol_252d')).drop('__mktvol_252d')
     daily_chars.collect().write_parquet(output_path)
 
-def z_ranks(data, var, min, sort):
+def z_ranks(data, var, __min, sort):
     order = False if sort == 'ascending' else True
-    c1 = pl.std('rank_aux').over(['excntry','eom']) != 0
-    __subset = (data.select(['excntry','id','eom',var])
-                    .with_columns(count = (col(var).is_not_null().sum()).over(['excntry','eom']))
-                    .filter(col('count') > min).drop('count')
-                    .with_columns(col(var).rank(descending = order).over(['excntry','eom']).alias('rank_aux'))
-                    .filter(col('rank_aux').is_not_null())
-                    .with_columns(zvar = pl.when(c1).then(((col('rank_aux') - pl.mean('rank_aux'))/pl.std('rank_aux')).over(['excntry','eom'])).otherwise(fl_none()))
-                    .select(['excntry','id','eom', col('zvar').alias(f'z_{var}')]))
-    return __subset
-
+    exp_z_var = (col('rank') - pl.mean('rank').over(['excntry', 'eom']))/ pl.std('rank').over(['excntry', 'eom'])
+    z_df = (data.filter(col(var).is_not_nan())
+                .filter(pl.count(var).over(['excntry', 'eom']) >= __min)
+                .with_columns(rank = col(var).rank(method = 'average', descending = order).over(['excntry', 'eom']))
+                .select(['excntry', 'id', 'eom', exp_z_var.alias(f'z_{var}')])
+                .with_columns(pl.when(col(f'z_{var}').is_nan()).then(fl_none()).otherwise(col(f'z_{var}')).alias(f'z_{var}'))
+                .filter(col(f'z_{var}').is_not_null())
+                )
+    return z_df
 @measure_time
 def quality_minus_junk(data_path, min_stks):
     z_vars = ['gp_at', 'ni_be', 'ni_at', 'ocf_at', 'gp_sale', 'oaccruals_at','gpoa_ch5', 'roe_ch5', 'roa_ch5', 'cfoa_ch5', 'gmar_ch5','betabab_1260d', 'debt_at', 'o_score', 'z_score', '__evol']
     direction = ['ascending', 'ascending', 'ascending', 'ascending', 'ascending', 'descending','ascending', 'ascending', 'ascending', 'ascending', 'ascending','descending', 'descending', 'descending', 'ascending', 'descending']
-    cols = ['id', 'eom', 'excntry', 'gp_at', 'ni_be', 'ni_at', 'ocf_at', 'gp_sale', 'oaccruals_at', 'gpoa_ch5', 'roe_ch5', 'roa_ch5', 'cfoa_ch5', 'gmar_ch5', 'betabab_1260d', 'debt_at', 'o_score', 'z_score', 'roeq_be_std', 'roe_be_std']
+    cols = ['id', 'eom', 'excntry', 'gp_at', 'ni_be', 'ni_at', 'ocf_at', 'gp_sale', 'oaccruals_at', 'gpoa_ch5', 'roe_ch5', 'roa_ch5', 'cfoa_ch5', 'gmar_ch5', 'betabab_1260d', 'debt_at', 'o_score', 'z_score', 'roeq_be_std', 'roe_be_std', pl.coalesce(2 * col('roeq_be_std'), 'roe_be_std').alias('__evol')]
     c1 = (col('common') == 1) & (col('primary_sec') == 1) & (col('obs_main') == 1) & (col('exch_main') == 1) & (col('ret_exc').is_not_null()) & (col('me').is_not_null())
-    qmj = (pl.read_parquet(data_path, columns = cols + ['common', 'primary_sec', 'obs_main', 'exch_main', 'ret_exc', 'me'])
-             .filter(c1)
-             .select(cols)
-             .with_columns(__evol = pl.coalesce(2 * col('roeq_be_std'), 'roe_be_std'))
-             .sort(['excntry', 'eom']))
+    qmj = (pl.scan_parquet(data_path)
+            .filter(c1)
+            .select(cols)
+            .sort(['excntry', 'eom'])
+            .collect()
+            )
     for var_z,dir in zip(z_vars,direction):
         __z = z_ranks(qmj, var_z, min_stks, dir)
-        qmj = qmj.join(__z, how = 'left', on = ['excntry','eom','id'])
+        qmj = qmj.join(__z, how = 'full', coalesce = True, on = ['excntry','eom','id'])
+
     qmj = (qmj.with_columns(__prof   = pl.mean_horizontal('z_gp_at', 'z_ni_be', 'z_ni_at', 'z_ocf_at', 'z_gp_sale', 'z_oaccruals_at'),
                             __growth = pl.mean_horizontal('z_gpoa_ch5', 'z_roe_ch5', 'z_roa_ch5', 'z_cfoa_ch5', 'z_gmar_ch5'),
                             __safety = pl.mean_horizontal('z_betabab_1260d', 'z_debt_at', 'z_o_score', 'z_z_score', 'z___evol'))
-              .select(['excntry', 'id', 'eom','__prof','__growth','__safety']))
+              .select(['excntry', 'id', 'eom','__prof','__growth','__safety'])
+              )
+
     ranks = {i: z_ranks(qmj, f'__{i}'  , min_stks, 'ascending').rename({f'z___{i}'  : f'qmj_{i}'}) for i in ['prof', 'growth', 'safety']}
     qmj = (qmj.select(['excntry', 'id', 'eom'])
-              .join(ranks['prof'], how = 'left', on = ['excntry','id','eom'])
-              .join(ranks['growth'], how = 'left', on = ['excntry','id','eom'])
-              .join(ranks['safety'], how = 'left', on = ['excntry','id','eom'])
-              .with_columns(__qmj = col('qmj_prof') + col('qmj_growth') + col('qmj_safety')))
+              .join(ranks['prof'  ], how = 'full', coalesce = True, on = ['excntry','id','eom'])
+              .join(ranks['growth'], how = 'full', coalesce = True, on = ['excntry','id','eom'])
+              .join(ranks['safety'], how = 'full', coalesce = True, on = ['excntry','id','eom'])
+              .with_columns(__qmj = (col('qmj_prof') + col('qmj_growth') + col('qmj_safety'))/3)
+            )
     __qmj = z_ranks(qmj, '__qmj', min_stks, 'ascending').rename({'z___qmj': 'qmj'})
     qmj = qmj.join(__qmj, how = 'left', on = ['excntry', 'id', 'eom']).drop('__qmj')
     qmj.write_parquet('qmj.parquet')
@@ -3127,10 +3203,10 @@ def mktcorr(df, sfx, __min):
     return df
 
 def dimsonbeta(df, sfx, __min):
+    beta_exp = (col('coeffs').struct.field('mktrf') + col('coeffs').struct.field('mktrf_ld1') + col('coeffs').struct.field('mktrf_lg1'))
     df = (df.group_by(['id_int', 'group_number'])
-            .agg(coeffs = pl.col('ret_exc').least_squares.ols('mktrf', 'mktrf_ld1', 'mktrf_lg1', add_intercept = True, mode = 'coefficients'))
-            .unnest('coeffs')
-            .with_columns(pl.sum_horizontal('mktrf', 'mktrf_ld1', 'mktrf_lg1').alias(f'beta_dimson{sfx}'))
-            .select(['id_int', 'group_number', f'beta_dimson{sfx}']))
+            .agg(coeffs = pl.col('ret_exc').least_squares.ols('mktrf', 'mktrf_ld1', 'mktrf_lg1', add_intercept = True, mode = 'coefficients', solve_method='svd'))
+            .select(['id_int', 'group_number', beta_exp.alias(f'beta_dimson{sfx}')])
+            )    
     return df
 
