@@ -2182,7 +2182,7 @@ def combine_ann_qtr_chars(ann_df_path, qtr_df_path, char_vars, q_suffix):
     combined = (combined.mutate(subs)
                         .drop(drop_columns)
                         .order_by(['gvkey', 'public_date', 'n1', 'n2'])
-                        .distinct(on = ['gvkey', 'public_date'])
+                        .distinct(on = ['gvkey', 'public_date'], keep = 'first')
                         .drop(['n1', 'n2'])
                         .order_by(['gvkey', 'public_date']))
     combined.to_parquet('acc_chars_world.parquet')
