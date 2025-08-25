@@ -38,23 +38,6 @@ def setup_folder_structure():
 def collect_and_write(df, filename, collect_streaming = False):
     df.collect(streaming = collect_streaming).write_parquet(filename)
 
-def load_firmshares_aux(filename):
-    csho_var = 'cshoq' if 'fundq' in filename else 'csho'
-    ajex_var = 'ajexq' if 'fundq' in filename else 'ajex'
-    df = (pl.scan_parquet(filename)
-            .with_columns([col(csho_var).cast(pl.Float64),col(ajex_var).cast(pl.Float64)])
-            .filter(
-                (pl.col('indfmt')  == 'INDL')    &
-                (pl.col('datafmt') == 'STD')     &
-                (pl.col('popsrc')  == 'D')       &
-                (pl.col('consol')  == 'C')       &
-                (pl.col(csho_var).is_not_null()) &
-                (pl.col(ajex_var).is_not_null())
-            )
-            .select(['gvkey', 'datadate', pl.col(csho_var).alias('csho_fund'), pl.col(ajex_var).alias('ajex_fund')])
-         )
-    return df
-
 def sic_naics_aux(filename):
     df = (pl.scan_parquet(filename)
             .select(['gvkey', 'datadate', col('sich').alias('sic'), col('naicsh').alias('naics')])
@@ -90,11 +73,80 @@ def prihist_aux(filename, alias_itemvalue):
             .filter(col('item') == alias_itemvalue.upper())
             .select(['gvkey', col('itemvalue').alias(alias_itemvalue), 'effdate', 'thrudate']))
     return df
+def gen_firmshares():
+    con = ibis.duckdb.connect(threads = os.cpu_count())
+    con.create_table('comp_fundq', con.read_parquet('Raw_tables/comp_fundq.parquet'))
+    con.create_table('comp_funda', con.read_parquet('Raw_tables/comp_funda.parquet').rename({"at_": "at"}))
+    con.raw_sql("""
+    CREATE TABLE __firm_shares1 AS
 
+    SELECT gvkey, datadate, cshoq AS csho_fund, ajexq AS ajex_fund
+    FROM comp_fundq
+    WHERE indfmt = 'INDL' AND datafmt = 'STD' AND popsrc = 'D' AND consol = 'C' AND cshoq IS NOT NULL AND ajexq IS NOT NULL
+
+    UNION ALL
+
+    SELECT gvkey, datadate, csho AS csho_fund, ajex AS ajex_fund
+    FROM comp_funda
+    WHERE indfmt = 'INDL' AND datafmt = 'STD' AND popsrc = 'D' AND consol = 'C' AND csho IS NOT NULL AND ajex IS NOT NULL;
+    """)
+    con.table('__firm_shares1').to_parquet('Raw_data_dfs/__firm_shares1.parquet')
+    con.disconnect()
+def gen_prihist_files():
+    con = ibis.duckdb.connect(threads = os.cpu_count())
+    con.create_table('comp_sec_history', con.read_parquet('Raw_tables/comp_sec_history.parquet'))
+    con.create_table('comp_g_sec_history', con.read_parquet('Raw_tables/comp_g_sec_history.parquet'))
+    con.raw_sql("""
+    CREATE TABLE __prihistrow AS
+    SELECT gvkey,
+        itemvalue AS prihistrow,
+        effdate,
+        thrudate
+    FROM comp_g_sec_history
+    WHERE item = 'PRIHISTROW';
+
+    CREATE TABLE __prihistusa AS
+    SELECT gvkey,
+        itemvalue AS prihistusa,
+        effdate,
+        thrudate
+    FROM comp_sec_history
+    WHERE item = 'PRIHISTUSA';
+
+    CREATE TABLE __prihistcan AS
+    SELECT gvkey,
+        itemvalue AS prihistcan,
+        effdate,
+        thrudate
+    FROM comp_sec_history
+    WHERE item = 'PRIHISTCAN';
+    """)
+
+    con.table('__prihistrow').to_parquet('Raw_data_dfs/__prihistrow.parquet')
+    con.table('__prihistusa').to_parquet('Raw_data_dfs/__prihistusa.parquet')
+    con.table('__prihistcan').to_parquet('Raw_data_dfs/__prihistcan.parquet')
+    con.disconnect()
+def gen_fx1():
+    con = ibis.duckdb.connect(threads = os.cpu_count())
+    con.create_table('comp_exrt_dly', con.read_parquet('Raw_tables/comp_exrt_dly.parquet'))
+    con.raw_sql("""
+    CREATE TABLE __fx1 AS
+    SELECT DISTINCT
+    a.tocurd AS curcdd,
+    a.datadate,
+    b.exratd / a.exratd AS fx
+    FROM comp_exrt_dly AS a
+    JOIN comp_exrt_dly AS b
+    ON a.fromcurd = b.fromcurd
+    AND a.datadate = b.datadate
+    WHERE a.fromcurd = 'GBP'
+    AND b.tocurd  = 'USD';
+    """)
+    con.table('__fx1').to_parquet('Raw_data_dfs/__fx1.parquet')
+    con.disconnect()
 @measure_time
 def gen_raw_data_dfs():
-    __firm_shares1 = pl.concat([load_firmshares_aux('Raw_tables/comp_funda.parquet'), load_firmshares_aux('Raw_tables/comp_fundq.parquet')])
-    collect_and_write(__firm_shares1, 'Raw_data_dfs/__firm_shares1.parquet')
+    gen_firmshares()
     sic_naics_na = sic_naics_aux('Raw_tables/comp_funda.parquet')
     collect_and_write(sic_naics_na, 'Raw_data_dfs/sic_naics_na.parquet')
     sic_naics_gl = sic_naics_aux('Raw_tables/comp_g_funda.parquet')
@@ -129,19 +181,8 @@ def gen_raw_data_dfs():
     __ex_country1 = pl.concat([ex_country_aux('Raw_tables/comp_g_security.parquet'), ex_country_aux('Raw_tables/comp_security.parquet')])
     collect_and_write(__ex_country1, 'Raw_data_dfs/__ex_country1.parquet')
     header_aux('Raw_tables/comp_company.parquet', 'Raw_tables/comp_g_company.parquet', 'Raw_data_dfs/__header.parquet')
-    __prihistcan = prihist_aux('Raw_tables/comp_sec_history.parquet', 'prihistcan')
-    collect_and_write(__prihistcan, 'Raw_data_dfs/__prihistcan.parquet')
-    __prihistusa = prihist_aux('Raw_tables/comp_sec_history.parquet', 'prihistusa')
-    collect_and_write(__prihistusa, 'Raw_data_dfs/__prihistusa.parquet')
-    __prihistrow = prihist_aux('Raw_tables/comp_g_sec_history.parquet', 'prihistrow')
-    collect_and_write(__prihistrow, 'Raw_data_dfs/__prihistrow.parquet')
-    a = pl.scan_parquet('Raw_tables/comp_exrt_dly.parquet').filter(col('fromcurd') == 'GBP')
-    b = pl.scan_parquet('Raw_tables/comp_exrt_dly.parquet').filter(col('tocurd') == 'USD')
-    __fx1 = (a.join(b, how = 'inner', on = ['fromcurd', 'datadate'], suffix = '_b')
-              .select([col('tocurd').alias('curcdd'), 'datadate', (col('exratd_b')/col('exratd')).alias('fx')])
-              .unique()
-              .sort(['datadate', 'curcdd']))
-    collect_and_write(__fx1, 'Raw_data_dfs/__fx1.parquet')
+    gen_prihist_files()
+    gen_fx1()
     gen_crsp_sf('m').to_parquet('Raw_data_dfs/__crsp_sf_m.parquet')
     gen_crsp_sf('d').to_parquet('Raw_data_dfs/__crsp_sf_d.parquet')
 
@@ -1247,8 +1288,12 @@ def load_raw_fund_table_and_filter(filename, start_date, source_str, mode):
     c1 = (col('indfmt').is_in(['INDL', 'FS'])) if mode == 1 else (col('indfmt') == 'INDL')
     datafmt_val = 'HIST_STD' if mode == 1 else 'STD'
     popsrc_val  = 'I'        if mode == 1 else 'D'
+    if 'curcd' in pl.scan_parquet(filename).collect_schema().names():
+        curcd_col = 'curcd'
+    else:
+        curcd_col = 'curcdq'
     df = (pl.scan_parquet(filename)
-            .with_columns(n = pl.cum_count('gvkey'))
+            .with_columns(n = pl.cum_count('gvkey').over(['gvkey', curcd_col]))
             .filter( c1                              &
                     (col('datafmt') == datafmt_val)  &
                     (col('popsrc')  == popsrc_val)   &
@@ -1262,7 +1307,10 @@ def apply_indfmt_filter(df):
             .drop(['indfmt', 'count_indfmt']))
     return df
 def add_fx_and_convert_vars(df, fx_df, vars, freq):
-    fx_var = 'curcd' if freq == 'annual' else 'curcdq'
+    if freq == 'annual':
+        fx_var = 'curcd'
+    else:
+        fx_var = 'curcdq'
     aux = (df.join(fx_df, left_on = ['datadate', fx_var], right_on = ['datadate', 'curcdd'], how = 'left')
                 .select(df.collect_schema().names() + ['fx'])
                 .with_columns([(col(var) * col('fx')).alias(var) for var in vars] + [pl.lit('USD').alias(fx_var)])
@@ -1780,25 +1828,106 @@ def chg_var1_to_var2(df, name, var1, var2, horizon):
             .with_columns(pl.when(col('count') > horizon).then(col('__x') - col('__x').shift(horizon)).otherwise(fl_none()).alias(name))
             .drop('__x'))
     return df
-
-
-def earnings_persistence(data, __n, __min):
-    x, y = '__ni_at_l1', '__ni_at'
+def compute_earnings_persistence(data_path, __n, __min):
     months = 12 * __n
-    beta = pl.rolling_cov(x, y, window_size = months, min_periods = __min)/col(x).rolling_var(window_size = months, min_periods = __min)
-    exp1 = col(y).rolling_var(window_size = months, min_periods = __min)
-    exp2 = col(x).rolling_var(window_size = months, min_periods = __min)
-    df = (data.sort(['gvkey', 'curcd', 'datadate'])
-              .select(['gvkey', 'curcd', 'datadate', safe_div('ni_x', 'at_x', '__ni_at', 3).alias('__ni_at'), safe_div('ni_x', 'at_x', '__ni_at_l1', 7).alias('__ni_at_l1')])
-              .sort(['gvkey','curcd','datadate'])
-              .with_columns(ni_ar1     = beta.over(['gvkey','curcd']).fill_nan(None))
-              .sort(['gvkey','curcd','datadate'])
-              .with_columns(ni_ivol    = ((exp1 - (col('ni_ar1')**2) * exp2) ** (1/2)).over(['gvkey','curcd']).fill_nan(None))
-              #.filter(col('ni_ar1').is_not_null())
-              .select(['gvkey','curcd','datadate','ni_ar1','ni_ivol'])
-              #.sort(['gvkey','datadate','curcd'])
-              )
-    return df
+    con = ibis.duckdb.connect('aux_earnings_pers.ddb', threads = os.cpu_count())    
+    con.create_table('raw_table', pl.scan_parquet(data_path).select(['gvkey', 'curcd', 'datadate', 'ni_x', 'at_x']).collect(), overwrite = True)
+    
+    con.raw_sql(f"""
+    CREATE OR REPLACE TABLE base_data AS
+    WITH base AS (
+      SELECT
+        gvkey,
+        curcd,
+        datadate,
+        CASE WHEN at_x > 0 THEN ni_x / at_x END AS __ni_at,
+        ROW_NUMBER() OVER (PARTITION BY gvkey, curcd ORDER BY datadate) AS rn
+      FROM raw_table
+    )
+    SELECT
+      gvkey,
+      curcd,
+      datadate,
+      __ni_at,
+      CASE WHEN rn > 12
+           THEN LAG(__ni_at, 12) OVER (PARTITION BY gvkey, curcd ORDER BY datadate)
+      END AS __ni_at_l1
+    FROM base
+    QUALIFY __ni_at IS NOT NULL AND __ni_at_l1 IS NOT NULL
+    ORDER BY gvkey, curcd, datadate;
+    
+    CREATE OR REPLACE TABLE dates_apply AS
+    SELECT
+      datadate,
+      (ROW_NUMBER() OVER (ORDER BY datadate) % {months}) AS grp
+    FROM (SELECT DISTINCT datadate FROM base_data);
+    
+    CREATE OR REPLACE TABLE calc_dates AS
+    SELECT
+      a.datadate,
+      b.datadate AS calc_date,
+      b.grp      AS calc_grp
+    FROM dates_apply a
+    JOIN dates_apply b
+      ON a.datadate > make_date(EXTRACT(YEAR FROM b.datadate) - {__n}, 12, 31)
+     AND a.datadate <= b.datadate
+     AND EXTRACT(MONTH FROM a.datadate) = EXTRACT(MONTH FROM b.datadate);
+    
+    CREATE OR REPLACE TABLE calc_data AS
+    SELECT
+      a.*,
+      c.calc_date,
+      c.calc_grp
+    FROM base_data a
+    JOIN calc_dates c
+      ON a.datadate = c.datadate
+    QUALIFY COUNT(*) OVER (
+      PARTITION BY a.gvkey, a.curcd, c.calc_date
+    ) >= {__min}
+    ORDER BY a.gvkey, c.calc_date;
+    
+    CREATE OR REPLACE TABLE reg_results AS
+    WITH fit AS (
+      SELECT
+        gvkey,
+        curcd,
+        calc_grp,
+        calc_date,
+        __ni_at,
+        __ni_at_l1,
+        regr_slope(__ni_at, __ni_at_l1) OVER (
+          PARTITION BY gvkey, curcd, calc_grp, calc_date
+        ) AS slope,
+        regr_intercept(__ni_at, __ni_at_l1) OVER (
+          PARTITION BY gvkey, curcd, calc_grp, calc_date
+        ) AS intercept
+      FROM calc_data
+      WHERE __ni_at IS NOT NULL AND __ni_at_l1 IS NOT NULL
+    ),
+    resids AS (
+      SELECT
+        gvkey,
+        curcd,
+        calc_grp,
+        calc_date,
+        slope,
+        (__ni_at - (intercept + slope * __ni_at_l1)) AS resid
+      FROM fit
+    )
+    SELECT
+      gvkey,
+      curcd,
+      calc_date as datadate,
+      slope as ni_ar1,
+      stddev_samp(resid) AS ni_ivol,
+    FROM resids
+    GROUP BY gvkey, curcd, calc_grp, calc_date, slope
+    HAVING COUNT(*) >= {__min}
+    ORDER BY gvkey, curcd, calc_date;
+    """)    
+    con.table('reg_results').to_parquet('ni_ar_res.parquet')
+    con.disconnect()
+    os.system('rm -f aux_earnings_pers.ddb')
 def scale_me(var):
     # Removing '_x' from the column name
     name = var.replace('_x', '')
@@ -2018,20 +2147,17 @@ def add_profit_scaled_by_lagged_vars(df):
                            safe_div('ope_x', 'be_x', 'ope_bel1', 4),
                            safe_div('cop_x', 'at_x', 'cop_atl1', 4)]))
     return df
-def add_earnings_persistence_and_expand(df, lag_to_pub, max_lag):
-    earnings_pers = earnings_persistence(df, 5, 5)
+def add_earnings_persistence_and_expand(df, data_path, lag_to_pub, max_lag):
+    compute_earnings_persistence(data_path, 5, 5)
+    earnings_pers = pl.scan_parquet('ni_ar_res.parquet')
     df = (df.join(earnings_pers, on = ['gvkey', 'curcd', 'datadate'], how = 'left')
             .filter(col('data_available')==1)
-            # .sort(['gvkey','curcd', 'datadate'])
-            # .unique(['gvkey','curcd','datadate'], keep = 'first')
-            #.sort(['gvkey','curcd', 'datadate'])
             .sort(['gvkey', 'datadate'])
             .with_columns(start_date = col('datadate').dt.offset_by(f'{lag_to_pub}mo').dt.month_end())
             .sort(['gvkey', 'datadate'])
             .with_columns(next_start_date = col('start_date').shift(-1).over(['gvkey']))
             .with_columns(end_date = pl.min_horizontal((col('next_start_date').dt.offset_by('-1mo').dt.month_end()),(col('datadate').dt.offset_by(f'{max_lag}mo').dt.month_end())))
             .drop('next_start_date'))
-    df.collect().write_parquet('expand_input.parquet')
     return expand(data=df, id_vars=['gvkey'], start_date='start_date', end_date='end_date', freq='month', new_date_name='public_date')
 def add_me_data_and_compute_me_mev_mat_eqdur_vars(df, me_df):
     #Characteristics Scaled by Market Equity
@@ -2153,7 +2279,7 @@ def create_acc_chars(data_path, output_path, lag_to_public, max_data_lag, __keep
                         .sort(['gvkey', 'curcd', 'datadate'])
                         .with_columns(ocf_at_chg1  = pl.when(col('count') > 12).then(col('ocf_at') - col('ocf_at').shift(12)).otherwise(fl_none()))
                         .pipe(add_accounting_misc_cols_2)
-                        .pipe(add_earnings_persistence_and_expand, lag_to_pub = lag_to_public, max_lag = max_data_lag)
+                        .pipe(add_earnings_persistence_and_expand, data_path = data_path, lag_to_pub = lag_to_public, max_lag = max_data_lag)
                         .pipe(convert_raw_vars_to_usd)
                         .pipe(add_me_data_and_compute_me_mev_mat_eqdur_vars, me_df = me_data))
 
@@ -2166,9 +2292,12 @@ def create_acc_chars(data_path, output_path, lag_to_public, max_data_lag, __keep
                                     .write_parquet(output_path)
 @measure_time
 def combine_ann_qtr_chars(ann_df_path, qtr_df_path, char_vars, q_suffix):    
-    con = ibis.duckdb.connect(threads = os.cpu_count())    
-    ann = con.read_parquet(ann_df_path).mutate(n1 = ibis.row_number())
-    qtr = con.read_parquet(qtr_df_path).mutate(n2 = ibis.row_number()).rename({'datadate_qitem': 'datadate', 'source_qitem': 'source'})
+    os.system('rm -f aux_aqtr_chars.ddb')
+    con = ibis.duckdb.connect('aux_aqtr_chars.ddb', threads = os.cpu_count())
+    con.create_table('ann', con.read_parquet(ann_df_path).mutate(n1 = ibis.row_number()), overwrite = True)
+    con.create_table('qtr', con.read_parquet(qtr_df_path).mutate(n2 = ibis.row_number()).rename({'datadate_qitem': 'datadate', 'source_qitem': 'source'}), overwrite = True)
+    ann = con.table('ann')
+    qtr = con.table('qtr')
     combined = ann.left_join(qtr, [ann.gvkey == qtr.gvkey, ann.public_date == qtr.public_date])
     drop_columns = ['datadate', f'datadate{q_suffix}', 'gvkey_right', 'public_date_right', 'source_qitem'] + [f'{ann_var}{q_suffix}' for ann_var in char_vars]
     subs = {}
@@ -2187,6 +2316,7 @@ def combine_ann_qtr_chars(ann_df_path, qtr_df_path, char_vars, q_suffix):
                         .order_by(['gvkey', 'public_date']))
     combined.to_parquet('acc_chars_world.parquet')
     con.disconnect()
+    os.system('rm -f aux_aqtr_chars.ddb')
 def seasonality(data, ret_x, start_year, end_year):
     all_r = pl.lit(0.)
     ann_r = pl.lit(0.)
@@ -2546,7 +2676,7 @@ def prepare_daily(data_path, fcts_path):
                               prc_adj  = safe_div('prc', 'adjfct', 'prc_adj'))
                 .drop(['ret_lag_dif', 'ret_local', 'adjfct','prc', 'dolvol'])
                 .sort(['id_int', 'date'])
-                #.select(pl.all().shrink_dtype()) #For computers without enough memory, use this line to apply dtype shrinking 
+                .select(pl.all().shrink_dtype()) #For computers without enough memory, use this line to apply dtype shrinking 
                 )
     dsf1.collect().write_parquet('dsf1.parquet')
 
@@ -2611,80 +2741,134 @@ def mispricing_factors(data_path, min_stks, min_fcts = 3, output_path = 'mp_fact
                             .select(['id', 'eom', 'mispricing_perf', 'mispricing_mgmt']))
     chars['1'].collect().write_parquet(output_path)
 
-@measure_time
-def bidask_hl(output_path, data_path, market_returns_daily_path, __min_obs):
+def impute_high_low(df: pl.LazyFrame) -> pl.LazyFrame:
+    sc1 = (
+          (col("bidask") == 1)
+        | (col("tvol") == 0)
+        | (col("prc_low") <= 0)
+        | (col("prc_high") <= 0)
+        | (col("prc_low") == col("prc_high"))
+    )
+    sc2 = (col('prc_low') > 0) & (col('prc_high') > col('prc_low'))
+    sc3 = (col('flag_replace')) & \
+          (
+           (col('prc') >= col('prc_low_r')) & (col('prc') <= col('prc_high_r'))
+           |
+           (col('prc').is_null() & col('prc_low_r').is_null() & col('prc_high_r').is_null())
+          )
+    sc4 = (col('flag_replace')) & (col('prc') < col('prc_low_r'))
+    sc5 = (col('flag_replace')) & (col('prc') > col('prc_high_r')).fill_null(True)
+    sc6 = (col('prc_low') != 0) & (col('prc_high') / col('prc_low') > 8)
+    df = (df.sort(['id', 'date'])
+            .with_columns(
+                prc_low_in = col('prc_low'),
+                prc_high_in = col('prc_high'),
+                prc_high = pl.when(sc1).then(None).otherwise(col('prc_high')),
+                prc_low = pl.when(sc1).then(None).otherwise(col('prc_low')),
+                count = pl.cum_count('id').over('id'),
+                hlreset = pl.lit(0)
+            )
+            .with_columns(
+                prc_low_r = (pl.when(col('count') == 1).then(None)
+                               .otherwise(col('prc_low'))
+                            ),
+                prc_high_r = (pl.when(col('count') == 1).then(None)
+                                .otherwise(col('prc_high'))
+                            )
+            )
+            .with_columns(
+                  prc_low_r = (pl.when(sc2).then(col('prc_low'))
+                                 .otherwise(col('prc_low_r'))
+                              ),
+                  prc_high_r = (pl.when(sc2).then(col('prc_high'))
+                                  .otherwise(col('prc_high_r'))
+                              )
+            )
+           .sort(['id', 'date'])
+           .with_columns(
+               flag_replace = col('prc_low_r').is_null(),
+               prc_low_r = col('prc_low_r').forward_fill().over('id'),
+               prc_high_r = col('prc_high_r').forward_fill().over('id')
+           )
+           .with_columns(
+               prc_low = (pl.when(sc3).then(col('prc_low_r'))
+                            .when(sc4).then(col('prc'))
+                            .when(sc5).then(col('prc_low_r') + (col('prc') - col('prc_high_r')))
+                            .otherwise(col('prc_low'))
+                         ),
+               prc_high = (pl.when(sc3).then(col('prc_high_r'))
+                            .when(sc4).then(col('prc_high_r') - (col('prc_low_r') - col('prc')))
+                            .when(sc5).then(col('prc'))
+                            .otherwise(col('prc_high'))
+                         ),
+               hlreset = (pl.when(sc3).then(pl.lit(1))
+                            .when(sc4).then(pl.lit(2))
+                            .when(sc5).then(pl.lit(3))
+                            .otherwise(col('hlreset'))
+                         )
+           )
+          .with_columns(
+              prc_low = pl.when(sc6).then(None).otherwise(col('prc_low')),
+              prc_high = pl.when(sc6).then(None).otherwise(col('prc_high'))
+          ) 
+    )
+    
+    return df
+
+def adjust_overnight_returns(df: pl.LazyFrame) -> pl.LazyFrame:
+    sc1 = (col('prc_l1') < col('prc_low'))  & (col('prc_l1') > 0)
+    sc2 = (col('prc_l1') > col('prc_high')) & (col('prc_l1') > 0)
+    df = (df.sort(['id','date'])
+            .with_columns(prc_low_t        = col('prc_low'),
+                          prc_high_t       = col('prc_high'),
+                          prc_low_l1       = col('prc_low').shift(1).over('id'),
+                          prc_high_l1      = col('prc_high').shift(1).over('id'),
+                          prc_l1           = col('prc').shift(1).over('id'))
+            .with_columns(prc_high_t       = pl.when(sc1).then(col('prc_high') - (col('prc_low') - col('prc_l1'))).otherwise(col('prc_high_t')),
+                          prc_low_t        = pl.when(sc1).then(col('prc_l1')).otherwise(col('prc_low_t')))
+            .with_columns(prc_high_t       = pl.when(sc2).then(col('prc_l1')).otherwise(col('prc_high_t')),
+                          prc_low_t        = pl.when(sc2).then(col('prc_low') + (col('prc_l1') - col('prc_high'))).otherwise(col('prc_low_t')))
+            .with_columns(prc_high_2d      = pl.max_horizontal('prc_high_t', 'prc_high_l1'),
+                          prc_low_2d       = pl.min_horizontal('prc_low_t', 'prc_low_l1'))
+          )
+    return df
+    
+def compute_bidask_spread(df: pl.LazyFrame, __min_obs: int) -> pl.LazyFrame:
     pi = 3.141592653589793
     k2 = sqrt(8 / pi)
     const = 3 - 2 * sqrt(2)
-    c1 = (col('bidask') != 1)                &\
-         (col('prc_low') != col('prc_high')) &\
-         (col('prc_low') > 0)                &\
-         (col('prc_high') > 0)               &\
-         (col('tvol') != 0)
-    c2 = (col('id_flag') == 0) & (col('ind') == 0) & (col('prc_low_r') <= col('prc')) & (col('prc') <= col('prc_high_r'))
-    c3 = (col('id_flag') == 0) & (col('ind') == 0) & (col('prc') < col('prc_low_r'))
-    c4 = (col('id_flag') == 0) & (col('ind') == 0) & (col('prc') > col('prc_high_r'))
-    c5 = (col('prc_low')!= 0.) & (col('prc_high')/col('prc_low') > 8)
-    c6 = (col('prc_l1') < col('prc_low'))  & (col('prc_l1') > 0)
-    c7 = (col('prc_l1') > col('prc_high')) & (col('prc_l1') > 0)
+    df = (df.with_columns(beta             = (pl.when((col('prc_low_t') > 0) & (col('prc_low_l1') > 0))
+                                                .then(((col('prc_high_t') / col('prc_low_t')).log() ** 2) + ((col('prc_high_l1') / col('prc_low_l1')).log() ** 2))
+                                                .otherwise(fl_none())),
+                          gamma            = pl.when(col('prc_low_2d') > 0).then(((col('prc_high_2d') / col('prc_low_2d')).log() ** 2)).otherwise(fl_none()))
+            .with_columns(alpha            = ((sqrt(2) - 1) * col('beta').sqrt()) / const - (col('gamma') / const).sqrt())
+            .with_columns(spread           = 2 * (pl.lit(exp(1)).pow(col('alpha')) - 1) / (1 + pl.lit(exp(1)).pow(col('alpha'))),
+                          sigma            = (((col('beta')/ 2).sqrt() - col('beta').sqrt()) / (k2 * const)) + (col('gamma') / (k2 * k2 * const)).sqrt())
+            .with_columns(spread_0         = pl.when(col('spread') < 0).then(pl.lit(0.)).otherwise(col('spread')),
+                          sigma_0          = pl.when(col('sigma') < 0).then(pl.lit(0.)).otherwise(col('sigma')))
+            .group_by(['id','eom'])
+            .agg(bidaskhl_21d = pl.mean('spread_0'),
+                 rvolhl_21d   = pl.mean('sigma_0'),
+                 count        = pl.count('spread_0'))
+            .filter(col('count') > __min_obs)
+            .drop('count')
+            .sort(['id','eom'])
+         )
+    return df  
+@measure_time
+def bidask_hl(output_path, data_path, market_returns_daily_path, __min_obs):
     market_returns_daily = pl.scan_parquet(market_returns_daily_path)
     __dsf = (pl.scan_parquet(data_path)
                .join(market_returns_daily, how = 'left', on=['excntry', 'date'])
                .filter(col('mkt_vw_exc').is_not_null())
                .with_columns([safe_div(var, 'adjfct', var) for var in ['prc', 'prc_high', 'prc_low']])
-               .select(['id', 'date', 'eom', 'bidask', 'tvol', 'prc', 'prc_high', 'prc_low'])
-               .with_columns(prc_high         = pl.when(c1).then(col('prc_high')).otherwise(fl_none()),
-                             prc_low          = pl.when(c1).then(col('prc_low')).otherwise(fl_none()))
-               .sort(['id','date'])
-               .with_columns(prc_low_r        = col('prc_low').shift(1).over('id'),
-                             prc_high_r       = col('prc_high').shift(1).over('id'),
-                             ind              = ((0 < col('prc_low')) & (col('prc_low') < col('prc_high'))).cast(pl.Int64).fill_null(0),
-                             id_flag          = (col('id').shift(1).over('id').is_null()).cast(pl.Int64))
-               .sort(['id','date'])
-               .with_columns(prc_low_r        = col('prc_low_r' ).fill_null(strategy = 'forward').over('id'),
-                             prc_high_r       = col('prc_high_r').fill_null(strategy = 'forward').over('id'))
-               .with_columns(prc_low          = (pl.when(c2).then(col('prc_low_r'))
-                                                   .when(c3).then(col('prc'))
-                                                   .when(c4).then(col('prc_low_r') + col('prc') - col('prc_high_r'))
-                                                   .otherwise(col('prc_low'))),
-                             prc_high         = (pl.when(c2).then(col('prc_high_r'))
-                                                   .when(c3).then(col('prc_high_r') - (col('prc_low_r') - col('prc')))
-                                                   .when(c4).then(col('prc'))
-                                                   .otherwise(col('prc_high'))))
-               .with_columns(prc_low          = pl.when(c5).then(fl_none()).otherwise(col('prc_low')),
-                             prc_high         = pl.when(c5).then(fl_none()).otherwise(col('prc_high')))
-               .select(['id','date','eom','prc', 'prc_high','prc_low'])
-               .sort(['id','date'])
-               .with_columns(prc_low_t        = col('prc_low'),
-                             prc_high_t       = col('prc_high'),
-                             prc_low_l1       = col('prc_low').shift(1).over('id'),
-                             prc_high_l1      = col('prc_high').shift(1).over('id'),
-                             prc_l1           = col('prc').shift(1).over('id'))
-               .with_columns(prc_high_t       = pl.when(c6).then(col('prc_high') - (col('prc_low') - col('prc_l1'))).otherwise(col('prc_high_t')),
-                             prc_low_t        = pl.when(c6).then(col('prc_l1')).otherwise(col('prc_low_t')))
-               .with_columns(prc_high_t       = pl.when(c7).then(col('prc_l1')).otherwise(col('prc_high_t')),
-                             prc_low_t        = pl.when(c7).then(col('prc_low') + (col('prc_l1') - col('prc_high'))).otherwise(col('prc_low_t')))
-               .with_columns(prc_high_2d      = pl.max_horizontal('prc_high_t', 'prc_high_l1'),
-                             prc_low_2d       = pl.min_horizontal('prc_low_t', 'prc_low_l1'))
-               .with_columns(beta             = (pl.when((col('prc_low_t') > 0) & (col('prc_low_l1') > 0))
-                                                   .then(((col('prc_high_t') / col('prc_low_t')).log() ** 2) + ((col('prc_high_l1') / col('prc_low_l1')).log() ** 2))
-                                                   .otherwise(fl_none())),
-                             gamma            = pl.when(col('prc_low_2d') > 0).then(((col('prc_high_2d') / col('prc_low_2d')).log() ** 2)).otherwise(fl_none()))
-               .with_columns(alpha            = ((sqrt(2) - 1) * col('beta').sqrt()) / const - (col('gamma') / const).sqrt())
-               .with_columns(spread           = 2 * (pl.lit(exp(1)).pow(col('alpha')) - 1) / (1 + pl.lit(exp(1)).pow(col('alpha'))),
-                             sigma            = (((col('beta')/ 2).sqrt() - col('beta').sqrt()) / (k2 * const)) + (col('gamma') / (k2 * k2 * const)).sqrt())
-               .with_columns(spread_0         = pl.when(col('spread') < 0).then(pl.lit(0.)).otherwise(col('spread')),
-                             sigma_0          = pl.when(col('sigma') < 0).then(pl.lit(0.)).otherwise(col('sigma')))
-               .select(['id','date','eom','spread_0','sigma_0'])
-               .group_by(['id','eom'])
-               .agg(bidaskhl_21d = pl.mean('spread_0'),
-                    rvolhl_21d   = pl.mean('sigma_0'),
-                    count        = pl.count('spread_0'))
-                     #count = pl.sum('count'))
-               .filter(col('count') > __min_obs)
-               .drop('count')
-               .sort(['id','eom']))
-    __dsf.collect().write_parquet(output_path)
+            )
+    bdhl = (__dsf.pipe(impute_high_low)
+                 .pipe(adjust_overnight_returns)
+                 .pipe(compute_bidask_spread, __min_obs = __min_obs)
+       )
+    bdhl.collect().write_parquet(output_path)
+
 
 @measure_time
 def create_world_data_prelim(msf_path, market_chars_monthly_path, acc_chars_world_path, output_path):
