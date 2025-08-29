@@ -1730,8 +1730,9 @@ def equity_duration_cd(df, horizon=10, r=0.12, roe_mean=0.12, roe_ar1=0.57, g_me
 
     ed_cd_w_exp = sum(t * col(f'__cd{t}') / ((1 + r)**t) for t in range(1, horizon + 1))
     ed_cd_exp = sum(col(f'__cd{t}') / ((1 + r)**t) for t in range(1, horizon + 1))
-    c_aux = reduce(lambda a, b: a | b, (col(f'__be{t}') < 0. for t in range(1, horizon + 1)))
+    c_aux = pl.any_horizontal([col(f"__be{t}") < 0 for t in range(1, horizon + 1)])
     ed_err_exp = pl.when(c_aux).then(pl.lit(1.)).otherwise(pl.lit(0.))
+    # c_aux = pl.any_horizontal(pl.col(r"^__be\d+$") < 0) Much cooler but not safe in case there are any other __be columns from before
     df = df.with_columns(ed_constant = (pl.lit(horizon) + ((1 + r) / r)),
                          ed_cd_w = ed_cd_w_exp,
                          ed_cd   = ed_cd_exp,
@@ -1802,11 +1803,11 @@ def altman_z(df, name = 'z_score'):
 def intrinsic_value(df, name = 'intrinsic_value', r = 0.12):
     c1 = col('count') > 12
     c2 = (col('be_x') + col('be_x').shift(12) > 0)
-    iv_roe_exp = (pl.when(c1 & c2).then(col('nix_x') / ((col('be_x') + col('be_x').shift(12)) / 2))
-                    .otherwise(fl_none())).alias('__iv_roe')
-    iv_po_exp  = (pl.when(col('nix_x') > 0  ).then(col('div_x') / col('nix_x'))
+    iv_po_exp  = (pl.when(col('nix_x') > 0).then(col('div_x') / col('nix_x'))
                     .when(col('at_x') != 0).then(col('div_x')/ (col('at_x') * 0.06))
                     .otherwise(fl_none())).alias('__iv_po')
+    iv_roe_exp = (pl.when(c1 & c2).then(col('nix_x') / ((col('be_x') + col('be_x').shift(12)) / 2))
+                    .otherwise(fl_none())).alias('__iv_roe')
     df = (df.sort(['gvkey','curcd','datadate'])
             .with_columns([iv_roe_exp, iv_po_exp])
             .with_columns(__iv_be1 = ((1 + (1 - col('__iv_po')) * col('__iv_roe')) * col('be_x')))
@@ -1829,11 +1830,13 @@ def kz_index(df, name ='kz_index'):
               .with_columns([col1,col2,col3,col4,col5])
               .with_columns((- 1.002 * col('__kz_cf') + 0.283 * col('__kz_q') + 3.139 * col('__kz_db') - 39.368 * col('__kz_dv') - 1.315 * col('__kz_cs')).alias(name)))
     return df
+#Make this be able to take a list of variables and horizons to only sort once for the whole list rather than once per variable. 
 def chg_var1_to_var2(df, name, var1, var2, horizon):
-    df = (df.with_columns(safe_div(var1, var2, '__x', 3))
-            .sort(['gvkey','curcd','datadate'])
-            .with_columns(pl.when(col('count') > horizon).then(col('__x') - col('__x').shift(horizon)).otherwise(fl_none()).alias(name))
-            .drop('__x'))
+    df = (df.with_columns(__x = pl.when(col(var2) <= 0).then(None).otherwise(col(var1)/col(var2)))
+            .sort(['gvkey', 'curcd', 'datadate'])
+            .with_columns(pl.when(col('count') <= horizon).then(None).otherwise(col('__x').diff(horizon)).alias(name))
+            .drop('__x')
+    )
     return df
 def compute_earnings_persistence(data_path, __n, __min):
     months = 12 * __n
@@ -2136,7 +2139,7 @@ def add_liq_and_efficiency_ratios(df):
     c_days = [temp_liq_rat('invt','cogs','inv_days'), temp_liq_rat('rect','sale_x','rec_days'), temp_liq_rat('ap','cogs','ap_days')]
     #Cash, quick, and current ratios; cash Conversion Cycle
     c_liq_rat = [safe_div('che', 'cl_x', 'cash_cl', 3), safe_div('caliq_x', 'cl_x', 'caliq_cl', 3), safe_div('ca_x', 'cl_x', 'ca_cl', 3),\
-                pl.when((col('inv_days') + col('rec_days') - col('ap_days')) > 0).then(col('inv_days') + col('rec_days') - col('ap_days')).otherwise(fl_none()).alias('cash_conversion')]
+                pl.when((col('inv_days') + col('rec_days') - col('ap_days')) >= 0).then(col('inv_days') + col('rec_days') - col('ap_days')).otherwise(fl_none()).alias('cash_conversion')]
     df = (df.sort(['gvkey','curcd','datadate'])
             .with_columns(c_days)
             .with_columns(c_liq_rat)
@@ -2174,10 +2177,6 @@ def add_me_data_and_compute_me_mev_mat_eqdur_vars(df, me_df):
     c_misc = [col('mev').alias('enterprise_value'),
               (pl.when((col('gvkey') == col('gvkey').shift(12)) & (col('mat').shift(12) != 0)).then(col('aliq_x') * col('fx') / col('mat').shift(12)).otherwise(fl_none())).alias('aliq_mat'),
               ((col('ed_cd_w') * col('fx') / col('me_company')) + col('ed_constant') * (col('me_company') - col('ed_cd') * col('fx'))/col('me_company')).alias('eq_dur')]
-    
-    # (df.join(me_df, left_on=['gvkey', 'public_date'], right_on=['gvkey', 'eom'], how='left')
-    #         .select(df.collect_schema().names() + ['me_company'])
-    #         .sort(['gvkey', 'public_date'])).collect().write_parquet('dedup_question2.parquet')
 
     df = (df.join(me_df, left_on=['gvkey', 'public_date'], right_on=['gvkey', 'eom'], how='left')
             .select(df.collect_schema().names() + ['me_company'])
@@ -2279,7 +2278,7 @@ def create_acc_chars(data_path, output_path, lag_to_public, max_data_lag, __keep
                         .pipe(compute_capex_abn)
                         .pipe(add_profit_scaled_by_lagged_vars)
                         .with_columns(pi_nix       = safe_div('pi_x', 'nix_x', 'pi_nix', 8),
-                                      ocf_at       = safe_div('ocf_x', 'at_x', 'ocf_at'),
+                                      ocf_at       = safe_div('ocf_x', 'at_x', 'ocf_at', 3),
                                       op_at        = safe_div('op_x', 'at_x', 'op_at', 3),
                                       at_be        = safe_div('at_x', 'be_x', 'at_be'),
                                       __ocfq_saleq = safe_div('ocf_qtr', 'sale_qtr', '__ocfq_saleq', 3),
@@ -2296,7 +2295,7 @@ def create_acc_chars(data_path, output_path, lag_to_public, max_data_lag, __keep
                         .pipe(add_me_data_and_compute_me_mev_mat_eqdur_vars, me_df = me_data))
 
     rename_dict = {"xrd": "rd","xsga": "sga","dlc": "debtst","dltt": "debtlt","oancf": "ocf","ppegt": "ppeg","ppent": "ppen","che": "cash","invt": "inv","rect": "rec","txt": "tax","ivao": "lti","ivst": "sti","sale_qtr": "saleq","ni_qtr": "niq","ocf_qtr": "ocfq"}
-    # rename_cols_and_select_keep_vars(chars_df, rename_dict, __keep_vars, suffix).collect().write_parquet('dedup_question.parquet')
+    
     rename_cols_and_select_keep_vars(chars_df, rename_dict, __keep_vars, suffix)\
                                     .sort(['gvkey', 'public_date'])\
                                     .unique(['gvkey', 'public_date'],keep = 'first')\
