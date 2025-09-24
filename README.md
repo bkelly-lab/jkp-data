@@ -19,7 +19,7 @@ This document provides instructions for creating a dataset based on the paper "I
    - Download the `requirements.txt` file and navigate to the directory where it's stored.
    - Run the following commands:
      ```sh
-     conda create --name jkp_factors python=3.11.7
+     conda create --name jkp_factors python=3.11.11
      conda activate jkp_factors
      conda install -c conda-forge postgresql
      pip install -r requirements.txt
