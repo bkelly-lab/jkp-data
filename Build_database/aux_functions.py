@@ -8,12 +8,24 @@ from ibis import _
 import os
 from datetime import date
 from math import sqrt, exp
-from functools import reduce
 from polars import col
 import math
 def fl_none(): return pl.lit(None).cast(pl.Float64)
 def bo_false(): return pl.lit(False).cast(pl.Boolean)
 def measure_time(func):
+    """
+    Description:
+        Decorator to time a function and print start/end timestamps and elapsed minutes:seconds.
+
+    Steps:
+        1) Record start time and print function name + start.
+        2) Execute the wrapped function and capture result.
+        3) Record end time; compute and print duration.
+        4) Return the original result.
+
+    Output:
+        Prints timing info to stdout; returns wrapped function's result.
+    """
     def wrapper(*args, **kwargs):
         start_time = time.time()
         print(f"Function       : {func.__name__.upper()}", flush=True)
@@ -33,47 +45,169 @@ def measure_time(func):
 
 @measure_time
 def setup_folder_structure():
+    """
+    Description:
+        Create the project’s folder structure if missing.
+
+    Steps:
+        1) Make directories: Raw_tables, Raw_data_dfs, Characteristics, World_Ret_Monthly,
+        Daily_Returns, World_Data, Accounting_Data, Output.
+
+    Output:
+        Folders created on disk (no return value).
+    """
     os.system('mkdir -p Raw_tables Raw_data_dfs Characteristics World_Ret_Monthly Daily_Returns World_Data Accounting_Data Output')
 
 def collect_and_write(df, filename, collect_streaming = False):
+    """
+    Description:
+        Collect a Polars LazyFrame (optionally streaming) and write to Parquet.
+
+    Steps:
+        1) df.collect(streaming=collect_streaming).
+        2) write_parquet(filename).
+
+    Output:
+        Parquet file at `filename`.
+    """
     df.collect(streaming = collect_streaming).write_parquet(filename)
 
 def sic_naics_aux(filename):
+    """
+    Description:
+        Load SIC/NAICS from a Compustat security header parquet and standardize column names.
+
+    Steps:
+        1) Read parquet lazily.
+        2) Select gvkey, datadate, map sich→sic and naicsh→naics.
+        3) Drop duplicates.
+
+    Output:
+        LazyFrame with unique (gvkey, datadate, sic, naics).
+    """
     df = (pl.scan_parquet(filename)
             .select(['gvkey', 'datadate', col('sich').alias('sic'), col('naicsh').alias('naics')])
             .unique())
     return df
 def load_age_aux(filename, filter_monthend = False):
+    """
+    Description:
+        Load gvkey–datadate pairs from a parquet; optionally filter to month-end rows.
+
+    Steps:
+        1) Scan parquet lazily.
+        2) If filter_monthend, keep rows with monthend == 1.
+        3) Select gvkey, datadate.
+
+    Output:
+        LazyFrame of (gvkey, datadate).
+    """
     df = pl.scan_parquet(filename)
     if filter_monthend: df = df.filter(col('monthend') == 1)
     return df.select(['gvkey', 'datadate'])
 def comp_hgics_aux(filename):
+    """
+    Description:
+        Load Compustat GICS (global sub-industry) histories.
+
+    Steps:
+        1) Scan parquet lazily; drop null gvkey.
+        2) Select gvkey, indfrom, indthru, gsubind→gics.
+        3) Unique rows.
+
+    Output:
+        LazyFrame with distinct GICS intervals per gvkey.
+    """
     df = (pl.scan_parquet(filename)
             .filter(col('gvkey').is_not_null())
             .select(['gvkey', 'indfrom', 'indthru', col('gsubind').alias('gics')])
             .unique())
     return df
 def sec_info_aux(filename):
+    """
+    Description:
+        Load security status info (listing/Delisting) from a parquet.
+
+    Steps:
+        1) Scan parquet lazily.
+        2) Select gvkey, iid, secstat, dlrsni.
+
+    Output:
+        LazyFrame of security status fields.
+    """
     df = (pl.scan_parquet(filename)
             .select(['gvkey', 'iid', 'secstat', 'dlrsni']))
     return df
 def ex_country_aux(filename):
+    """
+    Description:
+        Map exchange codes to country codes.
+
+    Steps:
+        1) Scan parquet lazily.
+        2) Select exchg, excntry.
+        3) Deduplicate.
+
+    Output:
+        LazyFrame of unique (exchg, excntry) mappings.
+    """
     df = (pl.scan_parquet(filename)
             .select(['exchg', 'excntry'])
             .unique())
     return df
 def header_aux(comp_path, gcomp_path, output_path):
+    """
+    Description:
+        Build a unified Compustat header table combining NA and Global sources (one row per gvkey).
+
+    Steps:
+        1) Read NA and Global header parquets into Ibis.
+        2) Select gvkey, prirow, priusa, prican from each.
+        3) Union tables and take the first occurrence per gvkey.
+        4) Write to `output_path` and close connection.
+
+    Output:
+        Parquet header file with unique gvkey rows.
+    """
     con = ibis.duckdb.connect(threads = os.cpu_count())
     comp   = con.read_parquet(comp_path).select(['gvkey', 'prirow', 'priusa', 'prican'])
     g_comp = con.read_parquet(gcomp_path).select(['gvkey', 'prirow', 'priusa', 'prican'])
     comp.union(g_comp).distinct(on = 'gvkey', keep = 'first').to_parquet(output_path)
     con.disconnect()
 def prihist_aux(filename, alias_itemvalue):
+    """
+    Description:
+        Build a unified Compustat header table combining NA and Global sources (one row per gvkey).
+
+    Steps:
+        1) Read NA and Global header parquets into Ibis.
+        2) Select gvkey, prirow, priusa, prican from each.
+        3) Union tables and take the first occurrence per gvkey.
+        4) Write to `output_path` and close connection.
+
+    Output:
+        Parquet header file with unique gvkey rows.
+    """
     df = (pl.scan_parquet(filename)
             .filter(col('item') == alias_itemvalue.upper())
             .select(['gvkey', col('itemvalue').alias(alias_itemvalue), 'effdate', 'thrudate']))
     return df
 def gen_firmshares():
+    """
+    Description:
+        Build a unified table of Compustat-reported shares outstanding and split factors
+        from quarterly (FUNDQ) and annual (FUNDA) NA files.
+
+    Steps:
+        1) Load FUNDQ and FUNDA into DuckDB (rename FUNDA at_→at to avoid conflicts).
+        2) Filter to INDL/STD/D/C rows with non-null shares & adj. factors.
+        3) SELECT {gvkey, datadate, cshoq→csho_fund, ajexq→ajex_fund} from FUNDQ.
+        4) UNION ALL with FUNDA {csho→csho_fund, ajex→ajex_fund}.
+        5) Write to Raw_data_dfs/__firm_shares1.parquet.
+
+    Output:
+        Parquet: Raw_data_dfs/__firm_shares1.parquet (gvkey, datadate, csho_fund, ajex_fund).
+    """
     con = ibis.duckdb.connect(threads = os.cpu_count())
     con.create_table('comp_fundq', con.read_parquet('Raw_tables/comp_fundq.parquet'))
     con.create_table('comp_funda', con.read_parquet('Raw_tables/comp_funda.parquet').rename({"at_": "at"}))
@@ -93,6 +227,20 @@ def gen_firmshares():
     con.table('__firm_shares1').to_parquet('Raw_data_dfs/__firm_shares1.parquet')
     con.disconnect()
 def gen_prihist_files():
+    """
+    Description:
+        Extract Compustat security history “primary listing” flags (ROW/USA/CAN) with date
+        intervals from NA and Global history tables.
+
+    Steps:
+        1) Load comp_sec_history and comp_g_sec_history into DuckDB.
+        2) Create three tables by item code: PRIHISTROW (global), PRIHISTUSA (NA), PRIHISTCAN (NA).
+        3) Keep gvkey, itemvalue→flag, effdate, thrudate.
+        4) Write each to Raw_data_dfs as separate Parquet files.
+
+    Output:
+        Parquets: __prihistrow.parquet, __prihistusa.parquet, __prihistcan.parquet.
+    """
     con = ibis.duckdb.connect(threads = os.cpu_count())
     con.create_table('comp_sec_history', con.read_parquet('Raw_tables/comp_sec_history.parquet'))
     con.create_table('comp_g_sec_history', con.read_parquet('Raw_tables/comp_g_sec_history.parquet'))
@@ -127,6 +275,19 @@ def gen_prihist_files():
     con.table('__prihistcan').to_parquet('Raw_data_dfs/__prihistcan.parquet')
     con.disconnect()
 def gen_fx1():
+    """
+    Description:
+        Build daily FX (to USD) series per currency using Compustat daily exchange rates.
+
+    Steps:
+        1) Load comp_exrt_dly into DuckDB.
+        2) Join table to itself on (fromcurd, datadate) with fromcurd='GBP' and b.tocurd='USD'.
+        3) Compute fx = b.exratd / a.exratd, label a.tocurd as curcdd.
+        4) DISTINCT rows and write out.
+
+    Output:
+        Parquet: Raw_data_dfs/__fx1.parquet (curcdd, datadate, fx to USD).
+    """
     con = ibis.duckdb.connect(threads = os.cpu_count())
     con.create_table('comp_exrt_dly', con.read_parquet('Raw_tables/comp_exrt_dly.parquet'))
     con.raw_sql("""
@@ -146,6 +307,21 @@ def gen_fx1():
     con.disconnect()
 @measure_time
 def gen_raw_data_dfs():
+    """
+    Description:
+        Generate a suite of “raw data” helper Parquet files from Compustat/CRSP sources.
+
+    Steps:
+        1) Call gen_firmshares(), gen_prihist_files(), gen_fx1().
+        2) Derive SIC/NAICS (NA & Global), GICS (NA & Global), delist files (CRSP m/d),
+        security info (NA & Global), T-bill return, FF monthly factors, exchange code map,
+        exchange→country map, company headers (NA+Global), and CRSP security files (m & d).
+        3) Standardize types/columns, sort/deduplicate where needed.
+        4) Write all to Raw_data_dfs/*.parquet.
+
+    Output:
+        Multiple helper Parquets under Raw_data_dfs/ used in later pipelines.
+    """
     gen_firmshares()
     sic_naics_na = sic_naics_aux('Raw_tables/comp_funda.parquet')
     collect_and_write(sic_naics_na, 'Raw_data_dfs/sic_naics_na.parquet')
@@ -187,6 +363,21 @@ def gen_raw_data_dfs():
     gen_crsp_sf('d').to_parquet('Raw_data_dfs/__crsp_sf_d.parquet')
 
 def gen_crsp_sf(freq):
+    """
+    Description:
+        Build CRSP security file enriched with names and CCM link history (monthly or daily).
+
+    Steps:
+        1) Load crsp_{freq}sf, crsp_{freq}senames, and ccmxpf_lnkhist into Ibis.
+        2) Join SF to SENAMES on permno with date in [namedt, nameendt].
+        3) Join to CCM link history on permno and link date window, linktype in {LC, LU, LS}.
+        4) Compute fields: bidask flag, abs(prc), shrout (thousands), ME, prc_high/low (valid only if prc>0),
+        main exchange flag, and carry identifiers.
+        5) Select standardized columns and return the Ibis table.
+
+    Output:
+        Ibis table (not written) with standardized CRSP {m|d} security fields.
+    """
     con = ibis.duckdb.connect(threads = os.cpu_count())
     sf = con.read_parquet(f'Raw_tables/crsp_{freq}sf.parquet')
     senames = con.read_parquet(f'Raw_tables/crsp_{freq}senames.parquet')
@@ -225,6 +416,17 @@ def gen_crsp_sf(freq):
     return result
 
 def gen_wrds_connection_object(user, password):
+    """
+    Description:
+        Open a WRDS Postgres connection via Ibis/Postgres.
+
+    Steps:
+        1) Connect to wrds-pgdata.wharton.upenn.edu:9737 with user/password/database=wrds.
+        2) Return the connection object.
+
+    Output:
+        Ibis Postgres client connected to WRDS.
+    """
     # Connect to WRDS using Ibis
     con = ibis.postgres.connect(
         host="wrds-pgdata.wharton.upenn.edu",
@@ -235,6 +437,19 @@ def gen_wrds_connection_object(user, password):
     return con
 
 def download_wrds_table(conn_obj, table_name, filename, cols = None):
+    """
+    Description:
+        Download a WRDS table to Parquet, optionally selecting columns and fixing dtypes.
+
+    Steps:
+        1) Split 'lib.table' into library and table; build Ibis table.
+        2) If cols provided, select them.
+        3) Cast common ID codes to int64 when present (permno, permco, sic, sich).
+        4) Save to Parquet at filename; log start/finish.
+
+    Output:
+        Parquet file for the requested WRDS table.
+    """
     print('Downloading table:' , table_name)
 
     lib, table = table_name.split('.')
@@ -249,6 +464,19 @@ def download_wrds_table(conn_obj, table_name, filename, cols = None):
     print('Finished')
 
 def check_and_reset_connection(wrds_session, start_time, username, password):
+    """
+    Description:
+        Keep WRDS connection alive; if ≥45 minutes elapsed, reconnect with backoff prompts.
+
+    Steps:
+        1) If elapsed ≥ 45 min: disconnect; loop up to 5 attempts:
+        a) Wait 60s (progress every 10s), then try to reconnect.
+        b) On success, reset start_time and continue; on final failure, raise.
+        2) If not elapsed, return unchanged.
+
+    Output:
+        (wrds_session, start_time) — refreshed connection.
+    """
     elapsed_time = time.time() - start_time
     if elapsed_time >= 45 * 60:
         wrds_session.disconnect()
@@ -274,6 +502,19 @@ def check_and_reset_connection(wrds_session, start_time, username, password):
 
 @measure_time
 def download_raw_data_tables(username, password):
+    """
+    Description:
+        Bulk-download core WRDS tables to Raw_tables and a few curated variants with column subsets.
+
+    Steps:
+        1) Connect to WRDS; iterate through a fixed list of library.tables.
+        2) For each table: download to Raw_tables/lib_table.parquet; periodically reset connection.
+        3) Additionally fetch comp.secd and comp.g_secd with curated columns.
+        4) Disconnect.
+
+    Output:
+        Many Parquet files under Raw_tables/ (Compustat, CRSP, FF, etc.).
+    """
     table_names = ['comp.exrt_dly'  , 'ff.factors_monthly', 'comp.g_security' , 'comp.security'      ,
                    'comp.r_ex_codes', 'comp.g_sec_history', 'comp.sec_history', 'comp.company'       ,
                    'comp.g_company' , 'crsp.msenames'     , 'crsp.dsenames'   , 'crsp.ccmxpf_lnkhist',
@@ -299,6 +540,17 @@ def download_raw_data_tables(username, password):
 
 @measure_time
 def prepare_comp_sf(freq):
+    """
+    Description:
+        Prepare Compustat security-file derivatives (Comp DSF/SSF equivalents) for daily/monthly runs.
+
+    Steps:
+        1) Ensure firm-shares table is populated (populate_own), then create Comp DSF (gen_comp_dsf).
+        2) Run process_comp_sf1 for requested frequency: 'd', 'm', or 'both'.
+
+    Output:
+        Intermediate Comp security files written by downstream helpers (no direct return).
+    """
     populate_own('Raw_data_dfs/__firm_shares1.parquet', 'gvkey', 'datadate', 'ddate')
     gen_comp_dsf()
     if freq == 'both':
@@ -308,6 +560,22 @@ def prepare_comp_sf(freq):
 
 @measure_time
 def populate_own(inset_path, idvar, datevar, datename):
+    """
+    Description:
+        Expand Compustat firm-shares observations to a DAILY panel between each report
+        date and the earlier of (next report date) or (report date + 12 months month-end).
+
+    Steps:
+        1) Read inset_path and drop duplicates on {idvar, datevar}.
+        2) Copy datevar into a new column named `datename` (used as start date 'ddate').
+        3) For each {idvar}, compute boundary `n` = min(next datadate, datadate+12m month-end) − 1 day.
+        4) Generate pl.date_ranges(ddate, n) per row, explode to daily rows.
+        5) Keep daily rows with columns {ddate, gvkey, datadate, csho_fund, ajex_fund}.
+        6) Sort and write to __firm_shares2.parquet.
+
+    Output:
+        Parquet: __firm_shares2.parquet with daily firm-share data aligned to report windows.
+    """
     inset = (pl.scan_parquet(inset_path)
                .unique([idvar, datevar])
                .with_columns(col(datevar).alias(datename))
@@ -319,6 +587,21 @@ def populate_own(inset_path, idvar, datevar, datename):
                .sort(['gvkey','datadate']))
     inset.collect().write_parquet('__firm_shares2.parquet')
 def compustat_fx():
+    """
+    Description:
+        Construct a complete daily FX (currency to USD) time series per currency, including USD=1.
+        Fills gaps by expanding each FX observation to all dates up to the next observation.
+
+    Steps:
+        1) Create a seed row for USD with fx=1.0 starting 1950-01-01.
+        2) Load __fx1 (curcdd, datadate, fx) and vertically concat the USD seed.
+        3) For each curcdd, compute next datadate; build a date range [datadate, next) per row.
+        4) Explode ranges to daily rows; fallback to single-day list if next is null.
+        5) Drop duplicates, sort by {curcdd, datadate}, and collect to a DataFrame.
+
+    Output:
+        Polars DataFrame with columns {datadate, curcdd, fx} at daily frequency (to USD).
+    """
     aux = pl.DataFrame({'curcdd': 'USD','datadate': '1950-01-01','fx': 1.0}).with_columns(col('datadate').str.to_date('%Y-%m-%d')).lazy()
     __fx1 = pl.scan_parquet('Raw_data_dfs/__fx1.parquet')
     __fx1 = (pl.concat([aux, __fx1], how = 'vertical_relaxed')
@@ -332,6 +615,19 @@ def compustat_fx():
     return __fx1.collect()
 
 def adj_trd_vol_NASDAQ(datevar, col_to_adjust, exchg_var, exchg_val):
+    """
+    Description:
+        Apply historic NASDAQ trade-volume adjustments (pre-decimalization reporting) to a volume column.
+
+    Steps:
+        1) Build date cutoffs: <2001-02-01, ≤2001-12-31, <2003-12-31.
+        2) If exchg_var == exchg_val (NASDAQ) and within windows, scale col_to_adjust by
+        1/2, 1/1.8, or 1/1.6 respectively; otherwise keep original.
+        3) Return the adjusted expression aliased as the original column name.
+
+    Output:
+        Polars expression that yields adjusted trade volume for NASDAQ histories.
+    """
     c1 = col(exchg_var) == exchg_val
     c2 = col(datevar)   <  pl.datetime(2001, 2, 1)
     c3 = col(datevar)   <= pl.datetime(2001, 12, 31)
@@ -344,6 +640,25 @@ def adj_trd_vol_NASDAQ(datevar, col_to_adjust, exchg_var, exchg_val):
 
 @measure_time
 def gen_comp_dsf():
+    """
+    Description:
+        Build daily Compustat security data (SECD + G_SECD), convert to USD, and compute
+        prices/returns/volumes/dividends; store as __comp_dsf.parquet.
+
+    Steps:
+        1) Materialize daily FX to fx_data.parquet; register SECD, G_SECD, firm-shares, and FX in DuckDB.
+        2) Create __comp_dsf_global from G_SECD: local prices, highs/lows (if prcstd≠5),
+        shares traded, shares outstanding, local return index (ri_local), dividend currencies.
+        3) Create __comp_dsf_na from SECD with same fields; infer cshoc from firm-shares when missing.
+        4) Adjust NASDAQ (exchg=14) cshtrd by historical factors (2001 windows).
+        5) FULL OUTER JOIN NA and Global records; LEFT JOIN daily FX for trading and dividend currencies.
+        6) Compute USD variables: prc, prc_high, prc_low, market cap (me), USD turnover (dolvol),
+        USD return index (ri), dividends (split into total/cash/special); derive month-end eom.
+        7) Drop intermediates and write __comp_dsf.parquet.
+
+    Output:
+        Parquet: __comp_dsf.parquet (daily Compustat security observations in USD).
+    """
     os.system('rm -f aux_comp_dsf.ddb')
     con = ibis.duckdb.connect('aux_comp_dsf.ddb', threads = os.cpu_count())    
     
@@ -432,6 +747,26 @@ def gen_comp_dsf():
     con.disconnect()
 
 def gen_secd_data():
+    """
+    Description:
+        Aggregate daily Compustat (__comp_dsf) to month-end security data (SECD-like monthly),
+        resolving multiple daily rows and computing monthly highs/lows/divs/volume.
+
+    Steps:
+        1) Read __comp_dsf.parquet into DuckDB.
+        2) Define window over {gvkey, iid, eom}.
+        3) Compute monthly aggregates at adjusted units:
+        - prc_highm/prc_lowm: month max/min using pre-adjusted local price with ajexdi.
+        - div_*m: sum of monthly dividends (by type) adjusted.
+        - cshtrm: sum of adjusted share turnover; dolvolm: sum of USD dollar volume.
+        - source=1 to mark SECD pipeline.
+        4) Keep valid rows (local price/currency present, prcstd in {3,4,10});
+        pick the last datadate in the month.
+        5) Write to secd_data.parquet.
+
+    Output:
+        Parquet: secd_data.parquet (monthly aggregates from daily Compustat pipeline).
+    """
     os.system('rm -f aux_msf.ddb')
     con = ibis.duckdb.connect('aux_msf.ddb', threads = os.cpu_count())
     table = con.read_parquet('__comp_dsf.parquet')
@@ -456,6 +791,24 @@ def gen_secd_data():
     new_table.to_parquet('secd_data.parquet')
     con.disconnect()
 def gen_secm_data():
+    """
+    Description:
+        Build Compustat SECM-derived monthly records (direct monthly pricing),
+        harmonize units, convert to USD, and output month-end rows.
+
+    Steps:
+        1) Materialize daily FX as fx_data.parquet; register SECM, firm-shares, and FX in DuckDB.
+        2) In CTE:
+        - Map SECM fields to local price/hi/low/ajex, compute cshoc fallback from firm-shares,
+            adjust NASDAQ cshtrm by historical factors.
+        - Join FX for trading and dividend currencies; compute ri_local.
+        3) Project to final fields: USD prc, prc_high/low, ME, dolvol, RI, total dividends (cash/special null),
+        prcstd=10, source=0, and eom=last_day(datadate).
+        4) Write to secm_data.parquet.
+
+    Output:
+        Parquet: secm_data.parquet (monthly Compustat SECM-based observations in USD).
+    """
     os.system('rm -f aux_comp_secm.ddb')
     con = ibis.duckdb.connect('aux_comp_secm.ddb', threads = os.cpu_count())    
 
@@ -513,6 +866,22 @@ def gen_secm_data():
     con.table('__comp_secm2').to_parquet('secm_data.parquet')
 @measure_time
 def gen_comp_msf():
+    """
+    Description:
+        Merge SECD-based and SECM-based monthly datasets into a single Compustat MSF-like file.
+        Prefer SECD (source=1) when both sources exist for the same {gvkey,iid,eom}.
+
+    Steps:
+        1) Ensure secd_data.parquet and secm_data.parquet exist (run gen_secd_data/gen_secm_data).
+        2) Load both; select a common column set and cast types consistently.
+        3) UNION the two sources; for each {gvkey,iid,eom} window count n rows.
+        4) Keep either the single row (n=1) or, if n=2, prefer source=1 (SECD).
+        5) Drop helper columns and deduplicate on {gvkey, iid, eom}.
+        6) Write to __comp_msf.parquet.
+
+    Output:
+        Parquet: __comp_msf.parquet (monthly Compustat security master in USD).
+    """
     gen_secd_data()
     gen_secm_data()
     common_vars = ['gvkey', 'iid', 'datadate', 'eom', 'tpci', 'exchg', 'curcdd', 'prc_local', 'prc_high', 'prc_low', 'ajexdi', 'cshoc', 'ri_local', 'fx', 'prc', 'me', 'cshtrm', 'dolvol', 'ri', 'div_tot', 'div_cash', 'div_spc', 'prcstd', 'source'] 
@@ -531,6 +900,22 @@ def gen_comp_msf():
     con.disconnect()
 
 def comp_exchanges():
+    """
+    Description:
+        Build an exchange→country lookup with “main exchange” flag for Compustat exchanges.
+
+    Steps:
+        1) Define a list of special exchange codes that should not be flagged as main.
+        2) Using __ex_country1 (exchg→excntry pairs):
+        a) SQL: for each exchg, if it maps to multiple countries label 'multi national',
+            else use its single country.
+        b) Join to comp_r_ex_codes for descriptions/codes; cast exchg to int64.
+        3) Compute exch_main = 1 when (excntry ≠ 'multi national') and exchg not in special_exchanges; else 0.
+        4) Return the resulting Polars DataFrame.
+
+    Output:
+        DataFrame mapping exchg → {excntry, exchgdesc/exchgcd if present, exch_main}.
+    """
     special_exchanges = [
         0, 1, 2, 3, 4, 15, 16, 17, 18, 21,
         13, 19, 20, 127, 150, 157, 229, 263, 269, 281,
@@ -565,6 +950,22 @@ def comp_exchanges():
     return __ex_country
 
 def add_primary_sec(data_path, datevar, file_name):
+    """
+    Description:
+        Flag primary securities by joining Compustat primary-history tables (ROW/USA/CAN)
+        onto a security-level dataset and comparing iid to recorded primary identifiers
+        over valid date ranges. Falls back to company header when history is missing.
+
+    Steps:
+        1) Open DuckDB; read: data_path, __prihistrow/usa/can, and __header (prirow/priusa/prican).
+        2) Range-join each PRI table on {gvkey} where datevar ∈ [effdate, thrudate]; drop join keys.
+        3) Left-join header; coalesce prihist* with pri* when historical value is null.
+        4) Compute primary_sec = 1 if iid matches any of {prihistrow, prihistusa, prihistcan}; else 0.
+        5) Clean columns, cast to int, deduplicate on (gvkey,iid,datadate), sort, and write file_name.
+
+    Output:
+        Parquet at file_name with a new integer column primary_sec ∈ {0,1}.
+    """
     os.system('rm -f aux_prim_sec.ddb')
     con = ibis.duckdb.connect('aux_prim_sec.ddb', threads = os.cpu_count())
 
@@ -617,6 +1018,18 @@ def add_primary_sec(data_path, datevar, file_name):
     con.disconnect()
     
 def load_rf_and_exchange_data():
+    """
+    Description:
+        Load auxiliary monthly T-bill returns, Fama–French RF, and exchange→country mapping.
+
+    Steps:
+        1) Read crsp_mcti_t30ret and create merge_aux = MMYY(caldt); drop caldt.
+        2) Read ff_factors_monthly and create merge_aux = MMYY(date); drop date.
+        3) Build exchange mapping via comp_exchanges().
+
+    Output:
+        Tuple of (crsp_mcti LazyFrame, ff_factors_monthly LazyFrame, exchanges DataFrame).
+    """
     crsp_mcti = (pl.read_parquet('Raw_data_dfs/crsp_mcti_t30ret.parquet')
                    .with_columns(merge_aux = gen_MMYY_column('caldt'))
                    .drop('caldt'))
@@ -626,6 +1039,21 @@ def load_rf_and_exchange_data():
     __exchanges = comp_exchanges()
     return crsp_mcti, ff_factors_monthly, __exchanges
 def gen_returns_df(freq):
+    """
+    Description:
+        Compute returns (USD and local), return-lag gaps, and currency-switch fixes
+        from Compustat security files (__comp_?sf.parquet).
+
+    Steps:
+        1) Determine ret_lag_dif: monthly via MMYY difference; daily via day difference.
+        2) Filter valid rows (ri not null; prcstd in {3,4,10}); unique and sort.
+        3) Compute ret and ret_local as pct_change of ri and ri_local over (gvkey,iid).
+        4) If iid unchanged but currency changed, set ret_local = ret (reset local base).
+        5) Null-out ±∞/NaN returns; select core columns and collect.
+
+    Output:
+        Polars DataFrame with {gvkey,iid,datadate,ret,ret_local,ret_lag_dif}.
+    """
     ret_lag_dif_exp = (gen_MMYY_column('datadate') - gen_MMYY_column('datadate', 1)).over(['gvkey','iid']) if freq == 'm' else ((col('datadate') - col('datadate').shift(1)).over(['gvkey','iid'])/86_400_000).cast(pl.Int64)
 
     base = pl.scan_parquet(f'__comp_{freq}sf.parquet')
@@ -643,6 +1071,18 @@ def gen_returns_df(freq):
                      .select(['gvkey','iid','datadate','ret','ret_local','ret_lag_dif']))
     return __returns.collect()
 def gen_delist_df(__returns):
+    """
+    Description:
+        Build an gvkey,iid-level delisting date/return table from last valid return and Compustat security info.
+
+    Steps:
+        1) From __returns, keep final nonzero/non-null ret_local per (gvkey,iid).
+        2) Join __sec_info to get secstat/dlrsni; keep inactive (secstat='I').
+        3) Map delisting code {02,03} → dlret = -0.30 else 0.0; rename columns.
+
+    Output:
+        DataFrame {gvkey,iid,date_delist,dlret} for use in delisting adjustments.
+    """
     __sec_info = pl.read_parquet('Raw_data_dfs/__sec_info.parquet')
     __delist = (__returns.filter((col('ret_local').is_not_null()) & (col('ret_local') != 0.))
                          .select(['gvkey', 'iid', 'datadate'])
@@ -655,6 +1095,20 @@ def gen_delist_df(__returns):
                          .select(['gvkey','iid','date_delist','dlret']))
     return __delist
 def gen_temporary_sf(freq, __returns, __delist):
+    """
+    Description:
+        Merge base price file with returns and delist info; apply delisting
+        returns on the delisting date and truncate after delisting.
+
+    Steps:
+        1) Join base (Compustat sf) with __returns and __delist on identifiers.
+        2) Keep rows where datadate ≤ date_delist or date_delist is null.
+        3) On delist date, compound dlret into both ret and ret_local.
+        4) Drop raw RI and delist helper columns.
+
+    Output:
+        Polars LazyFrame with returns adjusted for delisting.
+    """
     base = pl.read_parquet(f'__comp_{freq}sf.parquet')
     temp_sf = (base.join(__returns, how = 'left', on = ['gvkey','iid', 'datadate'])
                    .join(__delist, how = 'left', on = ['gvkey', 'iid'])
@@ -664,6 +1118,18 @@ def gen_temporary_sf(freq, __returns, __delist):
                    .drop(['ri', 'ri_local', 'date_delist', 'dlret']))
     return temp_sf
 def add_rf_and_exchange_data_to_temporary_sf(freq, temp_sf):
+    """
+    Description:
+        Append T-bill / RF and exchange metadata to the temp security file; compute excess returns.
+
+    Steps:
+        1) Add merge_aux = MMYY(datadate); left-join T-bill (t30ret) and FF RF on merge_aux.
+        2) Compute ret_exc = ret − (t30ret or rf)/scale, with scale=1 (m) or 21 (d).
+        3) Cast exchg to int64 and join exchange-country mapping.
+
+    Output:
+        Polars LazyFrame temp_sf with ret_exc and exchange info attached.
+    """
     crsp_mcti, ff_factors_monthly, __exchanges = load_rf_and_exchange_data()
     scale = 1 if (freq == 'm') else 21
     temp_sf = (temp_sf.with_columns(merge_aux = gen_MMYY_column('datadate'))
@@ -677,6 +1143,20 @@ def add_rf_and_exchange_data_to_temporary_sf(freq, temp_sf):
 
 @measure_time
 def process_comp_sf1(freq):
+    """
+    Description:
+        Full pipeline to build Compustat monthly or daily security files with returns,
+        excess returns, exchange flags, and primary_sec indicator.
+
+    Steps:
+        1) If monthly, run gen_comp_msf() to ensure comp_msf/parquets exist.
+        2) Compute __returns → gen_delist_df → gen_temporary_sf.
+        3) Add RF/exchange metadata; write __comp_sf2.parquet.
+        4) Call add_primary_sec(...) to add primary_sec and write final comp_{freq}sf.parquet.
+
+    Output:
+        comp_msf.parquet or comp_dsf.parquet with enriched fields (ret_exc, primary_sec, etc.).
+    """
     #Eager mode is faster here
     if freq == 'm': gen_comp_msf()
     __returns  = gen_returns_df(freq)
@@ -688,14 +1168,53 @@ def process_comp_sf1(freq):
     add_primary_sec('__comp_sf2.parquet', 'datadate',f'comp_{freq}sf.parquet')
 
 def gen_MMYY_column(var, shift = None):
+    """
+    Description:
+        Create an integer YYYY*12+MM index (optionally using lagged date).
+
+    Steps:
+        1) If shift is None: use var; else use var shifted by 1 over its group (as provided by caller).
+        2) Compute year*12 + month; cast to Int32.
+
+    Output:
+        Polars expression yielding a month index (MMYY integer).
+    """
     if shift == None:
         return (col(var).dt.year()*12 + col(var).dt.month()).cast(pl.Int32)
     else:
         return (col(var).shift(1).dt.year()*12 + col(var).shift(1).dt.month()).cast(pl.Int32)
-def add_MMYY_column_drop_original(df, var): return df.with_columns(merge_aux = gen_MMYY_column(var)).drop(var)
+def add_MMYY_column_drop_original(df, var):
+    """
+    Description:
+        Convenience helper to add merge_aux = MMYY(var) and drop var.
+
+    Steps:
+        1) with_columns(merge_aux = gen_MMYY_column(var)).
+        2) drop original date column var.
+
+    Output:
+        LazyFrame with merge_aux month index.
+    """
+    return df.with_columns(merge_aux = gen_MMYY_column(var)).drop(var)
 
 @measure_time
 def prepare_crsp_sf(freq):
+    """
+    Description:
+        Build CRSP monthly/daily security files with cleaned prices, volumes, dividends,
+        delist adjustments, excess returns, and company-level market equity.
+
+    Steps:
+        1) Read __crsp_sf_{freq}; cast numeric types; adjust NASDAQ volumes pre-2004.
+        2) Compute dolvol; infer monthly dividend totals from ret−retx and split factors.
+        3) Bring in delist table; set dlret to -30% for {500, 520–584} when missing; set ret=0 if ret null but dlret present; compound.
+        4) Join T-bill and FF RF; compute ret_exc; compute me_company (permco aggregation).
+        5) If monthly: scale vol/dolvol by 100 (units alignment).
+        6) Drop helpers, deduplicate, sort, and write crsp_{freq}sf.parquet.
+
+    Output:
+        Parquet crsp_msf.parquet or crsp_dsf.parquet with returns and ret_exc.
+    """
     merge_vars = ['permno', 'merge_aux'] if (freq == 'm') else ['permno', 'date']
     __crsp_sf = (pl.scan_parquet(f'Raw_data_dfs/__crsp_sf_{freq}.parquet')
                    .with_columns([col(var).cast(pl.Float64) for var in ['prc', 'ret', 'retx', 'prc_high', 'prc_low']] +\
@@ -738,6 +1257,19 @@ def prepare_crsp_sf(freq):
     __crsp_sf.collect().write_parquet(f'crsp_{freq}sf.parquet')
 
 def prepare_crsp_sfs_for_merging():
+    """
+    Description:
+        Normalize CRSP monthly/daily frames for concatenation with Compustat, adding
+        shared schema fields and flags.
+
+    Steps:
+        1) For crsp_msf: set USA defaults (USD, fx=1), common/primary flags, map columns
+        to shared names, compute eom, ret_lag_dif=1, source_crsp=1.
+        2) For crsp_dsf: similar normalization (eom, flags, USD), rename to shared schema.
+
+    Output:
+        Tuple (crsp_msf LazyFrame, crsp_dsf LazyFrame) ready for merging.
+    """
     crsp_msf = (pl.scan_parquet('crsp_msf.parquet')
                   .with_columns(exch_main   = col('exch_main').cast(pl.Int32),
                                 bidask      = col('bidask').cast(pl.Int32),
@@ -780,6 +1312,18 @@ def prepare_crsp_sfs_for_merging():
                            'vol'    : 'tvol'}))
     return crsp_msf, crsp_dsf
 def prepare_comp_sfs_for_merging():
+    """
+    Description:
+        Normalize Compustat monthly/daily frames to match CRSP schema (ids, flags, names).
+
+    Steps:
+        1) Build integer id from gvkey+iid with instrument-type prefix (1 common, 2 ADR, 3 when-Issued).
+        2) For comp_msf: map/rename fields; set flags (common/bidask), me_company=me, source_crsp=0.
+        3) For comp_dsf: map/rename; compute eom from datadate; set source_crsp=0.
+
+    Output:
+        Tuple (comp_msf LazyFrame, comp_dsf LazyFrame) ready for concatenation.
+    """
     id_exp = (pl.when(col('iid').str.contains('W')).then(pl.lit('3') + col('gvkey') + col('iid').str.slice(0,2))
                 .when(col('iid').str.contains('C')).then(pl.lit('2') + col('gvkey') + col('iid').str.slice(0,2))
                 .otherwise(pl.lit('1') + col('gvkey') + col('iid').str.slice(0,2))).cast(pl.Int64)
@@ -817,6 +1361,18 @@ def prepare_comp_sfs_for_merging():
                            'cshtrd'  : 'tvol'}))
     return comp_msf, comp_dsf
 def gen_temp_sf(freq, crsp_df, comp_df):
+    """
+    Description:
+        Vertically merge CRSP and Compustat security files to a unified world file
+        with a harmonized column set; optionally compute lead ret_exc for monthly.
+
+    Steps:
+        1) Define cols_to_keep per frequency; concat CRSP/Compustat frames vertically.
+        2) If monthly: compute ret_exc_lead1m where next observation is contiguous.
+
+    Output:
+        LazyFrame unified security file (__msf_world or world_dsf before filtering).
+    """
     cols_to_keep = ['id','permno','permco','gvkey', 'iid','excntry', 'exch_main', 'common', 'primary_sec', 'bidask','crsp_shrcd',\
                     'crsp_exchcd','comp_tpci','comp_exchg', 'curcd', 'fx', 'date', 'eom','adjfct','shares', 'me', 'me_company',\
                     'prc','prc_local', 'prc_high', 'prc_low', 'dolvol','tvol', 'ret','ret_local','ret_exc','ret_lag_dif',\
@@ -834,6 +1390,18 @@ def gen_temp_sf(freq, crsp_df, comp_df):
         )
     return sf_world
 def add_obs_main_to_sf_and_write_file(freq, sf_df, obs_main):
+    """
+    Description:
+        Add an observation selection flag (obs_main) and write the final world file.
+
+    Steps:
+        1) Filter to dates ≥ 1999-12-31.
+        2) Left-join obs_main; unique and sort by {id,eom} or {id,date}.
+        3) Collect (streaming) and save to '__msf_world.parquet' (monthly) or 'world_dsf.parquet' (daily).
+
+    Output:
+        Parquet file with obs_main indicating preferred monthly observation per id-date.
+    """
     file_path = '__msf_world.parquet' if freq == 'm' else 'world_dsf.parquet'
     sort_vars = ['id','eom'] if freq == 'm' else ['id','date']
     (sf_df.filter(col('eom')  >= pl.datetime(1999, 12, 31))
@@ -845,6 +1413,20 @@ def add_obs_main_to_sf_and_write_file(freq, sf_df, obs_main):
     
 @measure_time
 def combine_crsp_comp_sf():
+    """
+    Description:
+        Create unified monthly and daily security datasets by combining CRSP and Compustat,
+        determining the main observation per id/eom, and writing outputs.
+
+    Steps:
+        1) Prepare normalized CRSP and Compustat frames (monthly & daily).
+        2) Build __msf_world and __dsf_world via gen_temp_sf.
+        3) From __msf_world derive obs_main: if only one obs or multiple but source_crsp==1 → 1 else 0.
+        4) Write final monthly and daily world files, injecting obs_main where applicable.
+
+    Output:
+        '__msf_world.parquet' and 'world_dsf.parquet' ready for downstream processing.
+    """
     crsp_msf, crsp_dsf = prepare_crsp_sfs_for_merging()
     comp_msf, comp_dsf = prepare_comp_sfs_for_merging()
     __msf_world = gen_temp_sf('m', crsp_msf, comp_msf)
@@ -858,6 +1440,18 @@ def combine_crsp_comp_sf():
 
 @measure_time
 def crsp_industry():
+    """
+    Description:
+        Generate a daily panel of CRSP SIC/NAICS codes per permno based on name-date spans.
+
+    Steps:
+        1) Read permno0; nullify sic==0; build date ranges from namedt to nameendt.
+        2) Explode to daily rows; keep distinct (permno,date); sort.
+        3) Write to crsp_ind.parquet.
+
+    Output:
+        Parquet crsp_ind.parquet with {permno,permco,date,sic,naics}.
+    """
     permno0 = pl.scan_parquet('Raw_data_dfs/permno0.parquet')
     permno0 = (permno0.with_columns(sic = pl.when(col('sic') == 0).then(pl.lit(None).cast(pl.Int64)).otherwise(col('sic')))
                       .with_columns(date = pl.date_ranges('namedt', 'nameendt'))
@@ -869,6 +1463,20 @@ def crsp_industry():
 
 @measure_time
 def comp_hgics(lib):
+    """
+    Description:
+        Expand Compustat GICS history (national/global) to a daily panel with forward-filled
+        terminal dates and write separate outputs.
+
+    Steps:
+        1) Load raw file (national/global); replace null gics with -999 sentinel.
+        2) Compute row counts and terminal rows; set open-ended indthru to (max(indfrom), or today).
+        3) Create date ranges [indfrom, indthru]; explode; unique per (gvkey,date).
+        4) Write to na_hgics.parquet or g_hgics.parquet.
+
+    Output:
+        Parquet with {gvkey,date,gics} expanded to daily frequency.
+    """
     paths = {'raw data': {'national': 'Raw_data_dfs/comp_hgics_na.parquet', 'global': 'Raw_data_dfs/comp_hgics_gl.parquet'},
              'output' : {'national': 'na_hgics.parquet', 'global': 'g_hgics.parquet'}}
     data = pl.read_parquet(paths['raw data'][lib])#.sort(['gvkey', 'indfrom'])
@@ -887,6 +1495,18 @@ def comp_hgics(lib):
 
 @measure_time
 def hgics_join():
+    """
+    Description:
+        Merge national and global GICS daily panels, preferring local (national) where available.
+
+    Steps:
+        1) Ensure comp_hgics('global') and comp_hgics('national') are created.
+        2) Full join on (gvkey,date) with coalesce of gics fields.
+        3) Deduplicate and sort; write comp_hgics.parquet.
+
+    Output:
+        Parquet comp_hgics.parquet with consolidated GICS per (gvkey,date).
+    """
     comp_hgics('global')
     comp_hgics('national')
     global_data = pl.scan_parquet('g_hgics.parquet')
@@ -899,6 +1519,21 @@ def hgics_join():
     
 @measure_time
 def comp_sic_naics():
+    """
+    Description:
+        Combine and reconcile Compustat SIC/NAICS from US and Global datasets into a
+        continuous daily series per gvkey, resolving duplicates and filling daily gaps.
+
+    Steps:
+        1) Load NA and GL tables; drop a known problematic row; outer-join on (gvkey,datadate).
+        2) Coalesce ids/dates/codes; order to prefer non-null SIC; select distinct per (gvkey,date).
+        3) Convert to daily spans by joining to next datadate; expand date ranges [datadate,end_date).
+        4) Handle single-date rows; project to {gvkey,date,sic,naics}; deduplicate, sort.
+        5) Write comp_other.parquet.
+
+    Output:
+        Parquet comp_other.parquet with daily SIC/NAICS per gvkey.
+    """
     con = ibis.duckdb.connect(threads = os.cpu_count())
     con.create_table('sic_naics_na', con.read_parquet('Raw_data_dfs/sic_naics_na.parquet'))
     con.create_table('sic_naics_gl', con.read_parquet('Raw_data_dfs/sic_naics_gl.parquet'))
@@ -976,6 +1611,20 @@ def comp_sic_naics():
     con.disconnect()
 @measure_time
 def comp_industry():
+    """
+    Description:
+        Merge daily GICS and SIC/NAICS into a single daily Compustat industry file,
+        filling gaps day-by-day to ensure continuity.
+
+    Steps:
+        1) Run comp_sic_naics() and hgics_join(); load into DuckDB.
+        2) Full-outer-join on (gvkey,date); compute aux_date = next date − 1 day to detect gaps.
+        3) Build gap ranges via generate_series and fill from gap_dates; union with continuous rows.
+        4) Select distinct first by (gvkey,date); write comp_ind.parquet.
+
+    Output:
+        Parquet comp_ind.parquet with {gvkey,date,gics,sic,naics} daily.
+    """
     comp_sic_naics()
     hgics_join()
     os.system('rm -f aux_comp_ind.ddb')
@@ -1039,6 +1688,19 @@ def comp_industry():
 
 @measure_time
 def ff_ind_class(data_path, ff_grps):
+    """
+    Description:
+        Assign Fama–French industry classifications (38-group or 49-group) based on SIC codes.
+
+    Steps:
+        1) If ff_grps==38: define lower/upper SIC bounds; iterate to map to ff38 groups (2..N),
+        with special rule for (100–999) → 1; set null when no match.
+        2) Else: build ff49 via explicit SIC enumerations/ranges per FF (Ken French) taxonomy.
+        3) Attach the classification column to input data and write __msf_world3.parquet.
+
+    Output:
+        Parquet __msf_world3.parquet with an added ff38 or ff49 integer column.
+    """
     data = pl.scan_parquet(data_path)
     if ff_grps==38:
         lower_bounds = [1000, 1300, 1400, 1500, 2000, 2100, 2200, 2300, 2400, 2500, 2600, 2700, 2800, 2900, 3000, 3100, 3200, 3300, 3400, 3500, 3600, 3700, 3800, 3900, 4000, 4800, 4830, 4900, 4950, 4960, 4970, 5000, 5200, 6000, 7000, 9000]
@@ -1103,21 +1765,19 @@ def ff_ind_class(data_path, ff_grps):
                                 )
 
     data.collect().write_parquet('__msf_world3.parquet')
-# def perc_method(series, p):
-#     """
-#     Calculates the given percentile using the SAS 5th method, which is the default SAS method and was used in our SAS code.
-#     """
-#     n = len(series)
-#     rank = p * n
-#     if rank.is_integer():return (series[int(rank) - 1] + series[int(rank)]) / 2
-#     else: return series[int(rank)]
-# def perc_method(series, p):
-#     n = len(series)
-#     h = p * n
-#     j = int(h)
-#     if h == j: return (series[j-1] + series[j]) * 0.5
-#     return series[j]
 def perc_method(series, p, tol=1e-8):
+    """
+    Description:
+        Percentile function for a sorted series, using midpoint if rank ~ integer.
+
+    Steps:
+        1) Compute h = p * n.
+        2) If h ≈ integer j, return avg(series[j-1], series[j]).
+        3) Else return series[floor(h)].
+
+    Output:
+        Single percentile value.
+    """
     n = len(series)
     h = p * n
     j_round = int(round(h))
@@ -1126,11 +1786,35 @@ def perc_method(series, p, tol=1e-8):
     return series[j_floor]
 
 def perc_exp(var, perc_function, list = False, type = 'float'):
+    """
+    Description:
+        Apply a percentile function to a Polars column or list column.
+
+    Steps:
+        1) If list=True: sort each list, map perc_function.
+        2) Else: sort column, map perc_function.
+
+    Output:
+        Polars expression returning Float64 percentiles.
+    """
     if list: return col(var).list.sort().map_elements(perc_function, return_dtype = pl.Float64)
     else: return col(var).sort().map_elements(perc_function, return_dtype = pl.Float64)
 
 @measure_time
 def nyse_size_cutoffs(data_path):
+    """
+    Description:
+        Compute NYSE market equity cutoffs (1%,20%,50%,80%) by month.
+
+    Steps:
+        1) Load parquet lazily, filter to NYSE common stocks.
+        2) Group by eom, count obs.
+        3) Apply perc_exp with perc_method for cutoffs.
+        4) Collect and save.
+
+    Output:
+        'nyse_cutoffs.parquet' with [eom, n, nyse_p1, nyse_p20, nyse_p50, nyse_p80].
+    """
     nyse_sf = (pl.scan_parquet(data_path)
                  .filter((col('crsp_exchcd') == 1) &         # NYSE exchange code
                          (col('obs_main') == 1)    &         # Main observation flag
@@ -1148,6 +1832,18 @@ def nyse_size_cutoffs(data_path):
 
 @measure_time
 def classify_stocks_size_groups():
+    """
+    Description:
+        Join world MSF with NYSE size cutoffs and classify stocks into size buckets.
+
+    Steps:
+        1) Read 'nyse_cutoffs.parquet' and '__msf_world3.parquet' lazily.
+        2) Left-join on eom; compute size_grp via ME vs NYSE p1/p20/p50/p80 (fallback to 'mega' if cutoffs missing).
+        3) Drop cutoff columns; collect and save.
+
+    Output:
+        Writes 'world_msf.parquet' with size_grp per row.
+    """
     nyse_cutoffs = pl.scan_parquet('nyse_cutoffs.parquet')
     __msf_world = pl.scan_parquet('__msf_world3.parquet')
     world_msf = (__msf_world.join(nyse_cutoffs, how = 'left', on = 'eom')
@@ -1164,7 +1860,19 @@ def classify_stocks_size_groups():
 
 @measure_time
 def return_cutoffs(freq, crsp_only):
-    # Filter data based on provided criteria. If 'crsp_only' is 1, filter for CRSP data only.
+    """
+    Description:
+        Compute return percentile cutoffs by period (monthly or daily), optionally CRSP-only.
+
+    Steps:
+        1) Select group vars and output path from freq; scan 'world_{freq}sf.parquet'.
+        2) Optional CRSP filter; require common/main/primary, exclude ZWE, non-null ret_exc.
+        3) Add year/month; group and aggregate counts + percentiles for ret, ret_local, ret_exc.
+        4) Sort, collect, save.
+
+    Output:
+        Writes 'return_cutoffs.parquet' (monthly) or 'return_cutoffs_daily.parquet' (daily).
+    """
     group_vars = ['eom'] if freq == 'm' else ['year', 'month']
     res_path = 'return_cutoffs.parquet' if freq == 'm' else 'return_cutoffs_daily.parquet'
     data = pl.scan_parquet(f'world_{freq}sf.parquet')
@@ -1193,10 +1901,33 @@ def return_cutoffs(freq, crsp_only):
                      ret_exc_99_9   = perc_exp('ret_exc'  , lambda x: perc_method(x, 0.999))))
     data.sort(group_vars).collect().write_parquet(res_path)
 def winsorize_mkt_ret(var, cutoff, comparison):
+    """
+    Description:
+        Winsorize a return variable using group cutoffs; skip CRSP rows.
+
+    Steps:
+        1) Build condition comparing var to cutoff ('>' or '<'), treat null cutoff as pass.
+        2) Only apply when source_crsp == 0 and var is non-null.
+        3) Replace with cutoff; else keep var.
+
+    Output:
+        Polars expression aliasing back to var.
+    """
     if comparison == '>': c1 = (col(var) > col(cutoff)).fill_null(pl.lit(True)) & (col('source_crsp') == 0) & (col(var).is_not_null())
     else: c1 = (col(var) < col(cutoff)).fill_null(pl.lit(True)) & (col('source_crsp') == 0) & (col(var).is_not_null())
     return (pl.when(c1).then(col(cutoff)).otherwise(col(var))).alias(var)
 def load_mkt_returns_params(freq):
+    """
+    Description:
+        Provide parameter defaults (column names, lags, groups, columns) by frequency.
+
+    Steps:
+        1) Set dt column, max lag, path suffix, group vars based on freq ('d' vs other).
+        2) Return common-stocks column list.
+
+    Output:
+        Tuple: (dt_col, max_date_lag, path_aux, group_vars, comm_stocks_cols).
+    """
     dt_col           = 'date' if freq == 'd' else 'eom'
     max_date_lag     = 14 if freq == 'd' else 1
     path_aux         = '_daily' if freq == 'd' else ''
@@ -1204,6 +1935,18 @@ def load_mkt_returns_params(freq):
     comm_stocks_cols = ['source_crsp', 'id', 'date', 'eom', 'excntry', 'obs_main', 'exch_main', 'primary_sec', 'common', 'ret_lag_dif', 'me', 'dolvol', 'ret', 'ret_local', 'ret_exc']
     return dt_col, max_date_lag, path_aux, group_vars, comm_stocks_cols
 def add_cutoffs_and_winsorize(df, wins_data_path, group_vars, dt_col):
+    """
+    Description:
+        Attach precomputed return cutoffs and winsorize ret, ret_local, ret_exc.
+
+    Steps:
+        1) Read winsor cutoff parquet; select group vars + needed thresholds.
+        2) Add year/month from dt_col; left-join cutoffs on group vars.
+        3) Winsorize high (99.9) then low (0.1) for each return series.
+
+    Output:
+        Polars LazyFrame/DataFrame with winsorized returns and cutoff columns joined.
+    """
     wins_data = (pl.scan_parquet(wins_data_path)
                    .select(group_vars + ['ret_exc_0_1', 'ret_exc_99_9', 'ret_0_1', 'ret_99_9', 'ret_local_0_1', 'ret_local_99_9']))
     df = (df.with_columns(year   = col(dt_col).dt.year(),
@@ -1212,8 +1955,32 @@ def add_cutoffs_and_winsorize(df, wins_data_path, group_vars, dt_col):
             .with_columns([winsorize_mkt_ret(i, f'{i}_99_9', '>') for i in ['ret', 'ret_local', 'ret_exc']])
             .with_columns([winsorize_mkt_ret(i, f'{i}_0_1' , '<') for i in ['ret', 'ret_local', 'ret_exc']]))
     return df
-def sas_sum_agg(name): return pl.when(pl.col(name).count()>0).then(pl.sum(name)).otherwise(None)
+def sas_sum_agg(name): 
+    """
+    Description:
+        SAS-like SUM aggregate that returns NULL when no rows; else sum(col).
+
+    Steps:
+        1) Check count(col) > 0.
+        2) If true, return sum(col); else NULL.
+
+    Output:
+        Polars expression yielding SUM(col) or NULL.
+    """
+    return pl.when(pl.col(name).count()>0).then(pl.sum(name)).otherwise(None)
 def apply_stock_filter_and_compute_indexes(df, dt_col, max_date_lag):
+    """
+    Description:
+        Filter to eligible common stocks and compute value/eq-weighted market returns by country/date.
+
+    Steps:
+        1) Filter on main/exchange/primary/common, date-lag ≤ max_date_lag, me_lag1 & ret_local non-null.
+        2) Create aux = ret*me_lag1 variants.
+        3) Group by [excntry, dt_col] and aggregate counts, sums, VW/EW returns.
+
+    Output:
+        LazyFrame/DataFrame aggregated at country-date with VW/EW returns and counts.
+    """
     c1 = (col('obs_main') == 1) & (col('exch_main') == 1) & (col('primary_sec') == 1) & (col('common') == 1) & (col('ret_lag_dif') <= max_date_lag) & (col('me_lag1').is_not_null()) & (col('ret_local').is_not_null())
     df = (df.filter(c1)
             .with_columns(aux1 = col('ret_local') * col('me_lag1'),
@@ -1231,6 +1998,18 @@ def apply_stock_filter_and_compute_indexes(df, dt_col, max_date_lag):
                  mkt_ew_exc    = pl.mean('ret_exc')))
     return df
 def drop_non_trading_days(df, n_col, dt_col, over_vars, thresh_fraction):
+    """
+    Description:
+        Remove thin-trading days by country-month (or given window) based on stock coverage.
+
+    Steps:
+        1) Add year/month from dt_col; compute max_stocks over over_vars.
+        2) Keep rows where n_col / max_stocks ≥ thresh_fraction.
+        3) Drop helper columns.
+
+    Output:
+        Frame filtered to sufficiently traded dates.
+    """
     df = (df.with_columns(year  = col(dt_col).dt.year(),
                           month = col(dt_col).dt.month())
              .with_columns(max_stocks = pl.max(n_col).over(over_vars))
@@ -1240,6 +2019,21 @@ def drop_non_trading_days(df, n_col, dt_col, over_vars, thresh_fraction):
 
 @measure_time
 def market_returns(data_path, freq, wins_comp, wins_data_path):
+    """
+    Description:
+        Build country-level market returns (daily or monthly), optional winsorization, and save to disk.
+
+    Steps:
+        1) Load params from freq; scan data; keep common-stock fields; sort by [id, dt].
+        2) Add lags me_lag1, dolvol_lag1 per id.
+        3) If wins_comp, join cutoffs and winsorize returns.
+        4) Apply stock filters & compute VW/EW country returns.
+        5) If daily, drop low-coverage trading days.
+        6) Sort and write 'market_returns{_daily}.parquet'.
+
+    Output:
+        Parquet file of country × date market returns.
+    """
     dt_col, max_date_lag, path_aux, group_vars, comm_stocks_cols = load_mkt_returns_params(freq)
     __common_stocks = (pl.scan_parquet(data_path)
                          .select(comm_stocks_cols)
@@ -1255,6 +2049,18 @@ def market_returns(data_path, freq, wins_comp, wins_data_path):
     __common_stocks.sort(['excntry', dt_col]).collect().write_parquet(f'market_returns{path_aux}.parquet')
 
 def quarterize(df, var_list):
+    """
+    Description:
+        Convert quarterly Compustat levels to quarter-over-quarter flows with guardrails.
+
+    Steps:
+        1) Per [gvkey,fyr,fyearq], add running count and diffs var_q = Δ(var).
+        2) Build deletion mask for first obs or quarter breaks; null-out invalid diffs.
+        3) Return unique, sorted quarterly panel with *_q flows.
+
+    Output:
+        Quarterly panel with flow variables var_q for each input in var_list.
+    """
     list_aux1 = [col('gvkey').cum_count().over(['gvkey','fyr','fyearq']).alias('count_aux')] +\
                 [col(var).cast(pl.Float64).diff().alias(var + '_q') for var in var_list]
     c1 = (col('fqtr') != 1).fill_null(pl.lit(True).cast(pl.Boolean))
@@ -1272,8 +2078,32 @@ def quarterize(df, var_list):
             .unique(['gvkey','fyr','fyearq','fqtr'])
             .sort(['gvkey','fyr','fyearq','fqtr']))
     return df
-def ttm(var): return col(var) + col(var).shift(1) + col(var).shift(2) + col(var).shift(3)
+def ttm(var): 
+    """
+    Description:
+        4-quarter trailing total (TTM) as sum of current and previous 3 lags.
+
+    Steps:
+        1) Compute var + lag1 + lag2 + lag3.
+
+    Output:
+        Polars expression for TTM of var.
+    """
+    return col(var) + col(var).shift(1) + col(var).shift(2) + col(var).shift(3)
 def cumulate_4q(df, var_list):
+    """
+    Description:
+        Create 4-quarter cumulative (TTM) level variables and enforce continuity checks.
+
+    Steps:
+        1) For each *_q in var_list, create year-level name by stripping trailing 'q'.
+        2) Compute TTM via ttm(*_q) and continuity flags (same gvkey/fyr/currency & ttm(fqtr)==10).
+        3) Keep TTM only when continuity holds; backfill at fqtr==4 if missing.
+        4) Drop helpers and *_q inputs.
+
+    Output:
+        Frame with validated 4Q cumulative variables for each input (e.g., sales, oibdp).
+    """
     var_yrl_name_list = [var[:-1] for var in var_list]
     df = (df.with_columns([ttm(var_yrl).alias(var_yrl_name) for var_yrl, var_yrl_name in zip(var_list, var_yrl_name_list)] + 
                           [((col('gvkey') == col('gvkey').shift(3)) & (col('fyr') == col('fyr').shift(3)) & (col('curcdq') == col('curcdq').shift(3)) & (ttm('fqtr') == 10)).alias('not_null_flag')])
@@ -1283,6 +2113,18 @@ def cumulate_4q(df, var_list):
     )
     return df
 def load_raw_fund_table_and_filter(filename, start_date, source_str, mode):
+    """
+    Description:
+        Load Compustat FUND[A/Q] parquet and filter by format, population, consolidation, and start date.
+
+    Steps:
+        1) Choose filters by mode: mode=1 → INDL/FS + HIST_STD + popsrc=I; else INDL + STD + popsrc=D.
+        2) Scan parquet, add row index, apply filters (consol='C', datadate ≥ start_date).
+        3) Tag rows with source string.
+
+    Output:
+        LazyFrame of filtered accounting rows with 'source'.
+    """
     c1 = (col('indfmt').is_in(['INDL', 'FS'])) if mode == 1 else (col('indfmt') == 'INDL')
     datafmt_val = 'HIST_STD' if mode == 1 else 'STD'
     popsrc_val  = 'I'        if mode == 1 else 'D'
@@ -1296,11 +2138,35 @@ def load_raw_fund_table_and_filter(filename, start_date, source_str, mode):
             .with_columns(source = pl.lit(source_str)))
     return df
 def apply_indfmt_filter(df):
+    """
+    Description:
+        Resolve dual-format rows per (gvkey, datadate), preferring INDL when both exist.
+
+    Steps:
+        1) Count rows over [gvkey, datadate].
+        2) Keep singletons or pairs where indfmt == 'INDL'.
+        3) Drop helper columns.
+
+    Output:
+        Frame with one format per (gvkey, datadate).
+    """
     df = (df.with_columns(count_indfmt = pl.len().over(['gvkey', 'datadate']))
             .filter((col('count_indfmt') == 1) | ((col('count_indfmt') == 2) & (col('indfmt') == 'INDL')))
             .drop(['indfmt', 'count_indfmt']))
     return df
 def add_fx_and_convert_vars(df, fx_df, vars, freq):
+    """
+    Description:
+        Join FX rates and convert selected variables to USD; normalize currency code.
+
+    Steps:
+        1) Pick currency column by freq: annual→curcd, quarterly→curcdq.
+        2) Left-join FX on [datadate, currency]; keep original cols + 'fx'.
+        3) Multiply listed vars by fx; set currency column to 'USD'; drop fx.
+
+    Output:
+        Frame with specified vars converted to USD and currency code set to USD.
+    """
     if freq == 'annual':
         fx_var = 'curcd'
     else:
@@ -1311,6 +2177,18 @@ def add_fx_and_convert_vars(df, fx_df, vars, freq):
                 .drop('fx'))
     return aux
 def load_mkt_equity_data(filename, alias = True):
+    """
+    Description:
+        Load market equity by gvkey–eom and optionally alias the column name.
+
+    Steps:
+        1) Scan parquet; require gvkey, primary/common/main flags, me_company non-null.
+        2) Select [gvkey, eom, me_company → (me_fiscal|me_company)].
+        3) Group [gvkey, eom] and take max(me).
+
+    Output:
+        LazyFrame with one ME value per (gvkey, eom).
+    """
     col_name = 'me_fiscal' if alias else 'me_company'
     df = (pl.scan_parquet(filename)
             .filter((col('gvkey').is_not_null())      &
@@ -1325,6 +2203,24 @@ def load_mkt_equity_data(filename, alias = True):
 
 @measure_time
 def standardized_accounting_data(coverage, convert_to_usd, me_data_path, include_helpers_vars, start_date):
+    """
+    Description:
+        Build standardized annual/quarterly accounting panels (NA, Global, or World), optionally USD-converted; attach ME; write Parquet.
+
+    Steps:
+        1) Inspect FUNDQ schemas; define target income/CF/BS/other vars; collect quarterly suffix vars (…q/…y).
+        2) Load & filter raw GLOBAL and/or NA (annual/quarterly) via helper; add computed fields (e.g., ni, niq, ppegtq); drop vars as needed; apply INDFMT resolver.
+        3) If world: concat NA+GLOBAL and break ties per key by preferring NA.
+        4) If convert_to_usd: join FX and convert listed vars (annual & quarterly).
+        5) Load ME and join to annual/quarterly panels.
+        6) Quarterly: quarterize …y → …y_q, coalesce to …q; create ni_qtr/sale_qtr/ocf_qtr; cumulate 4Q flows with continuity checks; normalize currency codes; de-dupe, prefer later/NA rows.
+        7) Annual: add empty quarterly helpers; join ME; sort.
+        8) Optionally add helper variables.
+        9) Unique by (gvkey, datadate), drop row index, sort, and write 'acc_std_ann.parquet' and 'acc_std_qtr.parquet'.
+
+    Output:
+        Two Parquet files: 'acc_std_ann.parquet' (annual) and 'acc_std_qtr.parquet' (quarterly) standardized accounting data.
+    """
     g_fundq_cols = pl.scan_parquet('Raw_tables/comp_g_fundq.parquet').collect_schema().names()
     fundq_cols   = pl.scan_parquet('Raw_tables/comp_fundq.parquet'  ).collect_schema().names()
     #Compustat Accounting Vars to Extract
@@ -1398,7 +2294,7 @@ def standardized_accounting_data(coverage, convert_to_usd, me_data_path, include
     else: aname, qname = __wfunda, __wfundq
     
     if convert_to_usd == 1:
-        fx = pl.read_csv('WRDS_files/fx.csv').select(col('date').cast(pl.Utf8).str.strptime(pl.Date, format = "%Y%m%d").alias('datadate'), 'curcdd', 'fx').lazy()
+        fx = compustat_fx().lazy()
         __compa = add_fx_and_convert_vars(aname, fx, avars, 'annual')
         __compq = add_fx_and_convert_vars(qname, fx, qvars, 'quarterly')
     else: __compa, __compq = aname, qname
@@ -1448,6 +2344,18 @@ def standardized_accounting_data(coverage, convert_to_usd, me_data_path, include
     __compq.unique(['gvkey', 'datadate']).drop('n').sort(['gvkey', 'datadate']).collect().write_parquet('acc_std_qtr.parquet')
 
 def expand(data, id_vars, start_date, end_date, freq='day', new_date_name='date'):
+    """
+    Description:
+        Expand each row into a daily/monthly date panel between start_date and end_date.
+
+    Steps:
+        1) Build pl.date_ranges with interval 1d or 1mo; explode to one row per date.
+        2) If monthly, snap dates to month-end.
+        3) Drop source date columns, de-dup on id_vars + date, sort.
+
+    Output:
+        Expanded frame with a 'date' (or custom) column at the chosen frequency.
+    """
     freq_range = '1d' if (freq == 'day') else '1mo'
     expanded_df = (data.with_columns(pl.date_ranges(start=start_date, end=end_date, interval=freq_range).alias(new_date_name))
                        .explode(new_date_name)
@@ -1457,15 +2365,50 @@ def expand(data, id_vars, start_date, end_date, freq='day', new_date_name='date'
                               .sort(id_vars + [new_date_name]))
     return expanded_df
 def sum_sas(col1, col2):
+    """
+    Description:
+        SAS-style sum: if either input exists, sum with 0-fill; else NULL.
+
+    Steps:
+        1) Check non-null flags for both inputs.
+        2) Return coalesce(col1,0) + coalesce(col2,0) when any non-null; otherwise NULL.
+
+    Output:
+        Polars expression with nullable sum.
+    """
     c1 = col(col1).is_not_null()
     c2 = col(col2).is_not_null()
     return pl.when(c1 | c2).then(pl.coalesce([col1, 0.]) + pl.coalesce([col2, 0.])).otherwise(fl_none())
 def sub_sas(col1, col2):
+    """
+    Description:
+        SAS-style subtraction: if either input exists, subtract with 0-fill; else NULL.
+
+    Steps:
+        1) Check non-null flags for both inputs.
+        2) Return coalesce(col1,0) − coalesce(col2,0) when any non-null; otherwise NULL.
+
+    Output:
+        Polars expression with nullable difference.
+    """
     c1 = col(col1).is_not_null()
     c2 = col(col2).is_not_null()
     return pl.when(c1 | c2).then(pl.coalesce([col1, 0.]) - pl.coalesce([col2, 0.])).otherwise(fl_none())
 def add_helper_vars(data):
+    """
+    Description:
+        Generate monthly-complete accounting panels per (gvkey,curcd), join originals, and compute a rich set of helper *_x variables.
 
+    Steps:
+        1) Create a temp DuckDB; load data; build monthly grid from min/max datadate; left-join raw rows; deduplicate per date.
+        2) Bring grid to Polars; sanitize key vars; construct building blocks (sale_x, debt_x, pstk_x, opex_x, etc.).
+        3) Derive financial aggregates (seq_x, nwc_x, be_x/bev_x, ebitda_x/ebit_x/op_x/ope_x, oa_x/ol_x/noa_x, etc.).
+        4) Compute flows/changes (cowc_x, nncoa_x, oacc_x, tacc_x, netis_x, dbnetis_x) with 12-month diffs where available; guard with early-count rules.
+        5) Finalize financing/cashflow measures (ocf_x, cop_x, fcf_x, fincf_x); drop helpers.
+
+    Output:
+        LazyFrame with monthly-complete panel and standardized helper variables (…_x) for downstream ratios/factors.
+    """
     os.system('rm -f aux_add_helpers.ddb')
     con = ibis.duckdb.connect('aux_add_helpers.ddb', threads = os.cpu_count())
     con.create_table('data', data.rename({'at': 'at_var'}).collect(), overwrite=True)
@@ -1546,7 +2489,6 @@ def add_helper_vars(data):
     c1 = (col('dltis').is_null()) & (col('dltr').is_null()) & (col('ltdch').is_null()) & (col('count') <= 12)
     c2 = (col('dlcch').is_null()) & (col('count') <= 12)
     sort_vars = ['gvkey', 'curcd', 'datadate']
-    over_vars = ['gvkey', 'curcd']
 
     base = con.table('helpers2').to_polars().rename({'at_var': 'at'}).lazy()
     base = (base.sort(sort_vars)
@@ -1616,7 +2558,18 @@ def add_helper_vars(data):
               )
     return helpers
 def var_growth(var_gr, horizon):
-    # Removing '_x' from the column name
+    """
+    Description:
+        Multi-period growth of var_gr over `horizon` months, guarding for coverage.
+
+    Steps:
+        1) Build name: strip '_x' → '{base}_gr{horizon/12}'.
+        2) Compute (var / var.shift(horizon)) − 1.
+        3) Keep only if var.shift(horizon) > 0 and count > horizon.
+
+    Output:
+        Polars expression aliasing the growth column.
+    """
     name_gr = var_gr.replace('_x', '')
     name_gr = f"{name_gr}_gr{int(horizon/12)}"
     name_gr_exp  = (col(var_gr) / col(var_gr).shift(horizon)) - 1
@@ -1624,7 +2577,18 @@ def var_growth(var_gr, horizon):
     name_gr_col = pl.when(c1).then(name_gr_exp).otherwise(fl_none()).alias(name_gr)
     return name_gr_col
 def chg_to_assets(var_gr, horizon):
-    # Removing '_x' from the column name
+    """
+    Description:
+        Change in var_gr over `horizon` months scaled by current assets.
+
+    Steps:
+        1) Name as '{base}_gr{horizon/12}a'.
+        2) Compute var.diff(horizon) / at_x.
+        3) Keep only if at_x > 0 and count > horizon.
+
+    Output:
+        Polars expression for asset-scaled change.
+    """
     name_gr = var_gr.replace('_x', '')
     name_gr = f"{name_gr}_gr{int(horizon/12)}a"
     #name_gr_exp = ((col(var_gr) - col(var_gr).shift(horizon))/col('at_x'))
@@ -1633,14 +2597,36 @@ def chg_to_assets(var_gr, horizon):
     name_gr_col = pl.when(c1).then(name_gr_exp).otherwise(fl_none()).alias(name_gr)
     return name_gr_col
 def chg_to_lagassets(var_gr):
-    # Removing '_x' from the column name
+    """
+    Description:
+        12-month change in var_gr scaled by lagged assets.
+
+    Steps:
+        1) Name as '{base}_gr1a'.
+        2) Compute (var − var.shift(12)) / at_x.shift(12).
+        3) Keep only if at_x.shift(12) > 0 and count > 12.
+
+    Output:
+        Polars expression for change / lagged assets.
+    """
     name_gr = var_gr.replace('_x', '')
     name_gr = f"{name_gr}_gr1a"
-    # Calculating the growth rate
     name_gr_exp = (col(var_gr) - col(var_gr).shift(12))/col('at_x').shift(12)
     c1 = (col('at_x').shift(12) > 0) & (col("count") > 12)
     return pl.when(c1).then(name_gr_exp).otherwise(fl_none()).alias(name_gr)
 def chg_to_exp(var):
+    """
+    Description:
+        Change relative to 12–24M trailing average of var.
+
+    Steps:
+        1) Name as '{base}_ce'.
+        2) Denominator = mean(var.shift(12), var.shift(24)).
+        3) Return var / denom − 1 when denom > 0 and count > 24.
+
+    Output:
+        Polars expression for change-to-expected metric.
+    """
     new_name = var.replace('_x', '')
     new_name = f"{new_name}_ce"
     c1 = (col(var).shift(12) + col(var).shift(24)) > 0
@@ -1649,6 +2635,18 @@ def chg_to_exp(var):
     den = (col(var).shift(12) + col(var).shift(24)) / 2
     return pl.when(c1 & c2).then(num/den - 1).otherwise(fl_none()).alias(new_name)
 def chg_to_avgassets(var):
+    """
+    Description:
+        12-month change in var scaled by average of current and lagged assets.
+
+    Steps:
+        1) Name as '{base}_gr1a'.
+        2) Compute (var − var.shift(12)) / (at_x + at_x.shift(12)).
+        3) Keep only if denominator > 0 and count > 12.
+
+    Output:
+        Polars expression for change / avg assets.
+    """
     new_name = var.replace('_x', '')
     new_name = f"{new_name}_gr1a"
     c1 = (col('at_x') + col('at_x').shift(12)) > 0
@@ -1657,6 +2655,21 @@ def chg_to_avgassets(var):
     den = col('at_x') + col('at_x').shift(12)
     return pl.when(c1 & c2).then(num/den).otherwise(fl_none()).alias(new_name)
 def standardized_unexpected(df, var, qtrs, qtrs_min):
+    """
+    Description:
+        Standardized unexpected change of var vs. rolling 3q×qtrs history.
+
+    Steps:
+        1) Compute __chg = var − var.shift(12) per (gvkey,curcd).
+        2) Build aux list of past __chg at 3-month steps over 3*qtrs; get mean, std, n.
+        3) Keep mean/std only if n > qtrs_min; shift mean/std by 3 months for forecasting.
+        4) SU = (Δ12 − mean.shift(3)) / std.shift(3); require count > 12 + 3*qtrs.
+        5) Drop helper columns.
+
+    Output:
+        DataFrame with '{base}_su' standardized surprise column.
+    """
+
     name = var.replace('_x', '')
     name = f'{name}_su'
     c1 = col('__chg_n') > qtrs_min
@@ -1677,6 +2690,18 @@ def standardized_unexpected(df, var, qtrs, qtrs_min):
             .drop(['__chg', '__chg_mean', '__chg_std', '__chg_n','aux']))
     return df
 def volq(df, name, var, qtrs, qtrs_min):
+    """
+    Description:
+        Quarterly volatility of var over qtrs quarters (3*qtrs months).
+
+    Steps:
+        1) Build list of var shifted at 3-month steps for 3*qtrs window.
+        2) Compute list std and length; keep if count > (qtrs−1)*3 and n ≥ qtrs_min.
+        3) Drop helpers.
+
+    Output:
+        DataFrame with a '{name}' volatility column.
+    """
     df = (df.sort(['gvkey','curcd','datadate'])
             .with_columns(aux = pl.concat_list([col(var).shift(i).over(['gvkey','curcd']) for i in range(0, (3*qtrs), 3)]).list.drop_nulls())
             .with_columns([col('aux').list.std().alias(name), col('aux').list.len().alias('__n')])
@@ -1684,6 +2709,18 @@ def volq(df, name, var, qtrs, qtrs_min):
             .drop(['__n','aux']))
     return df
 def vola(df, name, var, yrs, yrs_min):
+    """
+    Description:
+        Annual volatility of var over yrs years (12*yrs months).
+
+    Steps:
+        1) Build list of var shifted at 12-month steps for 12*yrs window.
+        2) Compute list std and length; keep if count > (yrs−1)*12 and n ≥ yrs_min.
+        3) Drop helpers.
+
+    Output:
+        DataFrame with a '{name}' annualized volatility column.
+    """
     df = (df.sort(['gvkey','curcd','datadate'])
             .with_columns(aux = pl.concat_list([col(var).shift(i).over(['gvkey','curcd']) for i in range(0, (12*yrs), 12)]).list.drop_nulls())
             .with_columns([col('aux').list.std().alias(name), col('aux').list.len().alias('__n')])
@@ -1691,8 +2728,20 @@ def vola(df, name, var, yrs, yrs_min):
             .drop(['__n','aux']))
     return df
 
-
 def earnings_variability(df, esm_h = 5):
+    """
+    Description:
+        Ratio of earnings volatility: std(ROA) / std(CROA) over esm_h years.
+
+    Steps:
+        1) Compute __roa = ni_x/at_x and __croa = ocf_x/at_x.
+        2) Build annual lists over 12*esm_h months; get std and count for each.
+        3) earnings_variability = __roa_std / __croa_std where counts ≥ esm_h and __croa_std>0.
+        4) Drop helpers.
+
+    Output:
+        DataFrame with 'earnings_variability' column.
+    """
     c1 = (col('count') > (12*esm_h)) & (col('__croa_std') > 0) & (col('__roa_n') >= esm_h) & (col('__croa_n') >= esm_h)
     df = (df.sort(['gvkey','curcd','datadate'])
             .with_columns([safe_div('ni_x', 'at_x', '__roa', 6), safe_div('ocf_x', 'at_x', '__croa',6)])
@@ -1708,12 +2757,49 @@ def earnings_variability(df, esm_h = 5):
             .with_columns(earnings_variability = pl.when(c1).then(col('earnings_variability')).otherwise(fl_none()))
             .drop(['__roa', '__croa', '__roa_n', '__croa_n', '__roa_std', '__croa_std','aux1','aux2']))
     return df
-def roe_and_g_exps(i, g_c, g_ar1, roe_c, roe_ar1): 
+def roe_and_g_exps(i, g_c, g_ar1, roe_c, roe_ar1):
+    """
+    Description:
+        Helpers for AR(1) projections of growth (g) and ROE.
+
+    Steps:
+        1) Return expressions: __g{i} = g_c + g_ar1*__g{i-1}; __roe{i} = roe_c + roe_ar1*__roe{i-1}.
+
+    Output:
+        List of Polars expressions for next-step __g and __roe.
+    """
     return [(g_c + g_ar1 * col(f'__g{i-1}')).alias(f'__g{i}'), (roe_c + roe_ar1 * col(f'__roe{i-1}')).alias(f'__roe{i}')]
 def be_and_cd_exps(i): 
+    """
+    Description:
+        Helpers to roll forward book equity and compute cash dividends per period.
+
+    Steps:
+        1) __be{i} = __be{i-1} * (1 + __g{i})
+        2) __cd{i} = __be{i-1} * (__roe{i} − __g{i})
+
+    Output:
+        List of Polars expressions for next-step __be and __cd.
+    """
+
     return [(col(f'__be{i-1}') * (1 + col(f'__g{i}'))).alias(f'__be{i}'), (col(f'__be{i-1}') * (col(f'__roe{i}') - col(f'__g{i}'))).alias(f'__cd{i}')]
 
 def equity_duration_cd(df, horizon=10, r=0.12, roe_mean=0.12, roe_ar1=0.57, g_mean=0.06, g_ar1=0.24):
+    """
+    Description:
+        Cash-dividend-based equity duration over a finite horizon with AR(1) ROE/g.
+
+    Steps:
+        1) Initialize __roe0 = ni_x / be_x.shift(12), __g0 = sale growth, __be0 = be_x (guard with counts>12).
+        2) For t=1..horizon: project __g{t}, __roe{t}; update __be{t}, __cd{t}.
+        3) Compute ed_cd   = Σ CD_t / (1+r)^t and ed_cd_w = Σ t*CD_t / (1+r)^t.
+        4) Flag ed_err if any projected __be_t < 0; set ed_constant = horizon + (1+r)/r.
+        5) Drop projection helper columns.
+
+    Output:
+        Columns: ed_cd, ed_cd_w, ed_constant, ed_err (and existing data).
+    """
+
     c1 = (col('count') > 12) & (col('be_x').shift(12) > 1)
     c2 = (col('count') > 12) & (col('sale_x').shift(12) > 1)
     roe_c = roe_mean * (1 - roe_ar1)
@@ -1744,6 +2830,20 @@ def equity_duration_cd(df, horizon=10, r=0.12, roe_mean=0.12, roe_ar1=0.57, g_me
     return df
 
 def pitroski_f(df, name = 'f_score'):
+    """
+    Description:
+        Compute Pitroski F-score from profitability, leverage/liquidity, and operating efficiency.
+
+    Steps:
+        1) Profitability: ROA, ΔROA, CFO>0, Accruals (CFO−ROA).
+        2) Leverage/Liquidity: Δleverage (↓), Δcurrent ratio (↑), no equity issuance.
+        3) Efficiency: Δgross margin (↑), Δasset turnover (↑).
+        4) Score each condition as 1/0 with data-availability guards; sum to name.
+
+    Output:
+        DataFrame with '{name}' integer score and helpers removed.
+    """
+
     c1      = (col('count') > 12)
     c2      = col('at_x').shift(12) > 0
     c3      = col('at_x') > 0
@@ -1771,6 +2871,19 @@ def pitroski_f(df, name = 'f_score'):
     return df
 
 def ohlson_o(df, name = 'o_score'):
+    """
+    Description:
+        Ohlson O-score using financial ratios and earnings dynamics.
+
+    Steps:
+        1) Build features: lev=debt/at_x, roe=nix_x/at_x, cacl=cl_x/ca_x, lat=log(at_x),
+        wc=(ca_x−cl_x)/at_x, ffo=(pi_x+dp)/lt, neg_eq=1[lt>at_x], neg_earn=1[both nix_x<0], nich=(Δnix)/( |nix|+|nix₋₁| ).
+        2) Apply linear index: −1.32 −0.407*lat +6.03*lev +1.43*wc +0.076*cacl −1.72*neg_eq −2.37*roe −1.83*ffo +0.285*neg_earn −0.52*nich.
+
+    Output:
+        DataFrame with '{name}' continuous score.
+    """
+
     c1 = (col('count') > 12) & (col('nix_x').is_not_null()) & (col('nix_x').shift(12).is_not_null())
     c2 = (col('count') > 12) & (col('nix_x').abs() + col('nix_x').shift(12).abs() != 0)
     exp_aux1 = ((col('nix_x') < 0) & (col('nix_x').shift(12) < 0)).cast(pl.Float64)
@@ -1790,6 +2903,19 @@ def ohlson_o(df, name = 'o_score'):
     return df
 
 def altman_z(df, name = 'z_score'):
+    """
+    Description:
+        Altman Z-score combining five standardized components.
+
+    Steps:
+        1) Compute components: WC/TA, RE/TA, EBITDA/TA, ME/LT, Sales/TA.
+        2) Z = 1.2*WC/TA + 1.4*RE/TA + 3.3*EBITDA/TA + 0.6*ME/LT + 1.0*Sales/TA.
+        3) Drop helper columns.
+
+    Output:
+        DataFrame with '{name}' Z-score.
+    """
+
     df = (df.with_columns([pl.when(col('at_x') > 0).then((col('ca_x') - col('cl_x'))/col('at_x')).otherwise(fl_none()).alias('__z_wc'),
                            safe_div('re'       ,'at_x' , '__z_re', 3),
                            safe_div('ebitda_x' , 'at_x', '__z_eb', 3),
@@ -1799,8 +2925,21 @@ def altman_z(df, name = 'z_score'):
            .drop(['__z_wc', '__z_re', '__z_eb', '__z_sa', '__z_me']))
     return df
 
-
 def intrinsic_value(df, name = 'intrinsic_value', r = 0.12):
+    """
+    Description:
+        One-step intrinsic value via payout-adjusted ROE and residual-income terms.
+
+    Steps:
+        1) __iv_po = div_x / nix_x if nix_x>0 else div_x / (at_x*0.06) if at_x≠0.
+        2) __iv_roe = nix_x / avg(be_x, be_x_lag12) when count>12 and be>0.
+        3) __iv_be1 = (1 + (1−__iv_po)*__iv_roe) * be_x.
+        4) name = be_x + ((__iv_roe−r)/(1+r))*be_x + ((__iv_roe−r)/((1+r)*r))*__iv_be1; clip to >0.
+
+    Output:
+        DataFrame with '{name}' intrinsic value and helpers removed.
+    """
+
     c1 = col('count') > 12
     c2 = (col('be_x') + col('be_x').shift(12) > 0)
     iv_po_exp  = (pl.when(col('nix_x') > 0).then(col('div_x') / col('nix_x'))
@@ -1818,6 +2957,19 @@ def intrinsic_value(df, name = 'intrinsic_value', r = 0.12):
 
 
 def kz_index(df, name ='kz_index'):
+    """
+    Description:
+        Kaplan–Zingales (KZ) index from five firm variables.
+
+    Steps:
+        1) Build: __kz_cf=(ni_x+dp)/ppent_lag; __kz_dv=div_x/ppent_lag; __kz_cs=che/ppent_lag (need count>12, ppent_lag>0).
+        2) __kz_q=(at_x+me_fiscal−be_x)/at_x (need at_x>0).
+        3) __kz_db=debt_x/(debt_x+seq_x) (den≠0).
+        4) KZ = −1.002*cf + 0.283*q + 3.139*db − 39.368*dv − 1.315*cs.
+
+    Output:
+        DataFrame with '{name}' continuous KZ score.
+    """
     c1   = (col('count') > 12) & (col('ppent').shift(12) > 0)
     c2   = (col('at_x') > 0)
     c3   = (col('debt_x') + col('seq_x')) != 0
@@ -1832,6 +2984,18 @@ def kz_index(df, name ='kz_index'):
     return df
 #Make this be able to take a list of variables and horizons to only sort once for the whole list rather than once per variable. 
 def chg_var1_to_var2(df, name, var1, var2, horizon):
+    """
+    Description:
+        Horizon change in the ratio var1/var2, guarded for coverage and den≤0.
+
+    Steps:
+        1) __x = var1/var2 when var2>0 else NULL.
+        2) Sort; compute Δhorizon(__x) when count>horizon.
+        3) Drop helper.
+
+    Output:
+        DataFrame with '{name}' change over the specified horizon.
+    """
     df = (df.with_columns(__x = pl.when(col(var2) <= 0).then(None).otherwise(col(var1)/col(var2)))
             .sort(['gvkey', 'curcd', 'datadate'])
             .with_columns(pl.when(col('count') <= horizon).then(None).otherwise(col('__x').diff(horizon)).alias(name))
@@ -1839,6 +3003,20 @@ def chg_var1_to_var2(df, name, var1, var2, horizon):
     )
     return df
 def compute_earnings_persistence(data_path, __n, __min):
+    """
+    Description:
+        Earnings persistence: AR(1) of NI/AT (annual steps) with rolling cohorts.
+
+    Steps:
+        1) Load gvkey,curcd,datadate,ni_x,at_x; create __ni_at=ni_x/at_x (at_x>0).
+        2) Keep obs with __ni_at and its 12-month lag; build calendar cohorts by month for N years.
+        3) For each (gvkey,curcd,calc_date,grp) with ≥ __min obs, run OLS __ni_at on lag.
+        4) Aggregate to slope (ni_ar1) and residual std (ni_ivol); save.
+
+    Output:
+        Writes 'ni_ar_res.parquet' with [gvkey, curcd, datadate, ni_ar1, ni_ivol].
+    """
+
     months = 12 * __n
     con = ibis.duckdb.connect('aux_earnings_pers.ddb', threads = os.cpu_count())    
     con.create_table('raw_table', pl.scan_parquet(data_path).select(['gvkey', 'curcd', 'datadate', 'ni_x', 'at_x']).collect(), overwrite = True)
@@ -1939,6 +3117,16 @@ def compute_earnings_persistence(data_path, __n, __min):
     con.disconnect()
     os.system('rm -f aux_earnings_pers.ddb')
 def scale_me(var):
+    """
+    Description:
+        Scale a flow/level by market equity (company), FX-adjusted.
+
+    Steps:
+        1) name='{base}_me'; compute (var*fx)/me_company when me_company≠0.
+
+    Output:
+        Polars expression '{base}_me'.
+    """
     # Removing '_x' from the column name
     name = var.replace('_x', '')
     # Appending '_me' to the name
@@ -1946,6 +3134,17 @@ def scale_me(var):
     col_aux = (col(var) * col('fx'))/col('me_company')
     return pl.when(col('me_company') != 0).then(col_aux).otherwise(fl_none()).alias(name)
 def scale_mev(var):
+    """
+    Description:
+        Scale a flow/level by market equity variant 'mev', FX-adjusted.
+
+    Steps:
+        1) name='{base}_mev'; compute (var*fx)/mev when mev≠0.
+
+    Output:
+        Polars expression '{base}_mev'.
+    """
+
     # Removing '_x' from the column name
     name = var.replace('_x', '')
     # Appending '_me' to the name
@@ -1953,30 +3152,96 @@ def scale_mev(var):
     col_aux = (col(var) * col('fx'))/col('mev')
     return pl.when(col('mev') != 0).then(col_aux).otherwise(fl_none()).alias(name)
 def mean_year(var):
+    """
+    Description:
+        Year-mean of a variable using current and 12-month lag, with fallbacks.
+
+    Steps:
+        1) If both present: return avg(current, lag12) over (gvkey,curcd).
+        2) Else return whichever is present; else NULL.
+
+    Output:
+        Polars expression for 1-year mean.
+    """
     return (pl.when(col(var).is_not_null() & (col(var).shift(12).over(['gvkey','curcd'])).is_not_null()).then((col(var) + col(var).shift(12)).over(['gvkey','curcd'])/2)
             .when(col(var).is_not_null()).then(col(var))
             .when((col(var).shift(12).over(['gvkey','curcd'])).is_not_null()).then(col(var).shift(12).over(['gvkey','curcd']))
             .otherwise(fl_none()))
 
 def temp_liq_rat(col_avg, den, alias):
+    """
+    Description:
+        Liquidity ratio using year-mean in numerator: 365*avg(col_avg)/den.
+
+    Steps:
+        1) Compute 365*mean_year(col_avg)/den.
+        2) Keep when count>12 and den≠0.
+
+    Output:
+        Polars expression aliased to provided name.
+    """
+
     col1 = (365 * mean_year(col_avg)/col(den))
     c1 = col('count') > 12
     c2 = col(den) != 0
     return pl.when(c1 & c2).then(col1).otherwise(fl_none()).alias(alias)
 
 def temp_rat_other(num, den, alias):
+    """
+    Description:
+        Generic ratio using year-mean in denominator.
+
+    Steps:
+        1) Compute num / mean_year(den).
+        2) Keep when count>12 and mean_year(den)≠0.
+
+    Output:
+        Polars expression aliased to provided name.
+    """
+
     col_expr = (col(num) / mean_year(den))
     c1 = col('count') > 12
     c2 = mean_year(den) != 0
     return pl.when(c1 & c2).then(col_expr).otherwise(fl_none()).alias(alias)
 
 def temp_rat_other_spc():
+    """
+    Description:
+        Accounts payable turnover ratio.
+
+    Steps:
+        1) Numerator = cogs + invt − invt_lag12 (per entity).
+        2) Denominator = mean_year(ap).
+        3) Keep when count>12 and mean_year(ap)≠0.
+
+    Output:
+        Polars expression 'ap_turnover'.
+    """
     num_expr = col('cogs') + col('invt') - col('invt').shift(12)
     col_expr = (num_expr.over(['gvkey','curcd']) / mean_year('ap'))
     c1 = col('count') > 12
     c2 = mean_year('ap') != 0
     return pl.when(c1 & c2).then(col_expr).otherwise(fl_none()).alias('ap_turnover')
 def safe_div(num, den, name, mode = 1):
+    """
+    Description:
+        Safe division utility with multiple guard modes.
+
+    Steps:
+        Mode 1: num/den if den≠0.
+        Mode 2: num/|den| if den≠0.
+        Mode 3: num/den if den>0.
+        Mode 4: (num/den_lag12) over (gvkey,curcd) if count>12 and den_lag12>0.
+        Mode 5: (num*fx)/den if den≠0.
+        Mode 6: (num/den_lag12) over (gvkey,curcd) if den_lag12≠0.
+        Mode 7: (num/den)_lag12 over (gvkey,curcd) if den_lag12>0.
+        Mode 8: num/den if num>0 and den>0.
+        Mode 9: num/den_lag3 if count>3 and den_lag3>0.
+
+    Output:
+        Polars expression named 'name' with NULLs on guard failures.
+    """
+
     if mode == 1: return pl.when(col(den) != 0).then(col(num)/col(den)).otherwise(fl_none()).alias(name)
     if mode == 2: return pl.when(col(den) != 0).then(col(num)/(col(den).abs())).otherwise(fl_none()).alias(name)
     if mode == 3: return pl.when(col(den) > 0).then(col(num)/col(den)).otherwise(fl_none()).alias(name)
@@ -2003,14 +3268,40 @@ def safe_div(num, den, name, mode = 1):
         cond2 = col(den).shift(3) > 0
         col_exp = col(num) / col(den).shift(3)
         return pl.when(cond1 & cond2).then(col_exp).otherwise(fl_none()).alias(name)
+    
 def update_ni_inc_and_decrease(df, lag):
+    """
+    Description:
+        Update running counts for 8 consecutive NI increases with no decreases.
+
+    Steps:
+        1) For rows where ni_inc lagged by `lag` is 1 and no_decrease==1:
+        - ni_inc8q += 1
+        - no_decrease stays 1; else set to 0.
+        2) Apply in gvkey–curcd–date order.
+
+    Output:
+        DataFrame with refreshed 'ni_inc8q' and 'no_decrease'.
+    """
     c1 = (col('ni_inc').shift(lag) == 1) & (col('no_decrease') == 1)
     ni_inc8q_updated_exp = pl.when(c1).then(col('ni_inc8q') + 1).otherwise(col('ni_inc8q')).alias('ni_inc8q')
     no_decrease_updated_exp = pl.when(c1).then(col('no_decrease')).otherwise(pl.lit(0)).alias('no_decrease')
     return df.sort(['gvkey','curcd','datadate']).with_columns([ni_inc8q_updated_exp, no_decrease_updated_exp])
 
-
 def calculate_consecutive_earnings_increases(df):
+    """
+    Description:
+        Count 8 consecutive quarterly NI increases (y/y, 12m apart) with no decreases.
+
+    Steps:
+        1) Build ni_inc (1/0/NULL) and initialize ni_inc8q=0, no_decrease=1.
+        2) Iterate 8 lags (every 3 months): update counters via helper.
+        3) Track how many non-null ni_inc across lags; set ni_inc8q only when n==8 & count≥33.
+        4) Drop helpers.
+
+    Output:
+        DataFrame with 'ni_inc8q' (or NULL when not eligible).
+    """
     ni_inc_exp = (pl.when(col('ni_x') > col('ni_x').shift(12)).then(pl.lit(1).cast(pl.Int64))
                     .when((col('ni_x').is_null()) | (col('ni_x').shift(12).is_null())).then(pl.lit(None).cast(pl.Int64))
                     .otherwise(pl.lit(0).cast(pl.Int64)).alias('ni_inc'))
@@ -2030,6 +3321,19 @@ def calculate_consecutive_earnings_increases(df):
             .drop(['ni_inc','no_decrease', 'n_ni_inc']))
     return df
 def compute_capex_abn(df):
+    """
+    Description:
+        Abnormal capex: current CAPX/Sales vs 3-year trailing average.
+
+    Steps:
+        1) Compute __capex_sale = capx/sale_x (den>0).
+        2) Denominator = avg of __capex_sale at 12, 24, 36-month lags.
+        3) capex_abn = __capex_sale / denom − 1 when count>36 and denom≠0.
+        4) Drop helper.
+
+    Output:
+        DataFrame with 'capex_abn'.
+    """
     c1  = (col('__capex_sale').shift(12) + col('__capex_sale').shift(24) + col('__capex_sale').shift(36)) != 0
     c2  = col('count') > 36
     num = col('__capex_sale')
@@ -2041,10 +3345,32 @@ def compute_capex_abn(df):
             .drop('__capex_sale'))
     return df
 def tangibility():
+    """
+    Description:
+        Asset tangibility index.
+
+    Steps:
+        1) Compute (che + 0.715*rect + 0.547*invt + 0.535*ppegt) / at_x when at_x≠0.
+
+    Output:
+        Polars expression 'tangibility'.
+    """
     c1 = pl.col('at_x') != 0
     div_exp = (col('che') + 0.715 * col('rect') + 0.547 * col('invt') + 0.535 * col('ppegt'))/ col('at_x')
     return pl.when(c1).then(div_exp).otherwise(fl_none()).alias('tangibility')
 def emp_gr(path):
+    """
+    Description:
+        Employee growth over 12 months (annual panel only).
+
+    Steps:
+        1) If quarterly file: return NULL.
+        2) Else, when count>12 and avg(emp, emp_lag12)≠0:
+        emp_gr1 = (emp − emp_lag12) / avg(emp, emp_lag12).
+
+    Output:
+        Polars expression 'emp_gr1'.
+    """
     if path == 'acc_std_qtr.parquet':
         col_expr = fl_none().alias('emp_gr1')
     else:
@@ -2058,6 +3384,21 @@ def emp_gr(path):
     return col_expr
 
 def add_accounting_misc_cols_1(df):
+    """
+    Description:
+        Add a broad set of accounting ratios: growth, asset-scaled changes, margins,
+        returns (AT/BE/BEV/PPENT), issuance, solvency, capitalization, accruals, NOA.
+
+    Steps:
+        1) Build 1y/3y growth for key levels; 1y/3y Δ scaled by assets.
+        2) Add investment & non-recurring intensity; profitability margins.
+        3) Compute returns on assets/equity/enterprise/PPENT.
+        4) Add issuance & solvency/capitalization ratios; accruals (o/t) and NOA.
+
+    Output:
+        DataFrame with appended columns for the above metrics.
+    """
+
     #growth characteristics
     growth_vars = [
     "at_x", "ca_x", "nca_x",                 # Assets - Aggregated
@@ -2119,6 +3460,20 @@ def add_accounting_misc_cols_1(df):
                   c_iss_eqp + c_solv_rat + c_cap_lev + c_accruals + c_noa_at
     return df.sort(['gvkey', 'curcd', 'datadate']).with_columns(acc_columns)
 def add_accounting_misc_cols_2(df):
+    """
+    Description:
+        Add volatility features and composite quality metrics; multi-year ratio changes.
+
+    Steps:
+        1) Compute volatilities: ocfq/sales, niq/sales, ROE quarterly/annual.
+        2) Pipe core composites: earnings variability, equity duration, F-score,
+        O-score, Z-score, intrinsic value, KZ index.
+        3) 5-year changes for gpoa, roe, roa, cfoa, gmar via Δ(var1/var2, 60m).
+        4) Drop temporary/driver columns.
+
+    Output:
+        DataFrame with stability and quality-change measures.
+    """
     #Volatility items
     funcs_vol = [volq, volq, volq, vola]
     names_col = ['ocfq_saleq_std', 'niq_saleq_std', 'roeq_be_std', 'roe_be_std']
@@ -2134,6 +3489,18 @@ def add_accounting_misc_cols_2(df):
     for i, j, k in zip(names, vars1, vars2): df = df.pipe(chg_var1_to_var2, name = i, var1 = j, var2 = k, horizon = 60)
     return df.drop(['count', '__ocfq_saleq', '__niq_saleq', '__roeq', '__roe'])
 def add_liq_and_efficiency_ratios(df):
+    """
+    Description:
+        Liquidity & efficiency ratios and cash conversion cycle.
+
+    Steps:
+        1) Liquidity days: inv_days, rec_days, ap_days via 365*avg / flow.
+        2) Ratios: cash/cl, caliq/cl, ca/cl; cash_conversion = inv+rec−ap (≥0).
+        3) Efficiency: inv_turnover, at_turnover, rec_turnover, ap_turnover.
+
+    Output:
+        DataFrame with liquidity and activity metrics.
+    """
     #Liquidity Ratios:
     #Days Inventory Outstanding, Days Sales Outstanding, Days Accounts Payable Outstanding
     c_days = [temp_liq_rat('invt','cogs','inv_days'), temp_liq_rat('rect','sale_x','rec_days'), temp_liq_rat('ap','cogs','ap_days')]
@@ -2151,6 +3518,16 @@ def add_liq_and_efficiency_ratios(df):
                            temp_rat_other_spc()]))
     return df
 def add_profit_scaled_by_lagged_vars(df):
+    """
+    Description:
+        Profitability scaled by prior-period assets/equity (lag-12).
+
+    Steps:
+        1) Compute op_atl1, gp_atl1, ope_bel1, cop_atl1 using safe_div mode 4 (lagged den>0).
+
+    Output:
+        DataFrame with lag-scaled profitability ratios.
+    """
     df = (df.sort(['gvkey', 'curcd', 'datadate'])
             .with_columns([safe_div('op_x', 'at_x', 'op_atl1', 4),
                            safe_div('gp_x', 'at_x', 'gp_atl1', 4),
@@ -2158,6 +3535,19 @@ def add_profit_scaled_by_lagged_vars(df):
                            safe_div('cop_x', 'at_x', 'cop_atl1', 4)]))
     return df
 def add_earnings_persistence_and_expand(df, data_path, lag_to_pub, max_lag):
+    """
+    Description:
+        Attach AR(1) earnings persistence (ni_ar1, ni_ivol) and expand to public dates.
+
+    Steps:
+        1) Run persistence job over input parquet (N=5 yrs, min=5) → 'ni_ar_res.parquet'.
+        2) Join on (gvkey,curcd,datadate); keep rows with data_available=1.
+        3) Set start_date = datadate + lag_to_pub months; end_date = min(next_start−1mo, datadate+max_lag).
+        4) Expand monthly between start/end to 'public_date'.
+
+    Output:
+        Expanded DataFrame keyed by (gvkey, public_date) with persistence fields.
+    """
     compute_earnings_persistence(data_path, 5, 5)
     earnings_pers = pl.scan_parquet('ni_ar_res.parquet')
     df = (df.join(earnings_pers, on = ['gvkey', 'curcd', 'datadate'], how = 'left')
@@ -2170,6 +3560,19 @@ def add_earnings_persistence_and_expand(df, data_path, lag_to_pub, max_lag):
             .drop('next_start_date'))
     return expand(data=df, id_vars=['gvkey'], start_date='start_date', end_date='end_date', freq='month', new_date_name='public_date')
 def add_me_data_and_compute_me_mev_mat_eqdur_vars(df, me_df):
+    """
+    Description:
+        Join market equity; compute MEV/MAT; scale many vars by ME/MEV; equity duration.
+
+    Steps:
+        1) Join me_company at (gvkey, public_date); build mev = me + netdebt*fx; mat = at*fx − be*fx + me.
+        2) Clean nonpositive me/mev/mat → NULL.
+        3) Add {var}_me and {var}_mev via scaling helpers; ival_me = intrinsic_value/ME (fx-adjusted).
+        4) Add misc: enterprise_value, aliq_mat, eq_dur (guard with ed_err, eq_dur>0, me>0).
+
+    Output:
+        DataFrame with ME/MEV-scaled features and market-based metrics.
+    """
     #Characteristics Scaled by Market Equity
     me_vars = ['at_x', 'be_x', 'debt_x', 'netdebt_x', 'che', 'sale_x', 'gp_x', 'ebitda_x','ebit_x', 'ope_x', 'ni_x', 'nix_x', 'cop_x', 'ocf_x', 'fcf_x', 'div_x','eqbb_x', 'eqis_x', 'eqpo_x', 'eqnpo_x', 'eqnetis_x', 'xrd']
     #Characteristics Scaled by Market Enterprise Value
@@ -2195,6 +3598,18 @@ def add_me_data_and_compute_me_mev_mat_eqdur_vars(df, me_df):
             .with_columns(pl.when((col('ed_err') ==1) | (col('eq_dur') <=0) | (col('me_company') == 0)).then(None).otherwise(col('eq_dur')).alias('eq_dur')))
     return df
 def rename_cols_and_select_keep_vars(df, rename_dict, vars_to_keep, suffix):
+    """
+    Description:
+        Systematically rename columns, then select and optionally suffix keepers.
+
+    Steps:
+        1) For every column, apply first-match replacements from rename_dict.
+        2) Select ['source','gvkey','public_date','datadate'] + vars_to_keep.
+        3) If suffix provided, append to vars_to_keep names.
+
+    Output:
+        DataFrame with renamed and reduced columns.
+    """
     new_names = {}
     for i in sorted(df.collect_schema().names()):
         col_name = i
@@ -2206,6 +3621,18 @@ def rename_cols_and_select_keep_vars(df, rename_dict, vars_to_keep, suffix):
     if suffix is None: return df
     else: return df.rename({i: (i+suffix) for i in vars_to_keep})
 def convert_raw_vars_to_usd(df):
+    """
+    Description:
+        Convert select raw variables to USD using FX at (curcd, public_date).
+
+    Steps:
+        1) Join FX table on [curcd, public_date]→fx.
+        2) Multiply assets, sales, book_equity, net_income by fx.
+        3) Drop currency code.
+
+    Output:
+        DataFrame with key fundamentals in USD.
+    """
     fx = compustat_fx().rename({'datadate': 'date'}).lazy()
     cols_for_new_df = df.collect_schema().names()
     df = (df.join(fx, left_on = ['curcd', 'public_date'], right_on = ['curcdd', 'date'], how='left')
@@ -2214,6 +3641,21 @@ def convert_raw_vars_to_usd(df):
             .drop('curcd'))
     return df
 def financial_soundness_and_misc_ratios_exps():
+    """
+    Description:
+        Return expression list for financial-soundness and miscellaneous ratios.
+
+    Steps:
+        1) Financial soundness: interest/ debt, OCF/ debt, EBITDA/ debt, ST/LT splits,
+        profitability per CL, liquidity to LT, composition within ACT, opex/AT,
+        NWC/AT, LT/PPENT, debtLT/BE, FCF/OCF (guarded).
+        2) Misc: advertising/sales, staff/sales, sales/BEV, R&D/sales, sales/BE,
+        sales/NWC (guarded), tax/PI (guarded), cash/AT (guarded), NI/emp, Sales/emp,
+        dividend/NI (using NI or NIX > 0).
+
+    Output:
+        List of Polars expressions ready for with_columns(...).
+    """
     #Financial Soundness Ratios:
     c_fin_s_rat = [safe_div('xint', 'debt_x', 'int_debt') , safe_div('ocf_x', 'debt_x', 'ocf_debt')  , safe_div('ebitda_x', 'debt_x', 'ebitda_debt'), safe_div('dlc', 'debt_x', 'debtst_debt'), safe_div('dltt', 'debt_x', 'debtlt_debt'),\
                     safe_div('xint', 'dltt', 'int_debtlt'), safe_div('ebitda_x', 'cl_x', 'profit_cl'), safe_div('ocf_x', 'cl_x', 'ocf_cl')          , safe_div('che', 'lt', 'cash_lt')        , safe_div('cl_x', 'lt', 'cl_lt'),\
@@ -2227,7 +3669,25 @@ def financial_soundness_and_misc_ratios_exps():
 
 @measure_time
 def create_acc_chars(data_path, output_path, lag_to_public, max_data_lag, __keep_vars, me_data_path, suffix):
-    #adding and filtering market return data
+    """
+    Description:
+        Build comprehensive accounting characteristics, align to public dates, convert to USD, join ME, and scale/derive market-based metrics.
+
+    Steps:
+        1) Load ME (company) and scan input; add counts and core aliases (assets, sales, book_equity, net_income).
+        2) Add accounting ratios/features (misc cols 1), financial soundness/misc ratios, and liquidity/efficiency ratios.
+        3) Add sales-per-employee growth and employee growth; compute consecutive NI increases.
+        4) Add changes/growth (NOA, PPE+Inv, LNOA, CAPEX 2y); quarterly profitability (saleq_gr1, NIQ/BE, NIQ/AT) and their 1y deltas.
+        5) RD capital-to-assets (5y decay); Abarbanell–Bushee changes; standardized surprises for sales/NI; abnormal CAPEX; lagged-profit ratios.
+        6) Add core ratios (pi_nix, ocf_at, op_at, at_be, ROE/OCF per quarter); tangibility, ALIQ/AT; OCF_AT 1y change.
+        7) Append volatility & composite metrics (misc cols 2); compute earnings persistence and expand to monthly public_date.
+        8) Convert key raw vars to USD; join ME; compute ME/MEV/MAT scales and equity duration.
+        9) Rename selected columns with mapping, select keep-vars (+ ids), optional suffix, dedupe, and write parquet.
+
+    Output:
+        Parquet at output_path with standardized, USD/ME/MEV-scaled accounting characteristics keyed by (gvkey, public_date).
+    """
+
     me_data = load_mkt_equity_data(me_data_path, False)
 
     chars_df = pl.scan_parquet(data_path)
@@ -2303,7 +3763,19 @@ def create_acc_chars(data_path, output_path, lag_to_public, max_data_lag, __keep
                                     .collect()\
                                     .write_parquet(output_path)
 @measure_time
-def combine_ann_qtr_chars(ann_df_path, qtr_df_path, char_vars, q_suffix):    
+def combine_ann_qtr_chars(ann_df_path, qtr_df_path, char_vars, q_suffix):  
+    """
+    Description:
+        Combine annual and quarterly characteristic panels, preferring fresher quarterly values at the same public_date.
+
+    Steps:
+        1) Load annual and quarterly files into DuckDB with row numbers.
+        2) Left-join on (gvkey, public_date); for each char_var choose quarterly value if present and more recent (datadate_qitem > datadate).
+        3) Drop redundant join and dated columns; dedupe on (gvkey, public_date).
+
+    Output:
+        Writes 'acc_chars_world.parquet' merged panel.
+    """  
     os.system('rm -f aux_aqtr_chars.ddb')
     con = ibis.duckdb.connect('aux_aqtr_chars.ddb', threads = os.cpu_count())
     con.create_table('ann', con.read_parquet(ann_df_path).mutate(n1 = ibis.row_number()), overwrite = True)
@@ -2330,6 +3802,18 @@ def combine_ann_qtr_chars(ann_df_path, qtr_df_path, char_vars, q_suffix):
     con.disconnect()
     os.system('rm -f aux_aqtr_chars.ddb')
 def seasonality(data, ret_x, start_year, end_year):
+    """
+    Description:
+        Seasonality features: average annual-month and non-annual-month returns over a horizon.
+
+    Steps:
+        1) Sum shifted returns over all months in [start_year−1, end_year] and over the annual month series.
+        2) For rows with sufficient history, compute seas_{start}_{end}an and seas_{start}_{end}na as means.
+        3) Keep NULL otherwise.
+
+    Output:
+        DataFrame with two seasonal return columns.
+    """
     all_r = pl.lit(0.)
     ann_r = pl.lit(0.)
     for i in range((start_year-1)*12, (end_year*12)): all_r += col(ret_x).shift(i)
@@ -2342,27 +3826,90 @@ def seasonality(data, ret_x, start_year, end_year):
                                pl.when(c1).then(seas_na_exp).otherwise(fl_none()).alias(f'seas_{start_year}_{end_year}na')]))
     return data
 def mom_rev_cols(i, j):
+    """
+    Description:
+        Momentum/reversal feature: return between months j and i using RI (return index).
+
+    Steps:
+        1) Require ri_x at lag j > 0, count > j, and ret_x at lag i exists.
+        2) Compute ri_x.shift(i)/ri_x.shift(j) − 1.
+
+    Output:
+        Polars expression named 'ret_{j}_{i}'.
+    """
+
     c1 = col('ri_x').shift(j) != 0
     c2 = col('count') > j
     c3 = (col('ret_x').shift(i)).is_not_null()
     return (pl.when(c1 & c2 & c3).then(col('ri_x').shift(i)/col('ri_x').shift(j) - 1).otherwise(fl_none())).alias(f'ret_{j}_{i}')
 def chcsho_cols(i):
+    """
+    Description:
+        Share change over i months from an auxiliary column (e.g., shares outstanding).
+
+    Steps:
+        1) Require aux_lag_i ≠ 0 and count > i.
+        2) Compute aux/aux.shift(i) − 1.
+
+    Output:
+        Polars expression 'chcsho_{i}m'.
+    """
     c1 = col('aux').shift(i) != 0
     c2 = col('count') > i
     return (pl.when(c1 & c2).then(col('aux')/col('aux').shift(i) - 1).otherwise(fl_none())).alias(f'chcsho_{i}m')
 def eqnpo_cols(lag):
+    """
+    Description:
+        Equity net payout over lag months: log growth of RI minus log growth of ME.
+
+    Steps:
+        1) Require ri and me positive now and at lag; count > lag.
+        2) Compute ln(ri/ri_lag) − ln(me/me_lag).
+
+    Output:
+        Polars expression 'eqnpo_{lag}m'.
+    """
     c1 = (col('ri') > 0) & (col('ri').shift(lag) > 0)
     c2 = (col('me') > 0) & (col('me').shift(lag) > 0)
     c3 = col('count') > lag
     eqnpo_col_exp = (col('ri')/col('ri').shift(lag)).log() - (col('me')/col('me').shift(lag)).log()
     return (pl.when(c1 & c2 & c3).then(eqnpo_col_exp).otherwise(fl_none())).alias(f'eqnpo_{lag}m')
 def div_cols(i, spc = False):
+    """
+    Description:
+        Rolling dividend-to-market-equity over i months (optionally special series).
+
+    Steps:
+        1) Base div var = 'div' or 'divspc'. Use monthly div1m_me, rolling-summed to horizon i.
+        2) Return rolling_sum(div1m_me, i) / me when count ≥ i and me ≠ 0.
+
+    Output:
+        Polars expression '{div|divspc}{i}m_me'.
+    """
+
     div_var = 'div' if (not spc) else 'divspc'
     num = col(f'{div_var}1m_me') if (i == 1) else col(f'{div_var}1m_me').rolling_sum(window_size = i, min_periods = 1).over('id')
     return (pl.when((col('count') >= i) & (col('me') != 0)).then(num / col('me'))
               .otherwise(fl_none())).alias(f'{div_var}{i}m_me')
 @measure_time
 def market_chars_monthly(data_path, market_ret_path, local_currency = False):
+    """
+    Description:
+        Build monthly market characteristics per security: dividends, issuance, momentum/reversal, seasonality.
+
+    Steps:
+        1) Read stock panel and join country market returns; pick ret_x (local vs USD).
+        2) Create complete monthly range per id; compute cumulative indices (ri, ri_x), counts, and missing-return mask.
+        3) Zero-out dividend artifacts near 0; derive:
+        - Dividend-to-ME (regular/special) over horizons
+        - Equity net payout (eqnpo), share change (chcsho)
+        - Momentum/reversal ret_{j}_{i}
+        - Seasonality windows via helper.
+        4) Select/id-sort final feature set.
+
+    Output:
+        Writes 'market_chars_m.parquet' with [id, eom, market_equity, div*, eqnpo*, chcsho*, ret_*, seas_*].
+    """
     div_range = [1,3,6,12]#[1,3,6,12,24,36]
     div_spc_range = [1,12]
     chcsho_lags = [1,3,6,12]
@@ -2409,6 +3956,18 @@ def market_chars_monthly(data_path, market_ret_path, local_currency = False):
 
 @measure_time
 def firm_age(data_path):
+    """
+    Description:
+        Compute firm age in months using earliest of CRSP, Compustat accounting, or Compustat returns dates.
+
+    Steps:
+        1) Load identifiers/dates from inputs; get earliest dates per gvkey/permco.
+        2) Join earliest sources to each (id, eom); also get first observed eom per id.
+        3) Age = months between eom and min(first_obs, first_alt). Write result.
+
+    Output:
+        'firm_age.parquet' with [id, eom, age].
+    """
     con = ibis.duckdb.connect(threads = os.cpu_count())    
     data = con.read_parquet(data_path).select(['gvkey', 'permco', 'id', 'eom'])
     comp_secm  = con.read_parquet('Raw_tables/comp_secm.parquet'  ).select(['gvkey', 'datadate'])
@@ -2461,11 +4020,36 @@ def firm_age(data_path):
     con.disconnect()
     
 def char_pf_rets():
+    """
+    Description:
+        Helper expressions for Fama–French-style factor composites.
+
+    Steps:
+        1) lms = average(high) − average(low) across size buckets.
+        2) smb = average(smalls) − average(bigs) across char terciles.
+
+    Output:
+        List of Polars expressions: [lms, smb].
+    """
     lms = ((col('small_high') + col('big_high')) / 2 - (col('small_low') + col('big_low')) / 2).alias('lms')
     smb = ((col('small_high') + col('small_mid') + col('small_low')) / 3 - (col('big_high') + col('big_mid') + col('big_low')) / 3).alias('smb')
     return [lms, smb]
 
 def sort_ff_style(char, min_stocks_bp, min_stocks_pf, date_col, data, sf):
+    """
+    Description:
+        FF-style triple-sort by size and a characteristic within country-month, then compute portfolio returns.
+
+    Steps:
+        1) Filter eligible stocks (US vs ex-US rules) with available {char}_l.
+        2) Compute country breakpoints (30/70) for {char}_l; assign char_pf ∈ {low,mid,high}.
+        3) Form size×char portfolios with ME weights; require min stocks.
+        4) Join with returns; aggregate to value-weighted ret_exc per (excntry, size_pf, char_pf, date).
+        5) Pivot to columns and derive lms/smb composites.
+
+    Output:
+        Tidy DataFrame with per-country portfolio returns and composites for the characteristic.
+    """
     print(f'Executing sort_ff_style for {char}', flush=True)
     c1 = (
             ((col('size_grp_l').is_in(['small', 'large', 'mega'])) & (col('excntry_l') != 'USA')) | 
@@ -2505,6 +4089,17 @@ def sort_ff_style(char, min_stocks_bp, min_stocks_pf, date_col, data, sf):
     return returns
 
 def winsorize_var(df, sort_vars, wins_var, perc_low, perc_high):
+    """
+    Description:
+        Winsorize a variable within groups using group-specific percentile bands.
+
+    Steps:
+        1) For each group (sort_vars), compute low/high cutoffs via perc_method on lists.
+        2) Clamp wins_var to [low, high] and expose as ret_exc (or overwrite target).
+
+    Output:
+        DataFrame with winsorized 'ret_exc' and original columns preserved.
+    """
     aux = (df.group_by(sort_vars)
                 .agg(col(wins_var))
                 .with_columns(low  = perc_exp(wins_var, lambda x: perc_method(x, perc_low), True),
@@ -2518,6 +4113,20 @@ def winsorize_var(df, sort_vars, wins_var, perc_low, perc_high):
     return wins_df
 @measure_time
 def ap_factors(output_path, freq, sf_path, mchars_path, mkt_path, min_stocks_bp, min_stocks_pf):
+    """
+    Description:
+        Build AP-style factor panels (FF HML/SMB and HXZ INV/ROE/SMB) by country and month (or day).
+
+    Steps:
+        1) Load security returns; winsorize ret_exc by date.
+        2) Load market characteristics; lag key vars 1 period with continuity guard; filter to eligible stocks.
+        3) Size-bucket each stock; run FF-style sorts for BE/ME, asset growth, and ROE.
+        4) Compose factors: mktrf from market file; HML/SMB (FF); INV/ROE/SMB (HXZ).
+        5) Join and write factors to output_path.
+
+    Output:
+        Parquet factor file with columns: [excntry, date/eom, mktrf, hml, smb_ff, inv, roe, smb_hxz].
+    """
     date_col = 'eom' if freq == 'm' else 'date'
     sf_cond  = (col('ret_lag_dif') == 1) if freq == 'm' else (col('ret_lag_dif') <= 5)
     lag_vars = ['comp_exchg', 'crsp_exchcd', 'exch_main', 'obs_main', 'common', 'primary_sec', 'excntry', 'size_grp', 'me', 'be_me', 'at_gr1', 'niq_be']
@@ -2570,6 +4179,18 @@ def winsorize_by_group(
     upper: float = 0.999,
     out_winsor: str = "winsorized_rets",
 ):
+    """
+    Description:
+        SQL winsorization within groups using discrete percentiles.
+
+    Steps:
+        1) Create percs table: low/high = quantile_disc(win_var, lower/upper) by group_cols.
+        2) Create output table replacing win_var with [low, high] bounds via join.
+
+    Output:
+        DuckDB table {out_winsor} with group-winsorized {win_var}.
+    """
+
     # 1) Build the GROUP BY list and join condition
     grp_list = ", ".join(group_cols)
     join_cond = " AND ".join(f"d.{c}=p.{c}" for c in group_cols)
@@ -2603,6 +4224,19 @@ def winsorize_by_group(
     """)
 
 def prep_data_factor_regs(data_path, fcts_path):
+    """
+    Description:
+        Prepare monthly panel for factor regressions (join data with factors, filter, winsorize).
+
+    Steps:
+        1) Create __msf1: join msf with factors on (excntry, eom); keep ret_exc, mktrf, hml, smb_ff and valid monthly obs.
+        2) Add integer date (aux_date) and cast id_int.
+        3) Winsorize ret_exc by eom into __msf2.
+
+    Output:
+        DuckDB connection containing tables '__msf2' (ready for rolling regs).
+    """
+
     os.system('rm -f aux_beta.ddb')
     con = ibis.duckdb.connect('aux_beta.ddb', threads = os.cpu_count())
     con.create_table('data_msf', con.read_parquet(data_path), overwrite = True)
@@ -2640,6 +4274,18 @@ def prep_data_factor_regs(data_path, fcts_path):
     return con
 @measure_time
 def market_beta(output_path, data_path, fcts_path, __n , __min):
+    """
+    Description:
+        Estimate rolling CAPM betas and idiosyncratic vol for each stock.
+
+    Steps:
+        1) Prep data via prep_data_factor_regs; load '__msf2' lazily.
+        2) Generate rolling-window mappings; run process_map_chunks(..., 'capm') per mapping.
+        3) Map back to ids/dates; select beta_{__n}m and ivol_capm_{__n}m; sort.
+
+    Output:
+        Parquet at output_path with [id, eom, beta_{__n}m, ivol_capm_{__n}m].
+    """
     con = prep_data_factor_regs(data_path, fcts_path)
     base_data = con.table('__msf2').to_polars().lazy()
     aux_maps = gen_aux_maps(__n)
@@ -2657,6 +4303,17 @@ def market_beta(output_path, data_path, fcts_path, __n , __min):
 
 @measure_time
 def residual_momentum(output_path, data_path, fcts_path, __n, __min, incl, skip):
+    """
+    Description:
+        Compute residual momentum from FF3 regressions with rolling windows and skip/inclusion rules.
+
+    Steps:
+        1) Prep '__msf2'; build window mappings; run process_map_chunks(..., 'res_mom', __n, __min, incl, skip).
+        2) Join back ids/dates and keep resff3_{incl}_{skip}; sort.
+
+    Output:
+        Parquet '{output_path}_{incl}_{skip}.parquet' with [id, eom, resff3_{incl}_{skip}].
+    """
     con = prep_data_factor_regs(data_path, fcts_path)
     base_data = con.table('__msf2').to_polars().lazy()
     aux_maps = gen_aux_maps(__n)
@@ -2674,6 +4331,20 @@ def residual_momentum(output_path, data_path, fcts_path, __n, __min, incl, skip)
     
 @measure_time
 def prepare_daily(data_path, fcts_path):
+    """
+    Description:
+        Build daily dataset: align returns with factors, shrink dtypes, and create helpers.
+
+    Steps:
+        1) Join daily stock data with daily factors; filter rows with mktrf.
+        2) Create zero_obs flags per (id,eom); cap returns to lag ≤14 days; compute prc_adj.
+        3) Write dsf1.parquet and id_int_key.parquet.
+        4) Build market lead/lag series per day and write mkt_lead_lag.parquet.
+        5) Build 3-day rolling sums for stock and market excess returns for correlations; write corr_data.parquet.
+
+    Output:
+        Parquets: dsf1.parquet, id_int_key.parquet, mkt_lead_lag.parquet, corr_data.parquet.
+    """
     data = pl.scan_parquet(data_path)
     fcts = pl.scan_parquet(fcts_path)
     dsf1 = (data.select(['excntry', 'id', 'date', 'eom', 'prc', 'adjfct', 'ret', 'ret_exc', 'dolvol', 'shares', 'tvol', 'ret_lag_dif', 'ret_local'])
@@ -2716,6 +4387,19 @@ def prepare_daily(data_path, fcts_path):
     corr_data.collect().write_parquet('corr_data.parquet')
 
 def gen_ranks_and_normalize(df, id_vars, geo_vars, time_vars, desc_flag, var, min_stks):
+    """
+    Description:
+        Rank-normalize a variable within geo×time groups and keep percentile ranks.
+
+    Steps:
+        1) Build group keys = geo_vars + time_vars.
+        2) Count valid var per group; require count ≥ min_stks.
+        3) Compute rank / count (descending if desc_flag); keep id_vars + group keys + rank_{var}.
+
+    Output:
+        LazyFrame with percentile column f"rank_{var}" per id and group.
+    """
+
     by_vars = geo_vars + time_vars
     var_ranks = (df.select([*id_vars, *by_vars, var])
                    .with_columns(count = pl.count(var).over(by_vars))
@@ -2724,6 +4408,17 @@ def gen_ranks_and_normalize(df, id_vars, geo_vars, time_vars, desc_flag, var, mi
                    .drop([*geo_vars, var, 'count']))
     return var_ranks
 def gen_misp_exp(var_list, min_fcts):
+    """
+    Description:
+        Combine multiple rank-percentiles into a single mispricing score with missingness guard.
+
+    Steps:
+        1) Count NULL ranks across var_list; if > min_fcts → set score NULL.
+        2) Else take horizontal mean of rank_{var} columns.
+
+    Output:
+        Polars expression for the composite mispricing score.
+    """
     sum = col('rank_' + var_list[0]).is_null().cast(pl.Int32)
     for i in var_list[1:]: sum += col('rank_' + i).is_null().cast(pl.Int32)
     c1 = (sum > min_fcts)
@@ -2731,6 +4426,19 @@ def gen_misp_exp(var_list, min_fcts):
 
 @measure_time
 def mispricing_factors(data_path, min_stks, min_fcts = 3, output_path = 'mp_factors.parquet'):
+    """
+    Description:
+        Compute two mispricing composites (management & performance) from ranked inputs.
+
+    Steps:
+        1) Load/Filter monthly stock panel; keep id/eom/excntry + factor inputs.
+        2) Iteratively join rank-normalized columns per variable with proper direction.
+        3) Build mispricing_mgmt from vars_mgmt and mispricing_perf from vars_perf using gen_misp_exp.
+        4) Keep id/eom + both composites and write parquet.
+
+    Output:
+        '{output_path}' with [id, eom, mispricing_perf, mispricing_mgmt].
+    """
     vars_mgmt = ['chcsho_12m','eqnpo_12m','oaccruals_at','noa_at','at_gr1','ppeinv_gr1a']
     vars_perf = ['o_score','ret_12_1','gp_at','niq_at']
     direction = [True, False, True, True, True, True, True, False, False, False]
@@ -2753,7 +4461,21 @@ def mispricing_factors(data_path, min_stks, min_fcts = 3, output_path = 'mp_fact
                             .select(['id', 'eom', 'mispricing_perf', 'mispricing_mgmt']))
     chars['1'].collect().write_parquet(output_path)
 
-def impute_high_low(df: pl.LazyFrame) -> pl.LazyFrame:
+def impute_high_low(df):
+    """
+    Description:
+        Clean/impute daily high/low prices using forward-filled anchors and logical bounds.
+
+    Steps:
+        1) Null out impossible HL (bid-ask flag, zero volume, nonpositive or equal HL).
+        2) Initialize rolling anchors prc_low_r/prc_high_r; update when valid HL arrives.
+        3) Forward-fill anchors; replace HL when price falls within anchor band or violates it; record hlreset reason.
+        4) Null extreme spreads where high/low ratio > 8.
+
+    Output:
+        LazyFrame with corrected prc_low/prc_high (+ diagnostics).
+    """
+
     sc1 = (
           (col("bidask") == 1)
         | (col("tvol") == 0)
@@ -2827,7 +4549,19 @@ def impute_high_low(df: pl.LazyFrame) -> pl.LazyFrame:
     
     return df
 
-def adjust_overnight_returns(df: pl.LazyFrame) -> pl.LazyFrame:
+def adjust_overnight_returns(df):
+    """
+    Description:
+        Adjust today's HL using prior close if it lies outside today’s reported range.
+
+    Steps:
+        1) Add lagged HL and prior close (prc_l1).
+        2) If prc_l1 < low: raise low to prc_l1 and shrink high by the gap; vice versa if prc_l1 > high.
+        3) Build 2-day envelope: prc_high_2d = max(today_t, lag1), prc_low_2d = min(today_t, lag1).
+
+    Output:
+        LazyFrame with prc_low_t/prc_high_t and 2-day bounds (prc_low_2d/prc_high_2d).
+    """
     sc1 = (col('prc_l1') < col('prc_low'))  & (col('prc_l1') > 0)
     sc2 = (col('prc_l1') > col('prc_high')) & (col('prc_l1') > 0)
     df = (df.sort(['id','date'])
@@ -2845,7 +4579,20 @@ def adjust_overnight_returns(df: pl.LazyFrame) -> pl.LazyFrame:
           )
     return df
     
-def compute_bidask_spread(df: pl.LazyFrame, __min_obs: int) -> pl.LazyFrame:
+def compute_bidask_spread(df, __min_obs):
+    """
+    Description:
+        Compute daily bid-ask spread and HL-based volatility, then monthly-average.
+
+    Steps:
+        1) Derive beta, gamma from log HL ranges (today and 2-day); compute alpha.
+        2) Map to spread and sigma; clamp negatives to 0.
+        3) Group by (id, eom); take 21-day means; require ≥ __min_obs days.
+
+    Output:
+        LazyFrame with [id, eom, bidaskhl_21d, rvolhl_21d].
+    """
+
     pi = 3.141592653589793
     k2 = sqrt(8 / pi)
     const = 3 - 2 * sqrt(2)
@@ -2869,6 +4616,19 @@ def compute_bidask_spread(df: pl.LazyFrame, __min_obs: int) -> pl.LazyFrame:
     return df  
 @measure_time
 def bidask_hl(output_path, data_path, market_returns_daily_path, __min_obs):
+    """
+    Description:
+        End-to-end HL-based bid-ask and volatility factors from daily prices and market returns.
+
+    Steps:
+        1) Read daily stock data; join daily market returns; deflate prices by adjfct.
+        2) Impute HL, adjust using prior close, compute spread/vol with monthly aggregation.
+        3) Write parquet.
+
+    Output:
+        '{output_path}' with monthly [id, eom, bidaskhl_21d, rvolhl_21d].
+    """
+
     market_returns_daily = pl.scan_parquet(market_returns_daily_path)
     __dsf = (pl.scan_parquet(data_path)
                .join(market_returns_daily, how = 'left', on=['excntry', 'date'])
@@ -2884,6 +4644,19 @@ def bidask_hl(output_path, data_path, market_returns_daily_path, __min_obs):
 
 @measure_time
 def create_world_data_prelim(msf_path, market_chars_monthly_path, acc_chars_world_path, output_path):
+    """
+    Description:
+        Build preliminary world dataset by merging returns, market characteristics, and accounting data.
+
+    Steps:
+        1) Load msf (stock returns), monthly market chars, and accounting chars parquet files.
+        2) Left-join msf with market chars on (id, eom).
+        3) Left-join with accounting chars on (gvkey, eom vs. public_date).
+        4) Drop dividend-related fields and source flag.
+
+    Output:
+        '{output_path}' parquet with merged stock, market, and accounting data.
+    """
     a = pl.scan_parquet(msf_path)
     b = pl.scan_parquet(market_chars_monthly_path)
     c = pl.scan_parquet(acc_chars_world_path)
@@ -2977,6 +4750,19 @@ def acc_chars_list():
 
 @measure_time
 def finish_daily_chars(output_path):
+    """
+    Description:
+        Combine bid-ask spread and roll-based daily metrics into a final daily chars file.
+
+    Steps:
+        1) Load Corwin-Schultz and roll_apply_daily parquet files.
+        2) Outer join on (id, eom).
+        3) Add betabab (beta * rvol / mktvol) and rmax5_rvol ratio.
+        4) Drop helper columns.
+
+    Output:
+        '{output_path}' parquet with final daily characteristics.
+    """
     bidask = pl.scan_parquet('corwin_schultz.parquet')
     r1 = pl.scan_parquet('roll_apply_daily.parquet').with_columns(col('id').cast(pl.Int64))
     daily_chars = bidask.join(r1, how = 'outer_coalesce', on=['id','eom'])
@@ -2996,6 +4782,19 @@ def z_ranks(data, var, __min, sort):
     return z_df
 @measure_time
 def quality_minus_junk(data_path, min_stks):
+    """
+    Description:
+        Compute standardized within-country z-scores for a variable.
+
+    Steps:
+        1) Rank variable by eom within each country (ascending/descending).
+        2) Keep months with at least __min stocks.
+        3) Standardize rank by mean/std within (excntry, eom).
+        4) Clean NaN values.
+
+    Output:
+        LazyFrame with ['excntry','id','eom', z_{var}].
+    """
     z_vars = ['gp_at', 'ni_be', 'ni_at', 'ocf_at', 'gp_sale', 'oaccruals_at','gpoa_ch5', 'roe_ch5', 'roa_ch5', 'cfoa_ch5', 'gmar_ch5','betabab_1260d', 'debt_at', 'o_score', 'z_score', '__evol']
     direction = ['ascending', 'ascending', 'ascending', 'ascending', 'ascending', 'descending','ascending', 'ascending', 'ascending', 'ascending', 'ascending','descending', 'descending', 'descending', 'ascending', 'descending']
     cols = ['id', 'eom', 'excntry', 'gp_at', 'ni_be', 'ni_at', 'ocf_at', 'gp_sale', 'oaccruals_at', 'gpoa_ch5', 'roe_ch5', 'roa_ch5', 'cfoa_ch5', 'gmar_ch5', 'betabab_1260d', 'debt_at', 'o_score', 'z_score', 'roeq_be_std', 'roe_be_std', pl.coalesce(2 * col('roeq_be_std'), 'roe_be_std').alias('__evol')]
@@ -3029,6 +4828,18 @@ def quality_minus_junk(data_path, min_stks):
 
 @measure_time
 def save_main_data(end_date):
+    """
+    Description:
+        Filter world_data to main securities and export country-level files.
+
+    Steps:
+        1) Load world_data.parquet and compute lagged market equity.
+        2) Filter to valid securities up to end_date.
+        3) Save filtered dataset and split into country parquet files.
+
+    Output:
+        'world_data_filtered.parquet' and 'Characteristics/{country}.parquet'.
+    """
     months_exp = (col('eom').dt.year() * 12 + col('eom').dt.month()).cast(pl.Int64)
     data = (pl.scan_parquet('world_data.parquet')
               .with_columns(dif_aux = months_exp)
@@ -3047,6 +4858,17 @@ def save_main_data(end_date):
 
 @measure_time
 def save_output_files():
+    """
+    Description:
+        Move main market returns and cutoff files to Output folder.
+
+    Steps:
+        1) Use system mv to move parquet outputs.
+        2) Includes market returns (monthly/daily) and cutoff files.
+
+    Output:
+        Files relocated into 'Output/' directory.
+    """
     os.system('mv market_returns.parquet Output/')
     os.system('mv market_returns_daily.parquet Output/')
     os.system('mv nyse_cutoffs.parquet Output/')
@@ -3055,6 +4877,18 @@ def save_output_files():
 
 @measure_time
 def save_daily_ret():
+    """
+    Description:
+        Export daily returns split by country.
+
+    Steps:
+        1) Load world_dsf.parquet with daily returns.
+        2) Identify unique countries.
+        3) For each country, filter and save parquet file (compressed).
+
+    Output:
+        'Daily_Returns/{country}.parquet' files for all countries.
+    """
     data = pl.scan_parquet('world_dsf.parquet').select(['excntry', 'id', 'date', 'me', 'ret', 'ret_exc'])
     countries = pl.scan_parquet('world_dsf.parquet').select('excntry').unique().collect().to_numpy().flatten()
     for i in countries:
@@ -3066,11 +4900,34 @@ def save_daily_ret():
             data.select(pl.all().shrink_dtype()).filter(col('excntry') == i).collect().write_parquet(f'Daily_Returns/{i}.parquet', compression='zstd', compression_level = 11, statistics = False)
 @measure_time
 def save_accounting_data():
+    """
+    Description:
+        Export quarterly and annual accounting datasets.
+
+    Steps:
+        1) Load acc_std_qtr and acc_std_ann parquet files.
+        2) Filter rows with non-null source.
+        3) Write results to Accounting_Data folder.
+
+    Output:
+        'Accounting_Data/Quarterly.parquet' and 'Accounting_Data/Annual.parquet'.
+    """
     pl.scan_parquet('acc_std_qtr.parquet').filter(col('source').is_not_null()).collect().write_parquet('Accounting_Data/Quarterly.parquet')
     pl.scan_parquet('acc_std_ann.parquet').filter(col('source').is_not_null()).collect().write_parquet('Accounting_Data/Annual.parquet')
 
 @measure_time
 def save_full_files_and_cleanup():
+    """
+    Description:
+        Save full datasets and remove temporary files.
+
+    Steps:
+        1) Write compressed versions of world_dsf, world_data, and filtered world_data.
+        2) Remove raw parquet files and Raw_tables/Raw_data_dfs folders.
+
+    Output:
+        Compressed parquet files in Daily_Returns/ and World_Data/, cleanup of temp files.
+    """
     pl.scan_parquet('world_dsf.parquet').select(pl.all().shrink_dtype()).collect(streaming = True).write_parquet(f'Daily_Returns/world_dsf.parquet', compression='zstd', compression_level = 11, statistics = False)
     pl.scan_parquet('world_data.parquet').select(pl.all().shrink_dtype()).collect(streaming = True).write_parquet(f'World_Data/world_data.parquet', compression='zstd', compression_level = 11, statistics = False)
     pl.scan_parquet('world_data_filtered.parquet').select(pl.all().shrink_dtype()).collect(streaming = True).write_parquet(f'World_Data/world_data_filtered.parquet', compression='zstd', compression_level = 11, statistics = False)
@@ -3080,11 +4937,37 @@ def save_full_files_and_cleanup():
 
 @measure_time
 def save_monthly_ret():
+    """
+    Description:
+        Save monthly returns for world securities.
+
+    Steps:
+        1) Load world_msf.parquet and select relevant columns.
+        2) Shrink dtypes and collect results.
+        3) Write to World_Ret_Monthly/world_ret_monthly.parquet.
+
+    Output:
+        Parquet file with monthly returns by country/security.
+    """
     data = pl.scan_parquet('world_msf.parquet').select(['excntry', 'id', 'source_crsp', 'eom', 'me', 'ret_exc', 'ret', 'ret_local'])
     data.select(pl.all().shrink_dtype()).collect().write_parquet(f'World_Ret_Monthly/world_ret_monthly.parquet', compression='zstd', compression_level = 11, statistics = False)
 
 @measure_time
 def merge_roll_apply_daily_results():
+    """
+    Description:
+        Merge rolling regression daily results into one dataset.
+
+    Steps:
+        1) Build date index from earliest to current month.
+        2) Load id_int mapping and all '__roll*' parquet files.
+        3) Outer join them on (id_int, aux_date).
+        4) Map aux_date to calendar eom and join id keys.
+        5) Save consolidated roll_apply_daily.parquet.
+
+    Output:
+        'roll_apply_daily.parquet' with merged roll regression results.
+    """
     date_idx = datetime.datetime.today().month + datetime.datetime.today().year * 12
     df_dates = pl.DataFrame({'aux_date': [i+1 for i in range(23112, date_idx+1)],'eom': [f'{i//12}-{i%12+1}-1' for i in range(23112, date_idx+1)]})
     df_dates = df_dates.with_columns(col('eom').str.strptime(pl.Date, "%Y-%m-%d").dt.month_end().alias('eom'), col('aux_date').cast(pl.Int64))
@@ -3112,6 +4995,18 @@ def merge_roll_apply_daily_results():
 
 @measure_time
 def merge_world_data_prelim():
+    """
+    Description:
+        Combine preliminary world data with factor/regression outputs.
+
+    Steps:
+        1) Load world_data_prelim and factor files (beta, resmom, mispricing, etc.).
+        2) Join all on (id, eom).
+        3) Include firm age variable.
+
+    Output:
+        'world_data_-1.parquet' with enriched world dataset.
+    """
     a = pl.scan_parquet('world_data_prelim.parquet')
     b = pl.scan_parquet('beta_60m.parquet')
     c = pl.scan_parquet('resmom_ff3_12_1.parquet')
@@ -3129,6 +5024,18 @@ def merge_world_data_prelim():
 
 @measure_time
 def merge_qmj_to_world_data():
+    """
+    Description:
+        Append QMJ factor to world_data.
+
+    Steps:
+        1) Load world_data_-1 and qmj.parquet.
+        2) Join on (excntry, id, eom).
+        3) Deduplicate and sort results.
+
+    Output:
+        'world_data.parquet' with QMJ added.
+    """
     a = pl.scan_parquet('world_data_-1.parquet')
     b = pl.scan_parquet('qmj.parquet')
     result = (a.join(b, how = 'left', on = ['excntry','id','eom'])
@@ -3138,6 +5045,19 @@ def merge_qmj_to_world_data():
 
 @measure_time
 def merge_industry_to_world_msf():
+    """
+    Description:
+        Merge industry codes into world MSF dataset.
+
+    Steps:
+        1) Load __msf_world, comp_ind, and crsp_ind datasets.
+        2) Join compustat and CRSP industry codes on matching keys.
+        3) Coalesce SIC/NAICS from both sources.
+        4) Drop redundant columns.
+
+    Output:
+        '__msf_world2.parquet' with industry codes appended.
+    """
     __msf_world = pl.scan_parquet('__msf_world.parquet')
     comp_ind = pl.scan_parquet('comp_ind.parquet')
     crsp_ind = pl.scan_parquet('crsp_ind.parquet').rename({'sic': 'sic_crsp', 'naics': 'naics_crsp'})
@@ -3150,17 +5070,68 @@ def merge_industry_to_world_msf():
 
 @measure_time
 def roll_apply_daily(stats, sfx, __min):
+    """
+    Description:
+        Run rolling daily-stat calculations over grouped date windows and save results.
+
+    Steps:
+        1) Generate date-group mappings from sfx (e.g., _21d → k=1, _252d → k=12).
+        2) Prepare base daily data per stat.
+        3) Apply process_map_chunks for each mapping and concat results.
+        4) Write to '__roll{sfx}_{stats}.parquet'.
+
+    Output:
+        Parquet with per-(id_int, group_number) rolling metrics for `stats`.
+    """
     print(f"Processing {stats} - {sfx.replace('_', '')} - {__min}", flush=True)
     aux_maps = gen_aux_maps(sfx)
     base_data = prepare_base_data(stat = stats)
     results = pl.concat([process_map_chunks(base_data, mapping, stats, sfx, __min) for mapping in aux_maps])
     results.collect().write_parquet(f'__roll{sfx}_{stats}.parquet')
 
-def gen_consecutive_lists(input_list, k): return [input_list[i:i+k] for i in range(0, len(input_list), k) if len(input_list[i:i+k]) == k]
+def gen_consecutive_lists(input_list, k): 
+    """
+    Description:
+        Split a list into consecutive, non-overlapping sublists of length k.
+
+    Steps:
+        1) Slice input_list in steps of k.
+        2) Keep only full-length chunks.
+
+    Output:
+        List of k-length sublists.
+    """
+    return [input_list[i:i+k] for i in range(0, len(input_list), k) if len(input_list[i:i+k]) == k]
     
-def build_groups(input_list, k): return [gen_consecutive_lists(input_list[offset:], k) for offset in range(k)]
+def build_groups(input_list, k): 
+    """
+    Description:
+        Build k staggered groupings (offset windows) over a list.
+
+    Steps:
+        1) For each offset in [0..k-1], take consecutive k-sublists from input_list[offset:].
+        2) Aggregate into a list of group lists.
+
+    Output:
+        List of k lists, each containing k-length sublists.
+    """
+    return [gen_consecutive_lists(input_list[offset:], k) for offset in range(k)]
     
 def group_mapping_dfs(input_list, k):
+    """
+    Description:
+        Create mapping DataFrames linking aux_date to group_number, and group_number to new (max) aux_date.
+
+    Steps:
+        1) Build groups via build_groups(input_list, k).
+        2) For each group, create a DataFrame with aux_date arrays and group_number.
+        3) Return:
+        - group_map: exploded (aux_date, group_number)
+        - date_map : (group_number, aux_date=max group date)
+
+    Output:
+        List of dicts: {'group_map': LazyFrame, 'date_map': LazyFrame}.
+    """
     groups =  build_groups(input_list, k)
     dfs = [pl.DataFrame({'aux_date': group})
              .with_columns(group_number = pl.cum_count('aux_date'), 
@@ -3170,6 +5141,17 @@ def group_mapping_dfs(input_list, k):
              'date_map' : df.select(['group_number', col('new_date').alias('aux_date')]).unique().sort(['group_number']).lazy()}for df in dfs]
 
 def base_data_filter_exp(stat):
+    """
+    Description:
+        Filter predicate for base daily data by statistic type.
+
+    Steps:
+        1) Choose required non-null columns by stat.
+        2) For return-based stats, also require zero_obs < 10.
+
+    Output:
+        Polars expression usable in .filter().
+    """
     if   stat == 'zero_trades': return col('tvol').is_not_null()
     elif stat == 'dolvol'     : return col('dolvol_d').is_not_null()
     elif stat == 'turnover'   : return col('tvol').is_not_null()
@@ -3177,6 +5159,19 @@ def base_data_filter_exp(stat):
     else                      : return (col('ret_exc').is_not_null()) & (col('zero_obs') < 10)
 
 def prepare_base_data(stat):
+    """
+    Description:
+        Load and minimally prepare base daily dataset for a given stat.
+
+    Steps:
+        1) Read 'corr_data.parquet' (mktcorr) or 'dsf1.parquet' (others).
+        2) Add integer aux_date via gen_MMYY_column('eom').
+        3) Filter using base_data_filter_exp(stat).
+        4) For 'dimsonbeta', join lead/lag market returns.
+
+    Output:
+        LazyFrame base_data ready for grouping.
+    """
     base_data_path = 'corr_data.parquet' if stat == 'mktcorr' else 'dsf1.parquet'
     base_data = (pl.scan_parquet(base_data_path)
                 .with_columns(aux_date = gen_MMYY_column('eom'))
@@ -3189,6 +5184,18 @@ def prepare_base_data(stat):
     return base_data
 
 def apply_group_filter(df, stat, min_obs):
+    """
+    Description:
+        Apply per-stat observation-count filters within groups.
+
+    Steps:
+        1) For 'dimsonbeta': require counts by (id_int,eom) and (id_int,group_number) and non-null lags.
+        2) For zero_trades/dolvol/others: count needed column within (id_int,group_number), require ≥ min_obs.
+        3) Pass-through for 'turnover' and 'mktcorr' (later filters inside function).
+
+    Output:
+        Filtered LazyFrame for subsequent aggregation/regression.
+    """
     if stat == 'turnover' or stat == 'mktcorr': 
         pass
     elif stat == 'dimsonbeta':
@@ -3204,7 +5211,19 @@ def apply_group_filter(df, stat, min_obs):
     return df
 
 def process_map_chunks(base_data, mapping, stats, sfx, __min, incl = None, skip = None):
+    """
+    Description:
+        Execute a rolling computation for a mapping: join groups, filter, compute stat, remap to end date.
 
+    Steps:
+        1) Join base_data with mapping['group_map'] on aux_date.
+        2) Apply apply_group_filter(stat, __min).
+        3) Run the appropriate function from `funcs` dict (res_mom with incl/skip).
+        4) Join mapping['date_map'] to replace group_number by new aux_date.
+
+    Output:
+        LazyFrame of per-(id_int, group_number) results with remapped aux_date.
+    """
     funcs = {'rvol'       : rvol, 
              'rmax'       : rmax, 
              'skew'       : skew, 
@@ -3239,6 +5258,19 @@ def process_map_chunks(base_data, mapping, stats, sfx, __min, incl = None, skip 
     return df
 
 def res_mom(df, sfx, __min, incl, skip):
+    """
+    Description:
+        Residual momentum: standardize mean residuals from FF3 over a lookback, excluding most recent skip.
+
+    Steps:
+        1) OLS: ret_exc ~ mktrf + hml + smb_ff (with intercept) → residuals per (id_int,group_number).
+        2) Filter to windows inside (max_date - incl, max_date - skip].
+        3) Require at least __min obs; compute mean(res)/std(res).
+
+    Output:
+        LazyFrame with column f'resff3_{incl}_{skip}' per (id_int, group_number).
+    """
+
     res_exp = pl.col('ret_exc').least_squares.ols('mktrf', 'hml', 'smb_ff', add_intercept = True, mode = 'residuals').over(['id_int', 'group_number'])
     df = (df.filter(
                     col('hml').is_not_null() &
@@ -3262,6 +5294,18 @@ def res_mom(df, sfx, __min, incl, skip):
     return df
 
 def gen_aux_maps(sfx):
+    """
+    Description:
+        Build date-group maps from suffix window length.
+
+    Steps:
+        1) Map suffix to k: {'_21d':1,'_126d':6,'_252d':12,'_1260d':60} or int(sfx).
+        2) Build aux_date range from start index to current month index.
+        3) Create grouped mappings via group_mapping_dfs(date_idx, k).
+
+    Output:
+        List of {'group_map','date_map'} mappings.
+    """
     parameter_mapping = {"_21d": 1,"_126d": 6,"_252d": 12,"_1260d": 60}
     date_aux = datetime.datetime.today().month + datetime.datetime.today().year * 12
     if sfx in parameter_mapping.keys():
@@ -3273,22 +5317,68 @@ def gen_aux_maps(sfx):
     return aux_maps
 
 def rvol(df, sfx, __min):
+    """
+    Description:
+        Rolling return volatility (std of ret_exc) within each date group.
+
+    Steps:
+        1) Group by (id_int, group_number).
+        2) Compute std(ret_exc).
+
+    Output:
+        LazyFrame with f'rvol{sfx}'.
+    """
     df = (df.group_by(['id_int', 'group_number'])
             .agg(col('ret_exc').std().alias(f'rvol{sfx}')))
     return df
 
 def rmax(df, sfx, __min):
+    """
+    Description:
+        Rolling extreme return measures.
+
+    Steps:
+        1) Group by (id_int,group_number).
+        2) Compute mean of top 5 returns and max return.
+
+    Output:
+        LazyFrame with f'rmax5{sfx}' and f'rmax1{sfx}'.
+    """
     df = (df.group_by(['id_int', 'group_number'])
             .agg([col('ret').top_k(5).mean().alias(f'rmax5{sfx}'),
                   col('ret').max().alias(f'rmax1{sfx}')]))
     return df
 
 def skew(df, sfx, __min):
+    """
+    Description:
+        Rolling skewness of excess returns.
+
+    Steps:
+        1) Group by (id_int,group_number).
+        2) Compute unbiased skew(ret_exc).
+
+    Output:
+        LazyFrame with f'rskew{sfx}'.
+    """
     df = (df.group_by(['id_int', 'group_number'])
             .agg(col('ret_exc').skew(bias = False).alias(f'rskew{sfx}')))
     return df
 
 def prc_to_high(df, sfx, __min):
+    """
+    Description:
+        Price-to-high: last price over group max price, with min obs filter.
+
+    Steps:
+        1) Sort by (id_int,date).
+        2) For each (id_int,group_number), compute last(prc_adj)/max(prc_adj) and count.
+        3) Keep groups with n ≥ __min.
+
+    Output:
+        LazyFrame with f'prc_highprc{sfx}'.
+    """
+
     df = (df.sort(['id_int', 'date'])
             .group_by(['id_int', 'group_number'])
             .agg([(col('prc_adj').last()/ col('prc_adj').max()).alias(f'prc_highprc{sfx}'),
@@ -3297,12 +5387,35 @@ def prc_to_high(df, sfx, __min):
             .drop('n'))
     return df
 def capm(df, sfx, __min):
+    """
+    Description:
+        CAPM beta and idiosyncratic volatility in rolling windows.
+
+    Steps:
+        1) For each (id_int,group_number), compute beta = cov(ret_exc,mktrf)/var(mktrf).
+        2) Compute residuals and their std as ivol_capm.
+
+    Output:
+        LazyFrame with f'beta{sfx}' and f'ivol_capm{sfx}'.
+    """
     df = (df.group_by(['id_int', 'group_number'])
             .agg([(pl.cov('ret_exc', 'mktrf')/pl.var('mktrf')).alias(f'beta{sfx}'),
                 (col('ret_exc') - col('mktrf') * (pl.cov('ret_exc', 'mktrf')/pl.var('mktrf'))).std().alias(f'ivol_capm{sfx}')]))
     return df
 
 def ami(df, sfx, __min):
+    """
+    Description:
+        Amihud illiquidity proxy using daily abs returns over dollar volume.
+
+    Steps:
+        1) Define dolvol guard (None if zero).
+        2) Group by (id_int,group_number); compute mean(|ret|/dolvol * 1e6) and count.
+        3) Keep groups with n ≥ __min.
+
+    Output:
+        LazyFrame with f'ami{sfx}'.
+    """
     aux_1 = pl.when(col('dolvol_d') == 0).then(fl_none()).otherwise(col('dolvol_d'))
     df = (df.group_by(['id_int', 'group_number'])
             .agg([(col('ret').abs()/aux_1 * 1e6).mean().alias(f'ami{sfx}'),
@@ -3312,6 +5425,17 @@ def ami(df, sfx, __min):
     return df
 
 def downbeta(df, sfx, __min):
+    """
+    Description:
+        Downside beta using days with negative market returns.
+
+    Steps:
+        1) Filter mktrf < 0.
+        2) Group by (id_int,group_number); compute beta as cov/var; require n ≥ __min/2.
+
+    Output:
+        LazyFrame with f'betadown{sfx}'.
+    """
     df = (df.filter(col('mktrf') < 0)
             .group_by(['id_int', 'group_number'])
             .agg([(pl.cov('ret_exc', 'mktrf')/pl.var('mktrf')).alias(f'betadown{sfx}'),
@@ -3321,11 +5445,33 @@ def downbeta(df, sfx, __min):
     return df
 
 def mktrf_vol(df, sfx, __min):
+    """
+    Description:
+        Market factor volatility within window.
+
+    Steps:
+        1) Group by (id_int,group_number) or simply group_number context.
+        2) Compute std(mktrf).
+
+    Output:
+        LazyFrame with f'__mktvol{sfx}'.
+    """
     df = (df.group_by(['id_int', 'group_number'])
             .agg(col('mktrf').std().alias(f'__mktvol{sfx}')))
     return df
 
 def capm_ext(df, sfx, __min):
+    """
+    Description:
+        Extended CAPM diagnostics: beta, idio vol, idio skew, and coskewness.
+
+    Steps:
+        1) Compute beta and alpha; residuals = ret_exc − (alpha + beta*mktrf).
+        2) Aggregate per (id_int,group_number): std(res), skew(res), coskew = E[res*(mktrf−E mktrf)^2]/(sqrt(E[res^2])*sqrt(E[(mktrf−E)^2])).
+
+    Output:
+        LazyFrame with [f'beta_capm{sfx}', f'ivol_capm{sfx}', f'iskew_capm{sfx}', f'coskew{sfx}'].
+    """
     beta_col     = (pl.cov('ret_exc', 'mktrf')/pl.var('mktrf'))
     alpha_col    = pl.mean('ret_exc') - beta_col * pl.mean('mktrf')
     residual_col = (col('ret_exc') - (alpha_col + col('mktrf') * beta_col))
@@ -3341,6 +5487,17 @@ def capm_ext(df, sfx, __min):
     return df
 
 def ff3(df, sfx, __min):
+    """
+    Description:
+        FF3 residual volatility and skewness in rolling windows.
+
+    Steps:
+        1) OLS: ret_exc ~ mktrf + smb_ff + hml; require factors present.
+        2) Aggregate per (id_int,group_number): std(residuals, ddof=3), skew(residuals).
+
+    Output:
+        LazyFrame with [f'ivol_ff3{sfx}', f'iskew_ff3{sfx}'].
+    """
     res_exp = pl.col('ret_exc').least_squares.ols('mktrf', 'smb_ff', 'hml', add_intercept = True, mode = 'residuals')
     df = (df.filter(col('smb_ff').is_not_null() & col('hml').is_not_null())
             .group_by(['id_int', 'group_number'])
@@ -3349,6 +5506,17 @@ def ff3(df, sfx, __min):
     return df
 
 def hxz4(df, sfx, __min):
+    """
+    Description:
+        HXZ 4-factor residual volatility and skewness.
+
+    Steps:
+        1) OLS: ret_exc ~ mktrf + smb_hxz + roe + inv; require all factors.
+        2) Aggregate per (id_int,group_number): std(residuals, ddof=4), skew(residuals).
+
+    Output:
+        LazyFrame with [f'ivol_hxz4{sfx}', f'iskew_hxz4{sfx}'].
+    """
     res_exp = pl.col('ret_exc').least_squares.ols('mktrf', 'smb_hxz', 'roe', 'inv', add_intercept = True, mode = 'residuals')
     df = (df.filter(col('smb_hxz').is_not_null() & col('roe').is_not_null() & col('inv').is_not_null())
             .group_by(['id_int', 'group_number'])
@@ -3357,6 +5525,19 @@ def hxz4(df, sfx, __min):
     return df
 
 def zero_trades(df, sfx, __min):
+    """
+    Description:
+        Zero-trade days and turnover-based illiquidity composite.
+
+    Steps:
+        1) zero_trades = mean(tvol==0) * 21.
+        2) turnover = tvol/(shares*1e6) when shares>0; take group mean.
+        3) Rank turnover within group_number; composite = rank/100 + zero_trades.
+
+    Output:
+        LazyFrame with f'zero_trades{sfx}'.
+    """
+
     aux_1 = (pl.col('tvol') == 0).mean() * 21
     aux_2 = pl.when(pl.col('shares') != 0).then(pl.col('tvol')/(pl.col('shares')*1e6)).otherwise(fl_none())
     aux_3 = (pl.col('turnover').rank(descending=True, method='average')/pl.count('turnover')).over('group_number')
@@ -3371,6 +5552,17 @@ def zero_trades(df, sfx, __min):
     return df
 
 def dolvol(df, sfx, __min):
+    """
+    Description:
+        Dollar volume level and variability within window.
+
+    Steps:
+        1) Group by (id_int,group_number); compute mean(dolvol_d).
+        2) Compute std/mean as variability (guard when mean==0).
+
+    Output:
+        LazyFrame with [f'dolvol{sfx}', f'dolvol_var{sfx}'].
+    """
     df = (df.group_by(['id_int', 'group_number'])
             .agg([col('dolvol_d').mean().alias(f'dolvol{sfx}'),
                 pl.when(col('dolvol_d').mean() != 0)
@@ -3379,6 +5571,17 @@ def dolvol(df, sfx, __min):
     return df
 
 def turnover(df, sfx, __min):
+    """
+    Description:
+        Turnover level and variability within window.
+
+    Steps:
+        1) Build list turnover_d = tvol/(shares*1e6) (guard shares>0).
+        2) Compute mean(turnover_d), std/mean, and n; require n ≥ __min.
+
+    Output:
+        LazyFrame with [f'turnover{sfx}', f'turnover_var{sfx}'].
+    """
     aux_1 = pl.when(col('turnover_d').list.mean() != 0).then(col('turnover_d').list.std()/col('turnover_d').list.mean()).otherwise(fl_none())
     df = (df.group_by(['id_int', 'group_number'])
             .agg([pl.when(col('shares') != 0).then(col('tvol')/(col('shares')*1e6)).otherwise(fl_none()).alias('turnover_d')])
@@ -3390,6 +5593,17 @@ def turnover(df, sfx, __min):
     return df
 
 def mktcorr(df, sfx, __min):
+    """
+    Description:
+        Rolling correlation between 3-day summed stock and market excess returns.
+
+    Steps:
+        1) Group by (id_int,group_number); count obs for ret_exc_3l and mkt_exc_3l.
+        2) Require both counts ≥ __min; compute Pearson corr.
+
+    Output:
+        LazyFrame with f'corr{sfx}'.
+    """
     df = (df.group_by(['id_int', 'group_number'])
             .agg([pl.count('ret_exc_3l').alias('n1'),
                 pl.count('mkt_exc_3l').alias('n2'),
@@ -3399,6 +5613,17 @@ def mktcorr(df, sfx, __min):
     return df
 
 def dimsonbeta(df, sfx, __min):
+    """
+    Description:
+        Dimson beta (lead-lag adjusted market beta) per window.
+
+    Steps:
+        1) OLS: ret_exc ~ mktrf + mktrf_ld1 + mktrf_lg1; get coefficients per group.
+        2) Sum coefficients on market terms.
+
+    Output:
+        LazyFrame with f'beta_dimson{sfx}'.
+    """
     beta_exp = (col('coeffs').struct.field('mktrf') + col('coeffs').struct.field('mktrf_ld1') + col('coeffs').struct.field('mktrf_lg1'))
     df = (df.group_by(['id_int', 'group_number'])
             .agg(coeffs = pl.col('ret_exc').least_squares.ols('mktrf', 'mktrf_ld1', 'mktrf_lg1', add_intercept = True, mode = 'coefficients', solve_method='svd'))
