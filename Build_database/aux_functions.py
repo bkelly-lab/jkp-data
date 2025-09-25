@@ -489,7 +489,7 @@ def download_raw_data_tables(username, password):
     con.execute("INSTALL postgres; LOAD postgres;")
 
     for table in table_names: 
-        print(f"Downloading WRDS table: {table}", flush=True)
+        # print(f"Downloading WRDS table: {table}", flush=True)
         download_wrds_table(wrds_session_data, con, table, 'Raw_tables/' + table.replace('.', '_') + '.parquet')
     
     con.close()
