@@ -507,10 +507,12 @@ def prepare_comp_sf(freq):
     Output:
         Intermediate Comp security files written by downstream helpers (no direct return).
     """
-    populate_own('Raw_data_dfs/__firm_shares1.parquet', 'gvkey', 'datadate', 'ddate')
-    gen_comp_dsf()
+    # populate_own('Raw_data_dfs/__firm_shares1.parquet', 'gvkey', 'datadate', 'ddate')
+    # gen_comp_dsf()
     if freq == 'both':
+        print('Process comp_ sf1 d')
         process_comp_sf1('d')
+        print('Process comp sf1 m')
         process_comp_sf1('m')
     else: process_comp_sf1(freq)
 
@@ -923,51 +925,56 @@ def add_primary_sec(data_path, datevar, file_name):
     os.system('rm -f aux_prim_sec.ddb')
     con = ibis.duckdb.connect('aux_prim_sec.ddb', threads = os.cpu_count())
 
-    data       = con.read_parquet(data_path)
-    prihistrow = con.read_parquet('Raw_data_dfs/__prihistrow.parquet')
-    prihistusa = con.read_parquet('Raw_data_dfs/__prihistusa.parquet')
-    prihistcan = con.read_parquet('Raw_data_dfs/__prihistcan.parquet')
-    header     = con.read_parquet('Raw_data_dfs/__header.parquet')
+    con.create_table('t1', con.read_parquet(data_path))
+    con.create_table('t2', con.read_parquet('Raw_data_dfs/__prihistrow.parquet'))
+    con.create_table('t3', con.read_parquet('Raw_data_dfs/__prihistusa.parquet'))
+    con.create_table('t4', con.read_parquet('Raw_data_dfs/__prihistcan.parquet'))
+    con.create_table('t5', con.read_parquet('Raw_data_dfs/__header.parquet'))
+
+    data       = con.table('t1')
+    prihistrow = con.table('t2')
+    prihistusa = con.table('t3')
+    prihistcan = con.table('t4')
+    header     = con.table('t5')
 
     data = (data.join(prihistrow, how = 'left',
-                      predicates = [
-                                    data.gvkey == prihistrow.gvkey,
+                    predicates = [
+                                    data['gvkey'] == prihistrow.gvkey,
                                     data[datevar] >= prihistrow.effdate,
                                     ((data[datevar] <= prihistrow.thrudate) | prihistrow.thrudate.isnull())
-                                   ])
-                 .drop(['effdate', 'thrudate', 'gvkey_right'])
-                 .join(prihistusa, how = 'left',
-                       predicates = [
-                                     _.gvkey == prihistusa.gvkey,
-                                     _[datevar] >= prihistusa.effdate,
+                                ])
+                .drop(['effdate', 'thrudate', 'gvkey_right'])
+                .join(prihistusa, how = 'left',
+                    predicates = [
+                                    _['gvkey'] == prihistusa.gvkey,
+                                    _[datevar] >= prihistusa.effdate,
                                     ((_[datevar] <= prihistusa.thrudate) | prihistusa.thrudate.isnull())
                                     ])
-                 .drop(['effdate', 'thrudate', 'gvkey_right'])
-                 .join(prihistcan, how = 'left',
-                       predicates = [
-                                     _.gvkey == prihistcan.gvkey,
-                                     _[datevar] >= prihistcan.effdate,
-                                     ((_[datevar] <= prihistcan.thrudate) | prihistcan.thrudate.isnull())
+                .drop(['effdate', 'thrudate', 'gvkey_right'])
+                .join(prihistcan, how = 'left',
+                    predicates = [
+                                    _['gvkey'] == prihistcan.gvkey,
+                                    _[datevar] >= prihistcan.effdate,
+                                    ((_[datevar] <= prihistcan.thrudate) | prihistcan.thrudate.isnull())
                                     ])
-                 .drop(['effdate', 'thrudate', 'gvkey_right'])
-                 .join(header, how = 'left', predicates = [_.gvkey == header.gvkey])
-                 .drop(['gvkey_right'])
-                 .mutate(
-                         prihistrow = _.prihistrow.coalesce(_.prirow),
-                         prihistusa = _.prihistusa.coalesce(_.priusa),
-                         prihistcan = _.prihistcan.coalesce(_.prican)
+                .drop(['effdate', 'thrudate', 'gvkey_right'])
+                .join(header, how = 'left', predicates = [_['gvkey'] == header.gvkey])
+                .drop(['gvkey_right'])
+                .mutate(
+                        prihistrow = _.prihistrow.coalesce(_.prirow),
+                        prihistusa = _.prihistusa.coalesce(_.priusa),
+                        prihistcan = _.prihistcan.coalesce(_.prican)
                         )
-                 .distinct()
-                 .mutate(
-                         primary_sec = (~(_.iid.isnull()) & ((_.iid == _.prihistrow) | (_.iid == _.prihistusa) | (_.iid == _.prihistcan)))
-                         )
-                 .drop(['exchgdesc', 'prihistrow',	'prihistusa', 'prihistcan', 'prirow', 'priusa', 'prican'])
-                 .cast({'primary_sec': 'int'})
-                 .fill_null({'primary_sec': 0})
-                 .distinct(on = ['gvkey', 'iid', 'datadate'])
-                 .order_by(['gvkey', 'iid', 'datadate'])
-
-    )
+                .distinct()
+                .mutate(
+                        primary_sec = (~(_.iid.isnull()) & ((_.iid == _.prihistrow) | (_.iid == _.prihistusa) | (_.iid == _.prihistcan)))
+                        )
+                .drop(['exchgdesc', 'prihistrow',	'prihistusa', 'prihistcan', 'prirow', 'priusa', 'prican'])
+                    .cast({'primary_sec': 'int'})
+                    .fill_null({'primary_sec': 0})
+                    .distinct(on = ['gvkey', 'iid', 'datadate'])
+                    .order_by(['gvkey', 'iid', 'datadate'])
+        )
     data.to_parquet(file_name)
     con.disconnect()
 
@@ -1037,8 +1044,9 @@ def gen_delist_df(__returns):
     Output:
         DataFrame {gvkey,iid,date_delist,dlret} for use in delisting adjustments.
     """
-    __sec_info = pl.read_parquet('Raw_data_dfs/__sec_info.parquet')
-    __delist = (__returns.filter((col('ret_local').is_not_null()) & (col('ret_local') != 0.))
+    __sec_info = pl.scan_parquet('Raw_data_dfs/__sec_info.parquet')
+    __delist = (__returns.lazy()
+                         .filter((col('ret_local').is_not_null()) & (col('ret_local') != 0.))
                          .select(['gvkey', 'iid', 'datadate'])
                          .sort(['gvkey', 'iid', 'datadate'])
                          .unique(['gvkey', 'iid'], keep = 'last')
@@ -1047,7 +1055,7 @@ def gen_delist_df(__returns):
                          .filter(col('secstat') == 'I')
                          .with_columns(dlret = pl.when(col('dlrsni').is_in(['02', '03'])).then(pl.lit(-0.3)).otherwise(pl.lit(0.)))
                          .select(['gvkey','iid','date_delist','dlret']))
-    return __delist
+    return __delist.collect()
 def gen_temporary_sf(freq, __returns, __delist):
     """
     Description:
@@ -1112,12 +1120,13 @@ def process_comp_sf1(freq):
     """
     #Eager mode is faster here
     if freq == 'm': gen_comp_msf()
-    __returns  = gen_returns_df(freq)
-    __delist   = gen_delist_df(__returns)
-    __comp_sf2 = gen_temporary_sf(freq, __returns, __delist)
-    __comp_sf2 = add_rf_and_exchange_data_to_temporary_sf(freq, __comp_sf2)
-    __comp_sf2.write_parquet('__comp_sf2.parquet')
-    del __comp_sf2
+    # __returns  = gen_returns_df(freq)
+    # __delist   = gen_delist_df(__returns)
+    # __comp_sf2 = gen_temporary_sf(freq, __returns, __delist)
+    # __comp_sf2 = add_rf_and_exchange_data_to_temporary_sf(freq, __comp_sf2)
+    # __comp_sf2.write_parquet('__comp_sf2.parquet')
+    # del __comp_sf2
+    print('Add prim sec')
     add_primary_sec('__comp_sf2.parquet', 'datadate',f'comp_{freq}sf.parquet')
 
 def gen_MMYY_column(var, shift = None):
