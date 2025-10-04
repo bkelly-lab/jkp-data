@@ -5279,7 +5279,7 @@ def res_mom(df, sfx, __min, incl, skip):
             .with_columns(
                  res         = res_exp.alias('res'),
                  max_date_gn = pl.max('aux_date').over('group_number'),
-                 n           = pl.len().over(['id', 'group_number'])
+                 n           = pl.len().over(['id_int', 'group_number'])
                  )
             .filter(
                     (col('aux_date') <= col('max_date_gn') - skip) &
