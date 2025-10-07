@@ -1,7 +1,7 @@
 from aux_functions import *
 end_date = pl.datetime(2023, 12, 31)
 setup_folder_structure()
-download_raw_data_tables(username = "jkp_factors", password = "jkp_factors")
+download_raw_data_tables(username = "", password = "")
 gen_raw_data_dfs()
 prepare_comp_sf('both')
 prepare_crsp_sf('m')
