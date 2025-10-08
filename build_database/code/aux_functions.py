@@ -819,7 +819,7 @@ def gen_secm_data():
         FROM base;
     """)
     con.table('__comp_secm2').to_parquet('secm_data.parquet')
-@measure_time
+    
 def gen_comp_msf():
     """
     Description:
