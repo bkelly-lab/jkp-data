@@ -39,11 +39,10 @@ env/
 outputs/
 output/
 data/
-build_database/data/
-
-# Keep this one intentionally
-!build_database/data/**/.gitkeep
+build_database/data/*
 !build_database/data/.gitkeep
+!build_database/data/**/
+!build_database/data/**/.gitkeep
 # ==========================================
 # OS-specific junk
 # ==========================================
