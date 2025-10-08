@@ -1,4 +1,0 @@
-
-CondaError: Run 'conda init' before 'conda activate'
-
-slurmstepd: error: *** JOB 49273 ON c002 CANCELLED AT 2025-10-07T21:49:52 ***
