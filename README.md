@@ -11,7 +11,14 @@ This document provides instructions for creating a dataset based on the paper *â
 
 ### Steps
 
-1. **Set up a Conda environment and install the packages in the `requirements.txt` file**
+1. **Download the `SAS-Python-Migrate` folder**
+
+   - Download the folder to your local machine by running the following command:
+     ```sh
+     git clone https://github.com/bkelly-lab/SAS-Python-Migrate.git
+     ```
+     
+2. **Set up a Conda environment and install the packages in the `requirements.txt` file**
 
    The sample instructions below may vary depending on your Conda installation.
 
@@ -23,27 +30,22 @@ This document provides instructions for creating a dataset based on the paper *â
      conda install -c conda-forge postgresql
      pip install -r requirements.txt
      ```
-
-2. **Download the `Build_database` Folder**
-
-   - Download the folder to your local machine by running the following command:
-     ```sh
-     git clone https://github.com/bkelly-lab/SAS-Python-Migrate.git
-     ```
-
 3. **Input WRDS Credentials**
 
-   - Navigate to `SAS-Python-Migrate/build_database/code` and run the `jkp_credentials.py` script.  
-     You will need to input your credentials to access WRDS.  
-
-     If you need to change your password or credentials, run:
-     ```sh
-     python jkp_credentials.py --reset
-     ```
-     and then re-run:
+   - Navigate to `SAS-Python-Migrate/build_database/code` and run:
      ```sh
      python jkp_credentials.py
      ```
+     Kindly follow the prompts.  
+
+        If you need to change your password or credentials, run:
+        ```sh
+        python jkp_credentials.py --reset
+        ```
+        and then re-run:
+        ```sh
+        python jkp_credentials.py
+        ```
 
 4. **Run the Script**
 
