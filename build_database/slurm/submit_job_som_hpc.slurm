@@ -27,5 +27,8 @@ export NUMEXPR_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 conda init
 conda activate jkp_factors
 
-# Run the Python script
+# Create char data
 python build_database/code/main.py
+
+# Create portfolio data
+python build_database/code/portfolio.py
