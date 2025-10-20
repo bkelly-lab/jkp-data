@@ -72,3 +72,4 @@ config/python_keyring/
 .local/share/python_keyring/
 .DS_Store
 build_database/.DS_Store
+*.ipynb

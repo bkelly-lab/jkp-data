@@ -2,9 +2,14 @@ import os
 import polars as pl
 from datetime import date
 import numpy as np
-from statsmodels.distributions.empirical_distribution import ECDF
 import time
 from tqdm import tqdm
+import warnings
+warnings.filterwarnings(
+    "ignore",
+    category=UserWarning,
+    message=r"Sortedness.*by.*provided",
+)
 
 # setting data path and output path
 data_path = "build_database/data/processed"
@@ -195,16 +200,41 @@ settings = {
     "daily_pf": True,
     "ind_pf": True,
 }
+def add_ecdf(df: pl.DataFrame, group_cols: list[str] = ["eom"]) -> pl.DataFrame:
+    # 1) counts of reference sample per distinct var within each group
+    ref_counts = (
+        df.filter(pl.col("bp_stock"))
+          .group_by(group_cols + ["var"])
+          .agg(n_ref = pl.len())
+    )
 
-def apply_ecdf_statsmodels(group_df: pl.DataFrame) -> pl.DataFrame:
-    # Fit ECDF on the subset bp_stock == True
-    base = group_df.filter(pl.col("bp_stock")).select("var").to_numpy().ravel()
-    # base = base[~np.isnan(base)]
-    F = ECDF(base, side="right")  # matches R's ecdf (right-continuous)
-    vals = group_df.select("var").to_numpy().ravel()
-    cdf_vals = F(vals)
+    # 2) ECDF steps: cumulative share within each group
+    ref_steps = (
+        ref_counts
+        .sort(group_cols + ["var"])
+        .with_columns(
+            # apply the window to the whole fraction to ensure same partition
+            cdf_val = (pl.cum_sum("n_ref") / pl.sum("n_ref")).over(group_cols)
+        )
+        .select(group_cols + ["var", "cdf_val"])
+    )
 
-    return group_df.with_columns(pl.Series("cdf", cdf_vals))
+    # 3) MUST pre-sort both sides by group_cols + ["var"] for join_asof with 'by'
+    left  = df.sort(group_cols + ["var"])
+    right = ref_steps.sort(group_cols + ["var"])  # already sorted above
+
+    out = (
+        left.join_asof(
+            right,
+            on = "var",
+            by=group_cols,
+            strategy="backward",
+        )
+        .with_columns(pl.col("cdf_val").fill_null(0.0).alias("cdf"))
+        .drop("cdf_val")
+    )
+    return out
+
 
 # main portfolios function to create the portfolios
 def portfolios(
@@ -428,7 +458,7 @@ def portfolios(
         data = data.with_columns(pl.col(x).cast(pl.Float64).alias("var"))
         if not signals:
             # Select rows where 'var' is not missing and only specific columns
-            sub = data.filter(pl.col("var").is_not_null()).select(
+            sub = data.lazy().filter(pl.col("var").is_not_null()).select(
                 [
                     "id",
                     "eom",
@@ -443,7 +473,7 @@ def portfolios(
             )
         else:
             # Select rows where 'var' is not missing, retaining all columns
-            sub = data.filter(pl.col("var").is_not_null())
+            sub = data.lazy().filter(pl.col("var").is_not_null())
 
         if bps == "nyse":
             # Create 'bp_stock' column for NYSE criteria
@@ -465,8 +495,8 @@ def portfolios(
         )
 
         # Ensure that 'sub' is not empty
-        if sub.height > 0:
-            sub = sub.group_by("eom").map_groups(apply_ecdf_statsmodels)
+        if sub.limit(1).collect().height > 0:
+            sub = add_ecdf(sub)
 
             # Step 1: Find the minimum CDF value within each 'eom' group
             sub = sub.with_columns(pl.col("cdf").min().over("eom").alias("min_cdf"))
@@ -482,7 +512,7 @@ def portfolios(
             # Step 3: Calculate portfolio assignments and adjust portfolio numbers (Happens when non-bp stocks extend beyond the bp stock range)
             sub = sub.with_columns((pl.col("cdf") * pfs).ceil().clip(lower_bound=1, upper_bound=pfs).alias("pf"))
 
-            pf_returns = sub.lazy().group_by(["pf", "eom"]).agg(
+            pf_returns = sub.group_by(["pf", "eom"]).agg(
                 [
                     pl.lit(x).alias("characteristic"),
                     pl.len().alias("n"),
@@ -526,7 +556,7 @@ def portfolios(
                 
                 pf_signals = pf_signals.with_columns([pl.lit(x).alias("characteristic"), pl.col("eom").dt.offset_by("1mo").dt.month_end().alias("eom")])
                 signals = pf_signals.clone()  # store in dictionary later
-                op["signals"] = signals
+                op["signals"] = signals.collect()
 
             if daily_pf:
                 weights = (
@@ -545,7 +575,7 @@ def portfolios(
                 )
 
                 daily_sub = weights.join(
-                    daily,
+                    daily.lazy(),
                     left_on=["id", "eom"],
                     right_on=["id", "eom_lag1"],
                     how="left",
@@ -564,7 +594,7 @@ def portfolios(
                         ),
                     ]
                 )
-                op["pf_daily"] = pf_daily
+                op["pf_daily"] = pf_daily.collect()
 
             char_pfs.append(op)
 
