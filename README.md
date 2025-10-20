@@ -1,12 +1,12 @@
-# Global Stock Returns and Stock Characteristics Database
+# Global Stock And Factors Database
 
-This document provides instructions for creating a dataset based on the paper *“Is There a Replication Crisis in Finance?”* by Jensen, Kelly, and Pedersen (*Journal of Finance*, 2023).
+This document provides instructions for creating a dataset based on the paper *“Is There a Replication Crisis in Finance?”* by Jensen, Kelly, and Pedersen (*Journal of Finance*, 2023) as well as portfolio returns.
 
 ## Instructions
 
 ### Prerequisites
 
-- Obtain your WRDS credentials.  
+- Obtain your WRDS credentials.
 - Ensure you have Conda or Miniconda installed on your system.
 
 ### Steps
@@ -49,10 +49,15 @@ This document provides instructions for creating a dataset based on the paper *�
      ```sh
      sbatch build_database/slurm/submit_job_som_hpc.slurm
      ```
+     (This will create the characteristics and the portfolio datasets).
 
      In interactive mode, navigate to `SAS-Python-Migrate` and run:
      ```sh
      python build_database/slurm/main.py
+     ```
+     This will create the characteristics dataset at stock-level. To get the portfolio return series, run:
+     ```sh
+     python build_database/slurm/portfolio.py
      ```
 
    During the initial execution, you may be prompted to grant access to WRDS using two-factor authentication (2FA), such as a Duo notification.  
