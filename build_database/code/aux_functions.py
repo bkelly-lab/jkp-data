@@ -2930,47 +2930,6 @@ def ff_ind_class(data_path, ff_grps):
 
     data.collect().write_parquet("__msf_world3.parquet")
 
-
-def perc_method(series, p, tol=1e-8):
-    """
-    Description:
-        Percentile function for a sorted series, using midpoint if rank ~ integer.
-
-    Steps:
-        1) Compute h = p * n.
-        2) If h ≈ integer j, return avg(series[j-1], series[j]).
-        3) Else return series[floor(h)].
-
-    Output:
-        Single percentile value.
-    """
-    n = len(series)
-    h = p * n
-    j_round = int(round(h))
-    if abs(h - j_round) < tol:
-        return 0.5 * (series[j_round - 1] + series[j_round])
-    j_floor = int(math.floor(h))
-    return series[j_floor]
-
-
-def perc_exp(var, perc_function, list=False, type="float"):
-    """
-    Description:
-        Apply a percentile function to a Polars column or list column.
-
-    Steps:
-        1) If list=True: sort each list, map perc_function.
-        2) Else: sort column, map perc_function.
-
-    Output:
-        Polars expression returning Float64 percentiles.
-    """
-    if list:
-        return col(var).list.sort().map_elements(perc_function, return_dtype=pl.Float64)
-    else:
-        return col(var).sort().map_elements(perc_function, return_dtype=pl.Float64)
-
-
 @measure_time
 def nyse_size_cutoffs(data_path):
     """
@@ -2980,22 +2939,22 @@ def nyse_size_cutoffs(data_path):
     Steps:
         1) Load parquet lazily, filter to NYSE common stocks.
         2) Group by eom, count obs.
-        3) Apply perc_exp with perc_method for cutoffs.
+        3) Apply QUANTILE_DISC for cutoffs.
         4) Collect and save.
 
     Output:
         'nyse_cutoffs.parquet' with [eom, n, nyse_p1, nyse_p20, nyse_p50, nyse_p80].
     """
     nyse_sf = (
-            pl.scan_parquet('__msf_world3.parquet')
+            pl.scan_parquet(data_path)
             .sql("""
             SELECT 
                 eom,
                 COUNT(*)                    AS n,
-                quantile_disc(me, 0.01)     AS nyse_p1,
-                quantile_disc(me, 0.20)     AS nyse_p20,
-                quantile_disc(me, 0.50)     AS nyse_p50,
-                quantile_disc(me, 0.80)     AS nyse_p80 
+                QUANTILE_DISC(me, 0.01)     AS nyse_p1,
+                QUANTILE_DISC(me, 0.20)     AS nyse_p20,
+                QUANTILE_DISC(me, 0.50)     AS nyse_p50,
+                QUANTILE_DISC(me, 0.80)     AS nyse_p80 
             FROM self
             WHERE  crsp_exchcd = 1
                 AND obs_main   = 1
@@ -3084,22 +3043,22 @@ def return_cutoffs(freq, crsp_only):
                 COUNT(ret)                                AS n,
 
                 -- ret percentiles
-                quantile_disc(ret,        0.001)          AS ret_0_1,
-                quantile_disc(ret,        0.01)           AS ret_1,
-                quantile_disc(ret,        0.99)           AS ret_99,
-                quantile_disc(ret,        0.999)          AS ret_99_9,
+                QUANTILE_DISC(ret,        0.001)          AS ret_0_1,
+                QUANTILE_DISC(ret,        0.01)           AS ret_1,
+                QUANTILE_DISC(ret,        0.99)           AS ret_99,
+                QUANTILE_DISC(ret,        0.999)          AS ret_99_9,
 
                 -- ret_local percentiles
-                quantile_disc(ret_local,  0.001)          AS ret_local_0_1,
-                quantile_disc(ret_local,  0.01)           AS ret_local_1,
-                quantile_disc(ret_local,  0.99)           AS ret_local_99,
-                quantile_disc(ret_local,  0.999)          AS ret_local_99_9,
+                QUANTILE_DISC(ret_local,  0.001)          AS ret_local_0_1,
+                QUANTILE_DISC(ret_local,  0.01)           AS ret_local_1,
+                QUANTILE_DISC(ret_local,  0.99)           AS ret_local_99,
+                QUANTILE_DISC(ret_local,  0.999)          AS ret_local_99_9,
 
                 -- ret_exc percentiles
-                quantile_disc(ret_exc,    0.001)          AS ret_exc_0_1,
-                quantile_disc(ret_exc,    0.01)           AS ret_exc_1,
-                quantile_disc(ret_exc,    0.99)           AS ret_exc_99,
-                quantile_disc(ret_exc,    0.999)          AS ret_exc_99_9
+                QUANTILE_DISC(ret_exc,    0.001)          AS ret_exc_0_1,
+                QUANTILE_DISC(ret_exc,    0.01)           AS ret_exc_1,
+                QUANTILE_DISC(ret_exc,    0.99)           AS ret_exc_99,
+                QUANTILE_DISC(ret_exc,    0.999)          AS ret_exc_99_9
 
             FROM self
             GROUP BY {group_vars}
@@ -6856,8 +6815,8 @@ def sort_ff_style(char, min_stocks_bp, min_stocks_pf, date_col, data, sf):
                     eom,
                     excntry_l,
                     COUNT(*) AS n,
-                    quantile_disc({char}_l, 0.3) AS bp_p30,
-                    quantile_disc({char}_l, 0.7) AS bp_p70
+                    QUANTILE_DISC({char}_l, 0.3) AS bp_p30,
+                    QUANTILE_DISC({char}_l, 0.7) AS bp_p70
                 FROM self
                 GROUP BY excntry_l, eom
                 ORDER BY excntry_l, eom
@@ -6899,44 +6858,6 @@ def sort_ff_style(char, min_stocks_bp, min_stocks_pf, date_col, data, sf):
         .sort(["excntry", date_col])
     )
     return returns
-
-
-def winsorize_var(df, sort_vars, wins_var, perc_low, perc_high):
-    """
-    Description:
-        Winsorize a variable within groups using group-specific percentile bands.
-
-    Steps:
-        1) For each group (sort_vars), compute low/high cutoffs via perc_method on lists.
-        2) Clamp wins_var to [low, high] and expose as ret_exc (or overwrite target).
-
-    Output:
-        DataFrame with winsorized 'ret_exc' and original columns preserved.
-    """
-    aux = (
-        df.group_by(sort_vars)
-        .agg(col(wins_var))
-        .with_columns(
-            low=perc_exp(wins_var, lambda x: perc_method(x, perc_low), True),
-            high=perc_exp(wins_var, lambda x: perc_method(x, perc_high), True),
-        )
-        .select([*sort_vars, "low", "high"])
-    )
-    wins_df = (
-        df.join(aux, how="left", on=sort_vars)
-        .with_columns(
-            ret_exc=(
-                pl.when(col(wins_var) < col("low"))
-                .then(col("low"))
-                .when(col(wins_var) > col("high"))
-                .then(col("high"))
-                .otherwise(col(wins_var))
-            )
-        )
-        .drop(["low", "high"])
-    )
-    return wins_df
-
 
 @measure_time
 def ap_factors(
@@ -6980,7 +6901,29 @@ def ap_factors(
         .filter(sf_cond & col("ret_exc").is_not_null())
         .select(["excntry", "id", "eom", "date", "ret_exc"])
     )
-    world_sf2 = winsorize_var(world_sf1, ["eom"], "ret_exc", 0.1 / 100, 99.9 / 100)
+    world_sf2 = world_sf1.sql(f"""
+                                WITH bounds AS (
+                                SELECT
+                                    eom,
+                                    QUANTILE_DISC(ret_exc, {0.1 /100}) AS low,
+                                    QUANTILE_DISC(ret_exc, {99.9/100}) AS high
+                                FROM self
+                                GROUP BY eom
+                                )
+                                SELECT
+                                    excntry,
+                                    id,
+                                    eom,
+                                    date,
+                                    CASE
+                                        WHEN ret_exc < low  THEN low
+                                        WHEN ret_exc > high THEN high
+                                        ELSE ret_exc
+                                    END AS ret_exc
+                                FROM self
+                                LEFT JOIN bounds
+                                USING (eom)
+                            """)
 
     base = (
         pl.scan_parquet(mchars_path)
@@ -7073,7 +7016,7 @@ def winsorize_by_group(
         SQL winsorization within groups using discrete percentiles.
 
     Steps:
-        1) Create percs table: low/high = quantile_disc(win_var, lower/upper) by group_cols.
+        1) Create percs table: low/high = QUANTILE_DISC(win_var, lower/upper) by group_cols.
         2) Create output table replacing win_var with [low, high] bounds via join.
 
     Output:
@@ -7090,8 +7033,8 @@ def winsorize_by_group(
     CREATE TABLE percs AS
     SELECT
       {grp_list},
-      quantile_disc({win_var}, {lower}) AS low,
-      quantile_disc({win_var}, {upper}) AS high
+      QUANTILE_DISC({win_var}, {lower}) AS low,
+      QUANTILE_DISC({win_var}, {upper}) AS high
     FROM {table}
     GROUP BY {grp_list};
     """)
