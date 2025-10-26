@@ -8410,7 +8410,7 @@ def save_accounting_data():
 
 
 @measure_time
-def save_full_files_and_cleanup():
+def save_full_files_and_cleanup(clear_all = True):
     """
     Description:
         Save full datasets and remove temporary files.
@@ -8435,7 +8435,7 @@ def save_full_files_and_cleanup():
     ).collect(streaming=True).write_parquet(
         f"characteristics/world_data_filtered.parquet"
     )
-    os.system("rm -rf ../interim/* ../raw/*")
+    if clear_all: os.system("rm -rf ../interim/* ../raw/*")
 
 
 @measure_time
