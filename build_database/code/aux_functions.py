@@ -3123,7 +3123,7 @@ def add_cutoffs_and_winsorize(df, wins_data_path, group_vars, dt_col):
 
     result = ctx.execute(f"""
     SELECT 
-        a.*,
+        a.*
         REPLACE(
             CASE
                 WHEN a.source_crsp = 0
