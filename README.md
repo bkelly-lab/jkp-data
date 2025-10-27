@@ -15,7 +15,7 @@ This document provides instructions for creating a dataset based on the paper *â
 
    - Download the folder to your local machine by running the following command:
      ```sh
-     git clone https://github.com/bkelly-lab/SAS-Python-Migrate.git
+     git clone git@github.com:bkelly-lab/SAS-Python-Migrate.git
      ```
      
 2. **Set up a Conda environment and install the packages in the `requirements.txt` file**
