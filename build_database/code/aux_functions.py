@@ -3066,34 +3066,6 @@ def return_cutoffs(freq, crsp_only):
             """)
     data.sink_parquet(res_path)
 
-def winsorize_mkt_ret(var, cutoff, comparison):
-    """
-    Description:
-        Winsorize a return variable using group cutoffs; skip CRSP rows.
-
-    Steps:
-        1) Build condition comparing var to cutoff ('>' or '<'), treat null cutoff as pass.
-        2) Only apply when source_crsp == 0 and var is non-null.
-        3) Replace with cutoff; else keep var.
-
-    Output:
-        Polars expression aliasing back to var.
-    """
-    if comparison == ">":
-        c1 = (
-            (col(var) > col(cutoff)).fill_null(pl.lit(True))
-            & (col("source_crsp") == 0)
-            & (col(var).is_not_null())
-        )
-    else:
-        c1 = (
-            (col(var) < col(cutoff)).fill_null(pl.lit(True))
-            & (col("source_crsp") == 0)
-            & (col(var).is_not_null())
-        )
-    return (pl.when(c1).then(col(cutoff)).otherwise(col(var))).alias(var)
-
-
 def load_mkt_returns_params(freq):
     """
     Description:
@@ -3109,7 +3081,7 @@ def load_mkt_returns_params(freq):
     dt_col = "date" if freq == "d" else "eom"
     max_date_lag = 14 if freq == "d" else 1
     path_aux = "_daily" if freq == "d" else ""
-    group_vars = ["year", "month"] if freq == "d" else ["eom"]
+    group_vars = "year, month" if freq == "d" else "eom"
     comm_stocks_cols = [
         "source_crsp",
         "id",
@@ -3143,34 +3115,50 @@ def add_cutoffs_and_winsorize(df, wins_data_path, group_vars, dt_col):
     Output:
         Polars LazyFrame/DataFrame with winsorized returns and cutoff columns joined.
     """
-    wins_data = pl.scan_parquet(wins_data_path).select(
-        group_vars
-        + [
-            "ret_exc_0_1",
-            "ret_exc_99_9",
-            "ret_0_1",
-            "ret_99_9",
-            "ret_local_0_1",
-            "ret_local_99_9",
-        ]
-    )
-    df = (
-        df.with_columns(year=col(dt_col).dt.year(), month=col(dt_col).dt.month())
-        .join(wins_data, how="left", on=group_vars)
-        .with_columns(
-            [
-                winsorize_mkt_ret(i, f"{i}_99_9", ">")
-                for i in ["ret", "ret_local", "ret_exc"]
-            ]
-        )
-        .with_columns(
-            [
-                winsorize_mkt_ret(i, f"{i}_0_1", "<")
-                for i in ["ret", "ret_local", "ret_exc"]
-            ]
-        )
-    )
-    return df
+    df = df.with_columns(year=col('eom').dt.year(), month=col('eom').dt.month())
+    wins_data = pl.scan_parquet(wins_data_path)
+    ctx = pl.SQLContext()
+    ctx.register("df", df)
+    ctx.register("wins_data", wins_data)
+
+    result = ctx.execute(f"""
+    SELECT 
+        a.* EXCLUDE (ret, ret_local, ret_exc),
+        CASE
+            WHEN a.source_crsp = 0
+            AND a.ret IS NOT NULL
+            AND a.ret > b.ret_99_9 THEN b.ret_99_9
+            WHEN a.source_crsp = 0
+            AND a.ret IS NOT NULL
+            AND a.ret < b.ret_0_1 THEN b.ret_0_1
+            ELSE a.ret
+        END AS ret,
+        
+        CASE
+            WHEN a.source_crsp = 0
+            AND a.ret_local IS NOT NULL
+            AND a.ret_local > b.ret_local_99_9 THEN b.ret_local_99_9
+            WHEN a.source_crsp = 0
+            AND a.ret_local IS NOT NULL
+            AND a.ret_local < b.ret_local_0_1 THEN b.ret_local_0_1
+            ELSE a.ret_local
+        END AS ret_local,
+        
+        CASE
+            WHEN a.source_crsp = 0
+            AND a.ret_exc IS NOT NULL
+            AND a.ret_exc > b.ret_exc_99_9 THEN b.ret_exc_99_9
+            WHEN a.source_crsp = 0
+            AND a.ret_exc IS NOT NULL
+            AND a.ret_exc < b.ret_exc_0_1 THEN b.ret_exc_0_1
+            ELSE a.ret_exc
+        END AS ret_exc
+
+    FROM df AS a
+    LEFT JOIN wins_data AS b
+    USING ({group_vars})
+    """)
+    return result
 
 
 def sas_sum_agg(name):
@@ -7001,61 +6989,6 @@ def ap_factors(
     )
     output.write_parquet(output_path)
 
-
-def winsorize_by_group(
-    con,
-    table: str,
-    group_cols: list[str],
-    win_var: str,
-    lower: float = 0.001,
-    upper: float = 0.999,
-    out_winsor: str = "winsorized_rets",
-):
-    """
-    Description:
-        SQL winsorization within groups using discrete percentiles.
-
-    Steps:
-        1) Create percs table: low/high = QUANTILE_DISC(win_var, lower/upper) by group_cols.
-        2) Create output table replacing win_var with [low, high] bounds via join.
-
-    Output:
-        DuckDB table {out_winsor} with group-winsorized {win_var}.
-    """
-
-    # 1) Build the GROUP BY list and join condition
-    grp_list = ", ".join(group_cols)
-    join_cond = " AND ".join(f"d.{c}=p.{c}" for c in group_cols)
-
-    # 2) Compute per‐group percentiles
-    con.raw_sql(f"""
-    DROP TABLE IF EXISTS percs;
-    CREATE TABLE percs AS
-    SELECT
-      {grp_list},
-      QUANTILE_DISC({win_var}, {lower}) AS low,
-      QUANTILE_DISC({win_var}, {upper}) AS high
-    FROM {table}
-    GROUP BY {grp_list};
-    """)
-
-    # 3) Apply winsorization
-    con.raw_sql(f"""
-    DROP TABLE IF EXISTS {out_winsor};
-    CREATE TABLE {out_winsor} AS
-    SELECT
-       d.* EXCLUDE ({win_var}),
-      CASE
-        WHEN d.{win_var} < p.low  THEN p.low
-        WHEN d.{win_var} > p.high THEN p.high
-        ELSE d.{win_var}
-      END AS {win_var}
-    FROM {table} AS d
-    LEFT JOIN percs AS p
-      ON {join_cond};
-    """)
-
-
 def prep_data_factor_regs(data_path, fcts_path):
     """
     Description:
@@ -7070,14 +7003,20 @@ def prep_data_factor_regs(data_path, fcts_path):
         DuckDB connection containing tables '__msf2' (ready for rolling regs).
     """
 
-    os.system("rm -f aux_beta.ddb")
-    con = ibis.duckdb.connect("aux_beta.ddb", threads=os.cpu_count())
-    con.create_table("data_msf", con.read_parquet(data_path), overwrite=True)
-    con.create_table("fcts", con.read_parquet(fcts_path), overwrite=True)
-    con.raw_sql("""
-    DROP TABLE IF EXISTS __msf1;
-
-    CREATE TABLE __msf1 AS
+    os.system("rm -f aux_factor_regs.ddb")
+    con = ibis.duckdb.connect("aux_factor_regs.ddb", threads=os.cpu_count())
+    
+    con.raw_sql(f"""
+    CREATE OR REPLACE VIEW data_msf AS
+    SELECT *
+    FROM read_parquet('{data_path}');
+    
+    CREATE OR REPLACE VIEW fcts AS
+    SELECT *
+    FROM read_parquet('{fcts_path}');
+    
+    CREATE OR REPLACE TABLE __msf2 AS
+    WITH __msf1 AS (
     SELECT
         a.id,
         CAST(a.id AS INTEGER) AS id_int,
@@ -7101,11 +7040,27 @@ def prep_data_factor_regs(data_path, fcts_path):
         a.ret_local <> 0
         AND a.ret_exc   IS NOT NULL
         AND a.ret_lag_dif = 1
-        AND b.mktrf    IS NOT NULL;
-    """)
-    winsorize_by_group(
-        con, "__msf1", ["eom"], "ret_exc", 0.1 / 100, 99.9 / 100, "__msf2"
+        AND b.mktrf    IS NOT NULL
+    ),
+    percs AS (
+        SELECT
+          eom,
+          QUANTILE_DISC(ret_exc, {0.1 /100}) AS low,
+          QUANTILE_DISC(ret_exc, {99.9/100}) AS high
+        FROM __msf1
+        GROUP BY eom
     )
+    SELECT
+       d.* EXCLUDE (ret_exc),
+      CASE
+        WHEN d.ret_exc < p.low  THEN p.low
+        WHEN d.ret_exc > p.high THEN p.high
+        ELSE d.ret_exc
+      END AS ret_exc
+    FROM __msf1 AS d
+    LEFT JOIN percs AS p
+      USING (eom);
+    """)
     return con
 
 
