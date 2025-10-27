@@ -22,7 +22,7 @@ This document provides instructions for creating a dataset based on the paper *â
 
    The sample instructions below may vary depending on your Conda installation.
 
-   - Download the `requirements.txt` file and navigate to the directory where it is stored.
+   - Navigate to `SAS-Python-Migrate/`
    - Run the following commands:
      ```sh
      conda create --name jkp_factors python=3.11.11 -y
