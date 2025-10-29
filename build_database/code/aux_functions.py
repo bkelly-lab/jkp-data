@@ -8202,7 +8202,7 @@ def save_main_data(end_date):
       COMPRESSION ZSTD,
       PARTITION_BY (excntry),
       WRITE_PARTITION_COLUMNS TRUE,
-      OVERWRITE_OR_IGNORE
+      OVERWRITE
       );
     """)
     con.close()
@@ -8277,7 +8277,7 @@ def save_daily_ret():
     ( FORMAT PARQUET, 
       COMPRESSION ZSTD, 
       PARTITION_BY (excntry), 
-      OVERWRITE_OR_IGNORE
+      OVERWRITE
       );
     """)
     con.close()
