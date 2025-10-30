@@ -19,7 +19,7 @@ This document provides instructions for creating a dataset based on the paper *â
      ```
 2. **Input WRDS Credentials**
 
-   - To save your WRDS credentials, run:
+   - To save your WRDS credentials, navigate to the `SAS-Python-Migrate/` folder and run:
      ```sh
      uv run python code/wrds_credentials.py
      ```
