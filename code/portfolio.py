@@ -13,8 +13,8 @@ warnings.filterwarnings(
 )
 
 # setting data path and output path
-data_path = "build_database/data/processed"
-output_path = "build_database/data/processed/portfolios"
+data_path = "data/processed"
+output_path = "data/processed/portfolios"
 
 countries = []
 # Iterate through all files in the folder
