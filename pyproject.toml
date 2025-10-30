@@ -7,6 +7,7 @@ requires-python = ">=3.11"
 dependencies = [
     "datetime==5.4",
     "duckdb==1.4.1",
+    "fastexcel>=0.16.0",
     "ibis-framework[duckdb,postgres]==11.0",
     "keyring==25.6.0",
     "keyrings-alt==5.0.2",
