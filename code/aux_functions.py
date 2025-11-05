@@ -3076,7 +3076,7 @@ def load_mkt_returns_params(freq):
     dt_col = "date" if freq == "d" else "eom"
     max_date_lag = 14 if freq == "d" else 1
     path_aux = "_daily" if freq == "d" else ""
-    group_vars = "year, month" if freq == "d" else "eom"
+    group_vars = ["year", "month"] if freq == "d" else ["eom"]
     comm_stocks_cols = [
         "source_crsp",
         "id",
@@ -3110,8 +3110,12 @@ def add_cutoffs_and_winsorize(df, wins_data_path, group_vars, dt_col):
     Output:
         Polars LazyFrame/DataFrame with winsorized returns and cutoff columns joined.
     """
+    print('New version')
     df = df.with_columns(year=col(dt_col).dt.year(), month=col(dt_col).dt.month())
     wins_data = pl.scan_parquet(wins_data_path)
+
+    on_clause = " AND ".join([f"a.{k} = b.{k}" for k in group_vars])
+
     ctx = pl.SQLContext()
     ctx.register("df", df)
     ctx.register("wins_data", wins_data)
@@ -3152,7 +3156,7 @@ def add_cutoffs_and_winsorize(df, wins_data_path, group_vars, dt_col):
         )
     FROM df AS a
     LEFT JOIN wins_data AS b
-    USING ({group_vars})
+        ON {on_clause}
     """)
     return result
 
