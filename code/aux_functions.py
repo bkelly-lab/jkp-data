@@ -9019,7 +9019,7 @@ def capm_ext(df, sfx, __min):
         2) Aggregate per (id_int,group_number): std(res), skew(res), coskew = E[res*(mktrf−E mktrf)^2]/(sqrt(E[res^2])*sqrt(E[(mktrf−E)^2])).
 
     Output:
-        LazyFrame with [f'beta_capm{sfx}', f'ivol_capm{sfx}', f'iskew_capm{sfx}', f'coskew{sfx}'].
+        LazyFrame with [f'beta_{sfx}', f'ivol_capm{sfx}', f'iskew_capm{sfx}', f'coskew{sfx}'].
     """
     beta_col = pl.cov("ret_exc", "mktrf") / pl.var("mktrf")
     alpha_col = pl.mean("ret_exc") - beta_col * pl.mean("mktrf")
@@ -9030,7 +9030,7 @@ def capm_ext(df, sfx, __min):
 
     df = df.group_by(["id_int", "group_number"]).agg(
         [
-            beta_col.cast(pl.Float64).alias(f"beta_capm{sfx}"),
+            beta_col.cast(pl.Float64).alias(f"beta_{sfx}"),
             residual_col.std().alias(f"ivol_capm{sfx}"),
             residual_col.skew(bias=False).alias(f"iskew_capm{sfx}"),
             (exp_coskew1 / exp_coskew2).alias(f"coskew{sfx}"),

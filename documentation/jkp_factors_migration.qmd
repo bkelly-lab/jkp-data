@@ -247,7 +247,7 @@ ax2.grid(axis="y", linestyle="--", alpha=0.7)
 
 plt.show()
 ```
-Here, factors differ more than in the U.S. sample. However, performance remains strong: only 9 out of 153 factors have a correlation below 0.90, and only 3 fall below 0.80.
+Here, factors differ more than in the U.S. sample. However, performance remains strong with all factors having a correlation above 90%.
 
 ```{python}
 #| label: fig-comparison4
