@@ -9030,7 +9030,7 @@ def capm_ext(df, sfx, __min):
 
     df = df.group_by(["id_int", "group_number"]).agg(
         [
-            beta_col.cast(pl.Float64).alias(f"beta_{sfx}"),
+            beta_col.cast(pl.Float64).alias(f"beta{sfx}"),
             residual_col.std().alias(f"ivol_capm{sfx}"),
             residual_col.skew(bias=False).alias(f"iskew_capm{sfx}"),
             (exp_coskew1 / exp_coskew2).alias(f"coskew{sfx}"),

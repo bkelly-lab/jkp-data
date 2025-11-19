@@ -281,8 +281,90 @@ plt.show()
 
 Overall, the mean and standard deviation of the factor returns are close to those produced in SAS/R.
 
+## Comparison of characteristics at stock level
+
+At a more granular level, we can also compare the correlation of the characteristics produced by the SAS portion of the previous version of the code and Python. 
+For that purpose, we compute the Spearman rank correlation of each of the characteristics. 
+
+The plot below shows a histogram of the rank correlation:
+```{python}
+#| label: fig-comparison5
+#| fig-cap: "Histogram of Spearman rank correlations."
+corr_df = pl.read_parquet('data/sas_vs_py_summ_stats.parquet')
+fig, ax = plt.subplots(figsize=(9, 5))
+
+# Histogram (capture counts and patches)
+n, bins, patches = ax.hist(
+    corr_df["spearman r-corr"],
+    bins=10,
+    density=False,
+    edgecolor="black",
+    linewidth=0.5,
+    alpha=0.8,
+)
+
+# X limits
+ax.set_xlim(0.7, 1.01)
+
+# Labels & title
+ax.set_xlabel(r"$\rho$", fontsize=14)
+ax.set_ylabel("n", fontsize=14)
+ax.set_title("Distribution of Spearman rank correlations", pad=20, fontsize=16)
+
+# Mean line and label
+mean_r = corr_df["spearman r-corr"].mean()
+ax.axvline(
+    mean_r,
+    color="red",
+    linestyle="--",
+    linewidth=1.3,
+)
+
+# Put mean text *above* the tallest bar, horizontal
+max_count = n.max() if len(n) > 0 else 1
+ax.text(
+    mean_r,
+    max_count * 1.3,       # 30% above tallest bar
+    f"Mean = {mean_r:.3f}",
+    color="red",
+    ha="center",
+    va="bottom",
+    fontsize=9,
+)
+
+# Numbers on top of each bar
+for count, patch in zip(n, patches):
+    if count <= 0:
+        continue  # skip empty bins (log scale hates 0)
+    x = patch.get_x() + patch.get_width() / 2
+    y = patch.get_height()
+    ax.text(
+        x,
+        y * 1.05,          # slightly above bar
+        f"{int(count)}",
+        ha="center",
+        va="bottom",
+        fontsize=8,
+    )
+
+# Light grid on y-axis
+ax.grid(axis="y", linestyle="--", alpha=0.4)
+
+# Clean up spines
+for spine in ["top", "right"]:
+    ax.spines[spine].set_visible(False)
+
+# Log scale on y
+ax.set_yscale("log")
+
+fig.tight_layout()
+plt.show()
+```
+What this shows is that most characteristics can be used to sort stocks, and the resulting portfolios are effectively identical to those produced in SAS. There are only three characteristics with a rank correlation below 0.99: eqnpo_1m, eqnpo_3m, and eqnpo_12m. In these cases, we found that small differences in numerical precision affect the output. However, other statistical measures—such as the mean and higher-order moments of the distributions—indicate that the results align very closely between SAS and Python.
+A more comprehensive comparison can be found in the `documentation/data/sas_vs_py_summ_stats.parquet` file, which includes distributional comparisons for all characteristics across the global sample (corresponding to `world_data_filtered.parquet`).
+
 **Main sources of differences:**
 
-- **Numerical precision:** Small differences in floating-point behavior between SAS and Python can flip inequality evaluations at the margin.
+- **Numerical precision:** Small differences in floating-point behavior between SAS and Python can flip inequality evaluations at the margin as well as result in differences in computation of the characteristics.
 - **Data revisions:** Underlying data may have changed.
 - **Algorithmic adjustments:** Differences due to updates in `standardized_accounting_data` for improved duplicate handling.
