@@ -6,13 +6,13 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "datetime==5.4",
-    "duckdb==1.4.1",
+    "duckdb==1.4.2",
     "fastexcel>=0.16.0",
     "ibis-framework[duckdb,postgres]==11.0",
     "keyring==25.6.0",
     "keyrings-alt==5.0.2",
     "numpy==1.26.4",
-    "polars==1.34.0",
+    "polars==1.35.2",
     "polars-ds==0.10.2",
     "polars-ols==0.3.5",
     "pyarrow==16.1.0",
