@@ -354,8 +354,8 @@ ax.grid(axis="y", linestyle="--", alpha=0.4)
 for spine in ["top", "right"]:
     ax.spines[spine].set_visible(False)
 
-# Log scale on y
-ax.set_yscale("log")
+# Log scale on y (Optional)
+# ax.set_yscale("log")
 
 fig.tight_layout()
 plt.show()
