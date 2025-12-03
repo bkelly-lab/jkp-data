@@ -12,7 +12,7 @@ dependencies = [
     "keyring==25.6.0",
     "keyrings-alt==5.0.2",
     "numpy==1.26.4",
-    "polars==1.35.2",
+    "polars==1.34.0",
     "polars-ds==0.10.2",
     "polars-ols==0.3.5",
     "pyarrow==16.1.0",
