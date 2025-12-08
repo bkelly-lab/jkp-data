@@ -384,3 +384,60 @@ plt.show()
 ```
 
 Overall, the mean and standard deviation of the factor returns are close to those produced in SAS/R.
+
+## Correlation by factor-country
+
+Finally, we examine correlations at the factor–country level. For each characteristic and country, we compare the SAS and Python return series of the corresponding factor portfolios. The figure below summarizes these comparisons by plotting the inverse cumulative distribution of the correlations for each portfolio type (EW, VW, VW_CAP), showing the proportion of factor–country portfolios that achieve at least a given correlation.
+
+```{python}
+#| label: fig-comparison6
+#| fig-cap: "Inverse CDF of return series correlation."
+
+import pandas as pd
+df = pd.read_parquet("data/lms_comparison.parquet")
+
+portfolios = [("EW", "ew"), ("VW", "vw"), ("VW_CAP", "vw_cap")]
+
+# Long form for correlations and mean/std differences
+records = []
+for label, suffix in portfolios:
+    records.append(
+        pd.DataFrame(
+            {
+                "portfolio": label,
+                "corr": df[f"corr_{suffix}"],
+                "mean_sas": df[f"mean_{suffix}_sas"],
+                "mean_py": df[f"mean_{suffix}_py"],
+                "std_sas": df[f"std_{suffix}_sas"],
+                "std_py": df[f"std_{suffix}_py"],
+                "n_common": df["n_common"],
+            }
+        )
+    )
+long = pd.concat(records, ignore_index=True)
+long["mean_diff"] = long["mean_py"] - long["mean_sas"]
+long["std_diff"] = long["std_py"] - long["std_sas"]
+
+# Inverse CDF: proportion on x, correlation on y
+inv_records = []
+for label, suffix in portfolios:
+    vals = df[f"corr_{suffix}"].dropna().sort_values().to_numpy()
+    n = len(vals)
+    prop = np.linspace(0, 1, n, endpoint=True)
+    inv_records.append(pd.DataFrame({"portfolio": label, "proportion": prop, "corr": vals}))
+inv = pd.concat(inv_records, ignore_index=True)
+
+plt.figure(figsize=(10, 6))
+for label in [p[0] for p in portfolios]:
+        sub = inv[inv["portfolio"] == label]
+        plt.step(sub["proportion"], sub["corr"], where="post", label=label)
+plt.axhline(1, color="k", linestyle="--", linewidth=1, alpha=0.6)
+plt.xlabel("Proportion")
+plt.ylabel("Correlation (SAS vs Python)")
+plt.title("Inverse CDF of correlations by portfolio type")
+plt.xlim(0, 1)
+plt.ylim(-1, 1.1)
+plt.legend(title="Portfolio")
+plt.tight_layout()
+```
+

@@ -194,3 +194,15 @@ remains strong with all factors having a correlation above 90%.
 
 Overall, the mean and standard deviation of the factor returns are close
 to those produced in SAS/R.
+
+## Correlation by factor-country
+
+Finally, we examine correlations at the factor–country level. For each
+characteristic and country, we compare the SAS and Python return series
+of the corresponding factor portfolios. The figure below summarizes
+these comparisons by plotting the inverse cumulative distribution of the
+correlations for each portfolio type (EW, VW, VW_CAP), showing the
+proportion of factor–country portfolios that achieve at least a given
+correlation.
+
+![](release_notes_files/figure-markdown_strict/fig-comparison6-output-1.png)
