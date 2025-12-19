@@ -20,3 +20,10 @@ dependencies = [
     "sqlalchemy==1.4.49",
     "tqdm==4.66.5",
 ]
+
+[dependency-groups]
+dev = [
+    "ipykernel>=7.1.0",
+    "jupyter>=1.1.1",
+    "matplotlib>=3.10.8",
+]
