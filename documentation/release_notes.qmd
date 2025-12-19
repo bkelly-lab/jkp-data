@@ -15,7 +15,7 @@ execute:
 
 ## Introduction
 
-We’re excited to announce the release of the newest version of the code that generates the global dataset of factor returns, stock returns, and firm characteristics from [“Is there a Replication Crisis in Finance?”](https://onlinelibrary.wiley.com/doi/full/10.1111/jofi.13249) (Jensen, Kelly, and Pedersen, *Journal of Finance* 2023). This new version has been completely rewritten in Python, replacing the previous SAS and R codebase, and is freely available on [`GitHub`](https://github.com/bkelly-lab/jkp-data).
+We’re excited to announce the release of the newest version of the code that generates the global dataset of factor returns, stock returns, and firm characteristics from [“Is there a Replication Crisis in Finance?”](https://onlinelibrary.wiley.com/doi/full/10.1111/jofi.13249) (Jensen, Kelly, and Pedersen, *Journal of Finance* 2023). This new version has been completely rewritten in Python, replacing the previous SAS and R codebase, and is freely available on [`GitHub`](https://github.com/bkelly-lab/jkp-data). We are grateful to Faheem Almas and Fernando Reyes De La Luz for excellent research assistance.
 
 **Highlights of this release:**
 
@@ -83,7 +83,7 @@ Next, we show a strong alignment between the characteristics and factors produce
 
 ## Comparison of characteristics at stock level
 
-The contain 402 stock-level characteristics. We start by computing the Spearman correlation between each characteristic from SAS/R and the corresponding characteristic from Python. The correlation is computed across all firms, dates, and countries where both versions have non-missing values (in reality the overlap is close to perfect).
+The data contains 402 stock-level characteristics. We start by computing the Spearman correlation between each characteristic from SAS/R and the corresponding characteristic from Python. The correlation is computed across all firms, dates, and countries where both versions have non-missing values (in reality the overlap is close to perfect).
 
 ```{python}
 #| label: fig-comparison1
@@ -166,9 +166,9 @@ fig.tight_layout()
 plt.show()
 ```
 
-Figure @fig-comparison1 shows that the spearman correlations are high, with the lowest correlation above 0.994, the average correlation at 0.999, and the majority of the correlations being effectively 1. 
+Figure @fig-comparison1 shows that the Spearman correlations are high, with the lowest correlation above 0.994, the average correlation at 0.999, and the majority of the correlations being effectively 1. 
 
-Moving to the Pearson correlations, two characteristis (`resff3_6_1` and `resff3_12_1`), have low correlations, but these low correlations are solely due to outliers. The 1st and 99th percentiles of the characteristics are effectively identical between SAS and Python. Beside these two charcteristics, `sale_emp` and `bidaskhl_21d` has a Pearson correlation of 0.977 and 0.991, respectively, and all other characteristics have a Pearson correlation above 0.997. We provide a wide range of summary statistics to compare characteristics in SAS/R and Python in [`sas_vs_py_summ_stats.parquet`](data/sas_vs_py_summ_stats.parquet).^[In the new Python code, the 'div' and 'eqnpo' characteristics in the `market_chars_monthly` subroutine are coerced to 0 whenever their magnitude falls below 1e-5, in order to eliminate arithmetic noise. When comparising characteristics values, we have likewise set 'div' and 'eqnpo' to 0 in the SAS results whenever their magnitued is smaller than 1e-5. In the portfolio return comparisons, however, we use the original SAS/R output, that is, before applying the zero-floor adjustments to `div_*` and `eqnpo_*`.]
+Moving to the Pearson correlations, two characteristics (`resff3_6_1` and `resff3_12_1`), have low correlations, but these low correlations are solely due to outliers. The 1st and 99th percentiles of the characteristics are effectively identical between SAS and Python. Beside these two characteristics, `sale_emp` and `bidaskhl_21d` have a Pearson correlation of 0.977 and 0.991, respectively, and all other characteristics have a Pearson correlation above 0.997. We provide a wide range of summary statistics to compare characteristics in SAS/R and Python in [`sas_vs_py_summ_stats.parquet`](data/sas_vs_py_summ_stats.parquet).^[In the new Python code, the 'div' and 'eqnpo' characteristics in the `market_chars_monthly` subroutine are coerced to 0 whenever their magnitude falls below 1e-5, in order to eliminate arithmetic noise. When comparing characteristics values, we have likewise set 'div' and 'eqnpo' to 0 in the SAS results whenever their magnitude is smaller than 1e-5. In the portfolio return comparisons, however, we use the original SAS/R output, that is, before applying the zero-floor adjustments to `div_*` and `eqnpo_*`.]
 
 ## US factor comparison
 
@@ -273,10 +273,10 @@ plt.show()
 
 ## World ex-US factor comparison
 
-We now repeat the comparison for the World ex-US region. Figure @fig-comparison4 shows that the return correlations are high, but lower than in the U.S. The differences mainly arise in earlier years where only few stocks have a non-missing characteristic, and where small changes in which stocks are longed and shorted can have a big difference on the factor return. Figure @fig-comparison5, however, show that the mean and standard deviation of the factors across the two datasets align closely.   
+We now repeat the comparison for the World ex-US region. Figure @fig-comparison4 shows that the return correlations are high, but lower than in the U.S. The differences mainly arise in earlier years where few stocks have a non-missing characteristic, and where small changes in which stocks are longed and shorted can have a big impact on the factor return. Figure @fig-comparison5, however, shows that the mean and standard deviation of the factors across the two datasets align closely.   
 ```{python}
 #| label: fig-comparison4
-#| fig-cap: "Correlation of World Ex US factor portfolios produced by Python and SAS/R."
+#| fig-cap: "Correlation of World ex-US factor portfolios produced by Python and SAS/R."
 
 import polars as pl
 from polars import col
@@ -340,7 +340,7 @@ plt.show()
 
 ```{python}
 #| label: fig-comparison5
-#| fig-cap: "Comparison of mean and standard deviation of World Ex US factor portfolios produced by Python and SAS/R."
+#| fig-cap: "Comparison of mean and standard deviation of World ex-US factor portfolios produced by Python and SAS/R."
 # Dummy arrays for diagonal lines
 line_coords1 = df.sort('mean_sas')['mean_sas'].to_numpy().flatten()
 line_coords2 = df.sort('std_py')['std_py'].to_numpy().flatten()
@@ -372,7 +372,7 @@ Overall, the mean and standard deviation of the factor returns are close to thos
 
 ## Correlation by factor-country
 
-Finally, we examine correlations at the factor–country level. Figure @fig-comparison6 summarizes these comparisons by plotting the inverse cumulative distribution of the correlations for each weighting scheme (equal-weigths, value-weigths, and capped-value-weights). The figure shows that the vast majority of factors across countries and weighting scheme achieves a correlation close to 1.
+Finally, we examine correlations at the factor–country level. Figure @fig-comparison6 summarizes these comparisons by plotting the inverse cumulative distribution of the correlations for each weighting scheme (equal-weights, value-weights, and capped-value-weights). The figure shows that the vast majority of factors across countries and weighting schemes achieve a correlation close to 1.
 
 ```{python}
 #| label: fig-comparison6
