@@ -15,7 +15,7 @@ This repo contains Python code to generate the global dataset of factor returns,
 
    - Clone the folder to your local machine by running the following command from your terminal:
      ```sh
-     git clone git@github.com:bkelly-lab/SAS-Python-Migrate.git
+     git clone git@github.com:bkelly-lab/jkp-data.git
      ```
 2. **Input WRDS credentials**
 
