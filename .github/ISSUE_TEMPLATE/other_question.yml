@@ -1,0 +1,70 @@
+name: Question / Other Issue
+description: Ask a question or report an issue that does not fit other categories
+title: "[Question]: "
+labels: ["question", "triage"]
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Have a question or an issue that does not fit the bug report, data discrepancy, or feature request templates? Please describe it below.
+
+        **Note:** For general discussions, consider using [GitHub Discussions](https://github.com/bkelly-lab/jkp-data/discussions) instead.
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Category
+      description: What category best describes your question?
+      options:
+        - Methodology / academic question
+        - Data interpretation
+        - Setup / installation help
+        - Usage / how-to question
+        - Documentation clarification
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: Describe your question or issue
+      placeholder: |
+        What would you like to know?
+        What are you trying to understand?
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Relevant Context
+      description: Any background information that might help us understand your question
+      placeholder: |
+        - What have you already tried?
+        - What documentation have you read?
+        - Any relevant code or data examples?
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional_info
+    attributes:
+      label: Additional Information
+      description: Any other details you would like to share
+      placeholder: Links, screenshots, etc.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Pre-submission Checklist
+      description: Please confirm the following
+      options:
+        - label: I have searched existing issues and discussions for an answer
+          required: true
+        - label: I have read the documentation
+          required: true

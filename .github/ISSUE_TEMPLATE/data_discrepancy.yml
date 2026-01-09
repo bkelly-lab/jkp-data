@@ -1,0 +1,359 @@
+name: Data Discrepancy
+description: Report incorrect, missing, or unexpected data values
+title: "[Data]: "
+labels: ["data-issue", "triage"]
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting a data discrepancy. Accurate data is critical for academic research. Please provide as much detail as possible.
+
+  - type: dropdown
+    id: discrepancy_type
+    attributes:
+      label: Type of Discrepancy
+      description: What kind of data issue did you find?
+      options:
+        - Missing data (NaN/null where values expected)
+        - Wrong values (numerically incorrect)
+        - Differs from published JKP factors
+        - Differs from previous run
+        - Differs from external source (WRDS, Compustat, etc.)
+        - Unexpected format or structure
+        - Date range issue
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: data_type
+    attributes:
+      label: Affected Data Type
+      description: What type of data is affected?
+      options:
+        - Firm characteristics
+        - Factor returns (monthly)
+        - Factor returns (daily)
+        - Stock returns
+        - Accounting data
+        - Market returns
+        - Industry portfolios
+        - Regional factors
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: characteristic
+    attributes:
+      label: Affected Characteristic(s)
+      description: Select the primary characteristic affected (if applicable)
+      multiple: true
+      options:
+        - age
+        - aliq_at
+        - aliq_mat
+        - ami_126d
+        - at_be
+        - at_gr1
+        - at_me
+        - at_turnover
+        - be_gr1a
+        - be_me
+        - beta_60m
+        - beta_dimson_21d
+        - betabab_1260d
+        - betadown_252d
+        - bev_mev
+        - bidaskhl_21d
+        - capex_abn
+        - capx_gr1
+        - capx_gr2
+        - capx_gr3
+        - cash_at
+        - chcsho_12m
+        - coa_gr1a
+        - col_gr1a
+        - cop_at
+        - cop_atl1
+        - corr_1260d
+        - coskew_21d
+        - cowc_gr1a
+        - dbnetis_at
+        - debt_gr3
+        - debt_me
+        - dgp_dsale
+        - div12m_me
+        - dolvol_126d
+        - dolvol_var_126d
+        - dsale_dinv
+        - dsale_drec
+        - dsale_dsga
+        - earnings_variability
+        - ebit_bev
+        - ebit_sale
+        - ebitda_mev
+        - emp_gr1
+        - eq_dur
+        - eqnetis_at
+        - eqnpo_12m
+        - eqnpo_me
+        - eqpo_me
+        - f_score
+        - fcf_me
+        - fnl_gr1a
+        - gp_at
+        - gp_atl1
+        - ival_me
+        - inv_gr1
+        - inv_gr1a
+        - iskew_capm_21d
+        - iskew_ff3_21d
+        - iskew_hxz4_21d
+        - ivol_capm_21d
+        - ivol_capm_252d
+        - ivol_ff3_21d
+        - ivol_hxz4_21d
+        - kz_index
+        - lnoa_gr1a
+        - lti_gr1a
+        - market_equity
+        - mispricing_mgmt
+        - mispricing_perf
+        - ncoa_gr1a
+        - ncol_gr1a
+        - netdebt_me
+        - netis_at
+        - nfna_gr1a
+        - ni_ar1
+        - ni_be
+        - ni_inc8q
+        - ni_ivol
+        - ni_me
+        - niq_at
+        - niq_at_chg1
+        - niq_be
+        - niq_be_chg1
+        - niq_su
+        - nncoa_gr1a
+        - noa_at
+        - noa_gr1a
+        - o_score
+        - oaccruals_at
+        - oaccruals_ni
+        - ocf_at
+        - ocf_at_chg1
+        - ocf_me
+        - ocfq_saleq_std
+        - op_at
+        - op_atl1
+        - ope_be
+        - ope_bel1
+        - opex_at
+        - pi_nix
+        - ppeinv_gr1a
+        - prc
+        - prc_highprc_252d
+        - qmj
+        - qmj_growth
+        - qmj_prof
+        - qmj_safety
+        - rd_me
+        - rd_sale
+        - rd5_at
+        - resff3_12_1
+        - resff3_6_1
+        - ret_1_0
+        - ret_12_1
+        - ret_12_7
+        - ret_3_1
+        - ret_6_1
+        - ret_60_12
+        - ret_9_1
+        - rmax1_21d
+        - rmax5_21d
+        - rmax5_rvol_21d
+        - rskew_21d
+        - rvol_21d
+        - sale_bev
+        - sale_emp_gr1
+        - sale_gr1
+        - sale_gr3
+        - sale_me
+        - saleq_gr1
+        - saleq_su
+        - seas_1_1an
+        - seas_1_1na
+        - seas_11_15an
+        - seas_11_15na
+        - seas_16_20an
+        - seas_16_20na
+        - seas_2_5an
+        - seas_2_5na
+        - seas_6_10an
+        - seas_6_10na
+        - sti_gr1a
+        - taccruals_at
+        - taccruals_ni
+        - tangibility
+        - tax_gr1a
+        - turnover_126d
+        - turnover_var_126d
+        - z_score
+        - zero_trades_126d
+        - zero_trades_21d
+        - zero_trades_252d
+        - Other (specify in description)
+        - Multiple / Not specific to one characteristic
+    validations:
+      required: false
+
+  - type: dropdown
+    id: country_region
+    attributes:
+      label: Country/Region Affected
+      description: Which country or region shows the discrepancy?
+      options:
+        - USA
+        - World (all countries)
+        - Developed markets
+        - Emerging markets
+        - World ex-US
+        - AUS (Australia)
+        - AUT (Austria)
+        - BEL (Belgium)
+        - CAN (Canada)
+        - CHE (Switzerland)
+        - CHN (China)
+        - DEU (Germany)
+        - DNK (Denmark)
+        - ESP (Spain)
+        - FIN (Finland)
+        - FRA (France)
+        - GBR (United Kingdom)
+        - HKG (Hong Kong)
+        - IND (India)
+        - IRL (Ireland)
+        - ISR (Israel)
+        - ITA (Italy)
+        - JPN (Japan)
+        - KOR (South Korea)
+        - NLD (Netherlands)
+        - NOR (Norway)
+        - NZL (New Zealand)
+        - PRT (Portugal)
+        - SGP (Singapore)
+        - SWE (Sweden)
+        - TWN (Taiwan)
+        - Other (specify in description)
+        - Multiple countries
+    validations:
+      required: true
+
+  - type: input
+    id: date_range_start
+    attributes:
+      label: Start Date of Affected Period
+      description: When does the discrepancy begin? (YYYY-MM-DD format)
+      placeholder: "1990-01-31"
+    validations:
+      required: false
+
+  - type: input
+    id: date_range_end
+    attributes:
+      label: End Date of Affected Period
+      description: When does the discrepancy end? (YYYY-MM-DD format)
+      placeholder: "2024-12-31"
+    validations:
+      required: false
+
+  - type: dropdown
+    id: comparison_baseline
+    attributes:
+      label: Comparison Baseline
+      description: What are you comparing against?
+      options:
+        - Published JKP factors (jkpfactors.com)
+        - WRDS Global Factor Data
+        - Previous run of this codebase
+        - Original SAS/R codebase output
+        - Kenneth French Data Library
+        - AQR data
+        - Published academic paper
+        - Other external source
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Detailed Description
+      description: Describe the discrepancy in detail
+      placeholder: |
+        What values did you expect?
+        What values did you observe?
+        How large is the discrepancy?
+    validations:
+      required: true
+
+  - type: textarea
+    id: sample_data
+    attributes:
+      label: Sample of Problematic Data
+      description: Provide a sample showing the issue (e.g., a few rows with expected vs actual values)
+      render: markdown
+      placeholder: |
+        | date       | characteristic | expected | actual   |
+        |------------|----------------|----------|----------|
+        | 2023-12-31 | be_me          | 0.85     | 0.42     |
+        | 2023-11-30 | be_me          | 0.83     | NaN      |
+    validations:
+      required: false
+
+  - type: textarea
+    id: reproduction_code
+    attributes:
+      label: Code to Reproduce (Optional)
+      description: If you have code that demonstrates the discrepancy, please share it
+      render: python
+      placeholder: |
+        import polars as pl
+
+        # Load the data
+        df = pl.read_parquet("data/processed/characteristics/USA.parquet")
+
+        # Show the discrepancy
+        print(df.filter(pl.col("characteristic") == "be_me"))
+    validations:
+      required: false
+
+  - type: input
+    id: run_date
+    attributes:
+      label: Date Code Was Run
+      description: When did you run the pipeline? (YYYY-MM-DD)
+      placeholder: "2024-01-15"
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: Additional Context
+      description: Any other information that might be helpful
+      placeholder: Links to papers, screenshots, related issues, etc.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Pre-submission Checklist
+      description: Please confirm the following
+      options:
+        - label: I have searched existing issues to ensure this discrepancy has not already been reported
+          required: true
+        - label: I have verified my comparison baseline is reliable
+          required: true

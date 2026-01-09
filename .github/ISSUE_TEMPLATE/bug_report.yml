@@ -1,0 +1,173 @@
+name: Bug Report
+description: Report a bug or error in the JKP data pipeline
+title: "[Bug]: "
+labels: ["bug", "triage"]
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for taking the time to report a bug. Please fill out the form below as completely as possible to help us diagnose and fix the issue.
+
+  - type: dropdown
+    id: script
+    attributes:
+      label: Which script were you running?
+      description: Select the script that produced the error
+      options:
+        - main.py (data generation)
+        - portfolio.py (factor returns)
+        - wrds_credentials.py (credential setup)
+        - Other (please specify in description)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: error_category
+    attributes:
+      label: Error Category
+      description: What type of error did you encounter?
+      options:
+        - WRDS connection / authentication
+        - Data download failure
+        - Memory / OOM error
+        - Computation error
+        - File I/O error
+        - Missing dependencies
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: A clear and concise description of what the bug is
+      placeholder: Describe what happened...
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps_to_reproduce
+    attributes:
+      label: Steps to Reproduce
+      description: Steps to reproduce the behavior
+      placeholder: |
+        1. Run `uv run python code/main.py`
+        2. Wait for WRDS authentication
+        3. See error at step X
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected_behavior
+    attributes:
+      label: Expected Behavior
+      description: What did you expect to happen?
+      placeholder: Describe what you expected...
+    validations:
+      required: true
+
+  - type: textarea
+    id: error_output
+    attributes:
+      label: Error Output / Stack Trace
+      description: Please paste the full error message and stack trace
+      render: shell
+      placeholder: |
+        Traceback (most recent call last):
+          File "code/main.py", line X, in <module>
+            ...
+        Error: ...
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating System
+      description: e.g., Ubuntu 22.04, macOS 14.0, Windows 11
+      placeholder: Ubuntu 22.04
+    validations:
+      required: true
+
+  - type: input
+    id: python_version
+    attributes:
+      label: Python Version
+      description: Output of `python --version`
+      placeholder: "3.11.x"
+    validations:
+      required: true
+
+  - type: input
+    id: polars_version
+    attributes:
+      label: Polars Version
+      description: Output of `python -c "import polars; print(polars.__version__)"`
+      placeholder: "1.34.0"
+    validations:
+      required: true
+
+  - type: input
+    id: uv_version
+    attributes:
+      label: uv Version
+      description: Output of `uv --version`
+      placeholder: "0.x.x"
+    validations:
+      required: true
+
+  - type: input
+    id: ram
+    attributes:
+      label: Available RAM
+      description: How much RAM does your system have?
+      placeholder: "450 GB"
+    validations:
+      required: false
+
+  - type: dropdown
+    id: wrds_auth
+    attributes:
+      label: WRDS Authentication Method
+      description: How are you authenticating with WRDS?
+      options:
+        - Stored credentials (keyring)
+        - Manual entry each run
+        - Not applicable
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: wrds_2fa
+    attributes:
+      label: WRDS Two-Factor Authentication
+      description: Did you complete the 2FA step (e.g., Duo notification)?
+      options:
+        - label: Yes, I approved the 2FA request
+        - label: No 2FA prompt appeared
+        - label: 2FA failed or timed out
+        - label: Not applicable
+
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: Additional Context
+      description: Any other information that might be helpful (screenshots, log files, etc.)
+      placeholder: Add any other context here...
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Pre-submission Checklist
+      description: Please confirm the following
+      options:
+        - label: I have searched existing issues to ensure this bug has not already been reported
+          required: true
+        - label: I am using the latest version of the code from the main branch
+          required: true
+        - label: I have read the README and followed the setup instructions
+          required: true

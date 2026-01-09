@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+contact_links:
+  - name: GitHub Discussions
+    url: https://github.com/bkelly-lab/jkp-data/discussions
+    about: Ask general questions, share ideas, or discuss the project with the community
+  - name: JKP Factors Website
+    url: https://jkpfactors.com
+    about: Access pre-computed global factor returns and documentation
+  - name: Documentation PDF
+    url: https://jkpfactors.s3.amazonaws.com/documents/Documentation.pdf
+    about: Read detailed documentation for JKP factor data
+  - name: Original Paper
+    url: https://onlinelibrary.wiley.com/doi/full/10.1111/jofi.13249
+    about: "Read the original paper: 'Is there a Replication Crisis in Finance?' (Jensen, Kelly, and Pedersen, JF 2023)"

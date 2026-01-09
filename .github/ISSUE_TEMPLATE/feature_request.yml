@@ -1,0 +1,99 @@
+name: Feature Request
+description: Suggest a new feature or enhancement for the JKP data pipeline
+title: "[Feature]: "
+labels: ["enhancement", "triage"]
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for suggesting an improvement to the JKP data pipeline. Please describe your idea in detail.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Feature Description
+      description: Describe the feature you would like to see
+      placeholder: |
+        What would you like to be added or changed?
+        How would it work?
+    validations:
+      required: true
+
+  - type: textarea
+    id: use_case
+    attributes:
+      label: Use Case / Motivation
+      description: Why do you need this feature? What problem does it solve?
+      placeholder: |
+        Describe your use case...
+        What are you trying to accomplish?
+    validations:
+      required: true
+
+  - type: textarea
+    id: academic_justification
+    attributes:
+      label: Academic / Industry Justification (if applicable)
+      description: For new characteristics or methodological changes, please provide academic references
+      placeholder: |
+        - Reference paper(s): Author (Year), "Title", Journal
+        - Why is this important for finance research?
+        - Is this characteristic used in industry?
+    validations:
+      required: false
+
+  - type: textarea
+    id: proposed_implementation
+    attributes:
+      label: Proposed Implementation (Optional)
+      description: If you have ideas on how to implement this, please share
+      placeholder: |
+        - Which files would need to change?
+        - What data sources would be needed?
+        - Any technical considerations?
+    validations:
+      required: false
+
+  - type: dropdown
+    id: willingness_to_contribute
+    attributes:
+      label: Willingness to Contribute
+      description: Would you be willing to help implement this feature?
+      options:
+        - "Yes, I can implement this myself and submit a PR"
+        - "Yes, I can help with testing/validation"
+        - "Yes, I can help with documentation"
+        - "No, but I can provide detailed specifications"
+        - "No, I am just suggesting the idea"
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Have you considered any alternative approaches?
+      placeholder: What other solutions have you thought about?
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: Additional Context
+      description: Any other information that might be helpful
+      placeholder: Screenshots, links, related projects, etc.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Pre-submission Checklist
+      description: Please confirm the following
+      options:
+        - label: I have searched existing issues to ensure this feature has not already been requested
+          required: true
+        - label: I have read the documentation to confirm this feature does not already exist
+          required: true
