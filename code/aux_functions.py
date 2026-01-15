@@ -402,31 +402,31 @@ def gen_raw_data_dfs():
     sic_naics_gl = sic_naics_aux("../raw/raw_tables/comp_g_funda.parquet")
     collect_and_write(sic_naics_gl, "raw_data_dfs/sic_naics_gl.parquet")
     permno0 = (
-        pl.scan_parquet("../raw/raw_tables/crsp_dsenames.parquet")
+        pl.scan_parquet("../raw/raw_tables/crsp_stksecurityinfohist.parquet")
         .select(
             [
                 col("permno").cast(pl.Int64),
                 col("permco").cast(pl.Int64),
-                "namedt",
-                "nameendt",
+                "secinfostartdt",
+                "secinfoenddt",
                 col("siccd").cast(pl.Int64).alias("sic"),
                 col("naics").cast(pl.Int64),
             ]
         )
         .unique()
-        .sort(["permno", "namedt", "nameendt"])
+        .sort(["permno", "secinfostartdt", "secinfoenddt"])
     )
     collect_and_write(permno0, "raw_data_dfs/permno0.parquet")
     comp_hgics_na = comp_hgics_aux("../raw/raw_tables/comp_co_hgic.parquet")
     collect_and_write(comp_hgics_na, "raw_data_dfs/comp_hgics_na.parquet")
     comp_hgics_gl = comp_hgics_aux("../raw/raw_tables/comp_g_co_hgic.parquet")
     collect_and_write(comp_hgics_gl, "raw_data_dfs/comp_hgics_gl.parquet")
-    crsp_dsedelist = pl.scan_parquet("../raw/raw_tables/crsp_dsedelist.parquet").select(
-        ["dlret", "dlstcd", col("permno").cast(pl.Int64), "dlstdt"]
+    crsp_dsedelist = pl.scan_parquet("../raw/raw_tables/crsp_stkdelists.parquet").select(
+        ["delret", 'delactiontype','delstatustype', 'delreasontype', 'delpaymenttype', col("permno").cast(pl.Int64), "delistingdt"]
     )
     collect_and_write(crsp_dsedelist, "raw_data_dfs/crsp_dsedelist.parquet")
-    crsp_msedelist = pl.scan_parquet("../raw/raw_tables/crsp_msedelist.parquet").select(
-        ["dlret", "dlstcd", col("permno").cast(pl.Int64), "dlstdt"]
+    crsp_msedelist = pl.scan_parquet("../raw/raw_tables/crsp_stkdelists.parquet").select(
+        ["delret", 'delactiontype','delstatustype', 'delreasontype', 'delpaymenttype', col("permno").cast(pl.Int64), "delistingdt"]
     )
     collect_and_write(crsp_msedelist, "raw_data_dfs/crsp_msedelist.parquet")
     __sec_info = pl.concat(
@@ -473,7 +473,7 @@ def gen_crsp_sf(freq):
 
     Steps:
         1) Load crsp_{freq}sf, crsp_{freq}senames, and ccmxpf_lnkhist into Ibis.
-        2) Join SF to SENAMES on permno with date in [namedt, nameendt].
+        2) Join SF to SENAMES on permno with date in [secinfostartdt, secinfoenddt].
         3) Join to CCM link history on permno and link date window, linktype in {LC, LU, LS}.
         4) Compute fields: bidask flag, abs(prc), shrout (thousands), ME, prc_high/low (valid only if prc>0),
         main exchange flag, and carry identifiers.
@@ -483,16 +483,40 @@ def gen_crsp_sf(freq):
         Ibis table (not written) with standardized CRSP {m|d} security fields.
     """
     con = ibis.duckdb.connect(threads=os.cpu_count())
-    sf = con.read_parquet(f"../raw/raw_tables/crsp_{freq}sf.parquet")
-    senames = con.read_parquet(f"../raw/raw_tables/crsp_{freq}senames.parquet")
+    sf = con.read_parquet(f"../raw/raw_tables/crsp_{freq}sf_v2.parquet")
+    senames = con.read_parquet(f"../raw/raw_tables/crsp_stksecurityinfohist.parquet")
     ccmxpf_lnkhist = con.read_parquet("../raw/raw_tables/crsp_ccmxpf_lnkhist.parquet")
+    
+    # ---------- CIZ name mapping by frequency ----------
+    if freq == "m":
+        date_expr   = sf.mthcaldt.cast("date")
+        prc_expr    = sf.mthprc.abs()
+        prcflg_expr = sf.mthprcflg
+        ret_expr    = sf.mthret
+        retx_expr   = sf.mthretx
+        vol_expr    = sf.mthvol
+        prcflg_expr = sf.mthprcflg
+        cfacshr_expr = sf.mthcumfacshr
+        askhi_expr = sf.mthaskhi
+        bidlo_expr = sf.mthbidlo
+    else:
+        date_expr   = sf.dlycaldt.cast("date")
+        prc_expr    = sf.dlyprc.abs()
+        prcflg_expr = sf.dlyprcflg
+        ret_expr    = sf.dlyret
+        retx_expr   = sf.dlyretx
+        vol_expr    = sf.dlyvol
+        cfacshr_expr = sf.dlycumfacshr
+        askhi_expr   = sf.dlyhigh
+        bidlo_expr   = sf.dlylow
+        
     sf_senames_join = sf.join(
         senames,
         how="left",
         predicates=[
             (sf.permno == senames.permno),
-            (sf.date >= senames.namedt),
-            (sf.date <= senames.nameendt),
+            (date_expr >= senames.secinfostartdt.cast("date")),
+            (date_expr <= senames.secinfoenddt.cast("date")),
         ],
     )
 
@@ -501,25 +525,70 @@ def gen_crsp_sf(freq):
         how="left",
         predicates=[
             (sf.permno == ccmxpf_lnkhist.lpermno),
-            ((sf.date >= ccmxpf_lnkhist.linkdt) | ccmxpf_lnkhist.linkdt.isnull()),
-            ((sf.date <= ccmxpf_lnkhist.linkenddt) | ccmxpf_lnkhist.linkenddt.isnull()),
+            ((date_expr >= ccmxpf_lnkhist.linkdt.cast("date")) | ccmxpf_lnkhist.linkdt.isnull()),
+            ((date_expr <= ccmxpf_lnkhist.linkenddt.cast("date")) | ccmxpf_lnkhist.linkenddt.isnull()),
             ccmxpf_lnkhist.linktype.isin(["LC", "LU", "LS"]),
         ],
     )
+    
+    bidask_expr = ibis.cases(
+        (prcflg_expr == "BA", 1),
+        (prcflg_expr == "TR", 0),
+        else_=ibis.null(),
+    ).cast("int32")
+    
+    securitytype_expr    = sf.securitytype
+    securitysubtype_expr = sf.securitysubtype
+    sharetype_expr       = sf.sharetype
+    usincflg_expr         = sf.usincflg
+    issuertype_expr      = sf.issuertype
+    
+    is_common_expr = (
+        (securitytype_expr == "EQTY") &
+        (securitysubtype_expr == "COM") &
+        (sharetype_expr == "NS") &
+        (issuertype_expr.isin(["ACOR", "CORP"])) &
+        (usincflg_expr == "Y")
+    )
+    
+    shrcd_expr = ibis.cases(
+        (is_common_expr, 10),
+        else_=ibis.null(),
+    ).cast("int32")
+    
+    primaryexch_expr = sf.primaryexch          
+    conditionaltype_expr = sf.conditionaltype
+    
+    exch_main_expr = (primaryexch_expr.isin(["A", "N", "Q"]) & (conditionaltype_expr == "RW")).cast("int32")
+    
+    exchcd_expr = ibis.cases(
+        ((primaryexch_expr == "N") & (conditionaltype_expr == "RW"), 1),
+        ((primaryexch_expr == "A") & (conditionaltype_expr == "RW"), 2),
+        ((primaryexch_expr == "Q") & (conditionaltype_expr == "RW"), 3),
+        else_=ibis.null(),
+    ).cast("int32")
 
     result = full_join.mutate(
-        bidask=(sf.prc < 0).cast("int32"),
-        prc=sf.prc.abs(),
+        date=date_expr,
+        bidask=bidask_expr,
+        prc=prc_expr,
         shrout=(sf.shrout / 1000),
-        me=(sf.prc.abs() * (sf.shrout / 1000)),
+        me=(prc_expr * (sf.shrout / 1000)),
         prc_high=ibis.cases(
-            ((sf.prc > 0) & (sf.askhi > 0), sf.askhi), else_=ibis.null()
+            ((prc_expr > 0) & (askhi_expr > 0), askhi_expr), else_=ibis.null()
         ),
         prc_low=ibis.cases(
-            ((sf.prc > 0) & (sf.bidlo > 0), sf.bidlo), else_=ibis.null()
+            ((prc_expr > 0) & (bidlo_expr > 0), bidlo_expr), else_=ibis.null()
         ),
         iid=ccmxpf_lnkhist.liid,
-        exch_main=senames.exchcd.isin([1, 2, 3]).cast("int32"),
+        ret=ret_expr,
+        retx=retx_expr,
+        cfacshr=cfacshr_expr,
+        vol=vol_expr,
+        exchcd=exchcd_expr,
+        exch_main=exch_main_expr,
+        shrcd=shrcd_expr,
+        gvkey=ccmxpf_lnkhist.gvkey,
     ).select(
         [
             "permno",
@@ -618,18 +687,18 @@ def download_raw_data_tables(username, password):
         "comp.sec_history",
         "comp.company",
         "comp.g_company",
-        "crsp.msenames",
-        "crsp.dsenames",
+        "crsp.stksecurityinfohist",
+        "crsp.stkissuerinfohist",
         "crsp.ccmxpf_lnkhist",
         "comp.funda",
         "comp.fundq",
-        "crsp.dsedelist",
-        "crsp.msedelist",
+        "crsp.stkdelists",
         "comp.secm",
-        "crsp.mcti",
-        "crsp.msf",
+        "crsp.indmthseriesdata_ind",
+        "crsp.indseriesinfohdr_ind",
+        "crsp.msf_v2",
         "comp.g_co_hgic",
-        "crsp.dsf",
+        "crsp.dsf_v2",
         "comp.g_funda",
         "comp.co_hgic",
         "comp.g_fundq",
@@ -651,8 +720,107 @@ def download_raw_data_tables(username, password):
         )
 
     con.close()
+    
+    
+def aug_msf_v2():
+    """
+    Description:
+        Add month-level high/low transaction-price fields to the CRSP CIZ monthly file (msf_v2)
+        using the CRSP CIZ daily file (dsf_v2). Keep all msf_v2 rows; set the new fields to
+        missing for non-TR monthly rows (e.g., BA).
 
+    Steps:
+        1) Read msf_v2 (monthly) and dsf_v2 (daily) from parquet.
+        2) Filter dsf_v2 to dlyprcflg == "TR", construct yyyymm from dlycaldt, and keep (permno, yyyymm, dlyprc).
+        3) For each (permno, yyyymm), compute:
+           - mthaskhi = max(dlyprc)
+           - mthbidlo = min(dlyprc)
+        4) Left-join these two fields onto msf_v2 by (permno, yyyymm).
+        5) Set mthaskhi/mthbidlo to NULL when mthprcflg != "TR".
+        6) Overwrite crsp_msf_v2.parquet (via a temp file).
 
+    Output:
+        Overwrites ../raw/raw_tables/crsp_msf_v2.parquet with two new columns:
+        mthaskhi and mthbidlo.
+    """
+    con = ibis.duckdb.connect(threads=os.cpu_count())
+    msf = con.read_parquet(f"../raw/raw_tables/crsp_msf_v2.parquet")
+    dsf = con.read_parquet(f"../raw/raw_tables/crsp_dsf_v2.parquet")
+    
+    dt = dsf.dlycaldt.cast("date")
+
+    d = (
+        dsf
+        .filter(dsf.dlyprcflg == "TR")
+        .mutate(
+            yyyymm=(dt.year() * 100 + dt.month()).cast("int32"),
+            dlyprc=dsf.dlyprc.cast("double"),
+        )
+        .select(["permno", "yyyymm", "dlyprc"])
+    )
+
+    m = (
+        d.group_by(["permno", "yyyymm"])
+        .aggregate(
+            mthaskhi=d.dlyprc.max(),
+            mthbidlo=d.dlyprc.min(),
+        )
+    )
+
+    msf_joined = (
+        msf.join(
+            m,
+            how="left",
+            predicates=[msf.permno == m.permno, msf.yyyymm == m.yyyymm],
+        )
+        .select([msf] + [m.mthaskhi, m.mthbidlo])
+    )
+
+    msf_aug = msf_joined.mutate(
+        mthaskhi=ibis.cases(
+            (msf_joined.mthprcflg == "TR", msf_joined.mthaskhi),
+            else_=ibis.null(),
+        ),
+        mthbidlo=ibis.cases(
+            (msf_joined.mthprcflg == "TR", msf_joined.mthbidlo),
+            else_=ibis.null(),
+        ),
+    )
+
+    msf_aug.to_parquet("../raw/raw_tables/crsp_msf_v2.parquet.tmp")
+    os.replace("../raw/raw_tables/crsp_msf_v2.parquet.tmp", "../raw/raw_tables/crsp_msf_v2.parquet")
+
+    
+def build_mcti():
+    """
+    Description:
+        Build monthly t30 return raw data.
+
+    Steps:
+        1) Read indmthseriesdata and indseriesinfohdr from parquet.
+        2) Inner join indmthseriesdata with indseriesinfohdr on "indno".
+        4) Filter for CRSP 30-Year Treasury Returns (indno == 1000708).
+        5) Write parquet to ../raw/raw_tables/crsp_mcti.parquet
+
+    Output:
+        Polars DataFrame (also written to parquet).
+    """
+
+    a = pl.read_parquet(f"../raw/raw_tables/crsp_indmthseriesdata_ind.parquet")
+    b = pl.read_parquet(f"../raw/raw_tables/crsp_indseriesinfohdr_ind.parquet")
+    
+    ab = a.join(b, on="indno", how="inner")
+    
+    out = (
+        ab.filter(pl.col("indno") == 1000708)
+          .select(["indno", "indnm", "mthcaldt", "mthtotret", "mthtotind"])
+          .rename({"mthcaldt": "caldt", "mthtotret": "t30ret"})
+    )
+
+    os.makedirs("../raw/raw_tables", exist_ok=True)
+    out.write_parquet(f"../raw/raw_tables/crsp_mcti.parquet")
+    
+    
 @measure_time
 def prepare_comp_sf(freq):
     """
@@ -1546,27 +1714,33 @@ def add_MMYY_column_drop_original(df, var):
 def prepare_crsp_sf(freq):
     """
     Description:
-        Build CRSP monthly/daily security files with cleaned prices, volumes, dividends,
-        delist adjustments, excess returns, and company-level market equity.
+        Clean and finalize the CRSP security-file panel (monthly or daily) produced by gen_crsp_sf.
+        This step adds trading-volume diagnostics, dividend totals, delisting-return adjustments,
+        excess returns (over T-bill / RF), and company-level market equity, using the CIZ delist
+        fields (DelReasonType/DelActionType/DelPaymentType/DelStatusType).
 
     Steps:
-        1) Read __crsp_sf_{freq}; cast numeric types; adjust NASDAQ volumes pre-2004.
-        2) Compute dolvol; infer monthly dividend totals from ret−retx and split factors.
-        3) Bring in delist table; set dlret to -30% for {500, 520–584} when missing; set ret=0 if ret null but dlret present; compound.
-        4) Join T-bill and FF RF; compute ret_exc; compute me_company (permco aggregation).
-        5) If monthly: scale vol/dolvol by 100 (units alignment).
-        6) Drop helpers, deduplicate, sort, and write crsp_{freq}sf.parquet.
+        1) Read raw_data_dfs/__crsp_sf_{freq}.parquet; cast key numeric columns; apply NASDAQ volume adjustment.
+        2) Compute dollar volume and infer dividend totals from (ret − retx) scaled by lagged price and split factors.
+        3) Join CRSP delists (crsp_{freq}sedelist); impute missing delret = −0.30 for “bad delist” buckets defined by CIZ codes;
+           set ret=0 when ret is missing but delret exists; compound ret with delret.
+        4) Join risk-free proxies (CRSP T-bill and FF RF) and compute excess return ret_exc; compute company ME by summing ME across permnos within permco-date.
+        5) If monthly, rescale vol and dolvol for unit alignment.
+        6) Drop helper columns, deduplicate by (permno, date), sort, and write crsp_{freq}sf.parquet.
 
     Output:
-        Parquet crsp_msf.parquet or crsp_dsf.parquet with returns and ret_exc.
+        Writes crsp_msf.parquet (freq="m") or crsp_dsf.parquet (freq="d") with cleaned returns and ret_exc.
     """
+    assert freq in ("m", "d")
+
     merge_vars = ["permno", "merge_aux"] if (freq == "m") else ["permno", "date"]
+
     __crsp_sf = (
         pl.scan_parquet(f"raw_data_dfs/__crsp_sf_{freq}.parquet")
         .with_columns(
             [
                 col(var).cast(pl.Float64)
-                for var in ["prc", "ret", "retx", "prc_high", "prc_low"]
+                for var in ["prc","cfacshr", "ret", "retx", "prc_high", "prc_low"]
             ]
             + [col("vol").cast(pl.Int64)]
         )
@@ -1587,21 +1761,18 @@ def prepare_crsp_sf(freq):
             merge_aux=gen_MMYY_column("date"),
         )
     )
-    c1 = col("dlret").is_null()
-    c2 = col("dlstcd") == 500
-    c3 = col("dlstcd").is_between(520, 584)
-    c4 = c1 & (c2 | c3)
-    c5 = col("ret").is_null()
-    c6 = col("dlret").is_not_null()
-    c7 = c5 & c6
+
     crsp_sedelist_aux_col = (
-        [gen_MMYY_column("dlstdt").alias("merge_aux")]
+        [gen_MMYY_column("delistingdt").alias("merge_aux")]
         if (freq == "m")
-        else [col("dlstdt").alias("date")]
+        else [col("delistingdt").alias("date")]
     )
-    crsp_sedelist = pl.scan_parquet(
-        f"raw_data_dfs/crsp_{freq}sedelist.parquet"
-    ).with_columns(crsp_sedelist_aux_col)
+
+    crsp_sedelist = (
+        pl.scan_parquet(f"raw_data_dfs/crsp_{freq}sedelist.parquet")
+        .with_columns(crsp_sedelist_aux_col)
+    )
+
     crsp_mcti = add_MMYY_column_drop_original(
         pl.scan_parquet("raw_data_dfs/crsp_mcti_t30ret.parquet"), "caldt"
     )
@@ -1609,31 +1780,92 @@ def prepare_crsp_sf(freq):
         pl.scan_parquet("raw_data_dfs/ff_factors_monthly.parquet"), "date"
     )
 
+    c1 = col("delret").is_null()
+
+    # CIZ replacement for legacy "dlstcd == 500"
+    c2 = (
+        (col("delreasontype") == "UNAV") &
+        (col("delactiontype") == "GDR") &
+        (col("delpaymenttype") == "PRCF") &
+        (col("delstatustype") == "VCL")
+    )
+
+    # CIZ replacement for legacy "dlstcd between 520 and 584"
+    c3 = (
+        (col("delactiontype") == "GDR") &
+        (col("delpaymenttype") == "PRCF") &
+        (col("delstatustype") == "VCL") &
+        col("delreasontype").is_in([
+            "MVOT",  # Move to OTC
+            "MTMK",  # Market Makers
+            "SHLD",  # Shareholders
+            "LP",    # Low Price
+            "INSC",  # Insufficient Capital
+            "INSF",  # Insufficient Float
+            "CORQ",  # Company Request
+            "DERE",  # Deregistration
+            "BKPY",  # Bankruptcy
+            "OFFRE", # Offer Rescinded
+            "DELQ",  # Delinquent
+            "FARG",  # Failure to Register
+            "EQRQ",  # Equity Requirements
+            "DEEX",  # Denied Exception
+            "FING",  # Financial Guidelines
+        ])
+    )
+
+    c4 = c1 & (c2 | c3)
+
+    c5 = col("ret").is_null()
+    c6 = col("delret").is_not_null()
+    c7 = c5 & c6
+
     me_company_exp = (
         pl.when(pl.count("me").over(["permco", "date"]) != 0)
         .then(pl.coalesce(["me", 0.0]).sum().over(["permco", "date"]))
         .otherwise(fl_none())
     )
+
     scale = 1 if (freq == "m") else 21
     ret_exc_exp = col("ret") - pl.coalesce(["t30ret", "rf"]) / scale
+
     __crsp_sf = (
         __crsp_sf.join(crsp_sedelist, how="left", on=merge_vars)
-        .with_columns(dlret=pl.when(c4).then(pl.lit(-0.3)).otherwise(col("dlret")))
+        # impute missing delret to -0.30 for the “bad delist” buckets
+        .with_columns(delret=pl.when(c4).then(pl.lit(-0.3)).otherwise(col("delret")))
+        # if ret missing but delret exists, set ret=0 so compounding works
         .with_columns(ret=pl.when(c7).then(pl.lit(0.0)).otherwise(col("ret")))
-        .with_columns(ret=(((col("ret") + 1) * (pl.coalesce(["dlret", 0.0]) + 1)) - 1))
+        # compound ret with delret
+        .with_columns(ret=((col("ret") + 1) * (pl.coalesce(["delret", 0.0]) + 1) - 1))
+        # rf joins
         .join(crsp_mcti, how="left", on="merge_aux")
         .join(ff_factors_monthly, how="left", on="merge_aux")
         .with_columns(ret_exc=ret_exc_exp, me_company=me_company_exp)
     )
+
     if freq == "m":
         __crsp_sf = __crsp_sf.with_columns(
             [(col(var) * 100).alias(var) for var in ["vol", "dolvol"]]
         )
+
     __crsp_sf = (
-        __crsp_sf.drop(["rf", "t30ret", "merge_aux", "dlret", "dlstcd", "dlstdt"])
+        __crsp_sf.drop(
+            [
+                "rf",
+                "t30ret",
+                "merge_aux",
+                "delret",
+                "delistingdt",
+                "delreasontype",
+                "delactiontype",
+                "delpaymenttype",
+                "delstatustype",
+            ]
+        )
         .unique(["permno", "date"])
         .sort(["permno", "date"])
     )
+
     __crsp_sf.collect().write_parquet(f"crsp_{freq}sf.parquet")
 
 
@@ -1937,7 +2169,7 @@ def crsp_industry():
         Generate a daily panel of CRSP SIC/NAICS codes per permno based on name-date spans.
 
     Steps:
-        1) Read permno0; nullify sic==0; build date ranges from namedt to nameendt.
+        1) Read permno0; nullify sic==0; build date ranges from secinfostartdt to secinfoenddt.
         2) Explode to daily rows; keep distinct (permno,date); sort.
         3) Write to crsp_ind.parquet.
 
@@ -1951,13 +2183,14 @@ def crsp_industry():
             .then(pl.lit(None).cast(pl.Int64))
             .otherwise(col("sic"))
         )
-        .with_columns(date=pl.date_ranges("namedt", "nameendt"))
+        .with_columns(date=pl.date_ranges("secinfostartdt", "secinfoenddt"))
         .explode("date")
         .select(["permno", "permco", "date", "sic", "naics"])
         .unique(["permno", "date"])
         .sort(["permno", "date"])
     )
     permno0.collect().write_parquet("crsp_ind.parquet")
+
 
 def comp_hgics(lib):
     """
@@ -6703,9 +6936,9 @@ def firm_age(data_path):
         )
     )
     crsp_age = (
-        con.read_parquet("../raw/raw_tables/crsp_msf.parquet")
+        con.read_parquet("../raw/raw_tables/crsp_msf_v2.parquet")
         .group_by("permco")
-        .agg(crsp_first=_.date.min())
+        .agg(crsp_first=_.mthcaldt.min())
     )
     con.create_table("data", data.to_polars())
     con.create_table("comp_ret_age", comp_ret_age.to_polars())
