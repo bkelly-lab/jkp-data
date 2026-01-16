@@ -182,7 +182,7 @@ chars = [
 
 # a dictionary which has the parameters for constructing portfolios.
 settings = {
-    "end_date": date(2023, 12, 31),
+    "end_date": date(2025, 12, 31),
     "pfs": 3,
     "source": ["CRSP", "COMPUSTAT"],
     "wins_ret": True,
