@@ -490,7 +490,7 @@ def gen_crsp_sf(freq):
     # ---------- CIZ name mapping by frequency ----------
     if freq == "m":
         date_expr   = sf.mthcaldt.cast("date")
-        prc_expr    = sf.mthprc.abs()
+        prc_expr    = sf.mthprc
         prcflg_expr = sf.mthprcflg
         ret_expr    = sf.mthret
         retx_expr   = sf.mthretx
@@ -501,7 +501,7 @@ def gen_crsp_sf(freq):
         bidlo_expr = sf.mthbidlo
     else:
         date_expr   = sf.dlycaldt.cast("date")
-        prc_expr    = sf.dlyprc.abs()
+        prc_expr    = sf.dlyprc
         prcflg_expr = sf.dlyprcflg
         ret_expr    = sf.dlyret
         retx_expr   = sf.dlyretx
