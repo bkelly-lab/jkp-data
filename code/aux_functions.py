@@ -1,17 +1,15 @@
-import polars as pl
-import numpy as np
-import polars_ols as pls
-import polars_ds as pds
-import time
 import datetime
-import ibis
-from ibis import _
-import duckdb
 import os
+import time
 from datetime import date
-from math import sqrt, exp
+from math import exp, sqrt
+
+import duckdb
+import ibis
+import polars as pl
+import polars_ds as pds
+from ibis import _
 from polars import col
-import math
 
 
 def fl_none():
@@ -55,9 +53,7 @@ def measure_time(func):
         # Calculate minutes and seconds
         minutes = int(total_seconds // 60)
         seconds = total_seconds % 60
-        print(
-            f"Execution time : {minutes} minutes and {seconds:.2f} seconds", flush=True
-        )
+        print(f"Execution time : {minutes} minutes and {seconds:.2f} seconds", flush=True)
         print()
         return result
 
@@ -216,9 +212,7 @@ def header_aux(comp_path, gcomp_path, output_path):
     """
     con = ibis.duckdb.connect(threads=os.cpu_count())
     comp = con.read_parquet(comp_path).select(["gvkey", "prirow", "priusa", "prican"])
-    g_comp = con.read_parquet(gcomp_path).select(
-        ["gvkey", "prirow", "priusa", "prican"]
-    )
+    g_comp = con.read_parquet(gcomp_path).select(["gvkey", "prirow", "priusa", "prican"])
     comp.union(g_comp).distinct(on="gvkey", keep="first").to_parquet(output_path)
     con.disconnect()
 
@@ -240,9 +234,7 @@ def prihist_aux(filename, alias_itemvalue):
     df = (
         pl.scan_parquet(filename)
         .filter(col("item") == alias_itemvalue.upper())
-        .select(
-            ["gvkey", col("itemvalue").alias(alias_itemvalue), "effdate", "thrudate"]
-        )
+        .select(["gvkey", col("itemvalue").alias(alias_itemvalue), "effdate", "thrudate"])
     )
     return df
 
@@ -264,9 +256,7 @@ def gen_firmshares():
         Parquet: raw_data_dfs/__firm_shares1.parquet (gvkey, datadate, csho_fund, ajex_fund).
     """
     con = ibis.duckdb.connect(threads=os.cpu_count())
-    con.create_table(
-        "comp_fundq", con.read_parquet("../raw/raw_tables/comp_fundq.parquet")
-    )
+    con.create_table("comp_fundq", con.read_parquet("../raw/raw_tables/comp_fundq.parquet"))
     con.create_table(
         "comp_funda",
         con.read_parquet("../raw/raw_tables/comp_funda.parquet").rename({"at_": "at"}),
@@ -359,9 +349,7 @@ def gen_fx1():
         Parquet: raw_data_dfs/__fx1.parquet (curcdd, datadate, fx to USD).
     """
     con = ibis.duckdb.connect(threads=os.cpu_count())
-    con.create_table(
-        "comp_exrt_dly", con.read_parquet("../raw/raw_tables/comp_exrt_dly.parquet")
-    )
+    con.create_table("comp_exrt_dly", con.read_parquet("../raw/raw_tables/comp_exrt_dly.parquet"))
     con.raw_sql("""
     CREATE TABLE __fx1 AS
     SELECT DISTINCT
@@ -422,11 +410,27 @@ def gen_raw_data_dfs():
     comp_hgics_gl = comp_hgics_aux("../raw/raw_tables/comp_g_co_hgic.parquet")
     collect_and_write(comp_hgics_gl, "raw_data_dfs/comp_hgics_gl.parquet")
     crsp_dsedelist = pl.scan_parquet("../raw/raw_tables/crsp_stkdelists.parquet").select(
-        ["delret", 'delactiontype','delstatustype', 'delreasontype', 'delpaymenttype', col("permno").cast(pl.Int64), "delistingdt"]
+        [
+            "delret",
+            "delactiontype",
+            "delstatustype",
+            "delreasontype",
+            "delpaymenttype",
+            col("permno").cast(pl.Int64),
+            "delistingdt",
+        ]
     )
     collect_and_write(crsp_dsedelist, "raw_data_dfs/crsp_dsedelist.parquet")
     crsp_msedelist = pl.scan_parquet("../raw/raw_tables/crsp_stkdelists.parquet").select(
-        ["delret", 'delactiontype','delstatustype', 'delreasontype', 'delpaymenttype', col("permno").cast(pl.Int64), "delistingdt"]
+        [
+            "delret",
+            "delactiontype",
+            "delstatustype",
+            "delreasontype",
+            "delpaymenttype",
+            col("permno").cast(pl.Int64),
+            "delistingdt",
+        ]
     )
     collect_and_write(crsp_msedelist, "raw_data_dfs/crsp_msedelist.parquet")
     __sec_info = pl.concat(
@@ -440,13 +444,13 @@ def gen_raw_data_dfs():
         ["caldt", "t30ret"]
     )
     collect_and_write(crsp_mcti_t30ret, "raw_data_dfs/crsp_mcti_t30ret.parquet")
-    ff_factors_monthly = pl.scan_parquet(
-        "../raw/raw_tables/ff_factors_monthly.parquet"
-    ).select(["date", "rf"])
+    ff_factors_monthly = pl.scan_parquet("../raw/raw_tables/ff_factors_monthly.parquet").select(
+        ["date", "rf"]
+    )
     collect_and_write(ff_factors_monthly, "raw_data_dfs/ff_factors_monthly.parquet")
-    comp_r_ex_codes = pl.scan_parquet(
-        "../raw/raw_tables/comp_r_ex_codes.parquet"
-    ).select(["exchgdesc", "exchgcd"])
+    comp_r_ex_codes = pl.scan_parquet("../raw/raw_tables/comp_r_ex_codes.parquet").select(
+        ["exchgdesc", "exchgcd"]
+    )
     collect_and_write(comp_r_ex_codes, "raw_data_dfs/comp_r_ex_codes.parquet")
     __ex_country1 = pl.concat(
         [
@@ -484,32 +488,32 @@ def gen_crsp_sf(freq):
     """
     con = ibis.duckdb.connect(threads=os.cpu_count())
     sf = con.read_parquet(f"../raw/raw_tables/crsp_{freq}sf_v2.parquet")
-    senames = con.read_parquet(f"../raw/raw_tables/crsp_stksecurityinfohist.parquet")
+    senames = con.read_parquet("../raw/raw_tables/crsp_stksecurityinfohist.parquet")
     ccmxpf_lnkhist = con.read_parquet("../raw/raw_tables/crsp_ccmxpf_lnkhist.parquet")
-    
+
     # ---------- CIZ name mapping by frequency ----------
     if freq == "m":
-        date_expr   = sf.mthcaldt.cast("date")
-        prc_expr    = sf.mthprc
+        date_expr = sf.mthcaldt.cast("date")
+        prc_expr = sf.mthprc
         prcflg_expr = sf.mthprcflg
-        ret_expr    = sf.mthret
-        retx_expr   = sf.mthretx
-        vol_expr    = sf.mthvol
+        ret_expr = sf.mthret
+        retx_expr = sf.mthretx
+        vol_expr = sf.mthvol
         prcflg_expr = sf.mthprcflg
         cfacshr_expr = sf.mthcumfacshr
         askhi_expr = sf.mthaskhi
         bidlo_expr = sf.mthbidlo
     else:
-        date_expr   = sf.dlycaldt.cast("date")
-        prc_expr    = sf.dlyprc
+        date_expr = sf.dlycaldt.cast("date")
+        prc_expr = sf.dlyprc
         prcflg_expr = sf.dlyprcflg
-        ret_expr    = sf.dlyret
-        retx_expr   = sf.dlyretx
-        vol_expr    = sf.dlyvol
+        ret_expr = sf.dlyret
+        retx_expr = sf.dlyretx
+        vol_expr = sf.dlyvol
         cfacshr_expr = sf.dlycumfacshr
-        askhi_expr   = sf.dlyhigh
-        bidlo_expr   = sf.dlylow
-        
+        askhi_expr = sf.dlyhigh
+        bidlo_expr = sf.dlylow
+
     sf_senames_join = sf.join(
         senames,
         how="left",
@@ -526,41 +530,46 @@ def gen_crsp_sf(freq):
         predicates=[
             (sf.permno == ccmxpf_lnkhist.lpermno),
             ((date_expr >= ccmxpf_lnkhist.linkdt.cast("date")) | ccmxpf_lnkhist.linkdt.isnull()),
-            ((date_expr <= ccmxpf_lnkhist.linkenddt.cast("date")) | ccmxpf_lnkhist.linkenddt.isnull()),
+            (
+                (date_expr <= ccmxpf_lnkhist.linkenddt.cast("date"))
+                | ccmxpf_lnkhist.linkenddt.isnull()
+            ),
             ccmxpf_lnkhist.linktype.isin(["LC", "LU", "LS"]),
         ],
     )
-    
+
     bidask_expr = ibis.cases(
         (prcflg_expr == "BA", 1),
         (prcflg_expr == "TR", 0),
         else_=ibis.null(),
     ).cast("int32")
-    
-    securitytype_expr    = sf.securitytype
+
+    securitytype_expr = sf.securitytype
     securitysubtype_expr = sf.securitysubtype
-    sharetype_expr       = sf.sharetype
-    usincflg_expr         = sf.usincflg
-    issuertype_expr      = sf.issuertype
-    
+    sharetype_expr = sf.sharetype
+    usincflg_expr = sf.usincflg
+    issuertype_expr = sf.issuertype
+
     is_common_expr = (
-        (securitytype_expr == "EQTY") &
-        (securitysubtype_expr == "COM") &
-        (sharetype_expr == "NS") &
-        (issuertype_expr.isin(["ACOR", "CORP"])) &
-        (usincflg_expr == "Y")
+        (securitytype_expr == "EQTY")
+        & (securitysubtype_expr == "COM")
+        & (sharetype_expr == "NS")
+        & (issuertype_expr.isin(["ACOR", "CORP"]))
+        & (usincflg_expr == "Y")
     )
-    
+
     shrcd_expr = ibis.cases(
         (is_common_expr, 10),
         else_=ibis.null(),
     ).cast("int32")
-    
-    primaryexch_expr = sf.primaryexch          
+
+    primaryexch_expr = sf.primaryexch
     conditionaltype_expr = sf.conditionaltype
-    
-    exch_main_expr = (primaryexch_expr.isin(["A", "N", "Q"]) & (conditionaltype_expr == "RW")).cast("int32")
-    
+
+    exch_main_expr = (primaryexch_expr.isin(["A", "N", "Q"]) & (conditionaltype_expr == "RW")).cast(
+        "int32"
+    )
+
     exchcd_expr = ibis.cases(
         ((primaryexch_expr == "N") & (conditionaltype_expr == "RW"), 1),
         ((primaryexch_expr == "A") & (conditionaltype_expr == "RW"), 2),
@@ -574,12 +583,8 @@ def gen_crsp_sf(freq):
         prc=prc_expr,
         shrout=(sf.shrout / 1000),
         me=(prc_expr * (sf.shrout / 1000)),
-        prc_high=ibis.cases(
-            ((prc_expr > 0) & (askhi_expr > 0), askhi_expr), else_=ibis.null()
-        ),
-        prc_low=ibis.cases(
-            ((prc_expr > 0) & (bidlo_expr > 0), bidlo_expr), else_=ibis.null()
-        ),
+        prc_high=ibis.cases(((prc_expr > 0) & (askhi_expr > 0), askhi_expr), else_=ibis.null()),
+        prc_low=ibis.cases(((prc_expr > 0) & (bidlo_expr > 0), bidlo_expr), else_=ibis.null()),
         iid=ccmxpf_lnkhist.liid,
         ret=ret_expr,
         retx=retx_expr,
@@ -720,8 +725,8 @@ def download_raw_data_tables(username, password):
         )
 
     con.close()
-    
-    
+
+
 def aug_msf_v2():
     """
     Description:
@@ -744,14 +749,13 @@ def aug_msf_v2():
         mthaskhi and mthbidlo.
     """
     con = ibis.duckdb.connect(threads=os.cpu_count())
-    msf = con.read_parquet(f"../raw/raw_tables/crsp_msf_v2.parquet")
-    dsf = con.read_parquet(f"../raw/raw_tables/crsp_dsf_v2.parquet")
-    
+    msf = con.read_parquet("../raw/raw_tables/crsp_msf_v2.parquet")
+    dsf = con.read_parquet("../raw/raw_tables/crsp_dsf_v2.parquet")
+
     dt = dsf.dlycaldt.cast("date")
 
     d = (
-        dsf
-        .filter(dsf.dlyprcflg == "TR")
+        dsf.filter(dsf.dlyprcflg == "TR")
         .mutate(
             yyyymm=(dt.year() * 100 + dt.month()).cast("int32"),
             dlyprc=dsf.dlyprc.cast("double"),
@@ -759,22 +763,16 @@ def aug_msf_v2():
         .select(["permno", "yyyymm", "dlyprc"])
     )
 
-    m = (
-        d.group_by(["permno", "yyyymm"])
-        .aggregate(
-            mthaskhi=d.dlyprc.max(),
-            mthbidlo=d.dlyprc.min(),
-        )
+    m = d.group_by(["permno", "yyyymm"]).aggregate(
+        mthaskhi=d.dlyprc.max(),
+        mthbidlo=d.dlyprc.min(),
     )
 
-    msf_joined = (
-        msf.join(
-            m,
-            how="left",
-            predicates=[msf.permno == m.permno, msf.yyyymm == m.yyyymm],
-        )
-        .select([msf] + [m.mthaskhi, m.mthbidlo])
-    )
+    msf_joined = msf.join(
+        m,
+        how="left",
+        predicates=[msf.permno == m.permno, msf.yyyymm == m.yyyymm],
+    ).select([msf] + [m.mthaskhi, m.mthbidlo])
 
     msf_aug = msf_joined.mutate(
         mthaskhi=ibis.cases(
@@ -790,7 +788,7 @@ def aug_msf_v2():
     msf_aug.to_parquet("../raw/raw_tables/crsp_msf_v2.parquet.tmp")
     os.replace("../raw/raw_tables/crsp_msf_v2.parquet.tmp", "../raw/raw_tables/crsp_msf_v2.parquet")
 
-    
+
 def build_mcti():
     """
     Description:
@@ -806,21 +804,21 @@ def build_mcti():
         Polars DataFrame (also written to parquet).
     """
 
-    a = pl.read_parquet(f"../raw/raw_tables/crsp_indmthseriesdata_ind.parquet")
-    b = pl.read_parquet(f"../raw/raw_tables/crsp_indseriesinfohdr_ind.parquet")
-    
+    a = pl.read_parquet("../raw/raw_tables/crsp_indmthseriesdata_ind.parquet")
+    b = pl.read_parquet("../raw/raw_tables/crsp_indseriesinfohdr_ind.parquet")
+
     ab = a.join(b, on="indno", how="inner")
-    
+
     out = (
         ab.filter(pl.col("indno") == 1000708)
-          .select(["indno", "indnm", "mthcaldt", "mthtotret", "mthtotind"])
-          .rename({"mthcaldt": "caldt", "mthtotret": "t30ret"})
+        .select(["indno", "indnm", "mthcaldt", "mthtotret", "mthtotind"])
+        .rename({"mthcaldt": "caldt", "mthtotret": "t30ret"})
     )
 
     os.makedirs("../raw/raw_tables", exist_ok=True)
-    out.write_parquet(f"../raw/raw_tables/crsp_mcti.parquet")
-    
-    
+    out.write_parquet("../raw/raw_tables/crsp_mcti.parquet")
+
+
 @measure_time
 def prepare_comp_sf(freq):
     """
@@ -908,9 +906,7 @@ def compustat_fx():
         .with_columns(
             datadate=pl.coalesce(
                 [
-                    pl.date_ranges(
-                        start="datadate", end="aux", interval="1d", closed="left"
-                    ),
+                    pl.date_ranges(start="datadate", end="aux", interval="1d", closed="left"),
                     pl.concat_list([col("datadate")]),
                 ]
             )
@@ -977,13 +973,9 @@ def gen_comp_dsf():
     con = ibis.duckdb.connect("aux_comp_dsf.ddb", threads=os.cpu_count())
 
     compustat_fx().write_parquet("fx_data.parquet")
-    con.create_table(
-        "comp_g_secd", con.read_parquet("../raw/raw_tables/comp_g_secd.parquet")
-    )
+    con.create_table("comp_g_secd", con.read_parquet("../raw/raw_tables/comp_g_secd.parquet"))
     con.create_table("__firm_shares2", con.read_parquet("__firm_shares2.parquet"))
-    con.create_table(
-        "comp_secd", con.read_parquet("../raw/raw_tables/comp_secd.parquet")
-    )
+    con.create_table("comp_secd", con.read_parquet("../raw/raw_tables/comp_secd.parquet"))
     con.create_table("fx", con.read_parquet("fx_data.parquet"))
 
     con.raw_sql("""
@@ -1111,9 +1103,7 @@ def gen_secd_data():
             dolvolm=_.dolvol.sum().over(window),
             source=1,
         )
-        .filter(
-            (_.prc_local.notnull()) & (_.curcdd.notnull()) & (_.prcstd.isin([3, 4, 10]))
-        )
+        .filter((_.prc_local.notnull()) & (_.curcdd.notnull()) & (_.prcstd.isin([3, 4, 10])))
         .mutate(max_date=_.datadate.max().over(window))
         .filter(_.max_date == _.datadate)
         .drop(
@@ -1172,9 +1162,7 @@ def gen_secm_data():
         con.read_parquet("../raw/raw_tables/comp_secm.parquet"),
         overwrite=True,
     )
-    con.create_table(
-        "__firm_shares2", con.read_parquet("__firm_shares2.parquet"), overwrite=True
-    )
+    con.create_table("__firm_shares2", con.read_parquet("__firm_shares2.parquet"), overwrite=True)
     con.create_table("fx", con.read_parquet("fx_data.parquet"), overwrite=True)
 
     con.raw_sql("""
@@ -1360,8 +1348,7 @@ def comp_exchanges():
         """
     exch_exp = (
         pl.when(
-            (col("excntry") != "multi national")
-            & (col("exchg").is_in(special_exchanges).not_())
+            (col("excntry") != "multi national") & (col("exchg").is_in(special_exchanges).not_())
         )
         .then(pl.lit(1))
         .otherwise(pl.lit(0))
@@ -1508,13 +1495,10 @@ def gen_returns_df(freq):
         Polars DataFrame with {gvkey,iid,datadate,ret,ret_local,ret_lag_dif}.
     """
     ret_lag_dif_exp = (
-        (gen_MMYY_column("datadate") - gen_MMYY_column("datadate", 1)).over(
-            ["gvkey", "iid"]
-        )
+        (gen_MMYY_column("datadate") - gen_MMYY_column("datadate", 1)).over(["gvkey", "iid"])
         if freq == "m"
         else (
-            (col("datadate") - col("datadate").shift(1)).over(["gvkey", "iid"])
-            / 86_400_000_000
+            (col("datadate") - col("datadate").shift(1)).over(["gvkey", "iid"]) / 86_400_000_000
         ).cast(pl.Int64)
     )
 
@@ -1532,16 +1516,13 @@ def gen_returns_df(freq):
         )
         .with_columns(
             ret_local=pl.when(
-                (col("iid") == col("lagged_iid"))
-                & (col("curcdd") != col("lagged_curcdd"))
+                (col("iid") == col("lagged_iid")) & (col("curcdd") != col("lagged_curcdd"))
             )
             .then(col("ret"))
             .otherwise(col("ret_local"))
         )
         .with_columns(
-            ret_local=pl.when(
-                col("ret_local").is_infinite() | col("ret_local").is_nan()
-            )
+            ret_local=pl.when(col("ret_local").is_infinite() | col("ret_local").is_nan())
             .then(None)
             .otherwise(col("ret_local")),
             ret=pl.when(col("ret").is_infinite() | col("ret").is_nan())
@@ -1605,9 +1586,7 @@ def gen_temporary_sf(freq, __returns, __delist):
     temp_sf = (
         base.join(__returns, how="left", on=["gvkey", "iid", "datadate"])
         .join(__delist, how="left", on=["gvkey", "iid"])
-        .filter(
-            (col("datadate") <= col("date_delist")) | (col("date_delist").is_null())
-        )
+        .filter((col("datadate") <= col("date_delist")) | (col("date_delist").is_null()))
         .with_columns(
             ret=pl.when(col("datadate") == col("date_delist"))
             .then((1 + col("ret")) * (1 + col("dlret")) - 1)
@@ -1687,12 +1666,10 @@ def gen_MMYY_column(var, shift=None):
     Output:
         Polars expression yielding a month index (MMYY integer).
     """
-    if shift == None:
+    if shift is None:
         return (col(var).dt.year() * 12 + col(var).dt.month()).cast(pl.Int32)
     else:
-        return (col(var).shift(1).dt.year() * 12 + col(var).shift(1).dt.month()).cast(
-            pl.Int32
-        )
+        return (col(var).shift(1).dt.year() * 12 + col(var).shift(1).dt.month()).cast(pl.Int32)
 
 
 def add_MMYY_column_drop_original(df, var):
@@ -1740,7 +1717,7 @@ def prepare_crsp_sf(freq):
         .with_columns(
             [
                 col(var).cast(pl.Float64)
-                for var in ["prc","cfacshr", "ret", "retx", "prc_high", "prc_low"]
+                for var in ["prc", "cfacshr", "ret", "retx", "prc_high", "prc_low"]
             ]
             + [col("vol").cast(pl.Int64)]
         )
@@ -1768,9 +1745,8 @@ def prepare_crsp_sf(freq):
         else [col("delistingdt").alias("date")]
     )
 
-    crsp_sedelist = (
-        pl.scan_parquet(f"raw_data_dfs/crsp_{freq}sedelist.parquet")
-        .with_columns(crsp_sedelist_aux_col)
+    crsp_sedelist = pl.scan_parquet(f"raw_data_dfs/crsp_{freq}sedelist.parquet").with_columns(
+        crsp_sedelist_aux_col
     )
 
     crsp_mcti = add_MMYY_column_drop_original(
@@ -1784,34 +1760,36 @@ def prepare_crsp_sf(freq):
 
     # CIZ replacement for legacy "dlstcd == 500"
     c2 = (
-        (col("delreasontype") == "UNAV") &
-        (col("delactiontype") == "GDR") &
-        (col("delpaymenttype") == "PRCF") &
-        (col("delstatustype") == "VCL")
+        (col("delreasontype") == "UNAV")
+        & (col("delactiontype") == "GDR")
+        & (col("delpaymenttype") == "PRCF")
+        & (col("delstatustype") == "VCL")
     )
 
     # CIZ replacement for legacy "dlstcd between 520 and 584"
     c3 = (
-        (col("delactiontype") == "GDR") &
-        (col("delpaymenttype") == "PRCF") &
-        (col("delstatustype") == "VCL") &
-        col("delreasontype").is_in([
-            "MVOT",  # Move to OTC
-            "MTMK",  # Market Makers
-            "SHLD",  # Shareholders
-            "LP",    # Low Price
-            "INSC",  # Insufficient Capital
-            "INSF",  # Insufficient Float
-            "CORQ",  # Company Request
-            "DERE",  # Deregistration
-            "BKPY",  # Bankruptcy
-            "OFFRE", # Offer Rescinded
-            "DELQ",  # Delinquent
-            "FARG",  # Failure to Register
-            "EQRQ",  # Equity Requirements
-            "DEEX",  # Denied Exception
-            "FING",  # Financial Guidelines
-        ])
+        (col("delactiontype") == "GDR")
+        & (col("delpaymenttype") == "PRCF")
+        & (col("delstatustype") == "VCL")
+        & col("delreasontype").is_in(
+            [
+                "MVOT",  # Move to OTC
+                "MTMK",  # Market Makers
+                "SHLD",  # Shareholders
+                "LP",  # Low Price
+                "INSC",  # Insufficient Capital
+                "INSF",  # Insufficient Float
+                "CORQ",  # Company Request
+                "DERE",  # Deregistration
+                "BKPY",  # Bankruptcy
+                "OFFRE",  # Offer Rescinded
+                "DELQ",  # Delinquent
+                "FARG",  # Failure to Register
+                "EQRQ",  # Equity Requirements
+                "DEEX",  # Denied Exception
+                "FING",  # Financial Guidelines
+            ]
+        )
     )
 
     c4 = c1 & (c2 | c3)
@@ -1890,9 +1868,7 @@ def prepare_crsp_sfs_for_merging():
             bidask=col("bidask").cast(pl.Int32),
             id=col("permno"),
             excntry=pl.lit("USA"),
-            common=(col("shrcd").is_in([10, 11, 12]).fill_null(bo_false())).cast(
-                pl.Int32
-            ),
+            common=(col("shrcd").is_in([10, 11, 12]).fill_null(bo_false())).cast(pl.Int32),
             primary_sec=pl.lit(1),
             comp_tpci=pl.lit(None).cast(pl.Utf8),
             comp_exchg=pl.lit(None).cast(pl.Int64),
@@ -1922,9 +1898,7 @@ def prepare_crsp_sfs_for_merging():
         .with_columns(
             id=col("permno"),
             excntry=pl.lit("USA"),
-            common=(col("shrcd").is_in([10, 11, 12]).fill_null(bo_false())).cast(
-                pl.Int32
-            ),
+            common=(col("shrcd").is_in([10, 11, 12]).fill_null(bo_false())).cast(pl.Int32),
             primary_sec=pl.lit(1),
             curcd=pl.lit("USD"),
             fx=pl.lit(1.0),
@@ -2150,8 +2124,7 @@ def combine_crsp_comp_sf():
         .with_columns(count=pl.count("gvkey").over(["gvkey", "iid", "eom"]))
         .with_columns(
             obs_main=pl.when(
-                (col("count").is_in([0, 1]))
-                | ((col("count") > 1) & (col("source_crsp") == 1))
+                (col("count").is_in([0, 1])) | ((col("count") > 1) & (col("source_crsp") == 1))
             )
             .then(1)
             .otherwise(0)
@@ -2179,9 +2152,7 @@ def crsp_industry():
     permno0 = pl.scan_parquet("raw_data_dfs/permno0.parquet")
     permno0 = (
         permno0.with_columns(
-            sic=pl.when(col("sic") == 0)
-            .then(pl.lit(None).cast(pl.Int64))
-            .otherwise(col("sic"))
+            sic=pl.when(col("sic") == 0).then(pl.lit(None).cast(pl.Int64)).otherwise(col("sic"))
         )
         .with_columns(date=pl.date_ranges("secinfostartdt", "secinfoenddt"))
         .explode("date")
@@ -2228,9 +2199,7 @@ def comp_hgics(lib):
     c1 = col("n") == col("n_aux")
     c2 = col("indthru").is_null()
     data = (
-        data.with_columns(
-            indthru=pl.when(c1 & c2).then(indthru_date).otherwise(col("indthru"))
-        )
+        data.with_columns(indthru=pl.when(c1 & c2).then(indthru_date).otherwise(col("indthru")))
         .select(["gvkey", pl.date_ranges("indfrom", "indthru").alias("date"), "gics"])
         .explode("date")
         .unique(subset=["gvkey", "date"])
@@ -2256,17 +2225,14 @@ def hgics_join():
     comp_hgics("national")
     global_data = pl.scan_parquet("g_hgics.parquet")
     local_data = pl.scan_parquet("na_hgics.parquet")
-    gjoin = local_data.join(
-        global_data, on=["gvkey", "date"], how="full", coalesce=True
-    )
+    gjoin = local_data.join(global_data, on=["gvkey", "date"], how="full", coalesce=True)
     gjoin = (
-        gjoin.select(
-            ["gvkey", "date", pl.coalesce(["gics", "gics_right"]).alias("gics")]
-        )
+        gjoin.select(["gvkey", "date", pl.coalesce(["gics", "gics_right"]).alias("gics")])
         .unique(["gvkey", "date"])
         .sort(["gvkey", "date"])
     )
     gjoin.collect().write_parquet("comp_hgics.parquet")
+
 
 def comp_sic_naics():
     """
@@ -2285,12 +2251,8 @@ def comp_sic_naics():
         Parquet comp_other.parquet with daily SIC/NAICS per gvkey.
     """
     con = ibis.duckdb.connect(threads=os.cpu_count())
-    con.create_table(
-        "sic_naics_na", con.read_parquet("raw_data_dfs/sic_naics_na.parquet")
-    )
-    con.create_table(
-        "sic_naics_gl", con.read_parquet("raw_data_dfs/sic_naics_gl.parquet")
-    )
+    con.create_table("sic_naics_na", con.read_parquet("raw_data_dfs/sic_naics_na.parquet"))
+    con.create_table("sic_naics_gl", con.read_parquet("raw_data_dfs/sic_naics_gl.parquet"))
     con.raw_sql("""
                 CREATE TABLE comp2 AS
                 SELECT *
@@ -2544,7 +2506,7 @@ def ff_ind_class(data_path, ff_grps):
         ]
         classification = [i + 2 for i in range(len(lower_bounds))]
         ff38_exp = pl.when(col("sic").is_between(100, 999)).then(1)
-        for i, j, k in zip(lower_bounds, upper_bounds, classification):
+        for i, j, k in zip(lower_bounds, upper_bounds, classification, strict=True):
             ff38_exp = ff38_exp.when(col("sic").is_between(i, j)).then(k)
         ff38_exp = (ff38_exp.otherwise(pl.lit(None))).alias("ff38")
         data = data.with_columns(ff38_exp)
@@ -2611,11 +2573,7 @@ def ff_ind_class(data_path, ff_grps):
                 )
             )
             .then(7)
-            .when(
-                col("sic").is_in(
-                    [2770, 2771, *range(2700, 2749 + 1), *range(2780, 2799 + 1)]
-                )
-            )
+            .when(col("sic").is_in([2770, 2771, *range(2700, 2749 + 1), *range(2780, 2799 + 1)]))
             .then(8)
             .when(
                 col("sic").is_in(
@@ -2688,11 +2646,7 @@ def ff_ind_class(data_path, ff_grps):
                 )
             )
             .then(14)
-            .when(
-                col("sic").is_in(
-                    [3031, 3041, *range(3050, 3053 + 1), *range(3060, 3099 + 1)]
-                )
-            )
+            .when(col("sic").is_in([3031, 3041, *range(3050, 3053 + 1), *range(3060, 3099 + 1)]))
             .then(15)
             .when(
                 col("sic").is_in(
@@ -2822,9 +2776,7 @@ def ff_ind_class(data_path, ff_grps):
             .then(24)
             .when(col("sic").is_in([3730, 3731, *range(3740, 3743 + 1)]))
             .then(25)
-            .when(
-                col("sic").is_in([3795, *range(3760, 3769 + 1), *range(3480, 3489 + 1)])
-            )
+            .when(col("sic").is_in([3795, *range(3760, 3769 + 1), *range(3480, 3489 + 1)]))
             .then(26)
             .when(col("sic").is_in([*range(1040, 1049 + 1)]))
             .then(27)
@@ -2946,21 +2898,15 @@ def ff_ind_class(data_path, ff_grps):
                 )
             )
             .then(34)
-            .when(
-                col("sic").is_in([3695, *range(3570, 3579 + 1), *range(3680, 3689 + 1)])
-            )
+            .when(col("sic").is_in([3695, *range(3570, 3579 + 1), *range(3680, 3689 + 1)]))
             .then(35)
             .when(col("sic").is_in([7375, *range(7370, 7373 + 1)]))
             .then(36)
             .when(
-                col("sic").is_in(
-                    [3622, 3810, 3812, *range(3661, 3666 + 1), *range(3669, 3679 + 1)]
-                )
+                col("sic").is_in([3622, 3810, 3812, *range(3661, 3666 + 1), *range(3669, 3679 + 1)])
             )
             .then(37)
-            .when(
-                col("sic").is_in([3811, *range(3820, 3827 + 1), *range(3829, 3839 + 1)])
-            )
+            .when(col("sic").is_in([3811, *range(3820, 3827 + 1), *range(3829, 3839 + 1)]))
             .then(38)
             .when(
                 col("sic").is_in(
@@ -3158,6 +3104,7 @@ def ff_ind_class(data_path, ff_grps):
 
     data.collect().write_parquet("__msf_world3.parquet")
 
+
 @measure_time
 def nyse_size_cutoffs(data_path):
     """
@@ -3173,16 +3120,14 @@ def nyse_size_cutoffs(data_path):
     Output:
         'nyse_cutoffs.parquet' with [eom, n, nyse_p1, nyse_p20, nyse_p50, nyse_p80].
     """
-    nyse_sf = (
-            pl.scan_parquet(data_path)
-            .sql("""
-            SELECT 
+    nyse_sf = pl.scan_parquet(data_path).sql("""
+            SELECT
                 eom,
                 COUNT(*)                    AS n,
                 QUANTILE_DISC(me, 0.01)     AS nyse_p1,
                 QUANTILE_DISC(me, 0.20)     AS nyse_p20,
                 QUANTILE_DISC(me, 0.50)     AS nyse_p50,
-                QUANTILE_DISC(me, 0.80)     AS nyse_p80 
+                QUANTILE_DISC(me, 0.80)     AS nyse_p80
             FROM self
             WHERE  crsp_exchcd = 1
                 AND obs_main   = 1
@@ -3193,7 +3138,6 @@ def nyse_size_cutoffs(data_path):
             GROUP BY eom
             ORDER BY eom
             """)
-            )
     nyse_sf.sink_parquet("nyse_cutoffs.parquet")
 
 
@@ -3251,19 +3195,19 @@ def return_cutoffs(freq, crsp_only):
         Writes 'return_cutoffs.parquet' (monthly) or 'return_cutoffs_daily.parquet' (daily).
     """
     group_vars = "eom" if freq == "m" else "year, month"
-    res_path = ("return_cutoffs.parquet" if freq == "m" else "return_cutoffs_daily.parquet")
+    res_path = "return_cutoffs.parquet" if freq == "m" else "return_cutoffs_daily.parquet"
     data = (
-            pl.scan_parquet(f"world_{freq}sf.parquet")
-            .filter(
-                (col("common") == 1)
-                & (col("obs_main") == 1)
-                & (col("exch_main") == 1)
-                & (col("primary_sec") == 1)
-                & (col("excntry") != "ZWE")
-                & (col("ret_exc").is_not_null())
-                & ( (col("source_crsp") == 1) if crsp_only == 1 else pl.lit(True) )
-                )
-            .with_columns(year=col("date").dt.year(), month=col("date").dt.month())
+        pl.scan_parquet(f"world_{freq}sf.parquet")
+        .filter(
+            (col("common") == 1)
+            & (col("obs_main") == 1)
+            & (col("exch_main") == 1)
+            & (col("primary_sec") == 1)
+            & (col("excntry") != "ZWE")
+            & (col("ret_exc").is_not_null())
+            & ((col("source_crsp") == 1) if crsp_only == 1 else pl.lit(True))
+        )
+        .with_columns(year=col("date").dt.year(), month=col("date").dt.month())
     )
     data = data.sql(f"""
             SELECT
@@ -3293,6 +3237,7 @@ def return_cutoffs(freq, crsp_only):
             ORDER BY {group_vars}
             """)
     data.sink_parquet(res_path)
+
 
 def load_mkt_returns_params(freq):
     """
@@ -3353,7 +3298,7 @@ def add_cutoffs_and_winsorize(df, wins_data_path, group_vars, dt_col):
     ctx.register("wins_data", wins_data)
 
     result = ctx.execute(f"""
-    SELECT 
+    SELECT
         a.*
         REPLACE(
             CASE
@@ -3365,7 +3310,7 @@ def add_cutoffs_and_winsorize(df, wins_data_path, group_vars, dt_col):
                 AND a.ret < b.ret_0_1 THEN b.ret_0_1
                 ELSE a.ret
             END AS ret,
-            
+
             CASE
                 WHEN a.source_crsp = 0
                 AND a.ret_local IS NOT NULL
@@ -3375,7 +3320,7 @@ def add_cutoffs_and_winsorize(df, wins_data_path, group_vars, dt_col):
                 AND a.ret_local < b.ret_local_0_1 THEN b.ret_local_0_1
                 ELSE a.ret_local
             END AS ret_local,
-            
+
             CASE
                 WHEN a.source_crsp = 0
                 AND a.ret_exc IS NOT NULL
@@ -3492,9 +3437,7 @@ def market_returns(data_path, freq, wins_comp, wins_data_path):
     Output:
         Parquet file of country × date market returns.
     """
-    dt_col, max_date_lag, path_aux, group_vars, comm_stocks_cols = (
-        load_mkt_returns_params(freq)
-    )
+    dt_col, max_date_lag, path_aux, group_vars, comm_stocks_cols = load_mkt_returns_params(freq)
     __common_stocks = (
         pl.scan_parquet(data_path)
         .select(comm_stocks_cols)
@@ -3509,9 +3452,7 @@ def market_returns(data_path, freq, wins_comp, wins_data_path):
         __common_stocks = add_cutoffs_and_winsorize(
             __common_stocks, wins_data_path, group_vars, dt_col
         )
-    __common_stocks = apply_stock_filter_and_compute_indexes(
-        __common_stocks, dt_col, max_date_lag
-    )
+    __common_stocks = apply_stock_filter_and_compute_indexes(__common_stocks, dt_col, max_date_lag)
     if freq == "d":
         __common_stocks = drop_non_trading_days(
             __common_stocks, "stocks", dt_col, ["excntry", "year", "month"], 0.25
@@ -3534,16 +3475,13 @@ def quarterize(df, var_list):
     Output:
         Quarterly panel with flow variables var_q for each input in var_list.
     """
-    list_aux1 = [
-        col("gvkey").cum_count().over(["gvkey", "fyr", "fyearq"]).alias("count_aux")
-    ] + [col(var).cast(pl.Float64).diff().alias(var + "_q") for var in var_list]
+    list_aux1 = [col("gvkey").cum_count().over(["gvkey", "fyr", "fyearq"]).alias("count_aux")] + [
+        col(var).cast(pl.Float64).diff().alias(var + "_q") for var in var_list
+    ]
     c1 = (col("fqtr") != 1).fill_null(pl.lit(True).cast(pl.Boolean))
     c2 = (col("fqtr").diff() != 1).fill_null(pl.lit(True).cast(pl.Boolean))
     list_aux2 = [
-        pl.when(col("count_aux") == 1)
-        .then(col(var))
-        .otherwise(col(var + "_q"))
-        .alias(var + "_q")
+        pl.when(col("count_aux") == 1).then(col(var)).otherwise(col(var + "_q")).alias(var + "_q")
         for var in var_list
     ] + [pl.when(col("count_aux") == 1).then(c1).otherwise(c2).alias("del")]
     list_aux3 = [
@@ -3597,7 +3535,7 @@ def cumulate_4q(df, var_list):
         df.with_columns(
             [
                 ttm(var_yrl).alias(var_yrl_name)
-                for var_yrl, var_yrl_name in zip(var_list, var_yrl_name_list)
+                for var_yrl, var_yrl_name in zip(var_list, var_yrl_name_list, strict=True)
             ]
             + [
                 (
@@ -3648,11 +3586,7 @@ def load_raw_fund_table_and_filter(filename, start_date, source_str, mode):
     Output:
         LazyFrame of filtered accounting rows with 'source'.
     """
-    c1 = (
-        (col("indfmt").is_in(["INDL", "FS"]))
-        if mode == 1
-        else (col("indfmt") == "INDL")
-    )
+    c1 = (col("indfmt").is_in(["INDL", "FS"])) if mode == 1 else (col("indfmt") == "INDL")
     datafmt_val = "HIST_STD" if mode == 1 else "STD"
     popsrc_val = "I" if mode == 1 else "D"
     df = (
@@ -3686,8 +3620,7 @@ def apply_indfmt_filter(df):
     df = (
         df.with_columns(count_indfmt=pl.len().over(["gvkey", "datadate"]))
         .filter(
-            (col("count_indfmt") == 1)
-            | ((col("count_indfmt") == 2) & (col("indfmt") == "INDL"))
+            (col("count_indfmt") == 1) | ((col("count_indfmt") == 2) & (col("indfmt") == "INDL"))
         )
         .drop(["indfmt", "count_indfmt"])
     )
@@ -3720,8 +3653,7 @@ def add_fx_and_convert_vars(df, fx_df, vars, freq):
         )
         .select(df.collect_schema().names() + ["fx"])
         .with_columns(
-            [(col(var) * col("fx")).alias(var) for var in vars]
-            + [pl.lit("USD").alias(fx_var)]
+            [(col(var) * col("fx")).alias(var) for var in vars] + [pl.lit("USD").alias(fx_var)]
         )
         .drop("fx")
     )
@@ -3781,13 +3713,9 @@ def standardized_accounting_data(
         Two Parquet files: 'acc_std_ann.parquet' (annual) and 'acc_std_qtr.parquet' (quarterly) standardized accounting data.
     """
     g_fundq_cols = (
-        pl.scan_parquet("../raw/raw_tables/comp_g_fundq.parquet")
-        .collect_schema()
-        .names()
+        pl.scan_parquet("../raw/raw_tables/comp_g_fundq.parquet").collect_schema().names()
     )
-    fundq_cols = (
-        pl.scan_parquet("../raw/raw_tables/comp_fundq.parquet").collect_schema().names()
-    )
+    fundq_cols = pl.scan_parquet("../raw/raw_tables/comp_fundq.parquet").collect_schema().names()
     # Compustat Accounting Vars to Extract
     avars_inc = [
         "sale",
@@ -3894,24 +3822,17 @@ def standardized_accounting_data(
     if coverage in ["global", "world"]:
         # Annual global data:
         vars_not_in_query = ["gp", "pstkrv", "pstkl", "itcb", "xad", "txbcof", "ni"]
-        query_vars = [
-            var for var in (avars + avars_other) if var not in vars_not_in_query
-        ]
+        query_vars = [var for var in (avars + avars_other) if var not in vars_not_in_query]
         g_funda = load_raw_fund_table_and_filter(
             "../raw/raw_tables/comp_g_funda.parquet", start_date, "GLOBAL", 1
         )
         __gfunda = (
             g_funda.with_columns(
-                ni=(col("ib") + pl.coalesce("xi", 0) + pl.coalesce("do", 0)).cast(
-                    pl.Float64
-                )
+                ni=(col("ib") + pl.coalesce("xi", 0) + pl.coalesce("do", 0)).cast(pl.Float64)
             )
             .select(
                 ["gvkey", "datadate", "n", "indfmt", "curcd", "source", "ni"]
-                + [
-                    fl_none().alias(i)
-                    for i in ["gp", "pstkrv", "pstkl", "itcb", "xad", "txbcof"]
-                ]
+                + [fl_none().alias(i) for i in ["gp", "pstkrv", "pstkl", "itcb", "xad", "txbcof"]]
                 + query_vars
             )
             .pipe(apply_indfmt_filter)
@@ -3976,9 +3897,7 @@ def standardized_accounting_data(
     if coverage in ["na", "world"]:
         # Annual north american data:
         vars_not_in_query = ["wcapt", "ltdch", "purtshr"]
-        query_vars = [
-            var for var in (avars + avars_other) if var not in vars_not_in_query
-        ]
+        query_vars = [var for var in (avars + avars_other) if var not in vars_not_in_query]
         funda = load_raw_fund_table_and_filter(
             "../raw/raw_tables/comp_funda.parquet", start_date, "NA", 2
         )
@@ -4145,7 +4064,7 @@ def standardized_accounting_data(
         .pipe(cumulate_4q, var_list=yrl_vars)
         .rename(
             {
-                **dict(zip(bs_vars, list(aux[:-1] for aux in bs_vars))),
+                **dict(zip(bs_vars, [aux[:-1] for aux in bs_vars], strict=True)),
                 **{"curcdq": "curcd"},
             }
         )
@@ -4227,18 +4146,14 @@ def expand(data, id_vars, start_date, end_date, freq="day", new_date_name="date"
     freq_range = "1d" if (freq == "day") else "1mo"
     expanded_df = (
         data.with_columns(
-            pl.date_ranges(start=start_date, end=end_date, interval=freq_range).alias(
-                new_date_name
-            )
+            pl.date_ranges(start=start_date, end=end_date, interval=freq_range).alias(new_date_name)
         )
         .explode(new_date_name)
         .drop([start_date, end_date])
     )
     if freq == "month":
         expanded_df = expanded_df.with_columns(col(new_date_name).dt.month_end())
-    expanded_df = expanded_df.unique(id_vars + [new_date_name]).sort(
-        id_vars + [new_date_name]
-    )
+    expanded_df = expanded_df.unique(id_vars + [new_date_name]).sort(id_vars + [new_date_name])
     return expanded_df
 
 
@@ -4402,12 +4317,8 @@ def add_helper_vars(data):
             div_x=pl.coalesce(["dvt", "dv"]),
             eqbb_x=sum_sas("prstkc", "purtshr"),
             xido_x=pl.coalesce(["xido", (col("xi") + pl.coalesce(["do", 0.0]))]),
-            ca_x=pl.coalesce(
-                ["act", col("rect") + col("invt") + col("che") + col("aco")]
-            ),
-            cl_x=pl.coalesce(
-                [col("lct"), col("ap") + col("dlc") + col("txp") + col("lco")]
-            ),
+            ca_x=pl.coalesce(["act", col("rect") + col("invt") + col("che") + col("aco")]),
+            cl_x=pl.coalesce([col("lct"), col("ap") + col("dlc") + col("txp") + col("lco")]),
             fna_x=pl.coalesce(["ivst", 0.0]) + pl.coalesce(["ivao", 0.0]),
             ppeinv_x=col("ppegt") + col("invt"),
             lnoa_x=col("ppent") + col("intan") + col("ao") - col("lo") + col("dp"),
@@ -4457,9 +4368,7 @@ def add_helper_vars(data):
             - pl.coalesce([col("pstk_x"), pl.lit(0)]),
             bev_x=pl.coalesce(
                 [
-                    col("icapt")
-                    + pl.coalesce(["dlc", 0.0])
-                    - pl.coalesce(["che", 0.0]),
+                    col("icapt") + pl.coalesce(["dlc", 0.0]) - pl.coalesce(["che", 0.0]),
                     col("netdebt_x") + col("seq_x") + pl.coalesce(["mib", 0.0]),
                 ]
             ),
@@ -4522,9 +4431,7 @@ def add_helper_vars(data):
             .otherwise(fl_none()),
             dltnetis_x=pl.when(c1)
             .then(fl_none())
-            .otherwise(
-                pl.coalesce([sub_sas("dltis", "dltr"), "ltdch", col("dltt").diff(n=12)])
-            ),
+            .otherwise(pl.coalesce([sub_sas("dltis", "dltr"), "ltdch", col("dltt").diff(n=12)])),
             dstnetis_x=pl.when(c2)
             .then(fl_none())
             .otherwise(pl.coalesce(["dlcch", col("dlc").diff(n=12)])),
@@ -4694,22 +4601,15 @@ def standardized_unexpected(df, var, qtrs, qtrs_min):
     name = f"{name}_su"
     c1 = col("__chg_n") > qtrs_min
     aux_std = (
-        pl.when(col("__chg_std").shift(3) != 0)
-        .then(col("__chg_std").shift(3))
-        .otherwise(fl_none())
+        pl.when(col("__chg_std").shift(3) != 0).then(col("__chg_std").shift(3)).otherwise(fl_none())
     )
     df = (
         df.sort(["gvkey", "curcd", "datadate"])
-        .with_columns(
-            (col(var) - col(var).shift(12)).over(["gvkey", "curcd"]).alias("__chg")
-        )
+        .with_columns((col(var) - col(var).shift(12)).over(["gvkey", "curcd"]).alias("__chg"))
         .sort(["gvkey", "curcd", "datadate"])
         .with_columns(
             aux=pl.concat_list(
-                [
-                    col("__chg").shift(i).over(["gvkey", "curcd"])
-                    for i in range(0, (3 * qtrs), 3)
-                ]
+                [col("__chg").shift(i).over(["gvkey", "curcd"]) for i in range(0, (3 * qtrs), 3)]
             ).list.drop_nulls()
         )
         .with_columns(
@@ -4729,10 +4629,7 @@ def standardized_unexpected(df, var, qtrs, qtrs_min):
             .alias(name)
         )
         .with_columns(
-            pl.when(col("count") > (12 + qtrs * 3))
-            .then(col(name))
-            .otherwise(fl_none())
-            .alias(name)
+            pl.when(col("count") > (12 + qtrs * 3)).then(col(name)).otherwise(fl_none()).alias(name)
         )
         .drop(["__chg", "__chg_mean", "__chg_std", "__chg_n", "aux"])
     )
@@ -4756,15 +4653,10 @@ def volq(df, name, var, qtrs, qtrs_min):
         df.sort(["gvkey", "curcd", "datadate"])
         .with_columns(
             aux=pl.concat_list(
-                [
-                    col(var).shift(i).over(["gvkey", "curcd"])
-                    for i in range(0, (3 * qtrs), 3)
-                ]
+                [col(var).shift(i).over(["gvkey", "curcd"]) for i in range(0, (3 * qtrs), 3)]
             ).list.drop_nulls()
         )
-        .with_columns(
-            [col("aux").list.std().alias(name), col("aux").list.len().alias("__n")]
-        )
+        .with_columns([col("aux").list.std().alias(name), col("aux").list.len().alias("__n")])
         .with_columns(
             pl.when((col("count") > ((qtrs - 1) * 3)) & (col("__n") >= qtrs_min))
             .then(col(name))
@@ -4793,15 +4685,10 @@ def vola(df, name, var, yrs, yrs_min):
         df.sort(["gvkey", "curcd", "datadate"])
         .with_columns(
             aux=pl.concat_list(
-                [
-                    col(var).shift(i).over(["gvkey", "curcd"])
-                    for i in range(0, (12 * yrs), 12)
-                ]
+                [col(var).shift(i).over(["gvkey", "curcd"]) for i in range(0, (12 * yrs), 12)]
             ).list.drop_nulls()
         )
-        .with_columns(
-            [col("aux").list.std().alias(name), col("aux").list.len().alias("__n")]
-        )
+        .with_columns([col("aux").list.std().alias(name), col("aux").list.len().alias("__n")])
         .with_columns(
             pl.when((col("count") > ((yrs - 1) * 12)) & (col("__n") >= yrs_min))
             .then(col(name))
@@ -4844,10 +4731,7 @@ def earnings_variability(df, esm_h=5):
         .sort(["gvkey", "curcd", "datadate"])
         .with_columns(
             aux1=pl.concat_list(
-                [
-                    col("__roa").shift(i).over(["gvkey", "curcd"])
-                    for i in range(0, (12 * esm_h), 12)
-                ]
+                [col("__roa").shift(i).over(["gvkey", "curcd"]) for i in range(0, (12 * esm_h), 12)]
             ).list.drop_nulls(),
             aux2=pl.concat_list(
                 [
@@ -4865,9 +4749,7 @@ def earnings_variability(df, esm_h=5):
         .explode(["__roa_std", "__croa_std"])
         .with_columns(safe_div("__roa_std", "__croa_std", "earnings_variability"))
         .with_columns(
-            earnings_variability=pl.when(c1)
-            .then(col("earnings_variability"))
-            .otherwise(fl_none())
+            earnings_variability=pl.when(c1).then(col("earnings_variability")).otherwise(fl_none())
         )
         .drop(
             [
@@ -4943,14 +4825,8 @@ def equity_duration_cd(
     c2 = (col("count") > 12) & (col("sale_x").shift(12) > 1)
     roe_c = roe_mean * (1 - roe_ar1)
     g_c = g_mean * (1 - g_ar1)
-    roe0_exp = (
-        pl.when(c1).then(col("ni_x") / col("be_x").shift(12)).otherwise(fl_none())
-    )
-    g0_exp = (
-        pl.when(c2)
-        .then(col("sale_x") / col("sale_x").shift(12) - 1)
-        .otherwise(fl_none())
-    )
+    roe0_exp = pl.when(c1).then(col("ni_x") / col("be_x").shift(12)).otherwise(fl_none())
+    g0_exp = pl.when(c2).then(col("sale_x") / col("sale_x").shift(12) - 1).otherwise(fl_none())
     be0_exp = col("be_x")
     df = df.sort(["gvkey", "curcd", "datadate"]).with_columns(
         __roe0=roe0_exp, __g0=g0_exp, __be0=be0_exp
@@ -4960,9 +4836,7 @@ def equity_duration_cd(
     for t in range(1, horizon + 1):
         df = df.with_columns(be_and_cd_exps(t))
 
-    ed_cd_w_exp = sum(
-        t * col(f"__cd{t}") / ((1 + r) ** t) for t in range(1, horizon + 1)
-    )
+    ed_cd_w_exp = sum(t * col(f"__cd{t}") / ((1 + r) ** t) for t in range(1, horizon + 1))
     ed_cd_exp = sum(col(f"__cd{t}") / ((1 + r) ** t) for t in range(1, horizon + 1))
     c_aux = pl.any_horizontal([col(f"__be{t}") < 0 for t in range(1, horizon + 1)])
     ed_err_exp = pl.when(c_aux).then(pl.lit(1.0)).otherwise(pl.lit(0.0))
@@ -4976,10 +4850,7 @@ def equity_duration_cd(
 
     cols_to_drop = [
         y
-        for x in [
-            [f"__roe{i}", f"__g{i}", f"__be{i}", f"__cd{i}"]
-            for i in range(0, horizon + 1)
-        ]
+        for x in [[f"__roe{i}", f"__g{i}", f"__be{i}", f"__cd{i}"] for i in range(0, horizon + 1)]
         for y in x
     ]
     cols_to_drop.remove("__cd0")
@@ -5011,9 +4882,9 @@ def pitroski_f(df, name="f_score"):
     c7 = col("sale_x").shift(12) > 0
     c8 = col("count") > 24
     c9 = col("at_x").shift(24) > 0
-    col_exp = (pl.coalesce([col("__f_eqis"), 0]) == 0).cast(pl.Int32) + (
-        col("__f_lev") < 0
-    ).cast(pl.Int32)
+    col_exp = (pl.coalesce([col("__f_eqis"), 0]) == 0).cast(pl.Int32) + (col("__f_lev") < 0).cast(
+        pl.Int32
+    )
     for var_name in [
         "__f_roa",
         "__f_croa",
@@ -5027,9 +4898,7 @@ def pitroski_f(df, name="f_score"):
     df = (
         df.sort(["gvkey", "curcd"])
         .with_columns(
-            __f_roa=pl.when(c1 & c2)
-            .then(col("ni_x") / col("at_x").shift(12))
-            .otherwise(fl_none()),
+            __f_roa=pl.when(c1 & c2).then(col("ni_x") / col("at_x").shift(12)).otherwise(fl_none()),
             __f_croa=pl.when(c1 & c2)
             .then(col("ocf_x") / col("at_x").shift(12))
             .otherwise(fl_none()),
@@ -5089,11 +4958,7 @@ def ohlson_o(df, name="o_score"):
         DataFrame with '{name}' continuous score.
     """
 
-    c1 = (
-        (col("count") > 12)
-        & (col("nix_x").is_not_null())
-        & (col("nix_x").shift(12).is_not_null())
-    )
+    c1 = (col("count") > 12) & (col("nix_x").is_not_null()) & (col("nix_x").shift(12).is_not_null())
     c2 = (col("count") > 12) & (col("nix_x").abs() + col("nix_x").shift(12).abs() != 0)
     exp_aux1 = ((col("nix_x") < 0) & (col("nix_x").shift(12) < 0)).cast(pl.Float64)
     exp_aux2 = (col("nix_x") - col("nix_x").shift(12)) / (
@@ -5104,18 +4969,14 @@ def ohlson_o(df, name="o_score"):
     col3 = safe_div("debt_x", "at_x", "__o_lev", 3)
     col4 = safe_div("nix_x", "at_x", "__o_roe", 3)
     col5 = safe_div("cl_x", "ca_x", "__o_cacl", 3)
-    col6 = (
-        pl.when(col("at_x") > 0).then(col("at_x").log()).otherwise(fl_none())
-    ).alias("__o_lat")
+    col6 = (pl.when(col("at_x") > 0).then(col("at_x").log()).otherwise(fl_none())).alias("__o_lat")
     col7 = (
         pl.when(col("at_x") > 0)
         .then((col("ca_x") - col("cl_x")) / col("at_x"))
         .otherwise(fl_none())
     ).alias("__o_wc")
     col8 = (
-        pl.when(col("lt") > 0)
-        .then((col("pi_x") + col("dp")) / col("lt"))
-        .otherwise(fl_none())
+        pl.when(col("lt") > 0).then((col("pi_x") + col("dp")) / col("lt")).otherwise(fl_none())
     ).alias("__o_ffo")
     col9 = (
         pl.when((col("lt").is_not_null()) & (col("at_x").is_not_null()))
@@ -5216,9 +5077,7 @@ def intrinsic_value(df, name="intrinsic_value", r=0.12):
     df = (
         df.sort(["gvkey", "curcd", "datadate"])
         .with_columns([iv_roe_exp, iv_po_exp])
-        .with_columns(
-            __iv_be1=((1 + (1 - col("__iv_po")) * col("__iv_roe")) * col("be_x"))
-        )
+        .with_columns(__iv_be1=((1 + (1 - col("__iv_po")) * col("__iv_roe")) * col("be_x")))
         .with_columns(
             (
                 col("be_x")
@@ -5226,9 +5085,7 @@ def intrinsic_value(df, name="intrinsic_value", r=0.12):
                 + (((col("__iv_roe") - r) / ((1 + r) * r)) * col("__iv_be1"))
             ).alias(name)
         )
-        .with_columns(
-            pl.when(col(name) > 0).then(col(name)).otherwise(fl_none()).alias(name)
-        )
+        .with_columns(pl.when(col(name) > 0).then(col(name)).otherwise(fl_none()).alias(name))
         .drop(["__iv_po", "__iv_roe", "__iv_be1"])
     )
     return df
@@ -5252,25 +5109,21 @@ def kz_index(df, name="kz_index"):
     c2 = col("at_x") > 0
     c3 = (col("debt_x") + col("seq_x")) != 0
     col1 = (
-        pl.when(c1)
-        .then((col("ni_x") + col("dp")) / col("ppent").shift(12))
-        .otherwise(fl_none())
+        pl.when(c1).then((col("ni_x") + col("dp")) / col("ppent").shift(12)).otherwise(fl_none())
     ).alias("__kz_cf")
-    col2 = (
-        pl.when(c1).then(col("div_x") / col("ppent").shift(12)).otherwise(fl_none())
-    ).alias("__kz_dv")
-    col3 = (
-        pl.when(c1).then(col("che") / col("ppent").shift(12)).otherwise(fl_none())
-    ).alias("__kz_cs")
+    col2 = (pl.when(c1).then(col("div_x") / col("ppent").shift(12)).otherwise(fl_none())).alias(
+        "__kz_dv"
+    )
+    col3 = (pl.when(c1).then(col("che") / col("ppent").shift(12)).otherwise(fl_none())).alias(
+        "__kz_cs"
+    )
     col4 = (
         pl.when(c2)
         .then((col("at_x") + col("me_fiscal") - col("be_x")) / col("at_x"))
         .otherwise(fl_none())
     ).alias("__kz_q")
     col5 = (
-        pl.when(c3)
-        .then(col("debt_x") / (col("debt_x") + col("seq_x")))
-        .otherwise(fl_none())
+        pl.when(c3).then(col("debt_x") / (col("debt_x") + col("seq_x"))).otherwise(fl_none())
     ).alias("__kz_db")
     df = (
         df.sort(["gvkey", "curcd", "datadate"])
@@ -5303,9 +5156,7 @@ def chg_var1_to_var2(df, name, var1, var2, horizon):
         DataFrame with '{name}' change over the specified horizon.
     """
     df = (
-        df.with_columns(
-            __x=pl.when(col(var2) <= 0).then(None).otherwise(col(var1) / col(var2))
-        )
+        df.with_columns(__x=pl.when(col(var2) <= 0).then(None).otherwise(col(var1) / col(var2)))
         .sort(["gvkey", "curcd", "datadate"])
         .with_columns(
             pl.when(col("count") <= horizon)
@@ -5337,9 +5188,7 @@ def compute_earnings_persistence(data_path, __n, __min):
     con = ibis.duckdb.connect("aux_earnings_pers.ddb", threads=os.cpu_count())
     con.create_table(
         "raw_table",
-        pl.scan_parquet(data_path)
-        .select(["gvkey", "curcd", "datadate", "ni_x", "at_x"])
-        .collect(),
+        pl.scan_parquet(data_path).select(["gvkey", "curcd", "datadate", "ni_x", "at_x"]).collect(),
         overwrite=True,
     )
 
@@ -5456,9 +5305,7 @@ def scale_me(var):
     # Appending '_me' to the name
     name = f"{name}_me"
     col_aux = (col(var) * col("fx")) / col("me_company")
-    return (
-        pl.when(col("me_company") != 0).then(col_aux).otherwise(fl_none()).alias(name)
-    )
+    return pl.when(col("me_company") != 0).then(col_aux).otherwise(fl_none()).alias(name)
 
 
 def scale_mev(var):
@@ -5495,8 +5342,7 @@ def mean_year(var):
     """
     return (
         pl.when(
-            col(var).is_not_null()
-            & (col(var).shift(12).over(["gvkey", "curcd"])).is_not_null()
+            col(var).is_not_null() & (col(var).shift(12).over(["gvkey", "curcd"])).is_not_null()
         )
         .then((col(var) + col(var).shift(12)).over(["gvkey", "curcd"]) / 2)
         .when(col(var).is_not_null())
@@ -5586,12 +5432,7 @@ def safe_div(num, den, name, mode=1):
     """
 
     if mode == 1:
-        return (
-            pl.when(col(den) != 0)
-            .then(col(num) / col(den))
-            .otherwise(fl_none())
-            .alias(name)
-        )
+        return pl.when(col(den) != 0).then(col(num) / col(den)).otherwise(fl_none()).alias(name)
     if mode == 2:
         return (
             pl.when(col(den) != 0)
@@ -5600,12 +5441,7 @@ def safe_div(num, den, name, mode=1):
             .alias(name)
         )
     if mode == 3:
-        return (
-            pl.when(col(den) > 0)
-            .then(col(num) / col(den))
-            .otherwise(fl_none())
-            .alias(name)
-        )
+        return pl.when(col(den) > 0).then(col(num) / col(den)).otherwise(fl_none()).alias(name)
     if mode == 4:
         cond1 = col("count") > 12
         cond2 = (col(den).shift(12) > 0).over(["gvkey", "curcd"])
@@ -5629,12 +5465,7 @@ def safe_div(num, den, name, mode=1):
     if mode == 8:
         cond1 = col(num) > 0
         cond2 = col(den) > 0
-        return (
-            pl.when(cond1 & cond2)
-            .then(col(num) / col(den))
-            .otherwise(fl_none())
-            .alias(name)
-        )
+        return pl.when(cond1 & cond2).then(col(num) / col(den)).otherwise(fl_none()).alias(name)
     if mode == 9:
         cond1 = col("count") > 3
         cond2 = col(den).shift(3) > 0
@@ -5658,10 +5489,7 @@ def update_ni_inc_and_decrease(df, lag):
     """
     c1 = (col("ni_inc").shift(lag) == 1) & (col("no_decrease") == 1)
     ni_inc8q_updated_exp = (
-        pl.when(c1)
-        .then(col("ni_inc8q") + 1)
-        .otherwise(col("ni_inc8q"))
-        .alias("ni_inc8q")
+        pl.when(c1).then(col("ni_inc8q") + 1).otherwise(col("ni_inc8q")).alias("ni_inc8q")
     )
     no_decrease_updated_exp = (
         pl.when(c1).then(col("no_decrease")).otherwise(pl.lit(0)).alias("no_decrease")
@@ -5740,9 +5568,7 @@ def compute_capex_abn(df):
         + col("__capex_sale").shift(24)
         + col("__capex_sale").shift(36)
     ) / 3
-    capex_abn_exp = (
-        pl.when(c1 & c2).then(num / den - 1).otherwise(fl_none()).alias("capex_abn")
-    )
+    capex_abn_exp = pl.when(c1 & c2).then(num / den - 1).otherwise(fl_none()).alias("capex_abn")
     df = (
         df.with_columns(safe_div("capx", "sale_x", "__capex_sale", 3))
         .sort(["gvkey", "curcd", "datadate"])
@@ -5764,9 +5590,9 @@ def tangibility():
         Polars expression 'tangibility'.
     """
     c1 = pl.col("at_x") != 0
-    div_exp = (
-        col("che") + 0.715 * col("rect") + 0.547 * col("invt") + 0.535 * col("ppegt")
-    ) / col("at_x")
+    div_exp = (col("che") + 0.715 * col("rect") + 0.547 * col("invt") + 0.535 * col("ppegt")) / col(
+        "at_x"
+    )
     return pl.when(c1).then(div_exp).otherwise(fl_none()).alias("tangibility")
 
 
@@ -5912,23 +5738,16 @@ def add_accounting_misc_cols_1(df):
     ]
     # Return on assets:
     c_ret_at = [
-        safe_div(f"{i}_x", "at_x", f"{i}_at")
-        for i in ["gp", "ebitda", "ebit", "fi", "cop", "ni"]
+        safe_div(f"{i}_x", "at_x", f"{i}_at") for i in ["gp", "ebitda", "ebit", "fi", "cop", "ni"]
     ]
     # Return on book equity:
-    c_ret_be = [
-        safe_div(f"{i}_x", "be_x", f"{i}_be")
-        for i in ["ope", "ni", "nix", "ocf", "fcf"]
-    ]
+    c_ret_be = [safe_div(f"{i}_x", "be_x", f"{i}_be") for i in ["ope", "ni", "nix", "ocf", "fcf"]]
     # Return on invested book capital:
     c_ret_bev = [
-        safe_div(f"{i}_x", "bev_x", f"{i}_bev")
-        for i in ["gp", "ebitda", "ebit", "fi", "cop"]
+        safe_div(f"{i}_x", "bev_x", f"{i}_bev") for i in ["gp", "ebitda", "ebit", "fi", "cop"]
     ]
     # Return on Physical Capital:
-    c_ret_ppent = [
-        safe_div(f"{i}_x", "ppent", f"{i}_ppen") for i in ["gp", "ebitda", "fcf"]
-    ]
+    c_ret_ppent = [safe_div(f"{i}_x", "ppent", f"{i}_ppen") for i in ["gp", "ebitda", "fcf"]]
     # Issuance Variables & Equity Payout
     aux_iss_eqp = [
         "fincf",
@@ -5950,9 +5769,7 @@ def add_accounting_misc_cols_1(df):
         safe_div("ebit_x", "xint", "ebit_int"),
     ]
     # Capitalization/Leverage Ratios Book:
-    c_cap_lev = [
-        safe_div(f"{i}_x", "bev_x", f"{i}_bev") for i in ["be", "debt", "pstk"]
-    ] + [
+    c_cap_lev = [safe_div(f"{i}_x", "bev_x", f"{i}_bev") for i in ["be", "debt", "pstk"]] + [
         safe_div("che", "bev_x", "cash_bev"),
         safe_div("dltt", "bev_x", "debtlt_bev"),
         safe_div("dlc", "bev_x", "debtst_bev"),
@@ -6006,7 +5823,7 @@ def add_accounting_misc_cols_2(df):
     t1_col = [16, 16, 20, 5]
     t2_col = [8, 8, 12, 5]
     for df_function, n_col, var_vol, t1, t2 in zip(
-        funcs_vol, names_col, vars_vol, t1_col, t2_col
+        funcs_vol, names_col, vars_vol, t1_col, t2_col, strict=True
     ):
         df = df_function(df, n_col, var_vol, t1, t2)
     for df_function in [
@@ -6023,7 +5840,7 @@ def add_accounting_misc_cols_2(df):
     names = ["gpoa_ch5", "roe_ch5", "roa_ch5", "cfoa_ch5", "gmar_ch5"]
     vars1 = ["gp_x", "ni_x", "ni_x", "ocf_x", "gp_x"]
     vars2 = ["at_x", "be_x", "at_x", "at_x", "sale_x"]
-    for i, j, k in zip(names, vars1, vars2):
+    for i, j, k in zip(names, vars1, vars2, strict=True):
         df = df.pipe(chg_var1_to_var2, name=i, var1=j, var2=k, horizon=60)
     return df.drop(["count", "__ocfq_saleq", "__niq_saleq", "__roeq", "__roe"])
 
@@ -6118,9 +5935,7 @@ def add_earnings_persistence_and_expand(df, data_path, lag_to_pub, max_lag):
         df.join(earnings_pers, on=["gvkey", "curcd", "datadate"], how="left")
         .filter(col("data_available") == 1)
         .sort(["gvkey", "datadate"])
-        .with_columns(
-            start_date=col("datadate").dt.offset_by(f"{lag_to_pub}mo").dt.month_end()
-        )
+        .with_columns(start_date=col("datadate").dt.offset_by(f"{lag_to_pub}mo").dt.month_end())
         .sort(["gvkey", "datadate"])
         .with_columns(next_start_date=col("start_date").shift(-1).over(["gvkey"]))
         .with_columns(
@@ -6210,9 +6025,7 @@ def add_me_data_and_compute_me_mev_mat_eqdur_vars(df, me_df):
     c_misc = [
         col("mev").alias("enterprise_value"),
         (
-            pl.when(
-                (col("gvkey") == col("gvkey").shift(12)) & (col("mat").shift(12) != 0)
-            )
+            pl.when((col("gvkey") == col("gvkey").shift(12)) & (col("mat").shift(12) != 0))
             .then(col("aliq_x") * col("fx") / col("mat").shift(12))
             .otherwise(fl_none())
         ).alias("aliq_mat"),
@@ -6237,9 +6050,7 @@ def add_me_data_and_compute_me_mev_mat_eqdur_vars(df, me_df):
         .with_columns(
             mev=col("me_company") + col("netdebt_x") * col("fx"),
             mat=col("at_x") * col("fx") - col("be_x") * col("fx") + col("me_company"),
-            me_company=pl.when(col("me_company") > 0)
-            .then(col("me_company"))
-            .otherwise(fl_none()),
+            me_company=pl.when(col("me_company") > 0).then(col("me_company")).otherwise(fl_none()),
         )
         .with_columns(
             mev=pl.when(col("mev") > 0).then(col("mev")).otherwise(fl_none()),
@@ -6253,9 +6064,7 @@ def add_me_data_and_compute_me_mev_mat_eqdur_vars(df, me_df):
             + c_misc
         )
         .with_columns(
-            pl.when(
-                (col("ed_err") == 1) | (col("eq_dur") <= 0) | (col("me_company") == 0)
-            )
+            pl.when((col("ed_err") == 1) | (col("eq_dur") <= 0) | (col("me_company") == 0))
             .then(None)
             .otherwise(col("eq_dur"))
             .alias("eq_dur")
@@ -6283,9 +6092,7 @@ def rename_cols_and_select_keep_vars(df, rename_dict, vars_to_keep, suffix):
         for a, b in rename_dict.items():
             col_name = col_name.replace(a, b, 1)
         new_names[i] = col_name
-    df = df.rename(new_names).select(
-        ["source", "gvkey", "public_date", "datadate"] + vars_to_keep
-    )
+    df = df.rename(new_names).select(["source", "gvkey", "public_date", "datadate"] + vars_to_keep)
     if suffix is None:
         return df
     else:
@@ -6440,9 +6247,7 @@ def create_acc_chars(
             [
                 chg_to_lagassets(i) for i in ["noa_x", "ppeinv_x"]
             ]  # 1yr Change Scaled by Lagged Assets)
-            + [
-                chg_to_avgassets(i) for i in ["lnoa_x"]
-            ]  # 1yr Change Scaled by Average Assets
+            + [chg_to_avgassets(i) for i in ["lnoa_x"]]  # 1yr Change Scaled by Average Assets
             + [var_growth(var_gr="capx", horizon=24)]
         )  # CAPEX growth over 2 years
         .sort(["gvkey", "curcd", "datadate"])
@@ -6587,9 +6392,7 @@ def combine_ann_qtr_chars(ann_df_path, qtr_df_path, char_vars, q_suffix):
     )
     ann = con.table("ann")
     qtr = con.table("qtr")
-    combined = ann.left_join(
-        qtr, [ann.gvkey == qtr.gvkey, ann.public_date == qtr.public_date]
-    )
+    combined = ann.left_join(qtr, [ann.gvkey == qtr.gvkey, ann.public_date == qtr.public_date])
     drop_columns = [
         "datadate",
         f"datadate{q_suffix}",
@@ -6602,10 +6405,7 @@ def combine_ann_qtr_chars(ann_df_path, qtr_df_path, char_vars, q_suffix):
         qtr_var = f"{ann_var}{q_suffix}"
         subs[ann_var] = ibis.ifelse(
             combined[ann_var].isnull()
-            | (
-                combined[qtr_var].notnull()
-                & (combined[f"datadate{q_suffix}"] > combined.datadate)
-            ),
+            | (combined[qtr_var].notnull() & (combined[f"datadate{q_suffix}"] > combined.datadate)),
             combined[qtr_var],
             combined[ann_var],
         )
@@ -6699,9 +6499,9 @@ def chcsho_cols(i):
     """
     c1 = col("aux").shift(i) != 0
     c2 = col("count") > i
-    return (
-        pl.when(c1 & c2).then(col("aux") / col("aux").shift(i) - 1).otherwise(fl_none())
-    ).alias(f"chcsho_{i}m")
+    return (pl.when(c1 & c2).then(col("aux") / col("aux").shift(i) - 1).otherwise(fl_none())).alias(
+        f"chcsho_{i}m"
+    )
 
 
 def eqnpo_cols(lag):
@@ -6722,9 +6522,7 @@ def eqnpo_cols(lag):
     eqnpo_col_exp = (col("ri") / col("ri").shift(lag)).log() - (
         col("me") / col("me").shift(lag)
     ).log()
-    return (pl.when(c1 & c2 & c3).then(eqnpo_col_exp).otherwise(fl_none())).alias(
-        f"eqnpo_{lag}m"
-    )
+    return (pl.when(c1 & c2 & c3).then(eqnpo_col_exp).otherwise(fl_none())).alias(f"eqnpo_{lag}m")
 
 
 def div_cols(i, spc=False):
@@ -6747,9 +6545,7 @@ def div_cols(i, spc=False):
         else col(f"{div_var}1m_me").rolling_sum(window_size=i, min_periods=1).over("id")
     )
     return (
-        pl.when((col("count") >= i) & (col("me") != 0))
-        .then(num / col("me"))
-        .otherwise(fl_none())
+        pl.when((col("count") >= i) & (col("me") != 0)).then(num / col("me")).otherwise(fl_none())
     ).alias(f"{div_var}{i}m_me")
 
 
@@ -6812,9 +6608,7 @@ def market_chars_monthly(data_path, market_ret_path, local_currency=False):
         .agg(start_date=pl.min("eom"), end_date=pl.max("eom"))
         .sort(["id", "start_date"])
     )
-    __full_range = expand(
-        __stock_coverage, ["id"], "start_date", "end_date", "month", "eom"
-    )
+    __full_range = expand(__stock_coverage, ["id"], "start_date", "end_date", "month", "eom")
     data = (
         __full_range.join(data, how="left", on=["id", "eom"])
         .sort(["id", "eom"])
@@ -6873,7 +6667,7 @@ def market_chars_monthly(data_path, market_ret_path, local_currency=False):
                 col("^div.*me$"),
                 col("^eqnpo.*$"),
                 col("^chcsho.*$"),
-                col("^ret_\d+_\d+$"),
+                col(r"^ret_\d+_\d+$"),
                 col("^seas.*$"),
             ]
         )
@@ -6913,8 +6707,7 @@ def firm_age(data_path):
         .agg(comp_ret_first=_.datadate.min())
         .mutate(
             comp_ret_first=(
-                (_.comp_ret_first - ibis.interval(years=1)).year().cast("string")
-                + "-12-31"
+                (_.comp_ret_first - ibis.interval(years=1)).year().cast("string") + "-12-31"
             ).cast("date")
         )
     )
@@ -6930,8 +6723,7 @@ def firm_age(data_path):
         .agg(comp_acc_first=_.datadate.min())
         .mutate(
             comp_acc_first=(
-                (_.comp_acc_first - ibis.interval(years=1)).year().cast("string")
-                + "-12-31"
+                (_.comp_acc_first - ibis.interval(years=1)).year().cast("string") + "-12-31"
             ).cast("date")
         )
     )
@@ -6985,8 +6777,7 @@ def char_pf_rets():
         List of Polars expressions: [lms, smb].
     """
     lms = (
-        (col("small_high") + col("big_high")) / 2
-        - (col("small_low") + col("big_low")) / 2
+        (col("small_high") + col("big_high")) / 2 - (col("small_low") + col("big_low")) / 2
     ).alias("lms")
     smb = (
         (col("small_high") + col("small_mid") + col("small_low")) / 3
@@ -7012,10 +6803,7 @@ def sort_ff_style(char, min_stocks_bp, min_stocks_pf, date_col, data, sf):
     """
     # print(f"Executing sort_ff_style for {char}", flush=True)
     c1 = (
-        (
-            (col("size_grp_l").is_in(["small", "large", "mega"]))
-            & (col("excntry_l") != "USA")
-        )
+        ((col("size_grp_l").is_in(["small", "large", "mega"])) & (col("excntry_l") != "USA"))
         | (
             ((col("crsp_exchcd_l") == 1) | (col("comp_exchg_l") == 11))
             & (col("excntry_l") == "USA")
@@ -7028,9 +6816,7 @@ def sort_ff_style(char, min_stocks_bp, min_stocks_pf, date_col, data, sf):
         .then(pl.lit("mid"))
         .otherwise(pl.lit("low"))
     ).alias("char_pf")
-    bp_stocks = (
-        data.filter(c1)
-            .sql(f"""
+    bp_stocks = data.filter(c1).sql(f"""
                 SELECT
                     eom,
                     excntry_l,
@@ -7041,13 +6827,10 @@ def sort_ff_style(char, min_stocks_bp, min_stocks_pf, date_col, data, sf):
                 GROUP BY excntry_l, eom
                 ORDER BY excntry_l, eom
             """)
-    )
     data = (
         data.join(bp_stocks, how="left", on=["excntry_l", "eom"])
         .filter(
-            (col("n") >= min_stocks_bp)
-            & (col(f"{char}_l").is_not_null())
-            & (col("size_pf") != "")
+            (col("n") >= min_stocks_bp) & (col(f"{char}_l").is_not_null()) & (col("size_pf") != "")
         )
         .select(
             ["excntry_l", "id", "eom", "size_pf", "me_l", "be_me_l", char_pf_exp]
@@ -7079,10 +6862,9 @@ def sort_ff_style(char, min_stocks_bp, min_stocks_pf, date_col, data, sf):
     )
     return returns
 
+
 @measure_time
-def ap_factors(
-    output_path, freq, sf_path, mchars_path, mkt_path, min_stocks_bp, min_stocks_pf
-):
+def ap_factors(output_path, freq, sf_path, mchars_path, mkt_path, min_stocks_bp, min_stocks_pf):
     """
     Description:
         Build AP-style factor panels (FF HML/SMB and HXZ INV/ROE/SMB) by country and month (or day).
@@ -7125,8 +6907,8 @@ def ap_factors(
                                 WITH bounds AS (
                                 SELECT
                                     eom,
-                                    QUANTILE_DISC(ret_exc, {0.1 /100}) AS low,
-                                    QUANTILE_DISC(ret_exc, {99.9/100}) AS high
+                                    QUANTILE_DISC(ret_exc, {0.1 / 100}) AS low,
+                                    QUANTILE_DISC(ret_exc, {99.9 / 100}) AS high
                                 FROM self
                                 GROUP BY eom
                                 )
@@ -7149,24 +6931,17 @@ def ap_factors(
         pl.scan_parquet(mchars_path)
         .sort(["id", "eom"])
         .with_columns(
-            [
-                col(i).shift(1).over(["id", "source_crsp"]).alias(i + "_l")
-                for i in lag_vars
-            ]
+            [col(i).shift(1).over(["id", "source_crsp"]).alias(i + "_l") for i in lag_vars]
         )
         .sort(["id", "eom"])
         .with_columns(
             [
                 pl.when(
                     (
-                        (
-                            12 * (col("eom").dt.year() - col("eom").shift(1).dt.year())
-                            + (
-                                col("eom").dt.month() - col("eom").shift(1).dt.month()
-                            ).cast(pl.Int32)
-                        ).over("id")
-                        != 1
-                    )
+                        12 * (col("eom").dt.year() - col("eom").shift(1).dt.year())
+                        + (col("eom").dt.month() - col("eom").shift(1).dt.month()).cast(pl.Int32)
+                    ).over("id")
+                    != 1
                 )
                 .then(pl.lit(None))
                 .otherwise(i + "_l")
@@ -7193,15 +6968,15 @@ def ap_factors(
         )
     )
 
-    ff = sort_ff_style(
-        "be_me", min_stocks_bp, min_stocks_pf, date_col, base, world_sf2
-    ).rename({"lms": "hml", "smb": "smb_ff"})
+    ff = sort_ff_style("be_me", min_stocks_bp, min_stocks_pf, date_col, base, world_sf2).rename(
+        {"lms": "hml", "smb": "smb_ff"}
+    )
     asset_growth = sort_ff_style(
         "at_gr1", min_stocks_bp, min_stocks_pf, date_col, base, world_sf2
     ).rename({"lms": "at_gr1_lms", "smb": "at_gr1_smb"})
-    roeq = sort_ff_style(
-        "niq_be", min_stocks_bp, min_stocks_pf, date_col, base, world_sf2
-    ).rename({"lms": "niq_be_lms", "smb": "niq_be_smb"})
+    roeq = sort_ff_style("niq_be", min_stocks_bp, min_stocks_pf, date_col, base, world_sf2).rename(
+        {"lms": "niq_be_lms", "smb": "niq_be_smb"}
+    )
     hxz = asset_growth.join(roeq, how="left", on=["excntry", date_col]).select(
         [
             "excntry",
@@ -7221,6 +6996,7 @@ def ap_factors(
     )
     output.write_parquet(output_path)
 
+
 def prep_data_factor_regs(data_path, fcts_path):
     """
     Description:
@@ -7237,16 +7013,16 @@ def prep_data_factor_regs(data_path, fcts_path):
 
     os.system("rm -f aux_factor_regs.ddb")
     con = ibis.duckdb.connect("aux_factor_regs.ddb", threads=os.cpu_count())
-    
+
     con.raw_sql(f"""
     CREATE OR REPLACE VIEW data_msf AS
     SELECT *
     FROM read_parquet('{data_path}');
-    
+
     CREATE OR REPLACE VIEW fcts AS
     SELECT *
     FROM read_parquet('{fcts_path}');
-    
+
     CREATE OR REPLACE TABLE __msf2 AS
     WITH __msf1 AS (
     SELECT
@@ -7277,8 +7053,8 @@ def prep_data_factor_regs(data_path, fcts_path):
     percs AS (
         SELECT
           eom,
-          QUANTILE_DISC(ret_exc, {0.1 /100}) AS low,
-          QUANTILE_DISC(ret_exc, {99.9/100}) AS high
+          QUANTILE_DISC(ret_exc, {0.1 / 100}) AS low,
+          QUANTILE_DISC(ret_exc, {99.9 / 100}) AS high
         FROM __msf1
         GROUP BY eom
     )
@@ -7314,10 +7090,7 @@ def market_beta(output_path, data_path, fcts_path, __n, __min):
     base_data = con.table("__msf2").to_polars().lazy()
     aux_maps = gen_aux_maps(__n)
     df = pl.concat(
-        [
-            process_map_chunks(base_data, mapping, "capm", __n, __min)
-            for mapping in aux_maps
-        ]
+        [process_map_chunks(base_data, mapping, "capm", __n, __min) for mapping in aux_maps]
     ).collect()
     ids = con.table("__msf2").select(["id", "id_int"]).distinct().to_polars()
     dates = (
@@ -7430,9 +7203,7 @@ def prepare_daily(data_path, fcts_path):
         )
         .with_columns(
             zero_obs=pl.sum("zero_obs").over(["id_int", "eom"]),
-            ret_exc=pl.when(col("ret_lag_dif") <= 14)
-            .then(col("ret_exc"))
-            .otherwise(fl_none()),
+            ret_exc=pl.when(col("ret_lag_dif") <= 14).then(col("ret_exc")).otherwise(fl_none()),
             ret=pl.when(col("ret_lag_dif") <= 14).then(col("ret")).otherwise(fl_none()),
             dolvol_d=col("dolvol"),
             prc_adj=safe_div("prc", "adjfct", "prc_adj"),
@@ -7449,9 +7220,7 @@ def prepare_daily(data_path, fcts_path):
     id_int_key.collect().write_parquet("id_int_key.parquet")
 
     mkt_lead_lag = (
-        fcts.select(
-            ["excntry", "date", "mktrf", col("date").dt.month_end().alias("eom")]
-        )
+        fcts.select(["excntry", "date", "mktrf", col("date").dt.month_end().alias("eom")])
         .sort(["excntry", "date"])
         .with_columns(
             mktrf_ld1=col("mktrf").shift(-1).over(["excntry", "eom"]),
@@ -7467,12 +7236,12 @@ def prepare_daily(data_path, fcts_path):
         .select(["ret_exc", "id", "id_int", "date", "mktrf", "eom", "zero_obs"])
         .sort(["id_int", "date"])
         .with_columns(
-            ret_exc_3l=(
-                col("ret_exc") + col("ret_exc").shift(1) + col("ret_exc").shift(2)
-            ).over(["id_int"]),
-            mkt_exc_3l=(
-                col("mktrf") + col("mktrf").shift(1) + col("mktrf").shift(2)
-            ).over(["id_int"]),
+            ret_exc_3l=(col("ret_exc") + col("ret_exc").shift(1) + col("ret_exc").shift(2)).over(
+                ["id_int"]
+            ),
+            mkt_exc_3l=(col("mktrf") + col("mktrf").shift(1) + col("mktrf").shift(2)).over(
+                ["id_int"]
+            ),
         )
         .select(["id_int", "eom", "zero_obs", "ret_exc_3l", "mkt_exc_3l"])
         .select(pl.all().shrink_dtype())
@@ -7501,9 +7270,7 @@ def gen_ranks_and_normalize(df, id_vars, geo_vars, time_vars, desc_flag, var, mi
         .with_columns(count=pl.count(var).over(by_vars))
         .filter(col("count") >= min_stks)
         .with_columns(
-            (col(var).rank(descending=desc_flag) / col("count"))
-            .over(by_vars)
-            .alias(f"rank_{var}")
+            (col(var).rank(descending=desc_flag) / col("count")).over(by_vars).alias(f"rank_{var}")
         )
         .drop([*geo_vars, var, "count"])
     )
@@ -7534,9 +7301,7 @@ def gen_misp_exp(var_list, min_fcts):
 
 
 @measure_time
-def mispricing_factors(
-    data_path, min_stks, min_fcts=3, output_path="mp_factors.parquet"
-):
+def mispricing_factors(data_path, min_stks, min_fcts=3, output_path="mp_factors.parquet"):
     """
     Description:
         Compute two mispricing composites (management & performance) from ranked inputs.
@@ -7575,13 +7340,9 @@ def mispricing_factors(
         .sort(["excntry", "eom"])
     )
     chars = {"1": aux_df}
-    for __d, __v, i in zip(direction, vars_mgmt + vars_perf, index):
-        subset = gen_ranks_and_normalize(
-            aux_df, ["id"], ["excntry"], ["eom"], __d, __v, min_stks
-        )
-        chars[f"{(i + 1) % 2}"] = chars[f"{i % 2}"].join(
-            subset, on=["id", "eom"], how="left"
-        )
+    for __d, __v, i in zip(direction, vars_mgmt + vars_perf, index, strict=True):
+        subset = gen_ranks_and_normalize(aux_df, ["id"], ["excntry"], ["eom"], __d, __v, min_stks)
+        chars[f"{(i + 1) % 2}"] = chars[f"{i % 2}"].join(subset, on=["id", "eom"], how="left")
     chars["1"] = (
         chars["1"]
         .with_columns(
@@ -7618,11 +7379,7 @@ def impute_high_low(df):
     sc2 = (col("prc_low") > 0) & (col("prc_high") > col("prc_low"))
     sc3 = (col("flag_replace")) & (
         (col("prc") >= col("prc_low_r")) & (col("prc") <= col("prc_high_r"))
-        | (
-            col("prc").is_null()
-            & col("prc_low_r").is_null()
-            & col("prc_high_r").is_null()
-        )
+        | (col("prc").is_null() & col("prc_low_r").is_null() & col("prc_high_r").is_null())
     )
     sc4 = (col("flag_replace")) & (col("prc") < col("prc_low_r"))
     sc5 = (col("flag_replace")) & (col("prc") > col("prc_high_r")).fill_null(True)
@@ -7639,15 +7396,11 @@ def impute_high_low(df):
         )
         .with_columns(
             prc_low_r=(pl.when(col("count") == 1).then(None).otherwise(col("prc_low"))),
-            prc_high_r=(
-                pl.when(col("count") == 1).then(None).otherwise(col("prc_high"))
-            ),
+            prc_high_r=(pl.when(col("count") == 1).then(None).otherwise(col("prc_high"))),
         )
         .with_columns(
             prc_low_r=(pl.when(sc2).then(col("prc_low")).otherwise(col("prc_low_r"))),
-            prc_high_r=(
-                pl.when(sc2).then(col("prc_high")).otherwise(col("prc_high_r"))
-            ),
+            prc_high_r=(pl.when(sc2).then(col("prc_high")).otherwise(col("prc_high_r"))),
         )
         .sort(["id", "date"])
         .with_columns(
@@ -7765,12 +7518,11 @@ def compute_bidask_spread(df, __min_obs):
                 .otherwise(fl_none())
             ),
             gamma=pl.when(col("prc_low_2d") > 0)
-            .then(((col("prc_high_2d") / col("prc_low_2d")).log() ** 2))
+            .then((col("prc_high_2d") / col("prc_low_2d")).log() ** 2)
             .otherwise(fl_none()),
         )
         .with_columns(
-            alpha=((sqrt(2) - 1) * col("beta").sqrt()) / const
-            - (col("gamma") / const).sqrt()
+            alpha=((sqrt(2) - 1) * col("beta").sqrt()) / const - (col("gamma") / const).sqrt()
         )
         .with_columns(
             spread=2
@@ -7780,9 +7532,7 @@ def compute_bidask_spread(df, __min_obs):
             + (col("gamma") / (k2 * k2 * const)).sqrt(),
         )
         .with_columns(
-            spread_0=pl.when(col("spread") < 0)
-            .then(pl.lit(0.0))
-            .otherwise(col("spread")),
+            spread_0=pl.when(col("spread") < 0).then(pl.lit(0.0)).otherwise(col("spread")),
             sigma_0=pl.when(col("sigma") < 0).then(pl.lit(0.0)).otherwise(col("sigma")),
         )
         .group_by(["id", "eom"])
@@ -7818,9 +7568,7 @@ def bidask_hl(output_path, data_path, market_returns_daily_path, __min_obs):
         pl.scan_parquet(data_path)
         .join(market_returns_daily, how="left", on=["excntry", "date"])
         .filter(col("mkt_vw_exc").is_not_null())
-        .with_columns(
-            [safe_div(var, "adjfct", var) for var in ["prc", "prc_high", "prc_low"]]
-        )
+        .with_columns([safe_div(var, "adjfct", var) for var in ["prc", "prc_high", "prc_low"]])
     )
     bdhl = (
         __dsf.pipe(impute_high_low)
@@ -7852,9 +7600,7 @@ def create_world_data_prelim(
     c = pl.scan_parquet(acc_chars_world_path)
     world_data_prelim = (
         a.join(b, how="left", on=["id", "eom"])
-        .join(
-            c, how="left", left_on=["gvkey", "eom"], right_on=["gvkey", "public_date"]
-        )
+        .join(c, how="left", left_on=["gvkey", "eom"], right_on=["gvkey", "public_date"])
         .drop(["div_tot", "div_cash", "div_spc", "source"])
     )
     world_data_prelim.collect().write_parquet(output_path)
@@ -8229,9 +7975,7 @@ def finish_daily_chars(output_path):
         '{output_path}' parquet with final daily characteristics.
     """
     bidask = pl.scan_parquet("corwin_schultz.parquet")
-    r1 = pl.scan_parquet("roll_apply_daily.parquet").with_columns(
-        col("id").cast(pl.Int64)
-    )
+    r1 = pl.scan_parquet("roll_apply_daily.parquet").with_columns(col("id").cast(pl.Int64))
     daily_chars = bidask.join(r1, how="outer_coalesce", on=["id", "eom"])
     daily_chars = daily_chars.with_columns(
         betabab_1260d=col("corr_1260d") * col("rvol_252d") / col("__mktvol_252d"),
@@ -8241,17 +7985,15 @@ def finish_daily_chars(output_path):
 
 
 def z_ranks(data, var, __min, sort):
-    order = False if sort == "ascending" else True
-    exp_z_var = (col("rank") - pl.mean("rank").over(["excntry", "eom"])) / pl.std(
-        "rank"
-    ).over(["excntry", "eom"])
+    order = sort != "ascending"
+    exp_z_var = (col("rank") - pl.mean("rank").over(["excntry", "eom"])) / pl.std("rank").over(
+        ["excntry", "eom"]
+    )
     z_df = (
         data.filter(col(var).is_not_nan())
         .filter(pl.count(var).over(["excntry", "eom"]) >= __min)
         .with_columns(
-            rank=col(var)
-            .rank(method="average", descending=order)
-            .over(["excntry", "eom"])
+            rank=col(var).rank(method="average", descending=order).over(["excntry", "eom"])
         )
         .select(["excntry", "id", "eom", exp_z_var.alias(f"z_{var}")])
         .with_columns(
@@ -8347,14 +8089,8 @@ def quality_minus_junk(data_path, min_stks):
         & (col("ret_exc").is_not_null())
         & (col("me").is_not_null())
     )
-    qmj = (
-        pl.scan_parquet(data_path)
-        .filter(c1)
-        .select(cols)
-        .sort(["excntry", "eom"])
-        .collect()
-    )
-    for var_z, dir in zip(z_vars, direction):
+    qmj = pl.scan_parquet(data_path).filter(c1).select(cols).sort(["excntry", "eom"]).collect()
+    for var_z, dir in zip(z_vars, direction, strict=True):
         __z = z_ranks(qmj, var_z, min_stks, dir)
         qmj = qmj.join(__z, how="full", coalesce=True, on=["excntry", "eom", "id"])
 
@@ -8371,9 +8107,7 @@ def quality_minus_junk(data_path, min_stks):
     ).select(["excntry", "id", "eom", "__prof", "__growth", "__safety"])
 
     ranks = {
-        i: z_ranks(qmj, f"__{i}", min_stks, "ascending").rename(
-            {f"z___{i}": f"qmj_{i}"}
-        )
+        i: z_ranks(qmj, f"__{i}", min_stks, "ascending").rename({f"z___{i}": f"qmj_{i}"})
         for i in ["prof", "growth", "safety"]
     }
     qmj = (
@@ -8381,9 +8115,7 @@ def quality_minus_junk(data_path, min_stks):
         .join(ranks["prof"], how="full", coalesce=True, on=["excntry", "id", "eom"])
         .join(ranks["growth"], how="full", coalesce=True, on=["excntry", "id", "eom"])
         .join(ranks["safety"], how="full", coalesce=True, on=["excntry", "id", "eom"])
-        .with_columns(
-            __qmj=(col("qmj_prof") + col("qmj_growth") + col("qmj_safety")) / 3
-        )
+        .with_columns(__qmj=(col("qmj_prof") + col("qmj_growth") + col("qmj_safety")) / 3)
     )
     __qmj = z_ranks(qmj, "__qmj", min_stks, "ascending").rename({"z___qmj": "qmj"})
     qmj = qmj.join(__qmj, how="left", on=["excntry", "id", "eom"]).drop("__qmj")
@@ -8414,9 +8146,7 @@ def save_main_data(end_date):
             dif_aux=(col("dif_aux") - col("dif_aux").shift(1)).over("id"),
         )
         .with_columns(
-            me_lag1=pl.when(col("dif_aux") == 1)
-            .then(col("me_lag1"))
-            .otherwise(fl_none())
+            me_lag1=pl.when(col("dif_aux") == 1).then(col("me_lag1")).otherwise(fl_none())
         )
         .drop("dif_aux")
         .filter(
@@ -8505,18 +8235,16 @@ def save_daily_ret():
             .otherwise(col("excntry"))
         )
     )
-    data.collect(engine="streaming").write_parquet(
-        "../interim/daily_returns_temp.parquet"
-    )
+    data.collect(engine="streaming").write_parquet("../interim/daily_returns_temp.parquet")
 
     OUT_DIR = "return_data/daily_rets_by_country"
     con = duckdb.connect()
     con.execute(f"""
     COPY (SELECT * FROM read_parquet('../interim/daily_returns_temp.parquet'))
     TO '{OUT_DIR}'
-    ( FORMAT PARQUET, 
-      COMPRESSION ZSTD, 
-      PARTITION_BY (excntry), 
+    ( FORMAT PARQUET,
+      COMPRESSION ZSTD,
+      PARTITION_BY (excntry),
       OVERWRITE
       );
     """)
@@ -8570,19 +8298,15 @@ def save_full_files_and_cleanup(clear_interim=True):
     Output:
         Compressed parquet files in return_data/ and characteristics/, cleanup of temp files.
     """
-    pl.scan_parquet("../interim/world_dsf.parquet").select(
-        pl.all().shrink_dtype()
-    ).collect(streaming=True).write_parquet(f"return_data/world_dsf.parquet")
-    pl.scan_parquet("../interim/world_data.parquet").select(
-        pl.all().shrink_dtype()
-    ).collect(streaming=True).write_parquet(
-        f"characteristics/world_data_unfiltered.parquet"
-    )
+    pl.scan_parquet("../interim/world_dsf.parquet").select(pl.all().shrink_dtype()).collect(
+        streaming=True
+    ).write_parquet("return_data/world_dsf.parquet")
+    pl.scan_parquet("../interim/world_data.parquet").select(pl.all().shrink_dtype()).collect(
+        streaming=True
+    ).write_parquet("characteristics/world_data_unfiltered.parquet")
     pl.scan_parquet("../interim/world_data_filtered.parquet").select(
         pl.all().shrink_dtype()
-    ).collect(streaming=True).write_parquet(
-        f"characteristics/world_data_filtered.parquet"
-    )
+    ).collect(streaming=True).write_parquet("characteristics/world_data_filtered.parquet")
     if clear_interim:
         os.system("rm -rf ../interim/* ../raw/*")
 
@@ -8605,7 +8329,7 @@ def save_monthly_ret():
         ["excntry", "id", "source_crsp", "eom", "me", "ret_exc", "ret", "ret_local"]
     )
     data.select(pl.all().shrink_dtype()).collect().write_parquet(
-        f"return_data/world_ret_monthly.parquet"
+        "return_data/world_ret_monthly.parquet"
     )
 
 
@@ -8642,14 +8366,12 @@ def merge_roll_apply_daily_results():
         joint_file = pl.scan_parquet(file_paths[0])
         for i in file_paths[1:]:
             df_aux = pl.scan_parquet(i)
-            joint_file = joint_file.join(
-                df_aux, how="outer_coalesce", on=["id_int", "aux_date"]
-            )
+            joint_file = joint_file.join(df_aux, how="outer_coalesce", on=["id_int", "aux_date"])
         joint_file.with_columns(col("aux_date").cast(pl.Int64)).join(
             df_dates.lazy(), how="left", on="aux_date"
-        ).join(df_id, how="left", on="id_int").drop(
-            ["aux_date", "id_int"]
-        ).collect().write_parquet("roll_apply_daily.parquet")
+        ).join(df_id, how="left", on="id_int").drop(["aux_date", "id_int"]).collect().write_parquet(
+            "roll_apply_daily.parquet"
+        )
     else:
         joint_file = pl.scan_parquet(file_paths[0])
 
@@ -8657,9 +8379,9 @@ def merge_roll_apply_daily_results():
         df_dates.lazy().with_columns(col("aux_date").cast(pl.Int64)),
         how="left",
         on="aux_date",
-    ).join(df_id, how="left", on="id_int").drop(
-        ["aux_date", "id_int"]
-    ).collect().write_parquet("roll_apply_daily.parquet")
+    ).join(df_id, how="left", on="id_int").drop(["aux_date", "id_int"]).collect().write_parquet(
+        "roll_apply_daily.parquet"
+    )
 
 
 @measure_time
@@ -8711,9 +8433,7 @@ def merge_qmj_to_world_data():
     a = pl.scan_parquet("world_data_-1.parquet")
     b = pl.scan_parquet("qmj.parquet")
     result = (
-        a.join(b, how="left", on=["excntry", "id", "eom"])
-        .unique(["id", "eom"])
-        .sort(["id", "eom"])
+        a.join(b, how="left", on=["excntry", "id", "eom"]).unique(["id", "eom"]).sort(["id", "eom"])
     )
     result.collect().write_parquet("world_data.parquet")
 
@@ -8739,9 +8459,7 @@ def merge_industry_to_world_msf():
         {"sic": "sic_crsp", "naics": "naics_crsp"}
     )
     __msf_world = (
-        __msf_world.join(
-            comp_ind, how="left", left_on=["gvkey", "eom"], right_on=["gvkey", "date"]
-        )
+        __msf_world.join(comp_ind, how="left", left_on=["gvkey", "eom"], right_on=["gvkey", "date"])
         .join(
             crsp_ind,
             how="left",
@@ -8776,10 +8494,7 @@ def roll_apply_daily(stats, sfx, __min):
     aux_maps = gen_aux_maps(sfx)
     base_data = prepare_base_data(stat=stats)
     results = pl.concat(
-        [
-            process_map_chunks(base_data, mapping, stats, sfx, __min)
-            for mapping in aux_maps
-        ]
+        [process_map_chunks(base_data, mapping, stats, sfx, __min) for mapping in aux_maps]
     )
     results.collect(engine="streaming").write_parquet(f"__roll{sfx}_{stats}.parquet")
 
@@ -8938,9 +8653,9 @@ def apply_group_filter(df, stat, min_obs):
             filter_var = "dolvol_d"
         else:
             filter_var = "ret_exc"
-        df = df.with_columns(
-            n=pl.count(filter_var).over(["id_int", "group_number"])
-        ).filter(col("n") >= min_obs)
+        df = df.with_columns(n=pl.count(filter_var).over(["id_int", "group_number"])).filter(
+            col("n") >= min_obs
+        )
     return df
 
 
@@ -8988,9 +8703,7 @@ def process_map_chunks(base_data, mapping, stats, sfx, __min, incl=None, skip=No
     else:
         df = df.pipe(funcs[stats], sfx=sfx, __min=__min)
 
-    df = df.join(mapping["date_map"], how="left", on="group_number").drop(
-        "group_number"
-    )
+    df = df.join(mapping["date_map"], how="left", on="group_number").drop("group_number")
 
     return df
 
@@ -9011,9 +8724,7 @@ def res_mom(df, sfx, __min, incl, skip):
 
     res_exp = (
         pl.col("ret_exc")
-        .least_squares.ols(
-            "mktrf", "hml", "smb_ff", add_intercept=True, mode="residuals"
-        )
+        .least_squares.ols("mktrf", "hml", "smb_ff", add_intercept=True, mode="residuals")
         .over(["id_int", "group_number"])
     )
     df = (
@@ -9029,11 +8740,7 @@ def res_mom(df, sfx, __min, incl, skip):
             & (col("n") >= __min)
         )
         .group_by(["id_int", "group_number"])
-        .agg(
-            (col("res").mean() / col("res").std())
-            .fill_nan(None)
-            .alias(f"resff3_{incl}_{skip}")
-        )
+        .agg((col("res").mean() / col("res").std()).fill_nan(None).alias(f"resff3_{incl}_{skip}"))
     )
     return df
 
@@ -9053,11 +8760,11 @@ def gen_aux_maps(sfx):
     """
     parameter_mapping = {"_21d": 1, "_126d": 6, "_252d": 12, "_1260d": 60}
     date_aux = datetime.datetime.today().month + datetime.datetime.today().year * 12
-    if sfx in parameter_mapping.keys():
-        date_idx = [i for i in range(23113 - parameter_mapping[sfx], date_aux + 1)]
+    if sfx in parameter_mapping:
+        date_idx = list(range(23113 - parameter_mapping[sfx], date_aux + 1))
         aux_maps = group_mapping_dfs(date_idx, parameter_mapping[sfx])
     else:
-        date_idx = [i for i in range(23113 - int(sfx), date_aux + 1)]
+        date_idx = list(range(23113 - int(sfx), date_aux + 1))
         aux_maps = group_mapping_dfs(date_idx, int(sfx))
     return aux_maps
 
@@ -9138,9 +8845,7 @@ def prc_to_high(df, sfx, __min):
         .group_by(["id_int", "group_number"])
         .agg(
             [
-                (col("prc_adj").last() / col("prc_adj").max()).alias(
-                    f"prc_highprc{sfx}"
-                ),
+                (col("prc_adj").last() / col("prc_adj").max()).alias(f"prc_highprc{sfx}"),
                 pl.count("prc_adj").alias("n"),
             ]
         )
@@ -9165,10 +8870,7 @@ def capm(df, sfx, __min):
     df = df.group_by(["id_int", "group_number"]).agg(
         [
             (pl.cov("ret_exc", "mktrf") / pl.var("mktrf")).alias(f"beta{sfx}"),
-            (
-                col("ret_exc")
-                - col("mktrf") * (pl.cov("ret_exc", "mktrf") / pl.var("mktrf"))
-            )
+            (col("ret_exc") - col("mktrf") * (pl.cov("ret_exc", "mktrf") / pl.var("mktrf")))
             .std()
             .alias(f"ivol_capm{sfx}"),
         ]
@@ -9322,9 +9024,7 @@ def hxz4(df, sfx, __min):
     )
     df = (
         df.filter(
-            col("smb_hxz").is_not_null()
-            & col("roe").is_not_null()
-            & col("inv").is_not_null()
+            col("smb_hxz").is_not_null() & col("roe").is_not_null() & col("inv").is_not_null()
         )
         .group_by(["id_int", "group_number"])
         .agg(
@@ -9356,8 +9056,7 @@ def zero_trades(df, sfx, __min):
         .otherwise(fl_none())
     )
     aux_3 = (
-        pl.col("turnover").rank(descending=True, method="average")
-        / pl.count("turnover")
+        pl.col("turnover").rank(descending=True, method="average") / pl.count("turnover")
     ).over("group_number")
     aux_4 = (aux_3 / 100) + pl.col("zero_trades")
     df = (
@@ -9451,9 +9150,7 @@ def mktcorr(df, sfx, __min):
         df.group_by(["id_int", "group_number"])
         .agg(
             [
-                pl.min_horizontal(
-                    [pl.count("ret_exc_3l"), pl.count("mkt_exc_3l")]
-                ).alias("n"),
+                pl.min_horizontal([pl.count("ret_exc_3l"), pl.count("mkt_exc_3l")]).alias("n"),
                 pl.corr("ret_exc_3l", "mkt_exc_3l").alias(f"corr{sfx}"),
             ]
         )
