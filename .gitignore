@@ -82,3 +82,19 @@ build_database/.DS_Store
 # README Rendering helper files
 README_files/*
 README.html
+
+# ==========================================
+# Testing
+# ==========================================
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+pytest-*.xml
+*.pytest_cache
+tests/fixtures/generated/
+.hypothesis/
+
+# Temporary test databases
+aux_*.ddb
+*.ddb.wal

@@ -27,3 +27,81 @@ dev = [
     "jupyter>=1.1.1",
     "matplotlib>=3.10.8",
 ]
+test = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.1.0",
+    "pytest-xdist>=3.5.0",
+]
+lint = [
+    "ruff>=0.4.0",
+    "pyright>=1.1.350",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--tb=short",
+    "-ra",
+    "--cov=code",
+    "--cov-report=term-missing",
+]
+filterwarnings = [
+    "ignore::UserWarning",
+    "ignore::DeprecationWarning",
+]
+markers = [
+    "unit: Unit tests (fast, isolated)",
+    "integration: Integration tests (module interactions)",
+    "methodology: Paper methodology validation tests",
+    "regression: Golden output regression tests",
+    "expensive: Expensive tests requiring significant resources",
+    "wrds: Tests requiring WRDS credentials",
+]
+
+[tool.coverage.run]
+source = ["code"]
+branch = true
+omit = [
+    "code/wrds_credentials.py",
+    "*/__pycache__/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]
+show_missing = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # Pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+    "SIM",    # flake8-simplify
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "B008",   # do not perform function calls in argument defaults
+    "SIM102", # nested if statements (sometimes clearer than combined)
+    "SIM108", # use ternary operator instead of if-else
+]
+
+[tool.pyright]
+pythonVersion = "3.11"
+typeCheckingMode = "basic"
+reportMissingImports = true
+reportMissingTypeStubs = false

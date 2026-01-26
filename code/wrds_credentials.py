@@ -1,11 +1,12 @@
 import os
 
 os.environ["PYTHON_KEYRING_BACKEND"] = "keyrings.alt.file.PlaintextKeyring"
-import keyring
-import getpass
 import argparse
+import getpass
 from dataclasses import dataclass
 from pathlib import Path
+
+import keyring
 
 SERVICE_NAME = "WRDS"
 LAST_USER_FILE = Path.home() / ".wrds_user"  # remembers last username
@@ -54,9 +55,7 @@ def reset_credentials(full_reset: bool = False):
         if full_reset:
             try:
                 keyring.delete_password(SERVICE_NAME, username)
-                print(
-                    f"Deleted password for '{username}' from keyring under '{SERVICE_NAME}'"
-                )
+                print(f"Deleted password for '{username}' from keyring under '{SERVICE_NAME}'")
             except keyring.errors.PasswordDeleteError:
                 print(f"No keyring entry found for '{username}'")
 

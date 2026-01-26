@@ -1,10 +1,10 @@
 import os
-import polars as pl
-from datetime import date
-import numpy as np
 import time
-from tqdm import tqdm
 import warnings
+from datetime import date
+
+import polars as pl
+from tqdm import tqdm
 
 warnings.filterwarnings(
     "ignore",
@@ -203,11 +203,11 @@ settings = {
 }
 
 
-def add_ecdf(df: pl.DataFrame, group_cols: list[str] = ["eom"]) -> pl.DataFrame:
+def add_ecdf(df: pl.DataFrame, group_cols: list[str] | None = None) -> pl.DataFrame:
+    if group_cols is None:
+        group_cols = ["eom"]
     # 1) counts of reference sample per distinct var within each group
-    ref_counts = (
-        df.filter(pl.col("bp_stock")).group_by(group_cols + ["var"]).agg(n_ref=pl.len())
-    )
+    ref_counts = df.filter(pl.col("bp_stock")).group_by(group_cols + ["var"]).agg(n_ref=pl.len())
 
     # 2) ECDF steps: cumulative share within each group
     ref_steps = (
@@ -245,10 +245,7 @@ def portfolios(
     bps,  # What should breakpoints be based on? Non-Microcap stocks ("non_mc") or NYSE stocks "nyse"
     bp_min_n,  # Minimum number of stocks used for breakpoints
     nyse_size_cutoffs,  # Data frame with NYSE size breakpoints
-    source=[
-        "CRSP",
-        "COMPUSTAT",
-    ],  # Use data from "CRSP", "Compustat" or both: c("CRSP", "COMPUSTAT")
+    source=None,  # Use data from "CRSP", "Compustat" or both: ["CRSP", "COMPUSTAT"]. Default: both.
     wins_ret=True,  # Should Compustat returns be winsorized at the 0.1% and 99.9% of CRSP returns?
     cmp_key=False,  # Create characteristics managed size portfolios?
     signals=False,  # Create portfolio signals?
@@ -259,6 +256,8 @@ def portfolios(
     ret_cutoffs=None,  # Data frame for monthly winsorization. Neccesary when wins_ret=T
     ret_cutoffs_daily=None,  # Data frame for daily winsorization. Neccesary when wins_ret=T and daily_pf=T
 ):
+    if source is None:
+        source = ["CRSP", "COMPUSTAT"]
     # characerteristics data
     file_path = f"{data_path}/characteristics/{excntry}.parquet"
 
@@ -286,9 +285,7 @@ def portfolios(
     data = data
 
     # capping me at nyse cut-off
-    data = data.join(
-        nyse_size_cutoffs.select(["eom", "nyse_p80"]), on="eom", how="left"
-    )
+    data = data.join(nyse_size_cutoffs.select(["eom", "nyse_p80"]), on="eom", how="left")
     data = data.with_columns(
         pl.min_horizontal(pl.col("me"), pl.col("nyse_p80")).alias("me_cap")
     ).drop("nyse_p80")
@@ -313,9 +310,7 @@ def portfolios(
 
     # Daily Returns
     if daily_pf:
-        daily_file_path = (
-            f"{data_path}/return_data/daily_rets_by_country/{excntry}.parquet"
-        )
+        daily_file_path = f"{data_path}/return_data/daily_rets_by_country/{excntry}.parquet"
         daily = pl.read_parquet(daily_file_path, columns=["id", "date", "ret_exc"])
         # daily = daily.with_columns(pl.col("date").cast(pl.Utf8).str.strptime(pl.Date, format="%Y%m%d").alias("date"))
         daily = daily.with_columns(
@@ -333,15 +328,9 @@ def portfolios(
             how="left",
         )
         data = data.with_columns(
-            pl.when(
-                (pl.col("source_crsp") == 0)
-                & (pl.col("ret_exc_lead1m") > pl.col("p999"))
-            )
+            pl.when((pl.col("source_crsp") == 0) & (pl.col("ret_exc_lead1m") > pl.col("p999")))
             .then(pl.col("p999"))
-            .when(
-                (pl.col("source_crsp") == 0)
-                & (pl.col("ret_exc_lead1m") < pl.col("p001"))
-            )
+            .when((pl.col("source_crsp") == 0) & (pl.col("ret_exc_lead1m") < pl.col("p001")))
             .then(pl.col("p001"))
             .otherwise(pl.col("ret_exc_lead1m"))
             .alias("ret_exc_lead1m")
@@ -384,18 +373,14 @@ def portfolios(
             # Ranking within groups defined by 'eom'
             .with_columns(
                 [
-                    (pl.col(char).rank(method="min").over("eom").cast(pl.Int64)).alias(
-                        char
-                    )
+                    (pl.col(char).rank(method="min").over("eom").cast(pl.Int64)).alias(char)
                     for char in chars
                 ]
             )
             # normalizing ranks
             .with_columns(
                 [
-                    (
-                        ((pl.col(char) / pl.col(char).max()) - pl.lit(0.5)).over("eom")
-                    ).alias(char)
+                    (((pl.col(char) / pl.col(char).max()) - pl.lit(0.5)).over("eom")).alias(char)
                     for char in chars
                 ]
             )
@@ -419,18 +404,15 @@ def portfolios(
             [
                 pl.len().alias("n"),
                 (pl.col("ret_exc_lead1m").mean()).alias("ret_ew"),
+                ((pl.col("ret_exc_lead1m") * pl.col("me")).sum() / pl.col("me").sum()).alias(
+                    "ret_vw"
+                ),
                 (
-                    (pl.col("ret_exc_lead1m") * pl.col("me")).sum() / pl.col("me").sum()
-                ).alias("ret_vw"),
-                (
-                    (pl.col("ret_exc_lead1m") * pl.col("me_cap")).sum()
-                    / pl.col("me_cap").sum()
+                    (pl.col("ret_exc_lead1m") * pl.col("me_cap")).sum() / pl.col("me_cap").sum()
                 ).alias("ret_vw_cap"),
             ]
         )
-        ind_gics = ind_gics.with_columns(
-            pl.lit(excntry).str.to_uppercase().alias("excntry")
-        )
+        ind_gics = ind_gics.with_columns(pl.lit(excntry).str.to_uppercase().alias("excntry"))
         ind_gics = ind_gics.with_columns(
             (pl.col("eom").dt.offset_by("1mo").dt.month_end()).alias("eom")
         )
@@ -445,19 +427,15 @@ def portfolios(
                 [
                     pl.len().alias("n"),
                     (pl.col("ret_exc_lead1m").mean()).alias("ret_ew"),
+                    ((pl.col("ret_exc_lead1m") * pl.col("me")).sum() / pl.col("me").sum()).alias(
+                        "ret_vw"
+                    ),
                     (
-                        (pl.col("ret_exc_lead1m") * pl.col("me")).sum()
-                        / pl.col("me").sum()
-                    ).alias("ret_vw"),
-                    (
-                        (pl.col("ret_exc_lead1m") * pl.col("me_cap")).sum()
-                        / pl.col("me_cap").sum()
+                        (pl.col("ret_exc_lead1m") * pl.col("me_cap")).sum() / pl.col("me_cap").sum()
                     ).alias("ret_vw_cap"),
                 ]
             )
-            ind_ff49 = ind_ff49.with_columns(
-                pl.lit(excntry).str.to_uppercase().alias("excntry")
-            )
+            ind_ff49 = ind_ff49.with_columns(pl.lit(excntry).str.to_uppercase().alias("excntry"))
             ind_ff49 = ind_ff49.with_columns(
                 (pl.col("eom").dt.offset_by("1mo").dt.month_end()).alias("eom")
             )
@@ -465,7 +443,7 @@ def portfolios(
 
     # creating portfolios for all the characteristics
     char_pfs = []
-    for i, x in enumerate(tqdm(chars, desc="Processing chars", unit="char", ncols=80)):
+    for _i, x in enumerate(tqdm(chars, desc="Processing chars", unit="char", ncols=80)):
         op = {}
 
         data = data.with_columns(pl.col(x).cast(pl.Float64).alias("var"))
@@ -528,10 +506,7 @@ def portfolios(
 
             # Step 3: Calculate portfolio assignments and adjust portfolio numbers (Happens when non-bp stocks extend beyond the bp stock range)
             sub = sub.with_columns(
-                (pl.col("cdf") * pfs)
-                .ceil()
-                .clip(lower_bound=1, upper_bound=pfs)
-                .alias("pf")
+                (pl.col("cdf") * pfs).ceil().clip(lower_bound=1, upper_bound=pfs).alias("pf")
             )
 
             pf_returns = sub.group_by(["pf", "eom"]).agg(
@@ -540,13 +515,11 @@ def portfolios(
                     pl.len().alias("n"),
                     pl.median("var").alias("signal"),
                     pl.mean("ret_exc_lead1m").alias("ret_ew"),
+                    ((pl.col("ret_exc_lead1m") * pl.col("me")).sum() / pl.col("me").sum()).alias(
+                        "ret_vw"
+                    ),
                     (
-                        (pl.col("ret_exc_lead1m") * pl.col("me")).sum()
-                        / pl.col("me").sum()
-                    ).alias("ret_vw"),
-                    (
-                        (pl.col("ret_exc_lead1m") * pl.col("me_cap")).sum()
-                        / pl.col("me_cap").sum()
+                        (pl.col("ret_exc_lead1m") * pl.col("me_cap")).sum() / pl.col("me_cap").sum()
                     ).alias("ret_vw_cap"),
                 ]
             )
@@ -557,20 +530,14 @@ def portfolios(
 
             if signals:
                 if signals_w == "ew":
-                    sub = sub.with_columns(
-                        (1 / pl.col("eom").len()).over(["pf", "eom"]).alias("w")
-                    )
+                    sub = sub.with_columns((1 / pl.col("eom").len()).over(["pf", "eom"]).alias("w"))
                 elif signals_w == "vw":
                     sub = sub.with_columns(
-                        (pl.col("me") / pl.col("me").sum())
-                        .over(["pf", "eom"])
-                        .alias("w")
+                        (pl.col("me") / pl.col("me").sum()).over(["pf", "eom"]).alias("w")
                     )
                 elif signals_w == "vw_cap":
                     sub = sub.with_columns(
-                        (pl.col("me_cap") / pl.col("me_cap").sum())
-                        .over(["pf", "eom"])
-                        .alias("w")
+                        (pl.col("me_cap") / pl.col("me_cap").sum()).over(["pf", "eom"]).alias("w")
                     )
 
                 sub = sub.with_columns(
@@ -583,10 +550,7 @@ def portfolios(
                     ]
                 )
                 pf_signals = sub.with_columns(
-                    [
-                        (pl.col("w") * pl.col(var)).sum().over(["pf", "eom"])
-                        for var in chars
-                    ]
+                    [(pl.col("w") * pl.col(var)).sum().over(["pf", "eom"]) for var in chars]
                 )
 
                 pf_signals = pf_signals.with_columns(
@@ -606,9 +570,7 @@ def portfolios(
                             pl.col("id"),
                             (1 / pl.len()).alias("w_ew"),
                             (pl.col("me") / pl.col("me").sum()).alias("w_vw"),
-                            (pl.col("me_cap") / pl.col("me_cap").sum()).alias(
-                                "w_vw_cap"
-                            ),
+                            (pl.col("me_cap") / pl.col("me_cap").sum()).alias("w_vw_cap"),
                         ]
                     )
                     .explode("id", "w_vw", "w_vw_cap")
@@ -619,9 +581,7 @@ def portfolios(
                     left_on=["id", "eom"],
                     right_on=["id", "eom_lag1"],
                     how="left",
-                ).filter(
-                    (pl.col("pf").is_not_null()) & (pl.col("ret_exc").is_not_null())
-                )
+                ).filter((pl.col("pf").is_not_null()) & (pl.col("ret_exc").is_not_null()))
 
                 pf_daily = daily_sub.group_by(["pf", "date"]).agg(
                     [
@@ -629,9 +589,7 @@ def portfolios(
                         pl.len().alias("n"),
                         ((pl.col("w_ew") * pl.col("ret_exc")).sum()).alias("ret_ew"),
                         ((pl.col("w_vw") * pl.col("ret_exc")).sum()).alias("ret_vw"),
-                        ((pl.col("w_vw_cap") * pl.col("ret_exc")).sum()).alias(
-                            "ret_vw_cap"
-                        ),
+                        ((pl.col("w_vw_cap") * pl.col("ret_exc")).sum()).alias("ret_vw_cap"),
                     ]
                 )
                 op["pf_daily"] = pf_daily.collect()
@@ -654,9 +612,7 @@ def portfolios(
     if ind_pf:
         output["gics_returns"] = ind_gics  # Assuming ind_gics is a DataFrame
         if excntry == "usa":
-            output["ff49_returns"] = (
-                ind_ff49.clone()
-            )  # Assuming ind_ff49 is a DataFrame
+            output["ff49_returns"] = ind_ff49.clone()  # Assuming ind_ff49 is a DataFrame
 
     # Add excntry to pf_returns and pf_daily, and aggregate signals
     if len(output) > 0:
@@ -696,12 +652,8 @@ def portfolios(
                         / (pl.len().over("size_grp", "eom") + 1)
                     ).alias("p_rank")
                 )
-                .with_columns(
-                    pl.col("p_rank").mean().over("size_grp", "eom").alias("mean_p_rank")
-                )
-                .with_columns(
-                    (pl.col("p_rank") - pl.col("mean_p_rank")).alias("p_rank_dev")
-                )
+                .with_columns(pl.col("p_rank").mean().over("size_grp", "eom").alias("mean_p_rank"))
+                .with_columns((pl.col("p_rank") - pl.col("mean_p_rank")).alias("p_rank_dev"))
                 .with_columns(
                     (pl.col("p_rank_dev") / ((pl.col("p_rank_dev").abs().sum()) / 2))
                     .over("size_grp", "eom")
@@ -716,12 +668,8 @@ def portfolios(
                     [
                         pl.lit(x).alias("characteristic"),
                         pl.len().alias("n_stocks"),
-                        ((pl.col("ret_exc_lead1m") * pl.col("weight")).sum()).alias(
-                            "ret_weighted"
-                        ),
-                        ((pl.col("var") * pl.col("weight")).sum()).alias(
-                            "signal_weighted"
-                        ),
+                        ((pl.col("ret_exc_lead1m") * pl.col("weight")).sum()).alias("ret_weighted"),
+                        ((pl.col("var") * pl.col("weight")).sum()).alias("signal_weighted"),
                         pl.col("var").std().alias("sd_var"),
                     ]
                 )
@@ -730,17 +678,13 @@ def portfolios(
 
             # Post-processing
             cmp = cmp.filter(pl.col("sd_var") != 0).drop("sd_var")
-            cmp = cmp.with_columns(
-                (pl.col("eom").dt.offset_by("1mo").dt.month_end()).alias("eom")
-            )
+            cmp = cmp.with_columns((pl.col("eom").dt.offset_by("1mo").dt.month_end()).alias("eom"))
 
             results.append(cmp)
 
     if len(results) > 0:
         output_cmp = pl.concat(results)
-        output_cmp = output_cmp.with_columns(
-            pl.col("excntry").str.to_uppercase().alias("excntry")
-        )
+        output_cmp = output_cmp.with_columns(pl.col("excntry").str.to_uppercase().alias("excntry"))
         output["cmp"] = output_cmp
 
     return output
@@ -775,8 +719,7 @@ def regional_data(
     )
     # Portfolio Return
     pf = data.filter(
-        (pl.col("excntry").is_in(countries.implode()))
-        & (pl.col("n_stocks_min") >= stocks_min)
+        (pl.col("excntry").is_in(countries.implode())) & (pl.col("n_stocks_min") >= stocks_min)
     )
     pf = pf.join(weights, on=["excntry", date_col], how="left")
     pf = (
@@ -824,9 +767,7 @@ char_info = (
         sheet_name="details",
     )
     .filter(pl.col("abr_jkp").is_not_null())
-    .select(
-        [pl.col("abr_jkp").alias("characteristic"), pl.col("direction").cast(pl.Int32)]
-    )
+    .select([pl.col("abr_jkp").alias("characteristic"), pl.col("direction").cast(pl.Int32)])
 )
 
 # Read country classification details from Excel file
@@ -837,9 +778,7 @@ country_classification = pl.read_excel(
 
 # getting relevannt information from country classification file loaded at the start loaded at the start.
 # Select columns
-country_classification = country_classification.select(
-    ["excntry", "msci_development", "region"]
-)
+country_classification = country_classification.select(["excntry", "msci_development", "region"])
 # Filter out rows with NA in 'excntry' and exclude specific countries
 country_classification = country_classification.filter(
     (pl.col("excntry").is_not_null())
@@ -852,8 +791,7 @@ regions = pl.DataFrame(
         "name": ["developed", "emerging", "frontier", "world", "world_ex_us"],
         "country_codes": [
             country_classification.filter(
-                (pl.col("msci_development") == "developed")
-                & (pl.col("excntry") != "USA")
+                (pl.col("msci_development") == "developed") & (pl.col("excntry") != "USA")
             )["excntry"].to_list(),
             country_classification.filter(pl.col("msci_development") == "emerging")[
                 "excntry"
@@ -862,9 +800,7 @@ regions = pl.DataFrame(
                 "excntry"
             ].to_list(),
             country_classification["excntry"].to_list(),
-            country_classification.filter(pl.col("excntry") != "USA")[
-                "excntry"
-            ].to_list(),
+            country_classification.filter(pl.col("excntry") != "USA")["excntry"].to_list(),
         ],
         "countries_min": [settings["regional_pfs"]["countries_min"]] * 3 + [1, 3],
     }
@@ -889,9 +825,7 @@ ret_cutoffs = ret_cutoffs.with_columns(
     (pl.col("eom").dt.month_start().dt.offset_by("-1d")).alias("eom_lag1")
 )
 if settings["daily_pf"]:
-    ret_cutoffs_daily = pl.read_parquet(
-        f"{data_path}/other_output/return_cutoffs_daily.parquet"
-    )
+    ret_cutoffs_daily = pl.read_parquet(f"{data_path}/other_output/return_cutoffs_daily.parquet")
 
 # market_returns
 market = pl.read_parquet(f"{data_path}/other_output/market_returns.parquet")
@@ -899,9 +833,7 @@ market = pl.read_parquet(f"{data_path}/other_output/market_returns.parquet")
 
 # daily_market_returns
 if settings["daily_pf"]:
-    market_daily = pl.read_parquet(
-        f"{data_path}/other_output/market_returns_daily.parquet"
-    )
+    market_daily = pl.read_parquet(f"{data_path}/other_output/market_returns_daily.parquet")
     # market_daily = market_daily.with_columns(pl.col("date").cast(pl.Utf8).str.strptime(pl.Date, format="%Y%m%d").alias("date"))
 
 
@@ -931,9 +863,7 @@ for ex in countries:
         signals=settings["signals"]["us"]
         if ex == "usa"
         else settings["signals"]["int"],  # Create portfolio signals?
-        signals_standardize=settings["signals"][
-            "standardize"
-        ],  # Map chars to [-0.5, +0.5]?,
+        signals_standardize=settings["signals"]["standardize"],  # Map chars to [-0.5, +0.5]?,
         signals_w=settings["signals"][
             "weight"
         ],  # Weighting for signals: in c("ew", "vw", "vw_cap")
@@ -955,10 +885,7 @@ for ex in countries:
 #                          if sub_dict in portfolio_data and 'pf_returns' in portfolio_data[sub_dict]])
 
 
-if any(
-    sub_data and "pf_returns" in sub_data
-    for sub_key, sub_data in portfolio_data.items()
-):
+if any(sub_data and "pf_returns" in sub_data for sub_key, sub_data in portfolio_data.items()):
     pf_returns = pl.concat(
         [
             sub_data["pf_returns"]
@@ -1005,8 +932,7 @@ else:
 # aggregating industry classification returns
 # GICS Returns
 if settings["ind_pf"] and any(
-    sub_data and "gics_returns" in sub_data
-    for sub_key, sub_data in portfolio_data.items()
+    sub_data and "gics_returns" in sub_data for sub_key, sub_data in portfolio_data.items()
 ):
     gics_returns = pl.concat(
         [
@@ -1470,8 +1396,7 @@ if settings["daily_pf"]:
         for exc in lms_daily["excntry"].unique():
             if exc:
                 filtered_df_daily = lms_daily.filter(
-                    (pl.col("date") <= settings["end_date"])
-                    & (pl.col("excntry") == exc)
+                    (pl.col("date") <= settings["end_date"]) & (pl.col("excntry") == exc)
                 )
                 file_path_daily = os.path.join(cnt_folder_daily, f"{exc}.parquet")
                 filtered_df_daily.write_parquet(file_path_daily)

@@ -1,4 +1,47 @@
-from aux_functions import *
+import polars as pl
+from aux_functions import (
+    acc_chars_list,
+    ap_factors,
+    aug_msf_v2,
+    bidask_hl,
+    build_mcti,
+    classify_stocks_size_groups,
+    combine_ann_qtr_chars,
+    combine_crsp_comp_sf,
+    comp_industry,
+    create_acc_chars,
+    create_world_data_prelim,
+    crsp_industry,
+    download_raw_data_tables,
+    ff_ind_class,
+    finish_daily_chars,
+    firm_age,
+    gen_raw_data_dfs,
+    market_beta,
+    market_chars_monthly,
+    market_returns,
+    merge_industry_to_world_msf,
+    merge_qmj_to_world_data,
+    merge_roll_apply_daily_results,
+    merge_world_data_prelim,
+    mispricing_factors,
+    nyse_size_cutoffs,
+    prepare_comp_sf,
+    prepare_crsp_sf,
+    prepare_daily,
+    quality_minus_junk,
+    residual_momentum,
+    return_cutoffs,
+    roll_apply_daily,
+    save_accounting_data,
+    save_daily_ret,
+    save_full_files_and_cleanup,
+    save_main_data,
+    save_monthly_ret,
+    save_output_files,
+    setup_folder_structure,
+    standardized_accounting_data,
+)
 from wrds_credentials import get_wrds_credentials
 
 end_date = pl.datetime(2024, 12, 31)
@@ -23,13 +66,50 @@ return_cutoffs("d", 0)
 market_returns("world_dsf.parquet", "d", 1, "return_cutoffs_daily.parquet")
 market_returns("world_msf.parquet", "m", 1, "return_cutoffs.parquet")
 standardized_accounting_data("world", 1, "world_msf.parquet", 1, pl.datetime(1949, 12, 31))
-create_acc_chars("acc_std_ann.parquet", "achars_world.parquet", 4, 18, acc_chars_list(), "world_msf.parquet", "",)
-create_acc_chars("acc_std_qtr.parquet", "qchars_world.parquet", 4, 18, acc_chars_list(), "world_msf.parquet", "_qitem",)
+create_acc_chars(
+    "acc_std_ann.parquet",
+    "achars_world.parquet",
+    4,
+    18,
+    acc_chars_list(),
+    "world_msf.parquet",
+    "",
+)
+create_acc_chars(
+    "acc_std_qtr.parquet",
+    "qchars_world.parquet",
+    4,
+    18,
+    acc_chars_list(),
+    "world_msf.parquet",
+    "_qitem",
+)
 combine_ann_qtr_chars("achars_world.parquet", "qchars_world.parquet", acc_chars_list(), "_qitem")
 market_chars_monthly("world_msf.parquet", "market_returns.parquet")
-create_world_data_prelim("world_msf.parquet", "market_chars_m.parquet", "acc_chars_world.parquet", "world_data_prelim.parquet",)
-ap_factors("ap_factors_daily.parquet", "d", "world_dsf.parquet", "world_data_prelim.parquet", "market_returns_daily.parquet", 10, 3,)
-ap_factors("ap_factors_monthly.parquet", "m", "world_msf.parquet", "world_data_prelim.parquet", "market_returns.parquet", 10, 3,)
+create_world_data_prelim(
+    "world_msf.parquet",
+    "market_chars_m.parquet",
+    "acc_chars_world.parquet",
+    "world_data_prelim.parquet",
+)
+ap_factors(
+    "ap_factors_daily.parquet",
+    "d",
+    "world_dsf.parquet",
+    "world_data_prelim.parquet",
+    "market_returns_daily.parquet",
+    10,
+    3,
+)
+ap_factors(
+    "ap_factors_monthly.parquet",
+    "m",
+    "world_msf.parquet",
+    "world_data_prelim.parquet",
+    "market_returns.parquet",
+    10,
+    3,
+)
 firm_age("world_msf.parquet")
 mispricing_factors("world_data_prelim.parquet", 10, min_fcts=3)
 market_beta("beta_60m.parquet", "world_msf.parquet", "ap_factors_monthly.parquet", 60, 36)
