@@ -8,6 +8,7 @@ import duckdb
 import ibis
 import polars as pl
 import polars_ds as pds
+import polars_ols  # noqa: F401 - required for least_squares method on polars expressions
 from ibis import _
 from polars import col
 
