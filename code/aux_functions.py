@@ -9173,7 +9173,7 @@ def dimsonbeta(df, sfx, __min):
     Output:
         LazyFrame with f'beta_dimson{sfx}'.
     """
-    beta_exp = col("coeffs").list.slice(0, -1).list.sum()
+    beta_exp = col("coeffs").list.head(3).list.sum()
     df = (
         df.group_by(["id_int", "group_number"])
         .agg(
