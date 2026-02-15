@@ -9173,7 +9173,9 @@ def dimsonbeta(df, sfx, __min):
     Output:
         LazyFrame with f'beta_dimson{sfx}'.
     """
-    beta_exp = col("coeffs").list.slice(0, -1).list.sum()
+    # pds.lin_reg returns [b_mktrf, b_mktrf_ld1, b_mktrf_lg1, intercept]
+    # Dimson beta should sum only the three market-loadings.
+    beta_exp = col("coeffs").list.head(3).list.sum()
     df = (
         df.group_by(["id_int", "group_number"])
         .agg(
