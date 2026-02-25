@@ -7,7 +7,7 @@ This document explains how to set up a development environment and contribute co
 1. **Clone the repository**
 
    ```bash
-   git clone git@github.com:bkelly-lab/jkp-data.git
+   git clone https://github.com/bkelly-lab/jkp-data.git
    cd jkp-data
    ```
 
