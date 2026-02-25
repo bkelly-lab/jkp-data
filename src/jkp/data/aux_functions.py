@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import functools
+import logging
 import operator
 import os
 import queue
@@ -27,9 +28,17 @@ import polars_ols  # noqa: F401 - required for least_squares method on polars ex
 from ibis import _
 from polars import col
 
+from .bessembinder import (
+    apply_bessembinder_section6,
+    apply_bessembinder_section8,
+    detect_potential_boundary_errors,
+    log_correction_summary_by_year,
+)
 from .config import COLLECT_CHUNK_SIZE, END_DATE, MAIN_FILTERS
 from .output_writer import write_dataframe
 from .paths import DataPaths
+
+logger = logging.getLogger(__name__)
 
 
 def fl_none():
@@ -1628,35 +1637,101 @@ def adj_trd_vol_NASDAQ(datevar, col_to_adjust, is_nasdaq_expr):
     return adj_trd_vol
 
 
-def gen_comp_dsf(paths: DataPaths):
+def gen_comp_dsf(paths: DataPaths, apply_bessembinder: bool = True):
     """
     Description:
         Build daily Compustat security data (SECD + G_SECD), convert to USD, and compute
         prices/returns/volumes/dividends; store as __comp_dsf.parquet.
 
     Steps:
-        1) Materialize daily FX to fx_data.parquet; register SECD, G_SECD, firm-shares, and FX in DuckDB.
-        2) Create __comp_dsf_global from G_SECD: local prices, highs/lows (if prcstd≠5),
+        1) Materialize daily FX to fx_data.parquet.
+        2) **NEW**: If apply_bessembinder, apply Section 6 decimal corrections to raw data.
+        3) Register SECD, G_SECD, firm-shares, and FX in DuckDB.
+        4) Create __comp_dsf_global from G_SECD: local prices, highs/lows (if prcstd≠5),
         shares traded, shares outstanding, local return index (ri_local), dividend currencies.
-        3) Create __comp_dsf_na from SECD with same fields; infer cshoc from firm-shares when missing.
-        4) Adjust NASDAQ (exchg=14) cshtrd by historical factors (2001 windows).
-        5) FULL OUTER JOIN NA and Global records; LEFT JOIN daily FX for trading and dividend currencies.
-        6) Compute USD variables: prc, prc_high, prc_low, market cap (me), USD turnover (dolvol),
+        5) Create __comp_dsf_na from SECD with same fields; infer cshoc from firm-shares when missing.
+        6) Adjust NASDAQ (exchg=14) cshtrd by historical factors (2001 windows).
+        7) FULL OUTER JOIN NA and Global records; LEFT JOIN daily FX for trading and dividend currencies.
+        8) Compute USD variables: prc, prc_high, prc_low, market cap (me), USD turnover (dolvol),
         USD return index (ri), dividends (split into total/cash/special); derive month-end eom.
-        7) Drop intermediates and write __comp_dsf.parquet.
+        9) **NEW**: If apply_bessembinder, apply Section 8 filters to USD data.
+        10) Drop intermediates and write __comp_dsf.parquet.
+
+    Args:
+        apply_bessembinder: Whether to apply Bessembinder et al. (2023) data corrections.
+            Default True. Set False to reproduce original behavior.
 
     Output:
         Parquet: __comp_dsf.parquet (daily Compustat security observations in USD).
+        If apply_bessembinder: Also writes bessembinder_corrections_log.parquet
     """
     (paths.interim_dir / "aux_comp_dsf.ddb").unlink(missing_ok=True)
+
+    # Prepare FX data
+    compustat_fx(paths).write_parquet(paths.interim_dir / "fx_data.parquet")
+
+    # =========================================================================
+    # Section 6: Apply decimal corrections to raw data (local currency)
+    # =========================================================================
+    section6_log = None
+    if apply_bessembinder:
+        print("Applying Bessembinder Section 6 decimal corrections...", flush=True)
+
+        # Load and correct Global data (no ADRRC)
+        df_global = pl.scan_parquet(paths.raw_tables_dir / "comp_g_secd.parquet")
+        df_global, log_global = apply_bessembinder_section6(
+            df_global,
+            group_cols=["gvkey", "iid"],
+            sort_col="datadate",
+            has_adrrc=False,
+        )
+        df_global.collect().write_parquet(paths.interim_dir / "__comp_g_secd_corrected.parquet")
+
+        # Load and correct NA data (has ADRRC for ADRs)
+        df_na = pl.scan_parquet(paths.raw_tables_dir / "comp_secd.parquet")
+        df_na, log_na = apply_bessembinder_section6(
+            df_na,
+            group_cols=["gvkey", "iid"],
+            sort_col="datadate",
+            has_adrrc=True,
+        )
+        df_na.collect().write_parquet(paths.interim_dir / "__comp_secd_corrected.parquet")
+
+        # Combine correction logs
+        logs = [log for log in [log_global, log_na] if log is not None]
+        if logs:
+            section6_log = pl.concat(logs, how="vertical_relaxed")
+
+            # Log additional debug breakdowns
+            logger.info("Section 6 correction breakdowns:")
+            log_correction_summary_by_year(section6_log)
+
+        # Log data quality after corrections
+        logger.info("Checking for potential boundary errors in corrected data...")
+        detect_potential_boundary_errors(
+            pl.scan_parquet(paths.interim_dir / "__comp_g_secd_corrected.parquet"),
+            price_col="prccd",
+            group_cols=["gvkey", "iid"],
+        )
+
+        # Use corrected files
+        g_secd_path = paths.interim_dir / "__comp_g_secd_corrected.parquet"
+        secd_path = paths.interim_dir / "__comp_secd_corrected.parquet"
+    else:
+        # Use original files
+        g_secd_path = paths.raw_tables_dir / "comp_g_secd.parquet"
+        secd_path = paths.raw_tables_dir / "comp_secd.parquet"
+
+    # =========================================================================
+    # Original SQL processing
+    # =========================================================================
     con = ibis.duckdb.connect(str(paths.interim_dir / "aux_comp_dsf.ddb"), threads=os.cpu_count())
 
-    compustat_fx(paths).write_parquet(paths.interim_dir / "fx_data.parquet")
-    con.create_table("comp_g_secd", con.read_parquet(paths.raw_tables_dir / "comp_g_secd.parquet"))
+    con.create_table("comp_g_secd", con.read_parquet(g_secd_path))
     con.create_table(
         "__firm_shares2", con.read_parquet(paths.interim_dir / "__firm_shares2.parquet")
     )
-    con.create_table("comp_secd", con.read_parquet(paths.raw_tables_dir / "comp_secd.parquet"))
+    con.create_table("comp_secd", con.read_parquet(secd_path))
     con.create_table("fx", con.read_parquet(paths.interim_dir / "fx_data.parquet"))
 
     con.raw_sql("""
@@ -1733,11 +1808,615 @@ def gen_comp_dsf(paths: DataPaths):
     FROM __comp_dsf2;
 
     """)
+
+    # Get the result from DuckDB
     t = con.table("__comp_dsf3").drop(
         ["div", "divd", "divsp", "fx_div", "curcddv", "prc_high_lcl", "prc_low_lcl"]
     )
-    t.to_parquet(paths.interim_dir / "__comp_dsf.parquet")
-    con.disconnect()
+
+    # =========================================================================
+    # Section 8: Apply filters to USD-converted data
+    # =========================================================================
+    section8_log = None
+    if apply_bessembinder:
+        print("Applying Bessembinder Section 8 filters...", flush=True)
+
+        # Convert ibis table to Polars LazyFrame for filtering
+        # First write to temp parquet, then read with Polars
+        t.to_parquet(paths.interim_dir / "__comp_dsf_pre_filter.parquet")
+        con.disconnect()
+
+        df = pl.scan_parquet(paths.interim_dir / "__comp_dsf_pre_filter.parquet")
+
+        # Need to add excntry (country) for country-specific filters
+        # Join with exchange-country mapping
+        exchanges = comp_exchanges(paths).lazy().select(["exchg", "excntry"])
+        df = df.join(exchanges, on="exchg", how="left")
+
+        # Apply Section 8 filters
+        df, section8_log = apply_bessembinder_section8(
+            df,
+            group_cols=["gvkey", "iid"],
+            sort_col="datadate",
+            country_col="excntry",
+        )
+
+        # Write corrected data
+        df.collect().write_parquet(paths.interim_dir / "__comp_dsf.parquet")
+
+        # Clean up temp file
+        (paths.interim_dir / "__comp_dsf_pre_filter.parquet").unlink()
+
+        # Combine and write correction logs
+        all_logs = []
+        if section6_log is not None:
+            all_logs.append(
+                section6_log.collect() if isinstance(section6_log, pl.LazyFrame) else section6_log
+            )
+        if section8_log is not None:
+            # Section 8 log has different columns, normalize it
+            s8_log = (
+                section8_log.collect() if isinstance(section8_log, pl.LazyFrame) else section8_log
+            )
+            # Add placeholder columns to match Section 6 log format
+            s8_log = s8_log.with_columns(
+                [
+                    pl.lit(None).cast(pl.Float64).alias("original_value"),
+                    pl.lit(None).cast(pl.Float64).alias("corrected_value"),
+                    pl.lit(None).cast(pl.Float64).alias("correction_factor"),
+                    pl.lit(None).cast(pl.Utf8).alias("error_type"),
+                    pl.lit(None).cast(pl.Int32).alias("window_size"),
+                ]
+            ).rename({"filter_reason": "variable"})
+            all_logs.append(s8_log)
+
+        if all_logs:
+            combined_log = pl.concat(all_logs, how="diagonal_relaxed")
+            combined_log.write_parquet(paths.interim_dir / "bessembinder_corrections_log.parquet")
+            print(
+                "Bessembinder corrections applied. Log written to bessembinder_corrections_log.parquet",
+                flush=True,
+            )
+    else:
+        t.to_parquet(paths.interim_dir / "__comp_dsf.parquet")
+        con.disconnect()
+
+    # Clean up corrected temp files if they exist
+    if apply_bessembinder:
+        for f in ["__comp_g_secd_corrected.parquet", "__comp_secd_corrected.parquet"]:
+            (paths.interim_dir / f).unlink(missing_ok=True)
+
+
+def compute_crsp_comparison_stats(
+    comparison_df: pl.DataFrame,
+    label: str = "",
+) -> dict:
+    """
+    Compute comprehensive comparison statistics between CRSP and Compustat data.
+
+    Args:
+        comparison_df: DataFrame with ret_crsp, ret_comp, prc_crsp, prc_comp columns
+        label: Optional label for the statistics (e.g., "before", "after")
+
+    Returns:
+        Dictionary with all comparison statistics
+    """
+    n_obs = len(comparison_df)
+    if n_obs == 0:
+        return {"label": label, "n_observations": 0}
+
+    # Compute differences if not already present
+    if "ret_diff_abs" not in comparison_df.columns:
+        comparison_df = comparison_df.with_columns(
+            [
+                (col("ret_comp") - col("ret_crsp")).alias("ret_diff"),
+                ((col("ret_comp") - col("ret_crsp")).abs()).alias("ret_diff_abs"),
+                (
+                    (col("prc_comp") - col("prc_crsp")).abs()
+                    / col("prc_crsp").abs().clip(lower_bound=0.0001)
+                ).alias("prc_pct_diff"),
+            ]
+        )
+
+    # Return correlation
+    ret_corr = comparison_df.select(pl.corr("ret_crsp", "ret_comp")).item()
+
+    # Return statistics
+    ret_stats = comparison_df.select(
+        [
+            col("ret_diff").mean().alias("ret_diff_mean"),
+            col("ret_diff").std().alias("ret_diff_std"),
+            col("ret_diff").median().alias("ret_diff_median"),
+            col("ret_diff_abs").mean().alias("ret_diff_abs_mean"),
+            col("ret_diff_abs").median().alias("ret_diff_abs_median"),
+            col("ret_diff_abs").quantile(0.90).alias("ret_diff_abs_p90"),
+            col("ret_diff_abs").quantile(0.95).alias("ret_diff_abs_p95"),
+            col("ret_diff_abs").quantile(0.99).alias("ret_diff_abs_p99"),
+            col("ret_diff_abs").max().alias("ret_diff_abs_max"),
+            # Large discrepancy counts
+            (col("ret_diff_abs") > 0.01).sum().alias("ret_diff_gt_1pct"),
+            (col("ret_diff_abs") > 0.05).sum().alias("ret_diff_gt_5pct"),
+            (col("ret_diff_abs") > 0.10).sum().alias("ret_diff_gt_10pct"),
+            (col("ret_diff_abs") > 0.50).sum().alias("ret_diff_gt_50pct"),
+            (col("ret_diff_abs") > 1.00).sum().alias("ret_diff_gt_100pct"),
+            # Price statistics
+            col("prc_pct_diff").mean().alias("prc_pct_diff_mean"),
+            col("prc_pct_diff").median().alias("prc_pct_diff_median"),
+            col("prc_pct_diff").quantile(0.95).alias("prc_pct_diff_p95"),
+            col("prc_pct_diff").quantile(0.99).alias("prc_pct_diff_p99"),
+        ]
+    ).to_dicts()[0]
+
+    return {
+        "label": label,
+        "n_observations": n_obs,
+        "ret_correlation": ret_corr,
+        **ret_stats,
+        # Percentages for discrepancies
+        "ret_diff_gt_1pct_pct": 100 * ret_stats["ret_diff_gt_1pct"] / n_obs,
+        "ret_diff_gt_5pct_pct": 100 * ret_stats["ret_diff_gt_5pct"] / n_obs,
+        "ret_diff_gt_10pct_pct": 100 * ret_stats["ret_diff_gt_10pct"] / n_obs,
+        "ret_diff_gt_50pct_pct": 100 * ret_stats["ret_diff_gt_50pct"] / n_obs,
+        "ret_diff_gt_100pct_pct": 100 * ret_stats["ret_diff_gt_100pct"] / n_obs,
+    }
+
+
+def print_crsp_comparison_stats(stats: dict, title: str = "CRSP vs Compustat") -> None:
+    """Print formatted comparison statistics."""
+    print("\n" + "=" * 70)
+    print(f"{title} ({stats.get('label', '')})")
+    print("=" * 70)
+    print(f"Total observations: {stats['n_observations']:,}")
+
+    if stats["n_observations"] == 0:
+        print("No data to compare.")
+        return
+
+    print("\nReturn Comparison:")
+    print(f"  Correlation:              {stats['ret_correlation']:.6f}")
+    print(f"  Mean difference:          {stats['ret_diff_mean']:.6f}")
+    print(f"  Median difference:        {stats['ret_diff_median']:.6f}")
+    print(f"  Std deviation:            {stats['ret_diff_std']:.6f}")
+    print(f"  Mean absolute diff:       {stats['ret_diff_abs_mean']:.6f}")
+    print(f"  Median absolute diff:     {stats['ret_diff_abs_median']:.6f}")
+    print(f"  90th pctile abs diff:     {stats['ret_diff_abs_p90']:.6f}")
+    print(f"  95th pctile abs diff:     {stats['ret_diff_abs_p95']:.6f}")
+    print(f"  99th pctile abs diff:     {stats['ret_diff_abs_p99']:.6f}")
+    print(f"  Max absolute diff:        {stats['ret_diff_abs_max']:.6f}")
+
+    print("\nLarge Discrepancies:")
+    print(
+        f"  |diff| > 1%:    {stats['ret_diff_gt_1pct']:>8,} ({stats['ret_diff_gt_1pct_pct']:.3f}%)"
+    )
+    print(
+        f"  |diff| > 5%:    {stats['ret_diff_gt_5pct']:>8,} ({stats['ret_diff_gt_5pct_pct']:.3f}%)"
+    )
+    print(
+        f"  |diff| > 10%:   {stats['ret_diff_gt_10pct']:>8,} "
+        f"({stats['ret_diff_gt_10pct_pct']:.3f}%)"
+    )
+    print(
+        f"  |diff| > 50%:   {stats['ret_diff_gt_50pct']:>8,} "
+        f"({stats['ret_diff_gt_50pct_pct']:.3f}%)"
+    )
+    print(
+        f"  |diff| > 100%:  {stats['ret_diff_gt_100pct']:>8,} "
+        f"({stats['ret_diff_gt_100pct_pct']:.3f}%)"
+    )
+
+    print("\nPrice Comparison:")
+    print(f"  Mean pct difference:      {100 * stats['prc_pct_diff_mean']:.4f}%")
+    print(f"  Median pct difference:    {100 * stats['prc_pct_diff_median']:.4f}%")
+    print(f"  95th pctile pct diff:     {100 * stats['prc_pct_diff_p95']:.4f}%")
+    print(f"  99th pctile pct diff:     {100 * stats['prc_pct_diff_p99']:.4f}%")
+    print("=" * 70)
+
+
+def print_before_after_comparison(
+    before_stats: dict,
+    after_stats: dict,
+) -> None:
+    """Print a comparison of before/after Bessembinder correction statistics."""
+    print("\n" + "=" * 70)
+    print("BESSEMBINDER CORRECTION IMPROVEMENT SUMMARY")
+    print("=" * 70)
+
+    if before_stats["n_observations"] == 0 or after_stats["n_observations"] == 0:
+        print("Insufficient data for comparison.")
+        return
+
+    def pct_change(before: float, after: float) -> str:
+        if before == 0:
+            return "N/A"
+        change = 100 * (after - before) / abs(before)
+        direction = "↓" if change < 0 else "↑"
+        return f"{change:+.2f}% {direction}"
+
+    def improvement(before: float, after: float) -> str:
+        """For metrics where lower is better."""
+        if before == 0:
+            return "N/A"
+        improvement_pct = 100 * (before - after) / before
+        if improvement_pct > 0:
+            return f"{improvement_pct:.1f}% better"
+        else:
+            return f"{-improvement_pct:.1f}% worse"
+
+    print(f"\n{'Metric':<30} {'Before':>15} {'After':>15} {'Improvement':>18}")
+    print("-" * 78)
+
+    # Correlation (higher is better)
+    print(
+        f"{'Return Correlation':<30} "
+        f"{before_stats['ret_correlation']:>15.6f} "
+        f"{after_stats['ret_correlation']:>15.6f} "
+        f"{pct_change(before_stats['ret_correlation'], after_stats['ret_correlation']):>18}"
+    )
+
+    # Mean absolute diff (lower is better)
+    print(
+        f"{'Mean Absolute Ret Diff':<30} "
+        f"{before_stats['ret_diff_abs_mean']:>15.6f} "
+        f"{after_stats['ret_diff_abs_mean']:>15.6f} "
+        f"{improvement(before_stats['ret_diff_abs_mean'], after_stats['ret_diff_abs_mean']):>18}"
+    )
+
+    # 95th percentile (lower is better)
+    print(
+        f"{'95th Pctile Ret Diff':<30} "
+        f"{before_stats['ret_diff_abs_p95']:>15.6f} "
+        f"{after_stats['ret_diff_abs_p95']:>15.6f} "
+        f"{improvement(before_stats['ret_diff_abs_p95'], after_stats['ret_diff_abs_p95']):>18}"
+    )
+
+    # Large discrepancies (lower is better)
+    print(
+        f"{'|Diff| > 5% (count)':<30} "
+        f"{before_stats['ret_diff_gt_5pct']:>15,} "
+        f"{after_stats['ret_diff_gt_5pct']:>15,} "
+        f"{improvement(before_stats['ret_diff_gt_5pct'], after_stats['ret_diff_gt_5pct']):>18}"
+    )
+
+    print(
+        f"{'|Diff| > 10% (count)':<30} "
+        f"{before_stats['ret_diff_gt_10pct']:>15,} "
+        f"{after_stats['ret_diff_gt_10pct']:>15,} "
+        f"{improvement(before_stats['ret_diff_gt_10pct'], after_stats['ret_diff_gt_10pct']):>18}"
+    )
+
+    print(
+        f"{'|Diff| > 50% (count)':<30} "
+        f"{before_stats['ret_diff_gt_50pct']:>15,} "
+        f"{after_stats['ret_diff_gt_50pct']:>15,} "
+        f"{improvement(before_stats['ret_diff_gt_50pct'], after_stats['ret_diff_gt_50pct']):>18}"
+    )
+
+    # Price differences (lower is better)
+    print(
+        f"{'Mean Price Pct Diff':<30} "
+        f"{100 * before_stats['prc_pct_diff_mean']:>14.4f}% "
+        f"{100 * after_stats['prc_pct_diff_mean']:>14.4f}% "
+        f"{improvement(before_stats['prc_pct_diff_mean'], after_stats['prc_pct_diff_mean']):>18}"
+    )
+
+    print("=" * 70)
+
+
+def compare_compustat_crsp_daily(
+    compustat_df: pl.LazyFrame,
+    crsp_df: pl.LazyFrame,
+    label: str = "",
+    output_path: str | None = None,
+) -> tuple[pl.DataFrame, dict]:
+    """
+    Compare daily Compustat prices/returns to CRSP for overlapping observations.
+
+    This function matches Compustat and CRSP data by permno and date to compute
+    price and return differences. Use this to validate Bessembinder corrections
+    by comparing before/after alignment with CRSP.
+
+    Note: gvkey and iid are preserved in the output if present in the input.
+    This allows per-share-class analysis since multiple iids can map to the
+    same permno.
+
+    Args:
+        compustat_df: LazyFrame with Compustat daily data (needs permno, datadate, prccd, ret)
+        crsp_df: LazyFrame with CRSP daily data (needs permno, date, prc, ret)
+        label: Label for this comparison (e.g., "before", "after")
+        output_path: Optional path to save detailed comparison
+
+    Returns:
+        Tuple of (comparison_df, stats_dict)
+    """
+    logger.info(f"Comparing Compustat to CRSP ({label})...")
+
+    # Standardize column names for Compustat
+    # Preserve gvkey and iid to allow per-share-class analysis
+    schema = compustat_df.collect_schema().names()
+    select_cols = [
+        col("permno").cast(pl.Int64),
+        col("datadate").alias("date"),
+        col("prccd").alias("prc_comp"),
+        # Compute return if not present
+        col("ret").alias("ret_comp") if "ret" in schema else pl.lit(None).alias("ret_comp"),
+    ]
+    # Add gvkey and iid if present (for diagnostics)
+    if "gvkey" in schema:
+        select_cols.insert(0, col("gvkey"))
+    if "iid" in schema:
+        select_cols.insert(1 if "gvkey" in schema else 0, col("iid"))
+
+    comp = compustat_df.select(select_cols).filter(col("permno").is_not_null())
+
+    # Standardize column names for CRSP
+    crsp = crsp_df.select(
+        [
+            col("permno").cast(pl.Int64),
+            col("date"),
+            col("prc").abs().alias("prc_crsp"),  # CRSP uses negative for bid/ask avg
+            col("ret").alias("ret_crsp"),
+        ]
+    ).filter(col("permno").is_not_null())
+
+    # Join on permno and date
+    comparison = comp.join(crsp, on=["permno", "date"], how="inner")
+
+    # Compute differences
+    comparison = comparison.with_columns(
+        [
+            (col("ret_comp") - col("ret_crsp")).alias("ret_diff"),
+            ((col("ret_comp") - col("ret_crsp")).abs()).alias("ret_diff_abs"),
+            (col("prc_comp") - col("prc_crsp")).alias("prc_diff"),
+            (
+                (col("prc_comp") - col("prc_crsp")).abs()
+                / col("prc_crsp").abs().clip(lower_bound=0.0001)
+            ).alias("prc_pct_diff"),
+        ]
+    )
+
+    # Collect
+    comparison_df = comparison.collect()
+    logger.info(f"Found {len(comparison_df):,} overlapping observations")
+
+    # Compute statistics
+    stats = compute_crsp_comparison_stats(comparison_df, label)
+
+    # Save if requested
+    if output_path:
+        comparison_df.write_parquet(output_path)
+        logger.info(f"Saved comparison to {output_path}")
+
+    return comparison_df, stats
+
+
+def compare_compustat_crsp_before_after(
+    compustat_before: pl.LazyFrame,
+    compustat_after: pl.LazyFrame,
+    crsp_df: pl.LazyFrame,
+    output_dir: str = ".",
+) -> dict:
+    """
+    Compare Compustat data to CRSP before and after Bessembinder corrections.
+
+    This is the main validation function to demonstrate that corrections
+    improve alignment with CRSP (the gold standard).
+
+    Args:
+        compustat_before: LazyFrame with uncorrected Compustat daily data
+        compustat_after: LazyFrame with corrected Compustat daily data
+        crsp_df: LazyFrame with CRSP daily data
+        output_dir: Directory to save comparison files
+
+    Returns:
+        Dictionary with before/after statistics and improvement metrics
+    """
+    logger.info("Running before/after CRSP comparison...")
+
+    # Compare before corrections
+    before_df, before_stats = compare_compustat_crsp_daily(
+        compustat_before,
+        crsp_df,
+        label="BEFORE corrections",
+        output_path=os.path.join(output_dir, "crsp_comparison_before.parquet"),
+    )
+
+    # Compare after corrections
+    after_df, after_stats = compare_compustat_crsp_daily(
+        compustat_after,
+        crsp_df,
+        label="AFTER corrections",
+        output_path=os.path.join(output_dir, "crsp_comparison_after.parquet"),
+    )
+
+    # Print detailed stats
+    print_crsp_comparison_stats(before_stats, "CRSP vs Compustat")
+    print_crsp_comparison_stats(after_stats, "CRSP vs Compustat")
+
+    # Print improvement summary
+    print_before_after_comparison(before_stats, after_stats)
+
+    # Compute improvement metrics
+    improvement = {}
+    if before_stats["n_observations"] > 0 and after_stats["n_observations"] > 0:
+        improvement = {
+            "correlation_improvement": after_stats["ret_correlation"]
+            - before_stats["ret_correlation"],
+            "mean_abs_diff_reduction_pct": 100
+            * (before_stats["ret_diff_abs_mean"] - after_stats["ret_diff_abs_mean"])
+            / before_stats["ret_diff_abs_mean"]
+            if before_stats["ret_diff_abs_mean"] > 0
+            else 0,
+            "large_discrepancies_reduced": before_stats["ret_diff_gt_10pct"]
+            - after_stats["ret_diff_gt_10pct"],
+            "extreme_discrepancies_reduced": before_stats["ret_diff_gt_50pct"]
+            - after_stats["ret_diff_gt_50pct"],
+        }
+
+    return {
+        "before": before_stats,
+        "after": after_stats,
+        "improvement": improvement,
+    }
+
+
+def verify_compustat_vs_crsp(output_path: str = "verification_report.parquet"):
+    """
+    Generate comparison report between CRSP and Compustat returns for US stocks.
+
+    This function compares returns from CRSP and Compustat for the same securities
+    to verify that Bessembinder corrections bring Compustat data closer to CRSP quality.
+
+    The comparison is done at the monthly level, matching securities by gvkey/iid/eom
+    where both CRSP and Compustat observations exist.
+
+    Args:
+        output_path: Path for the detailed comparison output file.
+
+    Output:
+        - Prints summary statistics to stdout
+        - Writes detailed comparison to verification_report.parquet
+    """
+    print("Generating CRSP vs Compustat verification report...", flush=True)
+
+    # Check if __msf_world.parquet exists
+    if not os.path.exists("__msf_world.parquet"):
+        print("Warning: __msf_world.parquet not found. Run combine_crsp_comp_sf() first.")
+        return
+
+    # Read the merged monthly data
+    df = pl.scan_parquet("__msf_world.parquet")
+
+    # Filter to US stocks only (excntry == 'USA')
+    df = df.filter(col("excntry") == "USA")
+
+    # Get observations where both CRSP and Compustat have data
+    # Group by gvkey, iid, eom and check if both sources exist
+    df = df.with_columns(
+        pl.count().over(["gvkey", "iid", "eom"]).alias("_obs_count"),
+        (col("source_crsp") == 1).sum().over(["gvkey", "iid", "eom"]).alias("_has_crsp"),
+        (col("source_crsp") == 0).sum().over(["gvkey", "iid", "eom"]).alias("_has_comp"),
+    )
+
+    # Keep only periods where both sources exist
+    df_both = df.filter((col("_has_crsp") > 0) & (col("_has_comp") > 0))
+
+    # Pivot to get CRSP and Compustat values side by side
+    crsp_data = df_both.filter(col("source_crsp") == 1).select(
+        [
+            "gvkey",
+            "iid",
+            "eom",
+            col("ret").alias("ret_crsp"),
+            col("me").alias("me_crsp"),
+            col("prc").alias("prc_crsp"),
+        ]
+    )
+
+    comp_data = df_both.filter(col("source_crsp") == 0).select(
+        [
+            "gvkey",
+            "iid",
+            "eom",
+            col("ret").alias("ret_comp"),
+            col("me").alias("me_comp"),
+            col("prc").alias("prc_comp"),
+        ]
+    )
+
+    # Join CRSP and Compustat data
+    comparison = crsp_data.join(comp_data, on=["gvkey", "iid", "eom"], how="inner")
+
+    # Compute differences
+    comparison = comparison.with_columns(
+        [
+            (col("ret_comp") - col("ret_crsp")).alias("ret_diff"),
+            ((col("ret_comp") - col("ret_crsp")).abs()).alias("ret_diff_abs"),
+            ((col("me_comp") - col("me_crsp")).abs() / col("me_crsp").abs()).alias("me_pct_diff"),
+            ((col("prc_comp") - col("prc_crsp")).abs() / col("prc_crsp").abs()).alias(
+                "prc_pct_diff"
+            ),
+        ]
+    )
+
+    # Collect for analysis
+    comparison_df = comparison.collect()
+
+    # Compute summary statistics
+    n_obs = len(comparison_df)
+    if n_obs == 0:
+        print("No overlapping observations found between CRSP and Compustat.")
+        return
+
+    stats = comparison_df.select(
+        [
+            pl.lit(n_obs).alias("n_observations"),
+            # Return differences
+            col("ret_diff").mean().alias("ret_diff_mean"),
+            col("ret_diff").std().alias("ret_diff_std"),
+            col("ret_diff").median().alias("ret_diff_median"),
+            col("ret_diff_abs").mean().alias("ret_diff_abs_mean"),
+            col("ret_diff_abs").quantile(0.95).alias("ret_diff_abs_p95"),
+            col("ret_diff_abs").quantile(0.99).alias("ret_diff_abs_p99"),
+            # Count of large discrepancies
+            (col("ret_diff_abs") > 0.01).sum().alias("ret_diff_gt_1pct"),
+            (col("ret_diff_abs") > 0.05).sum().alias("ret_diff_gt_5pct"),
+            (col("ret_diff_abs") > 0.10).sum().alias("ret_diff_gt_10pct"),
+            # Correlation (compute separately due to Polars API)
+            col("ret_crsp").alias("_ret_crsp_for_corr"),
+            col("ret_comp").alias("_ret_comp_for_corr"),
+            # ME differences
+            col("me_pct_diff").mean().alias("me_pct_diff_mean"),
+            col("me_pct_diff").quantile(0.95).alias("me_pct_diff_p95"),
+            # Price differences
+            col("prc_pct_diff").mean().alias("prc_pct_diff_mean"),
+            col("prc_pct_diff").quantile(0.95).alias("prc_pct_diff_p95"),
+        ]
+    )
+
+    # Compute correlation manually
+    ret_corr = comparison_df.select(pl.corr("ret_crsp", "ret_comp")).item()
+
+    # Print summary
+    print("\n" + "=" * 60)
+    print("CRSP vs Compustat Verification Report (US Stocks)")
+    print("=" * 60)
+    print(f"Total overlapping observations: {n_obs:,}")
+    print("\nReturn Comparison:")
+    print(f"  Correlation:           {ret_corr:.4f}")
+    print(f"  Mean difference:       {stats['ret_diff_mean'][0]:.6f}")
+    print(f"  Std deviation:         {stats['ret_diff_std'][0]:.6f}")
+    print(f"  Median difference:     {stats['ret_diff_median'][0]:.6f}")
+    print(f"  Mean absolute diff:    {stats['ret_diff_abs_mean'][0]:.6f}")
+    print(f"  95th pctile abs diff:  {stats['ret_diff_abs_p95'][0]:.6f}")
+    print(f"  99th pctile abs diff:  {stats['ret_diff_abs_p99'][0]:.6f}")
+    print("\nLarge Discrepancies:")
+    ret_gt_1 = stats["ret_diff_gt_1pct"][0]
+    ret_gt_5 = stats["ret_diff_gt_5pct"][0]
+    ret_gt_10 = stats["ret_diff_gt_10pct"][0]
+    print(f"  |diff| > 1%:   {ret_gt_1:,} ({100 * ret_gt_1 / n_obs:.2f}%)")
+    print(f"  |diff| > 5%:   {ret_gt_5:,} ({100 * ret_gt_5 / n_obs:.2f}%)")
+    print(f"  |diff| > 10%:  {ret_gt_10:,} ({100 * ret_gt_10 / n_obs:.2f}%)")
+    print("\nMarket Cap Comparison:")
+    print(f"  Mean pct difference:   {100 * stats['me_pct_diff_mean'][0]:.2f}%")
+    print(f"  95th pctile pct diff:  {100 * stats['me_pct_diff_p95'][0]:.2f}%")
+    print("\nPrice Comparison:")
+    print(f"  Mean pct difference:   {100 * stats['prc_pct_diff_mean'][0]:.2f}%")
+    print(f"  95th pctile pct diff:  {100 * stats['prc_pct_diff_p95'][0]:.2f}%")
+    print("=" * 60)
+
+    # Write detailed comparison file
+    comparison_df.write_parquet(output_path)
+    print(f"\nDetailed comparison written to: {output_path}")
+
+    # Identify extreme outliers for review
+    extreme_outliers = comparison_df.filter(col("ret_diff_abs") > 0.5).sort(
+        "ret_diff_abs", descending=True
+    )
+    if len(extreme_outliers) > 0:
+        print(f"\nExtreme outliers (|ret diff| > 50%): {len(extreme_outliers)}")
+        outlier_path = output_path.replace(".parquet", "_extreme_outliers.parquet")
+        extreme_outliers.write_parquet(outlier_path)
+        print(f"Extreme outliers written to: {outlier_path}")
 
 
 def gen_secd_data(paths: DataPaths):
@@ -2592,7 +3271,7 @@ def combine_crsp_comp_sf(paths: DataPaths) -> None:
     Steps:
         1) Connect to DuckDB (persistent file for out-of-core processing).
         2) Create monthly world table: normalize CRSP/Comp → UNION ALL → LEAD(ret_exc).
-        3) Derive obs_main: prefer CRSP when multiple observations per (gvkey, iid, eom).
+        3) Derive obs_main: prefer Compustat when multiple observations per (gvkey, iid, eom).
         4) Write __msf_world.parquet with deterministic dedup (primary_sec preferred
            on tie via ROW_NUMBER).
         5) Write world_dsf.parquet: normalize daily → UNION ALL → join obs_main → dedup.
@@ -2712,7 +3391,9 @@ def combine_crsp_comp_sf(paths: DataPaths) -> None:
             ) unioned
         """)
 
-        # Derive obs_main: prefer CRSP when multiple obs per (gvkey, iid, eom).
+        # Derive obs_main: prefer Compustat when multiple obs per (gvkey, iid, eom).
+        # Bessembinder et al. (2023) corrections improve Compustat quality; when both
+        # sources exist for the same security-date, Compustat is the preferred observation.
         # Deduplicate to (id, eom) before the join to avoid transient row inflation.
         con.execute("""
             CREATE TABLE obs_main AS
@@ -2721,7 +3402,7 @@ def combine_crsp_comp_sf(paths: DataPaths) -> None:
                 SELECT id, eom,
                     CAST(CASE
                         WHEN cnt IN (0, 1) THEN 1
-                        WHEN cnt > 1 AND source_crsp = 1 THEN 1
+                        WHEN cnt > 1 AND source_crsp = 0 THEN 1
                         ELSE 0
                     END AS INT) AS obs_main
                 FROM (
