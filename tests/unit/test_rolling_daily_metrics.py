@@ -1,21 +1,18 @@
 """
 Unit tests for rolling daily metric helpers in aux_functions.py.
 
-This module starts with rvol() and can be extended with tests for
-other functions in the same section (rmax, zero_trades, mktcorr, ...).
+This module covers 16 rolling window functions: rvol, rmax, skew, prc_to_high,
+capm, ami, downbeta, mktrf_vol, capm_ext, ff3, hxz4, zero_trades, dolvol,
+turnover, mktcorr, and dimsonbeta.
 """
 
 from __future__ import annotations
 
-import sys
 from datetime import date
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 import polars as pl
-
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "code"))
 
 from aux_functions import (
     ami,
