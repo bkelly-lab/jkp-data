@@ -13,7 +13,6 @@ from typing import Any
 
 import numpy as np
 import polars as pl
-
 from aux_functions import (
     ami,
     capm,
