@@ -548,7 +548,6 @@ def gen_crsp_sf(freq):
     securitytype_expr = sf.securitytype
     securitysubtype_expr = sf.securitysubtype
     sharetype_expr = sf.sharetype
-    usincflg_expr = sf.usincflg
     issuertype_expr = sf.issuertype
 
     is_common_expr = (
@@ -556,7 +555,6 @@ def gen_crsp_sf(freq):
         & (securitysubtype_expr == "COM")
         & (sharetype_expr == "NS")
         & (issuertype_expr.isin(["ACOR", "CORP"]))
-        & (usincflg_expr == "Y")
     )
 
     shrcd_expr = ibis.cases(
