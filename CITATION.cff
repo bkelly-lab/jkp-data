@@ -1,0 +1,36 @@
+cff-version: 1.2.0
+type: software
+message: "If you use this software, please cite it as below."
+title: "JKP Factors: Global Factor Data"
+url: "https://jkpfactors.com"
+repository-code: "https://github.com/bkelly-lab/jkp-data"
+license: MIT
+abstract: >
+  Global equity factor data and replication code accompanying
+  Jensen, Kelly, and Pedersen (2023), "Is There a Replication
+  Crisis in Finance?"
+
+authors:
+  - family-names: Jensen
+    given-names: Theis Ingerslev
+    orcid: https://orcid.org/0009-0006-4290-8406
+  - family-names: Kelly
+    given-names: Bryan T.
+    orcid: https://orcid.org/0009-0001-9685-0397
+  - family-names: Pedersen
+    given-names: Lasse Heje
+    orcid: https://orcid.org/0000-0001-7126-5530
+
+preferred-citation:
+  type: article
+  authors:
+    - family-names: Jensen
+      given-names: Theis Ingerslev
+    - family-names: Kelly
+      given-names: Bryan T.
+    - family-names: Pedersen
+      given-names: Lasse Heje
+  title: "Is There a Replication Crisis in Finance?"
+  journal: "Journal of Finance"
+  year: 2023
+  doi: "10.1111/jofi.13249"
