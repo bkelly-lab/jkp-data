@@ -42,6 +42,7 @@ outputs/
 output/
 data/*
 !data/.gitkeep
+!data/README.md
 !data/factor_details.xlsx
 !data/country_classification.xlsx
 !data/cluster_labels.csv

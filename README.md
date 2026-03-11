@@ -68,5 +68,10 @@ Please see the release notes (`documentation/release_notes.html`) for a descript
 
 - The original SAS/R codebase is still available at [github.com/bkelly-lab/ReplicationCrisis](https://github.com/bkelly-lab/ReplicationCrisis), but we recommend using this new Python codebase for future work.
 
+## License
 
+Code in this repository is released under the [MIT License](LICENSE).
 
+Data distributed in this repository is licensed under [Creative Commons Attribution-NonCommercial 4.0 (CC BY-NC 4.0)](DATA_LICENSE).
+
+See [LICENSE](LICENSE) and [DATA_LICENSE](DATA_LICENSE) for details.
