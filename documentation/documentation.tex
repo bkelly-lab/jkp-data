@@ -44,7 +44,7 @@
 % Add any additional content or information here
 \renewcommand{\thefootnote}{\ensuremath{\ast}}
 \footnotetext{%
-Jensen is at Yale School of Management; \url{https://sites.google.com/view/theis-ingerslev-jensen/}. Kelly is at AQR Capital Management, Yale School of Management, and NBER; \url{www.bryankellyacademic.org}. Pedersen is at AQR Capital Management, Copenhagen Business School, and CEPR; \url{www.lhpedersen.com}. We are grateful to Faheem Almas and Tyler Gwinn for excellent research assistance.  AQR Capital Management is a global investment management firm, which may or may not apply similar investment techniques or methods of analysis as described herein. The views expressed here are those of the authors and not necessarily those of AQR.}
+Jensen is at Yale School of Management; \url{www.tijensen.com}. Kelly is at AQR Capital Management, Yale School of Management, and NBER; \url{www.bryankellyacademic.org}. Pedersen is at AQR Capital Management, Copenhagen Business School, and CEPR; \url{www.lhpedersen.com}. We are grateful to Faheem Almas, Fernando Reyes De La Luz and Tyler Gwinn for excellent research assistance.  AQR Capital Management is a global investment management firm, which may or may not apply similar investment techniques or methods of analysis as described herein. The views expressed here are those of the authors and not necessarily those of AQR.}
 \end{titlepage}
 
 
@@ -70,8 +70,9 @@ Jensen is at Yale School of Management; \url{https://sites.google.com/view/theis
 }	
 	\end{verbatim}
 	\item The Global Factor Data includes 406 characteristics and their associated factor portfolios.  This is a superset of the 153 factors analyzed in Jensen, Kelly, and Pedersen (2023).
-        \item This documentation is grouped into eight main sections: Identifier Variables, Industry Identifiers, Helper Functions, Accounting Characteristics, Market Based Characteristics, Detailed Characteristic Construction, FX Conversion Rate Construction and Factor Details and Citations.
+        \item This documentation is grouped into sections covering data downloads, identifier variables, industry identifiers, helper functions, accounting characteristics, market-based characteristics, detailed characteristic construction, FX conversion rate construction, and factor details and citations.
             \begin{itemize}
+                \item Data downloads describe the files available on jkpfactors.com/factor-returns and their columns.
                 \item Identifier Variables include firm identifying information, date, etc...
                 \item Each of the Characteristics sections includes at least three subsections: Datasets, Variables, and Characteristics.
                 \item Datasets refers to which datasets the items in variables are drawn from. For example, 'COMP.FUNDA' suggests we use variables from the FUNDA dataset provided by Compustat. 
@@ -218,6 +219,429 @@ Jensen is at Yale School of Management; \url{https://sites.google.com/view/theis
 	\item We update characteristics with the most recent accounting data (which could be either annual or quarterly) starting four months after the end of the fiscal period.
 	\item To compute a cluster (theme) return, we first sign factors according to the original reference, then we equal-weight the returns of factors within a specific cluster. The signing convention and cluster allocation follows  \cite{JensenKellyPedersen2023} and we show it in table \ref{tbl:factor:details}.
 \end{itemize}
+
+\section{Public data not on jkpfactors.com}
+We share long/short factor returns on \url{jkpfactors.com/factor-returns}, but we also share additional data, which can be accessed via \href{https://www.dropbox.com/scl/fo/zxha6i1zcjzx8a3mb2372/AN9kkos5H5UjjXUOqW3EuDs?rlkey=i3wkvrjbadft6hld863571dol&st=6sg3nmw0&dl=0}{this Dropbox link}. Below is an explanation of the most important files.
+
+\subsection{Tercile Portfolio Returns (\texttt{pfs.csv} / \texttt{pfs\_daily.csv})}
+
+\begin{itemize}
+  \item \texttt{pfs.csv} / \texttt{pfs\_daily.csv} reports the monthly/daily equal weight, value weight, and capped value weight excess return for the high, middle, and low portfolios.
+  \item For each characteristic, we construct 1-period holding-period portfolio returns within each country at a monthly (\texttt{pfs.csv}) or daily (\texttt{pfs\_daily.csv}) frequency.
+\end{itemize}
+
+{\scriptsize
+	\begin{longtable}{@{\extracolsep{\fill}}|l|m{14.2cm}|@{}}
+	\caption{\texttt{pfs.csv} Data Columns \label{pfs-monthly}}\\
+	
+	\hline
+	Name & Description \\
+	\hline
+	\endfirsthead
+	
+	\hline
+	Name & Description \\
+	\hline
+	\endhead
+	
+	\hline
+	\endfoot
+	
+	
+	\hline\hline
+	\endlastfoot
+	
+	excntry\rule{0pt}{10pt} & The country of the exchange where the security is traded. Expressed as an ISO \emph{country} code; \texttt{mul} indicates a multi-country exchange. \\[1ex]
+	
+	characteristic & Characteristic name used for the sort. \\[1ex]
+	
+	pf & Portfolio tercile. \\[1ex]
+	
+	eom & The last day of the month in which the observation is made. \\[1ex]
+
+	n & Number of stocks in the tercile. \\[1ex]
+    
+	signal & Median value of the characteristic within the bucket and month. \\[1ex]
+
+	ret\_ew & Equal weight return for the tercile in the month.\\[1ex]
+
+	ret\_vw & Value weight return for the tercile in the month.\\[1ex]
+
+	ret\_vw\_cap & Capped value weight return for the tercile in the month.\\[1ex]
+
+\end{longtable}}
+
+{\scriptsize
+	\begin{longtable}{@{\extracolsep{\fill}}|l|m{14.2cm}|@{}}
+	\caption{\texttt{pfs\_daily.csv} Data Columns \label{pfs-daily}}\\
+	
+	\hline
+	Name & Description \\
+	\hline
+	\endfirsthead
+	
+	\hline
+	Name & Description \\
+	\hline
+	\endhead
+	
+	\hline
+	\endfoot
+	
+	
+	\hline\hline
+	\endlastfoot
+	
+	pf\rule{0pt}{10pt} & Portfolio tercile. \\[1ex]
+
+	date & The date on which the observation is made. \\[1ex]
+
+	n & Number of stocks in the tercile. \\[1ex]
+
+	excntry & The country of the exchange where the security is traded. Expressed as an ISO \emph{country} code; \texttt{mul} indicates a multi-country exchange. \\[1ex]
+	
+	characteristic & Characteristic name used for the sort. \\[1ex]
+    
+	ret\_ew & Equal weight return for the tercile on the date.\\[1ex]
+
+	ret\_vw & Value weight return for the tercile on the date.\\[1ex]
+
+	ret\_vw\_cap & Capped value weight return for the tercile on the date.\\[1ex]
+	
+\end{longtable}}
+
+
+\subsection{GICS Industry Returns (\texttt{industry\_gics.csv})}
+\begin{itemize}
+    \item \texttt{industry\_gics.csv} reports for each country and month the monthly equal weight, value weight, and capped value weight return in each sector.
+    \item For all stocks with non-missing GICS, we convert to 2-digit GICS sectors (first two characters of the code).
+    \item For a sector return to be non-missing, the sector-month must contain at least the minimum number of constituents (\texttt{bp\_min\_n} = 10 in the current version).
+
+\end{itemize}
+
+{\scriptsize
+	\begin{longtable}{@{\extracolsep{\fill}}|l|m{14.2cm}|@{}}
+	\caption{\texttt{industry\_gics.csv} Data Columns \label{industry_gics}}\\
+	
+	\hline
+	Name & Description \\
+	\hline
+	\endfirsthead
+	
+	\hline
+	Name & Description \\
+	\hline
+	\endhead
+	
+	\hline
+	\endfoot
+	
+	
+	\hline\hline
+	\endlastfoot
+	
+	gics\rule{0pt}{10pt} & Firm GICS industry. We use historical data from Compustat. \\[1ex]
+	
+	eom & The last day of the month in which the observation is made. \\[1ex]
+
+	n & Number of stocks in the sector that month. \\[1ex]
+
+	ret\_ew & Equal weight return for the sector in the month.\\[1ex]
+
+	ret\_vw & Value weight return for the sector in the month.\\[1ex]
+
+	ret\_vw\_cap & Capped value weight return for the sector in the month.\\[1ex]
+
+	excntry & The country of the exchange where the security is traded. Expressed as an ISO \emph{country} code; \texttt{mul} indicates a multi-country exchange. \\[1ex]
+
+\end{longtable}}
+
+
+\subsection{FF49 Industry Returns (\texttt{industry\_ff49.csv})}
+\begin{itemize}
+    \item \texttt{industry\_ff49.csv} reports the monthly equal weight, value weight, and capped value weight return for 49 SIC-based Fama-French industries (Fama and French, 1997) with the addition of a software industry in the U.S.
+    \item For an industry to be non-missing, the industry-month must contain at least the minimum number of constituents (\texttt{bp\_min\_n} = 10 in the current version).
+
+\end{itemize}
+
+{\scriptsize
+	\begin{longtable}{@{\extracolsep{\fill}}|l|m{14.2cm}|@{}}
+	\caption{\texttt{industry\_ff49.csv} Data Columns \label{industry_ff49}}\\
+	
+	\hline
+	Name & Description \\
+	\hline
+	\endfirsthead
+	
+	\hline
+	Name & Description \\
+	\hline
+	\endhead
+	
+	\hline
+	\endfoot
+	
+	
+	\hline\hline
+	\endlastfoot
+	
+	ff49\rule{0pt}{10pt} & Classification of stocks into 49 industry groups based on SIC codes and the methodology in Fama and French (1997), with the addition of a software industry. \\[1ex]
+	
+	eom & The last day of the month in which the observation is made. \\[1ex]
+
+	n & Number of stocks in the industry that month. \\[1ex]
+
+	ret\_ew & Equal weight return for the industry in the month.\\[1ex]
+
+	ret\_vw & Value weight return for the industry in the month.\\[1ex]
+
+	ret\_vw\_cap & Capped value weight return for the industry in the month.\\[1ex]
+
+	excntry & The country of the exchange where the security is traded. This file is U.S.-only data. \\[1ex]
+
+\end{longtable}}
+
+\subsection{Characteristics-Managed Portfolio Returns (\texttt{cmp.csv})}
+\begin{itemize}
+    \item \texttt{cmp.csv} reports for each country, characteristic, and month the size-neutral long-short excess returns with the corresponding weighted characteristic.
+    \item For each characteristic, country, and month, we form characteristics-managed portfolios (CMP) within predefined size groups based on \hyperref[app:nyse-breakpoints]{NYSE size breakpoints}. Only observations with non-missing characteristic values and returns are included.
+    \item Within each size group and month, we compute each stock's percentile rank on the characteristic, demean the rank within the group, and scale the deviation so long and short weights offset and the gross weight is normalized. These weights create a within-size long-short portfolio that isolates the characteristic from size.
+    \item Using the within-group weights, we compute the group's next-month excess return and the weighted signal level.
+\end{itemize}
+
+{\scriptsize
+\begin{longtable}{|p{0.22\textwidth}|p{0.68\textwidth}|}
+\caption{NYSE Size Breakpoints Definitions}\label{app:nyse-breakpoints}\\
+\hline
+\textbf{Size group} & \textbf{NYSE market equity percentiles} \\
+\hline
+\endfirsthead
+
+\hline
+\textbf{Size group} & \textbf{NYSE market equity percentiles} \\
+\hline
+\endhead
+
+\hline
+\multicolumn{2}{r}{\textit{(table continues)}}\\
+\endfoot
+
+\hline
+\endlastfoot
+
+Mega\rule{0pt}{10pt}  & Top 20\% percentiles. \\[1ex]
+
+Large & 80th--50th percentiles. \\[1ex]
+
+Small & 50th--20th percentiles. \\[1ex]
+
+Micro & 20th--1st percentiles. \\[1ex]
+
+Nano  & Below 1st percentile. \\
+\end{longtable}
+\vspace{-0.4\baselineskip}
+\noindent\footnotesize Notes: Percentiles \((p1,p20,p50,p80)\) are recomputed each month using NYSE common stocks (primary share/security, main class, non-missing market equity). Discrete quantiles are used (no interpolation).
+}
+
+{\scriptsize
+	\begin{longtable}{@{\extracolsep{\fill}}|l|m{14.2cm}|@{}}
+	\caption{\texttt{cmp.csv} Data Columns \label{cmp}}\\
+	
+	\hline
+	Name & Description \\
+	\hline
+	\endfirsthead
+	
+	\hline
+	Name & Description \\
+	\hline
+	\endhead
+	
+	\hline
+	\endfoot
+	
+	
+	\hline\hline
+	\endlastfoot
+	
+	excntry\rule{0pt}{10pt} & The country of the exchange where the security is traded. Expressed as an ISO \emph{country} code; \texttt{mul} indicates a multi-country exchange. \\[1ex]
+	
+	characteristic & Characteristic name used for the sort. \\[1ex]
+
+	size\_grp & NYSE size group.\\[1ex]
+    
+    eom & The last day of the month in which the observation is made. \\[1ex]
+
+    n\_stocks & Number of stocks in the size group that month. \\[1ex]
+
+    ret\_weighted & Characteristics-managed excess return using CMP weights. \\[1ex]
+
+\end{longtable}}
+
+\subsection{NYSE Size Cutoffs (\texttt{nyse\_cutoffs.csv})}
+\begin{itemize}
+    \item \texttt{nyse\_cutoffs.csv} reports the monthly NYSE market equity (ME) breakpoints used for the micro-cap screen and capped value weights.
+    \item For each month, we compute discrete percentiles of market equity across the NYSE universe: 1st, 20th, 50th, and 80th.
+    \item The monthly cutoffs are derived from a universe of NYSE common stocks (primary share/security, main class) with non-missing market equity on CRSP.
+    
+\end{itemize}
+
+{\scriptsize
+	\begin{longtable}{@{\extracolsep{\fill}}|l|m{14.2cm}|@{}}
+	\caption{\texttt{nyse\_cutoffs.csv} Data Columns \label{nyse-cutoffs}}\\
+	
+	\hline
+	Name & Description \\
+	\hline
+	\endfirsthead
+	
+	\hline
+	Name & Description \\
+	\hline
+	\endhead
+	
+	\hline
+	\endfoot
+	
+	
+	\hline\hline
+	\endlastfoot
+    
+    eom\rule{0pt}{10pt} & The last day of the month in which the observation is made. \\[1ex]
+
+    n\_stocks & Number of eligible NYSE stocks that month. \\[1ex]
+
+    nyse\_p1 & 1st percentile of ME (NYSE only). \\[1ex]
+
+    nyse\_p20 & 20th percentile of ME (NYSE only). \\[1ex]
+    
+    nyse\_p50 & 50th percentile of ME (NYSE only). \\[1ex]
+
+    nyse\_p80 & 80th percentile of ME (NYSE only). \\[1ex]
+
+\end{longtable}}
+
+\subsection{Monthly Return Cutoffs (\texttt{return\_cutoffs.csv})}
+\begin{itemize}
+    \item \texttt{return\_cutoffs.csv} reports the discrete monthly percentile return cutoffs for return winsorization.
+    \item The cutoffs are derived from a monthly panel of common stocks (primary share/security, main class, non-missing market equity) with non-missing return on CRSP.
+    \item For each month-end, we compute non-interpolated (list-based) cross-sectional percentiles, typically the 0.1\%/99.9\% and 1\%/99\% bounds, for three return measures: USD, local, and excess.
+    \item The cutoffs can be joined back to the stock-level panel by period and used to clip returns to the chosen bounds. This mitigates data errors and outliers so equal-weighted/value-weighted aggregates and long-short factors are not driven by a few extreme observations.
+\end{itemize}
+
+{\scriptsize
+	\begin{longtable}{@{\extracolsep{\fill}}|l|m{14.2cm}|@{}}
+	\caption{\texttt{return\_cutoffs.csv} Data Columns \label{return-cutoffs}}\\
+	
+	\hline
+	Name & Description \\
+	\hline
+	\endfirsthead
+	
+	\hline
+	Name & Description \\
+	\hline
+	\endhead
+	
+	\hline
+	\endfoot
+	
+	
+	\hline\hline
+	\endlastfoot
+    
+    eom\rule{0pt}{10pt} & The last day of the month in which the observation is made. \\[1ex]
+
+    n & Number of eligible stock-month observations. \\[1ex]
+
+    return\_0\_1 & 0.1st percentile of USD return. \\[1ex]
+
+    return\_1 & 1st percentile of USD return. \\[1ex]
+    
+    return\_99 & 99th percentile of USD return. \\[1ex]
+
+    return\_99\_99 & 99.99th percentile of USD return. \\[1ex]
+
+    return\_local\_0\_1 & 0.1st percentile of local return. \\[1ex]
+
+    return\_local\_1 & 1st percentile of local return. \\[1ex]
+    
+    return\_local\_99 & 99th percentile of local return. \\[1ex]
+
+    return\_local\_99\_99 & 99.99th percentile of local return. \\[1ex]
+
+    return\_exc\_0\_1 & 0.1st percentile of excess return. \\[1ex]
+
+    return\_exc\_1 & 1st percentile of excess return. \\[1ex]
+    
+    return\_exc\_99 & 99th percentile of excess return. \\[1ex]
+
+    return\_exc\_99\_99 & 99.99th percentile of excess return. \\[1ex]
+
+    eom\_lag1 & Previous month-end date for the observation (that is, \texttt{eom} shifted back one month). \\[1ex]
+
+\end{longtable}}
+
+\subsection{Daily Return Cutoffs (\texttt{return\_cutoffs\_daily.csv})}
+\begin{itemize}
+    \item \texttt{return\_cutoffs\_daily.csv} reports the discrete calendar-month percentile return cutoffs for return winsorization.
+    \item The cutoffs are derived from a daily panel of common stocks (primary share/security, main class, non-missing market equity) with non-missing return on CRSP.
+    \item For each trading day, we extract year and month, then group stocks by (year, month). Within each group, we compute non-interpolated cross-sectional percentiles, typically the 0.1\%/99.9\% and 1\%/99\% bounds, for three return measures: USD, local, and excess.
+    \item The cutoffs can be joined back to the stock-level panel by period and used to clip returns to the chosen bounds. This mitigates data errors and outliers so equal-weighted/value-weighted aggregates and long-short factors are not driven by a few extreme observations.
+\end{itemize}
+
+{\scriptsize
+	\begin{longtable}{@{\extracolsep{\fill}}|l|m{14.2cm}|@{}}
+	\caption{\texttt{return\_cutoffs\_daily.csv} Data Columns \label{return-cutoffs-daily}}\\
+	
+	\hline
+	Name & Description \\
+	\hline
+	\endfirsthead
+	
+	\hline
+	Name & Description \\
+	\hline
+	\endhead
+	
+	\hline
+	\endfoot
+	
+	
+	\hline\hline
+	\endlastfoot
+    
+    year\rule{0pt}{10pt} & Calendar year extracted from the trading date. \\[1ex]
+
+    month & Calendar month (1--12) extracted from the trading date. \\[1ex]
+
+    n & Number of eligible stock-day observations in that year-month group. \\[1ex]
+
+    return\_0\_1 & 0.1st percentile of USD return. \\[1ex]
+
+    return\_1 & 1st percentile of USD return. \\[1ex]
+    
+    return\_99 & 99th percentile of USD return. \\[1ex]
+
+    return\_99\_99 & 99.99th percentile of USD return. \\[1ex]
+
+    return\_local\_0\_1 & 0.1st percentile of local return. \\[1ex]
+
+    return\_local\_1 & 1st percentile of local return. \\[1ex]
+    
+    return\_local\_99 & 99th percentile of local return. \\[1ex]
+
+    return\_local\_99\_99 & 99.99th percentile of local return. \\[1ex]
+
+    return\_exc\_0\_1 & 0.1st percentile of excess return. \\[1ex]
+
+    return\_exc\_1 & 1st percentile of excess return. \\[1ex]
+    
+    return\_exc\_99 & 99th percentile of excess return. \\[1ex]
+
+    return\_exc\_99\_99 & 99.99th percentile of excess return. \\[1ex]
+
+\end{longtable}}
     
 \section{Identifier Variables}
 This section covers all of the variables that give firm/date level identifiers and information. If a variable starts with 'comp' or 'crsp', then the following variable name is drawn from the specified dataset. For example, 'crsp\_shrcd' is the 'shrcd' variable from CRSP.
