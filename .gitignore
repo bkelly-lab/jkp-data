@@ -28,7 +28,7 @@ env/
 # ==========================================
 *.parquet
 *.ddb
-!documentation/data/*.parquet
+!documentation/sas_to_python/data/*.parquet
 *.csv
 *.xlsx
 *.xls
