@@ -96,6 +96,17 @@ pytest-*.xml
 tests/fixtures/generated/
 .hypothesis/
 
+# ==========================================
+# LaTeX auxiliary files
+# ==========================================
+documentation/**/*.aux
+documentation/**/*.bbl
+documentation/**/*.blg
+documentation/**/*.fdb_latexmk
+documentation/**/*.fls
+documentation/**/*.synctex.gz
+documentation/**/*.toc
+
 # Temporary test databases
 aux_*.ddb
 *.ddb.wal
