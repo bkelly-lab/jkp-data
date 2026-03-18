@@ -28,7 +28,7 @@ env/
 # ==========================================
 *.parquet
 *.ddb
-!documentation/data/*.parquet
+!documentation/sas_to_python/data/*.parquet
 *.csv
 *.xlsx
 *.xls
@@ -95,6 +95,17 @@ pytest-*.xml
 *.pytest_cache
 tests/fixtures/generated/
 .hypothesis/
+
+# ==========================================
+# LaTeX auxiliary files
+# ==========================================
+documentation/**/*.aux
+documentation/**/*.bbl
+documentation/**/*.blg
+documentation/**/*.fdb_latexmk
+documentation/**/*.fls
+documentation/**/*.synctex.gz
+documentation/**/*.toc
 
 # Temporary test databases
 aux_*.ddb
