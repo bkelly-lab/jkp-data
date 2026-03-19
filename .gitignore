@@ -110,3 +110,8 @@ documentation/**/*.toc
 # Temporary test databases
 aux_*.ddb
 *.ddb.wal
+
+# ==========================================
+# Private
+# ==========================================
+private/
