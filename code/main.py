@@ -44,7 +44,7 @@ from aux_functions import (
 )
 from wrds_credentials import get_wrds_credentials
 
-end_date = pl.datetime(2024, 12, 31)
+end_date = pl.datetime(2025, 12, 31)
 creds = get_wrds_credentials()
 setup_folder_structure()
 download_raw_data_tables(username=creds.username, password=creds.password)
