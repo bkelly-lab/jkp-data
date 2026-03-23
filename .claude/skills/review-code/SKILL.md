@@ -1,3 +1,9 @@
+---
+name: review-code
+description: Review changed Python files against project conventions.
+disable-model-invocation: true
+---
+
 Review changed Python files against project conventions.
 
 Gather context, then delegate to the code-critic agent:

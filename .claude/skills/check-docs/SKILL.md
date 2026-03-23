@@ -1,3 +1,9 @@
+---
+name: check-docs
+description: Check whether code changes need documentation updates.
+disable-model-invocation: true
+---
+
 Check whether code changes need documentation updates.
 
 Gather context, then delegate to the doc-sync agent:
