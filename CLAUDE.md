@@ -132,3 +132,9 @@ Follow these steps when making code changes:
    - Changed code follows project conventions: run `/review-code`
 
 5. **Open a pull request** — Reference the issue in the PR description. The PR template will guide you through the required sections.
+
+6. **Request review from Copilot** — Use GitHub's Copilot reviewer on the PR.
+
+7. **Review Copilot suggestions with Claude Code** — Have Claude Code review Copilot's feedback and implement suggestions where appropriate.
+
+8. **Request human review** — Assign a human reviewer: prefer `theisij` for fundamental codebase changes; prefer `capellini` for infrastructure-related changes.
