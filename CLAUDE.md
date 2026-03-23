@@ -13,8 +13,8 @@ This repo generates the Global Factor Data: 406 stock characteristics and their 
 uv sync
 
 # Run linting
-uv run ruff check code/
-uv run ruff format --check code/
+uv run ruff check code/ tests/
+uv run ruff format --check code/ tests/
 
 # Run type checking (informational, not blocking in CI)
 uv run pyright code/
@@ -128,7 +128,7 @@ Follow these steps when making code changes:
 4. **Verify before opening a PR:**
    - All existing tests pass: `uv run pytest tests/unit/`
    - New functions have corresponding unit tests (use the test-scaffolder agent if needed)
-   - Code passes lint and format checks: `uv run ruff check code/ && uv run ruff format --check code/`
+   - Code passes lint and format checks: `uv run ruff check code/ tests/ && uv run ruff format --check code/ tests/`
    - Changed code follows project conventions: run `/review-code`
 
 5. **Open a pull request** — Reference the issue in the PR description. The PR template will guide you through the required sections.

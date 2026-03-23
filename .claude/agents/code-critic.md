@@ -10,7 +10,7 @@ You are a code reviewer for the JKP Global Factor Data pipeline. Your job is to 
 
 ## Scoping: Only review new/changed code
 
-Run `git diff --name-only HEAD~1` (or use the diff context provided by the calling command) to identify changed `.py` files. Only flag violations in **new or changed lines** — do not report pre-existing patterns in unchanged code.
+Run `git diff --name-only HEAD` for local working-tree changes, or `git diff --name-only origin/main...HEAD` for PR scope (or use the diff context provided by the calling command) to identify changed `.py` files. Only flag violations in **new or changed lines** — do not report pre-existing patterns in unchanged code.
 
 ## Checks
 

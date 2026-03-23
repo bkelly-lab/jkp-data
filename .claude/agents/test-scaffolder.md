@@ -30,7 +30,7 @@ Follow these patterns exactly:
 import polars as pl
 import pytest
 
-from code.aux_functions import function_name
+from aux_functions import function_name
 
 
 class TestFunctionName:
@@ -61,8 +61,8 @@ class TestFunctionName:
 - **DataFrames:** `pl.DataFrame({"col": [values]})` — small, focused test data
 - **Numerical assertions:** Use `ToleranceSpec.STANDARD` by default; `TIGHT` for exact, `LOOSE`/`VERY_LOOSE` for inherently imprecise calculations
 - **Null handling tests are mandatory** — verify behavior with partial and complete null inputs
-- **Import from:** `from code.aux_functions import <function>`
-- **Markers:** Add `@pytest.mark.unit` if the existing tests in the file use markers
+- **Import from:** `from aux_functions import <function>` (tests use `sys.path` to resolve `code/`)
+- **Markers:** Do not add explicit `@pytest.mark.unit`; tests under `tests/unit/` are auto-marked via `tests/conftest.py`.
 
 ## What to generate
 
@@ -75,6 +75,6 @@ For each target function, produce **3–6 test methods** covering:
 
 ## Output
 
-Write the test file to `tests/unit/test_<function_name>.py`. If a test file already exists for the module, append the new test class to the existing file instead of creating a new one.
+Prefer adding new tests to an existing topic-based test module in `tests/unit/` (for example, `test_expressions.py`, `test_accounting_formulas.py`) that matches the function's domain, and append the new test class there. Only create a new test file in `tests/unit/` when introducing a genuinely new domain/topic that does not fit any existing file; in that case, name it `test_<topic>.py` and place the new test class in that file.
 
 After writing, run `uv run pytest <test_file> -v --no-header` to verify the tests pass. Report the results.
