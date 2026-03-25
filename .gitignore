@@ -72,6 +72,9 @@ desktop.ini
 # Local creds helpers
 .jkp_factors_user
 
+# Claude Code user-specific settings
+.claude/settings.local.json
+
 # Keyring files (plaintext/alt backends)
 .local/
 config/python_keyring/
