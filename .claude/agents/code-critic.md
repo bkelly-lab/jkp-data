@@ -26,7 +26,7 @@ Apply these checks in order of severity:
 ### Important (C5–C7)
 
 - **C5 — Namespaced `pl.col()`:** New code must use `pl.col(...)`, not bare `col(...)`. Flag bare `col()` in new lines.
-- **C6 — Lazy reading:** New code should use `pl.scan_parquet()`, not `pl.read_parquet()`, unless there's a clear justification (e.g., small reference data, immediate `.collect()` needed).
+- **C6 — Lazy reading:** New code should use `pl.scan_parquet()`, not `pl.read_parquet()`, unless there's a clear justification (e.g., small reference data under 1 MB, immediate `.collect()` needed).
 - **C7 — Type annotations:** New function definitions must have type annotations on all parameters and return type.
 
 ### Advisory (C8–C10)

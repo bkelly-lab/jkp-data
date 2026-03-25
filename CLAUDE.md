@@ -65,9 +65,8 @@ Static reference data (`data/cluster_labels.csv`, `data/country_classification.x
 
 - **Polars, not Pandas.** The codebase uses Polars with lazy evaluation throughout. Always use `import polars as pl` and Polars APIs.
 - **`pl.col()`, not bare `col()`.** Use `pl.col(...)` in new code. Existing code uses `from polars import col` with bare `col(...)`, but the standard Polars convention is the namespaced form.
-- **Line length:** 100 characters (ruff configured)
-- **Ruff rules:** E, W, F, I (isort), B (bugbear), C4, UP, SIM — with E501, B008, SIM102, SIM108 ignored
-- **Python target:** 3.11+
+- **Ruff:** Used for linting and formatting — abide by all rules specified in `pyproject.toml`
+- **Python target:** See `requires-python` and `target-version` in `pyproject.toml`
 
 ## Development Guidelines
 
@@ -116,11 +115,15 @@ Output:
 
 Follow these steps when making code changes:
 
-1. **Find or open an issue** — Search existing GitHub issues (`gh issue list`) for a matching issue. If none exists, create one (`gh issue create`) describing the problem or feature before starting work.
+1. **Find or open an issue** — Search existing GitHub issues (`gh issue list`) for a matching issue. If none exists, create one using the predefined issue templates in `.github/ISSUE_TEMPLATE/` (`gh issue create`) describing the problem or feature before starting work.
 
 2. **Create a branch** — Branch from `main` with a descriptive name:
    ```bash
    git checkout -b <topic>  # e.g. fix-beta-calculation, add-momentum-char
+   ```
+   For parallel work, create a git worktree instead:
+   ```bash
+   git worktree add ../jkp-data-<topic> -b <topic>
    ```
 
 3. **Implement the change** — Follow the conventions in this file (Code Conventions, Development Guidelines).
