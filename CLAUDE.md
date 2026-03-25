@@ -8,6 +8,8 @@ This repo generates the Global Factor Data: 406 stock characteristics and their 
 
 ## Build & Run Commands
 
+For complete setup and contribution instructions, see [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ```bash
 # Install dependencies
 uv sync
@@ -96,7 +98,7 @@ Output:
 - Add type annotations to new functions (parameters and return types), even though older code in `aux_functions.py` lacks them
 
 **Testing:**
-- New functions should have corresponding unit tests in `tests/unit/`; follow existing tests as examples for patterns and conventions
+- New functions should have corresponding unit tests in `tests/unit/`; see [tests/README.md](tests/README.md) for detailed patterns, conventions, fixture usage, and numerical tolerance guidance
 
 **DRY / reuse:**
 - Check `aux_functions.py` for existing helpers before writing new ones (especially `safe_div`, `fl_none`, `bo_false`)
@@ -104,16 +106,18 @@ Output:
 
 ## Testing
 
+See [tests/README.md](tests/README.md) for full guidance on writing tests, numerical tolerances, markers, common patterns, and CI integration.
+
+Key conventions to know:
 - Tests live in `tests/unit/` with shared fixtures in `tests/conftest.py`
-- Markers: `unit`, `integration`, `methodology`, `regression`, `expensive`, `wrds`
-- `ToleranceSpec` class provides named tolerance levels (TIGHT, STANDARD, LOOSE, VERY_LOOSE) for numerical comparisons
-- `assert_series_equal()` fixture handles NaN-aware Polars series comparison
-- `make_dataframe` factory fixture creates test DataFrames; `temp_data_dir` provides a temp directory with standard pipeline subdirectory structure
-- CI runs lint first, then unit tests on Python 3.11 and 3.12
+- Available test markers: `unit`, `integration`, `methodology`, `regression`, `expensive`, `wrds`
+- Key fixtures: `tolerance` (pre-calibrated `ToleranceSpec` levels), `assert_series_equal` (NaN-aware series comparison), `make_dataframe` (test DataFrame factory), `temp_data_dir` (temp directory with pipeline subdirectories)
 
 ## Development Workflow
 
-Follow these steps when making code changes:
+For standard contribution steps (branching, running tests, linting, and opening a PR), see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+Additional Claude Code-specific steps when making changes:
 
 1. **Find or open an issue** — Search existing GitHub issues (`gh issue list`) for a matching issue. If none exists, create one using the predefined issue templates in `.github/ISSUE_TEMPLATE/` (`gh issue create`) describing the problem or feature before starting work.
 
