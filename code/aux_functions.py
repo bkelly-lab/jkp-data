@@ -653,29 +653,42 @@ def build_projection(cols):
         return "*"
 
 
-def download_wrds_table(conninfo, duckdb_conn, table_name, filename):
+def download_wrds_table(
+    conninfo: str,
+    duckdb_conn,
+    table_name: str,
+    filename: str,
+    date_column: str | None = None,
+    end_date: date | None = None,
+) -> None:
     lib, table = table_name.split(".")
     cols = get_columns(duckdb_conn, conninfo, lib, table)
     projection = build_projection(cols)
+
+    where_clause = ""
+    if date_column and end_date:
+        where_clause = f"WHERE {date_column} <= '{end_date}'"
 
     duckdb_conn.execute(f"""
         COPY (
           SELECT {projection}
           FROM postgres_scan('{conninfo}', '{lib}', '{table}')
+          {where_clause}
         )
         TO '{filename}' (FORMAT PARQUET);
     """)
 
 
 @measure_time
-def download_raw_data_tables(username, password):
+def download_raw_data_tables(username: str, password: str, end_date: date | None = None) -> None:
     """
     Description:
         Bulk-download core WRDS tables to raw_tables and a few curated variants with column subsets.
 
     Steps:
         1) Connect to WRDS; iterate through a fixed list of library.tables.
-        2) For each table: download to raw_tables/lib_table.parquet; periodically reset connection.
+        2) For each table: download to raw_tables/lib_table.parquet, applying date filtering
+           when end_date is provided and the table has a known date column.
         3) Additionally fetch comp.secd and comp.g_secd with curated columns.
         4) Disconnect.
 
@@ -711,6 +724,24 @@ def download_raw_data_tables(username, password):
         "comp.g_secd",
     ]
 
+    # Tables with a known date column are filtered to end_date during download.
+    # Reference/metadata tables (not listed here) are downloaded in full.
+    date_columns: dict[str, str] = {
+        "comp.exrt_dly": "datadate",
+        "comp.funda": "datadate",
+        "comp.fundq": "datadate",
+        "comp.g_funda": "datadate",
+        "comp.g_fundq": "datadate",
+        "comp.secm": "datadate",
+        "comp.secd": "datadate",
+        "comp.g_secd": "datadate",
+        "crsp.msf_v2": "mthcaldt",
+        "crsp.dsf_v2": "dlycaldt",
+        "crsp.stkdelists": "delistingdt",
+        "crsp.indmthseriesdata_ind": "mthcaldt",
+        "ff.factors_monthly": "date",
+    }
+
     wrds_session_data = gen_wrds_connection_info(username, password)
     con = duckdb.connect(":memory:")
     con.execute("INSTALL postgres; LOAD postgres;")
@@ -722,6 +753,8 @@ def download_raw_data_tables(username, password):
             con,
             table,
             "../raw/raw_tables/" + table.replace(".", "_") + ".parquet",
+            date_column=date_columns.get(table),
+            end_date=end_date,
         )
 
     con.close()
@@ -8123,14 +8156,14 @@ def quality_minus_junk(data_path, min_stks):
 
 
 @measure_time
-def save_main_data(end_date):
+def save_main_data():
     """
     Description:
         Filter world_data to main securities and export country-level files.
 
     Steps:
         1) Load world_data.parquet and compute lagged market equity.
-        2) Filter to valid securities up to end_date.
+        2) Filter to valid main securities.
         3) Save filtered dataset and split into country parquet files.
 
     Output:
@@ -8154,7 +8187,6 @@ def save_main_data(end_date):
             & (col("common") == 1)
             & (col("obs_main") == 1)
             & (col("exch_main") == 1)
-            & (col("eom") <= end_date)
         )
     )
     data.select(pl.all().shrink_dtype()).collect(streaming=True).write_parquet(
