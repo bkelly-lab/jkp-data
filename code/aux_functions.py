@@ -726,19 +726,15 @@ def download_raw_data_tables(username: str, password: str, end_date: date | None
     # Tables with a known date column are filtered to end_date during download.
     # Reference/metadata tables (not listed here) are downloaded in full.
     date_columns: dict[str, str] = {
-        "comp.exrt_dly": "datadate",
+        "crsp.msf_v2": "mthcaldt",
+        "crsp.dsf_v2": "dlycaldt",
+        "comp.secd": "datadate",
+        "comp.g_secd": "datadate",
+        "comp.secm": "datadate",
         "comp.funda": "datadate",
         "comp.fundq": "datadate",
         "comp.g_funda": "datadate",
         "comp.g_fundq": "datadate",
-        "comp.secm": "datadate",
-        "comp.secd": "datadate",
-        "comp.g_secd": "datadate",
-        "crsp.msf_v2": "mthcaldt",
-        "crsp.dsf_v2": "dlycaldt",
-        "crsp.stkdelists": "delistingdt",
-        "crsp.indmthseriesdata_ind": "mthcaldt",
-        "ff.factors_monthly": "date",
     }
 
     wrds_session_data = gen_wrds_connection_info(username, password)
