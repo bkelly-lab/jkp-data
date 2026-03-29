@@ -3187,26 +3187,22 @@ def return_cutoffs(freq, crsp_only):
     Steps:
         1) Select group vars and output path from freq; scan 'world_{freq}sf.parquet'.
         2) Optional CRSP filter; require common/main/primary, exclude ZWE, non-null ret_exc.
-        3) Add year/month; group and aggregate counts + percentiles for ret, ret_local, ret_exc.
+        3) Group by eom and aggregate counts + percentiles for ret, ret_local, ret_exc.
         4) Sort, collect, save.
 
     Output:
         Writes 'return_cutoffs.parquet' (monthly) or 'return_cutoffs_daily.parquet' (daily).
     """
-    group_vars = "eom" if freq == "m" else "year, month"
+    group_vars = "eom"
     res_path = "return_cutoffs.parquet" if freq == "m" else "return_cutoffs_daily.parquet"
-    data = (
-        pl.scan_parquet(f"world_{freq}sf.parquet")
-        .filter(
-            (col("common") == 1)
-            & (col("obs_main") == 1)
-            & (col("exch_main") == 1)
-            & (col("primary_sec") == 1)
-            & (col("excntry") != "ZWE")
-            & (col("ret_exc").is_not_null())
-            & ((col("source_crsp") == 1) if crsp_only == 1 else pl.lit(True))
-        )
-        .with_columns(year=col("date").dt.year(), month=col("date").dt.month())
+    data = pl.scan_parquet(f"world_{freq}sf.parquet").filter(
+        (col("common") == 1)
+        & (col("obs_main") == 1)
+        & (col("exch_main") == 1)
+        & (col("primary_sec") == 1)
+        & (col("excntry") != "ZWE")
+        & (col("ret_exc").is_not_null())
+        & ((col("source_crsp") == 1) if crsp_only == 1 else pl.lit(True))
     )
     data = data.sql(f"""
             SELECT
@@ -3253,7 +3249,7 @@ def load_mkt_returns_params(freq):
     dt_col = "date" if freq == "d" else "eom"
     max_date_lag = 14 if freq == "d" else 1
     path_aux = "_daily" if freq == "d" else ""
-    group_vars = ["year", "month"] if freq == "d" else ["eom"]
+    group_vars = ["eom"]
     comm_stocks_cols = [
         "source_crsp",
         "id",
@@ -3281,13 +3277,12 @@ def add_cutoffs_and_winsorize(df, wins_data_path, group_vars, dt_col):
 
     Steps:
         1) Read winsor cutoff parquet; select group vars + needed thresholds.
-        2) Add year/month from dt_col; left-join cutoffs on group vars.
+        2) Left-join cutoffs on group vars (eom).
         3) Winsorize high (99.9) then low (0.1) for each return series.
 
     Output:
         Polars LazyFrame/DataFrame with winsorized returns and cutoff columns joined.
     """
-    df = df.with_columns(year=col(dt_col).dt.year(), month=col(dt_col).dt.month())
     wins_data = pl.scan_parquet(wins_data_path)
 
     on_clause = " AND ".join([f"a.{k} = b.{k}" for k in group_vars])
@@ -3403,7 +3398,7 @@ def drop_non_trading_days(df, n_col, dt_col, over_vars, thresh_fraction):
         Remove thin-trading days by country-month (or given window) based on stock coverage.
 
     Steps:
-        1) Add year/month from dt_col; compute max_stocks over over_vars.
+        1) Compute max_stocks over over_vars.
         2) Keep rows where n_col / max_stocks ≥ thresh_fraction.
         3) Drop helper columns.
 
@@ -3411,10 +3406,9 @@ def drop_non_trading_days(df, n_col, dt_col, over_vars, thresh_fraction):
         Frame filtered to sufficiently traded dates.
     """
     df = (
-        df.with_columns(year=col(dt_col).dt.year(), month=col(dt_col).dt.month())
-        .with_columns(max_stocks=pl.max(n_col).over(over_vars))
+        df.with_columns(max_stocks=pl.max(n_col).over(over_vars))
         .filter((col(n_col) / col("max_stocks")) >= thresh_fraction)
-        .drop(["year", "month", "max_stocks"])
+        .drop(["max_stocks"])
     )
     return df
 
@@ -3454,7 +3448,7 @@ def market_returns(data_path, freq, wins_comp, wins_data_path):
     __common_stocks = apply_stock_filter_and_compute_indexes(__common_stocks, dt_col, max_date_lag)
     if freq == "d":
         __common_stocks = drop_non_trading_days(
-            __common_stocks, "stocks", dt_col, ["excntry", "year", "month"], 0.25
+            __common_stocks, "stocks", dt_col, ["excntry", "eom"], 0.25
         )
     __common_stocks.sort(["excntry", dt_col]).collect().write_parquet(
         f"market_returns{path_aux}.parquet"
