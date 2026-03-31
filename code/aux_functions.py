@@ -1,7 +1,9 @@
 import datetime
 import os
+import re
 import time
 from datetime import date
+from functools import reduce
 from math import exp, sqrt
 
 import duckdb
@@ -2410,6 +2412,71 @@ def comp_industry():
     con.disconnect()
 
 
+def _parse_siccodes_file(filename: str, label: str) -> pl.DataFrame:
+    """Parse a single Fama-French Siccodes text file into a SIC→category DataFrame.
+
+    Each file contains numbered industry categories with SIC code ranges.
+    Returns a DataFrame with columns ``sic`` (Int64) and *label* (Int32).
+    """
+    header_re = re.compile(r"^\s*(\d+)\s+\S+.*$")
+    range_re = re.compile(r"^\s*(\d{4})-(\d{4})(?:\b.*)?$")
+
+    result: dict[int, list[int]] = {}
+    current_category: int | None = None
+
+    with open(filename, encoding="utf-8") as f:
+        for raw_line in f:
+            line = raw_line.rstrip()
+
+            header_match = header_re.match(line)
+            if header_match:
+                current_category = int(header_match.group(1))
+                result[current_category] = []
+                continue
+
+            range_match = range_re.match(line)
+            if range_match and current_category is not None:
+                start = int(range_match.group(1))
+                end = int(range_match.group(2))
+                result[current_category].extend(range(start, end + 1))
+
+    rows = [{label: ff, "sic": sic_list} for ff, sic_list in result.items()]
+
+    return (
+        pl.DataFrame(
+            rows,
+            schema={"sic": pl.List(pl.Int64), label: pl.Int32},
+            orient="row",
+        )
+        .sort(label)
+        .explode("sic")
+        .drop_nulls()
+    )
+
+
+def _build_sic_ff_mapping() -> pl.LazyFrame:
+    """Build the full SIC→Fama-French mapping from the source text files.
+
+    Parses all eight ``data/raw/Siccodes{N}.txt`` files and full-joins them
+    on ``sic`` to produce a single LazyFrame with columns ``sic``, ``ff5``,
+    ``ff10``, ``ff12``, ``ff17``, ``ff30``, ``ff38``, ``ff48``, ``ff49``.
+    """
+    raw_dir = os.path.join(os.path.dirname(__file__), "..", "data", "raw")
+    dfs = [
+        _parse_siccodes_file(os.path.join(raw_dir, f"Siccodes{n}.txt"), label=f"ff{n}")
+        for n in [5, 10, 12, 17, 30, 38, 48, 49]
+    ]
+
+    return (
+        reduce(
+            lambda left, right: left.join(right, on="sic", how="full", coalesce=True),
+            dfs,
+        )
+        .sort("sic")
+        .lazy()
+    )
+
+
 @measure_time
 def ff_ind_class(data_path):
     """
@@ -2418,9 +2485,9 @@ def ff_ind_class(data_path):
         FF38, FF48, FF49) based on SIC codes.
 
     Steps:
-        1) Load the pre-built SIC→FF mapping parquet (data/sic_ff_mapping.parquet).
-           Only SIC codes explicitly listed in a Fama-French classification have
-           non-null values; all others are NULL.
+        1) Parse the eight Fama-French Siccodes text files in data/raw/ to build
+           a SIC→FF mapping.  Only SIC codes explicitly listed in a classification
+           receive non-null values; all others are NULL.
         2) Left-join the input data on 'sic' to attach all eight classification columns.
         3) Write __msf_world3.parquet.
 
@@ -2433,7 +2500,7 @@ def ff_ind_class(data_path):
         receive a value. NULL SICs, omitted SICs, and out-of-range SICs all
         map to NULL.
     """
-    mapping = pl.scan_parquet("data/sic_ff_mapping.parquet")
+    mapping = _build_sic_ff_mapping()
     data = pl.scan_parquet(data_path)
     data.join(mapping, on="sic", how="left").collect().write_parquet("__msf_world3.parquet")
 

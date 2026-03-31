@@ -1,0 +1,112 @@
+ 1 Agric  Agriculture, forestry, and fishing
+          0100-0999
+
+ 2 Mines  Mining
+          1000-1299
+
+ 3 Oil    Oil and Gas Extraction
+          1300-1399
+
+ 4 Stone  Nonmetallic Minerals Except Fuels
+          1400-1499
+
+ 5 Cnstr  Construction
+          1500-1799
+
+ 6 Food   Food and Kindred Products
+          2000-2099
+
+ 7 Smoke  Tobacco Products
+          2100-2199
+
+ 8 Txtls  Textile Mill Products
+          2200-2299
+
+ 9 Apprl  Apparel and other Textile Products
+          2300-2399
+
+10 Wood   Lumber and Wood Products
+          2400-2499
+
+11 Chair  Furniture and Fixtures
+          2500-2599
+
+12 Paper  Paper and Allied Products
+          2600-2661
+
+13 Print  Printing and Publishing
+          2700-2799
+
+14 Chems  Chemicals and Allied Products
+          2800-2899
+
+15 Ptrlm  Petroleum and Coal Products
+          2900-2999
+
+16 Rubbr  Rubber and Miscellaneous Plastics Products
+          3000-3099
+
+17 Lethr  Leather and Leather Products
+          3100-3199
+
+18 Glass  Stone, Clay and Glass Products
+          3200-3299
+
+19 Metal  Primary Metal Industries
+          3300-3399
+
+20 MtlPr  Fabricated Metal Products
+          3400-3499
+
+21 Machn  Machinery, Except Electrical
+          3500-3599
+
+22 Elctr  Electrical and Electronic Equipment
+          3600-3699
+
+23 Cars   Transportation Equipment
+          3700-3799
+
+24 Instr  Instruments and Related Products
+          3800-3879
+
+25 Manuf  Miscellaneous Manufacturing Industries
+          3900-3999
+
+26 Trans  Transportation
+          4000-4799
+
+27 Phone  Telephone and Telegraph Communication
+          4800-4829
+
+28 TV     Radio and Television Broadcasting
+          4830-4899
+
+29 Utils  Electric, Gas, and Water Supply
+          4900-4949
+
+30 Garbg  Sanitary Services
+          4950-4959
+
+31 Steam  Steam Supply
+          4960-4969
+
+32 Water  Irrigation Systems
+          4970-4979
+
+33 Whlsl  Wholesale
+          5000-5199
+
+34 Rtail  Retail Stores
+          5200-5999
+
+35 Money  Finance, Insurance, and Real Estate
+          6000-6999
+
+36 Srvc   Services
+          7000-8999
+
+37 Govt   Public Administration
+          9000-9999
+
+38 Other  Almost Nothing
