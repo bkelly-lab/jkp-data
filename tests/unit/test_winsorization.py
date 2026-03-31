@@ -233,14 +233,22 @@ class TestWinsorizeEquivalence:
 
     @pytest.fixture
     def daily_returns(self, seed):
-        """Generate daily return data spanning 3 months with known distributions."""
+        """Generate daily return data spanning a year boundary and leap/non-leap Februaries.
+
+        Covers Dec 2019 – Mar 2020 (leap year, Feb has 29 days) and
+        Dec 2020 – Mar 2021 (non-leap year, Feb has 28 days).
+        """
         np.random.seed(seed)
-        dates = pl.date_range(date(2020, 1, 2), date(2020, 3, 31), "1d", eager=True)
+        dates = pl.concat(
+            [
+                pl.date_range(date(2019, 12, 2), date(2020, 3, 31), "1d", eager=True),
+                pl.date_range(date(2020, 12, 1), date(2021, 3, 31), "1d", eager=True),
+            ]
+        )
         n = len(dates)
         return pl.DataFrame(
             {
                 "date": dates,
-                "eom": [d.replace(day=28) for d in dates.to_list()],
                 "ret_exc": np.random.randn(n) * 0.05,
             }
         ).with_columns(
@@ -251,23 +259,25 @@ class TestWinsorizeEquivalence:
 
     def test_quantile_bounds_identical(self, daily_returns, tolerance):
         """QUANTILE_DISC grouped by eom must equal grouping by year+month."""
-        by_eom = (
-            daily_returns.group_by("eom")
-            .agg(
-                low_eom=pl.col("ret_exc").quantile(0.001, interpolation="lower"),
-                high_eom=pl.col("ret_exc").quantile(0.999, interpolation="higher"),
-            )
-            .sort("eom")
-        )
+        by_eom = daily_returns.sql("""
+            SELECT
+                eom,
+                QUANTILE_DISC(ret_exc, 0.001) AS low_eom,
+                QUANTILE_DISC(ret_exc, 0.999) AS high_eom
+            FROM self
+            GROUP BY eom
+            ORDER BY eom
+        """)
 
-        by_ym = (
-            daily_returns.group_by(["year", "month"])
-            .agg(
-                low_ym=pl.col("ret_exc").quantile(0.001, interpolation="lower"),
-                high_ym=pl.col("ret_exc").quantile(0.999, interpolation="higher"),
-            )
-            .sort(["year", "month"])
-        )
+        by_ym = daily_returns.sql("""
+            SELECT
+                year, month,
+                QUANTILE_DISC(ret_exc, 0.001) AS low_ym,
+                QUANTILE_DISC(ret_exc, 0.999) AS high_ym
+            FROM self
+            GROUP BY year, month
+            ORDER BY year, month
+        """)
 
         assert len(by_eom) == len(by_ym), (
             f"Group counts differ: {len(by_eom)} (eom) vs {len(by_ym)} (year/month)"
