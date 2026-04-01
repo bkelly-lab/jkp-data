@@ -24,7 +24,12 @@ export MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 export NUMEXPR_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 
 # Create char data
-uv run python code/main.py
+# Set PERSISTENT_WRDS_CONNECTION=1 to use a single WRDS connection (reduces MFA on NAT-rotated networks)
+if [ "${PERSISTENT_WRDS_CONNECTION:-0}" = "1" ]; then
+    uv run python code/main.py --persistent-connection
+else
+    uv run python code/main.py
+fi
 
 # Create portfolio data
 uv run python code/portfolio.py
