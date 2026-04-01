@@ -86,7 +86,7 @@ class TestBuildSicFfMapping:
 
     @pytest.fixture(autouse=True)
     def _chdir_to_repo_root(self, monkeypatch: pytest.MonkeyPatch):
-        """Ensure CWD is the repo root so data/raw/ paths resolve."""
+        """Ensure tests run with CWD set to the repo root for any code using relative paths."""
         repo_root = Path(__file__).parent.parent.parent
         monkeypatch.chdir(repo_root)
 
