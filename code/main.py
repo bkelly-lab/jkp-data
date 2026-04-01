@@ -1,3 +1,5 @@
+import argparse
+
 import polars as pl
 from aux_functions import (
     acc_chars_list,
@@ -44,10 +46,22 @@ from aux_functions import (
 )
 from wrds_credentials import get_wrds_credentials
 
+parser = argparse.ArgumentParser(description="JKP Factor Data Pipeline")
+parser.add_argument(
+    "--persistent-connection",
+    action="store_true",
+    help="Use a single persistent WRDS connection (reduces MFA prompts on NAT-rotated networks like Yale Bouchet)",
+)
+args = parser.parse_args()
+
 end_date = pl.datetime(2025, 12, 31)
 creds = get_wrds_credentials()
 setup_folder_structure()
-download_raw_data_tables(username=creds.username, password=creds.password)
+download_raw_data_tables(
+    username=creds.username,
+    password=creds.password,
+    persistent_connection=args.persistent_connection,
+)
 aug_msf_v2()
 build_mcti()
 gen_raw_data_dfs()

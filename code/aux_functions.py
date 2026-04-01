@@ -635,6 +635,31 @@ def get_columns(conn, conninfo, lib, table):
     return [c[0] for c in cols]
 
 
+def get_columns_attached(conn, db_alias, lib, table):
+    """Get column names from an attached PostgreSQL database."""
+    cols = conn.execute(f"""
+        SELECT *
+        FROM {db_alias}.{lib}.{table}
+        LIMIT 0
+    """).description
+    return [c[0] for c in cols]
+
+
+def download_wrds_table_attached(duckdb_conn, db_alias, table_name, filename):
+    """Download a WRDS table using an attached persistent connection."""
+    lib, table = table_name.split(".")
+    cols = get_columns_attached(duckdb_conn, db_alias, lib, table)
+    projection = build_projection(cols)
+
+    duckdb_conn.execute(f"""
+        COPY (
+          SELECT {projection}
+          FROM {db_alias}.{lib}.{table}
+        )
+        TO '{filename}' (FORMAT PARQUET);
+    """)
+
+
 def build_projection(cols):
     casts = []
     if "permno" in cols:
@@ -667,7 +692,7 @@ def download_wrds_table(conninfo, duckdb_conn, table_name, filename):
 
 
 @measure_time
-def download_raw_data_tables(username, password):
+def download_raw_data_tables(username, password, persistent_connection=False):
     """
     Description:
         Bulk-download core WRDS tables to raw_tables and a few curated variants with column subsets.
@@ -677,6 +702,13 @@ def download_raw_data_tables(username, password):
         2) For each table: download to raw_tables/lib_table.parquet; periodically reset connection.
         3) Additionally fetch comp.secd and comp.g_secd with curated columns.
         4) Disconnect.
+
+    Args:
+        username: WRDS username
+        password: WRDS password
+        persistent_connection: If True, use a single persistent connection via ATTACH.
+            This reduces MFA prompts on systems with NAT IP rotation (e.g., Yale Bouchet).
+            If False (default), use postgres_scan() which creates a new connection per query.
 
     Output:
         Parquet files under raw_tables/ (Compustat, CRSP, FF, etc.).
@@ -714,14 +746,26 @@ def download_raw_data_tables(username, password):
     con = duckdb.connect(":memory:")
     con.execute("INSTALL postgres; LOAD postgres;")
 
-    for table in table_names:
-        # print(f"Downloading WRDS table: {table}", flush=True)
-        download_wrds_table(
-            wrds_session_data,
-            con,
-            table,
-            "../raw/raw_tables/" + table.replace(".", "_") + ".parquet",
-        )
+    if persistent_connection:
+        # Use ATTACH for a single persistent connection (reduces MFA on NAT-rotated networks)
+        con.execute(f"ATTACH '{wrds_session_data}' AS wrds (TYPE postgres, READ_ONLY)")
+        for table in table_names:
+            download_wrds_table_attached(
+                con,
+                "wrds",
+                table,
+                "../raw/raw_tables/" + table.replace(".", "_") + ".parquet",
+            )
+        con.execute("DETACH wrds")
+    else:
+        # Use postgres_scan() which creates a new connection per query (default)
+        for table in table_names:
+            download_wrds_table(
+                wrds_session_data,
+                con,
+                table,
+                "../raw/raw_tables/" + table.replace(".", "_") + ".parquet",
+            )
 
     con.close()
 
