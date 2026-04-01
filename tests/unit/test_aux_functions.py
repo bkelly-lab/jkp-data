@@ -12,7 +12,6 @@ from pathlib import Path
 
 import polars as pl
 import pytest
-
 from aux_functions import gen_crsp_sf
 
 
