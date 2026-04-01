@@ -115,7 +115,9 @@ def test_gen_crsp_sf_exposes_ticker_after_senames_join(
         f"Missing expected columns from output: {df.columns}"
     )
 
-    ticker_by_date = {row["date"]: row["ticker"] for row in df.select(["date", "ticker"]).to_dicts()}
+    ticker_by_date = {
+        row["date"]: row["ticker"] for row in df.select(["date", "ticker"]).to_dicts()
+    }
     assert ticker_by_date[matched_date] == "TEST", (
         f"Expected ticker TEST on {matched_date}, got {ticker_by_date[matched_date]!r}"
     )
