@@ -86,7 +86,8 @@ class TestDownloadRawDataTablesBranching:
         download_raw_data_tables("user", "pass", persistent_connection=False)
 
         executed_sql = [
-            str(c[0][0]) for c in mock_conn.execute.call_args_list
+            str(c[0][0])
+            for c in mock_conn.execute.call_args_list
             if c[0] and isinstance(c[0][0], str)
         ]
         sql_joined = " ".join(executed_sql)
@@ -103,7 +104,8 @@ class TestDownloadRawDataTablesBranching:
         download_raw_data_tables("user", "pass", persistent_connection=True)
 
         executed_sql = [
-            str(c[0][0]) for c in mock_conn.execute.call_args_list
+            str(c[0][0])
+            for c in mock_conn.execute.call_args_list
             if c[0] and isinstance(c[0][0], str)
         ]
         sql_joined = " ".join(executed_sql)
@@ -121,7 +123,8 @@ class TestDownloadRawDataTablesBranching:
         download_raw_data_tables("user", "pass", persistent_connection=True)
 
         executed_sql = [
-            str(c[0][0]) for c in mock_conn.execute.call_args_list
+            str(c[0][0])
+            for c in mock_conn.execute.call_args_list
             if c[0] and isinstance(c[0][0], str)
         ]
 
@@ -193,8 +196,7 @@ class TestDownloadWrdsTableAttached:
         download_wrds_table_attached(mock_conn, "wrds", "crsp.msf", "/tmp/test.parquet")
 
         copy_calls = [
-            c for c in mock_conn.execute.call_args_list
-            if c[0] and "COPY" in str(c[0][0])
+            c for c in mock_conn.execute.call_args_list if c[0] and "COPY" in str(c[0][0])
         ]
 
         assert len(copy_calls) == 1, "Should have exactly one COPY command"
