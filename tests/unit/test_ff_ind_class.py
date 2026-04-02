@@ -135,13 +135,7 @@ class TestFFIndClass:
 
     @pytest.fixture(autouse=True)
     def _setup_workdir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-        """Set up working directory with Siccodes files symlinked from the repo."""
-        repo_root = Path(__file__).parent.parent.parent
-        # Create data/raw/ in the temp directory and symlink the real Siccodes files
-        raw_dir = tmp_path / "data" / "raw"
-        raw_dir.mkdir(parents=True)
-        for f in (repo_root / "data" / "raw").glob("Siccodes*.txt"):
-            (raw_dir / f.name).symlink_to(f)
+        """Set working directory to temp path for parquet output."""
         monkeypatch.chdir(tmp_path)
         self._tmp = tmp_path
 

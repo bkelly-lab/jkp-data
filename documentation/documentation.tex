@@ -716,7 +716,7 @@ This section covers all of the variables that give firm/date level identifiers a
 }
 
 \section{Industry Identification}
-    This section describes the industry identifiers. First we contruct separate identifiers for CRSP and Compustat. Based on these datasets, we create one SIC, NAICS and GICS code for each firm based on Compustat data if available and otherwise CRSP. GVKEY is the company identifier for COMPUSTAT. PERMNO is the security identifier for CRSP. While we would prefer to use PERMCO, which is company level, different firms with different industry identifications can be listed under the same PERMCO. CRSP identifiers are available on a daily basis. For Compustat, we extract SIC and NAICS codes from annual accounting reports. Historical GICS codes are only available in Compustat. The Fama-French industry identifier is mapped from SIC codes using documentation provided by Ken French. We allow for using either 38 or 49 industry portfolio definitions, as defined  \href{https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/Data_Library/det_38_ind_port.html}{here} and \href{https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/Data_Library/det_49_ind_port.html}{here}, respectively. By default, we use the 49 portfolio definition, but that can be adjusted in 'main.sas'.
+    This section describes the industry identifiers. First we contruct separate identifiers for CRSP and Compustat. Based on these datasets, we create one SIC, NAICS and GICS code for each firm based on Compustat data if available and otherwise CRSP. GVKEY is the company identifier for COMPUSTAT. PERMNO is the security identifier for CRSP. While we would prefer to use PERMCO, which is company level, different firms with different industry identifications can be listed under the same PERMCO. CRSP identifiers are available on a daily basis. For Compustat, we extract SIC and NAICS codes from annual accounting reports. Historical GICS codes are only available in Compustat. The Fama-French industry identifier is mapped from SIC codes using documentation provided by Ken French. We provide classifications at eight levels of granularity (5, 10, 12, 17, 30, 38, 48, and 49 industries), as defined on \href{https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/data_library.html}{Ken French's data library}.
 
 \subsection{Datasets}
 \begin{itemize}
@@ -754,8 +754,22 @@ This section covers all of the variables that give firm/date level identifiers a
 	
 	gics & Firm GICS industry. We use historical data from Compustat. \\[1ex]
 	
-	ff49 & Classification of stocks into 49 industry groups based SIC codes and the methodology in \citeA{famafrench1997} with the addition of a software industry. \\[1ex]
-	
+	ff5 & Classification of stocks into 5 industry groups based on SIC codes and the methodology in \citeA{famafrench1997}. \\[1ex]
+
+	ff10 & Classification of stocks into 10 industry groups based on SIC codes and the methodology in \citeA{famafrench1997}. \\[1ex]
+
+	ff12 & Classification of stocks into 12 industry groups based on SIC codes and the methodology in \citeA{famafrench1997}. \\[1ex]
+
+	ff17 & Classification of stocks into 17 industry groups based on SIC codes and the methodology in \citeA{famafrench1997}. \\[1ex]
+
+	ff30 & Classification of stocks into 30 industry groups based on SIC codes and the methodology in \citeA{famafrench1997}. \\[1ex]
+
+	ff38 & Classification of stocks into 38 industry groups based on SIC codes and the methodology in \citeA{famafrench1997}. \\[1ex]
+
+	ff48 & Classification of stocks into 48 industry groups based on SIC codes and the methodology in \citeA{famafrench1997}. \\[1ex]
+
+	ff49 & Classification of stocks into 49 industry groups based on SIC codes and the methodology in \citeA{famafrench1997} with the addition of a software industry. \\[1ex]
+
 \end{longtable}}
 
 
