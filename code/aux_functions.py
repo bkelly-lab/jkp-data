@@ -3399,17 +3399,20 @@ def drop_non_trading_days(df, n_col, dt_col, over_vars, thresh_fraction):
         Remove thin-trading days by country-month (or given window) based on stock coverage.
 
     Steps:
-        1) Compute max_stocks over over_vars.
+        1) Derive eom from dt_col; compute max_stocks over over_vars.
         2) Keep rows where n_col / max_stocks ≥ thresh_fraction.
         3) Drop helper columns.
 
     Output:
         Frame filtered to sufficiently traded dates.
     """
+    added_eom = "eom" not in df.collect_schema().names()
+    if added_eom:
+        df = df.with_columns(eom=col(dt_col).dt.month_end())
     df = (
         df.with_columns(max_stocks=pl.max(n_col).over(over_vars))
         .filter((col(n_col) / col("max_stocks")) >= thresh_fraction)
-        .drop(["max_stocks"])
+        .drop(["max_stocks"] + (["eom"] if added_eom else []))
     )
     return df
 
