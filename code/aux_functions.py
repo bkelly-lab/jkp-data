@@ -613,6 +613,7 @@ def gen_crsp_sf(freq):
             "exch_main",
             "shrcd",
             "me",
+            "ticker",
         ]
     )
     return result
