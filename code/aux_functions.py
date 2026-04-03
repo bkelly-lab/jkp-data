@@ -3239,6 +3239,46 @@ def return_cutoffs(freq, crsp_only):
     data.sink_parquet(res_path)
 
 
+@measure_time
+def add_ret_exc_wins(freq: str, lower: float = 0.001, upper: float = 0.999) -> None:
+    """
+    Description:
+        Add a winsorized excess return column (ret_exc_wins) to the world security file.
+        Compustat returns are clipped to the [lower, upper] percentiles of ret_exc per eom.
+        CRSP returns are left unchanged.
+
+    Steps:
+        1) Read world_{freq}sf.parquet; drop ret_exc_wins if already present (idempotency).
+        2) Compute ret_exc_wins via SQL window: QUANTILE_DISC percentiles over eom,
+           clipped with GREATEST/LEAST, applied only to Compustat rows (id > 99999).
+        3) Collect and overwrite the file.
+
+    Output:
+        Overwrites 'world_{freq}sf.parquet' with ret_exc_wins added.
+    """
+    data_path = f"world_{freq}sf.parquet"
+    data = pl.scan_parquet(data_path)
+    if "ret_exc_wins" in data.collect_schema().names():
+        data = data.drop("ret_exc_wins")
+
+    result = data.sql(f"""
+        SELECT *,
+            CASE
+                WHEN id > 99999 AND ret_exc IS NOT NULL THEN
+                    GREATEST(
+                        QUANTILE_DISC(ret_exc, {lower}) OVER (PARTITION BY eom),
+                        LEAST(
+                            ret_exc,
+                            QUANTILE_DISC(ret_exc, {upper}) OVER (PARTITION BY eom)
+                        )
+                    )
+                ELSE ret_exc
+            END AS ret_exc_wins
+        FROM self
+    """)
+    result.collect(streaming=(freq == "d")).write_parquet(data_path)
+
+
 def load_mkt_returns_params(freq):
     """
     Description:
@@ -8228,7 +8268,7 @@ def save_daily_ret():
     """
     data = (
         pl.scan_parquet("../interim/world_dsf.parquet")
-        .select(["excntry", "id", "date", "me", "ret", "ret_exc"])
+        .select(["excntry", "id", "date", "me", "ret", "ret_exc", "ret_exc_wins"])
         .with_columns(
             excntry=pl.when(col("excntry").is_null())
             .then(pl.lit("null_country"))
@@ -8326,7 +8366,7 @@ def save_monthly_ret():
         Parquet file with monthly returns by country/security.
     """
     data = pl.scan_parquet("../interim/world_msf.parquet").select(
-        ["excntry", "id", "source_crsp", "eom", "me", "ret_exc", "ret", "ret_local"]
+        ["excntry", "id", "source_crsp", "eom", "me", "ret_exc", "ret", "ret_local", "ret_exc_wins"]
     )
     data.select(pl.all().shrink_dtype()).collect().write_parquet(
         "return_data/world_ret_monthly.parquet"
