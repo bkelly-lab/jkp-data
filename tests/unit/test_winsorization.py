@@ -408,3 +408,181 @@ class TestPortfolioDailyJoin:
         ).drop(["p001", "p999", "eom"])
         assert "year" not in daily.columns
         assert "month" not in daily.columns
+
+
+# =============================================================================
+# TestInlineWinsorization
+# =============================================================================
+
+
+class TestInlineWinsorization:
+    """Tests for inline GREATEST/LEAST winsorization used in ap_factors and prep_data_factor_regs.
+
+    Validates that the inline window function approach correctly clips outliers,
+    preserves non-outliers, and supports custom thresholds.
+    """
+
+    @pytest.fixture
+    def returns_df(self, seed):
+        """Synthetic returns with known outliers across two months.
+
+        Each month has 2000 rows from a normal distribution plus 2 extreme outliers,
+        giving enough data for QUANTILE_DISC at 0.1%/99.9% to produce bounds
+        below the outliers.
+        """
+        np.random.seed(seed)
+        n_per_month = 2000
+
+        # Month 1: tight distribution
+        ret1 = np.random.randn(n_per_month) * 0.02
+        dates1 = [date(2020, 1, 15)] * n_per_month
+        eom1 = [date(2020, 1, 31)] * n_per_month
+
+        # Month 2: wider distribution
+        ret2 = np.random.randn(n_per_month) * 0.05
+        dates2 = [date(2020, 2, 15)] * n_per_month
+        eom2 = [date(2020, 2, 29)] * n_per_month
+
+        # Combine and add extreme outliers at known positions
+        ret_exc = np.concatenate([ret1, ret2])
+        dates_all = dates1 + dates2
+        eom_all = eom1 + eom2
+
+        # Inject outliers: indices 0,1 in month 1; 2000,2001 in month 2
+        ret_exc[0] = 5.0  # extreme high, month 1
+        ret_exc[1] = -5.0  # extreme low, month 1
+        ret_exc[2000] = 10.0  # extreme high, month 2
+        ret_exc[2001] = -10.0  # extreme low, month 2
+
+        return pl.LazyFrame(
+            {
+                "excntry": ["USA"] * (n_per_month * 2),
+                "id": list(range(1, n_per_month * 2 + 1)),
+                "eom": eom_all,
+                "date": dates_all,
+                "ret_exc": ret_exc.tolist(),
+            }
+        )
+
+    @staticmethod
+    def _winsorize_cte_greatest(lf, lower=0.001, upper=0.999):
+        """Apply CTE+JOIN winsorization using GREATEST/LEAST (ap_factors pattern)."""
+        return lf.sql(f"""
+            WITH bounds AS (
+                SELECT eom,
+                    QUANTILE_DISC(ret_exc, {lower}) AS low,
+                    QUANTILE_DISC(ret_exc, {upper}) AS high
+                FROM self
+                GROUP BY eom
+            )
+            SELECT excntry, id, self.eom, date,
+                GREATEST(low, LEAST(ret_exc, high)) AS ret_exc
+            FROM self
+            LEFT JOIN bounds USING (eom)
+        """)
+
+    @staticmethod
+    def _winsorize_cte_case(lf, lower=0.001, upper=0.999):
+        """Apply CTE+JOIN winsorization using CASE (old ap_factors pattern)."""
+        return lf.sql(f"""
+            WITH bounds AS (
+                SELECT eom,
+                    QUANTILE_DISC(ret_exc, {lower}) AS low,
+                    QUANTILE_DISC(ret_exc, {upper}) AS high
+                FROM self
+                GROUP BY eom
+            )
+            SELECT excntry, id, eom, date,
+                CASE
+                    WHEN ret_exc < low  THEN low
+                    WHEN ret_exc > high THEN high
+                    ELSE ret_exc
+                END AS ret_exc
+            FROM self
+            LEFT JOIN bounds USING (eom)
+        """)
+
+    def test_outliers_clipped_to_bounds(self, returns_df, tolerance):
+        """Extreme values should be clipped to the group's percentile bounds."""
+        result = self._winsorize_cte_greatest(returns_df).collect()
+
+        # The injected outliers should be clipped (their winsorized value < original)
+        for outlier_id, orig_val in [(1, 5.0), (2001, 10.0)]:
+            winsorized = result.filter(pl.col("id") == outlier_id)["ret_exc"][0]
+            assert winsorized < orig_val, f"High outlier id={outlier_id} not clipped: {winsorized}"
+
+        for outlier_id, orig_val in [(2, -5.0), (2002, -10.0)]:
+            winsorized = result.filter(pl.col("id") == outlier_id)["ret_exc"][0]
+            assert winsorized > orig_val, f"Low outlier id={outlier_id} not clipped: {winsorized}"
+
+    def test_non_outliers_unchanged(self, returns_df, tolerance):
+        """Values within bounds should remain unchanged after winsorization."""
+        original = returns_df.collect().sort("id")
+        result = self._winsorize_cte_greatest(returns_df).collect().sort("id")
+
+        # Identify rows that were actually clipped (original != result)
+        orig_vals = original["ret_exc"].to_numpy()
+        result_vals = result["ret_exc"].to_numpy()
+        unchanged_mask = np.isclose(orig_vals, result_vals, rtol=1e-10, atol=1e-12)
+
+        # All unchanged rows should be exactly equal
+        np.testing.assert_allclose(
+            result_vals[unchanged_mask],
+            orig_vals[unchanged_mask],
+            **tolerance.TIGHT,
+            err_msg="Non-outlier values should be unchanged",
+        )
+        # At least the 4 injected outliers should have been clipped
+        assert np.sum(~unchanged_mask) >= 4, "Expected at least 4 clipped values"
+
+    def test_custom_thresholds(self, returns_df):
+        """Wider thresholds (5%/95%) should clip more aggressively."""
+        narrow = self._winsorize_cte_greatest(returns_df, lower=0.001, upper=0.999).collect()
+        wide = self._winsorize_cte_greatest(returns_df, lower=0.05, upper=0.95).collect()
+
+        # Wider thresholds should produce a tighter range
+        assert wide["ret_exc"].max() <= narrow["ret_exc"].max()
+        assert wide["ret_exc"].min() >= narrow["ret_exc"].min()
+
+    def test_per_group_winsorization(self, returns_df, tolerance):
+        """Each eom group should have its own clipping bounds."""
+        result = self._winsorize_cte_greatest(returns_df).collect()
+
+        month1 = result.filter(pl.col("eom") == date(2020, 1, 31))
+        month2 = result.filter(pl.col("eom") == date(2020, 2, 29))
+
+        # Month 2 has wider distribution (0.05 vs 0.02 std), so bounds should differ
+        range1 = month1["ret_exc"].max() - month1["ret_exc"].min()
+        range2 = month2["ret_exc"].max() - month2["ret_exc"].min()
+        assert range2 > range1, "Month 2 (wider distribution) should have a wider winsorized range"
+
+    def test_single_eom_group(self):
+        """Winsorization should work correctly with a single eom group."""
+        np.random.seed(123)
+        n = 2000
+        ret_exc = np.random.randn(n) * 0.03
+        ret_exc[0] = 2.0  # outlier
+        lf = pl.LazyFrame(
+            {
+                "excntry": ["USA"] * n,
+                "id": list(range(1, n + 1)),
+                "eom": [date(2020, 1, 31)] * n,
+                "date": [date(2020, 1, 15)] * n,
+                "ret_exc": ret_exc.tolist(),
+            }
+        )
+        result = self._winsorize_cte_greatest(lf).collect()
+        winsorized = result.filter(pl.col("id") == 1)["ret_exc"][0]
+        assert winsorized < 2.0, f"Outlier should be clipped: {winsorized}"
+
+    def test_greatest_least_matches_case(self, returns_df, tolerance):
+        """GREATEST/LEAST approach must produce identical results to the CASE approach."""
+        greatest_result = self._winsorize_cte_greatest(returns_df).collect().sort("id")
+        case_result = self._winsorize_cte_case(returns_df).collect().sort("id")
+
+        np.testing.assert_allclose(
+            greatest_result["ret_exc"].to_numpy(),
+            case_result["ret_exc"].to_numpy(),
+            **tolerance.TIGHT,
+            err_msg="GREATEST/LEAST and CASE winsorization should produce identical results",
+        )

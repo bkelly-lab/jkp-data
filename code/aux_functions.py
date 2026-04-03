@@ -6858,13 +6858,23 @@ def sort_ff_style(char, min_stocks_bp, min_stocks_pf, date_col, data, sf):
 
 
 @measure_time
-def ap_factors(output_path, freq, sf_path, mchars_path, mkt_path, min_stocks_bp, min_stocks_pf):
+def ap_factors(
+    output_path,
+    freq,
+    sf_path,
+    mchars_path,
+    mkt_path,
+    min_stocks_bp,
+    min_stocks_pf,
+    lower=0.001,
+    upper=0.999,
+):
     """
     Description:
         Build AP-style factor panels (FF HML/SMB and HXZ INV/ROE/SMB) by country and month (or day).
 
     Steps:
-        1) Load security returns; winsorize ret_exc by date.
+        1) Load security returns; winsorize ret_exc by eom at configurable percentile bounds.
         2) Load market characteristics; lag key vars 1 period with continuity guard; filter to eligible stocks.
         3) Size-bucket each stock; run FF-style sorts for BE/ME, asset growth, and ROE.
         4) Compose factors: mktrf from market file; HML/SMB (FF); INV/ROE/SMB (HXZ).
@@ -6898,28 +6908,21 @@ def ap_factors(output_path, freq, sf_path, mchars_path, mkt_path, min_stocks_bp,
         .select(["excntry", "id", "eom", "date", "ret_exc"])
     )
     world_sf2 = world_sf1.sql(f"""
-                                WITH bounds AS (
-                                SELECT
-                                    eom,
-                                    QUANTILE_DISC(ret_exc, {0.1 / 100}) AS low,
-                                    QUANTILE_DISC(ret_exc, {99.9 / 100}) AS high
-                                FROM self
-                                GROUP BY eom
-                                )
-                                SELECT
-                                    excntry,
-                                    id,
-                                    eom,
-                                    date,
-                                    CASE
-                                        WHEN ret_exc < low  THEN low
-                                        WHEN ret_exc > high THEN high
-                                        ELSE ret_exc
-                                    END AS ret_exc
-                                FROM self
-                                LEFT JOIN bounds
-                                USING (eom)
-                            """)
+        WITH bounds AS (
+            SELECT
+                eom,
+                QUANTILE_DISC(ret_exc, {lower}) AS low,
+                QUANTILE_DISC(ret_exc, {upper}) AS high
+            FROM self
+            GROUP BY eom
+        )
+        SELECT
+            excntry, id, self.eom, date,
+            GREATEST(low, LEAST(ret_exc, high)) AS ret_exc
+        FROM self
+        LEFT JOIN bounds
+        USING (eom)
+    """)
 
     base = (
         pl.scan_parquet(mchars_path)
@@ -6991,7 +6994,7 @@ def ap_factors(output_path, freq, sf_path, mchars_path, mkt_path, min_stocks_bp,
     output.write_parquet(output_path)
 
 
-def prep_data_factor_regs(data_path, fcts_path):
+def prep_data_factor_regs(data_path, fcts_path, lower=0.001, upper=0.999):
     """
     Description:
         Prepare monthly panel for factor regressions (join data with factors, filter, winsorize).
@@ -6999,7 +7002,7 @@ def prep_data_factor_regs(data_path, fcts_path):
     Steps:
         1) Create __msf1: join msf with factors on (excntry, eom); keep ret_exc, mktrf, hml, smb_ff and valid monthly obs.
         2) Add integer date (aux_date) and cast id_int.
-        3) Winsorize ret_exc by eom into __msf2.
+        3) Winsorize ret_exc by eom at configurable percentile bounds into __msf2.
 
     Output:
         DuckDB connection containing tables '__msf2' (ready for rolling regs).
@@ -7043,25 +7046,18 @@ def prep_data_factor_regs(data_path, fcts_path):
         AND a.ret_exc   IS NOT NULL
         AND a.ret_lag_dif = 1
         AND b.mktrf    IS NOT NULL
-    ),
-    percs AS (
-        SELECT
-          eom,
-          QUANTILE_DISC(ret_exc, {0.1 / 100}) AS low,
-          QUANTILE_DISC(ret_exc, {99.9 / 100}) AS high
-        FROM __msf1
-        GROUP BY eom
     )
     SELECT
-       d.* EXCLUDE (ret_exc),
-      CASE
-        WHEN d.ret_exc < p.low  THEN p.low
-        WHEN d.ret_exc > p.high THEN p.high
-        ELSE d.ret_exc
-      END AS ret_exc
-    FROM __msf1 AS d
-    LEFT JOIN percs AS p
-      USING (eom);
+        id, id_int, eom, ret_lag_dif, mktrf, hml, smb_ff, aux_date,
+        GREATEST(
+            QUANTILE_DISC(ret_exc, {lower}) OVER w,
+            LEAST(
+                ret_exc,
+                QUANTILE_DISC(ret_exc, {upper}) OVER w
+            )
+        ) AS ret_exc
+    FROM __msf1
+    WINDOW w AS (PARTITION BY eom);
     """)
     return con
 
