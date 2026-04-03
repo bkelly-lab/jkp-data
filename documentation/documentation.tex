@@ -123,70 +123,52 @@ Jensen is at Yale School of Management; \url{www.tijensen.com}. Kelly is at AQR 
 \textbf{Date} & \textbf{Changes} \\
 \hline
 \endhead
-03-05-2025 & 
-\begin{itemize}[nosep, leftmargin=*]
-    \item Updated market returns macro to add a capped value option.
-    \item Corrected error in o-score calculation
-\end{itemize} \\
+04-03-2026 &
+\textbullet~Added \texttt{ret\_exc\_wins} column to \texttt{world\_dsf}, \texttt{world\_msf}, and \texttt{world\_data}. This is a pre-winsorized excess return clipped at the 0.1\%/99.9\% percentiles per month. CRSP returns are left unchanged; only Compustat returns are winsorized. \\
+&
+Affected output files:
+\begin{enumerate}[nosep, leftmargin=*]
+    \item \texttt{return\_data/world\_dsf.parquet}
+    \item \texttt{return\_data/world\_ret\_monthly.parquet}
+    \item \texttt{return\_data/daily\_rets\_by\_country/}
+    \item \texttt{characteristics/world\_data\_unfiltered.parquet}
+    \item \texttt{characteristics/world\_data\_filtered.parquet}
+\end{enumerate} \\
 \hline
-03-03-2023 & 
-\begin{itemize}[nosep, leftmargin=*]
-    \item Added 'me' (market equity) and 'ret' (total return) and removed 'source\_crsp' from daily return files.
-\end{itemize} \\
+03-05-2025 & \textbullet~Updated market returns macro to add a capped value option. \\
+& \textbullet~Corrected error in o-score calculation. \\
 \hline
-02-08-2022 & 
-\begin{itemize}[nosep, leftmargin=*]
-    \item Fixed error in the construction of intrinsic\_value. Previously, we failed to scale intrinsic\_value by market equity as done in Frankel and Lee (1998). We call the new characteristic ival\_me and keep intrinsic\_value in the data set. The alpha of the new factor based on ival\_me is significantly different from zero, while the factor based on intrinsic\_value is insignificant.
-\end{itemize} \\
+03-03-2023 & \textbullet~Added 'me' (market equity) and 'ret' (total return) and removed 'source\_crsp' from daily return files. \\
 \hline
-11-16-2021 & 
-\begin{itemize}[nosep, leftmargin=*]
-    \item Changed return cutoffs to depend on all stocks, instead of only stocks from CRSP.
-    \item Changed the 'source' (character) column to 'source\_crsp' (integer), source\_crsp is 1 if CRSP is the return data source.
-    \item Changed the 'id' column from character to integer. For stocks from CRSP, the id is just their permno. For stocks from Compustat, the first digit is 1 if the stock is traded on a US exchange, 2 if it's traded on a Canadian exchange, and 3 otherwise. The next two digits are the IID from Compustat, and the remaining six digits are the gvkey.
-    \item Adapted the primary\_sec column such that all observations from CRSP have primary\_sec=1.
-    \item Changed the treatment of zero return. Previously, we treated a zero return as a missing observation. Now, we have removed this screen, such that a zero return is treated like any other return.
-    \item Changed the creation of characteristics based on daily stock market data. Previously, we winsorized daily returns, market equity, and dollar volume, before creating characteristics based on daily stock market data. Now, we have removed this winsorization, and daily characteristics are based on the raw data.
-    \item Added the option to create daily factor return in the portfolios.R code.
-    \item Added the option to create industry returns in the portfolios.R code.
-\end{itemize} \\
+02-08-2022 & \textbullet~Fixed error in the construction of intrinsic\_value. Previously, we failed to scale intrinsic\_value by market equity as done in Frankel and Lee (1998). We call the new characteristic ival\_me and keep intrinsic\_value in the data set. The alpha of the new factor based on ival\_me is significantly different from zero, while the factor based on intrinsic\_value is insignificant. \\
 \hline
-08-27-2021 & 
-\begin{itemize}[nosep, leftmargin=*]
-    \item Fixed a bug regarding how daily delisting returns from CRSP are incorporated.
-    \item Added indfmt='FS' to the international accounting data.
-\end{itemize} \\
+11-16-2021 & \textbullet~Changed return cutoffs to depend on all stocks, instead of only stocks from CRSP. \\
+& \textbullet~Changed the 'source' (character) column to 'source\_crsp' (integer), source\_crsp is 1 if CRSP is the return data source. \\
+& \textbullet~Changed the 'id' column from character to integer. For stocks from CRSP, the id is just their permno. For stocks from Compustat, the first digit is 1 if the stock is traded on a US exchange, 2 if it's traded on a Canadian exchange, and 3 otherwise. The next two digits are the IID from Compustat, and the remaining six digits are the gvkey. \\
+& \textbullet~Adapted the primary\_sec column such that all observations from CRSP have primary\_sec=1. \\
+& \textbullet~Changed the treatment of zero return. Previously, we treated a zero return as a missing observation. Now, we have removed this screen, such that a zero return is treated like any other return. \\
+& \textbullet~Changed the creation of characteristics based on daily stock market data. Previously, we winsorized daily returns, market equity, and dollar volume, before creating characteristics based on daily stock market data. Now, we have removed this winsorization, and daily characteristics are based on the raw data. \\
+& \textbullet~Added the option to create daily factor return in the portfolios.R code. \\
+& \textbullet~Added the option to create industry returns in the portfolios.R code. \\
 \hline
-06-14-2021 & 
-\begin{itemize}[nosep, leftmargin=*]
-    \item We changed the winsorization scheme. First, we removed the 0.01\%/99.9\% winsorization of market equity in all countries. Second, we removed the winsorization of returns from the CRSP database. For Compustat returns, we set returns above (below) the 99.9\% (0.01\%) of CRSP returns in the same month, to that level. In other words, we base our winsorization of Compustat data on CRSP data from the same month.
-\end{itemize} \\
+08-27-2021 & \textbullet~Fixed a bug regarding how daily delisting returns from CRSP are incorporated. \\
+& \textbullet~Added indfmt='FS' to the international accounting data. \\
 \hline
-02-19-2021 & 
-\begin{itemize}[nosep, leftmargin=*]
-    \item Previously we did not exclude securities that are only traded over the counter. In the new version of the data set, we include an indicator column "exch\_main" to exclude non-standard exchanges. In the US, the main exchanges are AMEX, NASDAQ, and NYSE. Outside of the US, we exclude over the counter exchanges, stock connect exchanges in China, and cross-country exchanges such as BATS Chi-X Europe. The documentation includes a full list of the excluded exchanges.
-    \item Included SIC, NAICS, and GICS industry codes.
-\end{itemize} \\
+06-14-2021 & \textbullet~We changed the winsorization scheme. First, we removed the 0.01\%/99.9\% winsorization of market equity in all countries. Second, we removed the winsorization of returns from the CRSP database. For Compustat returns, we set returns above (below) the 99.9\% (0.01\%) of CRSP returns in the same month, to that level. In other words, we base our winsorization of Compustat data on CRSP data from the same month. \\
 \hline
-02-15-2021 & 
-\begin{itemize}[nosep, leftmargin=*]
-    \item Removed a bug that caused ivol\_ff3\_21d, iskew\_ff3\_21d, ivol\_hxz4\_21d, and iskew\_hxz4\_21d to require 17 (ff3) and 18 (hxz) observations for a valid estimate. Consistent with our original intent, we now require at least 15 observations for a valid estimate.
-\end{itemize} \\
+02-19-2021 & \textbullet~Previously we did not exclude securities that are only traded over the counter. In the new version of the data set, we include an indicator column "exch\_main" to exclude non-standard exchanges. In the US, the main exchanges are AMEX, NASDAQ, and NYSE. Outside of the US, we exclude over the counter exchanges, stock connect exchanges in China, and cross-country exchanges such as BATS Chi-X Europe. The documentation includes a full list of the excluded exchanges. \\
+& \textbullet~Included SIC, NAICS, and GICS industry codes. \\
 \hline
-02-01-2021 & 
-\begin{itemize}[nosep, leftmargin=*]
-    \item Fixed a small bug in the bidask\_hl() macro.
-    \item Lowered the requirement for the number of stocks needed when creating asset pricing factors (FF and HXZ). We previously required at least 5 stocks in a sub-portfolio (e.g., small stocks with high BM) for the observation to be valid. This led to missing observations in the 1950s for small stocks with low BM. We lowered this requirement to 3 stocks. Furthermore, when creating asset pricing factors, we changed the breakpoints to be based on NYSE stocks in the US instead of non-microcap stocks. Outside of the US, breakpoints are still based on non-microcap stocks.
-\end{itemize} \\
+02-15-2021 & \textbullet~Removed a bug that caused ivol\_ff3\_21d, iskew\_ff3\_21d, ivol\_hxz4\_21d, and iskew\_hxz4\_21d to require 17 (ff3) and 18 (hxz) observations for a valid estimate. Consistent with our original intent, we now require at least 15 observations for a valid estimate. \\
 \hline
-01-25-2021 & 
-\begin{itemize}[nosep, leftmargin=*]
-    \item Changed residual momentum characteristics (resff3\_12\_1 \& resff3\_6\_1) to be scaled with the standard deviation of residuals consistent with Blitz, Huij, and Mertens (2011).
-    \item Fixed error in creating qmj\_prof. The issue was that the oaccruals\_at used the value instead of the z-score of ranks. This effectively meant that accruals didn't impact the profitability score.
-    \item Fixed error for annual seasonality characteristics (factor names starting with seas\_ and ending with \_an). There was a bug in the screening procedure which meant that the characteristic for one stock could use information from an unrelated stock.
-    \item Rounding issues when converting a .csv file to an excel file, caused the zero\_trades\_* variables to not have any decimals which made the turnover tie-breaker ineffective.
-    \item Standardized unexpected earnings (niq\_su) and sales (saleq\_su) is computed as the actual value minus the expected value (standardized by the standard deviation of this change). Before, the expected value was computed as the mean yearly change over the last 8 quarters added to the last quarterly value. Now the expected value is the same mean yearly change, but added to the quarterly value 4 quarters ago consistent with Jegadeesh and Livnat (2006).
-\end{itemize} \\
+02-01-2021 & \textbullet~Fixed a small bug in the bidask\_hl() macro. \\
+& \textbullet~Lowered the requirement for the number of stocks needed when creating asset pricing factors (FF and HXZ). We previously required at least 5 stocks in a sub-portfolio (e.g., small stocks with high BM) for the observation to be valid. This led to missing observations in the 1950s for small stocks with low BM. We lowered this requirement to 3 stocks. Furthermore, when creating asset pricing factors, we changed the breakpoints to be based on NYSE stocks in the US instead of non-microcap stocks. Outside of the US, breakpoints are still based on non-microcap stocks. \\
+\hline
+01-25-2021 & \textbullet~Changed residual momentum characteristics (resff3\_12\_1 \& resff3\_6\_1) to be scaled with the standard deviation of residuals consistent with Blitz, Huij, and Mertens (2011). \\
+& \textbullet~Fixed error in creating qmj\_prof. The issue was that the oaccruals\_at used the value instead of the z-score of ranks. This effectively meant that accruals didn't impact the profitability score. \\
+& \textbullet~Fixed error for annual seasonality characteristics (factor names starting with seas\_ and ending with \_an). There was a bug in the screening procedure which meant that the characteristic for one stock could use information from an unrelated stock. \\
+& \textbullet~Rounding issues when converting a .csv file to an excel file, caused the zero\_trades\_* variables to not have any decimals which made the turnover tie-breaker ineffective. \\
+& \textbullet~Standardized unexpected earnings (niq\_su) and sales (saleq\_su) is computed as the actual value minus the expected value (standardized by the standard deviation of this change). Before, the expected value was computed as the mean yearly change over the last 8 quarters added to the last quarterly value. Now the expected value is the same mean yearly change, but added to the quarterly value 4 quarters ago consistent with Jegadeesh and Livnat (2006). \\
 \hline
 \end{xltabular}
 
