@@ -8288,13 +8288,13 @@ def save_output_files():
     Output:
         Files relocated into 'Output/' directory.
     """
-    os.system("mv ../interim/market_returns.parquet other_output/")
-    os.system("mv ../interim/market_returns_daily.parquet other_output/")
-    os.system("mv ../interim/nyse_cutoffs.parquet other_output/")
-    os.system("mv ../interim/return_cutoffs.parquet other_output/")
-    os.system("mv ../interim/return_cutoffs_daily.parquet other_output/")
-    os.system("mv ../interim/ap_factors_monthly.parquet other_output/")
-    os.system("mv ../interim/ap_factors_daily.parquet other_output/")
+    os.system("cp ../interim/market_returns.parquet other_output/")
+    os.system("cp ../interim/market_returns_daily.parquet other_output/")
+    os.system("cp ../interim/nyse_cutoffs.parquet other_output/")
+    os.system("cp ../interim/return_cutoffs.parquet other_output/")
+    os.system("cp ../interim/return_cutoffs_daily.parquet other_output/")
+    os.system("cp ../interim/ap_factors_monthly.parquet other_output/")
+    os.system("cp ../interim/ap_factors_daily.parquet other_output/")
 
 
 @measure_time
