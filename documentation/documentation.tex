@@ -94,12 +94,12 @@ Jensen is at Yale School of Management; \url{www.tijensen.com}. Kelly is at AQR 
 	\item The \texttt{id} column is the unique security $\times$ source\footnote{CRSP or Compustat.} identifier.
 	\item The \texttt{eom} column shows the end of month, where the data is valid. In other words, it shows the information available by the end of a given month. As an example, the \texttt{me} value for a stocks with \texttt{eom=20191231}, will be the last available market equity before or at December 31st 2019. Therefore, when predicting the return column \texttt{ret}, characteristics should be lagged by one month (as \texttt{ret} shows the return in the current month identified by \texttt{eom}). Alternatively, you can predict next month’s returns, stored in \texttt{ret\_exc\_lead1m}, without lagging the characteristics.
 	\item The \texttt{excntry} column, identifies the country of the exchange where the security is traded.
-	\item Suggested screens:
+	\item The following screens are applied by default:
 	\begin{itemize}
-		\item To restrict the sample to one observation per security $\times$ month, use \texttt{obs\_main=1}.
-		\item To restrict the sample to common stocks, use \texttt{common=1}.
-		\item To restrict the sample to prominent exchanges, use \texttt{exch\_main=1}.
-		\item To restrict the sample to primary listing $\times$ month, use \texttt{primary\_sec=1}.
+		\item \texttt{obs\_main=1}: one observation per security $\times$ month.
+		\item \texttt{common=1}: common stocks only.
+		\item \texttt{exch\_main=1}: prominent exchanges only.
+		\item \texttt{primary\_sec=1}: primary listing $\times$ month only.
 	\end{itemize}  
 	
 \end{itemize}
@@ -197,7 +197,7 @@ Jensen is at Yale School of Management; \url{www.tijensen.com}. Kelly is at AQR 
 	
 	\item \textit{Quarterly data} refers to accounting data from quarterly reports sourced from COMP.FUNDQ and COMP.G\_FUNDQ.
 	
-	\item \textit{Final Dataset} refers to ``world\_data.sas7bdat", the output dataset
+	\item \textit{Final Dataset} refers to ``world\_data.parquet", the output dataset
 	
 	\item \textit{Fiscal period} refers to the relevant period over which income and expenses have accrued. 
 	

@@ -1,4 +1,6 @@
 import datetime
+import functools
+import operator
 import os
 import time
 from datetime import date
@@ -9,6 +11,7 @@ import ibis
 import polars as pl
 import polars_ds as pds
 import polars_ols  # noqa: F401 - required for least_squares method on polars expressions
+from config import MAIN_FILTERS
 from ibis import _
 from polars import col
 
@@ -8151,23 +8154,84 @@ def quality_minus_junk(data_path, min_stks):
     qmj.write_parquet("qmj.parquet")
 
 
+def _main_filter_expr() -> pl.Expr:
+    """Build a Polars filter expression from the MAIN_FILTERS config dict."""
+    return functools.reduce(operator.and_, (pl.col(k) == v for k, v in MAIN_FILTERS.items()))
+
+
+@measure_time
+def filter_dsf():
+    """
+    Description:
+        Filter world_dsf to main securities.
+
+    Steps:
+        1) Load world_dsf.parquet.
+        2) Filter to MAIN_FILTERS (primary_sec, common, obs_main, exch_main).
+        3) Write world_dsf_output.parquet.
+
+    Output:
+        'world_dsf_output.parquet'.
+    """
+    pl.scan_parquet("world_dsf.parquet").filter(_main_filter_expr()).sink_parquet(
+        "world_dsf_output.parquet"
+    )
+
+
+@measure_time
+def filter_msf():
+    """
+    Description:
+        Filter world_msf to main securities.
+
+    Steps:
+        1) Load world_msf.parquet.
+        2) Filter to MAIN_FILTERS (primary_sec, common, obs_main, exch_main).
+        3) Write world_msf_output.parquet.
+
+    Output:
+        'world_msf_output.parquet'.
+    """
+    pl.scan_parquet("world_msf.parquet").filter(_main_filter_expr()).sink_parquet(
+        "world_msf_output.parquet"
+    )
+
+
+@measure_time
+def filter_world():
+    """
+    Description:
+        Filter world_data to main securities.
+
+    Steps:
+        1) Load world_data.parquet.
+        2) Filter to MAIN_FILTERS (primary_sec, common, obs_main, exch_main).
+        3) Write world_data_output.parquet.
+
+    Output:
+        'world_data_output.parquet'.
+    """
+    pl.scan_parquet("world_data.parquet").filter(_main_filter_expr()).sink_parquet(
+        "world_data_output.parquet"
+    )
+
+
 @measure_time
 def save_main_data():
     """
     Description:
-        Filter world_data to main securities and export country-level files.
+        Compute lagged market equity and export country-level files.
 
     Steps:
-        1) Load world_data.parquet and compute lagged market equity.
-        2) Filter to valid main securities.
-        3) Save filtered dataset and split into country parquet files.
+        1) Load world_data_output.parquet (pre-filtered) and compute lagged market equity.
+        2) Save dataset and split into country parquet files.
 
     Output:
-        'world_data_filtered.parquet' and 'characteristics/{country}.parquet'.
+        'world_data_output.parquet' and 'characteristics/{country}.parquet'.
     """
     months_exp = (col("eom").dt.year() * 12 + col("eom").dt.month()).cast(pl.Int64)
     data = (
-        pl.scan_parquet("world_data.parquet")
+        pl.scan_parquet("world_data_output.parquet")
         .with_columns(dif_aux=months_exp)
         .sort(["id", "eom"])
         .with_columns(
@@ -8178,23 +8242,16 @@ def save_main_data():
             me_lag1=pl.when(col("dif_aux") == 1).then(col("me_lag1")).otherwise(fl_none())
         )
         .drop("dif_aux")
-        .filter(
-            (col("primary_sec") == 1)
-            & (col("common") == 1)
-            & (col("obs_main") == 1)
-            & (col("exch_main") == 1)
-        )
     )
-    data.select(pl.all().shrink_dtype()).collect(streaming=True).write_parquet(
-        "world_data_filtered.parquet"
-    )
+    data.select(pl.all().shrink_dtype()).sink_parquet("world_data_output_temp.parquet")
+    os.replace("world_data_output_temp.parquet", "world_data_output.parquet")
 
     os.chdir(os.path.join(os.path.dirname(__file__), "..", "data/processed"))
 
     OUT_DIR = "characteristics"
     con = duckdb.connect()
     con.execute(f"""
-    COPY (SELECT * FROM read_parquet('../interim/world_data_filtered.parquet'))
+    COPY (SELECT * FROM read_parquet('../interim/world_data_output.parquet'))
     TO '{OUT_DIR}'
     ( FORMAT PARQUET,
       COMPRESSION ZSTD,
@@ -8247,7 +8304,7 @@ def save_daily_ret():
         Export daily returns split by country.
 
     Steps:
-        1) Load world_dsf.parquet with daily returns.
+        1) Load world_dsf_output.parquet with daily returns.
         2) Identify unique countries.
         3) For each country, filter and save parquet file (compressed).
 
@@ -8255,7 +8312,7 @@ def save_daily_ret():
         'return_data/daily_rets_by_country/{country}.parquet' files for all countries.
     """
     data = (
-        pl.scan_parquet("../interim/world_dsf.parquet")
+        pl.scan_parquet("../interim/world_dsf_output.parquet")
         .select(["excntry", "id", "date", "me", "ret", "ret_exc"])
         .with_columns(
             excntry=pl.when(col("excntry").is_null())
@@ -8320,21 +8377,18 @@ def save_full_files_and_cleanup(clear_interim=True):
         Save full datasets and remove temporary files.
 
     Steps:
-        1) Write compressed versions of world_dsf, world_data, and filtered world_data.
+        1) Write compressed versions of world_dsf and world_data.
         2) Remove raw parquet files and raw_tables/raw_data_dfs folders.
 
     Output:
         Compressed parquet files in return_data/ and characteristics/, cleanup of temp files.
     """
-    pl.scan_parquet("../interim/world_dsf.parquet").select(pl.all().shrink_dtype()).collect(
-        streaming=True
-    ).write_parquet("return_data/world_dsf.parquet")
-    pl.scan_parquet("../interim/world_data.parquet").select(pl.all().shrink_dtype()).collect(
-        streaming=True
-    ).write_parquet("characteristics/world_data_unfiltered.parquet")
-    pl.scan_parquet("../interim/world_data_filtered.parquet").select(
+    pl.scan_parquet("../interim/world_dsf_output.parquet").select(
         pl.all().shrink_dtype()
-    ).collect(streaming=True).write_parquet("characteristics/world_data_filtered.parquet")
+    ).sink_parquet("return_data/world_dsf.parquet")
+    pl.scan_parquet("../interim/world_data_output.parquet").select(
+        pl.all().shrink_dtype()
+    ).sink_parquet("characteristics/world_data.parquet")
     if clear_interim:
         os.system("rm -rf ../interim/* ../raw/*")
 
@@ -8346,14 +8400,14 @@ def save_monthly_ret():
         Save monthly returns for world securities.
 
     Steps:
-        1) Load world_msf.parquet and select relevant columns.
+        1) Load world_msf_output.parquet and select relevant columns.
         2) Shrink dtypes and collect results.
         3) Write to return_data/world_ret_monthly.parquet.
 
     Output:
         Parquet file with monthly returns by country/security.
     """
-    data = pl.scan_parquet("../interim/world_msf.parquet").select(
+    data = pl.scan_parquet("../interim/world_msf_output.parquet").select(
         ["excntry", "id", "source_crsp", "eom", "me", "ret_exc", "ret", "ret_local"]
     )
     data.select(pl.all().shrink_dtype()).collect().write_parquet(
