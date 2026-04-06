@@ -441,9 +441,8 @@ def gen_raw_data_dfs():
         ]
     )
     collect_and_write(__sec_info, "raw_data_dfs/__sec_info.parquet")
-    crsp_mcti_t30ret = pl.scan_parquet("../raw/raw_tables/crsp_mcti.parquet").select(
-        ["caldt", "t30ret"]
-    )
+    build_mcti()
+    crsp_mcti_t30ret = pl.scan_parquet("raw_data_dfs/crsp_mcti.parquet").select(["caldt", "t30ret"])
     collect_and_write(crsp_mcti_t30ret, "raw_data_dfs/crsp_mcti_t30ret.parquet")
     ff_factors_monthly = pl.scan_parquet("../raw/raw_tables/ff_factors_monthly.parquet").select(
         ["date", "rf"]
@@ -801,7 +800,7 @@ def build_mcti():
         1) Read indmthseriesdata and indseriesinfohdr from parquet.
         2) Inner join indmthseriesdata with indseriesinfohdr on "indno".
         4) Filter for CRSP 30-Year Treasury Returns (indno == 1000708).
-        5) Write parquet to ../raw/raw_tables/crsp_mcti.parquet
+        5) Write parquet to raw_data_dfs/crsp_mcti.parquet
 
     Output:
         Polars DataFrame (also written to parquet).
@@ -818,8 +817,8 @@ def build_mcti():
         .rename({"mthcaldt": "caldt", "mthtotret": "t30ret"})
     )
 
-    os.makedirs("../raw/raw_tables", exist_ok=True)
-    out.write_parquet("../raw/raw_tables/crsp_mcti.parquet")
+    os.makedirs("raw_data_dfs", exist_ok=True)
+    out.write_parquet("raw_data_dfs/crsp_mcti.parquet")
 
 
 @measure_time

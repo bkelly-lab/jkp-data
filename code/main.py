@@ -3,7 +3,6 @@ from aux_functions import (
     acc_chars_list,
     ap_factors,
     bidask_hl,
-    build_mcti,
     classify_stocks_size_groups,
     combine_ann_qtr_chars,
     combine_crsp_comp_sf,
@@ -47,7 +46,6 @@ end_date = pl.datetime(2025, 12, 31)
 creds = get_wrds_credentials()
 setup_folder_structure()
 download_raw_data_tables(username=creds.username, password=creds.password)
-build_mcti()
 gen_raw_data_dfs()
 prepare_comp_sf("both")
 prepare_crsp_sf("m")
