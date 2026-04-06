@@ -3,7 +3,6 @@ import os
 import re
 import time
 from datetime import date
-from functools import reduce
 from math import exp, sqrt
 
 import duckdb
@@ -2455,53 +2454,25 @@ def _parse_siccodes_file(filename: str, label: str) -> pl.DataFrame:
     )
 
 
-def _build_sic_ff_mapping() -> pl.LazyFrame:
-    """Build the full SIC→Fama-French mapping from the source text files.
-
-    Parses all eight ``data/raw/Siccodes{N}.txt`` files and full-joins them
-    on ``sic`` to produce a single LazyFrame with columns ``sic``, ``ff5``,
-    ``ff10``, ``ff12``, ``ff17``, ``ff30``, ``ff38``, ``ff48``, ``ff49``.
-    """
-    raw_dir = os.path.join(os.path.dirname(__file__), "..", "data", "raw")
-    dfs = [
-        _parse_siccodes_file(os.path.join(raw_dir, f"Siccodes{n}.txt"), label=f"ff{n}")
-        for n in [5, 10, 12, 17, 30, 38, 48, 49]
-    ]
-
-    return (
-        reduce(
-            lambda left, right: left.join(right, on="sic", how="full", coalesce=True),
-            dfs,
-        )
-        .sort("sic")
-        .lazy()
-    )
-
-
 @measure_time
-def ff_ind_class(data_path):
+def ff_ind_class(data_path: str) -> None:
     """
     Description:
-        Assign Fama–French industry classifications (FF5, FF10, FF12, FF17, FF30,
-        FF38, FF48, FF49) based on SIC codes.
+        Assign Fama-French 49 industry classification based on SIC codes.
 
     Steps:
-        1) Parse the eight Fama-French Siccodes text files in data/raw/ to build
-           a SIC→FF mapping.  Only SIC codes explicitly listed in a classification
-           receive non-null values; all others are NULL.
-        2) Left-join the input data on 'sic' to attach all eight classification columns.
+        1) Parse data/raw/Siccodes49.txt to build a SIC→FF49 mapping.
+           Only SIC codes explicitly listed receive non-null values.
+        2) Left-join the input data on 'sic' to attach the ff49 column.
         3) Write __msf_world3.parquet.
 
     Output:
-        Parquet __msf_world3.parquet with added ff5, ff10, ff12, ff17, ff30, ff38,
-        ff48, and ff49 columns (all Int32).
-
-    Null behaviour:
-        Only SIC codes explicitly mentioned in the Fama-French classification
-        receive a value. NULL SICs, omitted SICs, and out-of-range SICs all
-        map to NULL.
+        Parquet __msf_world3.parquet with added ff49 column (Int32).
     """
-    mapping = _build_sic_ff_mapping()
+    # The parser can handle other Fama-French classifications
+    # (e.g., Siccodes5.txt through Siccodes48.txt).
+    raw_dir = os.path.join(os.path.dirname(__file__), "..", "data", "raw")
+    mapping = _parse_siccodes_file(os.path.join(raw_dir, "Siccodes49.txt"), label="ff49").lazy()
     data = pl.scan_parquet(data_path)
     data.join(mapping, on="sic", how="left").collect().write_parquet("__msf_world3.parquet")
 

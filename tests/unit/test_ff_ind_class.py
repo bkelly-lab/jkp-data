@@ -10,7 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "code"))
 
-from aux_functions import _build_sic_ff_mapping, _parse_siccodes_file, ff_ind_class
+from aux_functions import _parse_siccodes_file, ff_ind_class
 
 # =============================================================================
 # Fixtures
@@ -77,55 +77,6 @@ class TestParseSiccodesFile:
 
 
 # =============================================================================
-# TestBuildSicFfMapping — full mapping builder (uses real Siccodes files)
-# =============================================================================
-
-
-class TestBuildSicFfMapping:
-    """Tests for _build_sic_ff_mapping()."""
-
-    @pytest.fixture(autouse=True)
-    def _chdir_to_repo_root(self, monkeypatch: pytest.MonkeyPatch):
-        """Ensure tests run with CWD set to the repo root for any code using relative paths."""
-        repo_root = Path(__file__).parent.parent.parent
-        monkeypatch.chdir(repo_root)
-
-    def test_has_all_columns(self):
-        """Result contains sic and all eight FF classification columns."""
-        df = _build_sic_ff_mapping().collect()
-        expected = {"sic", "ff5", "ff10", "ff12", "ff17", "ff30", "ff38", "ff48", "ff49"}
-        assert set(df.columns) == expected
-
-    def test_no_duplicate_sics(self):
-        """Each SIC code appears at most once in the mapping."""
-        df = _build_sic_ff_mapping().collect()
-        assert df["sic"].n_unique() == len(df)
-
-    def test_known_sic_mapping(self):
-        """Spot-check: SIC 2011 (Meat packing) -> ff49 category 2 (Food)."""
-        df = _build_sic_ff_mapping().collect()
-        row = df.filter(pl.col("sic") == 2011).row(0, named=True)
-        assert row["ff49"] == 2
-
-    def test_unmapped_sics_are_null(self):
-        """SIC codes not listed in a scheme should not appear (or have null)."""
-        df = _build_sic_ff_mapping().collect()
-        # SIC 0050 is not in any FF classification
-        rows = df.filter(pl.col("sic") == 50)
-        if len(rows) > 0:
-            row = rows.row(0, named=True)
-            # If it exists, all FF columns should be null
-            for c in ["ff5", "ff10", "ff12", "ff17", "ff30", "ff38", "ff48", "ff49"]:
-                assert row[c] is None
-
-    def test_output_dtypes(self):
-        """All FF columns should be Int32."""
-        df = _build_sic_ff_mapping().collect()
-        for c in ["ff5", "ff10", "ff12", "ff17", "ff30", "ff38", "ff48", "ff49"]:
-            assert df[c].dtype == pl.Int32
-
-
-# =============================================================================
 # TestFFIndClass — full pipeline function
 # =============================================================================
 
@@ -152,7 +103,7 @@ class TestFFIndClass:
         assert row["ff49"] == 2  # Food Products
 
     def test_unmapped_sic_gets_null(self):
-        """A SIC code not in any mapping should have null FF columns."""
+        """A SIC code not in any mapping should have null ff49."""
         input_df = pl.DataFrame({"sic": [50], "dummy": [1.0]})
         input_path = str(self._tmp / "input.parquet")
         input_df.write_parquet(input_path)
@@ -161,11 +112,10 @@ class TestFFIndClass:
 
         result = pl.read_parquet("__msf_world3.parquet")
         row = result.row(0, named=True)
-        for c in ["ff5", "ff10", "ff12", "ff17", "ff30", "ff38", "ff48", "ff49"]:
-            assert row[c] is None
+        assert row["ff49"] is None
 
     def test_null_sic_gets_null(self):
-        """A null SIC should result in null FF columns."""
+        """A null SIC should result in null ff49."""
         input_df = pl.DataFrame({"sic": [None]}, schema={"sic": pl.Int64})
         input_path = str(self._tmp / "input.parquet")
         input_df.write_parquet(input_path)
@@ -174,8 +124,7 @@ class TestFFIndClass:
 
         result = pl.read_parquet("__msf_world3.parquet")
         row = result.row(0, named=True)
-        for c in ["ff5", "ff10", "ff12", "ff17", "ff30", "ff38", "ff48", "ff49"]:
-            assert row[c] is None
+        assert row["ff49"] is None
 
     def test_preserves_all_input_rows(self):
         """Output should have the same number of rows as input."""

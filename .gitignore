@@ -46,7 +46,7 @@ data/*
 !data/factor_details.xlsx
 !data/country_classification.xlsx
 !data/cluster_labels.csv
-!data/raw/Siccodes*.txt
+!data/raw/Siccodes49.txt
 !data/**/
 !data/**/.gitkeep
 # ==========================================
@@ -64,7 +64,7 @@ desktop.ini
 *.out
 *.err
 *.txt
-!data/raw/Siccodes*.txt
+!data/raw/Siccodes49.txt
 *.txt~
 *~
 
