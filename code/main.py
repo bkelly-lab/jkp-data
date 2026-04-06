@@ -2,7 +2,6 @@ import polars as pl
 from aux_functions import (
     acc_chars_list,
     ap_factors,
-    aug_msf_v2,
     bidask_hl,
     build_mcti,
     classify_stocks_size_groups,
@@ -48,7 +47,6 @@ end_date = pl.datetime(2025, 12, 31)
 creds = get_wrds_credentials()
 setup_folder_structure()
 download_raw_data_tables(username=creds.username, password=creds.password)
-aug_msf_v2()
 build_mcti()
 gen_raw_data_dfs()
 prepare_comp_sf("both")

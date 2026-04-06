@@ -467,6 +467,7 @@ def gen_raw_data_dfs():
     )
     gen_prihist_files()
     gen_fx1()
+    aug_msf_v2()
     gen_crsp_sf("m").to_parquet("raw_data_dfs/__crsp_sf_m.parquet")
     gen_crsp_sf("d").to_parquet("raw_data_dfs/__crsp_sf_d.parquet")
 
@@ -488,7 +489,10 @@ def gen_crsp_sf(freq):
         Ibis table (not written) with standardized CRSP {m|d} security fields.
     """
     con = ibis.duckdb.connect(threads=os.cpu_count())
-    sf = con.read_parquet(f"../raw/raw_tables/crsp_{freq}sf_v2.parquet")
+    if freq == "m":
+        sf = con.read_parquet("raw_data_dfs/crsp_msf_v2_aug.parquet")
+    else:
+        sf = con.read_parquet("../raw/raw_tables/crsp_dsf_v2.parquet")
     senames = con.read_parquet("../raw/raw_tables/crsp_stksecurityinfohist.parquet")
     ccmxpf_lnkhist = con.read_parquet("../raw/raw_tables/crsp_ccmxpf_lnkhist.parquet")
 
@@ -732,21 +736,21 @@ def aug_msf_v2():
     Description:
         Add month-level high/low transaction-price fields to the CRSP CIZ monthly file (msf_v2)
         using the CRSP CIZ daily file (dsf_v2). Keep all msf_v2 rows; set the new fields to
-        missing for non-TR monthly rows (e.g., BA).
+        missing for non-TR monthly rows (e.g., BA). Called from gen_raw_data_dfs().
 
     Steps:
-        1) Read msf_v2 (monthly) and dsf_v2 (daily) from parquet.
+        1) Read msf_v2 (monthly) and dsf_v2 (daily) from raw_tables parquet.
         2) Filter dsf_v2 to dlyprcflg == "TR", construct yyyymm from dlycaldt, and keep (permno, yyyymm, dlyprc).
         3) For each (permno, yyyymm), compute:
            - mthaskhi = max(dlyprc)
            - mthbidlo = min(dlyprc)
         4) Left-join these two fields onto msf_v2 by (permno, yyyymm).
         5) Set mthaskhi/mthbidlo to NULL when mthprcflg != "TR".
-        6) Overwrite crsp_msf_v2.parquet (via a temp file).
+        6) Write augmented table to raw_data_dfs/crsp_msf_v2_aug.parquet.
 
     Output:
-        Overwrites ../raw/raw_tables/crsp_msf_v2.parquet with two new columns:
-        mthaskhi and mthbidlo.
+        Writes raw_data_dfs/crsp_msf_v2_aug.parquet with all original columns
+        plus mthaskhi and mthbidlo.
     """
     con = ibis.duckdb.connect(threads=os.cpu_count())
     msf = con.read_parquet("../raw/raw_tables/crsp_msf_v2.parquet")
@@ -785,8 +789,7 @@ def aug_msf_v2():
         ),
     )
 
-    msf_aug.to_parquet("../raw/raw_tables/crsp_msf_v2.parquet.tmp")
-    os.replace("../raw/raw_tables/crsp_msf_v2.parquet.tmp", "../raw/raw_tables/crsp_msf_v2.parquet")
+    msf_aug.to_parquet("raw_data_dfs/crsp_msf_v2_aug.parquet")
 
 
 def build_mcti():
@@ -6728,7 +6731,7 @@ def firm_age(data_path):
         )
     )
     crsp_age = (
-        con.read_parquet("../raw/raw_tables/crsp_msf_v2.parquet")
+        con.read_parquet("raw_data_dfs/crsp_msf_v2_aug.parquet")
         .group_by("permco")
         .agg(crsp_first=_.mthcaldt.min())
     )
