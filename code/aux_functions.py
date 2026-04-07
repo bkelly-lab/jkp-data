@@ -1858,9 +1858,26 @@ def combine_crsp_comp_sf():
         1) Connect to DuckDB (persistent file for out-of-core processing).
         2) Create monthly world table: normalize CRSP/Comp → UNION ALL → LEAD(ret_exc).
         3) Derive obs_main: prefer CRSP when multiple observations per (gvkey, iid, eom).
-        4) Write __msf_world.parquet with deterministic dedup (CRSP preferred via ROW_NUMBER).
+        4) Write __msf_world.parquet with deterministic dedup (primary_sec preferred
+           on tie via ROW_NUMBER).
         5) Write world_dsf.parquet: normalize daily → UNION ALL → join obs_main → dedup.
         6) Clean up DuckDB file.
+
+    Note on the dedup tie-break (ORDER BY source_crsp DESC, primary_sec DESC):
+        CRSP rows use raw permno as id (5-digit ints), while Compustat rows construct
+        ids as '1'/'2'/'3' || gvkey || iid[0:2] (9+ digit bigints). These id spaces
+        never overlap, so any (id, eom) partition is either entirely CRSP or entirely
+        Compustat — a "mixed" partition where source_crsp varies cannot exist.
+        That makes `source_crsp DESC` effectively a no-op today; it is kept only to
+        document the intended preference hierarchy and to remain correct if a future
+        change unifies the id schemes.
+
+        The tie-break that actually does the work is `primary_sec DESC`, and it
+        only matters within Compustat partitions. When multiple Compustat rows share
+        the same (id, eom) and disagree on primary_sec, preferring primary_sec=1
+        gives the principled answer — "if any candidate row says this security is
+        primary at this date, treat it as primary" — and makes the output
+        deterministic across engines and row orderings.
 
     Output:
         '__msf_world.parquet' and 'world_dsf.parquet' ready for downstream processing.
@@ -1978,9 +1995,14 @@ def combine_crsp_comp_sf():
                 prc_high, prc_low, dolvol, tvol, ret, ret_local, ret_exc, ret_lag_dif,
                 div_tot, div_cash, div_spc, source_crsp, ret_exc_lead1m, obs_main
             FROM (
+                -- source_crsp DESC is a no-op today (CRSP/Comp ids don't collide);
+                -- primary_sec DESC is the real tie-break: when Compustat rows
+                -- disagree on primary_sec for the same (id, eom), prefer the
+                -- primary one. See combine_crsp_comp_sf docstring for details.
                 SELECT a.*, b.obs_main,
                     ROW_NUMBER() OVER (
-                        PARTITION BY a.id, a.eom ORDER BY a.source_crsp DESC
+                        PARTITION BY a.id, a.eom
+                        ORDER BY a.source_crsp DESC, a.primary_sec DESC
                     ) AS _rn
                 FROM sf_world_m a
                 LEFT JOIN obs_main b ON a.id = b.id AND a.eom = b.eom
@@ -2053,9 +2075,11 @@ def combine_crsp_comp_sf():
                 SELECT * FROM comp_dsf_norm
             ),
             ranked AS (
+                -- See dedup tie-break note in monthly block above.
                 SELECT a.*, b.obs_main,
                     ROW_NUMBER() OVER (
-                        PARTITION BY a.id, a.date ORDER BY a.source_crsp DESC
+                        PARTITION BY a.id, a.date
+                        ORDER BY a.source_crsp DESC, a.primary_sec DESC
                     ) AS _rn
                 FROM sf_world_d a
                 LEFT JOIN obs_main b ON a.id = b.id AND a.eom = b.eom

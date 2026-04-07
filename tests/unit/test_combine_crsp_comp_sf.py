@@ -1077,6 +1077,117 @@ class TestDedupDeterminism:
         _, dsf = duckdb_output
         assert dsf.sort(["id", "date"]).equals(dsf)
 
+    def test_dedup_prefers_primary_sec_monthly(self, tmp_path: Path) -> None:
+        """When two Compustat rows share (id, eom) and differ only on primary_sec,
+        the survivor must be the primary_sec=1 row.
+
+        The combine_crsp_comp_sf dedup tie-break ORDER BY primary_sec DESC must
+        resolve this deterministically by keeping the primary row, regardless
+        of input row order.
+        """
+        base = {
+            "gvkey": "999000",
+            "iid": "07",
+            "excntry": "USA",
+            "exch_main": 1,
+            "tpci": "0",
+            "prcstd": 1,
+            "exchg": 11,
+            "curcdd": "USD",
+            "fx": 1.0,
+            "datadate": date(2020, 6, 30),
+            "eom": date(2020, 6, 30),
+            "ajexdi": 1.0,
+            "cshoc": 100.0,
+            "me": 1000.0,
+            "prc": 50.0,
+            "prc_local": 50.0,
+            "prc_high": 51.0,
+            "prc_low": 49.0,
+            "dolvol": 5000.0,
+            "cshtrm": 100.0,
+            "ret": 0.01,
+            "ret_local": 0.01,
+            "ret_exc": 0.005,
+            "ret_lag_dif": 1,
+            "div_tot": None,
+            "div_cash": None,
+            "div_spc": None,
+        }
+        pl.DataFrame([{**base, "primary_sec": 0}, {**base, "primary_sec": 1}]).cast(
+            {
+                "gvkey": pl.Utf8,
+                "iid": pl.Utf8,
+                "exch_main": pl.Int64,
+                "primary_sec": pl.Int64,
+                "prcstd": pl.Int64,
+                "exchg": pl.Int64,
+                "datadate": pl.Date,
+                "eom": pl.Date,
+                "ret_lag_dif": pl.Int64,
+            }
+        ).write_parquet(tmp_path / "comp_msf.parquet")
+        _make_crsp_msf(tmp_path, n_permnos=0)
+        _make_crsp_dsf(tmp_path, n_permnos=1)
+        _make_comp_dsf(tmp_path, n_gvkeys=0)
+
+        msf, _ = _duckdb_combine_crsp_comp_sf(tmp_path)
+        # id construction: '1' || gvkey || iid[0:2] = '1' || '999000' || '07'
+        expected_id = 199900007
+        survivor = msf.filter((pl.col("id") == expected_id) & (pl.col("eom") == date(2020, 6, 30)))
+        assert survivor.height == 1, f"expected single survivor, got {survivor.height}"
+        assert survivor["primary_sec"][0] == 1
+
+    def test_dedup_prefers_primary_sec_daily(self, tmp_path: Path) -> None:
+        """Same as the monthly case but for the daily dedup.
+
+        Two Compustat daily rows sharing (id, date) and differing only on
+        primary_sec must collapse to the primary_sec=1 row.
+        """
+        base = {
+            "gvkey": "999000",
+            "iid": "07",
+            "excntry": "USA",
+            "exch_main": 1,
+            "tpci": "0",
+            "prcstd": 1,
+            "curcdd": "USD",
+            "fx": 1.0,
+            "datadate": date(2020, 6, 15),
+            "ajexdi": 1.0,
+            "cshoc": 100.0,
+            "me": 1000.0,
+            "dolvol": 5000.0,
+            "cshtrd": 100.0,
+            "prc": 50.0,
+            "prc_high": 51.0,
+            "prc_low": 49.0,
+            "ret_local": 0.01,
+            "ret": 0.01,
+            "ret_exc": 0.005,
+            "ret_lag_dif": 1,
+        }
+        pl.DataFrame([{**base, "primary_sec": 0}, {**base, "primary_sec": 1}]).cast(
+            {
+                "gvkey": pl.Utf8,
+                "iid": pl.Utf8,
+                "exch_main": pl.Int64,
+                "primary_sec": pl.Int64,
+                "prcstd": pl.Int64,
+                "datadate": pl.Date,
+                "ret_lag_dif": pl.Int64,
+            }
+        ).write_parquet(tmp_path / "comp_dsf.parquet")
+        _make_crsp_msf(tmp_path, n_permnos=1)
+        _make_comp_msf(tmp_path, n_gvkeys=0)
+        _make_crsp_dsf(tmp_path, n_permnos=0)
+
+        _, dsf = _duckdb_combine_crsp_comp_sf(tmp_path)
+        expected_id = 199900007
+        survivor = dsf.filter((pl.col("id") == expected_id) & (pl.col("date") == date(2020, 6, 15)))
+        assert survivor.height == 1, f"expected single survivor, got {survivor.height}"
+        assert survivor["primary_sec"][0] == 1
+
 
 # =========================================================================
 # Test Class 6: End-to-End Comparison
