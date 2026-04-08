@@ -2614,6 +2614,79 @@ def return_cutoffs(freq, crsp_only):
     data.sink_parquet(res_path)
 
 
+@measure_time
+def add_ret_exc_wins(freq: str, lower: float = 0.001, upper: float = 0.999) -> None:
+    """
+    Description:
+        Add a winsorized excess return column (ret_exc_wins) to the world security file.
+        Compustat returns (source_crsp == 0) are clipped to the [lower, upper] percentiles
+        of ret_exc using precomputed cutoffs from return_cutoffs{,_daily}.parquet.
+        CRSP returns are left unchanged.
+
+    Steps:
+        1) Validate lower/upper and map them to precomputed cutoff column names.
+        2) Read world_{freq}sf.parquet; drop ret_exc_wins if already present (idempotency).
+        3) Left-join precomputed cutoffs from return_cutoffs{,_daily}.parquet on eom (monthly)
+           or year/month (daily).
+        4) Build ret_exc_wins via pl.when: clip Compustat rows to [lower_col, upper_col],
+           leave CRSP rows and nulls unchanged.
+        5) Collect and overwrite the file.
+
+    Output:
+        Overwrites 'world_{freq}sf.parquet' with ret_exc_wins added.
+    """
+    if not (0 <= lower < upper <= 1):
+        raise ValueError(
+            f"Percentile bounds must satisfy 0 <= lower < upper <= 1, got {lower=}, {upper=}"
+        )
+
+    percentile_to_column = {
+        0.001: "ret_exc_0_1",
+        0.01: "ret_exc_1",
+        0.99: "ret_exc_99",
+        0.999: "ret_exc_99_9",
+    }
+    if lower not in percentile_to_column or upper not in percentile_to_column:
+        raise ValueError(
+            f"lower/upper must be one of {sorted(percentile_to_column)} "
+            f"(matching precomputed cutoffs in return_cutoffs.parquet); "
+            f"got {lower=}, {upper=}"
+        )
+    lower_col = percentile_to_column[lower]
+    upper_col = percentile_to_column[upper]
+
+    data_path = f"world_{freq}sf.parquet"
+    cutoffs_path = "return_cutoffs.parquet" if freq == "m" else "return_cutoffs_daily.parquet"
+    group_vars = ["eom"] if freq == "m" else ["year", "month"]
+
+    data = pl.scan_parquet(data_path)
+    if "ret_exc_wins" in data.collect_schema().names():
+        data = data.drop("ret_exc_wins")
+
+    if freq == "d":
+        data = data.with_columns(
+            year=pl.col("date").dt.year(),
+            month=pl.col("date").dt.month(),
+        )
+
+    cutoffs = pl.scan_parquet(cutoffs_path).select([*group_vars, lower_col, upper_col])
+
+    drop_cols = [lower_col, upper_col]
+    if freq == "d":
+        drop_cols += ["year", "month"]
+
+    result = (
+        data.join(cutoffs, on=group_vars, how="left")
+        .with_columns(
+            ret_exc_wins=pl.when((pl.col("source_crsp") == 0) & pl.col("ret_exc").is_not_null())
+            .then(pl.col("ret_exc").clip(pl.col(lower_col), pl.col(upper_col)))
+            .otherwise(pl.col("ret_exc"))
+        )
+        .drop(drop_cols)
+    )
+    result.collect(streaming=(freq == "d")).write_parquet(data_path)
+
+
 def load_mkt_returns_params(freq):
     """
     Description:
@@ -7603,7 +7676,7 @@ def save_daily_ret():
     """
     data = (
         pl.scan_parquet("../interim/world_dsf.parquet")
-        .select(["excntry", "id", "date", "me", "ret", "ret_exc"])
+        .select(["excntry", "id", "date", "me", "ret", "ret_exc", "ret_exc_wins"])
         .with_columns(
             excntry=pl.when(col("excntry").is_null())
             .then(pl.lit("null_country"))
@@ -7701,7 +7774,7 @@ def save_monthly_ret():
         Parquet file with monthly returns by country/security.
     """
     data = pl.scan_parquet("../interim/world_msf.parquet").select(
-        ["excntry", "id", "source_crsp", "eom", "me", "ret_exc", "ret", "ret_local"]
+        ["excntry", "id", "source_crsp", "eom", "me", "ret_exc", "ret", "ret_local", "ret_exc_wins"]
     )
     data.select(pl.all().shrink_dtype()).collect().write_parquet(
         "return_data/world_ret_monthly.parquet"
