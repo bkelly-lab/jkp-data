@@ -123,17 +123,8 @@ Jensen is at Yale School of Management; \url{www.tijensen.com}. Kelly is at AQR 
 \textbf{Date} & \textbf{Changes} \\
 \hline
 \endhead
-04-03-2026 &
-\textbullet~Added \texttt{ret\_exc\_wins} column to \texttt{world\_dsf}, \texttt{world\_msf}, and \texttt{world\_data}. This is a pre-winsorized excess return clipped at the 0.1\%/99.9\% percentiles per month. CRSP returns are left unchanged; only Compustat returns are winsorized. \\
-&
-Affected output files:
-\begin{enumerate}[nosep, leftmargin=*]
-    \item \texttt{return\_data/world\_dsf.parquet}
-    \item \texttt{return\_data/world\_ret\_monthly.parquet}
-    \item \texttt{return\_data/daily\_rets\_by\_country/}
-    \item \texttt{characteristics/world\_data\_unfiltered.parquet}
-    \item \texttt{characteristics/world\_data\_filtered.parquet}
-\end{enumerate} \\
+04-03-2026 & \textbullet~Added \texttt{ret\_exc\_wins} column to \texttt{world\_dsf}, \texttt{world\_msf}, and \texttt{world\_data}. This is a pre-winsorized excess return clipped at the 0.1\%/99.9\% percentiles per period using cutoffs from \texttt{return\_cutoffs.parquet} / \texttt{return\_cutoffs\_daily.parquet}. CRSP returns are left unchanged; only Compustat returns are winsorized. \\
+& \textbullet~Affected output files: \texttt{return\_data/world\_dsf.parquet}, \texttt{return\_data/world\_ret\_monthly.parquet}, \texttt{return\_data/daily\_rets\_by\_country/}, \texttt{characteristics/world\_data\_unfiltered.parquet}, \texttt{characteristics/world\_data\_filtered.parquet}. \\
 \hline
 03-05-2025 & \textbullet~Updated market returns macro to add a capped value option. \\
 & \textbullet~Corrected error in o-score calculation. \\
@@ -1980,6 +1971,8 @@ $\\
     
     Excess Return t+1 & ret\_exc\_lead1m\mbox{*} &  Excess return (ret\_exc\mbox{*}) in month t+1 \\
 
+    Excess Return Winsorized & ret\_exc\_wins\mbox{*} & Equal to ret\_exc\mbox{*}; CRSP returns are not winsorized. \\
+
     Time Since Most Recent Return & ret\_lag\_dif\mbox{*} & We automatically set this to 1 \\
     
     Cumulative Return & ri\mbox{*} & This is the cumulative return estimated from RET\mbox{*}\\
@@ -2024,7 +2017,9 @@ $\\
     \href{https://wrds-www.wharton.upenn.edu/data-dictionary/ff_all/factors_monthly/#row-rf}{RF}. If the return is a monthly return rather than a daily return, the T30RET is divided by 1 rather than 21. \\
     
     Excess Return t+1 & ret\_exc\_lead1m\mbox{*} &  Excess return (ret\_exc\mbox{*}) in month t+1 \\
-    
+
+    Excess Return Winsorized & ret\_exc\_wins\mbox{*} & ret\_exc\mbox{*} clipped to the [0.1\%, 99.9\%] percentiles of ret\_exc\mbox{*} for the same period. Cutoffs are precomputed in \texttt{return\_cutoffs.parquet} (monthly) and \texttt{return\_cutoffs\_daily.parquet} (daily) from filtered stocks (\texttt{common=1}, \texttt{obs\_main=1}, \texttt{exch\_main=1}, \texttt{primary\_sec=1}, \texttt{excntry$\neq$ZWE}). \\
+
     Time Since Most Recent Return  & ret\_lag\_dif\mbox{*} & We estimate the number of days since the previous return. If the returns are monthly rather than daily, then the time is in months\\
  
     

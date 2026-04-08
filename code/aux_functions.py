@@ -2616,38 +2616,71 @@ def add_ret_exc_wins(freq: str, lower: float = 0.001, upper: float = 0.999) -> N
     """
     Description:
         Add a winsorized excess return column (ret_exc_wins) to the world security file.
-        Compustat returns are clipped to the [lower, upper] percentiles of ret_exc per eom.
+        Compustat returns (source_crsp == 0) are clipped to the [lower, upper] percentiles
+        of ret_exc using precomputed cutoffs from return_cutoffs{,_daily}.parquet.
         CRSP returns are left unchanged.
 
     Steps:
-        1) Read world_{freq}sf.parquet; drop ret_exc_wins if already present (idempotency).
-        2) Compute ret_exc_wins via SQL window: QUANTILE_DISC percentiles over eom,
-           clipped with GREATEST/LEAST, applied only to Compustat rows (id > 99999).
-        3) Collect and overwrite the file.
+        1) Validate lower/upper and map them to precomputed cutoff column names.
+        2) Read world_{freq}sf.parquet; drop ret_exc_wins if already present (idempotency).
+        3) Left-join precomputed cutoffs from return_cutoffs{,_daily}.parquet on eom (monthly)
+           or year/month (daily).
+        4) Build ret_exc_wins via pl.when: clip Compustat rows to [lower_col, upper_col],
+           leave CRSP rows and nulls unchanged.
+        5) Collect and overwrite the file.
 
     Output:
         Overwrites 'world_{freq}sf.parquet' with ret_exc_wins added.
     """
+    if not (0 <= lower < upper <= 1):
+        raise ValueError(
+            f"Percentile bounds must satisfy 0 <= lower < upper <= 1, got {lower=}, {upper=}"
+        )
+
+    percentile_to_column = {
+        0.001: "ret_exc_0_1",
+        0.01: "ret_exc_1",
+        0.99: "ret_exc_99",
+        0.999: "ret_exc_99_9",
+    }
+    if lower not in percentile_to_column or upper not in percentile_to_column:
+        raise ValueError(
+            f"lower/upper must be one of {sorted(percentile_to_column)} "
+            f"(matching precomputed cutoffs in return_cutoffs.parquet); "
+            f"got {lower=}, {upper=}"
+        )
+    lower_col = percentile_to_column[lower]
+    upper_col = percentile_to_column[upper]
+
     data_path = f"world_{freq}sf.parquet"
+    cutoffs_path = "return_cutoffs.parquet" if freq == "m" else "return_cutoffs_daily.parquet"
+    group_vars = ["eom"] if freq == "m" else ["year", "month"]
+
     data = pl.scan_parquet(data_path)
     if "ret_exc_wins" in data.collect_schema().names():
         data = data.drop("ret_exc_wins")
 
-    result = data.sql(f"""
-        SELECT *,
-            CASE
-                WHEN id > 99999 AND ret_exc IS NOT NULL THEN
-                    GREATEST(
-                        QUANTILE_DISC(ret_exc, {lower}) OVER (PARTITION BY eom),
-                        LEAST(
-                            ret_exc,
-                            QUANTILE_DISC(ret_exc, {upper}) OVER (PARTITION BY eom)
-                        )
-                    )
-                ELSE ret_exc
-            END AS ret_exc_wins
-        FROM self
-    """)
+    if freq == "d":
+        data = data.with_columns(
+            year=pl.col("date").dt.year(),
+            month=pl.col("date").dt.month(),
+        )
+
+    cutoffs = pl.scan_parquet(cutoffs_path).select([*group_vars, lower_col, upper_col])
+
+    drop_cols = [lower_col, upper_col]
+    if freq == "d":
+        drop_cols += ["year", "month"]
+
+    result = (
+        data.join(cutoffs, on=group_vars, how="left")
+        .with_columns(
+            ret_exc_wins=pl.when((pl.col("source_crsp") == 0) & pl.col("ret_exc").is_not_null())
+            .then(pl.col("ret_exc").clip(pl.col(lower_col), pl.col(upper_col)))
+            .otherwise(pl.col("ret_exc"))
+        )
+        .drop(drop_cols)
+    )
     result.collect(streaming=(freq == "d")).write_parquet(data_path)
 
 
