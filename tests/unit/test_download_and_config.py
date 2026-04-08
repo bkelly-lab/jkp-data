@@ -279,8 +279,8 @@ class TestSaveMainData:
         assert len(output) == 1, f"Expected 1 row after filtering, got {len(output)}"
         assert output["id"][0] == "A", f"Expected row A, got {output['id'][0]}"
 
-    def test_no_eom_date_filter(self, tmp_path):
-        """All dates should pass through — there should be no eom <= end_date filter."""
+    def test_eom_date_filter_drops_post_end_date_rows(self, tmp_path):
+        """Belt-and-suspenders: rows with eom > END_DATE must be dropped before output."""
         world_data = pl.DataFrame(
             {
                 "id": ["A", "A"],
@@ -297,4 +297,122 @@ class TestSaveMainData:
         self._run_save_main_data(tmp_path)
 
         output = pl.read_parquet(tmp_path / "world_data_filtered.parquet")
-        assert len(output) == 2, f"Expected both rows (no date filter), got {len(output)}"
+        assert len(output) == 1, f"Expected only the in-sample row, got {len(output)}"
+        assert output["eom"][0] == date(2020, 1, 31)
+        assert output["eom"].max() <= END_DATE
+
+
+# =============================================================================
+# Tests: save_daily_ret
+# =============================================================================
+
+
+class TestSaveDailyRet:
+    """Tests for save_daily_ret().
+
+    The function reads ../interim/world_dsf.parquet and writes
+    ../interim/daily_returns_temp.parquet before partitioning by country via
+    DuckDB. We mock duckdb/os.system/os.chdir and verify the temp parquet only
+    contains in-sample rows (date <= END_DATE).
+    """
+
+    def _run_save_daily_ret(self, work_dir: Path) -> None:
+        """Chdir to work_dir and run save_daily_ret with side effects mocked."""
+        import os
+
+        from aux_functions import save_daily_ret
+
+        original_cwd = os.getcwd()
+        os.chdir(str(work_dir))
+        try:
+            with (
+                patch("aux_functions.os.system"),
+                patch("aux_functions.duckdb") as mock_duckdb,
+            ):
+                mock_duckdb.connect.return_value = MagicMock()
+                save_daily_ret()
+        finally:
+            os.chdir(original_cwd)
+
+    def test_date_filter_drops_post_end_date_rows(self, tmp_path):
+        """Belt-and-suspenders: rows with date > END_DATE must be dropped before output."""
+        work_dir = tmp_path / "work"
+        interim_dir = tmp_path / "interim"
+        work_dir.mkdir()
+        interim_dir.mkdir()
+
+        world_dsf = pl.DataFrame(
+            {
+                "excntry": ["USA", "USA"],
+                "id": ["A", "A"],
+                "date": [date(2020, 6, 15), date(2099, 12, 31)],
+                "me": [100.0, 200.0],
+                "ret": [0.01, 0.02],
+                "ret_exc": [0.005, 0.015],
+            }
+        )
+        world_dsf.write_parquet(interim_dir / "world_dsf.parquet")
+
+        self._run_save_daily_ret(work_dir)
+
+        output = pl.read_parquet(interim_dir / "daily_returns_temp.parquet")
+        assert len(output) == 1, f"Expected only the in-sample row, got {len(output)}"
+        assert output["date"][0] == date(2020, 6, 15)
+        assert output["date"].max() <= END_DATE
+
+
+# =============================================================================
+# Tests: save_monthly_ret
+# =============================================================================
+
+
+class TestSaveMonthlyRet:
+    """Tests for save_monthly_ret().
+
+    The function reads ../interim/world_msf.parquet and writes
+    return_data/world_ret_monthly.parquet. We chdir into a temp work dir with
+    a sibling interim/ dir holding the input fixture and a return_data/
+    subdir for the output.
+    """
+
+    def _run_save_monthly_ret(self, work_dir: Path) -> None:
+        """Chdir to work_dir and run save_monthly_ret."""
+        import os
+
+        from aux_functions import save_monthly_ret
+
+        original_cwd = os.getcwd()
+        os.chdir(str(work_dir))
+        try:
+            save_monthly_ret()
+        finally:
+            os.chdir(original_cwd)
+
+    def test_eom_date_filter_drops_post_end_date_rows(self, tmp_path):
+        """Belt-and-suspenders: rows with eom > END_DATE must be dropped before output."""
+        work_dir = tmp_path / "work"
+        interim_dir = tmp_path / "interim"
+        work_dir.mkdir()
+        interim_dir.mkdir()
+        (work_dir / "return_data").mkdir()
+
+        world_msf = pl.DataFrame(
+            {
+                "excntry": ["USA", "USA"],
+                "id": ["A", "A"],
+                "source_crsp": [1, 1],
+                "eom": [date(2020, 1, 31), date(2099, 12, 31)],
+                "me": [100.0, 200.0],
+                "ret_exc": [0.01, 0.02],
+                "ret": [0.015, 0.025],
+                "ret_local": [0.012, 0.022],
+            }
+        )
+        world_msf.write_parquet(interim_dir / "world_msf.parquet")
+
+        self._run_save_monthly_ret(work_dir)
+
+        output = pl.read_parquet(work_dir / "return_data" / "world_ret_monthly.parquet")
+        assert len(output) == 1, f"Expected only the in-sample row, got {len(output)}"
+        assert output["eom"][0] == date(2020, 1, 31)
+        assert output["eom"].max() <= END_DATE

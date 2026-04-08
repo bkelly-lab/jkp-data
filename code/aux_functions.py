@@ -10,6 +10,7 @@ import ibis
 import polars as pl
 import polars_ds as pds
 import polars_ols  # noqa: F401 - required for least_squares method on polars expressions
+from config import END_DATE
 from ibis import _
 from polars import col
 
@@ -656,7 +657,7 @@ def build_projection(cols):
 
 def download_wrds_table(
     conninfo: str,
-    duckdb_conn,
+    duckdb_conn: duckdb.DuckDBPyConnection,
     table_name: str,
     filename: str,
     date_column: str | None = None,
@@ -690,8 +691,7 @@ def download_raw_data_tables(username: str, password: str, end_date: date | None
         1) Connect to WRDS; iterate through a fixed list of library.tables.
         2) For each table: download to raw_tables/lib_table.parquet, applying date filtering
            when end_date is provided and the table has a known date column.
-        3) Additionally fetch comp.secd and comp.g_secd with curated columns.
-        4) Disconnect.
+        3) Disconnect.
 
     Output:
         Parquet files under raw_tables/ (Compustat, CRSP, FF, etc.).
@@ -7540,6 +7540,7 @@ def save_main_data():
     months_exp = (col("eom").dt.year() * 12 + col("eom").dt.month()).cast(pl.Int64)
     data = (
         pl.scan_parquet("world_data.parquet")
+        .filter(pl.col("eom") <= END_DATE)
         .with_columns(dif_aux=months_exp)
         .sort(["id", "eom"])
         .with_columns(
@@ -7629,6 +7630,7 @@ def save_daily_ret():
     data = (
         pl.scan_parquet("../interim/world_dsf.parquet")
         .select(["excntry", "id", "date", "me", "ret", "ret_exc"])
+        .filter(pl.col("date") <= END_DATE)
         .with_columns(
             excntry=pl.when(col("excntry").is_null())
             .then(pl.lit("null_country"))
@@ -7725,8 +7727,10 @@ def save_monthly_ret():
     Output:
         Parquet file with monthly returns by country/security.
     """
-    data = pl.scan_parquet("../interim/world_msf.parquet").select(
-        ["excntry", "id", "source_crsp", "eom", "me", "ret_exc", "ret", "ret_local"]
+    data = (
+        pl.scan_parquet("../interim/world_msf.parquet")
+        .select(["excntry", "id", "source_crsp", "eom", "me", "ret_exc", "ret", "ret_local"])
+        .filter(pl.col("eom") <= END_DATE)
     )
     data.select(pl.all().shrink_dtype()).collect().write_parquet(
         "return_data/world_ret_monthly.parquet"
