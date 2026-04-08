@@ -65,7 +65,7 @@ After triaging Copilot's suggestions, resolve all Copilot review threads on the 
    gh api graphql -f query='{ repository(owner: "bkelly-lab", name: "jkp-data") { pullRequest(number: <PR>) { reviewThreads(first: 20) { nodes { id isResolved comments(first: 1) { nodes { author { login } } } } } } } }'
    ```
 
-2. For each unresolved thread from `copilot-pull-request-reviewer`, resolve it:
+2. For each unresolved thread from `copilot-pull-request-reviewer[bot]`, resolve it:
    ```
    gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "<THREAD_ID>"}) { thread { isResolved } } }'
    ```

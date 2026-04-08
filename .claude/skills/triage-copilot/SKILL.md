@@ -34,7 +34,7 @@ Run these commands to gather Copilot's feedback:
    gh pr diff <PR>
    ```
 
-If no Copilot review exists, report that and suggest running `gh pr edit <PR> --add-assignee @copilot` to request one.
+If no Copilot review exists, report that and suggest running `gh pr edit <PR> --add-reviewer copilot` to request one.
 
 ## Step 3: Delegate to agent
 
