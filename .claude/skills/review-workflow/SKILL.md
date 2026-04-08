@@ -175,14 +175,9 @@ Ask the reviewer to describe their observations. Incorporate them into the revie
 
 When this skill is run on a PR that already has review comments from the reviewer:
 
-1. **Detect new commits** since the last review:
-   ```
-   gh api repos/bkelly-lab/jkp-data/pulls/<PR>/commits --jq '.[-1].commit.committer.date'
-   ```
-   Compare with the timestamp of the last review comment.
-
-2. **Skip Copilot** — do not re-request a review. Copilot triage was done in the first pass.
-
-3. **Run `/review-pr`** focused on changes since the last review. Note which previous findings have been addressed.
-
-4. **Return to Phase 3** — present updated findings and ask the reviewer to decide.
+Follow the `/verify-review` skill instructions for this PR. This handles:
+- Finding the prior review comment and parsing checklist items
+- Identifying response commits and computing the scoped diff
+- Verifying each item against the diff
+- Running lightweight new-issue detection (code-critic on response diff only)
+- Presenting a decision point (approve, request further changes, or manual review)
