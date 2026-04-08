@@ -1,5 +1,6 @@
 import datetime
 import os
+import re
 import time
 from datetime import date
 from math import exp, sqrt
@@ -2440,698 +2441,69 @@ def comp_industry():
     con.disconnect()
 
 
+def _parse_siccodes_file(filename: str, label: str) -> pl.DataFrame:
+    """Parse a single Fama-French Siccodes text file into a SIC→category DataFrame.
+
+    Each file contains numbered industry categories with SIC code ranges.
+    Returns a DataFrame with columns ``sic`` (Int64) and *label* (Int32).
+    """
+    header_re = re.compile(r"^\s*(\d+)\s+\S+.*$")
+    range_re = re.compile(r"^\s*(\d{4})-(\d{4})(?:\b.*)?$")
+
+    result: dict[int, list[int]] = {}
+    current_category: int | None = None
+
+    with open(filename, encoding="utf-8") as f:
+        for raw_line in f:
+            line = raw_line.rstrip()
+
+            header_match = header_re.match(line)
+            if header_match:
+                current_category = int(header_match.group(1))
+                result[current_category] = []
+                continue
+
+            range_match = range_re.match(line)
+            if range_match and current_category is not None:
+                start = int(range_match.group(1))
+                end = int(range_match.group(2))
+                result[current_category].extend(range(start, end + 1))
+
+    rows = [{label: ff, "sic": sic_list} for ff, sic_list in result.items()]
+
+    return (
+        pl.DataFrame(
+            rows,
+            schema={"sic": pl.List(pl.Int64), label: pl.Int32},
+            orient="row",
+        )
+        .sort(label)
+        .explode("sic")
+        .drop_nulls()
+    )
+
+
 @measure_time
-def ff_ind_class(data_path, ff_grps):
+def ff_ind_class(data_path: str) -> None:
     """
     Description:
-        Assign Fama–French industry classifications (38-group or 49-group) based on SIC codes.
+        Assign Fama-French 49 industry classification based on SIC codes.
 
     Steps:
-        1) If ff_grps==38: define lower/upper SIC bounds; iterate to map to ff38 groups (2..N),
-        with special rule for (100–999) → 1; set null when no match.
-        2) Else: build ff49 via explicit SIC enumerations/ranges per FF (Ken French) taxonomy.
-        3) Attach the classification column to input data and write __msf_world3.parquet.
+        1) Parse data/raw/Siccodes49.txt to build a SIC→FF49 mapping.
+           Only SIC codes explicitly listed receive non-null values.
+        2) Left-join the input data on 'sic' to attach the ff49 column.
+        3) Write __msf_world3.parquet.
 
     Output:
-        Parquet __msf_world3.parquet with an added ff38 or ff49 integer column.
+        Parquet __msf_world3.parquet with added ff49 column (Int32).
     """
+    # The parser can handle other Fama-French classifications
+    # (e.g., Siccodes5.txt through Siccodes48.txt).
+    raw_dir = os.path.join(os.path.dirname(__file__), "..", "data", "raw")
+    mapping = _parse_siccodes_file(os.path.join(raw_dir, "Siccodes49.txt"), label="ff49").lazy()
     data = pl.scan_parquet(data_path)
-    if ff_grps == 38:
-        lower_bounds = [
-            1000,
-            1300,
-            1400,
-            1500,
-            2000,
-            2100,
-            2200,
-            2300,
-            2400,
-            2500,
-            2600,
-            2700,
-            2800,
-            2900,
-            3000,
-            3100,
-            3200,
-            3300,
-            3400,
-            3500,
-            3600,
-            3700,
-            3800,
-            3900,
-            4000,
-            4800,
-            4830,
-            4900,
-            4950,
-            4960,
-            4970,
-            5000,
-            5200,
-            6000,
-            7000,
-            9000,
-        ]
-        upper_bounds = [
-            1299,
-            1399,
-            1499,
-            1799,
-            2099,
-            2199,
-            2299,
-            2399,
-            2499,
-            2599,
-            2661,
-            2799,
-            2899,
-            2999,
-            3099,
-            3199,
-            3299,
-            3399,
-            3499,
-            3599,
-            3699,
-            3799,
-            3879,
-            3999,
-            4799,
-            4829,
-            4899,
-            4949,
-            4959,
-            4969,
-            4979,
-            5199,
-            5999,
-            6999,
-            8999,
-            9999,
-        ]
-        classification = [i + 2 for i in range(len(lower_bounds))]
-        ff38_exp = pl.when(col("sic").is_between(100, 999)).then(1)
-        for i, j, k in zip(lower_bounds, upper_bounds, classification, strict=True):
-            ff38_exp = ff38_exp.when(col("sic").is_between(i, j)).then(k)
-        ff38_exp = (ff38_exp.otherwise(pl.lit(None))).alias("ff38")
-        data = data.with_columns(ff38_exp)
-    else:
-        data = data.with_columns(
-            pl.when(
-                col("sic").is_in(
-                    [
-                        2048,
-                        *range(100, 299 + 1),
-                        *range(700, 799 + 1),
-                        *range(910, 919 + 1),
-                    ]
-                )
-            )
-            .then(1)
-            .when(
-                col("sic").is_in(
-                    [
-                        2095,
-                        2098,
-                        2099,
-                        *range(2000, 2046 + 1),
-                        *range(2050, 2063 + 1),
-                        *range(2070, 2079 + 1),
-                        *range(2090, 2092 + 1),
-                    ]
-                )
-            )
-            .then(2)
-            .when(col("sic").is_in([2086, 2087, 2096, 2097, *range(2064, 2068 + 1)]))
-            .then(3)
-            .when(col("sic").is_in([2080, *range(2082, 2085 + 1)]))
-            .then(4)
-            .when(col("sic").is_in([*range(2100, 2199 + 1)]))
-            .then(5)
-            .when(
-                col("sic").is_in(
-                    [
-                        3732,
-                        3930,
-                        3931,
-                        *range(920, 999 + 1),
-                        *range(3650, 3652 + 1),
-                        *range(3940, 3949 + 1),
-                    ]
-                )
-            )
-            .then(6)
-            .when(
-                col("sic").is_in(
-                    [
-                        7840,
-                        7841,
-                        7900,
-                        7910,
-                        7911,
-                        7980,
-                        *range(7800, 7833 + 1),
-                        *range(7920, 7933 + 1),
-                        *range(7940, 7949 + 1),
-                        *range(7990, 7999 + 1),
-                    ]
-                )
-            )
-            .then(7)
-            .when(col("sic").is_in([2770, 2771, *range(2700, 2749 + 1), *range(2780, 2799 + 1)]))
-            .then(8)
-            .when(
-                col("sic").is_in(
-                    [
-                        2047,
-                        2391,
-                        2392,
-                        3160,
-                        3161,
-                        3229,
-                        3260,
-                        3262,
-                        3263,
-                        3269,
-                        3230,
-                        3231,
-                        3750,
-                        3751,
-                        3800,
-                        3860,
-                        3861,
-                        3910,
-                        3911,
-                        3914,
-                        3915,
-                        3991,
-                        3995,
-                        *range(2510, 2519 + 1),
-                        *range(2590, 2599 + 1),
-                        *range(2840, 2844 + 1),
-                        *range(3170, 3172 + 1),
-                        *range(3190, 3199 + 1),
-                        *range(3630, 3639 + 1),
-                        *range(3870, 3873 + 1),
-                        *range(3960, 3962 + 1),
-                    ]
-                )
-            )
-            .then(9)
-            .when(
-                col("sic").is_in(
-                    [
-                        3020,
-                        3021,
-                        3130,
-                        3131,
-                        3150,
-                        3151,
-                        *range(2300, 2390 + 1),
-                        *range(3100, 3111 + 1),
-                        *range(3140, 3149 + 1),
-                        *range(3963, 3965 + 1),
-                    ]
-                )
-            )
-            .then(10)
-            .when(col("sic").is_in([*range(8000, 8099 + 1)]))
-            .then(11)
-            .when(col("sic").is_in([3693, 3850, 3851, *range(3840, 3849 + 1)]))
-            .then(12)
-            .when(col("sic").is_in([2830, 2831, *range(2833, 2836 + 1)]))
-            .then(13)
-            .when(
-                col("sic").is_in(
-                    [
-                        *range(2800, 2829 + 1),
-                        *range(2850, 2879 + 1),
-                        *range(2890, 2899 + 1),
-                    ]
-                )
-            )
-            .then(14)
-            .when(col("sic").is_in([3031, 3041, *range(3050, 3053 + 1), *range(3060, 3099 + 1)]))
-            .then(15)
-            .when(
-                col("sic").is_in(
-                    [
-                        *range(2200, 2284 + 1),
-                        *range(2290, 2295 + 1),
-                        *range(2297, 2299 + 1),
-                        *range(2393, 2395 + 1),
-                        *range(2397, 2399 + 1),
-                    ]
-                )
-            )
-            .then(16)
-            .when(
-                col("sic").is_in(
-                    [
-                        2660,
-                        2661,
-                        3200,
-                        3210,
-                        3211,
-                        3240,
-                        3241,
-                        3261,
-                        3264,
-                        3280,
-                        3281,
-                        3446,
-                        3996,
-                        *range(800, 899 + 1),
-                        *range(2400, 2439 + 1),
-                        *range(2450, 2459 + 1),
-                        *range(2490, 2499 + 1),
-                        *range(2950, 2952 + 1),
-                        *range(3250, 3259 + 1),
-                        *range(3270, 3275 + 1),
-                        *range(3290, 3293 + 1),
-                        *range(3295, 3299 + 1),
-                        *range(3420, 3429 + 1),
-                        *range(3430, 3433 + 1),
-                        *range(3440, 3442 + 1),
-                        *range(3448, 3452 + 1),
-                        *range(3490, 3499 + 1),
-                    ]
-                )
-            )
-            .then(17)
-            .when(
-                col("sic").is_in(
-                    [
-                        *range(1500, 1511 + 1),
-                        *range(1520, 1549 + 1),
-                        *range(1600, 1799 + 1),
-                    ]
-                )
-            )
-            .then(18)
-            .when(
-                col("sic").is_in(
-                    [
-                        3300,
-                        *range(3310, 3317 + 1),
-                        *range(3320, 3325 + 1),
-                        *range(3330, 3341 + 1),
-                        *range(3350, 3357 + 1),
-                        *range(3360, 3379 + 1),
-                        *range(3390, 3399 + 1),
-                    ]
-                )
-            )
-            .then(19)
-            .when(col("sic").is_in([3400, 3443, 3444, *range(3460, 3479 + 1)]))
-            .then(20)
-            .when(
-                col("sic").is_in(
-                    [
-                        3538,
-                        3585,
-                        3586,
-                        *range(3510, 3536 + 1),
-                        *range(3540, 3569 + 1),
-                        *range(3580, 3582 + 1),
-                        *range(3589, 3599 + 1),
-                    ]
-                )
-            )
-            .then(21)
-            .when(
-                col("sic").is_in(
-                    [
-                        3600,
-                        3620,
-                        3621,
-                        3648,
-                        3649,
-                        3660,
-                        3699,
-                        *range(3610, 3613 + 1),
-                        *range(3623, 3629 + 1),
-                        *range(3640, 3646 + 1),
-                        *range(3690, 3692 + 1),
-                    ]
-                )
-            )
-            .then(22)
-            .when(
-                col("sic").is_in(
-                    [
-                        2296,
-                        2396,
-                        3010,
-                        3011,
-                        3537,
-                        3647,
-                        3694,
-                        3700,
-                        3710,
-                        3711,
-                        3799,
-                        *range(3713, 3716 + 1),
-                        *range(3790, 3792 + 1),
-                    ]
-                )
-            )
-            .then(23)
-            .when(col("sic").is_in([3720, 3721, 3728, 3729, *range(3723, 3725 + 1)]))
-            .then(24)
-            .when(col("sic").is_in([3730, 3731, *range(3740, 3743 + 1)]))
-            .then(25)
-            .when(col("sic").is_in([3795, *range(3760, 3769 + 1), *range(3480, 3489 + 1)]))
-            .then(26)
-            .when(col("sic").is_in([*range(1040, 1049 + 1)]))
-            .then(27)
-            .when(
-                col("sic").is_in(
-                    [
-                        *range(1000, 1039 + 1),
-                        *range(1050, 1119 + 1),
-                        *range(1400, 1499 + 1),
-                    ]
-                )
-            )
-            .then(28)
-            .when(col("sic").is_in([*range(1200, 1299 + 1)]))
-            .then(29)
-            .when(
-                col("sic").is_in(
-                    [
-                        1300,
-                        1389,
-                        *range(1310, 1339 + 1),
-                        *range(1370, 1382 + 1),
-                        *range(2900, 2912 + 1),
-                        *range(2990, 2999 + 1),
-                    ]
-                )
-            )
-            .then(30)
-            .when(
-                col("sic").is_in(
-                    [
-                        4900,
-                        4910,
-                        4911,
-                        4939,
-                        *range(4920, 4925 + 1),
-                        *range(4930, 4932 + 1),
-                        *range(4940, 4942 + 1),
-                    ]
-                )
-            )
-            .then(31)
-            .when(
-                col("sic").is_in(
-                    [
-                        4800,
-                        4899,
-                        *range(4810, 4813 + 1),
-                        *range(4820, 4822 + 1),
-                        *range(4830, 4841 + 1),
-                        *range(4880, 4892 + 1),
-                    ]
-                )
-            )
-            .then(32)
-            .when(
-                col("sic").is_in(
-                    [
-                        7020,
-                        7021,
-                        7200,
-                        7230,
-                        7231,
-                        7240,
-                        7241,
-                        7250,
-                        7251,
-                        7395,
-                        7500,
-                        7600,
-                        7620,
-                        7622,
-                        7623,
-                        7640,
-                        7641,
-                        *range(7030, 7033 + 1),
-                        *range(7210, 7212 + 1),
-                        *range(7214, 7217 + 1),
-                        *range(7219, 7221 + 1),
-                        *range(7260, 7299 + 1),
-                        *range(7520, 7549 + 1),
-                        *range(7629, 7631 + 1),
-                        *range(7690, 7699 + 1),
-                        *range(8100, 8499 + 1),
-                        *range(8600, 8699 + 1),
-                        *range(8800, 8899 + 1),
-                        *range(7510, 7515 + 1),
-                    ]
-                )
-            )
-            .then(33)
-            .when(
-                col("sic").is_in(
-                    [
-                        3993,
-                        7218,
-                        7300,
-                        7374,
-                        7396,
-                        7397,
-                        7399,
-                        7519,
-                        8700,
-                        8720,
-                        8721,
-                        *range(2750, 2759 + 1),
-                        *range(7310, 7342 + 1),
-                        *range(7349, 7353 + 1),
-                        *range(7359, 7369 + 1),
-                        *range(7376, 7385 + 1),
-                        *range(7389, 7394 + 1),
-                        *range(8710, 8713 + 1),
-                        *range(8730, 8734 + 1),
-                        *range(8740, 8748 + 1),
-                        *range(8900, 8911 + 1),
-                        *range(8920, 8999 + 1),
-                        *range(4220, 4229 + 1),
-                    ]
-                )
-            )
-            .then(34)
-            .when(col("sic").is_in([3695, *range(3570, 3579 + 1), *range(3680, 3689 + 1)]))
-            .then(35)
-            .when(col("sic").is_in([7375, *range(7370, 7373 + 1)]))
-            .then(36)
-            .when(
-                col("sic").is_in([3622, 3810, 3812, *range(3661, 3666 + 1), *range(3669, 3679 + 1)])
-            )
-            .then(37)
-            .when(col("sic").is_in([3811, *range(3820, 3827 + 1), *range(3829, 3839 + 1)]))
-            .then(38)
-            .when(
-                col("sic").is_in(
-                    [
-                        2760,
-                        2761,
-                        *range(2520, 2549 + 1),
-                        *range(2600, 2639 + 1),
-                        *range(2670, 2699 + 1),
-                        *range(3950, 3955 + 1),
-                    ]
-                )
-            )
-            .then(39)
-            .when(
-                col("sic").is_in(
-                    [
-                        3220,
-                        3221,
-                        *range(2440, 2449 + 1),
-                        *range(2640, 2659 + 1),
-                        *range(3410, 3412 + 1),
-                    ]
-                )
-            )
-            .then(40)
-            .when(
-                col("sic").is_in(
-                    [
-                        4100,
-                        4130,
-                        4131,
-                        4150,
-                        4151,
-                        4230,
-                        4231,
-                        4780,
-                        4789,
-                        *range(4000, 4013 + 1),
-                        *range(4040, 4049 + 1),
-                        *range(4110, 4121 + 1),
-                        *range(4140, 4142 + 1),
-                        *range(4170, 4173 + 1),
-                        *range(4190, 4200 + 1),
-                        *range(4210, 4219 + 1),
-                        *range(4240, 4249 + 1),
-                        *range(4400, 4700 + 1),
-                        *range(4710, 4712 + 1),
-                        *range(4720, 4749 + 1),
-                        *range(4782, 4785 + 1),
-                    ]
-                )
-            )
-            .then(41)
-            .when(
-                col("sic").is_in(
-                    [
-                        5000,
-                        5099,
-                        5100,
-                        *range(5010, 5015 + 1),
-                        *range(5020, 5023 + 1),
-                        *range(5030, 5060 + 1),
-                        *range(5063, 5065 + 1),
-                        *range(5070, 5078 + 1),
-                        *range(5080, 5088 + 1),
-                        *range(5090, 5094 + 1),
-                        *range(5110, 5113 + 1),
-                        *range(5120, 5122 + 1),
-                        *range(5130, 5172 + 1),
-                        *range(5180, 5182 + 1),
-                        *range(5190, 5199 + 1),
-                    ]
-                )
-            )
-            .then(42)
-            .when(
-                col("sic").is_in(
-                    [
-                        5200,
-                        5250,
-                        5251,
-                        5260,
-                        5261,
-                        5270,
-                        5271,
-                        5300,
-                        5310,
-                        5311,
-                        5320,
-                        5330,
-                        5331,
-                        5334,
-                        5900,
-                        5999,
-                        *range(5210, 5231 + 1),
-                        *range(5340, 5349 + 1),
-                        *range(5390, 5400 + 1),
-                        *range(5410, 5412 + 1),
-                        *range(5420, 5469 + 1),
-                        *range(5490, 5500 + 1),
-                        *range(5510, 5579 + 1),
-                        *range(5590, 5700 + 1),
-                        *range(5710, 5722 + 1),
-                        *range(5730, 5736 + 1),
-                        *range(5750, 5799 + 1),
-                        *range(5910, 5912 + 1),
-                        *range(5920, 5932 + 1),
-                        *range(5940, 5990 + 1),
-                        *range(5992, 5995 + 1),
-                    ]
-                )
-            )
-            .then(43)
-            .when(
-                col("sic").is_in(
-                    [
-                        7000,
-                        7213,
-                        *range(5800, 5829 + 1),
-                        *range(5890, 5899 + 1),
-                        *range(7010, 7019 + 1),
-                        *range(7040, 7049 + 1),
-                    ]
-                )
-            )
-            .then(44)
-            .when(
-                col("sic").is_in(
-                    [
-                        6000,
-                        *range(6010, 6036 + 1),
-                        *range(6040, 6062 + 1),
-                        *range(6080, 6082 + 1),
-                        *range(6090, 6100 + 1),
-                        *range(6110, 6113 + 1),
-                        *range(6120, 6179 + 1),
-                        *range(6190, 6199 + 1),
-                    ]
-                )
-            )
-            .then(45)
-            .when(
-                col("sic").is_in(
-                    [
-                        6300,
-                        6350,
-                        6351,
-                        6360,
-                        6361,
-                        *range(6310, 6331 + 1),
-                        *range(6370, 6379 + 1),
-                        *range(6390, 6411 + 1),
-                    ]
-                )
-            )
-            .then(46)
-            .when(
-                col("sic").is_in(
-                    [
-                        6500,
-                        6510,
-                        6540,
-                        6541,
-                        6610,
-                        6611,
-                        *range(6512, 6515 + 1),
-                        *range(6517, 6532 + 1),
-                        *range(6550, 6553 + 1),
-                        *range(6590, 6599 + 1),
-                    ]
-                )
-            )
-            .then(47)
-            .when(
-                col("sic").is_in(
-                    [
-                        6700,
-                        6798,
-                        6799,
-                        *range(6200, 6299 + 1),
-                        *range(6710, 6726 + 1),
-                        *range(6730, 6733 + 1),
-                        *range(6740, 6779 + 1),
-                        *range(6790, 6795 + 1),
-                    ]
-                )
-            )
-            .then(48)
-            .when(col("sic").is_in([4970, 4971, 4990, 4991, *range(4950, 4961 + 1)]))
-            .then(49)
-            .otherwise(pl.lit(None))
-            .alias("ff49")
-        )
-
-    data.collect().write_parquet("__msf_world3.parquet")
+    data.join(mapping, on="sic", how="left").collect().write_parquet("__msf_world3.parquet")
 
 
 @measure_time
