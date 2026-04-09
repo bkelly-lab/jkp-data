@@ -7703,6 +7703,7 @@ def save_daily_ret():
     data = (
         pl.scan_parquet("../interim/world_dsf.parquet")
         .select(["excntry", "id", "date", "me", "ret", "ret_exc", "ret_exc_wins"])
+        .filter(pl.col("date") <= END_DATE)
         .with_columns(
             excntry=pl.when(col("excntry").is_null())
             .then(pl.lit("null_country"))
@@ -7799,8 +7800,22 @@ def save_monthly_ret():
     Output:
         Parquet file with monthly returns by country/security.
     """
-    data = pl.scan_parquet("../interim/world_msf.parquet").select(
-        ["excntry", "id", "source_crsp", "eom", "me", "ret_exc", "ret", "ret_local", "ret_exc_wins"]
+    data = (
+        pl.scan_parquet("../interim/world_msf.parquet")
+        .select(
+            [
+                "excntry",
+                "id",
+                "source_crsp",
+                "eom",
+                "me",
+                "ret_exc",
+                "ret",
+                "ret_local",
+                "ret_exc_wins",
+            ]
+        )
+        .filter(pl.col("eom") <= END_DATE)
     )
     data.select(pl.all().shrink_dtype()).collect().write_parquet(
         "return_data/world_ret_monthly.parquet"

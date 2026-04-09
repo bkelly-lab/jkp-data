@@ -349,6 +349,7 @@ class TestSaveDailyRet:
                 "me": [100.0, 200.0],
                 "ret": [0.01, 0.02],
                 "ret_exc": [0.005, 0.015],
+                "ret_exc_wins": [0.005, 0.015],
             }
         )
         world_dsf.write_parquet(interim_dir / "world_dsf.parquet")
@@ -406,6 +407,7 @@ class TestSaveMonthlyRet:
                 "ret_exc": [0.01, 0.02],
                 "ret": [0.015, 0.025],
                 "ret_local": [0.012, 0.022],
+                "ret_exc_wins": [0.01, 0.02],
             }
         )
         world_msf.write_parquet(interim_dir / "world_msf.parquet")
