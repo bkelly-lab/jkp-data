@@ -730,7 +730,9 @@ def download_raw_data_tables(
         1) Connect to WRDS; iterate through a fixed list of library.tables.
         2) For each table: download to raw_tables/lib_table.parquet, applying date filtering
            when end_date is provided and the table has a known date column.
-        3) Disconnect.
+        3) If persistent_connection: ATTACH a single postgres connection and download all tables.
+           Otherwise: use postgres_scan() which creates a new connection per query.
+        4) Disconnect.
 
     Args:
         username: WRDS username
