@@ -2604,6 +2604,11 @@ def return_cutoffs(freq, crsp_only):
             GROUP BY {group_vars}
             ORDER BY {group_vars}
             """)
+    if freq == "d":
+        data = data.with_columns(
+            year=pl.col("eom").dt.year(),
+            month=pl.col("eom").dt.month(),
+        )
     data.sink_parquet(res_path)
 
 
@@ -2838,7 +2843,7 @@ def drop_non_trading_days(df, n_col, dt_col, over_vars, thresh_fraction):
     """
     added_eom = "eom" not in df.collect_schema().names()
     if added_eom:
-        df = df.with_columns(eom=col(dt_col).dt.month_end())
+        df = df.with_columns(eom=pl.col(dt_col).dt.month_end())
     df = (
         df.with_columns(max_stocks=pl.max(n_col).over(over_vars))
         .filter((col(n_col) / col("max_stocks")) >= thresh_fraction)
@@ -6299,8 +6304,8 @@ def ap_factors(
     mkt_path,
     min_stocks_bp,
     min_stocks_pf,
-    lower=0.001,
-    upper=0.999,
+    lower: float = 0.001,
+    upper: float = 0.999,
 ):
     """
     Description:
@@ -6340,6 +6345,8 @@ def ap_factors(
         .filter(sf_cond & col("ret_exc").is_not_null())
         .select(["excntry", "id", "eom", "date", "ret_exc"])
     )
+    # CTE+JOIN because Polars SQL doesn't support WINDOW with QUANTILE_DISC;
+    # prep_data_factor_regs uses OVER() window functions via DuckDB instead.
     world_sf2 = world_sf1.sql(f"""
         WITH bounds AS (
             SELECT
@@ -6427,7 +6434,7 @@ def ap_factors(
     output.write_parquet(output_path)
 
 
-def prep_data_factor_regs(data_path, fcts_path, lower=0.001, upper=0.999):
+def prep_data_factor_regs(data_path, fcts_path, lower: float = 0.001, upper: float = 0.999):
     """
     Description:
         Prepare monthly panel for factor regressions (join data with factors, filter, winsorize).

@@ -218,6 +218,67 @@ class TestAddCutoffsAndWinsorize:
         assert "year" not in result.columns, "'year' should not be in output"
         assert "month" not in result.columns, "'month' should not be in output"
 
+    def test_missing_cutoff_rows_preserve_original_returns(self, tmp_path, tolerance):
+        """When a stock's eom has no matching cutoff row, returns should be preserved unchanged.
+
+        GREATEST/LEAST in Polars SQL skip NULLs, so missing cutoffs (NULL bounds
+        from the LEFT JOIN) must not corrupt or NULL-out the original return values.
+        """
+        # Cutoffs only for Jan 2020 — no cutoffs for Feb 2020
+        cutoffs = pl.DataFrame(
+            {
+                "eom": [date(2020, 1, 31)],
+                "n": [100],
+                "ret_0_1": [-0.50],
+                "ret_1": [-0.20],
+                "ret_99": [0.20],
+                "ret_99_9": [0.50],
+                "ret_local_0_1": [-0.50],
+                "ret_local_1": [-0.20],
+                "ret_local_99": [0.20],
+                "ret_local_99_9": [0.50],
+                "ret_exc_0_1": [-0.40],
+                "ret_exc_1": [-0.15],
+                "ret_exc_99": [0.15],
+                "ret_exc_99_9": [0.40],
+            }
+        )
+        cutoffs_path = tmp_path / "cutoffs_missing.parquet"
+        cutoffs.write_parquet(cutoffs_path)
+
+        # Compustat stock in Feb 2020 (no matching cutoff row)
+        df = pl.LazyFrame(
+            {
+                "id": [100001, 100002],
+                "eom": [date(2020, 2, 29), date(2020, 2, 29)],
+                "date": [date(2020, 2, 15), date(2020, 2, 15)],
+                "source_crsp": [0, 0],
+                "ret": [0.90, -0.80],
+                "ret_local": [0.85, -0.75],
+                "ret_exc": [0.80, -0.70],
+            }
+        )
+        result = add_cutoffs_and_winsorize(df, str(cutoffs_path), ["eom"], "date").collect()
+
+        np.testing.assert_allclose(
+            result.sort("id")["ret"].to_list(),
+            [0.90, -0.80],
+            **tolerance.TIGHT,
+            err_msg="Returns should be preserved when cutoff row is missing",
+        )
+        np.testing.assert_allclose(
+            result.sort("id")["ret_exc"].to_list(),
+            [0.80, -0.70],
+            **tolerance.TIGHT,
+            err_msg="Excess returns should be preserved when cutoff row is missing",
+        )
+        np.testing.assert_allclose(
+            result.sort("id")["ret_local"].to_list(),
+            [0.85, -0.75],
+            **tolerance.TIGHT,
+            err_msg="Local returns should be preserved when cutoff row is missing",
+        )
+
 
 # =============================================================================
 # TestWinsorizeEquivalence (regression)
