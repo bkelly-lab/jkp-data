@@ -54,22 +54,27 @@ Find commits the author pushed after the review comment.
 
 ## Step 4: Diff the response
 
-Get the scoped diff covering only the response commits.
+Get the scoped diff covering only the response commits. Use a git worktree so the reviewer's working tree and current branch are untouched regardless of whether they have uncommitted changes.
 
-1. Check out the PR branch if not already on it:
+1. Create a worktree for the PR branch. This works for fork PRs via the `pull/<PR>/head` virtual ref:
    ```
-   gh pr checkout <PR>
+   git fetch origin pull/<PR>/head:pr-<PR>-review
+   ```
+   ```
+   git worktree add ../jkp-data-review-pr<PR> pr-<PR>-review
    ```
 
-2. Get the overview:
+2. Get the overview (run git against the worktree via `-C`):
    ```
-   git diff <base>..<head> --stat
-   git diff <base>..<head> --name-only
+   git -C ../jkp-data-review-pr<PR> diff <base>..<head> --stat
+   ```
+   ```
+   git -C ../jkp-data-review-pr<PR> diff <base>..<head> --name-only
    ```
 
 3. Get the full diff per file:
    ```
-   git diff <base>..<head> -- <file>
+   git -C ../jkp-data-review-pr<PR> diff <base>..<head> -- <file>
    ```
    Read each changed file's diff. For large diffs, focus on the files referenced in the review items first.
 
@@ -139,7 +144,17 @@ Use checkmark/cross symbols for the verdicts to make the summary scannable.
 
 ### New issues check
 
-If the response diff includes changed `.py` files, run @code-critic on the response diff only (not the full PR diff). Present any findings under a "New Issues in Response" section. If no Python files changed, skip this step.
+If the response diff includes changed `.py` files, run @code-critic on the response diff only (not the full PR diff). The changed files live inside the worktree at `../jkp-data-review-pr<PR>` — pass those paths to @code-critic. Present any findings under a "New Issues in Response" section. If no Python files changed, skip this step.
+
+### Clean up the worktree
+
+Before the decision point, remove the worktree and temporary ref so the reviewer's repo is left tidy:
+```
+git worktree remove ../jkp-data-review-pr<PR>
+```
+```
+git branch -D pr-<PR>-review
+```
 
 ### Decision point
 
