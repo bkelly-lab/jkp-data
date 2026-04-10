@@ -2589,26 +2589,22 @@ def return_cutoffs(freq, crsp_only):
     Steps:
         1) Select group vars and output path from freq; scan 'world_{freq}sf.parquet'.
         2) Optional CRSP filter; require common/main/primary, exclude ZWE, non-null ret_exc.
-        3) Add year/month; group and aggregate counts + percentiles for ret, ret_local, ret_exc.
+        3) Group by eom and aggregate counts + percentiles for ret, ret_local, ret_exc.
         4) Sort, collect, save.
 
     Output:
         Writes 'return_cutoffs.parquet' (monthly) or 'return_cutoffs_daily.parquet' (daily).
     """
-    group_vars = "eom" if freq == "m" else "year, month"
+    group_vars = "eom"
     res_path = "return_cutoffs.parquet" if freq == "m" else "return_cutoffs_daily.parquet"
-    data = (
-        pl.scan_parquet(f"world_{freq}sf.parquet")
-        .filter(
-            (col("common") == 1)
-            & (col("obs_main") == 1)
-            & (col("exch_main") == 1)
-            & (col("primary_sec") == 1)
-            & (col("excntry") != "ZWE")
-            & (col("ret_exc").is_not_null())
-            & ((col("source_crsp") == 1) if crsp_only == 1 else pl.lit(True))
-        )
-        .with_columns(year=col("date").dt.year(), month=col("date").dt.month())
+    data = pl.scan_parquet(f"world_{freq}sf.parquet").filter(
+        (col("common") == 1)
+        & (col("obs_main") == 1)
+        & (col("exch_main") == 1)
+        & (col("primary_sec") == 1)
+        & (col("excntry") != "ZWE")
+        & (col("ret_exc").is_not_null())
+        & ((col("source_crsp") == 1) if crsp_only == 1 else pl.lit(True))
     )
     data = data.sql(f"""
             SELECT
@@ -2637,6 +2633,11 @@ def return_cutoffs(freq, crsp_only):
             GROUP BY {group_vars}
             ORDER BY {group_vars}
             """)
+    if freq == "d":
+        data = data.with_columns(
+            year=pl.col("eom").dt.year(),
+            month=pl.col("eom").dt.month(),
+        )
     data.sink_parquet(res_path)
 
 
@@ -2728,7 +2729,7 @@ def load_mkt_returns_params(freq):
     dt_col = "date" if freq == "d" else "eom"
     max_date_lag = 14 if freq == "d" else 1
     path_aux = "_daily" if freq == "d" else ""
-    group_vars = ["year", "month"] if freq == "d" else ["eom"]
+    group_vars = ["eom"]
     comm_stocks_cols = [
         "source_crsp",
         "id",
@@ -2756,13 +2757,12 @@ def add_cutoffs_and_winsorize(df, wins_data_path, group_vars, dt_col):
 
     Steps:
         1) Read winsor cutoff parquet; select group vars + needed thresholds.
-        2) Add year/month from dt_col; left-join cutoffs on group vars.
+        2) Left-join cutoffs on group vars (eom).
         3) Winsorize high (99.9) then low (0.1) for each return series.
 
     Output:
         Polars LazyFrame/DataFrame with winsorized returns and cutoff columns joined.
     """
-    df = df.with_columns(year=col(dt_col).dt.year(), month=col(dt_col).dt.month())
     wins_data = pl.scan_parquet(wins_data_path)
 
     on_clause = " AND ".join([f"a.{k} = b.{k}" for k in group_vars])
@@ -2775,34 +2775,19 @@ def add_cutoffs_and_winsorize(df, wins_data_path, group_vars, dt_col):
     SELECT
         a.*
         REPLACE(
-            CASE
-                WHEN a.source_crsp = 0
-                AND a.ret IS NOT NULL
-                AND a.ret > b.ret_99_9 THEN b.ret_99_9
-                WHEN a.source_crsp = 0
-                AND a.ret IS NOT NULL
-                AND a.ret < b.ret_0_1 THEN b.ret_0_1
-                ELSE a.ret
+            CASE WHEN a.source_crsp = 0 AND a.ret IS NOT NULL
+                 THEN GREATEST(b.ret_0_1, LEAST(a.ret, b.ret_99_9))
+                 ELSE a.ret
             END AS ret,
 
-            CASE
-                WHEN a.source_crsp = 0
-                AND a.ret_local IS NOT NULL
-                AND a.ret_local > b.ret_local_99_9 THEN b.ret_local_99_9
-                WHEN a.source_crsp = 0
-                AND a.ret_local IS NOT NULL
-                AND a.ret_local < b.ret_local_0_1 THEN b.ret_local_0_1
-                ELSE a.ret_local
+            CASE WHEN a.source_crsp = 0 AND a.ret_local IS NOT NULL
+                 THEN GREATEST(b.ret_local_0_1, LEAST(a.ret_local, b.ret_local_99_9))
+                 ELSE a.ret_local
             END AS ret_local,
 
-            CASE
-                WHEN a.source_crsp = 0
-                AND a.ret_exc IS NOT NULL
-                AND a.ret_exc > b.ret_exc_99_9 THEN b.ret_exc_99_9
-                WHEN a.source_crsp = 0
-                AND a.ret_exc IS NOT NULL
-                AND a.ret_exc < b.ret_exc_0_1 THEN b.ret_exc_0_1
-                ELSE a.ret_exc
+            CASE WHEN a.source_crsp = 0 AND a.ret_exc IS NOT NULL
+                 THEN GREATEST(b.ret_exc_0_1, LEAST(a.ret_exc, b.ret_exc_99_9))
+                 ELSE a.ret_exc
             END AS ret_exc
         )
     FROM df AS a
@@ -2878,18 +2863,20 @@ def drop_non_trading_days(df, n_col, dt_col, over_vars, thresh_fraction):
         Remove thin-trading days by country-month (or given window) based on stock coverage.
 
     Steps:
-        1) Add year/month from dt_col; compute max_stocks over over_vars.
+        1) Derive eom from dt_col; compute max_stocks over over_vars.
         2) Keep rows where n_col / max_stocks ≥ thresh_fraction.
         3) Drop helper columns.
 
     Output:
         Frame filtered to sufficiently traded dates.
     """
+    added_eom = "eom" not in df.collect_schema().names()
+    if added_eom:
+        df = df.with_columns(eom=pl.col(dt_col).dt.month_end())
     df = (
-        df.with_columns(year=col(dt_col).dt.year(), month=col(dt_col).dt.month())
-        .with_columns(max_stocks=pl.max(n_col).over(over_vars))
+        df.with_columns(max_stocks=pl.max(n_col).over(over_vars))
         .filter((col(n_col) / col("max_stocks")) >= thresh_fraction)
-        .drop(["year", "month", "max_stocks"])
+        .drop(["max_stocks"] + (["eom"] if added_eom else []))
     )
     return df
 
@@ -2929,7 +2916,7 @@ def market_returns(data_path, freq, wins_comp, wins_data_path):
     __common_stocks = apply_stock_filter_and_compute_indexes(__common_stocks, dt_col, max_date_lag)
     if freq == "d":
         __common_stocks = drop_non_trading_days(
-            __common_stocks, "stocks", dt_col, ["excntry", "year", "month"], 0.25
+            __common_stocks, "stocks", dt_col, ["excntry", "eom"], 0.25
         )
     __common_stocks.sort(["excntry", dt_col]).collect().write_parquet(
         f"market_returns{path_aux}.parquet"
@@ -6338,13 +6325,23 @@ def sort_ff_style(char, min_stocks_bp, min_stocks_pf, date_col, data, sf):
 
 
 @measure_time
-def ap_factors(output_path, freq, sf_path, mchars_path, mkt_path, min_stocks_bp, min_stocks_pf):
+def ap_factors(
+    output_path,
+    freq,
+    sf_path,
+    mchars_path,
+    mkt_path,
+    min_stocks_bp,
+    min_stocks_pf,
+    lower: float = 0.001,
+    upper: float = 0.999,
+):
     """
     Description:
         Build AP-style factor panels (FF HML/SMB and HXZ INV/ROE/SMB) by country and month (or day).
 
     Steps:
-        1) Load security returns; winsorize ret_exc by date.
+        1) Load security returns; winsorize ret_exc by eom at configurable percentile bounds.
         2) Load market characteristics; lag key vars 1 period with continuity guard; filter to eligible stocks.
         3) Size-bucket each stock; run FF-style sorts for BE/ME, asset growth, and ROE.
         4) Compose factors: mktrf from market file; HML/SMB (FF); INV/ROE/SMB (HXZ).
@@ -6377,29 +6374,24 @@ def ap_factors(output_path, freq, sf_path, mchars_path, mkt_path, min_stocks_bp,
         .filter(sf_cond & col("ret_exc").is_not_null())
         .select(["excntry", "id", "eom", "date", "ret_exc"])
     )
+    # CTE+JOIN because Polars SQL doesn't support WINDOW with QUANTILE_DISC;
+    # prep_data_factor_regs uses OVER() window functions via DuckDB instead.
     world_sf2 = world_sf1.sql(f"""
-                                WITH bounds AS (
-                                SELECT
-                                    eom,
-                                    QUANTILE_DISC(ret_exc, {0.1 / 100}) AS low,
-                                    QUANTILE_DISC(ret_exc, {99.9 / 100}) AS high
-                                FROM self
-                                GROUP BY eom
-                                )
-                                SELECT
-                                    excntry,
-                                    id,
-                                    eom,
-                                    date,
-                                    CASE
-                                        WHEN ret_exc < low  THEN low
-                                        WHEN ret_exc > high THEN high
-                                        ELSE ret_exc
-                                    END AS ret_exc
-                                FROM self
-                                LEFT JOIN bounds
-                                USING (eom)
-                            """)
+        WITH bounds AS (
+            SELECT
+                eom,
+                QUANTILE_DISC(ret_exc, {lower}) AS low,
+                QUANTILE_DISC(ret_exc, {upper}) AS high
+            FROM self
+            GROUP BY eom
+        )
+        SELECT
+            excntry, id, self.eom, date,
+            GREATEST(low, LEAST(ret_exc, high)) AS ret_exc
+        FROM self
+        LEFT JOIN bounds
+        USING (eom)
+    """)
 
     base = (
         pl.scan_parquet(mchars_path)
@@ -6471,7 +6463,7 @@ def ap_factors(output_path, freq, sf_path, mchars_path, mkt_path, min_stocks_bp,
     output.write_parquet(output_path)
 
 
-def prep_data_factor_regs(data_path, fcts_path):
+def prep_data_factor_regs(data_path, fcts_path, lower: float = 0.001, upper: float = 0.999):
     """
     Description:
         Prepare monthly panel for factor regressions (join data with factors, filter, winsorize).
@@ -6479,7 +6471,7 @@ def prep_data_factor_regs(data_path, fcts_path):
     Steps:
         1) Create __msf1: join msf with factors on (excntry, eom); keep ret_exc, mktrf, hml, smb_ff and valid monthly obs.
         2) Add integer date (aux_date) and cast id_int.
-        3) Winsorize ret_exc by eom into __msf2.
+        3) Winsorize ret_exc by eom at configurable percentile bounds into __msf2.
 
     Output:
         DuckDB connection containing tables '__msf2' (ready for rolling regs).
@@ -6523,25 +6515,18 @@ def prep_data_factor_regs(data_path, fcts_path):
         AND a.ret_exc   IS NOT NULL
         AND a.ret_lag_dif = 1
         AND b.mktrf    IS NOT NULL
-    ),
-    percs AS (
-        SELECT
-          eom,
-          QUANTILE_DISC(ret_exc, {0.1 / 100}) AS low,
-          QUANTILE_DISC(ret_exc, {99.9 / 100}) AS high
-        FROM __msf1
-        GROUP BY eom
     )
     SELECT
-       d.* EXCLUDE (ret_exc),
-      CASE
-        WHEN d.ret_exc < p.low  THEN p.low
-        WHEN d.ret_exc > p.high THEN p.high
-        ELSE d.ret_exc
-      END AS ret_exc
-    FROM __msf1 AS d
-    LEFT JOIN percs AS p
-      USING (eom);
+        id, id_int, eom, ret_lag_dif, mktrf, hml, smb_ff, aux_date,
+        GREATEST(
+            QUANTILE_DISC(ret_exc, {lower}) OVER w,
+            LEAST(
+                ret_exc,
+                QUANTILE_DISC(ret_exc, {upper}) OVER w
+            )
+        ) AS ret_exc
+    FROM __msf1
+    WINDOW w AS (PARTITION BY eom);
     """)
     return con
 

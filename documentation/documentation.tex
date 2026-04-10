@@ -559,7 +559,7 @@ Nano  & Below 1st percentile. \\
 \begin{itemize}
     \item \texttt{return\_cutoffs\_daily.csv} reports the discrete calendar-month percentile return cutoffs for return winsorization.
     \item The cutoffs are derived from a daily panel of common stocks (primary share/security, main class, non-missing market equity) with non-missing return on CRSP.
-    \item For each trading day, we extract year and month, then group stocks by (year, month). Within each group, we compute non-interpolated cross-sectional percentiles, typically the 0.1\%/99.9\% and 1\%/99\% bounds, for three return measures: USD, local, and excess.
+    \item For each trading day, we derive the end-of-month date (\texttt{eom}) and group stocks by that date. Within each group, we compute non-interpolated cross-sectional percentiles, typically the 0.1\%/99.9\% and 1\%/99\% bounds, for three return measures: USD, local, and excess. Calendar \texttt{year} and \texttt{month} columns are also included for convenience.
     \item The cutoffs can be joined back to the stock-level panel by period and used to clip returns to the chosen bounds. This mitigates data errors and outliers so equal-weighted/value-weighted aggregates and long-short factors are not driven by a few extreme observations.
 \end{itemize}
 
@@ -584,11 +584,13 @@ Nano  & Below 1st percentile. \\
 	\hline\hline
 	\endlastfoot
     
-    year\rule{0pt}{10pt} & Calendar year extracted from the trading date. \\[1ex]
+    eom\rule{0pt}{10pt} & End-of-month date for the trading period (used as the grouping key). \\[1ex]
 
-    month & Calendar month (1--12) extracted from the trading date. \\[1ex]
+    year & Calendar year derived from the end-of-month date. \\[1ex]
 
-    n & Number of eligible stock-day observations in that year-month group. \\[1ex]
+    month & Calendar month (1--12) derived from the end-of-month date. \\[1ex]
+
+    n & Number of eligible stock-day observations in that month group. \\[1ex]
 
     return\_0\_1 & 0.1st percentile of USD return. \\[1ex]
 
