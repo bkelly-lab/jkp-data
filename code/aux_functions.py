@@ -10,6 +10,7 @@ import ibis
 import polars as pl
 import polars_ds as pds
 import polars_ols  # noqa: F401 - required for least_squares method on polars expressions
+from config import END_DATE
 from ibis import _
 from polars import col
 
@@ -654,31 +655,43 @@ def build_projection(cols):
         return "*"
 
 
-def download_wrds_table(conninfo, duckdb_conn, table_name, filename):
+def download_wrds_table(
+    conninfo: str,
+    duckdb_conn: duckdb.DuckDBPyConnection,
+    table_name: str,
+    filename: str,
+    date_column: str | None = None,
+    end_date: date | None = None,
+) -> None:
     lib, table = table_name.split(".")
     cols = get_columns(duckdb_conn, conninfo, lib, table)
     projection = build_projection(cols)
+
+    where_clause = ""
+    if date_column and end_date:
+        where_clause = f"WHERE {date_column} <= '{end_date}'"
 
     duckdb_conn.execute(f"""
         COPY (
           SELECT {projection}
           FROM postgres_scan('{conninfo}', '{lib}', '{table}')
+          {where_clause}
         )
         TO '{filename}' (FORMAT PARQUET);
     """)
 
 
 @measure_time
-def download_raw_data_tables(username, password):
+def download_raw_data_tables(username: str, password: str, end_date: date | None = None) -> None:
     """
     Description:
         Bulk-download core WRDS tables to raw_tables and a few curated variants with column subsets.
 
     Steps:
         1) Connect to WRDS; iterate through a fixed list of library.tables.
-        2) For each table: download to raw_tables/lib_table.parquet; periodically reset connection.
-        3) Additionally fetch comp.secd and comp.g_secd with curated columns.
-        4) Disconnect.
+        2) For each table: download to raw_tables/lib_table.parquet, applying date filtering
+           when end_date is provided and the table has a known date column.
+        3) Disconnect.
 
     Output:
         Parquet files under raw_tables/ (Compustat, CRSP, FF, etc.).
@@ -712,6 +725,20 @@ def download_raw_data_tables(username, password):
         "comp.g_secd",
     ]
 
+    # Tables with a known date column are filtered to end_date during download.
+    # Reference/metadata tables (not listed here) are downloaded in full.
+    date_columns: dict[str, str] = {
+        "crsp.msf_v2": "mthcaldt",
+        "crsp.dsf_v2": "dlycaldt",
+        "comp.secd": "datadate",
+        "comp.g_secd": "datadate",
+        "comp.secm": "datadate",
+        "comp.funda": "datadate",
+        "comp.fundq": "datadate",
+        "comp.g_funda": "datadate",
+        "comp.g_fundq": "datadate",
+    }
+
     wrds_session_data = gen_wrds_connection_info(username, password)
     con = duckdb.connect(":memory:")
     con.execute("INSTALL postgres; LOAD postgres;")
@@ -723,6 +750,8 @@ def download_raw_data_tables(username, password):
             con,
             table,
             "../raw/raw_tables/" + table.replace(".", "_") + ".parquet",
+            date_column=date_columns.get(table),
+            end_date=end_date,
         )
 
     con.close()
@@ -7553,14 +7582,14 @@ def quality_minus_junk(data_path, min_stks):
 
 
 @measure_time
-def save_main_data(end_date):
+def save_main_data():
     """
     Description:
         Filter world_data to main securities and export country-level files.
 
     Steps:
         1) Load world_data.parquet and compute lagged market equity.
-        2) Filter to valid securities up to end_date.
+        2) Filter to valid main securities.
         3) Save filtered dataset and split into country parquet files.
 
     Output:
@@ -7569,6 +7598,7 @@ def save_main_data(end_date):
     months_exp = (col("eom").dt.year() * 12 + col("eom").dt.month()).cast(pl.Int64)
     data = (
         pl.scan_parquet("world_data.parquet")
+        .filter(pl.col("eom") <= END_DATE)
         .with_columns(dif_aux=months_exp)
         .sort(["id", "eom"])
         .with_columns(
@@ -7584,7 +7614,6 @@ def save_main_data(end_date):
             & (col("common") == 1)
             & (col("obs_main") == 1)
             & (col("exch_main") == 1)
-            & (col("eom") <= end_date)
         )
     )
     data.select(pl.all().shrink_dtype()).collect(streaming=True).write_parquet(
@@ -7659,6 +7688,7 @@ def save_daily_ret():
     data = (
         pl.scan_parquet("../interim/world_dsf.parquet")
         .select(["excntry", "id", "date", "me", "ret", "ret_exc", "ret_exc_wins"])
+        .filter(pl.col("date") <= END_DATE)
         .with_columns(
             excntry=pl.when(col("excntry").is_null())
             .then(pl.lit("null_country"))
@@ -7755,8 +7785,22 @@ def save_monthly_ret():
     Output:
         Parquet file with monthly returns by country/security.
     """
-    data = pl.scan_parquet("../interim/world_msf.parquet").select(
-        ["excntry", "id", "source_crsp", "eom", "me", "ret_exc", "ret", "ret_local", "ret_exc_wins"]
+    data = (
+        pl.scan_parquet("../interim/world_msf.parquet")
+        .select(
+            [
+                "excntry",
+                "id",
+                "source_crsp",
+                "eom",
+                "me",
+                "ret_exc",
+                "ret",
+                "ret_local",
+                "ret_exc_wins",
+            ]
+        )
+        .filter(pl.col("eom") <= END_DATE)
     )
     data.select(pl.all().shrink_dtype()).collect().write_parquet(
         "return_data/world_ret_monthly.parquet"
