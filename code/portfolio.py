@@ -12,6 +12,12 @@ warnings.filterwarnings(
     message=r"Sortedness.*by.*provided",
 )
 
+# Larger streaming chunks than polars' default give substantially better
+# throughput on the production 450 GB HPC box where memory is abundant. This
+# is a module-level tuning knob — harmless on smaller machines (polars still
+# bounds memory per chunk) and free for eager queries that don't stream.
+pl.Config.set_streaming_chunk_size(1_000_000)
+
 # setting data path and output path
 data_path = "data/processed"
 output_path = "data/processed/portfolios"
@@ -275,7 +281,6 @@ def portfolios(
 
     # Load the data
     data = pl.read_parquet(file_path, columns=columns)
-    data = data
 
     # capping me at nyse cut-off
     data = data.join(nyse_size_cutoffs.select(["eom", "nyse_p80"]), on="eom", how="left")
@@ -283,11 +288,11 @@ def portfolios(
         pl.min_horizontal(pl.col("me"), pl.col("nyse_p80")).alias("me_cap")
     ).drop("nyse_p80")
 
-    # ensuring numerical columns are float-added later:
-    exclude = ["id", "eom", "source_crsp", "size_grp", "excntry"]
-    for i in data.columns:
-        if i not in exclude:
-            data = data.with_columns(pl.col(i).cast(pl.Float64))
+    # Batched Float64 cast: a single plan rebuild instead of one per column.
+    cast_exclude = {"id", "eom", "source_crsp", "size_grp", "excntry"}
+    data = data.with_columns(
+        [pl.col(c).cast(pl.Float64) for c in data.columns if c not in cast_exclude]
+    )
 
     # Screens
     if len(source) == 1:
@@ -300,6 +305,20 @@ def portfolios(
         & (pl.col("me").is_not_null())
         & (pl.col("ret_exc_lead1m").is_not_null())
     )
+
+    # Hoist bp_stock onto `data`: it is row-static across chars, so computing
+    # it once before the per-characteristic loop avoids redundant work.
+    if bps == "nyse":
+        data = data.with_columns(
+            (
+                ((pl.col("crsp_exchcd") == 1) & pl.col("comp_exchg").is_null())
+                | ((pl.col("comp_exchg") == 11) & pl.col("crsp_exchcd").is_null())
+            ).alias("bp_stock")
+        )
+    elif bps == "non_mc":
+        data = data.with_columns(
+            pl.col("size_grp").is_in(["mega", "large", "small"]).alias("bp_stock")
+        )
 
     # Daily Returns
     if daily_pf:
@@ -351,6 +370,10 @@ def portfolios(
                 .otherwise(pl.col("ret_exc"))
                 .alias("ret_exc")
             ).drop(["p001", "p999", "eom"])
+
+    # Cache a single LazyFrame view of daily so the per-char loop and the
+    # industry-daily branches don't rebuild `daily.lazy()` on every use.
+    daily_lazy = daily.lazy() if daily_pf else None
 
     # standardizing signals
     if signals_standardize and signals:
@@ -462,7 +485,7 @@ def portfolios(
             ind_gics_daily = (
                 gics_weights.lazy()
                 .join(
-                    daily.lazy(),
+                    daily_lazy,
                     left_on=["id", "eom"],
                     right_on=["id", "eom_lag1"],
                     how="left",
@@ -509,7 +532,7 @@ def portfolios(
                 ind_ff49_daily = (
                     ff49_weights.lazy()
                     .join(
-                        daily.lazy(),
+                        daily_lazy,
                         left_on=["id", "eom"],
                         right_on=["id", "eom_lag1"],
                         how="left",
@@ -552,27 +575,13 @@ def portfolios(
                         "me_cap",
                         "crsp_exchcd",
                         "comp_exchg",
+                        "bp_stock",
                     ]
                 )
             )
         else:
             # Select rows where 'var' is not missing, retaining all columns
             sub = data.lazy().filter(pl.col("var").is_not_null())
-
-        if bps == "nyse":
-            # Create 'bp_stock' column for NYSE criteria
-            sub = sub.with_columns(
-                (
-                    ((pl.col("crsp_exchcd") == 1) & pl.col("comp_exchg").is_null())
-                    | ((pl.col("comp_exchg") == 11) & pl.col("crsp_exchcd").is_null())
-                ).alias("bp_stock")
-            )
-
-        elif bps == "non_mc":
-            # Create 'bp_stock' column for non-microcap criteria
-            sub = sub.with_columns(
-                pl.col("size_grp").is_in(["mega", "large", "small"]).alias("bp_stock")
-            )
 
         sub = sub.with_columns(bp_n=pl.sum("bp_stock").over("eom")).filter(
             pl.col("bp_n") >= bp_min_n
@@ -666,7 +675,7 @@ def portfolios(
                 )
 
                 daily_sub = weights.join(
-                    daily.lazy(),
+                    daily_lazy,
                     left_on=["id", "eom"],
                     right_on=["id", "eom_lag1"],
                     how="left",
