@@ -21,14 +21,23 @@ warnings.filterwarnings(
 
 
 def parse_args() -> argparse.Namespace:
-    """Parse command line arguments."""
+    """Parse command line arguments for portfolio generation.
+
+    Description:
+        Parse CLI arguments for output format selection.
+    Steps:
+        1) Create argument parser with output-format option.
+        2) Parse and return the arguments.
+    Output:
+        argparse.Namespace with output_format attribute.
+    """
     parser = argparse.ArgumentParser(
         description="Generate JKP portfolio data.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  uv run python portfolio.py                      # Default: parquet output
-  uv run python portfolio.py --output-format csv  # CSV output with quoted strings
+  uv run python code/portfolio.py                      # Default: parquet output
+  uv run python code/portfolio.py --output-format csv  # CSV output with quoted strings
         """,
     )
     parser.add_argument(
@@ -595,7 +604,20 @@ def regional_data(
 
 
 def main() -> None:
-    """Main entry point for JKP portfolio generation."""
+    """Main entry point for JKP portfolio generation.
+
+    Description:
+        Orchestrate portfolio construction: parse arguments, configure output
+        format, build factor portfolios for each country, and write results.
+    Steps:
+        1) Parse CLI arguments and configure output format.
+        2) Load country list and characteristic definitions.
+        3) Construct portfolios per country (monthly, daily, industry).
+        4) Aggregate cross-country results and compute long-minus-short factors.
+        5) Write output files and optionally convert to CSV.
+    Output:
+        Portfolio files written to data/processed/portfolios/.
+    """
     args = parse_args()
 
     # Configure output format
@@ -929,7 +951,7 @@ def main() -> None:
             [
                 sub_data["pf_daily"]
                 for sub_key, sub_data in portfolio_data.items()
-                if sub_data and "pf_returns" in sub_data
+                if sub_data and "pf_daily" in sub_data
             ]
         )
         pf_daily = pf_daily.sort(["excntry", "characteristic", "pf", "date"])
