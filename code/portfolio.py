@@ -434,6 +434,109 @@ def portfolios(
             )
             ind_ff49 = ind_ff49.filter(pl.col("n") >= bp_min_n)
 
+        if daily_pf:
+            # Daily industry returns: weights are formed from monthly end-of-
+            # formation-month `me` and applied to every trading day of the
+            # following month (rebalanced daily back to beginning-of-month
+            # weights). Mirrors the char factor daily logic below and keeps
+            # coverage aligned with the monthly industry output.
+            gics_weights_data = (
+                data.filter(pl.col("gics").is_not_null())
+                .select(["id", "eom", "gics", "me", "me_cap"])
+                .with_columns(
+                    pl.col("gics").cast(pl.Utf8).str.slice(0, 2).cast(pl.Int64).alias("gics")
+                )
+            )
+            gics_weights_data = (
+                gics_weights_data.with_columns(pl.len().over(["gics", "eom"]).alias("bp_n"))
+                .filter(pl.col("bp_n") >= bp_min_n)
+                .drop("bp_n")
+            )
+
+            gics_weights = (
+                gics_weights_data.group_by(["eom", "gics"])
+                .agg(
+                    [
+                        pl.col("id"),
+                        (1 / pl.len()).alias("w_ew"),
+                        (pl.col("me") / pl.col("me").sum()).alias("w_vw"),
+                        (pl.col("me_cap") / pl.col("me_cap").sum()).alias("w_vw_cap"),
+                    ]
+                )
+                .explode("id", "w_vw", "w_vw_cap")
+            )
+
+            ind_gics_daily = (
+                gics_weights.lazy()
+                .join(
+                    daily.lazy(),
+                    left_on=["id", "eom"],
+                    right_on=["id", "eom_lag1"],
+                    how="left",
+                )
+                .filter(pl.col("gics").is_not_null() & pl.col("ret_exc").is_not_null())
+                .group_by(["gics", "date"])
+                .agg(
+                    [
+                        pl.len().alias("n"),
+                        (pl.col("w_ew") * pl.col("ret_exc")).sum().alias("ret_ew"),
+                        (pl.col("w_vw") * pl.col("ret_exc")).sum().alias("ret_vw"),
+                        (pl.col("w_vw_cap") * pl.col("ret_exc")).sum().alias("ret_vw_cap"),
+                    ]
+                )
+                .collect()
+            )
+            ind_gics_daily = ind_gics_daily.with_columns(
+                pl.lit(excntry).str.to_uppercase().alias("excntry")
+            )
+
+            if excntry == "usa":
+                ff49_weights_data = data.filter(pl.col("ff49").is_not_null()).select(
+                    ["id", "eom", "ff49", "me", "me_cap"]
+                )
+                ff49_weights_data = (
+                    ff49_weights_data.with_columns(pl.len().over(["ff49", "eom"]).alias("bp_n"))
+                    .filter(pl.col("bp_n") >= bp_min_n)
+                    .drop("bp_n")
+                )
+
+                ff49_weights = (
+                    ff49_weights_data.group_by(["eom", "ff49"])
+                    .agg(
+                        [
+                            pl.col("id"),
+                            (1 / pl.len()).alias("w_ew"),
+                            (pl.col("me") / pl.col("me").sum()).alias("w_vw"),
+                            (pl.col("me_cap") / pl.col("me_cap").sum()).alias("w_vw_cap"),
+                        ]
+                    )
+                    .explode("id", "w_vw", "w_vw_cap")
+                )
+
+                ind_ff49_daily = (
+                    ff49_weights.lazy()
+                    .join(
+                        daily.lazy(),
+                        left_on=["id", "eom"],
+                        right_on=["id", "eom_lag1"],
+                        how="left",
+                    )
+                    .filter(pl.col("ff49").is_not_null() & pl.col("ret_exc").is_not_null())
+                    .group_by(["ff49", "date"])
+                    .agg(
+                        [
+                            pl.len().alias("n"),
+                            (pl.col("w_ew") * pl.col("ret_exc")).sum().alias("ret_ew"),
+                            (pl.col("w_vw") * pl.col("ret_exc")).sum().alias("ret_vw"),
+                            (pl.col("w_vw_cap") * pl.col("ret_exc")).sum().alias("ret_vw_cap"),
+                        ]
+                    )
+                    .collect()
+                )
+                ind_ff49_daily = ind_ff49_daily.with_columns(
+                    pl.lit(excntry).str.to_uppercase().alias("excntry")
+                )
+
     # creating portfolios for all the characteristics
     char_pfs = []
     for _i, x in enumerate(tqdm(chars, desc="Processing chars", unit="char", ncols=80)):
@@ -606,6 +709,10 @@ def portfolios(
         output["gics_returns"] = ind_gics  # Assuming ind_gics is a DataFrame
         if excntry == "usa":
             output["ff49_returns"] = ind_ff49.clone()  # Assuming ind_ff49 is a DataFrame
+        if daily_pf:
+            output["gics_daily"] = ind_gics_daily
+            if excntry == "usa":
+                output["ff49_daily"] = ind_ff49_daily.clone()
 
     # Add excntry to pf_returns and pf_daily, and aggregate signals
     if len(output) > 0:
@@ -948,6 +1055,31 @@ if settings["ind_pf"] and any(
         ff49_returns = None
 else:
     gics_returns = None
+
+
+# aggregating daily industry classification returns
+if (
+    settings["ind_pf"]
+    and settings["daily_pf"]
+    and any(sub_data and "gics_daily" in sub_data for sub_key, sub_data in portfolio_data.items())
+):
+    gics_daily = pl.concat(
+        [
+            sub_data["gics_daily"]
+            for sub_key, sub_data in portfolio_data.items()
+            if sub_data and "gics_daily" in sub_data
+        ]
+    )
+    gics_daily = gics_daily.sort(["excntry", "gics", "date"])
+
+    if "usa" in countries and "ff49_daily" in portfolio_data.get("usa", {}):
+        ff49_daily = portfolio_data["usa"]["ff49_daily"]
+        ff49_daily = ff49_daily.sort(["excntry", "ff49", "date"])
+    else:
+        ff49_daily = None
+else:
+    gics_daily = None
+    ff49_daily = None
 
 
 # Create HML Returns
@@ -1297,6 +1429,16 @@ if settings["ind_pf"]:
     if "ff49_returns" in globals() and ff49_returns is not None:
         ff49_returns.filter(pl.col("eom") <= settings["end_date"]).write_parquet(
             f"{output_path}/industry_ff49.parquet"
+        )
+
+if settings["ind_pf"] and settings["daily_pf"]:
+    if "gics_daily" in globals() and gics_daily is not None:
+        gics_daily.filter(pl.col("date") <= settings["end_date"]).write_parquet(
+            f"{output_path}/industry_gics_daily.parquet"
+        )
+    if "ff49_daily" in globals() and ff49_daily is not None:
+        ff49_daily.filter(pl.col("date") <= settings["end_date"]).write_parquet(
+            f"{output_path}/industry_ff49_daily.parquet"
         )
 
 
