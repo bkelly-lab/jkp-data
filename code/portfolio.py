@@ -412,7 +412,7 @@ def portfolios(
         ind_gics = ind_gics.filter(pl.col("n") >= bp_min_n)
 
         # Estimate industry portfolios by Fama-French portfolios for US data
-        if excntry == "usa":
+        if excntry.lower() == "usa":
             ind_data = data.filter(pl.col("ff49").is_not_null()).select(
                 ["eom", "ff49", "ret_exc_lead1m", "me", "me_cap"]
             )
@@ -490,7 +490,7 @@ def portfolios(
                 pl.lit(excntry).str.to_uppercase().alias("excntry")
             )
 
-            if excntry == "usa":
+            if excntry.lower() == "usa":
                 ff49_weights_data = data.filter(pl.col("ff49").is_not_null()).select(
                     ["id", "eom", "ff49", "me", "me_cap"]
                 )
@@ -707,11 +707,11 @@ def portfolios(
     # Handle industry portfolio returns if ind_pf is true
     if ind_pf:
         output["gics_returns"] = ind_gics  # Assuming ind_gics is a DataFrame
-        if excntry == "usa":
+        if excntry.lower() == "usa":
             output["ff49_returns"] = ind_ff49.clone()  # Assuming ind_ff49 is a DataFrame
         if daily_pf:
             output["gics_daily"] = ind_gics_daily
-            if excntry == "usa":
+            if excntry.lower() == "usa":
                 output["ff49_daily"] = ind_ff49_daily.clone()
 
     # Add excntry to pf_returns and pf_daily, and aggregate signals
@@ -958,10 +958,10 @@ for ex in countries:
             "wins_ret"
         ],  # Should Compustat returns be winsorized at the 0.1% and 99.9% of CRSP returns?
         cmp_key=settings["cmp"]["us"]
-        if ex == "usa"
+        if ex.lower() == "usa"
         else settings["cmp"]["int"],  # Create characteristics managed size portfolios?
         signals=settings["signals"]["us"]
-        if ex == "usa"
+        if ex.lower() == "usa"
         else settings["signals"]["int"],  # Create portfolio signals?
         signals_standardize=settings["signals"]["standardize"],  # Map chars to [-0.5, +0.5]?,
         signals_w=settings["signals"][
@@ -1046,15 +1046,23 @@ if settings["ind_pf"] and any(
     #                     for sub_dict in portfolio_data
     #                     if 'gics_returns' in portfolio_data[sub_dict]])
     gics_returns = gics_returns.sort(["excntry", "gics", "eom"])
-
-    # FF49 Returns
-    if "usa" in countries:
-        ff49_returns = portfolio_data["usa"]["ff49_returns"]
-        ff49_returns = ff49_returns.sort(["excntry", "ff49", "eom"])
-    else:
-        ff49_returns = None
 else:
     gics_returns = None
+
+# FF49 Returns
+if settings["ind_pf"] and any(
+    sub_data and "ff49_returns" in sub_data for sub_key, sub_data in portfolio_data.items()
+):
+    ff49_returns = pl.concat(
+        [
+            sub_data["ff49_returns"]
+            for sub_key, sub_data in portfolio_data.items()
+            if sub_data and "ff49_returns" in sub_data
+        ]
+    )
+    ff49_returns = ff49_returns.sort(["excntry", "ff49", "eom"])
+else:
+    ff49_returns = None
 
 
 # aggregating daily industry classification returns
@@ -1071,14 +1079,23 @@ if (
         ]
     )
     gics_daily = gics_daily.sort(["excntry", "gics", "date"])
-
-    if "usa" in countries and "ff49_daily" in portfolio_data.get("usa", {}):
-        ff49_daily = portfolio_data["usa"]["ff49_daily"]
-        ff49_daily = ff49_daily.sort(["excntry", "ff49", "date"])
-    else:
-        ff49_daily = None
 else:
     gics_daily = None
+
+if (
+    settings["ind_pf"]
+    and settings["daily_pf"]
+    and any(sub_data and "ff49_daily" in sub_data for sub_key, sub_data in portfolio_data.items())
+):
+    ff49_daily = pl.concat(
+        [
+            sub_data["ff49_daily"]
+            for sub_key, sub_data in portfolio_data.items()
+            if sub_data and "ff49_daily" in sub_data
+        ]
+    )
+    ff49_daily = ff49_daily.sort(["excntry", "ff49", "date"])
+else:
     ff49_daily = None
 
 
