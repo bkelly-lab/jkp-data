@@ -22,6 +22,10 @@ The LaTeX documentation has these key sections:
 - Currency-adjusted variables use `\mbox{*}` suffix
 - Growth variants (`_gr1`, `_gr3`, `_gr1a`) are documented categorically, not individually listed
 
+## Tool usage
+
+**Never chain commands with `&&` or `;`.** Always use separate Bash tool calls. Chained commands bypass the permission allow-list and force manual approval.
+
 ## Process
 
 ### Step 1: Identify characteristic changes
