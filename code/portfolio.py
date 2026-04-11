@@ -16,13 +16,6 @@ warnings.filterwarnings(
 data_path = "data/processed"
 output_path = "data/processed/portfolios"
 
-countries = []
-# Iterate through all files in the folder
-for file in os.listdir(os.path.join(data_path, "characteristics")):
-    if file.endswith(".parquet") and "world" not in file:
-        countries.append(file.replace(".parquet", ""))
-countries = sorted(countries)
-
 # characteristics
 chars = [
     "age",
@@ -855,705 +848,707 @@ def regional_data(
     return pf
 
 
-print(
-    f"Start          : {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))}",
-    flush=True,
-)
-# Extract Neccesary Information
-# Read Factor details from Excel file
-char_info = (
-    pl.read_excel(
-        "https://github.com/bkelly-lab/ReplicationCrisis/raw/master/GlobalFactors/Factor%20Details.xlsx",
-        sheet_name="details",
+def main() -> None:
+    countries = []
+    # Iterate through all files in the folder
+    for file in os.listdir(os.path.join(data_path, "characteristics")):
+        if file.endswith(".parquet") and "world" not in file:
+            countries.append(file.replace(".parquet", ""))
+    countries = sorted(countries)
+
+    print(
+        f"Start          : {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))}",
+        flush=True,
     )
-    .filter(pl.col("abr_jkp").is_not_null())
-    .select([pl.col("abr_jkp").alias("characteristic"), pl.col("direction").cast(pl.Int32)])
-)
-
-# Read country classification details from Excel file
-country_classification = pl.read_excel(
-    "https://github.com/bkelly-lab/ReplicationCrisis/raw/master/GlobalFactors/Country%20Classification.xlsx",
-    sheet_name="countries",
-)
-
-# getting relevannt information from country classification file loaded at the start loaded at the start.
-# Select columns
-country_classification = country_classification.select(["excntry", "msci_development", "region"])
-# Filter out rows with NA in 'excntry' and exclude specific countries
-country_classification = country_classification.filter(
-    (pl.col("excntry").is_not_null())
-    & (~pl.col("excntry").is_in(settings["regional_pfs"]["country_excl"]))
-)
-
-# Creating the regions DataFrame
-regions = pl.DataFrame(
-    {
-        "name": ["developed", "emerging", "frontier", "world", "world_ex_us"],
-        "country_codes": [
-            country_classification.filter(
-                (pl.col("msci_development") == "developed") & (pl.col("excntry") != "USA")
-            )["excntry"].to_list(),
-            country_classification.filter(pl.col("msci_development") == "emerging")[
-                "excntry"
-            ].to_list(),
-            country_classification.filter(pl.col("msci_development") == "frontier")[
-                "excntry"
-            ].to_list(),
-            country_classification["excntry"].to_list(),
-            country_classification.filter(pl.col("excntry") != "USA")["excntry"].to_list(),
-        ],
-        "countries_min": [settings["regional_pfs"]["countries_min"]] * 3 + [1, 3],
-    }
-)
-
-
-# Read cluster lables details from Excel file
-cluster_labels = pl.read_csv(
-    "https://raw.githubusercontent.com/bkelly-lab/ReplicationCrisis/refs/heads/master/GlobalFactors/Cluster%20Labels.csv",
-    infer_schema_length=int(1e10),
-)
-
-
-# nyse_cutoffs
-nyse_size_cutoffs = pl.read_parquet(f"{data_path}/other_output/nyse_cutoffs.parquet")
-# nyse_size_cutoffs = nyse_size_cutoffs.with_columns(pl.col("eom").cast(pl.Utf8).str.strptime(pl.Date, format="%Y%m%d").alias("eom"))
-
-# return_cutoffs
-ret_cutoffs = pl.read_parquet(f"{data_path}/other_output/return_cutoffs.parquet")
-# ret_cutoffs = ret_cutoffs.with_columns(pl.col("eom").cast(pl.Utf8).str.strptime(pl.Date, format="%Y%m%d").alias("eom"))
-ret_cutoffs = ret_cutoffs.with_columns(
-    (pl.col("eom").dt.month_start().dt.offset_by("-1d")).alias("eom_lag1")
-)
-if settings["daily_pf"]:
-    ret_cutoffs_daily = pl.read_parquet(f"{data_path}/other_output/return_cutoffs_daily.parquet")
-
-# market_returns
-market = pl.read_parquet(f"{data_path}/other_output/market_returns.parquet")
-# market = market.with_columns(pl.col("eom").cast(pl.Utf8).str.strptime(pl.Date, format="%Y%m%d").alias("eom"))
-
-# daily_market_returns
-if settings["daily_pf"]:
-    market_daily = pl.read_parquet(f"{data_path}/other_output/market_returns_daily.parquet")
-    # market_daily = market_daily.with_columns(pl.col("date").cast(pl.Utf8).str.strptime(pl.Date, format="%Y%m%d").alias("date"))
-
-
-# creating portfolios by using the portfolios function
-portfolio_data = {}
-for ex in countries:
-    print(f"{ex}: {countries.index(ex) + 1} out of {len(countries)}")
-    result = portfolios(
-        data_path=data_path,
-        excntry=ex,
-        chars=chars,
-        pfs=settings["pfs"],  # Number of portfolios
-        bps=settings[
-            "bps"
-        ],  # What should breakpoints be based on? Non-Microcap stocks ("non_mc") or NYSE stocks "nyse"
-        bp_min_n=settings["bp_min_n"],  # Minimum number of stocks used for breakpoints
-        nyse_size_cutoffs=nyse_size_cutoffs,  # Data frame with NYSE size breakpoints
-        source=settings[
-            "source"
-        ],  # Use data from "CRSP", "Compustat" or both: c("CRSP", "COMPUSTAT")
-        wins_ret=settings[
-            "wins_ret"
-        ],  # Should Compustat returns be winsorized at the 0.1% and 99.9% of CRSP returns?
-        cmp_key=settings["cmp"]["us"]
-        if ex.lower() == "usa"
-        else settings["cmp"]["int"],  # Create characteristics managed size portfolios?
-        signals=settings["signals"]["us"]
-        if ex.lower() == "usa"
-        else settings["signals"]["int"],  # Create portfolio signals?
-        signals_standardize=settings["signals"]["standardize"],  # Map chars to [-0.5, +0.5]?,
-        signals_w=settings["signals"][
-            "weight"
-        ],  # Weighting for signals: in c("ew", "vw", "vw_cap")
-        daily_pf=settings["daily_pf"],  # Should daily return be estimated
-        ind_pf=settings["ind_pf"],  # Should industry portfolio returns be estimated
-        ret_cutoffs=ret_cutoffs,  # Data frame for monthly winsorization. Neccesary when wins_ret=T
-        ret_cutoffs_daily=ret_cutoffs_daily,  # Data frame for daily winsorization. Neccesary when wins_ret=T and daily_pf=T
-    )
-    portfolio_data[ex] = result
-
-
-# aggregating portfolio returns
-# pf_returns = pl.concat([portfolio_data[sub_dict]['pf_returns']
-#                         for sub_dict in portfolio_data
-#                         if 'pf_returns' in portfolio_data[sub_dict]])
-
-# pf_returns = pl.concat([portfolio_data[sub_dict]['pf_returns']
-#                         for sub_dict in portfolio_data
-#                          if sub_dict in portfolio_data and 'pf_returns' in portfolio_data[sub_dict]])
-
-
-if any(sub_data and "pf_returns" in sub_data for sub_key, sub_data in portfolio_data.items()):
-    pf_returns = pl.concat(
-        [
-            sub_data["pf_returns"]
-            for sub_key, sub_data in portfolio_data.items()
-            if sub_data and "pf_returns" in sub_data
-        ]
-    )
-    pf_returns = pf_returns.select(
-        [
-            "excntry",
-            "characteristic",
-            "pf",
-            "eom",
-            "n",
-            "signal",
-            "ret_ew",
-            "ret_vw",
-            "ret_vw_cap",
-        ]
-    )
-    pf_returns = pf_returns.sort(["excntry", "characteristic", "pf", "eom"])
-else:
-    pf_returns = None
-
-
-if settings["daily_pf"] and any(
-    sub_data and "pf_daily" in sub_data for sub_key, sub_data in portfolio_data.items()
-):
-    pf_daily = pl.concat(
-        [
-            sub_data["pf_daily"]
-            for sub_key, sub_data in portfolio_data.items()
-            if sub_data and "pf_returns" in sub_data
-        ]
-    )
-    # pf_daily = pl.concat([portfolio_data[sub_dict]['pf_daily']
-    #                     for sub_dict in portfolio_data
-    #                     if 'pf_daily' in portfolio_data[sub_dict]])
-    pf_daily = pf_daily.sort(["excntry", "characteristic", "pf", "date"])
-else:
-    pf_daily = None
-
-
-# aggregating industry classification returns
-# GICS Returns
-if settings["ind_pf"] and any(
-    sub_data and "gics_returns" in sub_data for sub_key, sub_data in portfolio_data.items()
-):
-    gics_returns = pl.concat(
-        [
-            sub_data["gics_returns"]
-            for sub_key, sub_data in portfolio_data.items()
-            if sub_data and "gics_returns" in sub_data
-        ]
+    # Extract Neccesary Information
+    # Read Factor details from Excel file
+    char_info = (
+        pl.read_excel(
+            "https://github.com/bkelly-lab/ReplicationCrisis/raw/master/GlobalFactors/Factor%20Details.xlsx",
+            sheet_name="details",
+        )
+        .filter(pl.col("abr_jkp").is_not_null())
+        .select([pl.col("abr_jkp").alias("characteristic"), pl.col("direction").cast(pl.Int32)])
     )
 
-    # gics_returns =pl.concat([portfolio_data[sub_dict]['gics_returns']
-    #                     for sub_dict in portfolio_data
-    #                     if 'gics_returns' in portfolio_data[sub_dict]])
-    gics_returns = gics_returns.sort(["excntry", "gics", "eom"])
-else:
-    gics_returns = None
-
-# FF49 Returns
-if settings["ind_pf"] and any(
-    sub_data and "ff49_returns" in sub_data for sub_key, sub_data in portfolio_data.items()
-):
-    ff49_returns = pl.concat(
-        [
-            sub_data["ff49_returns"]
-            for sub_key, sub_data in portfolio_data.items()
-            if sub_data and "ff49_returns" in sub_data
-        ]
-    )
-    ff49_returns = ff49_returns.sort(["excntry", "ff49", "eom"])
-else:
-    ff49_returns = None
-
-
-# aggregating daily industry classification returns
-if (
-    settings["ind_pf"]
-    and settings["daily_pf"]
-    and any(sub_data and "gics_daily" in sub_data for sub_key, sub_data in portfolio_data.items())
-):
-    gics_daily = pl.concat(
-        [
-            sub_data["gics_daily"]
-            for sub_key, sub_data in portfolio_data.items()
-            if sub_data and "gics_daily" in sub_data
-        ]
-    )
-    gics_daily = gics_daily.sort(["excntry", "gics", "date"])
-else:
-    gics_daily = None
-
-if (
-    settings["ind_pf"]
-    and settings["daily_pf"]
-    and any(sub_data and "ff49_daily" in sub_data for sub_key, sub_data in portfolio_data.items())
-):
-    ff49_daily = pl.concat(
-        [
-            sub_data["ff49_daily"]
-            for sub_key, sub_data in portfolio_data.items()
-            if sub_data and "ff49_daily" in sub_data
-        ]
-    )
-    ff49_daily = ff49_daily.sort(["excntry", "ff49", "date"])
-else:
-    ff49_daily = None
-
-
-# Create HML Returns
-if pf_returns is not None and pf_returns.height > 0:
-    hml_returns = pf_returns.group_by(["excntry", "characteristic", "eom"]).agg(
-        [
-            pl.col("pf").is_in([settings["pfs"], 1]).sum().alias("pfs"),
-            (
-                pl.col("signal").filter(pl.col("pf") == settings["pfs"]).first()
-                - pl.col("signal").filter(pl.col("pf") == 1).first()
-            ).alias("signal"),
-            (
-                pl.col("n").filter(pl.col("pf") == settings["pfs"]).first()
-                + pl.col("n").filter(pl.col("pf") == 1).first()
-            ).alias("n_stocks"),
-            (pl.col("n").filter(pl.col("pf").is_in([settings["pfs"], 1])).min()).alias(
-                "n_stocks_min"
-            ),
-            (
-                pl.col("ret_ew").filter(pl.col("pf") == settings["pfs"]).first()
-                - pl.col("ret_ew").filter(pl.col("pf") == 1).first()
-            ).alias("ret_ew"),
-            (
-                pl.col("ret_vw").filter(pl.col("pf") == settings["pfs"]).first()
-                - pl.col("ret_vw").filter(pl.col("pf") == 1).first()
-            ).alias("ret_vw"),
-            (
-                pl.col("ret_vw_cap").filter(pl.col("pf") == settings["pfs"]).first()
-                - pl.col("ret_vw_cap").filter(pl.col("pf") == 1).first()
-            ).alias("ret_vw_cap"),
-        ]
+    # Read country classification details from Excel file
+    country_classification = pl.read_excel(
+        "https://github.com/bkelly-lab/ReplicationCrisis/raw/master/GlobalFactors/Country%20Classification.xlsx",
+        sheet_name="countries",
     )
 
-    hml_returns = hml_returns.filter(pl.col("pfs") == 2).drop("pfs")
-    hml_returns = hml_returns.sort(["excntry", "characteristic", "eom"])
-
-    # Create Long-Short Factors [Sign Returns to be consistent with original paper]
-    lms_returns = char_info.join(hml_returns, on="characteristic", how="left")
-
-    # Define columns to be modified
-    resign_cols = ["signal", "ret_ew", "ret_vw", "ret_vw_cap"]
-    lms_returns = lms_returns.with_columns(
-        [pl.col(var) * pl.col("direction").alias(var) for var in resign_cols]
+    # getting relevannt information from country classification file loaded at the start loaded at the start.
+    # Select columns
+    country_classification = country_classification.select(
+        ["excntry", "msci_development", "region"]
     )
-else:
-    hml_returns = None
-    lms_returns = None
-
-# daily hml and lms
-if settings["daily_pf"] and pf_daily is not None and pf_daily.height > 0:
-    hml_daily = pf_daily.group_by(["excntry", "characteristic", "date"]).agg(
-        [
-            pl.col("pf").is_in([settings["pfs"], 1]).sum().alias("pfs"),
-            (
-                pl.col("n").filter(pl.col("pf") == settings["pfs"]).first()
-                + pl.col("n").filter(pl.col("pf") == 1).first()
-            ).alias("n_stocks"),
-            (pl.col("n").filter(pl.col("pf").is_in([settings["pfs"], 1])).min()).alias(
-                "n_stocks_min"
-            ),
-            (
-                pl.col("ret_ew").filter(pl.col("pf") == settings["pfs"]).first()
-                - pl.col("ret_ew").filter(pl.col("pf") == 1).first()
-            ).alias("ret_ew"),
-            (
-                pl.col("ret_vw").filter(pl.col("pf") == settings["pfs"]).first()
-                - pl.col("ret_vw").filter(pl.col("pf") == 1).first()
-            ).alias("ret_vw"),
-            (
-                pl.col("ret_vw_cap").filter(pl.col("pf") == settings["pfs"]).first()
-                - pl.col("ret_vw_cap").filter(pl.col("pf") == 1).first()
-            ).alias("ret_vw_cap"),
-        ]
+    # Filter out rows with NA in 'excntry' and exclude specific countries
+    country_classification = country_classification.filter(
+        (pl.col("excntry").is_not_null())
+        & (~pl.col("excntry").is_in(settings["regional_pfs"]["country_excl"]))
     )
 
-    hml_daily = hml_daily.filter(pl.col("pfs") == 2).drop("pfs")
-    hml_daily = hml_daily.sort(["excntry", "characteristic", "date"])
-
-    lms_daily = char_info.join(hml_daily, on="characteristic", how="left")
-    resign_cols = ["ret_ew", "ret_vw", "ret_vw_cap"]
-
-    lms_daily = lms_daily.with_columns(
-        [(pl.col(var) * pl.col("direction")).alias(var) for var in resign_cols]
+    # Creating the regions DataFrame
+    regions = pl.DataFrame(
+        {
+            "name": ["developed", "emerging", "frontier", "world", "world_ex_us"],
+            "country_codes": [
+                country_classification.filter(
+                    (pl.col("msci_development") == "developed") & (pl.col("excntry") != "USA")
+                )["excntry"].to_list(),
+                country_classification.filter(pl.col("msci_development") == "emerging")[
+                    "excntry"
+                ].to_list(),
+                country_classification.filter(pl.col("msci_development") == "frontier")[
+                    "excntry"
+                ].to_list(),
+                country_classification["excntry"].to_list(),
+                country_classification.filter(pl.col("excntry") != "USA")["excntry"].to_list(),
+            ],
+            "countries_min": [settings["regional_pfs"]["countries_min"]] * 3 + [1, 3],
+        }
     )
-else:
-    hml_daily = None
-    lms_daily = None
 
+    # Read cluster lables details from Excel file
+    cluster_labels = pl.read_csv(
+        "https://raw.githubusercontent.com/bkelly-lab/ReplicationCrisis/refs/heads/master/GlobalFactors/Cluster%20Labels.csv",
+        infer_schema_length=int(1e10),
+    )
 
-# Extract CMP returns
-cmp_list = [
-    portfolio_data[sub_dict]["cmp"]
-    for sub_dict in portfolio_data
-    if "cmp" in portfolio_data[sub_dict]
-]
-if cmp_list:
-    cmp_returns = pl.concat(cmp_list)
-else:
-    # Handle the empty list case here
-    print("No 'cmp' keys found")
+    # nyse_cutoffs
+    nyse_size_cutoffs = pl.read_parquet(f"{data_path}/other_output/nyse_cutoffs.parquet")
+    # nyse_size_cutoffs = nyse_size_cutoffs.with_columns(pl.col("eom").cast(pl.Utf8).str.strptime(pl.Date, format="%Y%m%d").alias("eom"))
 
+    # return_cutoffs
+    ret_cutoffs = pl.read_parquet(f"{data_path}/other_output/return_cutoffs.parquet")
+    # ret_cutoffs = ret_cutoffs.with_columns(pl.col("eom").cast(pl.Utf8).str.strptime(pl.Date, format="%Y%m%d").alias("eom"))
+    ret_cutoffs = ret_cutoffs.with_columns(
+        (pl.col("eom").dt.month_start().dt.offset_by("-1d")).alias("eom_lag1")
+    )
+    if settings["daily_pf"]:
+        ret_cutoffs_daily = pl.read_parquet(
+            f"{data_path}/other_output/return_cutoffs_daily.parquet"
+        )
 
-# Create Clustered Portfolios
-if lms_returns is not None:
-    cluster_pfs = (
-        lms_returns.join(cluster_labels, on="characteristic", how="left")
-        .group_by(["excntry", "cluster", "eom"])
-        .agg(
+    # market_returns
+    market = pl.read_parquet(f"{data_path}/other_output/market_returns.parquet")
+    # market = market.with_columns(pl.col("eom").cast(pl.Utf8).str.strptime(pl.Date, format="%Y%m%d").alias("eom"))
+
+    # daily_market_returns
+    if settings["daily_pf"]:
+        market_daily = pl.read_parquet(f"{data_path}/other_output/market_returns_daily.parquet")
+        # market_daily = market_daily.with_columns(pl.col("date").cast(pl.Utf8).str.strptime(pl.Date, format="%Y%m%d").alias("date"))
+
+    # creating portfolios by using the portfolios function
+    portfolio_data = {}
+    for ex in countries:
+        print(f"{ex}: {countries.index(ex) + 1} out of {len(countries)}")
+        result = portfolios(
+            data_path=data_path,
+            excntry=ex,
+            chars=chars,
+            pfs=settings["pfs"],  # Number of portfolios
+            bps=settings[
+                "bps"
+            ],  # What should breakpoints be based on? Non-Microcap stocks ("non_mc") or NYSE stocks "nyse"
+            bp_min_n=settings["bp_min_n"],  # Minimum number of stocks used for breakpoints
+            nyse_size_cutoffs=nyse_size_cutoffs,  # Data frame with NYSE size breakpoints
+            source=settings[
+                "source"
+            ],  # Use data from "CRSP", "Compustat" or both: c("CRSP", "COMPUSTAT")
+            wins_ret=settings[
+                "wins_ret"
+            ],  # Should Compustat returns be winsorized at the 0.1% and 99.9% of CRSP returns?
+            cmp_key=settings["cmp"]["us"]
+            if ex.lower() == "usa"
+            else settings["cmp"]["int"],  # Create characteristics managed size portfolios?
+            signals=settings["signals"]["us"]
+            if ex.lower() == "usa"
+            else settings["signals"]["int"],  # Create portfolio signals?
+            signals_standardize=settings["signals"]["standardize"],  # Map chars to [-0.5, +0.5]?,
+            signals_w=settings["signals"][
+                "weight"
+            ],  # Weighting for signals: in c("ew", "vw", "vw_cap")
+            daily_pf=settings["daily_pf"],  # Should daily return be estimated
+            ind_pf=settings["ind_pf"],  # Should industry portfolio returns be estimated
+            ret_cutoffs=ret_cutoffs,  # Data frame for monthly winsorization. Neccesary when wins_ret=T
+            ret_cutoffs_daily=ret_cutoffs_daily,  # Data frame for daily winsorization. Neccesary when wins_ret=T and daily_pf=T
+        )
+        portfolio_data[ex] = result
+
+    # aggregating portfolio returns
+    # pf_returns = pl.concat([portfolio_data[sub_dict]['pf_returns']
+    #                         for sub_dict in portfolio_data
+    #                         if 'pf_returns' in portfolio_data[sub_dict]])
+
+    # pf_returns = pl.concat([portfolio_data[sub_dict]['pf_returns']
+    #                         for sub_dict in portfolio_data
+    #                          if sub_dict in portfolio_data and 'pf_returns' in portfolio_data[sub_dict]])
+
+    if any(sub_data and "pf_returns" in sub_data for sub_key, sub_data in portfolio_data.items()):
+        pf_returns = pl.concat(
             [
-                pl.len().alias("n_factors"),
-                pl.col("ret_ew").mean().alias("ret_ew"),
-                pl.col("ret_vw").mean().alias("ret_vw"),
-                pl.col("ret_vw_cap").mean().alias("ret_vw_cap"),
+                sub_data["pf_returns"]
+                for sub_key, sub_data in portfolio_data.items()
+                if sub_data and "pf_returns" in sub_data
             ]
         )
-    )
-else:
-    cluster_pfs = None
-
-# Conditional Operation for Daily Clustered Portfolios
-if settings["daily_pf"] and lms_daily is not None:
-    cluster_pfs_daily = (
-        lms_daily.join(cluster_labels, on="characteristic", how="left")
-        .group_by(["excntry", "cluster", "date"])
-        .agg(
+        pf_returns = pf_returns.select(
             [
-                pl.len().alias("n_factors"),
-                pl.col("ret_ew").mean().alias("ret_ew"),
-                pl.col("ret_vw").mean().alias("ret_vw"),
-                pl.col("ret_vw_cap").mean().alias("ret_vw_cap"),
-            ]
-        )
-    )
-else:
-    cluster_pfs_daily = None
-
-# creating regional portfolios
-if lms_returns is not None:
-    regional_pfs = []
-    for i in range(regions.height):
-        info = regions[i][0]
-        reg_pf = regional_data(
-            data=lms_returns,
-            mkt=market,
-            countries=info["country_codes"][0],
-            date_col="eom",
-            char_col="characteristic",
-            weighting=settings["regional_pfs"]["country_weights"],
-            countries_min=info["countries_min"][0],
-            periods_min=settings["regional_pfs"]["months_min"],
-            stocks_min=settings["regional_pfs"]["stocks_min"],
-        )
-        reg_pf = reg_pf.with_columns(pl.lit(info["name"][0]).alias("region"))
-        reg_pf = reg_pf.select(
-            [
-                "region",
+                "excntry",
                 "characteristic",
-                "direction",
+                "pf",
                 "eom",
-                "n_countries",
+                "n",
+                "signal",
                 "ret_ew",
                 "ret_vw",
                 "ret_vw_cap",
-                "mkt_vw_exc",
             ]
         )
-        regional_pfs.append(reg_pf)
+        pf_returns = pf_returns.sort(["excntry", "characteristic", "pf", "eom"])
+    else:
+        pf_returns = None
 
-    regional_pfs = pl.concat(regional_pfs)  # .explode('direction')
-
-else:
-    regional_pfs = None
-
-
-if settings["daily_pf"] and lms_daily is not None:
-    regional_pfs_daily = []
-    for i in range(regions.height):
-        info = regions[i][0]
-        reg_pf = regional_data(
-            data=lms_daily,
-            mkt=market_daily,
-            countries=info["country_codes"][0],
-            date_col="date",
-            char_col="characteristic",
-            weighting=settings["regional_pfs"]["country_weights"],
-            countries_min=info["countries_min"][0],
-            periods_min=settings["regional_pfs"]["months_min"] * 21,
-            stocks_min=settings["regional_pfs"]["stocks_min"],
-        )
-        reg_pf = reg_pf.with_columns(pl.lit(info["name"][0]).alias("region"))
-        reg_pf = reg_pf.select(
+    if settings["daily_pf"] and any(
+        sub_data and "pf_daily" in sub_data for sub_key, sub_data in portfolio_data.items()
+    ):
+        pf_daily = pl.concat(
             [
-                "region",
-                "characteristic",
-                "direction",
-                "date",
-                "n_countries",
-                "ret_ew",
-                "ret_vw",
-                "ret_vw_cap",
-                "mkt_vw_exc",
+                sub_data["pf_daily"]
+                for sub_key, sub_data in portfolio_data.items()
+                if sub_data and "pf_returns" in sub_data
             ]
         )
+        # pf_daily = pl.concat([portfolio_data[sub_dict]['pf_daily']
+        #                     for sub_dict in portfolio_data
+        #                     if 'pf_daily' in portfolio_data[sub_dict]])
+        pf_daily = pf_daily.sort(["excntry", "characteristic", "pf", "date"])
+    else:
+        pf_daily = None
 
-        regional_pfs_daily.append(reg_pf)  # .explode('direction')
-
-    regional_pfs_daily = pl.concat(regional_pfs_daily)
-
-else:
-    regional_pfs_daily = None
-
-
-# creating regional clusters
-if cluster_pfs is not None:
-    regional_clusters = []
-    for i in range(regions.height):
-        info = regions[i][0]
-        reg_pf = cluster_pfs.rename({"n_factors": "n_stocks_min"})
-        reg_pf = reg_pf.with_columns(
-            pl.lit(None).cast(pl.Float64).alias("direction")
-        )  # Adding 'direction' column with NA values
-        reg_pf = regional_data(
-            data=reg_pf,
-            mkt=market,
-            countries=info["country_codes"][0],
-            date_col="eom",
-            char_col="cluster",
-            weighting=settings["regional_pfs"]["country_weights"],
-            countries_min=info["countries_min"][0],
-            periods_min=settings["regional_pfs"]["months_min"],
-            stocks_min=1,
-        )
-        reg_pf = reg_pf.with_columns(pl.lit(info["name"][0]).alias("region"))
-        reg_pf = reg_pf.select(
+    # aggregating industry classification returns
+    # GICS Returns
+    if settings["ind_pf"] and any(
+        sub_data and "gics_returns" in sub_data for sub_key, sub_data in portfolio_data.items()
+    ):
+        gics_returns = pl.concat(
             [
-                "region",
-                "cluster",
-                "eom",
-                "n_countries",
-                "ret_ew",
-                "ret_vw",
-                "ret_vw_cap",
-                "mkt_vw_exc",
+                sub_data["gics_returns"]
+                for sub_key, sub_data in portfolio_data.items()
+                if sub_data and "gics_returns" in sub_data
             ]
         )
 
-        regional_clusters.append(reg_pf)
+        # gics_returns =pl.concat([portfolio_data[sub_dict]['gics_returns']
+        #                     for sub_dict in portfolio_data
+        #                     if 'gics_returns' in portfolio_data[sub_dict]])
+        gics_returns = gics_returns.sort(["excntry", "gics", "eom"])
+    else:
+        gics_returns = None
 
-    regional_clusters = pl.concat(regional_clusters)
-else:
-    regional_clusters = None
-
-
-if settings["daily_pf"] and cluster_pfs_daily is not None:
-    regional_clusters_daily = []
-    for i in range(regions.height):
-        info = regions[i][0]
-        reg_pf = cluster_pfs_daily.rename({"n_factors": "n_stocks_min"})
-        reg_pf = reg_pf.with_columns(
-            pl.lit(None).cast(pl.Float64).alias("direction")
-        )  # Adding 'direction' column with NA values
-        reg_pf = regional_data(
-            data=reg_pf,
-            mkt=market_daily,
-            countries=info["country_codes"][0],
-            date_col="date",
-            char_col="cluster",
-            weighting=settings["regional_pfs"]["country_weights"],
-            countries_min=info["countries_min"][0],
-            periods_min=settings["regional_pfs"]["months_min"] * 21,
-            stocks_min=1,
-        )
-        reg_pf = reg_pf.with_columns(pl.lit(info["name"][0]).alias("region"))
-        reg_pf = reg_pf.select(
+    # FF49 Returns
+    if settings["ind_pf"] and any(
+        sub_data and "ff49_returns" in sub_data for sub_key, sub_data in portfolio_data.items()
+    ):
+        ff49_returns = pl.concat(
             [
-                "region",
-                "cluster",
-                "date",
-                "n_countries",
-                "ret_ew",
-                "ret_vw",
-                "ret_vw_cap",
-                "mkt_vw_exc",
+                sub_data["ff49_returns"]
+                for sub_key, sub_data in portfolio_data.items()
+                if sub_data and "ff49_returns" in sub_data
             ]
         )
-        regional_clusters_daily.append(reg_pf)
+        ff49_returns = ff49_returns.sort(["excntry", "ff49", "eom"])
+    else:
+        ff49_returns = None
 
-    regional_clusters_daily = pl.concat(regional_clusters_daily)
-else:
-    regional_clusters_daily = None
+    # aggregating daily industry classification returns
+    if (
+        settings["ind_pf"]
+        and settings["daily_pf"]
+        and any(
+            sub_data and "gics_daily" in sub_data for sub_key, sub_data in portfolio_data.items()
+        )
+    ):
+        gics_daily = pl.concat(
+            [
+                sub_data["gics_daily"]
+                for sub_key, sub_data in portfolio_data.items()
+                if sub_data and "gics_daily" in sub_data
+            ]
+        )
+        gics_daily = gics_daily.sort(["excntry", "gics", "date"])
+    else:
+        gics_daily = None
 
+    if (
+        settings["ind_pf"]
+        and settings["daily_pf"]
+        and any(
+            sub_data and "ff49_daily" in sub_data for sub_key, sub_data in portfolio_data.items()
+        )
+    ):
+        ff49_daily = pl.concat(
+            [
+                sub_data["ff49_daily"]
+                for sub_key, sub_data in portfolio_data.items()
+                if sub_data and "ff49_daily" in sub_data
+            ]
+        )
+        ff49_daily = ff49_daily.sort(["excntry", "ff49", "date"])
+    else:
+        ff49_daily = None
 
-# Writing output
-# if "market" in globals():
-# market.filter(pl.col("eom") <= settings["end_date"]).write_parquet(
-#     f"{output_path}/market_returns.parquet"
-# )
-if "pf_returns" in globals() and pf_returns is not None:
-    pf_returns.filter(pl.col("eom") <= settings["end_date"]).write_parquet(
-        f"{output_path}/pfs.parquet"
-    )
-if "hml_returns" in globals() and hml_returns is not None:
-    hml_returns.filter(pl.col("eom") <= settings["end_date"]).write_parquet(
-        f"{output_path}/hml.parquet"
-    )
-if "lms_returns" in globals() and lms_returns is not None:
-    lms_returns.filter(pl.col("eom") <= settings["end_date"]).write_parquet(
-        f"{output_path}/lms.parquet"
-    )
-if "cmp_returns" in globals() and cmp_returns is not None:
-    cmp_returns.filter(pl.col("eom") <= settings["end_date"]).write_parquet(
-        f"{output_path}/cmp.parquet"
-    )
-if "cluster_pfs" in globals() and cluster_pfs is not None:
-    cluster_pfs.filter(pl.col("eom") <= settings["end_date"]).write_parquet(
-        f"{output_path}/clusters.parquet"
-    )
-
-
-if settings["daily_pf"]:
-    # if "market_daily" in globals():
-    #     market_daily.filter(pl.col("date") <= settings["end_date"]).write_parquet(
-    #         f"{output_path}/market_returns_daily.parquet"
-    #     )
-    if "pf_daily" in globals() and pf_daily is not None:
-        pf_daily.filter(pl.col("date") <= settings["end_date"]).write_parquet(
-            f"{output_path}/pfs_daily.parquet"
-        )
-    if "hml_daily" in globals() and hml_daily is not None:
-        hml_daily.filter(pl.col("date") <= settings["end_date"]).write_parquet(
-            f"{output_path}/hml_daily.parquet"
-        )
-    if "lms_daily" in globals() and lms_daily is not None:
-        lms_daily.filter(pl.col("date") <= settings["end_date"]).write_parquet(
-            f"{output_path}/lms_daily.parquet"
-        )
-    if "cluster_pfs_daily" in globals() and cluster_pfs_daily is not None:
-        cluster_pfs_daily.filter(pl.col("date") <= settings["end_date"]).write_parquet(
-            f"{output_path}/clusters_daily.parquet"
-        )
-
-if settings["ind_pf"]:
-    if "gics_returns" in globals() and gics_returns is not None:
-        gics_returns.filter(pl.col("eom") <= settings["end_date"]).write_parquet(
-            f"{output_path}/industry_gics.parquet"
-        )
-    if "ff49_returns" in globals() and ff49_returns is not None:
-        ff49_returns.filter(pl.col("eom") <= settings["end_date"]).write_parquet(
-            f"{output_path}/industry_ff49.parquet"
-        )
-
-if settings["ind_pf"] and settings["daily_pf"]:
-    if "gics_daily" in globals() and gics_daily is not None:
-        gics_daily.filter(pl.col("date") <= settings["end_date"]).write_parquet(
-            f"{output_path}/industry_gics_daily.parquet"
-        )
-    if "ff49_daily" in globals() and ff49_daily is not None:
-        ff49_daily.filter(pl.col("date") <= settings["end_date"]).write_parquet(
-            f"{output_path}/industry_ff49_daily.parquet"
+    # Create HML Returns
+    if pf_returns is not None and pf_returns.height > 0:
+        hml_returns = pf_returns.group_by(["excntry", "characteristic", "eom"]).agg(
+            [
+                pl.col("pf").is_in([settings["pfs"], 1]).sum().alias("pfs"),
+                (
+                    pl.col("signal").filter(pl.col("pf") == settings["pfs"]).first()
+                    - pl.col("signal").filter(pl.col("pf") == 1).first()
+                ).alias("signal"),
+                (
+                    pl.col("n").filter(pl.col("pf") == settings["pfs"]).first()
+                    + pl.col("n").filter(pl.col("pf") == 1).first()
+                ).alias("n_stocks"),
+                (pl.col("n").filter(pl.col("pf").is_in([settings["pfs"], 1])).min()).alias(
+                    "n_stocks_min"
+                ),
+                (
+                    pl.col("ret_ew").filter(pl.col("pf") == settings["pfs"]).first()
+                    - pl.col("ret_ew").filter(pl.col("pf") == 1).first()
+                ).alias("ret_ew"),
+                (
+                    pl.col("ret_vw").filter(pl.col("pf") == settings["pfs"]).first()
+                    - pl.col("ret_vw").filter(pl.col("pf") == 1).first()
+                ).alias("ret_vw"),
+                (
+                    pl.col("ret_vw_cap").filter(pl.col("pf") == settings["pfs"]).first()
+                    - pl.col("ret_vw_cap").filter(pl.col("pf") == 1).first()
+                ).alias("ret_vw_cap"),
+            ]
         )
 
+        hml_returns = hml_returns.filter(pl.col("pfs") == 2).drop("pfs")
+        hml_returns = hml_returns.sort(["excntry", "characteristic", "eom"])
 
-# Create directory for Regional Factors
-if "regional_pfs" in globals() and regional_pfs is not None:
-    reg_folder = os.path.join(output_path, "regional_factors")
-    if not os.path.exists(reg_folder):
-        os.makedirs(reg_folder)
+        # Create Long-Short Factors [Sign Returns to be consistent with original paper]
+        lms_returns = char_info.join(hml_returns, on="characteristic", how="left")
 
-    # Write regional portfolios to parquet files
-    for reg in regional_pfs["region"].unique():
-        filtered_df = regional_pfs.filter(
-            (pl.col("eom") <= settings["end_date"]) & (pl.col("region") == reg)
+        # Define columns to be modified
+        resign_cols = ["signal", "ret_ew", "ret_vw", "ret_vw_cap"]
+        lms_returns = lms_returns.with_columns(
+            [pl.col(var) * pl.col("direction").alias(var) for var in resign_cols]
         )
-        file_path = os.path.join(reg_folder, f"{reg}.parquet")
-        filtered_df.write_parquet(file_path)
+    else:
+        hml_returns = None
+        lms_returns = None
 
-# Conditional block for daily regional factors
-if settings["daily_pf"]:
-    if "regional_pfs_daily" in globals() and regional_pfs_daily is not None:
-        # Create directory for Daily Regional Factors
-        reg_folder_daily = os.path.join(output_path, "regional_factors_daily")
-        if not os.path.exists(reg_folder_daily):
-            os.makedirs(reg_folder_daily)
+    # daily hml and lms
+    if settings["daily_pf"] and pf_daily is not None and pf_daily.height > 0:
+        hml_daily = pf_daily.group_by(["excntry", "characteristic", "date"]).agg(
+            [
+                pl.col("pf").is_in([settings["pfs"], 1]).sum().alias("pfs"),
+                (
+                    pl.col("n").filter(pl.col("pf") == settings["pfs"]).first()
+                    + pl.col("n").filter(pl.col("pf") == 1).first()
+                ).alias("n_stocks"),
+                (pl.col("n").filter(pl.col("pf").is_in([settings["pfs"], 1])).min()).alias(
+                    "n_stocks_min"
+                ),
+                (
+                    pl.col("ret_ew").filter(pl.col("pf") == settings["pfs"]).first()
+                    - pl.col("ret_ew").filter(pl.col("pf") == 1).first()
+                ).alias("ret_ew"),
+                (
+                    pl.col("ret_vw").filter(pl.col("pf") == settings["pfs"]).first()
+                    - pl.col("ret_vw").filter(pl.col("pf") == 1).first()
+                ).alias("ret_vw"),
+                (
+                    pl.col("ret_vw_cap").filter(pl.col("pf") == settings["pfs"]).first()
+                    - pl.col("ret_vw_cap").filter(pl.col("pf") == 1).first()
+                ).alias("ret_vw_cap"),
+            ]
+        )
 
-        # Write daily regional portfolios to parquet files
-        for reg in regional_pfs_daily["region"].unique():
-            filtered_df_daily = regional_pfs_daily.filter(
-                (pl.col("date") <= settings["end_date"]) & (pl.col("region") == reg)
+        hml_daily = hml_daily.filter(pl.col("pfs") == 2).drop("pfs")
+        hml_daily = hml_daily.sort(["excntry", "characteristic", "date"])
+
+        lms_daily = char_info.join(hml_daily, on="characteristic", how="left")
+        resign_cols = ["ret_ew", "ret_vw", "ret_vw_cap"]
+
+        lms_daily = lms_daily.with_columns(
+            [(pl.col(var) * pl.col("direction")).alias(var) for var in resign_cols]
+        )
+    else:
+        hml_daily = None
+        lms_daily = None
+
+    # Extract CMP returns
+    cmp_list = [
+        portfolio_data[sub_dict]["cmp"]
+        for sub_dict in portfolio_data
+        if "cmp" in portfolio_data[sub_dict]
+    ]
+    if cmp_list:
+        cmp_returns = pl.concat(cmp_list)
+    else:
+        # Handle the empty list case here
+        print("No 'cmp' keys found")
+        cmp_returns = None
+
+    # Create Clustered Portfolios
+    if lms_returns is not None:
+        cluster_pfs = (
+            lms_returns.join(cluster_labels, on="characteristic", how="left")
+            .group_by(["excntry", "cluster", "eom"])
+            .agg(
+                [
+                    pl.len().alias("n_factors"),
+                    pl.col("ret_ew").mean().alias("ret_ew"),
+                    pl.col("ret_vw").mean().alias("ret_vw"),
+                    pl.col("ret_vw_cap").mean().alias("ret_vw_cap"),
+                ]
             )
-            file_path_daily = os.path.join(reg_folder_daily, f"{reg}.parquet")
-            filtered_df_daily.write_parquet(file_path_daily)
-
-
-# Create directory for Regional Clusters
-if "regional_clusters" in globals() and regional_clusters is not None:
-    reg_folder = os.path.join(output_path, "regional_clusters")
-    if not os.path.exists(reg_folder):
-        os.makedirs(reg_folder)
-
-    # Write regional clusters to parquet files
-    for reg in regional_clusters["region"].unique():
-        filtered_df = regional_clusters.filter(
-            (pl.col("eom") <= settings["end_date"]) & (pl.col("region") == reg)
         )
-        file_path = os.path.join(reg_folder, f"{reg}.parquet")
-        filtered_df.write_parquet(file_path)
+    else:
+        cluster_pfs = None
 
-# Conditional block for daily regional clusters
-if settings["daily_pf"]:
-    if "regional_clusters_daily" in globals() and regional_clusters_daily is not None:
-        # Create directory for Daily Regional Clusters
-        reg_folder_daily = os.path.join(output_path, "regional_clusters_daily")
-        if not os.path.exists(reg_folder_daily):
-            os.makedirs(reg_folder_daily)
-
-        # Write daily regional clusters to parquet files
-        for reg in regional_clusters_daily["region"].unique():
-            filtered_df_daily = regional_clusters_daily.filter(
-                (pl.col("date") <= settings["end_date"]) & (pl.col("region") == reg)
+    # Conditional Operation for Daily Clustered Portfolios
+    if settings["daily_pf"] and lms_daily is not None:
+        cluster_pfs_daily = (
+            lms_daily.join(cluster_labels, on="characteristic", how="left")
+            .group_by(["excntry", "cluster", "date"])
+            .agg(
+                [
+                    pl.len().alias("n_factors"),
+                    pl.col("ret_ew").mean().alias("ret_ew"),
+                    pl.col("ret_vw").mean().alias("ret_vw"),
+                    pl.col("ret_vw_cap").mean().alias("ret_vw_cap"),
+                ]
             )
-            file_path_daily = os.path.join(reg_folder_daily, f"{reg}.parquet")
-            filtered_df_daily.write_parquet(file_path_daily)
+        )
+    else:
+        cluster_pfs_daily = None
 
-
-# Create directory for Country Factors
-if "lms_returns" in globals() and lms_returns is not None:
-    cnt_folder = os.path.join(output_path, "country_factors")
-    if not os.path.exists(cnt_folder):
-        os.makedirs(cnt_folder)
-
-    # Write country factors to parquet files
-    for exc in lms_returns["excntry"].unique():
-        if exc:
-            filtered_df = lms_returns.filter(
-                (pl.col("eom") <= settings["end_date"]) & (pl.col("excntry") == exc)
+    # creating regional portfolios
+    if lms_returns is not None:
+        regional_pfs = []
+        for i in range(regions.height):
+            info = regions[i][0]
+            reg_pf = regional_data(
+                data=lms_returns,
+                mkt=market,
+                countries=info["country_codes"][0],
+                date_col="eom",
+                char_col="characteristic",
+                weighting=settings["regional_pfs"]["country_weights"],
+                countries_min=info["countries_min"][0],
+                periods_min=settings["regional_pfs"]["months_min"],
+                stocks_min=settings["regional_pfs"]["stocks_min"],
             )
-            file_path = os.path.join(cnt_folder, f"{exc}.parquet")
+            reg_pf = reg_pf.with_columns(pl.lit(info["name"][0]).alias("region"))
+            reg_pf = reg_pf.select(
+                [
+                    "region",
+                    "characteristic",
+                    "direction",
+                    "eom",
+                    "n_countries",
+                    "ret_ew",
+                    "ret_vw",
+                    "ret_vw_cap",
+                    "mkt_vw_exc",
+                ]
+            )
+            regional_pfs.append(reg_pf)
+
+        regional_pfs = pl.concat(regional_pfs)  # .explode('direction')
+
+    else:
+        regional_pfs = None
+
+    if settings["daily_pf"] and lms_daily is not None:
+        regional_pfs_daily = []
+        for i in range(regions.height):
+            info = regions[i][0]
+            reg_pf = regional_data(
+                data=lms_daily,
+                mkt=market_daily,
+                countries=info["country_codes"][0],
+                date_col="date",
+                char_col="characteristic",
+                weighting=settings["regional_pfs"]["country_weights"],
+                countries_min=info["countries_min"][0],
+                periods_min=settings["regional_pfs"]["months_min"] * 21,
+                stocks_min=settings["regional_pfs"]["stocks_min"],
+            )
+            reg_pf = reg_pf.with_columns(pl.lit(info["name"][0]).alias("region"))
+            reg_pf = reg_pf.select(
+                [
+                    "region",
+                    "characteristic",
+                    "direction",
+                    "date",
+                    "n_countries",
+                    "ret_ew",
+                    "ret_vw",
+                    "ret_vw_cap",
+                    "mkt_vw_exc",
+                ]
+            )
+
+            regional_pfs_daily.append(reg_pf)  # .explode('direction')
+
+        regional_pfs_daily = pl.concat(regional_pfs_daily)
+
+    else:
+        regional_pfs_daily = None
+
+    # creating regional clusters
+    if cluster_pfs is not None:
+        regional_clusters = []
+        for i in range(regions.height):
+            info = regions[i][0]
+            reg_pf = cluster_pfs.rename({"n_factors": "n_stocks_min"})
+            reg_pf = reg_pf.with_columns(
+                pl.lit(None).cast(pl.Float64).alias("direction")
+            )  # Adding 'direction' column with NA values
+            reg_pf = regional_data(
+                data=reg_pf,
+                mkt=market,
+                countries=info["country_codes"][0],
+                date_col="eom",
+                char_col="cluster",
+                weighting=settings["regional_pfs"]["country_weights"],
+                countries_min=info["countries_min"][0],
+                periods_min=settings["regional_pfs"]["months_min"],
+                stocks_min=1,
+            )
+            reg_pf = reg_pf.with_columns(pl.lit(info["name"][0]).alias("region"))
+            reg_pf = reg_pf.select(
+                [
+                    "region",
+                    "cluster",
+                    "eom",
+                    "n_countries",
+                    "ret_ew",
+                    "ret_vw",
+                    "ret_vw_cap",
+                    "mkt_vw_exc",
+                ]
+            )
+
+            regional_clusters.append(reg_pf)
+
+        regional_clusters = pl.concat(regional_clusters)
+    else:
+        regional_clusters = None
+
+    if settings["daily_pf"] and cluster_pfs_daily is not None:
+        regional_clusters_daily = []
+        for i in range(regions.height):
+            info = regions[i][0]
+            reg_pf = cluster_pfs_daily.rename({"n_factors": "n_stocks_min"})
+            reg_pf = reg_pf.with_columns(
+                pl.lit(None).cast(pl.Float64).alias("direction")
+            )  # Adding 'direction' column with NA values
+            reg_pf = regional_data(
+                data=reg_pf,
+                mkt=market_daily,
+                countries=info["country_codes"][0],
+                date_col="date",
+                char_col="cluster",
+                weighting=settings["regional_pfs"]["country_weights"],
+                countries_min=info["countries_min"][0],
+                periods_min=settings["regional_pfs"]["months_min"] * 21,
+                stocks_min=1,
+            )
+            reg_pf = reg_pf.with_columns(pl.lit(info["name"][0]).alias("region"))
+            reg_pf = reg_pf.select(
+                [
+                    "region",
+                    "cluster",
+                    "date",
+                    "n_countries",
+                    "ret_ew",
+                    "ret_vw",
+                    "ret_vw_cap",
+                    "mkt_vw_exc",
+                ]
+            )
+            regional_clusters_daily.append(reg_pf)
+
+        regional_clusters_daily = pl.concat(regional_clusters_daily)
+    else:
+        regional_clusters_daily = None
+
+    # Writing output
+    # if "market" in globals():
+    # market.filter(pl.col("eom") <= settings["end_date"]).write_parquet(
+    #     f"{output_path}/market_returns.parquet"
+    # )
+    if pf_returns is not None:
+        pf_returns.filter(pl.col("eom") <= settings["end_date"]).write_parquet(
+            f"{output_path}/pfs.parquet"
+        )
+    if hml_returns is not None:
+        hml_returns.filter(pl.col("eom") <= settings["end_date"]).write_parquet(
+            f"{output_path}/hml.parquet"
+        )
+    if lms_returns is not None:
+        lms_returns.filter(pl.col("eom") <= settings["end_date"]).write_parquet(
+            f"{output_path}/lms.parquet"
+        )
+    if cmp_returns is not None:
+        cmp_returns.filter(pl.col("eom") <= settings["end_date"]).write_parquet(
+            f"{output_path}/cmp.parquet"
+        )
+    if cluster_pfs is not None:
+        cluster_pfs.filter(pl.col("eom") <= settings["end_date"]).write_parquet(
+            f"{output_path}/clusters.parquet"
+        )
+
+    if settings["daily_pf"]:
+        # if "market_daily" in globals():
+        #     market_daily.filter(pl.col("date") <= settings["end_date"]).write_parquet(
+        #         f"{output_path}/market_returns_daily.parquet"
+        #     )
+        if pf_daily is not None:
+            pf_daily.filter(pl.col("date") <= settings["end_date"]).write_parquet(
+                f"{output_path}/pfs_daily.parquet"
+            )
+        if hml_daily is not None:
+            hml_daily.filter(pl.col("date") <= settings["end_date"]).write_parquet(
+                f"{output_path}/hml_daily.parquet"
+            )
+        if lms_daily is not None:
+            lms_daily.filter(pl.col("date") <= settings["end_date"]).write_parquet(
+                f"{output_path}/lms_daily.parquet"
+            )
+        if cluster_pfs_daily is not None:
+            cluster_pfs_daily.filter(pl.col("date") <= settings["end_date"]).write_parquet(
+                f"{output_path}/clusters_daily.parquet"
+            )
+
+    if settings["ind_pf"]:
+        if gics_returns is not None:
+            gics_returns.filter(pl.col("eom") <= settings["end_date"]).write_parquet(
+                f"{output_path}/industry_gics.parquet"
+            )
+        if ff49_returns is not None:
+            ff49_returns.filter(pl.col("eom") <= settings["end_date"]).write_parquet(
+                f"{output_path}/industry_ff49.parquet"
+            )
+
+    if settings["ind_pf"] and settings["daily_pf"]:
+        if gics_daily is not None:
+            gics_daily.filter(pl.col("date") <= settings["end_date"]).write_parquet(
+                f"{output_path}/industry_gics_daily.parquet"
+            )
+        if ff49_daily is not None:
+            ff49_daily.filter(pl.col("date") <= settings["end_date"]).write_parquet(
+                f"{output_path}/industry_ff49_daily.parquet"
+            )
+
+    # Create directory for Regional Factors
+    if regional_pfs is not None:
+        reg_folder = os.path.join(output_path, "regional_factors")
+        if not os.path.exists(reg_folder):
+            os.makedirs(reg_folder)
+
+        # Write regional portfolios to parquet files
+        for reg in regional_pfs["region"].unique():
+            filtered_df = regional_pfs.filter(
+                (pl.col("eom") <= settings["end_date"]) & (pl.col("region") == reg)
+            )
+            file_path = os.path.join(reg_folder, f"{reg}.parquet")
             filtered_df.write_parquet(file_path)
 
-# Conditional block for daily country factors
-if settings["daily_pf"]:
-    if "lms_daily" in globals() and lms_daily is not None:
-        # Create directory for Daily Country Factors
-        cnt_folder_daily = os.path.join(output_path, "country_factors_daily")
-        if not os.path.exists(cnt_folder_daily):
-            os.makedirs(cnt_folder_daily)
+    # Conditional block for daily regional factors
+    if settings["daily_pf"]:
+        if regional_pfs_daily is not None:
+            # Create directory for Daily Regional Factors
+            reg_folder_daily = os.path.join(output_path, "regional_factors_daily")
+            if not os.path.exists(reg_folder_daily):
+                os.makedirs(reg_folder_daily)
 
-        # Write daily country factors to parquet files
-        for exc in lms_daily["excntry"].unique():
-            if exc:
-                filtered_df_daily = lms_daily.filter(
-                    (pl.col("date") <= settings["end_date"]) & (pl.col("excntry") == exc)
+            # Write daily regional portfolios to parquet files
+            for reg in regional_pfs_daily["region"].unique():
+                filtered_df_daily = regional_pfs_daily.filter(
+                    (pl.col("date") <= settings["end_date"]) & (pl.col("region") == reg)
                 )
-                file_path_daily = os.path.join(cnt_folder_daily, f"{exc}.parquet")
+                file_path_daily = os.path.join(reg_folder_daily, f"{reg}.parquet")
                 filtered_df_daily.write_parquet(file_path_daily)
 
-print(
-    f"End            : {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))}",
-    flush=True,
-)
+    # Create directory for Regional Clusters
+    if regional_clusters is not None:
+        reg_folder = os.path.join(output_path, "regional_clusters")
+        if not os.path.exists(reg_folder):
+            os.makedirs(reg_folder)
+
+        # Write regional clusters to parquet files
+        for reg in regional_clusters["region"].unique():
+            filtered_df = regional_clusters.filter(
+                (pl.col("eom") <= settings["end_date"]) & (pl.col("region") == reg)
+            )
+            file_path = os.path.join(reg_folder, f"{reg}.parquet")
+            filtered_df.write_parquet(file_path)
+
+    # Conditional block for daily regional clusters
+    if settings["daily_pf"]:
+        if regional_clusters_daily is not None:
+            # Create directory for Daily Regional Clusters
+            reg_folder_daily = os.path.join(output_path, "regional_clusters_daily")
+            if not os.path.exists(reg_folder_daily):
+                os.makedirs(reg_folder_daily)
+
+            # Write daily regional clusters to parquet files
+            for reg in regional_clusters_daily["region"].unique():
+                filtered_df_daily = regional_clusters_daily.filter(
+                    (pl.col("date") <= settings["end_date"]) & (pl.col("region") == reg)
+                )
+                file_path_daily = os.path.join(reg_folder_daily, f"{reg}.parquet")
+                filtered_df_daily.write_parquet(file_path_daily)
+
+    # Create directory for Country Factors
+    if lms_returns is not None:
+        cnt_folder = os.path.join(output_path, "country_factors")
+        if not os.path.exists(cnt_folder):
+            os.makedirs(cnt_folder)
+
+        # Write country factors to parquet files
+        for exc in lms_returns["excntry"].unique():
+            if exc:
+                filtered_df = lms_returns.filter(
+                    (pl.col("eom") <= settings["end_date"]) & (pl.col("excntry") == exc)
+                )
+                file_path = os.path.join(cnt_folder, f"{exc}.parquet")
+                filtered_df.write_parquet(file_path)
+
+    # Conditional block for daily country factors
+    if settings["daily_pf"]:
+        if lms_daily is not None:
+            # Create directory for Daily Country Factors
+            cnt_folder_daily = os.path.join(output_path, "country_factors_daily")
+            if not os.path.exists(cnt_folder_daily):
+                os.makedirs(cnt_folder_daily)
+
+            # Write daily country factors to parquet files
+            for exc in lms_daily["excntry"].unique():
+                if exc:
+                    filtered_df_daily = lms_daily.filter(
+                        (pl.col("date") <= settings["end_date"]) & (pl.col("excntry") == exc)
+                    )
+                    file_path_daily = os.path.join(cnt_folder_daily, f"{exc}.parquet")
+                    filtered_df_daily.write_parquet(file_path_daily)
+
+    print(
+        f"End            : {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))}",
+        flush=True,
+    )
+
+
+if __name__ == "__main__":
+    main()
