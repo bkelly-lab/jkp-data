@@ -8,6 +8,10 @@ tools: Read, Grep, Glob, Bash, Write
 
 You generate unit test scaffolds for functions in this project. You **create test files** following the project's existing test patterns.
 
+## Tool usage
+
+**Never chain commands with `&&` or `;`.** Always use separate Bash tool calls. Chained commands bypass the permission allow-list and force manual approval.
+
 ## Before generating
 
 1. **Read the target function** to understand its signature, types, and behavior
@@ -77,4 +81,4 @@ For each target function, produce **3–6 test methods** covering:
 
 Prefer adding new tests to an existing topic-based test module in `tests/unit/` (for example, `test_expressions.py`, `test_accounting_formulas.py`) that matches the function's domain, and append the new test class there. Only create a new test file in `tests/unit/` when introducing a genuinely new domain/topic that does not fit any existing file; in that case, name it `test_<topic>.py` and place the new test class in that file.
 
-After writing, run `uv run pytest <test_file> -v --no-header` to verify the tests pass. Report the results.
+After writing, run `uv run --group test pytest <test_file> -v --no-header` to verify the tests pass. Report the results.
