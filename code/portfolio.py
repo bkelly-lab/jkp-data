@@ -593,13 +593,17 @@ def portfolios(
     pf_daily_lazys: list[pl.LazyFrame] = []
     char_pfs: list[dict] = []  # populated only when signals=True
 
+    # Single shared LazyFrame node for the preprocessed data. All per-char
+    # pipelines branch off this node, enabling polars' common-subplan
+    # elimination (CSE) in collect_all to avoid redundant scans.
+    data_lazy = data.lazy()
+
     for _i, x in enumerate(tqdm(chars, desc="Processing chars", unit="char", ncols=80)):
         # Alias current char into a 'var' column on the per-char subset.
         # Operate on `sub` only -- `data` is not mutated.
         if not signals:
             sub = (
-                data.lazy()
-                .with_columns(pl.col(x).cast(pl.Float64).alias("var"))
+                data_lazy.with_columns(pl.col(x).cast(pl.Float64).alias("var"))
                 .filter(pl.col("var").is_not_null())
                 .select(
                     [
@@ -617,10 +621,8 @@ def portfolios(
                 )
             )
         else:
-            sub = (
-                data.lazy()
-                .with_columns(pl.col(x).cast(pl.Float64).alias("var"))
-                .filter(pl.col("var").is_not_null())
+            sub = data_lazy.with_columns(pl.col(x).cast(pl.Float64).alias("var")).filter(
+                pl.col("var").is_not_null()
             )
 
         sub = sub.with_columns(bp_n=pl.sum("bp_stock").over("eom")).filter(
