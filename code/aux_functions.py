@@ -645,6 +645,43 @@ def get_columns(conn, conninfo, lib, table):
     return [c[0] for c in cols]
 
 
+def get_columns_attached(conn, db_alias, lib, table):
+    """Get column names from an attached PostgreSQL database."""
+    cols = conn.execute(f"""
+        SELECT *
+        FROM {db_alias}.{lib}.{table}
+        LIMIT 0
+    """).description
+    return [c[0] for c in cols]
+
+
+def download_wrds_table_attached(
+    duckdb_conn,
+    db_alias,
+    table_name,
+    filename,
+    date_column: str | None = None,
+    end_date: date | None = None,
+):
+    """Download a WRDS table using an attached persistent connection."""
+    lib, table = table_name.split(".")
+    cols = get_columns_attached(duckdb_conn, db_alias, lib, table)
+    projection = build_projection(cols)
+
+    where_clause = ""
+    if date_column and end_date:
+        where_clause = f"WHERE {date_column} <= '{end_date}'"
+
+    duckdb_conn.execute(f"""
+        COPY (
+          SELECT {projection}
+          FROM {db_alias}.{lib}.{table}
+          {where_clause}
+        )
+        TO '{filename}' (FORMAT PARQUET);
+    """)
+
+
 def build_projection(cols):
     casts = []
     if "permno" in cols:
@@ -689,7 +726,9 @@ def download_wrds_table(
 
 
 @measure_time
-def download_raw_data_tables(username: str, password: str, end_date: date | None = None) -> None:
+def download_raw_data_tables(
+    username: str, password: str, end_date: date | None = None, persistent_connection: bool = False
+) -> None:
     """
     Description:
         Bulk-download core WRDS tables to raw_tables and a few curated variants with column subsets.
@@ -698,7 +737,16 @@ def download_raw_data_tables(username: str, password: str, end_date: date | None
         1) Connect to WRDS; iterate through a fixed list of library.tables.
         2) For each table: download to raw_tables/lib_table.parquet, applying date filtering
            when end_date is provided and the table has a known date column.
-        3) Disconnect.
+        3) If persistent_connection: ATTACH a single postgres connection and download all tables.
+           Otherwise: use postgres_scan() which creates a new connection per query.
+        4) Disconnect.
+
+    Args:
+        username: WRDS username
+        password: WRDS password
+        persistent_connection: If True, use a single persistent connection via ATTACH.
+            This reduces MFA prompts on systems with NAT IP rotation (e.g., Yale Bouchet).
+            If False (default), use postgres_scan() which creates a new connection per query.
 
     Output:
         Parquet files under raw_tables/ (Compustat, CRSP, FF, etc.).
@@ -750,16 +798,43 @@ def download_raw_data_tables(username: str, password: str, end_date: date | None
     con = duckdb.connect(":memory:")
     con.execute("INSTALL postgres; LOAD postgres;")
 
-    for table in table_names:
-        # print(f"Downloading WRDS table: {table}", flush=True)
-        download_wrds_table(
-            wrds_session_data,
-            con,
-            table,
-            "../raw/raw_tables/" + table.replace(".", "_") + ".parquet",
-            date_column=date_columns.get(table),
-            end_date=end_date,
-        )
+    if persistent_connection:
+        # Use ATTACH for a single persistent connection (reduces MFA on NAT-rotated networks).
+        # DuckDB's postgres extension includes the full connection string (with password)
+        # in error messages. If the connection fails, suppress the original exception to
+        # avoid leaking credentials in logs/tracebacks, and raise a generic error instead.
+        try:
+            con.execute(f"ATTACH '{wrds_session_data}' AS wrds (TYPE postgres, READ_ONLY)")
+        except Exception as e:
+            if password in str(e):
+                raise RuntimeError(
+                    "Failed to attach persistent WRDS connection. "
+                    "Check credentials and MFA approval."
+                ) from None
+            raise
+        try:
+            for table in table_names:
+                download_wrds_table_attached(
+                    con,
+                    "wrds",
+                    table,
+                    "../raw/raw_tables/" + table.replace(".", "_") + ".parquet",
+                    date_column=date_columns.get(table),
+                    end_date=end_date,
+                )
+        finally:
+            con.execute("DETACH wrds")
+    else:
+        # Use postgres_scan() which creates a new connection per query (default)
+        for table in table_names:
+            download_wrds_table(
+                wrds_session_data,
+                con,
+                table,
+                "../raw/raw_tables/" + table.replace(".", "_") + ".parquet",
+                date_column=date_columns.get(table),
+                end_date=end_date,
+            )
 
     con.close()
 
