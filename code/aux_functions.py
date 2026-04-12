@@ -10,6 +10,7 @@ import ibis
 import polars as pl
 import polars_ds as pds
 import polars_ols  # noqa: F401 - required for least_squares method on polars expressions
+from config import END_DATE
 from ibis import _
 from polars import col
 
@@ -641,6 +642,43 @@ def get_columns(conn, conninfo, lib, table):
     return [c[0] for c in cols]
 
 
+def get_columns_attached(conn, db_alias, lib, table):
+    """Get column names from an attached PostgreSQL database."""
+    cols = conn.execute(f"""
+        SELECT *
+        FROM {db_alias}.{lib}.{table}
+        LIMIT 0
+    """).description
+    return [c[0] for c in cols]
+
+
+def download_wrds_table_attached(
+    duckdb_conn,
+    db_alias,
+    table_name,
+    filename,
+    date_column: str | None = None,
+    end_date: date | None = None,
+):
+    """Download a WRDS table using an attached persistent connection."""
+    lib, table = table_name.split(".")
+    cols = get_columns_attached(duckdb_conn, db_alias, lib, table)
+    projection = build_projection(cols)
+
+    where_clause = ""
+    if date_column and end_date:
+        where_clause = f"WHERE {date_column} <= '{end_date}'"
+
+    duckdb_conn.execute(f"""
+        COPY (
+          SELECT {projection}
+          FROM {db_alias}.{lib}.{table}
+          {where_clause}
+        )
+        TO '{filename}' (FORMAT PARQUET);
+    """)
+
+
 def build_projection(cols):
     casts = []
     if "permno" in cols:
@@ -658,31 +696,54 @@ def build_projection(cols):
         return "*"
 
 
-def download_wrds_table(conninfo, duckdb_conn, table_name, filename):
+def download_wrds_table(
+    conninfo: str,
+    duckdb_conn: duckdb.DuckDBPyConnection,
+    table_name: str,
+    filename: str,
+    date_column: str | None = None,
+    end_date: date | None = None,
+) -> None:
     lib, table = table_name.split(".")
     cols = get_columns(duckdb_conn, conninfo, lib, table)
     projection = build_projection(cols)
+
+    where_clause = ""
+    if date_column and end_date:
+        where_clause = f"WHERE {date_column} <= '{end_date}'"
 
     duckdb_conn.execute(f"""
         COPY (
           SELECT {projection}
           FROM postgres_scan('{conninfo}', '{lib}', '{table}')
+          {where_clause}
         )
         TO '{filename}' (FORMAT PARQUET);
     """)
 
 
 @measure_time
-def download_raw_data_tables(username, password):
+def download_raw_data_tables(
+    username: str, password: str, end_date: date | None = None, persistent_connection: bool = False
+) -> None:
     """
     Description:
         Bulk-download core WRDS tables to raw_tables and a few curated variants with column subsets.
 
     Steps:
         1) Connect to WRDS; iterate through a fixed list of library.tables.
-        2) For each table: download to raw_tables/lib_table.parquet; periodically reset connection.
-        3) Additionally fetch comp.secd and comp.g_secd with curated columns.
+        2) For each table: download to raw_tables/lib_table.parquet, applying date filtering
+           when end_date is provided and the table has a known date column.
+        3) If persistent_connection: ATTACH a single postgres connection and download all tables.
+           Otherwise: use postgres_scan() which creates a new connection per query.
         4) Disconnect.
+
+    Args:
+        username: WRDS username
+        password: WRDS password
+        persistent_connection: If True, use a single persistent connection via ATTACH.
+            This reduces MFA prompts on systems with NAT IP rotation (e.g., Yale Bouchet).
+            If False (default), use postgres_scan() which creates a new connection per query.
 
     Output:
         Parquet files under raw_tables/ (Compustat, CRSP, FF, etc.).
@@ -716,18 +777,61 @@ def download_raw_data_tables(username, password):
         "comp.g_secd",
     ]
 
+    # Tables with a known date column are filtered to end_date during download.
+    # Reference/metadata tables (not listed here) are downloaded in full.
+    date_columns: dict[str, str] = {
+        "crsp.msf_v2": "mthcaldt",
+        "crsp.dsf_v2": "dlycaldt",
+        "comp.secd": "datadate",
+        "comp.g_secd": "datadate",
+        "comp.secm": "datadate",
+        "comp.funda": "datadate",
+        "comp.fundq": "datadate",
+        "comp.g_funda": "datadate",
+        "comp.g_fundq": "datadate",
+    }
+
     wrds_session_data = gen_wrds_connection_info(username, password)
     con = duckdb.connect(":memory:")
     con.execute("INSTALL postgres; LOAD postgres;")
 
-    for table in table_names:
-        # print(f"Downloading WRDS table: {table}", flush=True)
-        download_wrds_table(
-            wrds_session_data,
-            con,
-            table,
-            "../raw/raw_tables/" + table.replace(".", "_") + ".parquet",
-        )
+    if persistent_connection:
+        # Use ATTACH for a single persistent connection (reduces MFA on NAT-rotated networks).
+        # DuckDB's postgres extension includes the full connection string (with password)
+        # in error messages. If the connection fails, suppress the original exception to
+        # avoid leaking credentials in logs/tracebacks, and raise a generic error instead.
+        try:
+            con.execute(f"ATTACH '{wrds_session_data}' AS wrds (TYPE postgres, READ_ONLY)")
+        except Exception as e:
+            if password in str(e):
+                raise RuntimeError(
+                    "Failed to attach persistent WRDS connection. "
+                    "Check credentials and MFA approval."
+                ) from None
+            raise
+        try:
+            for table in table_names:
+                download_wrds_table_attached(
+                    con,
+                    "wrds",
+                    table,
+                    "../raw/raw_tables/" + table.replace(".", "_") + ".parquet",
+                    date_column=date_columns.get(table),
+                    end_date=end_date,
+                )
+        finally:
+            con.execute("DETACH wrds")
+    else:
+        # Use postgres_scan() which creates a new connection per query (default)
+        for table in table_names:
+            download_wrds_table(
+                wrds_session_data,
+                con,
+                table,
+                "../raw/raw_tables/" + table.replace(".", "_") + ".parquet",
+                date_column=date_columns.get(table),
+                end_date=end_date,
+            )
 
     con.close()
 
@@ -2563,26 +2667,22 @@ def return_cutoffs(freq, crsp_only):
     Steps:
         1) Select group vars and output path from freq; scan 'world_{freq}sf.parquet'.
         2) Optional CRSP filter; require common/main/primary, exclude ZWE, non-null ret_exc.
-        3) Add year/month; group and aggregate counts + percentiles for ret, ret_local, ret_exc.
+        3) Group by eom and aggregate counts + percentiles for ret, ret_local, ret_exc.
         4) Sort, collect, save.
 
     Output:
         Writes 'return_cutoffs.parquet' (monthly) or 'return_cutoffs_daily.parquet' (daily).
     """
-    group_vars = "eom" if freq == "m" else "year, month"
+    group_vars = "eom"
     res_path = "return_cutoffs.parquet" if freq == "m" else "return_cutoffs_daily.parquet"
-    data = (
-        pl.scan_parquet(f"world_{freq}sf.parquet")
-        .filter(
-            (col("common") == 1)
-            & (col("obs_main") == 1)
-            & (col("exch_main") == 1)
-            & (col("primary_sec") == 1)
-            & (col("excntry") != "ZWE")
-            & (col("ret_exc").is_not_null())
-            & ((col("source_crsp") == 1) if crsp_only == 1 else pl.lit(True))
-        )
-        .with_columns(year=col("date").dt.year(), month=col("date").dt.month())
+    data = pl.scan_parquet(f"world_{freq}sf.parquet").filter(
+        (col("common") == 1)
+        & (col("obs_main") == 1)
+        & (col("exch_main") == 1)
+        & (col("primary_sec") == 1)
+        & (col("excntry") != "ZWE")
+        & (col("ret_exc").is_not_null())
+        & ((col("source_crsp") == 1) if crsp_only == 1 else pl.lit(True))
     )
     data = data.sql(f"""
             SELECT
@@ -2611,6 +2711,11 @@ def return_cutoffs(freq, crsp_only):
             GROUP BY {group_vars}
             ORDER BY {group_vars}
             """)
+    if freq == "d":
+        data = data.with_columns(
+            year=pl.col("eom").dt.year(),
+            month=pl.col("eom").dt.month(),
+        )
     data.sink_parquet(res_path)
 
 
@@ -2702,7 +2807,7 @@ def load_mkt_returns_params(freq):
     dt_col = "date" if freq == "d" else "eom"
     max_date_lag = 14 if freq == "d" else 1
     path_aux = "_daily" if freq == "d" else ""
-    group_vars = ["year", "month"] if freq == "d" else ["eom"]
+    group_vars = ["eom"]
     comm_stocks_cols = [
         "source_crsp",
         "id",
@@ -2730,13 +2835,12 @@ def add_cutoffs_and_winsorize(df, wins_data_path, group_vars, dt_col):
 
     Steps:
         1) Read winsor cutoff parquet; select group vars + needed thresholds.
-        2) Add year/month from dt_col; left-join cutoffs on group vars.
+        2) Left-join cutoffs on group vars (eom).
         3) Winsorize high (99.9) then low (0.1) for each return series.
 
     Output:
         Polars LazyFrame/DataFrame with winsorized returns and cutoff columns joined.
     """
-    df = df.with_columns(year=col(dt_col).dt.year(), month=col(dt_col).dt.month())
     wins_data = pl.scan_parquet(wins_data_path)
 
     on_clause = " AND ".join([f"a.{k} = b.{k}" for k in group_vars])
@@ -2749,34 +2853,19 @@ def add_cutoffs_and_winsorize(df, wins_data_path, group_vars, dt_col):
     SELECT
         a.*
         REPLACE(
-            CASE
-                WHEN a.source_crsp = 0
-                AND a.ret IS NOT NULL
-                AND a.ret > b.ret_99_9 THEN b.ret_99_9
-                WHEN a.source_crsp = 0
-                AND a.ret IS NOT NULL
-                AND a.ret < b.ret_0_1 THEN b.ret_0_1
-                ELSE a.ret
+            CASE WHEN a.source_crsp = 0 AND a.ret IS NOT NULL
+                 THEN GREATEST(b.ret_0_1, LEAST(a.ret, b.ret_99_9))
+                 ELSE a.ret
             END AS ret,
 
-            CASE
-                WHEN a.source_crsp = 0
-                AND a.ret_local IS NOT NULL
-                AND a.ret_local > b.ret_local_99_9 THEN b.ret_local_99_9
-                WHEN a.source_crsp = 0
-                AND a.ret_local IS NOT NULL
-                AND a.ret_local < b.ret_local_0_1 THEN b.ret_local_0_1
-                ELSE a.ret_local
+            CASE WHEN a.source_crsp = 0 AND a.ret_local IS NOT NULL
+                 THEN GREATEST(b.ret_local_0_1, LEAST(a.ret_local, b.ret_local_99_9))
+                 ELSE a.ret_local
             END AS ret_local,
 
-            CASE
-                WHEN a.source_crsp = 0
-                AND a.ret_exc IS NOT NULL
-                AND a.ret_exc > b.ret_exc_99_9 THEN b.ret_exc_99_9
-                WHEN a.source_crsp = 0
-                AND a.ret_exc IS NOT NULL
-                AND a.ret_exc < b.ret_exc_0_1 THEN b.ret_exc_0_1
-                ELSE a.ret_exc
+            CASE WHEN a.source_crsp = 0 AND a.ret_exc IS NOT NULL
+                 THEN GREATEST(b.ret_exc_0_1, LEAST(a.ret_exc, b.ret_exc_99_9))
+                 ELSE a.ret_exc
             END AS ret_exc
         )
     FROM df AS a
@@ -2852,18 +2941,20 @@ def drop_non_trading_days(df, n_col, dt_col, over_vars, thresh_fraction):
         Remove thin-trading days by country-month (or given window) based on stock coverage.
 
     Steps:
-        1) Add year/month from dt_col; compute max_stocks over over_vars.
+        1) Derive eom from dt_col; compute max_stocks over over_vars.
         2) Keep rows where n_col / max_stocks ≥ thresh_fraction.
         3) Drop helper columns.
 
     Output:
         Frame filtered to sufficiently traded dates.
     """
+    added_eom = "eom" not in df.collect_schema().names()
+    if added_eom:
+        df = df.with_columns(eom=pl.col(dt_col).dt.month_end())
     df = (
-        df.with_columns(year=col(dt_col).dt.year(), month=col(dt_col).dt.month())
-        .with_columns(max_stocks=pl.max(n_col).over(over_vars))
+        df.with_columns(max_stocks=pl.max(n_col).over(over_vars))
         .filter((col(n_col) / col("max_stocks")) >= thresh_fraction)
-        .drop(["year", "month", "max_stocks"])
+        .drop(["max_stocks"] + (["eom"] if added_eom else []))
     )
     return df
 
@@ -2903,7 +2994,7 @@ def market_returns(data_path, freq, wins_comp, wins_data_path):
     __common_stocks = apply_stock_filter_and_compute_indexes(__common_stocks, dt_col, max_date_lag)
     if freq == "d":
         __common_stocks = drop_non_trading_days(
-            __common_stocks, "stocks", dt_col, ["excntry", "year", "month"], 0.25
+            __common_stocks, "stocks", dt_col, ["excntry", "eom"], 0.25
         )
     __common_stocks.sort(["excntry", dt_col]).collect().write_parquet(
         f"market_returns{path_aux}.parquet"
@@ -6312,13 +6403,23 @@ def sort_ff_style(char, min_stocks_bp, min_stocks_pf, date_col, data, sf):
 
 
 @measure_time
-def ap_factors(output_path, freq, sf_path, mchars_path, mkt_path, min_stocks_bp, min_stocks_pf):
+def ap_factors(
+    output_path,
+    freq,
+    sf_path,
+    mchars_path,
+    mkt_path,
+    min_stocks_bp,
+    min_stocks_pf,
+    lower: float = 0.001,
+    upper: float = 0.999,
+):
     """
     Description:
         Build AP-style factor panels (FF HML/SMB and HXZ INV/ROE/SMB) by country and month (or day).
 
     Steps:
-        1) Load security returns; winsorize ret_exc by date.
+        1) Load security returns; winsorize ret_exc by eom at configurable percentile bounds.
         2) Load market characteristics; lag key vars 1 period with continuity guard; filter to eligible stocks.
         3) Size-bucket each stock; run FF-style sorts for BE/ME, asset growth, and ROE.
         4) Compose factors: mktrf from market file; HML/SMB (FF); INV/ROE/SMB (HXZ).
@@ -6351,29 +6452,24 @@ def ap_factors(output_path, freq, sf_path, mchars_path, mkt_path, min_stocks_bp,
         .filter(sf_cond & col("ret_exc").is_not_null())
         .select(["excntry", "id", "eom", "date", "ret_exc"])
     )
+    # CTE+JOIN because Polars SQL doesn't support WINDOW with QUANTILE_DISC;
+    # prep_data_factor_regs uses OVER() window functions via DuckDB instead.
     world_sf2 = world_sf1.sql(f"""
-                                WITH bounds AS (
-                                SELECT
-                                    eom,
-                                    QUANTILE_DISC(ret_exc, {0.1 / 100}) AS low,
-                                    QUANTILE_DISC(ret_exc, {99.9 / 100}) AS high
-                                FROM self
-                                GROUP BY eom
-                                )
-                                SELECT
-                                    excntry,
-                                    id,
-                                    eom,
-                                    date,
-                                    CASE
-                                        WHEN ret_exc < low  THEN low
-                                        WHEN ret_exc > high THEN high
-                                        ELSE ret_exc
-                                    END AS ret_exc
-                                FROM self
-                                LEFT JOIN bounds
-                                USING (eom)
-                            """)
+        WITH bounds AS (
+            SELECT
+                eom,
+                QUANTILE_DISC(ret_exc, {lower}) AS low,
+                QUANTILE_DISC(ret_exc, {upper}) AS high
+            FROM self
+            GROUP BY eom
+        )
+        SELECT
+            excntry, id, self.eom, date,
+            GREATEST(low, LEAST(ret_exc, high)) AS ret_exc
+        FROM self
+        LEFT JOIN bounds
+        USING (eom)
+    """)
 
     base = (
         pl.scan_parquet(mchars_path)
@@ -6445,7 +6541,7 @@ def ap_factors(output_path, freq, sf_path, mchars_path, mkt_path, min_stocks_bp,
     output.write_parquet(output_path)
 
 
-def prep_data_factor_regs(data_path, fcts_path):
+def prep_data_factor_regs(data_path, fcts_path, lower: float = 0.001, upper: float = 0.999):
     """
     Description:
         Prepare monthly panel for factor regressions (join data with factors, filter, winsorize).
@@ -6453,7 +6549,7 @@ def prep_data_factor_regs(data_path, fcts_path):
     Steps:
         1) Create __msf1: join msf with factors on (excntry, eom); keep ret_exc, mktrf, hml, smb_ff and valid monthly obs.
         2) Add integer date (aux_date) and cast id_int.
-        3) Winsorize ret_exc by eom into __msf2.
+        3) Winsorize ret_exc by eom at configurable percentile bounds into __msf2.
 
     Output:
         DuckDB connection containing tables '__msf2' (ready for rolling regs).
@@ -6497,25 +6593,18 @@ def prep_data_factor_regs(data_path, fcts_path):
         AND a.ret_exc   IS NOT NULL
         AND a.ret_lag_dif = 1
         AND b.mktrf    IS NOT NULL
-    ),
-    percs AS (
-        SELECT
-          eom,
-          QUANTILE_DISC(ret_exc, {0.1 / 100}) AS low,
-          QUANTILE_DISC(ret_exc, {99.9 / 100}) AS high
-        FROM __msf1
-        GROUP BY eom
     )
     SELECT
-       d.* EXCLUDE (ret_exc),
-      CASE
-        WHEN d.ret_exc < p.low  THEN p.low
-        WHEN d.ret_exc > p.high THEN p.high
-        ELSE d.ret_exc
-      END AS ret_exc
-    FROM __msf1 AS d
-    LEFT JOIN percs AS p
-      USING (eom);
+        id, id_int, eom, ret_lag_dif, mktrf, hml, smb_ff, aux_date,
+        GREATEST(
+            QUANTILE_DISC(ret_exc, {lower}) OVER w,
+            LEAST(
+                ret_exc,
+                QUANTILE_DISC(ret_exc, {upper}) OVER w
+            )
+        ) AS ret_exc
+    FROM __msf1
+    WINDOW w AS (PARTITION BY eom);
     """)
     return con
 
@@ -7571,14 +7660,14 @@ def quality_minus_junk(data_path, min_stks):
 
 
 @measure_time
-def save_main_data(end_date):
+def save_main_data():
     """
     Description:
         Filter world_data to main securities and export country-level files.
 
     Steps:
         1) Load world_data.parquet and compute lagged market equity.
-        2) Filter to valid securities up to end_date.
+        2) Filter to valid main securities.
         3) Save filtered dataset and split into country parquet files.
 
     Output:
@@ -7587,6 +7676,7 @@ def save_main_data(end_date):
     months_exp = (col("eom").dt.year() * 12 + col("eom").dt.month()).cast(pl.Int64)
     data = (
         pl.scan_parquet("world_data.parquet")
+        .filter(pl.col("eom") <= END_DATE)
         .with_columns(dif_aux=months_exp)
         .sort(["id", "eom"])
         .with_columns(
@@ -7602,7 +7692,6 @@ def save_main_data(end_date):
             & (col("common") == 1)
             & (col("obs_main") == 1)
             & (col("exch_main") == 1)
-            & (col("eom") <= end_date)
         )
     )
     data.select(pl.all().shrink_dtype()).collect(streaming=True).write_parquet(
@@ -7677,6 +7766,7 @@ def save_daily_ret():
     data = (
         pl.scan_parquet("../interim/world_dsf.parquet")
         .select(["excntry", "id", "date", "me", "ret", "ret_exc", "ret_exc_wins"])
+        .filter(pl.col("date") <= END_DATE)
         .with_columns(
             excntry=pl.when(col("excntry").is_null())
             .then(pl.lit("null_country"))
@@ -7773,8 +7863,22 @@ def save_monthly_ret():
     Output:
         Parquet file with monthly returns by country/security.
     """
-    data = pl.scan_parquet("../interim/world_msf.parquet").select(
-        ["excntry", "id", "source_crsp", "eom", "me", "ret_exc", "ret", "ret_local", "ret_exc_wins"]
+    data = (
+        pl.scan_parquet("../interim/world_msf.parquet")
+        .select(
+            [
+                "excntry",
+                "id",
+                "source_crsp",
+                "eom",
+                "me",
+                "ret_exc",
+                "ret",
+                "ret_local",
+                "ret_exc_wins",
+            ]
+        )
+        .filter(pl.col("eom") <= END_DATE)
     )
     data.select(pl.all().shrink_dtype()).collect().write_parquet(
         "return_data/world_ret_monthly.parquet"
