@@ -4,6 +4,7 @@ import re
 import time
 from datetime import date
 from math import exp, sqrt
+from pathlib import Path
 
 import duckdb
 import ibis
@@ -1878,7 +1879,7 @@ def prepare_crsp_sf(freq):
 
 
 @measure_time
-def combine_crsp_comp_sf():
+def combine_crsp_comp_sf() -> None:
     """
     Description:
         Create unified monthly and daily security datasets by combining CRSP and Compustat,
@@ -1912,166 +1913,45 @@ def combine_crsp_comp_sf():
     Output:
         '__msf_world.parquet' and 'world_dsf.parquet' ready for downstream processing.
     """
-    os.system("rm -f aux_combine_sf.ddb")
+    Path("aux_combine_sf.ddb").unlink(missing_ok=True)
     con = duckdb.connect("aux_combine_sf.ddb")
-
-    # Monthly: normalize CRSP/Comp, UNION ALL, compute ret_exc_lead1m
-    con.execute("""
-        CREATE TABLE sf_world_m AS
-        WITH crsp_msf_norm AS (
-            SELECT
-                permno AS id, permno, permco, gvkey, iid,
-                'USA' AS excntry,
-                exch_main::INT AS exch_main,
-                CASE WHEN shrcd IN (10, 11, 12) THEN 1 ELSE 0 END AS common,
-                1 AS primary_sec,
-                bidask::INT AS bidask,
-                shrcd::DOUBLE AS crsp_shrcd,
-                exchcd::DOUBLE AS crsp_exchcd,
-                NULL::VARCHAR AS comp_tpci,
-                NULL::BIGINT AS comp_exchg,
-                'USD' AS curcd,
-                1.0 AS fx,
-                date,
-                last_day(date) AS eom,
-                cfacshr AS adjfct,
-                shrout AS shares,
-                me, me_company, prc,
-                prc AS prc_local,
-                prc_high, prc_low, dolvol,
-                vol AS tvol,
-                ret,
-                ret AS ret_local,
-                ret_exc,
-                1::BIGINT AS ret_lag_dif,
-                div_tot,
-                NULL::DOUBLE AS div_cash,
-                NULL::DOUBLE AS div_spc,
-                1 AS source_crsp
-            FROM read_parquet('crsp_msf.parquet')
-        ),
-        comp_msf_norm AS (
-            SELECT
-                CAST(
-                    CASE
-                        WHEN iid LIKE '%W%' THEN '3' || gvkey || SUBSTRING(iid, 1, 2)
-                        WHEN iid LIKE '%C%' THEN '2' || gvkey || SUBSTRING(iid, 1, 2)
-                        ELSE '1' || gvkey || SUBSTRING(iid, 1, 2)
-                    END AS BIGINT
-                ) AS id,
-                NULL::BIGINT AS permno,
-                NULL::BIGINT AS permco,
-                gvkey, iid, excntry,
-                exch_main::INT AS exch_main,
-                CASE WHEN tpci = '0' THEN 1 ELSE 0 END AS common,
-                primary_sec::INT AS primary_sec,
-                CASE WHEN prcstd = 4 THEN 1 ELSE 0 END AS bidask,
-                NULL::DOUBLE AS crsp_shrcd,
-                NULL::DOUBLE AS crsp_exchcd,
-                tpci AS comp_tpci,
-                exchg::BIGINT AS comp_exchg,
-                curcdd AS curcd,
-                fx,
-                datadate AS date,
-                eom,
-                ajexdi AS adjfct,
-                cshoc AS shares,
-                me,
-                me AS me_company,
-                prc, prc_local, prc_high, prc_low, dolvol,
-                cshtrm AS tvol,
-                ret, ret_local, ret_exc,
-                ret_lag_dif::BIGINT AS ret_lag_dif,
-                div_tot, div_cash, div_spc,
-                0 AS source_crsp
-            FROM read_parquet('comp_msf.parquet')
-        )
-        SELECT *,
-            CASE
-                WHEN LEAD(ret_lag_dif, 1) OVER (PARTITION BY id ORDER BY eom) != 1
-                THEN NULL
-                ELSE LEAD(ret_exc, 1) OVER (PARTITION BY id ORDER BY eom)
-            END AS ret_exc_lead1m
-        FROM (
-            SELECT * FROM crsp_msf_norm
-            UNION ALL
-            SELECT * FROM comp_msf_norm
-        ) unioned
-    """)
-
-    # Derive obs_main: prefer CRSP when multiple obs per (gvkey, iid, eom)
-    con.execute("""
-        CREATE TABLE obs_main AS
-        SELECT id, eom,
-            CAST(CASE
-                WHEN cnt IN (0, 1) THEN 1
-                WHEN cnt > 1 AND source_crsp = 1 THEN 1
-                ELSE 0
-            END AS INT) AS obs_main
-        FROM (
-            SELECT id, source_crsp, eom,
-                COUNT(gvkey) OVER (PARTITION BY gvkey, iid, eom) AS cnt
-            FROM sf_world_m
-        ) sub
-    """)
-
-    # Write monthly output with deterministic dedup (prefer CRSP)
-    con.execute("""
-        COPY (
-            SELECT
-                id, permno, permco, gvkey, iid, excntry, exch_main, common,
-                primary_sec, bidask, crsp_shrcd, crsp_exchcd, comp_tpci, comp_exchg,
-                curcd, fx, date, eom, adjfct, shares, me, me_company, prc, prc_local,
-                prc_high, prc_low, dolvol, tvol, ret, ret_local, ret_exc, ret_lag_dif,
-                div_tot, div_cash, div_spc, source_crsp, ret_exc_lead1m, obs_main
-            FROM (
-                -- source_crsp DESC is a no-op today (CRSP/Comp ids don't collide);
-                -- primary_sec DESC is the real tie-break: when Compustat rows
-                -- disagree on primary_sec for the same (id, eom), prefer the
-                -- primary one. See combine_crsp_comp_sf docstring for details.
-                SELECT a.*, b.obs_main,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY a.id, a.eom
-                        ORDER BY a.source_crsp DESC, a.primary_sec DESC
-                    ) AS _rn
-                FROM sf_world_m a
-                LEFT JOIN obs_main b ON a.id = b.id AND a.eom = b.eom
-            ) ranked
-            WHERE _rn = 1
-            ORDER BY id, eom
-        ) TO '__msf_world.parquet' (FORMAT PARQUET)
-    """)
-
-    # Free monthly table memory; keep obs_main for daily step
-    con.execute("DROP TABLE sf_world_m")
-
-    # Daily: normalize CRSP/Comp, UNION ALL, join obs_main, dedup, write
-    con.execute("""
-        COPY (
-            WITH crsp_dsf_norm AS (
+    try:
+        # Monthly: normalize CRSP/Comp, UNION ALL, compute ret_exc_lead1m
+        con.execute("""
+            CREATE TABLE sf_world_m AS
+            WITH crsp_msf_norm AS (
                 SELECT
-                    permno AS id,
+                    permno AS id, permno, permco, gvkey, iid,
                     'USA' AS excntry,
                     exch_main::INT AS exch_main,
                     CASE WHEN shrcd IN (10, 11, 12) THEN 1 ELSE 0 END AS common,
                     1 AS primary_sec,
                     bidask::INT AS bidask,
+                    shrcd::DOUBLE AS crsp_shrcd,
+                    exchcd::DOUBLE AS crsp_exchcd,
+                    NULL::VARCHAR AS comp_tpci,
+                    NULL::BIGINT AS comp_exchg,
                     'USD' AS curcd,
                     1.0 AS fx,
                     date,
                     last_day(date) AS eom,
                     cfacshr AS adjfct,
                     shrout AS shares,
-                    me, dolvol,
+                    me, me_company, prc,
+                    prc AS prc_local,
+                    prc_high, prc_low, dolvol,
                     vol AS tvol,
-                    prc, prc_high, prc_low,
+                    ret,
                     ret AS ret_local,
-                    ret, ret_exc,
+                    ret_exc,
                     1::BIGINT AS ret_lag_dif,
+                    div_tot,
+                    NULL::DOUBLE AS div_cash,
+                    NULL::DOUBLE AS div_spc,
                     1 AS source_crsp
-                FROM read_parquet('crsp_dsf.parquet')
+                FROM read_parquet('crsp_msf.parquet')
             ),
-            comp_dsf_norm AS (
+            comp_msf_norm AS (
                 SELECT
                     CAST(
                         CASE
@@ -2080,52 +1960,178 @@ def combine_crsp_comp_sf():
                             ELSE '1' || gvkey || SUBSTRING(iid, 1, 2)
                         END AS BIGINT
                     ) AS id,
-                    excntry,
+                    NULL::BIGINT AS permno,
+                    NULL::BIGINT AS permco,
+                    gvkey, iid, excntry,
                     exch_main::INT AS exch_main,
                     CASE WHEN tpci = '0' THEN 1 ELSE 0 END AS common,
                     primary_sec::INT AS primary_sec,
                     CASE WHEN prcstd = 4 THEN 1 ELSE 0 END AS bidask,
+                    NULL::DOUBLE AS crsp_shrcd,
+                    NULL::DOUBLE AS crsp_exchcd,
+                    tpci AS comp_tpci,
+                    exchg::BIGINT AS comp_exchg,
                     curcdd AS curcd,
                     fx,
                     datadate AS date,
-                    last_day(datadate) AS eom,
+                    eom,
                     ajexdi AS adjfct,
                     cshoc AS shares,
-                    me, dolvol,
-                    cshtrd AS tvol,
-                    prc, prc_high, prc_low,
-                    ret_local, ret, ret_exc,
+                    me,
+                    me AS me_company,
+                    prc, prc_local, prc_high, prc_low, dolvol,
+                    cshtrm AS tvol,
+                    ret, ret_local, ret_exc,
                     ret_lag_dif::BIGINT AS ret_lag_dif,
+                    div_tot, div_cash, div_spc,
                     0 AS source_crsp
-                FROM read_parquet('comp_dsf.parquet')
-            ),
-            sf_world_d AS (
-                SELECT * FROM crsp_dsf_norm
-                UNION ALL
-                SELECT * FROM comp_dsf_norm
-            ),
-            ranked AS (
-                -- See dedup tie-break note in monthly block above.
-                SELECT a.*, b.obs_main,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY a.id, a.date
-                        ORDER BY a.source_crsp DESC, a.primary_sec DESC
-                    ) AS _rn
-                FROM sf_world_d a
-                LEFT JOIN obs_main b ON a.id = b.id AND a.eom = b.eom
+                FROM read_parquet('comp_msf.parquet')
             )
-            SELECT
-                id, excntry, exch_main, common, primary_sec, bidask, curcd, fx,
-                date, eom, adjfct, shares, me, dolvol, tvol, prc, prc_high, prc_low,
-                ret_local, ret, ret_exc, ret_lag_dif, source_crsp, obs_main
-            FROM ranked
-            WHERE _rn = 1
-            ORDER BY id, date
-        ) TO 'world_dsf.parquet' (FORMAT PARQUET)
-    """)
+            SELECT *,
+                CASE
+                    WHEN LEAD(ret_lag_dif, 1) OVER (PARTITION BY id ORDER BY eom) != 1
+                    THEN NULL
+                    ELSE LEAD(ret_exc, 1) OVER (PARTITION BY id ORDER BY eom)
+                END AS ret_exc_lead1m
+            FROM (
+                SELECT * FROM crsp_msf_norm
+                UNION ALL
+                SELECT * FROM comp_msf_norm
+            ) unioned
+        """)
 
-    con.close()
-    os.system("rm -f aux_combine_sf.ddb")
+        # Derive obs_main: prefer CRSP when multiple obs per (gvkey, iid, eom).
+        # Deduplicate to (id, eom) before the join to avoid transient row inflation.
+        con.execute("""
+            CREATE TABLE obs_main AS
+            SELECT id, eom, MAX(obs_main) AS obs_main
+            FROM (
+                SELECT id, eom,
+                    CAST(CASE
+                        WHEN cnt IN (0, 1) THEN 1
+                        WHEN cnt > 1 AND source_crsp = 1 THEN 1
+                        ELSE 0
+                    END AS INT) AS obs_main
+                FROM (
+                    SELECT id, source_crsp, eom,
+                        COUNT(gvkey) OVER (PARTITION BY gvkey, iid, eom) AS cnt
+                    FROM sf_world_m
+                ) sub
+            ) dedup
+            GROUP BY id, eom
+        """)
+
+        # Write monthly output with deterministic dedup (prefer CRSP)
+        con.execute("""
+            COPY (
+                SELECT
+                    id, permno, permco, gvkey, iid, excntry, exch_main, common,
+                    primary_sec, bidask, crsp_shrcd, crsp_exchcd, comp_tpci, comp_exchg,
+                    curcd, fx, date, eom, adjfct, shares, me, me_company, prc, prc_local,
+                    prc_high, prc_low, dolvol, tvol, ret, ret_local, ret_exc, ret_lag_dif,
+                    div_tot, div_cash, div_spc, source_crsp, ret_exc_lead1m, obs_main
+                FROM (
+                    -- source_crsp DESC is a no-op today (CRSP/Comp ids don't collide);
+                    -- primary_sec DESC is the real tie-break: when Compustat rows
+                    -- disagree on primary_sec for the same (id, eom), prefer the
+                    -- primary one. See combine_crsp_comp_sf docstring for details.
+                    SELECT a.*, b.obs_main,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY a.id, a.eom
+                            ORDER BY a.source_crsp DESC, a.primary_sec DESC
+                        ) AS _rn
+                    FROM sf_world_m a
+                    LEFT JOIN obs_main b ON a.id = b.id AND a.eom = b.eom
+                ) ranked
+                WHERE _rn = 1
+                ORDER BY id, eom
+            ) TO '__msf_world.parquet' (FORMAT PARQUET)
+        """)
+
+        # Free monthly table memory; keep obs_main for daily step
+        con.execute("DROP TABLE sf_world_m")
+
+        # Daily: normalize CRSP/Comp, UNION ALL, join obs_main, dedup, write
+        con.execute("""
+            COPY (
+                WITH crsp_dsf_norm AS (
+                    SELECT
+                        permno AS id,
+                        'USA' AS excntry,
+                        exch_main::INT AS exch_main,
+                        CASE WHEN shrcd IN (10, 11, 12) THEN 1 ELSE 0 END AS common,
+                        1 AS primary_sec,
+                        bidask::INT AS bidask,
+                        'USD' AS curcd,
+                        1.0 AS fx,
+                        date,
+                        last_day(date) AS eom,
+                        cfacshr AS adjfct,
+                        shrout AS shares,
+                        me, dolvol,
+                        vol AS tvol,
+                        prc, prc_high, prc_low,
+                        ret AS ret_local,
+                        ret, ret_exc,
+                        1::BIGINT AS ret_lag_dif,
+                        1 AS source_crsp
+                    FROM read_parquet('crsp_dsf.parquet')
+                ),
+                comp_dsf_norm AS (
+                    SELECT
+                        CAST(
+                            CASE
+                                WHEN iid LIKE '%W%' THEN '3' || gvkey || SUBSTRING(iid, 1, 2)
+                                WHEN iid LIKE '%C%' THEN '2' || gvkey || SUBSTRING(iid, 1, 2)
+                                ELSE '1' || gvkey || SUBSTRING(iid, 1, 2)
+                            END AS BIGINT
+                        ) AS id,
+                        excntry,
+                        exch_main::INT AS exch_main,
+                        CASE WHEN tpci = '0' THEN 1 ELSE 0 END AS common,
+                        primary_sec::INT AS primary_sec,
+                        CASE WHEN prcstd = 4 THEN 1 ELSE 0 END AS bidask,
+                        curcdd AS curcd,
+                        fx,
+                        datadate AS date,
+                        last_day(datadate) AS eom,
+                        ajexdi AS adjfct,
+                        cshoc AS shares,
+                        me, dolvol,
+                        cshtrd AS tvol,
+                        prc, prc_high, prc_low,
+                        ret_local, ret, ret_exc,
+                        ret_lag_dif::BIGINT AS ret_lag_dif,
+                        0 AS source_crsp
+                    FROM read_parquet('comp_dsf.parquet')
+                ),
+                sf_world_d AS (
+                    SELECT * FROM crsp_dsf_norm
+                    UNION ALL
+                    SELECT * FROM comp_dsf_norm
+                ),
+                ranked AS (
+                    -- See dedup tie-break note in monthly block above.
+                    SELECT a.*, b.obs_main,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY a.id, a.date
+                            ORDER BY a.source_crsp DESC, a.primary_sec DESC
+                        ) AS _rn
+                    FROM sf_world_d a
+                    LEFT JOIN obs_main b ON a.id = b.id AND a.eom = b.eom
+                )
+                SELECT
+                    id, excntry, exch_main, common, primary_sec, bidask, curcd, fx,
+                    date, eom, adjfct, shares, me, dolvol, tvol, prc, prc_high, prc_low,
+                    ret_local, ret, ret_exc, ret_lag_dif, source_crsp, obs_main
+                FROM ranked
+                WHERE _rn = 1
+                ORDER BY id, date
+            ) TO 'world_dsf.parquet' (FORMAT PARQUET)
+        """)
+    finally:
+        con.close()
+        Path("aux_combine_sf.ddb").unlink(missing_ok=True)
 
 
 @measure_time

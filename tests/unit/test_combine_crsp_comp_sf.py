@@ -288,16 +288,15 @@ def _write_all_fixtures(tmp: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Polars reference implementation (mirrors the old helpers exactly)
+# Polars reference implementation (deterministic dedup behavior)
 # ---------------------------------------------------------------------------
 
 
 def _polars_combine_crsp_comp_sf(tmp: Path) -> tuple[pl.DataFrame, pl.DataFrame]:
-    """Run a Polars-only reference implementation equivalent to the old code.
+    """Deterministic Polars reference for intended dedup behavior.
 
     Returns (monthly_df, daily_df).
     """
-    from polars import col
 
     def fl_none():
         return pl.lit(None).cast(pl.Float64)
@@ -309,20 +308,20 @@ def _polars_combine_crsp_comp_sf(tmp: Path) -> tuple[pl.DataFrame, pl.DataFrame]
     crsp_msf = (
         pl.scan_parquet(str(tmp / "crsp_msf.parquet"))
         .with_columns(
-            exch_main=col("exch_main").cast(pl.Int32),
-            bidask=col("bidask").cast(pl.Int32),
-            id=col("permno"),
+            exch_main=pl.col("exch_main").cast(pl.Int32),
+            bidask=pl.col("bidask").cast(pl.Int32),
+            id=pl.col("permno"),
             excntry=pl.lit("USA"),
-            common=(col("shrcd").is_in([10, 11, 12]).fill_null(bo_false())).cast(pl.Int32),
+            common=(pl.col("shrcd").is_in([10, 11, 12]).fill_null(bo_false())).cast(pl.Int32),
             primary_sec=pl.lit(1),
             comp_tpci=pl.lit(None).cast(pl.Utf8),
             comp_exchg=pl.lit(None).cast(pl.Int64),
             curcd=pl.lit("USD"),
             fx=pl.lit(1.0),
-            eom=col("date").dt.month_end(),
-            prc_local=col("prc"),
-            tvol=col("vol"),
-            ret_local=col("ret"),
+            eom=pl.col("date").dt.month_end(),
+            prc_local=pl.col("prc"),
+            tvol=pl.col("vol"),
+            ret_local=pl.col("ret"),
             ret_lag_dif=pl.lit(1).cast(pl.Int64),
             div_cash=fl_none(),
             div_spc=fl_none(),
@@ -340,11 +339,11 @@ def _polars_combine_crsp_comp_sf(tmp: Path) -> tuple[pl.DataFrame, pl.DataFrame]
 
     # --- Normalize Compustat monthly ---
     id_exp = (
-        pl.when(col("iid").str.contains("W"))
-        .then(pl.lit("3") + col("gvkey") + col("iid").str.slice(0, 2))
-        .when(col("iid").str.contains("C"))
-        .then(pl.lit("2") + col("gvkey") + col("iid").str.slice(0, 2))
-        .otherwise(pl.lit("1") + col("gvkey") + col("iid").str.slice(0, 2))
+        pl.when(pl.col("iid").str.contains("W"))
+        .then(pl.lit("3") + pl.col("gvkey") + pl.col("iid").str.slice(0, 2))
+        .when(pl.col("iid").str.contains("C"))
+        .then(pl.lit("2") + pl.col("gvkey") + pl.col("iid").str.slice(0, 2))
+        .otherwise(pl.lit("1") + pl.col("gvkey") + pl.col("iid").str.slice(0, 2))
     ).cast(pl.Int64)
 
     comp_msf = (
@@ -353,13 +352,13 @@ def _polars_combine_crsp_comp_sf(tmp: Path) -> tuple[pl.DataFrame, pl.DataFrame]
             id=id_exp,
             permno=pl.lit(None).cast(pl.Int64),
             permco=pl.lit(None).cast(pl.Int64),
-            common=pl.when(col("tpci") == "0").then(pl.lit(1)).otherwise(pl.lit(0)),
-            bidask=pl.when(col("prcstd") == 4).then(pl.lit(1)).otherwise(pl.lit(0)),
+            common=pl.when(pl.col("tpci") == "0").then(pl.lit(1)).otherwise(pl.lit(0)),
+            bidask=pl.when(pl.col("prcstd") == 4).then(pl.lit(1)).otherwise(pl.lit(0)),
             crsp_shrcd=fl_none(),
             crsp_exchcd=fl_none(),
-            me_company=col("me"),
+            me_company=pl.col("me"),
             source_crsp=pl.lit(0),
-            ret_lag_dif=col("ret_lag_dif").cast(pl.Int64),
+            ret_lag_dif=pl.col("ret_lag_dif").cast(pl.Int64),
         )
         .rename(
             {
@@ -418,9 +417,9 @@ def _polars_combine_crsp_comp_sf(tmp: Path) -> tuple[pl.DataFrame, pl.DataFrame]
         how="vertical_relaxed",
     )
     __msf_world = __msf_world.sort(["id", "eom"]).with_columns(
-        ret_exc_lead1m=pl.when(col("ret_lag_dif").shift(-1).over("id") != 1)
+        ret_exc_lead1m=pl.when(pl.col("ret_lag_dif").shift(-1).over("id") != 1)
         .then(None)
-        .otherwise(col("ret_exc").shift(-1).over("id"))
+        .otherwise(pl.col("ret_exc").shift(-1).over("id"))
     )
 
     obs_main = (
@@ -428,7 +427,8 @@ def _polars_combine_crsp_comp_sf(tmp: Path) -> tuple[pl.DataFrame, pl.DataFrame]
         .with_columns(count=pl.count("gvkey").over(["gvkey", "iid", "eom"]))
         .with_columns(
             obs_main=pl.when(
-                (col("count").is_in([0, 1])) | ((col("count") > 1) & (col("source_crsp") == 1))
+                (pl.col("count").is_in([0, 1]))
+                | ((pl.col("count") > 1) & (pl.col("source_crsp") == 1))
             )
             .then(1)
             .otherwise(0)
@@ -448,17 +448,17 @@ def _polars_combine_crsp_comp_sf(tmp: Path) -> tuple[pl.DataFrame, pl.DataFrame]
     crsp_dsf = (
         pl.scan_parquet(str(tmp / "crsp_dsf.parquet"))
         .with_columns(
-            id=col("permno"),
+            id=pl.col("permno"),
             excntry=pl.lit("USA"),
-            common=(col("shrcd").is_in([10, 11, 12]).fill_null(bo_false())).cast(pl.Int32),
+            common=(pl.col("shrcd").is_in([10, 11, 12]).fill_null(bo_false())).cast(pl.Int32),
             primary_sec=pl.lit(1),
             curcd=pl.lit("USD"),
             fx=pl.lit(1.0),
-            eom=col("date").dt.month_end(),
-            ret_local=col("ret"),
+            eom=pl.col("date").dt.month_end(),
+            ret_local=pl.col("ret"),
             ret_lag_dif=pl.lit(1).cast(pl.Int64),
-            exch_main=col("exch_main").cast(pl.Int32),
-            bidask=col("bidask").cast(pl.Int32),
+            exch_main=pl.col("exch_main").cast(pl.Int32),
+            bidask=pl.col("bidask").cast(pl.Int32),
             source_crsp=pl.lit(1),
         )
         .rename({"cfacshr": "adjfct", "shrout": "shares", "vol": "tvol"})
@@ -468,9 +468,9 @@ def _polars_combine_crsp_comp_sf(tmp: Path) -> tuple[pl.DataFrame, pl.DataFrame]
         pl.scan_parquet(str(tmp / "comp_dsf.parquet"))
         .with_columns(
             id=id_exp,
-            common=pl.when(col("tpci") == "0").then(pl.lit(1)).otherwise(pl.lit(0)),
-            bidask=pl.when(col("prcstd") == 4).then(pl.lit(1)).otherwise(pl.lit(0)),
-            eom=col("datadate").dt.month_end(),
+            common=pl.when(pl.col("tpci") == "0").then(pl.lit(1)).otherwise(pl.lit(0)),
+            bidask=pl.when(pl.col("prcstd") == 4).then(pl.lit(1)).otherwise(pl.lit(0)),
+            eom=pl.col("datadate").dt.month_end(),
             source_crsp=pl.lit(0),
         )
         .rename(
@@ -705,7 +705,8 @@ class TestCrspNormalization:
             FROM read_parquet('crsp_dsf.parquet')
         """
         df = _run_cte_on_parquet(toy_dir, sql)
-        assert (df["id"] == df.select(pl.col("id")).to_series()).all()
+        raw = pl.read_parquet(toy_dir / "crsp_dsf.parquet")
+        assert (df["id"] == raw["permno"].cast(df["id"].dtype)).all()
         assert (df["excntry"] == "USA").all()
         assert (df["source_crsp"] == 1).all()
         assert df.shape[0] > 0
@@ -1270,20 +1271,14 @@ class TestEndToEnd:
         for c in float_cols:
             d = duck[c].to_numpy()
             p = pol[c].to_numpy()
-            both_nan = np.isnan(np.where(d is None, np.nan, d)) & np.isnan(
-                np.where(p is None, np.nan, p)
+            np.testing.assert_allclose(
+                d,
+                p,
+                rtol=1e-10,
+                atol=1e-12,
+                equal_nan=True,
+                err_msg=f"Monthly column {c} mismatch",
             )
-            d_filled = np.where(np.isnan(d), 0, d)
-            p_filled = np.where(np.isnan(p), 0, p)
-            mask = ~both_nan & np.isfinite(d_filled) & np.isfinite(p_filled)
-            if np.any(mask):
-                np.testing.assert_allclose(
-                    d_filled[mask],
-                    p_filled[mask],
-                    rtol=1e-10,
-                    atol=1e-12,
-                    err_msg=f"Monthly column {c} mismatch",
-                )
 
     def test_monthly_categorical_values_match(
         self,
