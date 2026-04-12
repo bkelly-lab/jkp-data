@@ -1,6 +1,9 @@
+import argparse
+
 import polars as pl
 from aux_functions import (
     acc_chars_list,
+    add_ret_exc_wins,
     ap_factors,
     aug_msf_v2,
     bidask_hl,
@@ -48,9 +51,22 @@ from aux_functions import (
 from config import END_DATE
 from wrds_credentials import get_wrds_credentials
 
+parser = argparse.ArgumentParser(description="JKP Factor Data Pipeline")
+parser.add_argument(
+    "--persistent-connection",
+    action="store_true",
+    help="Use a single persistent WRDS connection (reduces MFA prompts on NAT-rotated networks like Yale Bouchet)",
+)
+args = parser.parse_args()
+
 creds = get_wrds_credentials()
 setup_folder_structure()
-download_raw_data_tables(username=creds.username, password=creds.password, end_date=END_DATE)
+download_raw_data_tables(
+    username=creds.username,
+    password=creds.password,
+    end_date=END_DATE,
+    persistent_connection=args.persistent_connection,
+)
 aug_msf_v2()
 build_mcti()
 gen_raw_data_dfs()
@@ -61,11 +77,13 @@ combine_crsp_comp_sf()
 crsp_industry()
 comp_industry()
 merge_industry_to_world_msf()
-ff_ind_class("__msf_world2.parquet", 49)
+ff_ind_class("__msf_world2.parquet")
 nyse_size_cutoffs("__msf_world3.parquet")
 classify_stocks_size_groups()
 return_cutoffs("m", 0)
 return_cutoffs("d", 0)
+add_ret_exc_wins("m")
+add_ret_exc_wins("d")
 market_returns("world_dsf.parquet", "d", 1, "return_cutoffs_daily.parquet")
 market_returns("world_msf.parquet", "m", 1, "return_cutoffs.parquet")
 standardized_accounting_data("world", 1, "world_msf.parquet", 1, pl.datetime(1949, 12, 31))
