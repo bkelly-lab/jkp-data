@@ -792,8 +792,19 @@ def download_raw_data_tables(
     con.execute("INSTALL postgres; LOAD postgres;")
 
     if persistent_connection:
-        # Use ATTACH for a single persistent connection (reduces MFA on NAT-rotated networks)
-        con.execute(f"ATTACH '{wrds_session_data}' AS wrds (TYPE postgres, READ_ONLY)")
+        # Use ATTACH for a single persistent connection (reduces MFA on NAT-rotated networks).
+        # DuckDB's postgres extension includes the full connection string (with password)
+        # in error messages. If the connection fails, suppress the original exception to
+        # avoid leaking credentials in logs/tracebacks, and raise a generic error instead.
+        try:
+            con.execute(f"ATTACH '{wrds_session_data}' AS wrds (TYPE postgres, READ_ONLY)")
+        except Exception as e:
+            if password in str(e):
+                raise RuntimeError(
+                    "Failed to attach persistent WRDS connection. "
+                    "Check credentials and MFA approval."
+                ) from None
+            raise
         try:
             for table in table_names:
                 download_wrds_table_attached(
