@@ -306,101 +306,101 @@ def portfolios(
         + ["excntry"]
     )
 
-    # Load the data
-    data = pl.read_parquet(file_path, columns=columns)
-
-    # capping me at nyse cut-off
-    data = data.join(nyse_size_cutoffs.select(["eom", "nyse_p80"]), on="eom", how="left")
-    data = data.with_columns(
-        pl.min_horizontal(pl.col("me"), pl.col("nyse_p80")).alias("me_cap")
-    ).drop("nyse_p80")
-
-    # Batched Float64 cast: a single plan rebuild instead of one per column.
+    # Build the full preprocessing chain as a single lazy pipeline. This lets
+    # polars push predicate/null filters into the parquet reader (skipping row
+    # groups on real production files) and fuse the ~15 intermediate steps into
+    # one pass instead of allocating ~15 intermediate DataFrames.
     cast_exclude = {"id", "eom", "source_crsp", "size_grp", "excntry"}
-    data = data.with_columns(
-        [pl.col(c).cast(pl.Float64) for c in data.columns if c not in cast_exclude]
+    cast_cols = [c for c in columns if c not in cast_exclude]
+
+    if bps == "nyse":
+        bp_stock_expr = (
+            ((pl.col("crsp_exchcd") == 1) & pl.col("comp_exchg").is_null())
+            | ((pl.col("comp_exchg") == 11) & pl.col("crsp_exchcd").is_null())
+        ).alias("bp_stock")
+    else:  # "non_mc"
+        bp_stock_expr = pl.col("size_grp").is_in(["mega", "large", "small"]).alias("bp_stock")
+
+    data_lazy = (
+        pl.scan_parquet(file_path)
+        .select(columns)
+        .join(nyse_size_cutoffs.lazy().select(["eom", "nyse_p80"]), on="eom", how="left")
+        .with_columns(pl.min_horizontal(pl.col("me"), pl.col("nyse_p80")).alias("me_cap"))
+        .drop("nyse_p80")
+        .with_columns([pl.col(c).cast(pl.Float64) for c in cast_cols])
+        .filter(
+            (pl.col("size_grp").is_not_null())
+            & (pl.col("me").is_not_null())
+            & (pl.col("ret_exc_lead1m").is_not_null())
+        )
+        .with_columns(bp_stock_expr)
     )
 
-    # Screens
+    # Conditional source screen
     if len(source) == 1:
         if source[0] == "CRSP":
-            data = data.filter(pl.col("source_crsp") == 1)
+            data_lazy = data_lazy.filter(pl.col("source_crsp") == 1)
         elif source[0] == "COMPUSTAT":
-            data = data.filter(pl.col("source_crsp") == 0)
-    data = data.filter(
-        (pl.col("size_grp").is_not_null())
-        & (pl.col("me").is_not_null())
-        & (pl.col("ret_exc_lead1m").is_not_null())
-    )
+            data_lazy = data_lazy.filter(pl.col("source_crsp") == 0)
 
-    # Hoist bp_stock onto `data`: it is row-static across chars, so computing
-    # it once before the per-characteristic loop avoids redundant work.
-    if bps == "nyse":
-        data = data.with_columns(
-            (
-                ((pl.col("crsp_exchcd") == 1) & pl.col("comp_exchg").is_null())
-                | ((pl.col("comp_exchg") == 11) & pl.col("crsp_exchcd").is_null())
-            ).alias("bp_stock")
-        )
-    elif bps == "non_mc":
-        data = data.with_columns(
-            pl.col("size_grp").is_in(["mega", "large", "small"]).alias("bp_stock")
-        )
-
-    # Daily Returns
+    # Daily returns as a lazy chain (scan_parquet + winsorization).
+    daily_file_path = f"{data_path}/return_data/daily_rets_by_country/{excntry}.parquet"
     if daily_pf:
-        daily_file_path = f"{data_path}/return_data/daily_rets_by_country/{excntry}.parquet"
-        daily = pl.read_parquet(daily_file_path, columns=["id", "date", "ret_exc"])
-        # daily = daily.with_columns(pl.col("date").cast(pl.Utf8).str.strptime(pl.Date, format="%Y%m%d").alias("date"))
-        daily = daily.with_columns(
-            (pl.col("date").dt.month_start().dt.offset_by("-1d")).alias("eom_lag1")
+        daily_lazy = (
+            pl.scan_parquet(daily_file_path)
+            .select(["id", "date", "ret_exc"])
+            .with_columns((pl.col("date").dt.month_start().dt.offset_by("-1d")).alias("eom_lag1"))
+            .with_columns(pl.col("ret_exc").cast(pl.Float64))
         )
-        # ensuring numerical columns are float-added later:
-        daily = daily.with_columns(pl.col("ret_exc").cast(pl.Float64))
+    else:
+        daily_lazy = None
 
+    # Monthly winsorization: clip Compustat ret_exc_lead1m to CRSP quantiles.
     if wins_ret:
-        data = data.join(
-            ret_cutoffs.select(["eom_lag1", "ret_exc_0_1", "ret_exc_99_9"]).rename(
-                {"eom_lag1": "eom", "ret_exc_0_1": "p001", "ret_exc_99_9": "p999"}
-            ),
-            on="eom",
-            how="left",
-        )
-        data = data.with_columns(
-            pl.when((pl.col("source_crsp") == 0) & (pl.col("ret_exc_lead1m") > pl.col("p999")))
-            .then(pl.col("p999"))
-            .when((pl.col("source_crsp") == 0) & (pl.col("ret_exc_lead1m") < pl.col("p001")))
-            .then(pl.col("p001"))
-            .otherwise(pl.col("ret_exc_lead1m"))
-            .alias("ret_exc_lead1m")
-        ).drop(["source_crsp", "p001", "p999"])
-
-        if daily_pf:
-            # Derive eom from date for joining with daily return cutoffs
-            daily = daily.with_columns(pl.col("date").dt.month_end().alias("eom"))
-
-            # Joining with daily return cutoffs
-            daily = daily.join(
-                ret_cutoffs_daily.select(["eom", "ret_exc_0_1", "ret_exc_99_9"]).rename(
-                    {"ret_exc_0_1": "p001", "ret_exc_99_9": "p999"}
-                ),
+        data_lazy = (
+            data_lazy.join(
+                ret_cutoffs.lazy()
+                .select(["eom_lag1", "ret_exc_0_1", "ret_exc_99_9"])
+                .rename({"eom_lag1": "eom", "ret_exc_0_1": "p001", "ret_exc_99_9": "p999"}),
                 on="eom",
                 how="left",
             )
-
-            # Applying winsorization to daily returns for Compustat data (id > 99999)
-            daily = daily.with_columns(
-                pl.when((pl.col("id") > 99999) & (pl.col("ret_exc") > pl.col("p999")))
+            .with_columns(
+                pl.when((pl.col("source_crsp") == 0) & (pl.col("ret_exc_lead1m") > pl.col("p999")))
                 .then(pl.col("p999"))
-                .when((pl.col("id") > 99999) & (pl.col("ret_exc") < pl.col("p001")))
+                .when((pl.col("source_crsp") == 0) & (pl.col("ret_exc_lead1m") < pl.col("p001")))
                 .then(pl.col("p001"))
-                .otherwise(pl.col("ret_exc"))
-                .alias("ret_exc")
-            ).drop(["p001", "p999", "eom"])
+                .otherwise(pl.col("ret_exc_lead1m"))
+                .alias("ret_exc_lead1m")
+            )
+            .drop(["source_crsp", "p001", "p999"])
+        )
 
-    # Cache a single LazyFrame view of daily so the per-char loop and the
-    # industry-daily branches don't rebuild `daily.lazy()` on every use.
-    daily_lazy = daily.lazy() if daily_pf else None
+        # Daily winsorization
+        if daily_pf:
+            daily_lazy = (
+                daily_lazy.with_columns(pl.col("date").dt.month_end().alias("eom"))
+                .join(
+                    ret_cutoffs_daily.lazy()
+                    .select(["eom", "ret_exc_0_1", "ret_exc_99_9"])
+                    .rename({"ret_exc_0_1": "p001", "ret_exc_99_9": "p999"}),
+                    on="eom",
+                    how="left",
+                )
+                .with_columns(
+                    pl.when((pl.col("id") > 99999) & (pl.col("ret_exc") > pl.col("p999")))
+                    .then(pl.col("p999"))
+                    .when((pl.col("id") > 99999) & (pl.col("ret_exc") < pl.col("p001")))
+                    .then(pl.col("p001"))
+                    .otherwise(pl.col("ret_exc"))
+                    .alias("ret_exc")
+                )
+                .drop(["p001", "p999", "eom"])
+            )
+
+    # Collect the lazy chain once — the single fused read + preprocess pass.
+    # `data` is used by industry/cmp/signals sections that need eager access.
+    data = data_lazy.collect()
 
     # standardizing signals
     if signals_standardize and signals:
