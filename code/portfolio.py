@@ -4,7 +4,6 @@ import warnings
 
 import polars as pl
 from config import END_DATE
-from tqdm import tqdm
 
 warnings.filterwarnings(
     "ignore",
@@ -598,7 +597,7 @@ def portfolios(
     # elimination (CSE) in collect_all to avoid redundant scans.
     data_lazy = data.lazy()
 
-    for _i, x in enumerate(tqdm(chars, desc="Processing chars", unit="char", ncols=80)):
+    for x in chars:
         # Alias current char into a 'var' column on the per-char subset.
         # Operate on `sub` only -- `data` is not mutated.
         if not signals:
