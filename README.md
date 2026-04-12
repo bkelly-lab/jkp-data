@@ -58,7 +58,19 @@ data/processed/
 Please see the release notes (`documentation/release_notes.html`) for a description of the output files and a comparison between the output of the SAS/R codebase and the new Python codebase.
 
 ## Notes
-- By default, the end date for the data in the code is 2024-12-31, which you can change by editing line 4 of the `code/main.py` file. For example, for May 6, 1992, use: `end_date = pl.datetime(1992, 5, 6)`.
+- By default, the end date for the data in the code is 2024-12-31, which you can change by editing the `end_date` assignment near the top of `code/main.py`. For example, for May 6, 1992, use: `end_date = pl.datetime(1992, 5, 6)`.
+
+- **Persistent WRDS Connection**: If you're running on an HPC cluster with NAT IP rotation (such as Yale's Bouchet cluster), you may receive many MFA prompts during data download. This happens because each database query creates a new TCP connection, and the NAT gateway assigns a random outbound IP to each connection. WRDS sees these as connections from different locations and triggers MFA for each.
+
+  To avoid this, use the `--persistent-connection` flag, which maintains a single database connection throughout the download process:
+  ```sh
+  # Interactive session
+  uv run python code/main.py --persistent-connection
+
+  # Slurm job (set environment variable)
+  sbatch --export=ALL,PERSISTENT_WRDS_CONNECTION=1 slurm/submit_job_som_hpc.slurm
+  ```
+  This reduces MFA prompts from ~26 (one per table) to just 1 (at connection time).
 
 - To run the code, we utilize a high performance computing cluster, where we request 450 GB RAM and 128 CPU cores. Running the routine takes about 6 hours.
 
