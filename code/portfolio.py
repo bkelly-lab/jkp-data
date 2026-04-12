@@ -1,9 +1,9 @@
 import os
 import time
 import warnings
-from datetime import date
 
 import polars as pl
+from config import END_DATE
 from tqdm import tqdm
 
 warnings.filterwarnings(
@@ -182,7 +182,7 @@ chars = [
 
 # a dictionary which has the parameters for constructing portfolios.
 settings = {
-    "end_date": date(2025, 12, 31),
+    "end_date": END_DATE,
     "pfs": 3,
     "source": ["CRSP", "COMPUSTAT"],
     "wins_ret": True,
@@ -337,22 +337,15 @@ def portfolios(
         ).drop(["source_crsp", "p001", "p999"])
 
         if daily_pf:
-            # Extracting year and month from the date column
-            daily = daily.with_columns(
-                [
-                    pl.col("date").dt.year().cast(pl.Int64).alias("year"),
-                    pl.col("date").dt.month().cast(pl.Int64).alias("month"),
-                ]
-            )
+            # Derive eom from date for joining with daily return cutoffs
+            daily = daily.with_columns(pl.col("date").dt.month_end().alias("eom"))
 
             # Joining with daily return cutoffs
             daily = daily.join(
-                ret_cutoffs_daily.with_columns(
-                    [pl.col("year").cast(pl.Int64), pl.col("month").cast(pl.Int64)]
-                )
-                .select(["year", "month", "ret_exc_0_1", "ret_exc_99_9"])
-                .rename({"ret_exc_0_1": "p001", "ret_exc_99_9": "p999"}),
-                on=["year", "month"],
+                ret_cutoffs_daily.select(["eom", "ret_exc_0_1", "ret_exc_99_9"]).rename(
+                    {"ret_exc_0_1": "p001", "ret_exc_99_9": "p999"}
+                ),
+                on="eom",
                 how="left",
             )
 
@@ -364,7 +357,7 @@ def portfolios(
                 .then(pl.col("p001"))
                 .otherwise(pl.col("ret_exc"))
                 .alias("ret_exc")
-            ).drop(["p001", "p999", "year", "month"])
+            ).drop(["p001", "p999", "eom"])
 
     # standardizing signals
     if signals_standardize and signals:

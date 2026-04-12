@@ -41,12 +41,12 @@ from aux_functions import (
     setup_folder_structure,
     standardized_accounting_data,
 )
+from config import END_DATE
 from wrds_credentials import get_wrds_credentials
 
-end_date = pl.datetime(2025, 12, 31)
 creds = get_wrds_credentials()
 setup_folder_structure()
-download_raw_data_tables(username=creds.username, password=creds.password)
+download_raw_data_tables(username=creds.username, password=creds.password, end_date=END_DATE)
 gen_raw_data_dfs()
 prepare_comp_sf("both")
 prepare_crsp_sf("m")
@@ -129,7 +129,7 @@ finish_daily_chars("market_chars_d.parquet")
 merge_world_data_prelim()
 quality_minus_junk("world_data_-1.parquet", 10)
 merge_qmj_to_world_data()
-save_main_data(end_date)
+save_main_data()
 save_daily_ret()
 save_monthly_ret()
 save_accounting_data()
