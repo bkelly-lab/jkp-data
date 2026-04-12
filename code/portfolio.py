@@ -582,195 +582,78 @@ def portfolios(
 
     # Creating portfolios for all the characteristics.
     #
-    # Two paths:
-    #   - signals=True  → legacy per-char sequential for loop (opt-in; kept
-    #                      unchanged for backward compatibility)
-    #   - signals=False → fully-vectorized lazy pipeline: unpivot all chars
-    #                      into a long-format frame, compute ECDF per
-    #                      (characteristic, eom), assign pf, aggregate
-    #                      monthly pf_returns and (if daily_pf) daily
-    #                      pf_daily in a single pl.collect_all so the shared
-    #                      upstream scan / unpivot / ECDF / pf subplan is
-    #                      only executed once.
-    char_pfs: list[dict] = []
-    pf_returns_df: pl.DataFrame | None = None
-    pf_daily_df: pl.DataFrame | None = None
+    # Each characteristic builds a per-char lazy pipeline (ECDF -> pf
+    # assignment -> monthly/daily aggregation).  The pipelines accumulate in
+    # ``pf_returns_lazys`` / ``pf_daily_lazys`` and are batch-collected via
+    # ``pl.collect_all`` so polars can execute them concurrently on its thread
+    # pool.  The signals=True branch is the exception: it needs the
+    # intermediate ``sub`` frame alive after each collect to compute
+    # pf_signals, so it collects eagerly per-char.
+    pf_returns_lazys: list[pl.LazyFrame] = []
+    pf_daily_lazys: list[pl.LazyFrame] = []
+    char_pfs: list[dict] = []  # populated only when signals=True
 
-    if signals:
-        for _i, x in enumerate(tqdm(chars, desc="Processing chars", unit="char", ncols=80)):
-            op: dict = {}
-
-            data = data.with_columns(pl.col(x).cast(pl.Float64).alias("var"))
-            # Select rows where 'var' is not missing, retaining all columns
-            sub = data.lazy().filter(pl.col("var").is_not_null())
-
-            sub = sub.with_columns(bp_n=pl.sum("bp_stock").over("eom")).filter(
-                pl.col("bp_n") >= bp_min_n
+    for _i, x in enumerate(tqdm(chars, desc="Processing chars", unit="char", ncols=80)):
+        # Alias current char into a 'var' column on the per-char subset.
+        # Operate on `sub` only -- `data` is not mutated.
+        if not signals:
+            sub = (
+                data.lazy()
+                .with_columns(pl.col(x).cast(pl.Float64).alias("var"))
+                .filter(pl.col("var").is_not_null())
+                .select(
+                    [
+                        "id",
+                        "eom",
+                        "var",
+                        "size_grp",
+                        "ret_exc_lead1m",
+                        "me",
+                        "me_cap",
+                        "crsp_exchcd",
+                        "comp_exchg",
+                        "bp_stock",
+                    ]
+                )
+            )
+        else:
+            sub = (
+                data.lazy()
+                .with_columns(pl.col(x).cast(pl.Float64).alias("var"))
+                .filter(pl.col("var").is_not_null())
             )
 
-            # Ensure that 'sub' is not empty
-            if sub.limit(1).collect().height > 0:
-                sub = add_ecdf(sub)
-
-                # Step 1: Find the minimum CDF value within each 'eom' group
-                sub = sub.with_columns(pl.col("cdf").min().over("eom").alias("min_cdf"))
-
-                # Step 2: Adjust CDF values for the lowest value in each group
-                sub = sub.with_columns(
-                    pl.when(pl.col("cdf") == pl.col("min_cdf"))
-                    .then(0.00000001)
-                    .otherwise(pl.col("cdf"))
-                    .alias("cdf")
-                )
-
-                # Step 3: Calculate portfolio assignments
-                sub = sub.with_columns(
-                    (pl.col("cdf") * pfs).ceil().clip(lower_bound=1, upper_bound=pfs).alias("pf")
-                )
-
-                pf_returns = sub.group_by(["pf", "eom"]).agg(
-                    [
-                        pl.lit(x).alias("characteristic"),
-                        pl.len().alias("n"),
-                        pl.median("var").alias("signal"),
-                        pl.mean("ret_exc_lead1m").alias("ret_ew"),
-                        (
-                            (pl.col("ret_exc_lead1m") * pl.col("me")).sum() / pl.col("me").sum()
-                        ).alias("ret_vw"),
-                        (
-                            (pl.col("ret_exc_lead1m") * pl.col("me_cap")).sum()
-                            / pl.col("me_cap").sum()
-                        ).alias("ret_vw_cap"),
-                    ]
-                )
-                pf_returns = pf_returns.with_columns(
-                    pl.col("eom").dt.offset_by("1mo").dt.month_end().alias("eom")
-                )
-                op["pf_returns"] = pf_returns.collect()
-
-                if signals_w == "ew":
-                    sub = sub.with_columns((1 / pl.col("eom").len()).over(["pf", "eom"]).alias("w"))
-                elif signals_w == "vw":
-                    sub = sub.with_columns(
-                        (pl.col("me") / pl.col("me").sum()).over(["pf", "eom"]).alias("w")
-                    )
-                elif signals_w == "vw_cap":
-                    sub = sub.with_columns(
-                        (pl.col("me_cap") / pl.col("me_cap").sum()).over(["pf", "eom"]).alias("w")
-                    )
-
-                sub = sub.with_columns(
-                    [
-                        pl.when(pl.col(var).is_null())
-                        .then(pl.lit(0))
-                        .otherwise(pl.col(var))
-                        .alias(var)
-                        for var in chars
-                    ]
-                )
-                pf_signals = sub.with_columns(
-                    [(pl.col("w") * pl.col(var)).sum().over(["pf", "eom"]) for var in chars]
-                )
-
-                pf_signals = pf_signals.with_columns(
-                    [
-                        pl.lit(x).alias("characteristic"),
-                        pl.col("eom").dt.offset_by("1mo").dt.month_end().alias("eom"),
-                    ]
-                )
-                op["signals"] = pf_signals.collect()
-
-                if daily_pf:
-                    weights = (
-                        sub.group_by(["eom", "pf"])
-                        .agg(
-                            [
-                                pl.col("id"),
-                                (1 / pl.len()).alias("w_ew"),
-                                (pl.col("me") / pl.col("me").sum()).alias("w_vw"),
-                                (pl.col("me_cap") / pl.col("me_cap").sum()).alias("w_vw_cap"),
-                            ]
-                        )
-                        .explode("id", "w_vw", "w_vw_cap")
-                    )
-
-                    daily_sub = weights.join(
-                        daily_lazy,
-                        left_on=["id", "eom"],
-                        right_on=["id", "eom_lag1"],
-                        how="left",
-                    ).filter((pl.col("pf").is_not_null()) & (pl.col("ret_exc").is_not_null()))
-
-                    pf_daily = daily_sub.group_by(["pf", "date"]).agg(
-                        [
-                            pl.lit(x).alias("characteristic"),
-                            pl.len().alias("n"),
-                            ((pl.col("w_ew") * pl.col("ret_exc")).sum()).alias("ret_ew"),
-                            ((pl.col("w_vw") * pl.col("ret_exc")).sum()).alias("ret_vw"),
-                            ((pl.col("w_vw_cap") * pl.col("ret_exc")).sum()).alias("ret_vw_cap"),
-                        ]
-                    )
-                    op["pf_daily"] = pf_daily.collect()
-
-                char_pfs.append(op)
-
-        if char_pfs:
-            pf_returns_df = pl.concat([op["pf_returns"] for op in char_pfs])
-            if daily_pf:
-                pf_daily_df = pl.concat([op["pf_daily"] for op in char_pfs])
-    else:
-        # Vectorized path: melt all characteristics into long format, run a
-        # single fused lazy pipeline for ECDF → pf assignment → monthly and
-        # daily aggregations, and collect both outputs together so polars'
-        # common-subplan elimination shares the scan/unpivot/ECDF/pf work.
-        id_cols_monthly = [
-            "id",
-            "eom",
-            "size_grp",
-            "ret_exc_lead1m",
-            "me",
-            "me_cap",
-            "crsp_exchcd",
-            "comp_exchg",
-            "bp_stock",
-        ]
-        long_monthly = (
-            data.lazy()
-            .unpivot(
-                on=chars,
-                index=id_cols_monthly,
-                variable_name="characteristic",
-                value_name="var",
-            )
-            .filter(pl.col("var").is_not_null())
-            .with_columns(pl.sum("bp_stock").over(["characteristic", "eom"]).alias("bp_n"))
-            .filter(pl.col("bp_n") >= bp_min_n)
+        sub = sub.with_columns(bp_n=pl.sum("bp_stock").over("eom")).filter(
+            pl.col("bp_n") >= bp_min_n
         )
 
-        # Vectorized ECDF across (characteristic, eom) partitions.
-        long_monthly = add_ecdf(long_monthly, group_cols=["characteristic", "eom"])
+        # Skip chars with no data after the bp_n filter.  For the
+        # collect_all path we cannot cheaply check emptiness without an
+        # eager collect, so we optimistically build the lazy pipeline and
+        # drop empty results after the batch collect.  For signals=True
+        # we still need the eager gate because the pf_signals block
+        # requires intermediate access to ``sub``.
+        if signals and sub.limit(1).collect().height == 0:
+            continue
 
-        # Vectorized pf assignment (min_cdf nudge + ceil + clip), identical
-        # to the per-char legacy steps but computed in a single pass.
-        long_monthly_with_pf = (
-            long_monthly.with_columns(
-                pl.col("cdf").min().over(["characteristic", "eom"]).alias("min_cdf")
-            )
-            .with_columns(
-                pl.when(pl.col("cdf") == pl.col("min_cdf"))
-                .then(pl.lit(0.00000001))
-                .otherwise(pl.col("cdf"))
-                .alias("cdf")
-            )
-            .with_columns(
-                (pl.col("cdf") * pfs).ceil().clip(lower_bound=1, upper_bound=pfs).alias("pf")
-            )
+        sub = add_ecdf(sub)
+        sub = sub.with_columns(pl.col("cdf").min().over("eom").alias("min_cdf"))
+        sub = sub.with_columns(
+            pl.when(pl.col("cdf") == pl.col("min_cdf"))
+            .then(0.00000001)
+            .otherwise(pl.col("cdf"))
+            .alias("cdf")
+        )
+        sub = sub.with_columns(
+            (pl.col("cdf") * pfs).ceil().clip(lower_bound=1, upper_bound=pfs).alias("pf")
         )
 
-        pf_returns_lazy = (
-            long_monthly_with_pf.group_by(["characteristic", "pf", "eom"])
+        # Monthly pf_returns lazy frame for this char.
+        pf_returns_x = (
+            sub.group_by(["pf", "eom"])
             .agg(
                 [
+                    pl.lit(x).alias("characteristic"),
                     pl.len().alias("n"),
                     pl.median("var").alias("signal"),
                     pl.mean("ret_exc_lead1m").alias("ret_ew"),
@@ -785,50 +668,121 @@ def portfolios(
             .with_columns(pl.col("eom").dt.offset_by("1mo").dt.month_end().alias("eom"))
         )
 
-        if daily_pf:
-            # Weights attached via `.over([characteristic, eom, pf])` — same
-            # row count as the long frame, no explode needed.
-            long_with_weights = long_monthly_with_pf.with_columns(
-                [
-                    (1.0 / pl.len().over(["characteristic", "eom", "pf"])).alias("w_ew"),
-                    (pl.col("me") / pl.col("me").sum().over(["characteristic", "eom", "pf"])).alias(
-                        "w_vw"
-                    ),
-                    (
-                        pl.col("me_cap")
-                        / pl.col("me_cap").sum().over(["characteristic", "eom", "pf"])
-                    ).alias("w_vw_cap"),
-                ]
-            ).select(["characteristic", "id", "eom", "pf", "w_ew", "w_vw", "w_vw_cap"])
+        if signals:
+            # Eager path: collect immediately, then compute pf_signals.
+            op: dict = {}
+            op["pf_returns"] = pf_returns_x.collect()
 
-            pf_daily_lazy = (
-                long_with_weights.join(
+            if signals_w == "ew":
+                sub = sub.with_columns((1 / pl.col("eom").len()).over(["pf", "eom"]).alias("w"))
+            elif signals_w == "vw":
+                sub = sub.with_columns(
+                    (pl.col("me") / pl.col("me").sum()).over(["pf", "eom"]).alias("w")
+                )
+            elif signals_w == "vw_cap":
+                sub = sub.with_columns(
+                    (pl.col("me_cap") / pl.col("me_cap").sum()).over(["pf", "eom"]).alias("w")
+                )
+
+            sub = sub.with_columns(
+                [
+                    pl.when(pl.col(var).is_null()).then(pl.lit(0)).otherwise(pl.col(var)).alias(var)
+                    for var in chars
+                ]
+            )
+            pf_signals = sub.with_columns(
+                [(pl.col("w") * pl.col(var)).sum().over(["pf", "eom"]) for var in chars]
+            )
+            pf_signals = pf_signals.with_columns(
+                [
+                    pl.lit(x).alias("characteristic"),
+                    pl.col("eom").dt.offset_by("1mo").dt.month_end().alias("eom"),
+                ]
+            )
+            op["signals"] = pf_signals.collect()
+
+            if daily_pf:
+                weights = (
+                    sub.group_by(["eom", "pf"])
+                    .agg(
+                        [
+                            pl.col("id"),
+                            (1 / pl.len()).alias("w_ew"),
+                            (pl.col("me") / pl.col("me").sum()).alias("w_vw"),
+                            (pl.col("me_cap") / pl.col("me_cap").sum()).alias("w_vw_cap"),
+                        ]
+                    )
+                    .explode("id", "w_vw", "w_vw_cap")
+                )
+                daily_sub = weights.join(
                     daily_lazy,
                     left_on=["id", "eom"],
                     right_on=["id", "eom_lag1"],
-                    how="inner",
-                )
-                .group_by(["characteristic", "pf", "date"])
-                .agg(
+                    how="left",
+                ).filter((pl.col("pf").is_not_null()) & (pl.col("ret_exc").is_not_null()))
+                pf_daily_x = daily_sub.group_by(["pf", "date"]).agg(
                     [
+                        pl.lit(x).alias("characteristic"),
                         pl.len().alias("n"),
-                        (pl.col("w_ew") * pl.col("ret_exc")).sum().alias("ret_ew"),
-                        (pl.col("w_vw") * pl.col("ret_exc")).sum().alias("ret_vw"),
-                        (pl.col("w_vw_cap") * pl.col("ret_exc")).sum().alias("ret_vw_cap"),
+                        ((pl.col("w_ew") * pl.col("ret_exc")).sum()).alias("ret_ew"),
+                        ((pl.col("w_vw") * pl.col("ret_exc")).sum()).alias("ret_vw"),
+                        ((pl.col("w_vw_cap") * pl.col("ret_exc")).sum()).alias("ret_vw_cap"),
                     ]
                 )
-            )
+                op["pf_daily"] = pf_daily_x.collect()
 
-            pf_returns_df, pf_daily_df = pl.collect_all([pf_returns_lazy, pf_daily_lazy])
+            char_pfs.append(op)
         else:
-            pf_returns_df = pf_returns_lazy.collect()
+            # Lazy path: accumulate LazyFrames for batch collect_all.
+            pf_returns_lazys.append(pf_returns_x)
 
-        # Drop empty outputs to mirror legacy behavior (chars with no bp
-        # coverage were silently skipped by the per-char loop).
-        if pf_returns_df is not None and pf_returns_df.height == 0:
-            pf_returns_df = None
-        if pf_daily_df is not None and pf_daily_df.height == 0:
-            pf_daily_df = None
+            if daily_pf:
+                weights = (
+                    sub.group_by(["eom", "pf"])
+                    .agg(
+                        [
+                            pl.col("id"),
+                            (1 / pl.len()).alias("w_ew"),
+                            (pl.col("me") / pl.col("me").sum()).alias("w_vw"),
+                            (pl.col("me_cap") / pl.col("me_cap").sum()).alias("w_vw_cap"),
+                        ]
+                    )
+                    .explode("id", "w_vw", "w_vw_cap")
+                )
+                daily_sub = weights.join(
+                    daily_lazy,
+                    left_on=["id", "eom"],
+                    right_on=["id", "eom_lag1"],
+                    how="left",
+                ).filter((pl.col("pf").is_not_null()) & (pl.col("ret_exc").is_not_null()))
+                pf_daily_x = daily_sub.group_by(["pf", "date"]).agg(
+                    [
+                        pl.lit(x).alias("characteristic"),
+                        pl.len().alias("n"),
+                        ((pl.col("w_ew") * pl.col("ret_exc")).sum()).alias("ret_ew"),
+                        ((pl.col("w_vw") * pl.col("ret_exc")).sum()).alias("ret_vw"),
+                        ((pl.col("w_vw_cap") * pl.col("ret_exc")).sum()).alias("ret_vw_cap"),
+                    ]
+                )
+                pf_daily_lazys.append(pf_daily_x)
+
+    # Batch-collect all per-char lazy pipelines in parallel.
+    pf_returns_df: pl.DataFrame | None = None
+    pf_daily_df: pl.DataFrame | None = None
+
+    if signals and char_pfs:
+        pf_returns_df = pl.concat([op["pf_returns"] for op in char_pfs])
+        if daily_pf:
+            pf_daily_df = pl.concat([op["pf_daily"] for op in char_pfs])
+    elif pf_returns_lazys:
+        all_lazys = pf_returns_lazys + pf_daily_lazys
+        collected = pl.collect_all(all_lazys)
+        n_ret = len(pf_returns_lazys)
+        ret_dfs = [df for df in collected[:n_ret] if df.height > 0]
+        pf_returns_df = pl.concat(ret_dfs) if ret_dfs else None
+        if daily_pf:
+            daily_dfs = [df for df in collected[n_ret:] if df.height > 0]
+            pf_daily_df = pl.concat(daily_dfs) if daily_dfs else None
 
     output = {}
     if pf_returns_df is not None:
