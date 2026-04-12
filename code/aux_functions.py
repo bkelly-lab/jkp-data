@@ -381,8 +381,10 @@ def gen_raw_data_dfs():
         2) Derive SIC/NAICS (NA & Global), GICS (NA & Global), delist files (CRSP m/d),
         security info (NA & Global), T-bill return, FF monthly factors, exchange code map,
         exchange→country map, company headers (NA+Global), and CRSP security files (m & d).
-        3) Standardize types/columns, sort/deduplicate where needed.
-        4) Write all to raw_data_dfs/*.parquet.
+        3) Call build_mcti() to derive the CRSP 30-Year Treasury index table.
+        4) Call aug_msf_v2() to augment the monthly CRSP file with daily high/low prices.
+        5) Standardize types/columns, sort/deduplicate where needed.
+        6) Write all to raw_data_dfs/*.parquet.
 
     Output:
         Multiple helper Parquets under raw_data_dfs/ used in later pipelines.
@@ -492,8 +494,10 @@ def gen_crsp_sf(freq):
     con = ibis.duckdb.connect(threads=os.cpu_count())
     if freq == "m":
         sf = con.read_parquet("raw_data_dfs/crsp_msf_v2_aug.parquet")
-    else:
+    elif freq == "d":
         sf = con.read_parquet("../raw/raw_tables/crsp_dsf_v2.parquet")
+    else:
+        raise ValueError(f"Unknown freq: {freq}")
     senames = con.read_parquet("../raw/raw_tables/crsp_stksecurityinfohist.parquet")
     ccmxpf_lnkhist = con.read_parquet("../raw/raw_tables/crsp_ccmxpf_lnkhist.parquet")
 
@@ -509,7 +513,7 @@ def gen_crsp_sf(freq):
         cfacshr_expr = sf.mthcumfacshr
         askhi_expr = sf.mthaskhi
         bidlo_expr = sf.mthbidlo
-    else:
+    else:  # freq == "d", validated above
         date_expr = sf.dlycaldt.cast("date")
         prc_expr = sf.dlyprc
         prcflg_expr = sf.dlyprcflg
@@ -760,6 +764,7 @@ def download_raw_data_tables(username: str, password: str, end_date: date | None
     con.close()
 
 
+@measure_time
 def aug_msf_v2():
     """
     Description:
@@ -821,6 +826,7 @@ def aug_msf_v2():
     msf_aug.to_parquet("raw_data_dfs/crsp_msf_v2_aug.parquet")
 
 
+@measure_time
 def build_mcti():
     """
     Description:
@@ -833,7 +839,7 @@ def build_mcti():
         5) Write parquet to raw_data_dfs/crsp_mcti.parquet
 
     Output:
-        Polars DataFrame (also written to parquet).
+        Writes raw_data_dfs/crsp_mcti.parquet (no return value).
     """
 
     a = pl.read_parquet("../raw/raw_tables/crsp_indmthseriesdata_ind.parquet")
