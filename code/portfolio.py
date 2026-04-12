@@ -767,7 +767,11 @@ def portfolios(
                 )
                 pf_daily_lazys.append(pf_daily_x)
 
-    # Batch-collect all per-char lazy pipelines in parallel.
+    # Batch-collect per-char lazy pipelines in chunks to bound peak memory.
+    # Each chunk runs its LazyFrames concurrently via collect_all; chunks are
+    # processed sequentially so at most COLLECT_CHUNK_SIZE chars' worth of
+    # sort buffers / join hash tables live simultaneously.
+    COLLECT_CHUNK_SIZE = 20
     pf_returns_df: pl.DataFrame | None = None
     pf_daily_df: pl.DataFrame | None = None
 
@@ -776,13 +780,20 @@ def portfolios(
         if daily_pf:
             pf_daily_df = pl.concat([op["pf_daily"] for op in char_pfs])
     elif pf_returns_lazys:
-        all_lazys = pf_returns_lazys + pf_daily_lazys
-        collected = pl.collect_all(all_lazys)
-        n_ret = len(pf_returns_lazys)
-        ret_dfs = [df for df in collected[:n_ret] if df.height > 0]
+        ret_dfs: list[pl.DataFrame] = []
+        daily_dfs: list[pl.DataFrame] = []
+        n_chars = len(pf_returns_lazys)
+        for start in range(0, n_chars, COLLECT_CHUNK_SIZE):
+            end = min(start + COLLECT_CHUNK_SIZE, n_chars)
+            chunk_ret = pf_returns_lazys[start:end]
+            chunk_daily = pf_daily_lazys[start:end] if daily_pf else []
+            collected = pl.collect_all(chunk_ret + chunk_daily)
+            n_ret_chunk = len(chunk_ret)
+            ret_dfs.extend(df for df in collected[:n_ret_chunk] if df.height > 0)
+            if daily_pf:
+                daily_dfs.extend(df for df in collected[n_ret_chunk:] if df.height > 0)
         pf_returns_df = pl.concat(ret_dfs) if ret_dfs else None
         if daily_pf:
-            daily_dfs = [df for df in collected[n_ret:] if df.height > 0]
             pf_daily_df = pl.concat(daily_dfs) if daily_dfs else None
 
     output = {}
