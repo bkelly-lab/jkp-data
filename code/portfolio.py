@@ -783,8 +783,13 @@ def portfolios(
         ret_dfs: list[pl.DataFrame] = []
         daily_dfs: list[pl.DataFrame] = []
         n_chars = len(pf_returns_lazys)
-        for start in range(0, n_chars, COLLECT_CHUNK_SIZE):
+        n_chunks = (n_chars + COLLECT_CHUNK_SIZE - 1) // COLLECT_CHUNK_SIZE
+        for chunk_idx, start in enumerate(range(0, n_chars, COLLECT_CHUNK_SIZE)):
             end = min(start + COLLECT_CHUNK_SIZE, n_chars)
+            print(
+                f"   Chars {start + 1}-{end} of {n_chars} (chunk {chunk_idx + 1}/{n_chunks})",
+                flush=True,
+            )
             chunk_ret = pf_returns_lazys[start:end]
             chunk_daily = pf_daily_lazys[start:end] if daily_pf else []
             collected = pl.collect_all(chunk_ret + chunk_daily)
