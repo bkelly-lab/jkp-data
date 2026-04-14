@@ -88,6 +88,11 @@ def collect_and_write(df, filename, collect_streaming=False):
     """
     Description:
         Collect a Polars LazyFrame (optionally streaming) and write to Parquet.
+        Used for interim files during pipeline execution in main.py.
+
+        Note: For final output files (in portfolio.py), use write_dataframe() from
+        output_writer module instead. write_dataframe() supports shrink_dtype,
+        ensures .parquet extension, and integrates with CSV conversion at pipeline end.
 
     Steps:
         1) df.collect(streaming=collect_streaming).
