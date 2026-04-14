@@ -23,13 +23,13 @@ This repo contains Python code to generate the global dataset of factor returns,
      ```sh
      uv run python code/wrds_credentials.py
      ```
-     Kindly follow the prompts.  
+     Kindly follow the prompts.
 
      Note: If you need to change your password or credentials, run `uv run python code/wrds_credentials.py --reset` and then `uv run python code/wrds_credentials.py`
 
 3. **Run the script**
 
-   - We run the code via a Slurm scheduler, but we also show how to run it in an interactive Python session. 
+   - We run the code via a Slurm scheduler, but we also show how to run it in an interactive Python session.
 
    - Before running the following commands, make sure you are in `jkp-data/`
 
@@ -43,7 +43,7 @@ This repo contains Python code to generate the global dataset of factor returns,
      ```sh
      uv run python code/main.py
      ```
-     to create the stock returns and firm characteristics, and 
+     to create the stock returns and firm characteristics, and
      ```sh
      uv run python code/portfolio.py
      ```
@@ -58,6 +58,11 @@ data/processed/
 Please see the release notes (`documentation/release_notes.html`) for a description of the output files and a comparison between the output of the SAS/R codebase and the new Python codebase.
 
 ## Notes
+- By default, output files are written in Parquet format. To output CSV files instead (with quoted strings to preserve leading zeros in identifiers like `gvkey`), run:
+  ```sh
+  uv run python code/portfolio.py --output-format csv
+  ```
+
 - By default, the end date for the data in the code is 2024-12-31, which you can change by editing the `end_date` assignment near the top of `code/main.py`. For example, for May 6, 1992, use: `end_date = pl.datetime(1992, 5, 6)`.
 
 - **Persistent WRDS Connection**: If you're running on an HPC cluster with NAT IP rotation (such as Yale's Bouchet cluster), you may receive many MFA prompts during data download. This happens because each database query creates a new TCP connection, and the NAT gateway assigns a random outbound IP to each connection. WRDS sees these as connections from different locations and triggers MFA for each.
@@ -74,7 +79,7 @@ Please see the release notes (`documentation/release_notes.html`) for a descript
 
 - To run the code, we utilize a high performance computing cluster, where we request 450 GB RAM and 128 CPU cores. Running the routine takes about 6 hours.
 
-- To understand the data, please refer to our [documentation](https://jkpfactors.s3.amazonaws.com/documents/Documentation.pdf). 
+- To understand the data, please refer to our [documentation](https://jkpfactors.s3.amazonaws.com/documents/Documentation.pdf).
 
 - We distribute the global factor returns generated from this codebase at [jkpfactors.com](https://jkpfactors.com) and the stock returns and firm characteristics at [wrds-www.wharton.upenn.edu/pages/get-data/contributed-data-forms/global-factor-data/](https://wrds-www.wharton.upenn.edu/pages/get-data/contributed-data-forms/global-factor-data/).
 
