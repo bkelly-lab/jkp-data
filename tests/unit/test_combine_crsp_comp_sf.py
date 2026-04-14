@@ -533,9 +533,6 @@ def _polars_combine_crsp_comp_sf(tmp: Path) -> tuple[pl.DataFrame, pl.DataFrame]
 
 def _duckdb_combine_crsp_comp_sf(tmp: Path) -> tuple[pl.DataFrame, pl.DataFrame]:
     """Run the DuckDB implementation and return (monthly_df, daily_df)."""
-    import sys
-
-    sys.path.insert(0, str(Path(__file__).parent.parent.parent / "code"))
     from jkp_data.aux_functions import combine_crsp_comp_sf
 
     orig_dir = os.getcwd()

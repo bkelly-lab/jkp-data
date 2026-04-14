@@ -1,5 +1,6 @@
 """Tests for the JKP CLI entry point."""
 
+import re
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -8,6 +9,17 @@ from typer.testing import CliRunner
 from jkp_data.cli import app
 
 runner = CliRunner()
+
+
+def _strip_ansi(text: str) -> str:
+    """Remove ANSI escape sequences from text.
+
+    Typer's Rich output inserts color codes that split option names
+    (e.g. ``--reset`` becomes ``\\x1b[1;36m-\\x1b[0m\\x1b[1;36m-reset``),
+    causing plain substring checks to fail in CI where a terminal is
+    not detected.
+    """
+    return re.sub(r"\x1b\[[0-9;]*m", "", text)
 
 
 @pytest.mark.unit
@@ -22,7 +34,7 @@ class TestCliHelp:
     def test_build_help(self):
         result = runner.invoke(app, ["build", "--help"])
         assert result.exit_code == 0
-        assert "--persistent-connection" in result.output
+        assert "--persistent-connection" in _strip_ansi(result.output)
 
     def test_portfolio_help(self):
         result = runner.invoke(app, ["portfolio", "--help"])
@@ -32,7 +44,7 @@ class TestCliHelp:
     def test_connect_help(self):
         result = runner.invoke(app, ["connect", "--help"])
         assert result.exit_code == 0
-        assert "--reset" in result.output
+        assert "--reset" in _strip_ansi(result.output)
 
 
 @pytest.mark.unit

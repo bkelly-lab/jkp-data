@@ -2,8 +2,6 @@
 
 import pytest
 
-from jkp_data.output_writer import configure_output_format
-
 
 class TestOutputFormatIntegration:
     """Tests that run_portfolio() forwards output_format to configure_output_format."""

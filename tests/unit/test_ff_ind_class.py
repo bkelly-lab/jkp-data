@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import polars as pl
 import pytest
-
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "code"))
 
 from jkp_data.aux_functions import _parse_siccodes_file, ff_ind_class
 
