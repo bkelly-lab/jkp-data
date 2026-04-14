@@ -1,9 +1,46 @@
+import argparse
 import os
 import time
 import warnings
 
 import polars as pl
 from config import END_DATE
+from output_writer import (
+    VALID_OUTPUT_FORMATS,
+    configure_output_format,
+    convert_outputs_to_csv,
+    write_dataframe,
+)
+
+
+def parse_args() -> argparse.Namespace:
+    """Parse command line arguments for portfolio generation.
+
+    Description:
+        Parse CLI arguments for output format selection.
+    Steps:
+        1) Create argument parser with output-format option.
+        2) Parse and return the arguments.
+    Output:
+        argparse.Namespace with output_format attribute.
+    """
+    parser = argparse.ArgumentParser(
+        description="Generate JKP portfolio data.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  uv run python code/portfolio.py                      # Default: parquet output
+  uv run python code/portfolio.py --output-format csv  # CSV output with quoted strings
+        """,
+    )
+    parser.add_argument(
+        "--output-format",
+        choices=VALID_OUTPUT_FORMATS,
+        default="parquet",
+        help="Output file format (default: parquet)",
+    )
+    return parser.parse_args()
+
 
 warnings.filterwarnings(
     "ignore",
@@ -958,6 +995,9 @@ def regional_data(
 
 
 def main() -> None:
+    args = parse_args()
+    configure_output_format(args.output_format)
+
     countries = []
     # Iterate through all files in the folder
     for file in os.listdir(os.path.join(data_path, "characteristics")):
@@ -1494,71 +1534,76 @@ def main() -> None:
         regional_clusters_daily = None
 
     # Writing output
-    # if "market" in globals():
-    # market.filter(pl.col("eom") <= settings["end_date"]).write_parquet(
-    #     f"{output_path}/market_returns.parquet"
-    # )
     if pf_returns is not None:
-        pf_returns.filter(pl.col("eom") <= settings["end_date"]).write_parquet(
-            f"{output_path}/pfs.parquet"
+        write_dataframe(
+            pf_returns.filter(pl.col("eom") <= settings["end_date"]),
+            f"{output_path}/pfs.parquet",
         )
     if hml_returns is not None:
-        hml_returns.filter(pl.col("eom") <= settings["end_date"]).write_parquet(
-            f"{output_path}/hml.parquet"
+        write_dataframe(
+            hml_returns.filter(pl.col("eom") <= settings["end_date"]),
+            f"{output_path}/hml.parquet",
         )
     if lms_returns is not None:
-        lms_returns.filter(pl.col("eom") <= settings["end_date"]).write_parquet(
-            f"{output_path}/lms.parquet"
+        write_dataframe(
+            lms_returns.filter(pl.col("eom") <= settings["end_date"]),
+            f"{output_path}/lms.parquet",
         )
     if cmp_returns is not None:
-        cmp_returns.filter(pl.col("eom") <= settings["end_date"]).write_parquet(
-            f"{output_path}/cmp.parquet"
+        write_dataframe(
+            cmp_returns.filter(pl.col("eom") <= settings["end_date"]),
+            f"{output_path}/cmp.parquet",
         )
     if cluster_pfs is not None:
-        cluster_pfs.filter(pl.col("eom") <= settings["end_date"]).write_parquet(
-            f"{output_path}/clusters.parquet"
+        write_dataframe(
+            cluster_pfs.filter(pl.col("eom") <= settings["end_date"]),
+            f"{output_path}/clusters.parquet",
         )
 
     if settings["daily_pf"]:
-        # if "market_daily" in globals():
-        #     market_daily.filter(pl.col("date") <= settings["end_date"]).write_parquet(
-        #         f"{output_path}/market_returns_daily.parquet"
-        #     )
         if pf_daily is not None:
-            pf_daily.filter(pl.col("date") <= settings["end_date"]).write_parquet(
-                f"{output_path}/pfs_daily.parquet"
+            write_dataframe(
+                pf_daily.filter(pl.col("date") <= settings["end_date"]),
+                f"{output_path}/pfs_daily.parquet",
             )
         if hml_daily is not None:
-            hml_daily.filter(pl.col("date") <= settings["end_date"]).write_parquet(
-                f"{output_path}/hml_daily.parquet"
+            write_dataframe(
+                hml_daily.filter(pl.col("date") <= settings["end_date"]),
+                f"{output_path}/hml_daily.parquet",
             )
         if lms_daily is not None:
-            lms_daily.filter(pl.col("date") <= settings["end_date"]).write_parquet(
-                f"{output_path}/lms_daily.parquet"
+            write_dataframe(
+                lms_daily.filter(pl.col("date") <= settings["end_date"]),
+                f"{output_path}/lms_daily.parquet",
             )
         if cluster_pfs_daily is not None:
-            cluster_pfs_daily.filter(pl.col("date") <= settings["end_date"]).write_parquet(
-                f"{output_path}/clusters_daily.parquet"
+            write_dataframe(
+                cluster_pfs_daily.filter(pl.col("date") <= settings["end_date"]),
+                f"{output_path}/clusters_daily.parquet",
             )
 
     if settings["ind_pf"]:
         if gics_returns is not None:
-            gics_returns.filter(pl.col("eom") <= settings["end_date"]).write_parquet(
-                f"{output_path}/industry_gics.parquet"
+            write_dataframe(
+                gics_returns.filter(pl.col("eom") <= settings["end_date"]),
+                f"{output_path}/industry_gics.parquet",
             )
         if ff49_returns is not None:
-            ff49_returns.filter(pl.col("eom") <= settings["end_date"]).write_parquet(
-                f"{output_path}/industry_ff49.parquet"
+            write_dataframe(
+                ff49_returns.filter(pl.col("eom") <= settings["end_date"]),
+                f"{output_path}/industry_ff49.parquet",
             )
 
     if settings["ind_pf"] and settings["daily_pf"]:
         if gics_daily is not None:
-            gics_daily.filter(pl.col("date") <= settings["end_date"]).write_parquet(
-                f"{output_path}/industry_gics_daily.parquet"
+            write_dataframe(
+                gics_daily.filter(pl.col("date") <= settings["end_date"]),
+                f"{output_path}/industry_gics_daily.parquet",
             )
         if ff49_daily is not None:
-            ff49_daily.filter(pl.col("date") <= settings["end_date"]).write_parquet(
-                f"{output_path}/industry_ff49_daily.parquet"
+            write_dataframe(
+                ff49_daily.filter(pl.col("date") <= settings["end_date"]),
+                f"{output_path}/industry_ff49_daily.parquet",
             )
 
     # Create directory for Regional Factors
@@ -1573,7 +1618,7 @@ def main() -> None:
                 (pl.col("eom") <= settings["end_date"]) & (pl.col("region") == reg)
             )
             file_path = os.path.join(reg_folder, f"{reg}.parquet")
-            filtered_df.write_parquet(file_path)
+            write_dataframe(filtered_df, file_path)
 
     # Conditional block for daily regional factors
     if settings["daily_pf"]:
@@ -1589,7 +1634,7 @@ def main() -> None:
                     (pl.col("date") <= settings["end_date"]) & (pl.col("region") == reg)
                 )
                 file_path_daily = os.path.join(reg_folder_daily, f"{reg}.parquet")
-                filtered_df_daily.write_parquet(file_path_daily)
+                write_dataframe(filtered_df_daily, file_path_daily)
 
     # Create directory for Regional Clusters
     if regional_clusters is not None:
@@ -1603,7 +1648,7 @@ def main() -> None:
                 (pl.col("eom") <= settings["end_date"]) & (pl.col("region") == reg)
             )
             file_path = os.path.join(reg_folder, f"{reg}.parquet")
-            filtered_df.write_parquet(file_path)
+            write_dataframe(filtered_df, file_path)
 
     # Conditional block for daily regional clusters
     if settings["daily_pf"]:
@@ -1619,7 +1664,7 @@ def main() -> None:
                     (pl.col("date") <= settings["end_date"]) & (pl.col("region") == reg)
                 )
                 file_path_daily = os.path.join(reg_folder_daily, f"{reg}.parquet")
-                filtered_df_daily.write_parquet(file_path_daily)
+                write_dataframe(filtered_df_daily, file_path_daily)
 
     # Create directory for Country Factors
     if lms_returns is not None:
@@ -1634,7 +1679,7 @@ def main() -> None:
                     (pl.col("eom") <= settings["end_date"]) & (pl.col("excntry") == exc)
                 )
                 file_path = os.path.join(cnt_folder, f"{exc}.parquet")
-                filtered_df.write_parquet(file_path)
+                write_dataframe(filtered_df, file_path)
 
     # Conditional block for daily country factors
     if settings["daily_pf"]:
@@ -1651,7 +1696,9 @@ def main() -> None:
                         (pl.col("date") <= settings["end_date"]) & (pl.col("excntry") == exc)
                     )
                     file_path_daily = os.path.join(cnt_folder_daily, f"{exc}.parquet")
-                    filtered_df_daily.write_parquet(file_path_daily)
+                    write_dataframe(filtered_df_daily, file_path_daily)
+
+    convert_outputs_to_csv()
 
     print(
         f"End            : {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))}",

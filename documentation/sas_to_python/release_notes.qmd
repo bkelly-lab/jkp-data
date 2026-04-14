@@ -43,9 +43,8 @@ The output is organized as follows:
    - `quarterly.parquet` and `annual.parquet` contain firm-level accounting characteristics from Compustat data sourced from quarterly and annual filings, respectively, and standardized across countries.
 
 2. **characteristics/**
-   - `world_data_unfiltered.parquet` contains the monthly stock file with stock-level characteristics, without filters.
-   - `world_data_filtered.parquet` contains the monthly stock file with stock-level characteristics filtered by `primary_sec == 1` (primary security flag), `common == 1` (common stock flag), `obs_main == 1` (main observation flag), `exch_main == 1` (main exchange flag).
-   - Partitions of `world_data_filtered.parquet` by country (e.g., `GBR.parquet`, `USA.parquet`). Files are named using [ISO Alpha-3 country codes](https://www.nationsonline.org/oneworld/country_code_list.htm).
+   - `world_data.parquet` contains the monthly stock file with stock-level characteristics, filtered by the standard screens: `primary_sec == 1` (primary security flag), `common == 1` (common stock flag), `obs_main == 1` (main observation flag), `exch_main == 1` (main exchange flag).
+   - Partitions of `world_data.parquet` by country (e.g., `GBR.parquet`, `USA.parquet`). Files are named using [ISO Alpha-3 country codes](https://www.nationsonline.org/oneworld/country_code_list.htm).
 
 3. **other_output/**
    - `ap_factors_monthly.parquet` and `ap_factors_daily.parquet` contain the returns of FF3 and HXZ4 factor portfolios for every country at monthly and daily frequencies, respectively.
