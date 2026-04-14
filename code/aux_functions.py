@@ -1,4 +1,6 @@
 import datetime
+import functools
+import operator
 import os
 import re
 import time
@@ -11,7 +13,7 @@ import ibis
 import polars as pl
 import polars_ds as pds
 import polars_ols  # noqa: F401 - required for least_squares method on polars expressions
-from config import END_DATE
+from config import MAIN_FILTERS
 from ibis import _
 from polars import col
 
@@ -87,6 +89,11 @@ def collect_and_write(df, filename, collect_streaming=False):
     """
     Description:
         Collect a Polars LazyFrame (optionally streaming) and write to Parquet.
+        Used for interim files during pipeline execution in main.py.
+
+        Note: For final output files (in portfolio.py), use write_dataframe() from
+        output_writer module instead. write_dataframe() supports shrink_dtype,
+        ensures .parquet extension, and integrates with CSV conversion at pipeline end.
 
     Steps:
         1) df.collect(streaming=collect_streaming).
@@ -382,8 +389,10 @@ def gen_raw_data_dfs():
         2) Derive SIC/NAICS (NA & Global), GICS (NA & Global), delist files (CRSP m/d),
         security info (NA & Global), T-bill return, FF monthly factors, exchange code map,
         exchange→country map, company headers (NA+Global), and CRSP security files (m & d).
-        3) Standardize types/columns, sort/deduplicate where needed.
-        4) Write all to raw_data_dfs/*.parquet.
+        3) Call build_mcti() to derive the CRSP 30-Year Treasury index table.
+        4) Call aug_msf_v2() to augment the monthly CRSP file with daily high/low prices.
+        5) Standardize types/columns, sort/deduplicate where needed.
+        6) Write all to raw_data_dfs/*.parquet.
 
     Output:
         Multiple helper Parquets under raw_data_dfs/ used in later pipelines.
@@ -444,9 +453,8 @@ def gen_raw_data_dfs():
         ]
     )
     collect_and_write(__sec_info, "raw_data_dfs/__sec_info.parquet")
-    crsp_mcti_t30ret = pl.scan_parquet("../raw/raw_tables/crsp_mcti.parquet").select(
-        ["caldt", "t30ret"]
-    )
+    build_mcti()
+    crsp_mcti_t30ret = pl.scan_parquet("raw_data_dfs/crsp_mcti.parquet").select(["caldt", "t30ret"])
     collect_and_write(crsp_mcti_t30ret, "raw_data_dfs/crsp_mcti_t30ret.parquet")
     ff_factors_monthly = pl.scan_parquet("../raw/raw_tables/ff_factors_monthly.parquet").select(
         ["date", "rf"]
@@ -470,6 +478,7 @@ def gen_raw_data_dfs():
     )
     gen_prihist_files()
     gen_fx1()
+    aug_msf_v2()
     gen_crsp_sf("m").to_parquet("raw_data_dfs/__crsp_sf_m.parquet")
     gen_crsp_sf("d").to_parquet("raw_data_dfs/__crsp_sf_d.parquet")
 
@@ -491,7 +500,12 @@ def gen_crsp_sf(freq):
         Ibis table (not written) with standardized CRSP {m|d} security fields.
     """
     con = ibis.duckdb.connect(threads=os.cpu_count())
-    sf = con.read_parquet(f"../raw/raw_tables/crsp_{freq}sf_v2.parquet")
+    if freq == "m":
+        sf = con.read_parquet("raw_data_dfs/crsp_msf_v2_aug.parquet")
+    elif freq == "d":
+        sf = con.read_parquet("../raw/raw_tables/crsp_dsf_v2.parquet")
+    else:
+        raise ValueError(f"Unknown freq: {freq}")
     senames = con.read_parquet("../raw/raw_tables/crsp_stksecurityinfohist.parquet")
     ccmxpf_lnkhist = con.read_parquet("../raw/raw_tables/crsp_ccmxpf_lnkhist.parquet")
 
@@ -507,7 +521,7 @@ def gen_crsp_sf(freq):
         cfacshr_expr = sf.mthcumfacshr
         askhi_expr = sf.mthaskhi
         bidlo_expr = sf.mthbidlo
-    else:
+    else:  # freq == "d", validated above
         date_expr = sf.dlycaldt.cast("date")
         prc_expr = sf.dlyprc
         prcflg_expr = sf.dlyprcflg
@@ -833,26 +847,27 @@ def download_raw_data_tables(
     con.close()
 
 
+@measure_time
 def aug_msf_v2():
     """
     Description:
         Add month-level high/low transaction-price fields to the CRSP CIZ monthly file (msf_v2)
         using the CRSP CIZ daily file (dsf_v2). Keep all msf_v2 rows; set the new fields to
-        missing for non-TR monthly rows (e.g., BA).
+        missing for non-TR monthly rows (e.g., BA). Called from gen_raw_data_dfs().
 
     Steps:
-        1) Read msf_v2 (monthly) and dsf_v2 (daily) from parquet.
+        1) Read msf_v2 (monthly) and dsf_v2 (daily) from raw_tables parquet.
         2) Filter dsf_v2 to dlyprcflg == "TR", construct yyyymm from dlycaldt, and keep (permno, yyyymm, dlyprc).
         3) For each (permno, yyyymm), compute:
            - mthaskhi = max(dlyprc)
            - mthbidlo = min(dlyprc)
         4) Left-join these two fields onto msf_v2 by (permno, yyyymm).
         5) Set mthaskhi/mthbidlo to NULL when mthprcflg != "TR".
-        6) Overwrite crsp_msf_v2.parquet (via a temp file).
+        6) Write augmented table to raw_data_dfs/crsp_msf_v2_aug.parquet.
 
     Output:
-        Overwrites ../raw/raw_tables/crsp_msf_v2.parquet with two new columns:
-        mthaskhi and mthbidlo.
+        Writes raw_data_dfs/crsp_msf_v2_aug.parquet with all original columns
+        plus mthaskhi and mthbidlo.
     """
     con = ibis.duckdb.connect(threads=os.cpu_count())
     msf = con.read_parquet("../raw/raw_tables/crsp_msf_v2.parquet")
@@ -891,10 +906,10 @@ def aug_msf_v2():
         ),
     )
 
-    msf_aug.to_parquet("../raw/raw_tables/crsp_msf_v2.parquet.tmp")
-    os.replace("../raw/raw_tables/crsp_msf_v2.parquet.tmp", "../raw/raw_tables/crsp_msf_v2.parquet")
+    msf_aug.to_parquet("raw_data_dfs/crsp_msf_v2_aug.parquet")
 
 
+@measure_time
 def build_mcti():
     """
     Description:
@@ -904,10 +919,10 @@ def build_mcti():
         1) Read indmthseriesdata and indseriesinfohdr from parquet.
         2) Inner join indmthseriesdata with indseriesinfohdr on "indno".
         4) Filter for CRSP 30-Year Treasury Returns (indno == 1000708).
-        5) Write parquet to ../raw/raw_tables/crsp_mcti.parquet
+        5) Write parquet to raw_data_dfs/crsp_mcti.parquet
 
     Output:
-        Polars DataFrame (also written to parquet).
+        Writes raw_data_dfs/crsp_mcti.parquet (no return value).
     """
 
     a = pl.read_parquet("../raw/raw_tables/crsp_indmthseriesdata_ind.parquet")
@@ -921,8 +936,8 @@ def build_mcti():
         .rename({"mthcaldt": "caldt", "mthtotret": "t30ret"})
     )
 
-    os.makedirs("../raw/raw_tables", exist_ok=True)
-    out.write_parquet("../raw/raw_tables/crsp_mcti.parquet")
+    os.makedirs("raw_data_dfs", exist_ok=True)
+    out.write_parquet("raw_data_dfs/crsp_mcti.parquet")
 
 
 @measure_time
@@ -6233,7 +6248,7 @@ def firm_age(data_path):
         )
     )
     crsp_age = (
-        con.read_parquet("../raw/raw_tables/crsp_msf_v2.parquet")
+        con.read_parquet("raw_data_dfs/crsp_msf_v2_aug.parquet")
         .group_by("permco")
         .agg(crsp_first=_.mthcaldt.min())
     )
@@ -7625,24 +7640,84 @@ def quality_minus_junk(data_path, min_stks):
     qmj.write_parquet("qmj.parquet")
 
 
+def _main_filter_expr() -> pl.Expr:
+    """Build a Polars filter expression from the MAIN_FILTERS config dict."""
+    return functools.reduce(operator.and_, (pl.col(k) == v for k, v in MAIN_FILTERS.items()))
+
+
+@measure_time
+def filter_dsf():
+    """
+    Description:
+        Filter world_dsf to main securities.
+
+    Steps:
+        1) Load world_dsf.parquet.
+        2) Filter to MAIN_FILTERS (primary_sec, common, obs_main, exch_main).
+        3) Write world_dsf_output.parquet.
+
+    Output:
+        'world_dsf_output.parquet'.
+    """
+    pl.scan_parquet("world_dsf.parquet").filter(_main_filter_expr()).sink_parquet(
+        "world_dsf_output.parquet"
+    )
+
+
+@measure_time
+def filter_msf():
+    """
+    Description:
+        Filter world_msf to main securities.
+
+    Steps:
+        1) Load world_msf.parquet.
+        2) Filter to MAIN_FILTERS (primary_sec, common, obs_main, exch_main).
+        3) Write world_msf_output.parquet.
+
+    Output:
+        'world_msf_output.parquet'.
+    """
+    pl.scan_parquet("world_msf.parquet").filter(_main_filter_expr()).sink_parquet(
+        "world_msf_output.parquet"
+    )
+
+
+@measure_time
+def filter_world():
+    """
+    Description:
+        Filter world_data to main securities.
+
+    Steps:
+        1) Load world_data.parquet.
+        2) Filter to MAIN_FILTERS (primary_sec, common, obs_main, exch_main).
+        3) Write world_data_output.parquet.
+
+    Output:
+        'world_data_output.parquet'.
+    """
+    pl.scan_parquet("world_data.parquet").filter(_main_filter_expr()).sink_parquet(
+        "world_data_output.parquet"
+    )
+
+
 @measure_time
 def save_main_data():
     """
     Description:
-        Filter world_data to main securities and export country-level files.
+        Compute lagged market equity and export country-level files.
 
     Steps:
-        1) Load world_data.parquet and compute lagged market equity.
-        2) Filter to valid main securities.
-        3) Save filtered dataset and split into country parquet files.
+        1) Load world_data_output.parquet (pre-filtered) and compute lagged market equity.
+        2) Save dataset and split into country parquet files.
 
     Output:
-        'world_data_filtered.parquet' and 'characteristics/{country}.parquet'.
+        'world_data_output.parquet' and 'characteristics/{country}.parquet'.
     """
     months_exp = (col("eom").dt.year() * 12 + col("eom").dt.month()).cast(pl.Int64)
     data = (
-        pl.scan_parquet("world_data.parquet")
-        .filter(pl.col("eom") <= END_DATE)
+        pl.scan_parquet("world_data_output.parquet")
         .with_columns(dif_aux=months_exp)
         .sort(["id", "eom"])
         .with_columns(
@@ -7653,23 +7728,16 @@ def save_main_data():
             me_lag1=pl.when(col("dif_aux") == 1).then(col("me_lag1")).otherwise(fl_none())
         )
         .drop("dif_aux")
-        .filter(
-            (col("primary_sec") == 1)
-            & (col("common") == 1)
-            & (col("obs_main") == 1)
-            & (col("exch_main") == 1)
-        )
     )
-    data.select(pl.all().shrink_dtype()).collect(streaming=True).write_parquet(
-        "world_data_filtered.parquet"
-    )
+    data.select(pl.all().shrink_dtype()).sink_parquet("world_data_output_temp.parquet")
+    os.replace("world_data_output_temp.parquet", "world_data_output.parquet")
 
     os.chdir(os.path.join(os.path.dirname(__file__), "..", "data/processed"))
 
     OUT_DIR = "characteristics"
     con = duckdb.connect()
     con.execute(f"""
-    COPY (SELECT * FROM read_parquet('../interim/world_data_filtered.parquet'))
+    COPY (SELECT * FROM read_parquet('../interim/world_data_output.parquet'))
     TO '{OUT_DIR}'
     ( FORMAT PARQUET,
       COMPRESSION ZSTD,
@@ -7697,22 +7765,23 @@ def save_main_data():
 def save_output_files():
     """
     Description:
-        Move main market returns and cutoff files to Output folder.
+        Copy main market returns and cutoff files to Output folder.
 
     Steps:
-        1) Use system mv to move parquet outputs.
+        1) Copy parquet outputs from interim/ to other_output/.
         2) Includes market returns (monthly/daily) and cutoff files.
+        3) Interim files are preserved for downstream steps.
 
     Output:
-        Files relocated into 'Output/' directory.
+        Files copied into 'other_output/' directory.
     """
-    os.system("mv ../interim/market_returns.parquet other_output/")
-    os.system("mv ../interim/market_returns_daily.parquet other_output/")
-    os.system("mv ../interim/nyse_cutoffs.parquet other_output/")
-    os.system("mv ../interim/return_cutoffs.parquet other_output/")
-    os.system("mv ../interim/return_cutoffs_daily.parquet other_output/")
-    os.system("mv ../interim/ap_factors_monthly.parquet other_output/")
-    os.system("mv ../interim/ap_factors_daily.parquet other_output/")
+    os.system("cp ../interim/market_returns.parquet other_output/")
+    os.system("cp ../interim/market_returns_daily.parquet other_output/")
+    os.system("cp ../interim/nyse_cutoffs.parquet other_output/")
+    os.system("cp ../interim/return_cutoffs.parquet other_output/")
+    os.system("cp ../interim/return_cutoffs_daily.parquet other_output/")
+    os.system("cp ../interim/ap_factors_monthly.parquet other_output/")
+    os.system("cp ../interim/ap_factors_daily.parquet other_output/")
 
 
 @measure_time
@@ -7722,7 +7791,7 @@ def save_daily_ret():
         Export daily returns split by country.
 
     Steps:
-        1) Load world_dsf.parquet with daily returns.
+        1) Load world_dsf_output.parquet with daily returns.
         2) Identify unique countries.
         3) For each country, filter and save parquet file (compressed).
 
@@ -7730,9 +7799,8 @@ def save_daily_ret():
         'return_data/daily_rets_by_country/{country}.parquet' files for all countries.
     """
     data = (
-        pl.scan_parquet("../interim/world_dsf.parquet")
+        pl.scan_parquet("../interim/world_dsf_output.parquet")
         .select(["excntry", "id", "date", "me", "ret", "ret_exc", "ret_exc_wins"])
-        .filter(pl.col("date") <= END_DATE)
         .with_columns(
             excntry=pl.when(col("excntry").is_null())
             .then(pl.lit("null_country"))
@@ -7796,21 +7864,18 @@ def save_full_files_and_cleanup(clear_interim=True):
         Save full datasets and remove temporary files.
 
     Steps:
-        1) Write compressed versions of world_dsf, world_data, and filtered world_data.
+        1) Write compressed versions of world_dsf and world_data.
         2) Remove raw parquet files and raw_tables/raw_data_dfs folders.
 
     Output:
         Compressed parquet files in return_data/ and characteristics/, cleanup of temp files.
     """
-    pl.scan_parquet("../interim/world_dsf.parquet").select(pl.all().shrink_dtype()).collect(
-        streaming=True
-    ).write_parquet("return_data/world_dsf.parquet")
-    pl.scan_parquet("../interim/world_data.parquet").select(pl.all().shrink_dtype()).collect(
-        streaming=True
-    ).write_parquet("characteristics/world_data_unfiltered.parquet")
-    pl.scan_parquet("../interim/world_data_filtered.parquet").select(
+    pl.scan_parquet("../interim/world_dsf_output.parquet").select(
         pl.all().shrink_dtype()
-    ).collect(streaming=True).write_parquet("characteristics/world_data_filtered.parquet")
+    ).sink_parquet("return_data/world_dsf.parquet")
+    pl.scan_parquet("../interim/world_data_output.parquet").select(
+        pl.all().shrink_dtype()
+    ).sink_parquet("characteristics/world_data.parquet")
     if clear_interim:
         os.system("rm -rf ../interim/* ../raw/*")
 
@@ -7822,29 +7887,15 @@ def save_monthly_ret():
         Save monthly returns for world securities.
 
     Steps:
-        1) Load world_msf.parquet and select relevant columns.
+        1) Load world_msf_output.parquet and select relevant columns.
         2) Shrink dtypes and collect results.
         3) Write to return_data/world_ret_monthly.parquet.
 
     Output:
         Parquet file with monthly returns by country/security.
     """
-    data = (
-        pl.scan_parquet("../interim/world_msf.parquet")
-        .select(
-            [
-                "excntry",
-                "id",
-                "source_crsp",
-                "eom",
-                "me",
-                "ret_exc",
-                "ret",
-                "ret_local",
-                "ret_exc_wins",
-            ]
-        )
-        .filter(pl.col("eom") <= END_DATE)
+    data = pl.scan_parquet("../interim/world_msf_output.parquet").select(
+        ["excntry", "id", "source_crsp", "eom", "me", "ret_exc", "ret", "ret_local", "ret_exc_wins"]
     )
     data.select(pl.all().shrink_dtype()).collect().write_parquet(
         "return_data/world_ret_monthly.parquet"
