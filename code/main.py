@@ -6,7 +6,6 @@ from aux_functions import (
     add_ret_exc_wins,
     ap_factors,
     bidask_hl,
-    build_mcti,
     classify_stocks_size_groups,
     combine_ann_qtr_chars,
     combine_crsp_comp_sf,
@@ -16,6 +15,9 @@ from aux_functions import (
     crsp_industry,
     download_raw_data_tables,
     ff_ind_class,
+    filter_dsf,
+    filter_msf,
+    filter_world,
     finish_daily_chars,
     firm_age,
     gen_raw_data_dfs,
@@ -63,7 +65,6 @@ download_raw_data_tables(
     end_date=END_DATE,
     persistent_connection=args.persistent_connection,
 )
-build_mcti()
 gen_raw_data_dfs()
 prepare_comp_sf("both")
 prepare_crsp_sf("m")
@@ -146,6 +147,9 @@ finish_daily_chars("market_chars_d.parquet")
 merge_world_data_prelim()
 quality_minus_junk("world_data_-1.parquet", 10)
 merge_qmj_to_world_data()
+filter_dsf()
+filter_msf()
+filter_world()
 save_main_data()
 save_daily_ret()
 save_monthly_ret()
