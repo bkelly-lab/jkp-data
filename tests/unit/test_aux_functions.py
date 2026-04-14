@@ -55,7 +55,7 @@ def _write_sf_fixture(raw_tables: Path, freq: str) -> tuple[date, date]:
     if freq == "m":
         matched_date = date(2020, 1, 31)
         unmatched_date = date(2020, 2, 29)
-        pl.DataFrame(
+        msf_df = pl.DataFrame(
             {
                 **common_columns,
                 "mthcaldt": [matched_date, unmatched_date],
@@ -68,7 +68,10 @@ def _write_sf_fixture(raw_tables: Path, freq: str) -> tuple[date, date]:
                 "mthaskhi": [10.5, 11.5],
                 "mthbidlo": [9.5, 10.5],
             }
-        ).write_parquet(raw_tables / "crsp_msf_v2.parquet")
+        )
+        raw_data_dfs = raw_tables.parent.parent / "code" / "raw_data_dfs"
+        raw_data_dfs.mkdir(parents=True, exist_ok=True)
+        msf_df.write_parquet(raw_data_dfs / "crsp_msf_v2_aug.parquet")
         return matched_date, unmatched_date
 
     matched_date = date(2020, 1, 2)
