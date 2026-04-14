@@ -6,6 +6,7 @@ import re
 import time
 from datetime import date
 from math import exp, sqrt
+from pathlib import Path
 
 import duckdb
 import ibis
@@ -1967,292 +1968,260 @@ def prepare_crsp_sf(freq):
     __crsp_sf.collect().write_parquet(f"crsp_{freq}sf.parquet")
 
 
-def prepare_crsp_sfs_for_merging():
-    """
-    Description:
-        Normalize CRSP monthly/daily frames for concatenation with Compustat, adding
-        shared schema fields and flags.
-
-    Steps:
-        1) For crsp_msf: set USA defaults (USD, fx=1), common/primary flags, map columns
-        to shared names, compute eom, ret_lag_dif=1, source_crsp=1.
-        2) For crsp_dsf: similar normalization (eom, flags, USD), rename to shared schema.
-
-    Output:
-        Tuple (crsp_msf LazyFrame, crsp_dsf LazyFrame) ready for merging.
-    """
-    crsp_msf = (
-        pl.scan_parquet("crsp_msf.parquet")
-        .with_columns(
-            exch_main=col("exch_main").cast(pl.Int32),
-            bidask=col("bidask").cast(pl.Int32),
-            id=col("permno"),
-            excntry=pl.lit("USA"),
-            common=(col("shrcd").is_in([10, 11, 12]).fill_null(bo_false())).cast(pl.Int32),
-            primary_sec=pl.lit(1),
-            comp_tpci=pl.lit(None).cast(pl.Utf8),
-            comp_exchg=pl.lit(None).cast(pl.Int64),
-            curcd=pl.lit("USD"),
-            fx=pl.lit(1.0),
-            eom=col("date").dt.month_end(),
-            prc_local=col("prc"),
-            tvol=col("vol"),
-            ret_local=col("ret"),
-            ret_lag_dif=pl.lit(1).cast(pl.Int64),
-            div_cash=fl_none(),
-            div_spc=fl_none(),
-            source_crsp=pl.lit(1),
-        )
-        .rename(
-            {
-                "shrcd": "crsp_shrcd",
-                "exchcd": "crsp_exchcd",
-                "cfacshr": "adjfct",
-                "shrout": "shares",
-            }
-        )
-    )
-
-    crsp_dsf = (
-        pl.scan_parquet("crsp_dsf.parquet")
-        .with_columns(
-            id=col("permno"),
-            excntry=pl.lit("USA"),
-            common=(col("shrcd").is_in([10, 11, 12]).fill_null(bo_false())).cast(pl.Int32),
-            primary_sec=pl.lit(1),
-            curcd=pl.lit("USD"),
-            fx=pl.lit(1.0),
-            eom=col("date").dt.month_end(),
-            ret_local=col("ret"),
-            ret_lag_dif=pl.lit(1).cast(pl.Int64),
-            exch_main=col("exch_main").cast(pl.Int32),
-            bidask=col("bidask").cast(pl.Int32),
-            source_crsp=pl.lit(1),
-        )
-        .rename({"cfacshr": "adjfct", "shrout": "shares", "vol": "tvol"})
-    )
-    return crsp_msf, crsp_dsf
-
-
-def prepare_comp_sfs_for_merging():
-    """
-    Description:
-        Normalize Compustat monthly/daily frames to match CRSP schema (ids, flags, names).
-
-    Steps:
-        1) Build integer id from gvkey+iid with instrument-type prefix (1 common, 2 ADR, 3 when-Issued).
-        2) For comp_msf: map/rename fields; set flags (common/bidask), me_company=me, source_crsp=0.
-        3) For comp_dsf: map/rename; compute eom from datadate; set source_crsp=0.
-
-    Output:
-        Tuple (comp_msf LazyFrame, comp_dsf LazyFrame) ready for concatenation.
-    """
-    id_exp = (
-        pl.when(col("iid").str.contains("W"))
-        .then(pl.lit("3") + col("gvkey") + col("iid").str.slice(0, 2))
-        .when(col("iid").str.contains("C"))
-        .then(pl.lit("2") + col("gvkey") + col("iid").str.slice(0, 2))
-        .otherwise(pl.lit("1") + col("gvkey") + col("iid").str.slice(0, 2))
-    ).cast(pl.Int64)
-
-    comp_msf = (
-        pl.scan_parquet("comp_msf.parquet")
-        .with_columns(
-            id=id_exp,
-            permno=pl.lit(None).cast(pl.Int64),
-            permco=pl.lit(None).cast(pl.Int64),
-            common=pl.when(col("tpci") == "0").then(pl.lit(1)).otherwise(pl.lit(0)),
-            bidask=pl.when(col("prcstd") == 4).then(pl.lit(1)).otherwise(pl.lit(0)),
-            crsp_shrcd=fl_none(),
-            crsp_exchcd=fl_none(),
-            me_company=col("me"),
-            source_crsp=pl.lit(0),
-            ret_lag_dif=col("ret_lag_dif").cast(pl.Int64),
-        )
-        .rename(
-            {
-                "tpci": "comp_tpci",
-                "exchg": "comp_exchg",
-                "curcdd": "curcd",
-                "datadate": "date",
-                "ajexdi": "adjfct",
-                "cshoc": "shares",
-                "cshtrm": "tvol",
-            }
-        )
-    )
-
-    comp_dsf = (
-        pl.scan_parquet("comp_dsf.parquet")
-        .with_columns(
-            id=id_exp,
-            common=pl.when(col("tpci") == "0").then(pl.lit(1)).otherwise(pl.lit(0)),
-            bidask=pl.when(col("prcstd") == 4).then(pl.lit(1)).otherwise(pl.lit(0)),
-            eom=col("datadate").dt.month_end(),
-            source_crsp=pl.lit(0),
-        )
-        .rename(
-            {
-                "curcdd": "curcd",
-                "datadate": "date",
-                "ajexdi": "adjfct",
-                "cshoc": "shares",
-                "cshtrd": "tvol",
-            }
-        )
-    )
-    return comp_msf, comp_dsf
-
-
-def gen_temp_sf(freq, crsp_df, comp_df):
-    """
-    Description:
-        Vertically merge CRSP and Compustat security files to a unified world file
-        with a harmonized column set; optionally compute lead ret_exc for monthly.
-
-    Steps:
-        1) Define cols_to_keep per frequency; concat CRSP/Compustat frames vertically.
-        2) If monthly: compute ret_exc_lead1m where next observation is contiguous.
-
-    Output:
-        LazyFrame unified security file (__msf_world or world_dsf before filtering).
-    """
-    cols_to_keep = (
-        [
-            "id",
-            "permno",
-            "permco",
-            "gvkey",
-            "iid",
-            "excntry",
-            "exch_main",
-            "common",
-            "primary_sec",
-            "bidask",
-            "crsp_shrcd",
-            "crsp_exchcd",
-            "comp_tpci",
-            "comp_exchg",
-            "curcd",
-            "fx",
-            "date",
-            "eom",
-            "adjfct",
-            "shares",
-            "me",
-            "me_company",
-            "prc",
-            "prc_local",
-            "prc_high",
-            "prc_low",
-            "dolvol",
-            "tvol",
-            "ret",
-            "ret_local",
-            "ret_exc",
-            "ret_lag_dif",
-            "div_tot",
-            "div_cash",
-            "div_spc",
-            "source_crsp",
-        ]
-        if freq == "m"
-        else [
-            "id",
-            "excntry",
-            "exch_main",
-            "common",
-            "primary_sec",
-            "bidask",
-            "curcd",
-            "fx",
-            "date",
-            "eom",
-            "adjfct",
-            "shares",
-            "me",
-            "dolvol",
-            "tvol",
-            "prc",
-            "prc_high",
-            "prc_low",
-            "ret_local",
-            "ret",
-            "ret_exc",
-            "ret_lag_dif",
-            "source_crsp",
-        ]
-    )
-    sf_world = pl.concat(
-        [crsp_df.select(cols_to_keep), comp_df.select(cols_to_keep)],
-        how="vertical_relaxed",
-    )
-    if freq == "m":
-        sf_world = sf_world.sort(["id", "eom"]).with_columns(
-            ret_exc_lead1m=pl.when(col("ret_lag_dif").shift(-1).over("id") != 1)
-            .then(None)
-            .otherwise(col("ret_exc").shift(-1).over("id"))
-        )
-    return sf_world
-
-
-def add_obs_main_to_sf_and_write_file(freq, sf_df, obs_main):
-    """
-    Description:
-        Add an observation selection flag (obs_main) and write the final world file.
-
-    Steps:
-        1) Left-join obs_main; unique and sort by {id,eom} or {id,date}.
-        2) Collect (streaming) and save to '__msf_world.parquet' (monthly) or 'world_dsf.parquet' (daily).
-
-    Output:
-        Parquet file with obs_main indicating preferred monthly observation per id-date.
-    """
-    file_path = "__msf_world.parquet" if freq == "m" else "world_dsf.parquet"
-    sort_vars = ["id", "eom"] if freq == "m" else ["id", "date"]
-    (
-        sf_df.join(obs_main, on=["id", "eom"], how="left")
-        .unique(sort_vars)
-        .sort(sort_vars)
-        .collect(streaming=True)
-        .write_parquet(file_path)
-    )
-
-
 @measure_time
-def combine_crsp_comp_sf():
+def combine_crsp_comp_sf() -> None:
     """
     Description:
         Create unified monthly and daily security datasets by combining CRSP and Compustat,
         determining the main observation per id/eom, and writing outputs.
 
     Steps:
-        1) Prepare normalized CRSP and Compustat frames (monthly & daily).
-        2) Build __msf_world and __dsf_world via gen_temp_sf.
-        3) From __msf_world derive obs_main: if only one obs or multiple but source_crsp==1 → 1 else 0.
-        4) Write final monthly and daily world files, injecting obs_main where applicable.
+        1) Connect to DuckDB (persistent file for out-of-core processing).
+        2) Create monthly world table: normalize CRSP/Comp → UNION ALL → LEAD(ret_exc).
+        3) Derive obs_main: prefer CRSP when multiple observations per (gvkey, iid, eom).
+        4) Write __msf_world.parquet with deterministic dedup (primary_sec preferred
+           on tie via ROW_NUMBER).
+        5) Write world_dsf.parquet: normalize daily → UNION ALL → join obs_main → dedup.
+        6) Clean up DuckDB file.
+
+    Note on the dedup tie-break (ORDER BY source_crsp DESC, primary_sec DESC):
+        CRSP rows use raw permno as id (5-digit ints), while Compustat rows construct
+        ids as '1'/'2'/'3' || gvkey || iid[0:2] (9+ digit bigints). These id spaces
+        never overlap, so any (id, eom) partition is either entirely CRSP or entirely
+        Compustat — a "mixed" partition where source_crsp varies cannot exist.
+        That makes `source_crsp DESC` effectively a no-op today; it is kept only to
+        document the intended preference hierarchy and to remain correct if a future
+        change unifies the id schemes.
+
+        The tie-break that actually does the work is `primary_sec DESC`, and it
+        only matters within Compustat partitions. When multiple Compustat rows share
+        the same (id, eom) and disagree on primary_sec, preferring primary_sec=1
+        gives the principled answer — "if any candidate row says this security is
+        primary at this date, treat it as primary" — and makes the output
+        deterministic across engines and row orderings.
 
     Output:
         '__msf_world.parquet' and 'world_dsf.parquet' ready for downstream processing.
     """
-    crsp_msf, crsp_dsf = prepare_crsp_sfs_for_merging()
-    comp_msf, comp_dsf = prepare_comp_sfs_for_merging()
-    __msf_world = gen_temp_sf("m", crsp_msf, comp_msf)
-    __dsf_world = gen_temp_sf("d", crsp_dsf, comp_dsf)
-    obs_main = (
-        __msf_world.select(["id", "source_crsp", "gvkey", "iid", "eom"])
-        .with_columns(count=pl.count("gvkey").over(["gvkey", "iid", "eom"]))
-        .with_columns(
-            obs_main=pl.when(
-                (col("count").is_in([0, 1])) | ((col("count") > 1) & (col("source_crsp") == 1))
+    Path("aux_combine_sf.ddb").unlink(missing_ok=True)
+    con = duckdb.connect("aux_combine_sf.ddb")
+    try:
+        # Monthly: normalize CRSP/Comp, UNION ALL, compute ret_exc_lead1m
+        con.execute("""
+            CREATE TABLE sf_world_m AS
+            WITH crsp_msf_norm AS (
+                SELECT
+                    permno AS id, permno, permco, gvkey, iid,
+                    'USA' AS excntry,
+                    exch_main::INT AS exch_main,
+                    CASE WHEN shrcd IN (10, 11, 12) THEN 1 ELSE 0 END AS common,
+                    1 AS primary_sec,
+                    bidask::INT AS bidask,
+                    shrcd::DOUBLE AS crsp_shrcd,
+                    exchcd::DOUBLE AS crsp_exchcd,
+                    NULL::VARCHAR AS comp_tpci,
+                    NULL::BIGINT AS comp_exchg,
+                    'USD' AS curcd,
+                    1.0 AS fx,
+                    date,
+                    last_day(date) AS eom,
+                    cfacshr AS adjfct,
+                    shrout AS shares,
+                    me, me_company, prc,
+                    prc AS prc_local,
+                    prc_high, prc_low, dolvol,
+                    vol AS tvol,
+                    ret,
+                    ret AS ret_local,
+                    ret_exc,
+                    1::BIGINT AS ret_lag_dif,
+                    div_tot,
+                    NULL::DOUBLE AS div_cash,
+                    NULL::DOUBLE AS div_spc,
+                    1 AS source_crsp
+                FROM read_parquet('crsp_msf.parquet')
+            ),
+            comp_msf_norm AS (
+                SELECT
+                    CAST(
+                        CASE
+                            WHEN iid LIKE '%W%' THEN '3' || gvkey || SUBSTRING(iid, 1, 2)
+                            WHEN iid LIKE '%C%' THEN '2' || gvkey || SUBSTRING(iid, 1, 2)
+                            ELSE '1' || gvkey || SUBSTRING(iid, 1, 2)
+                        END AS BIGINT
+                    ) AS id,
+                    NULL::BIGINT AS permno,
+                    NULL::BIGINT AS permco,
+                    gvkey, iid, excntry,
+                    exch_main::INT AS exch_main,
+                    CASE WHEN tpci = '0' THEN 1 ELSE 0 END AS common,
+                    primary_sec::INT AS primary_sec,
+                    CASE WHEN prcstd = 4 THEN 1 ELSE 0 END AS bidask,
+                    NULL::DOUBLE AS crsp_shrcd,
+                    NULL::DOUBLE AS crsp_exchcd,
+                    tpci AS comp_tpci,
+                    exchg::BIGINT AS comp_exchg,
+                    curcdd AS curcd,
+                    fx,
+                    datadate AS date,
+                    eom,
+                    ajexdi AS adjfct,
+                    cshoc AS shares,
+                    me,
+                    me AS me_company,
+                    prc, prc_local, prc_high, prc_low, dolvol,
+                    cshtrm AS tvol,
+                    ret, ret_local, ret_exc,
+                    ret_lag_dif::BIGINT AS ret_lag_dif,
+                    div_tot, div_cash, div_spc,
+                    0 AS source_crsp
+                FROM read_parquet('comp_msf.parquet')
             )
-            .then(1)
-            .otherwise(0)
-        )
-        .drop(["count", "iid", "gvkey", "source_crsp"])
-    )
-    add_obs_main_to_sf_and_write_file("m", __msf_world, obs_main)
-    add_obs_main_to_sf_and_write_file("d", __dsf_world, obs_main)
+            SELECT *,
+                CASE
+                    WHEN LEAD(ret_lag_dif, 1) OVER (PARTITION BY id ORDER BY eom) != 1
+                    THEN NULL
+                    ELSE LEAD(ret_exc, 1) OVER (PARTITION BY id ORDER BY eom)
+                END AS ret_exc_lead1m
+            FROM (
+                SELECT * FROM crsp_msf_norm
+                UNION ALL
+                SELECT * FROM comp_msf_norm
+            ) unioned
+        """)
+
+        # Derive obs_main: prefer CRSP when multiple obs per (gvkey, iid, eom).
+        # Deduplicate to (id, eom) before the join to avoid transient row inflation.
+        con.execute("""
+            CREATE TABLE obs_main AS
+            SELECT id, eom, MAX(obs_main) AS obs_main
+            FROM (
+                SELECT id, eom,
+                    CAST(CASE
+                        WHEN cnt IN (0, 1) THEN 1
+                        WHEN cnt > 1 AND source_crsp = 1 THEN 1
+                        ELSE 0
+                    END AS INT) AS obs_main
+                FROM (
+                    SELECT id, source_crsp, eom,
+                        COUNT(gvkey) OVER (PARTITION BY gvkey, iid, eom) AS cnt
+                    FROM sf_world_m
+                ) sub
+            ) dedup
+            GROUP BY id, eom
+        """)
+
+        # Write monthly output with deterministic dedup (prefer CRSP)
+        con.execute("""
+            COPY (
+                SELECT
+                    id, permno, permco, gvkey, iid, excntry, exch_main, common,
+                    primary_sec, bidask, crsp_shrcd, crsp_exchcd, comp_tpci, comp_exchg,
+                    curcd, fx, date, eom, adjfct, shares, me, me_company, prc, prc_local,
+                    prc_high, prc_low, dolvol, tvol, ret, ret_local, ret_exc, ret_lag_dif,
+                    div_tot, div_cash, div_spc, source_crsp, ret_exc_lead1m, obs_main
+                FROM (
+                    -- source_crsp DESC is a no-op today (CRSP/Comp ids don't collide);
+                    -- primary_sec DESC is the real tie-break: when Compustat rows
+                    -- disagree on primary_sec for the same (id, eom), prefer the
+                    -- primary one. See combine_crsp_comp_sf docstring for details.
+                    SELECT a.*, b.obs_main,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY a.id, a.eom
+                            ORDER BY a.source_crsp DESC, a.primary_sec DESC
+                        ) AS _rn
+                    FROM sf_world_m a
+                    LEFT JOIN obs_main b ON a.id = b.id AND a.eom = b.eom
+                ) ranked
+                WHERE _rn = 1
+                ORDER BY id, eom
+            ) TO '__msf_world.parquet' (FORMAT PARQUET)
+        """)
+
+        # Free monthly table memory; keep obs_main for daily step
+        con.execute("DROP TABLE sf_world_m")
+
+        # Daily: normalize CRSP/Comp, UNION ALL, join obs_main, dedup, write
+        con.execute("""
+            COPY (
+                WITH crsp_dsf_norm AS (
+                    SELECT
+                        permno AS id,
+                        'USA' AS excntry,
+                        exch_main::INT AS exch_main,
+                        CASE WHEN shrcd IN (10, 11, 12) THEN 1 ELSE 0 END AS common,
+                        1 AS primary_sec,
+                        bidask::INT AS bidask,
+                        'USD' AS curcd,
+                        1.0 AS fx,
+                        date,
+                        last_day(date) AS eom,
+                        cfacshr AS adjfct,
+                        shrout AS shares,
+                        me, dolvol,
+                        vol AS tvol,
+                        prc, prc_high, prc_low,
+                        ret AS ret_local,
+                        ret, ret_exc,
+                        1::BIGINT AS ret_lag_dif,
+                        1 AS source_crsp
+                    FROM read_parquet('crsp_dsf.parquet')
+                ),
+                comp_dsf_norm AS (
+                    SELECT
+                        CAST(
+                            CASE
+                                WHEN iid LIKE '%W%' THEN '3' || gvkey || SUBSTRING(iid, 1, 2)
+                                WHEN iid LIKE '%C%' THEN '2' || gvkey || SUBSTRING(iid, 1, 2)
+                                ELSE '1' || gvkey || SUBSTRING(iid, 1, 2)
+                            END AS BIGINT
+                        ) AS id,
+                        excntry,
+                        exch_main::INT AS exch_main,
+                        CASE WHEN tpci = '0' THEN 1 ELSE 0 END AS common,
+                        primary_sec::INT AS primary_sec,
+                        CASE WHEN prcstd = 4 THEN 1 ELSE 0 END AS bidask,
+                        curcdd AS curcd,
+                        fx,
+                        datadate AS date,
+                        last_day(datadate) AS eom,
+                        ajexdi AS adjfct,
+                        cshoc AS shares,
+                        me, dolvol,
+                        cshtrd AS tvol,
+                        prc, prc_high, prc_low,
+                        ret_local, ret, ret_exc,
+                        ret_lag_dif::BIGINT AS ret_lag_dif,
+                        0 AS source_crsp
+                    FROM read_parquet('comp_dsf.parquet')
+                ),
+                sf_world_d AS (
+                    SELECT * FROM crsp_dsf_norm
+                    UNION ALL
+                    SELECT * FROM comp_dsf_norm
+                ),
+                ranked AS (
+                    -- See dedup tie-break note in monthly block above.
+                    SELECT a.*, b.obs_main,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY a.id, a.date
+                            ORDER BY a.source_crsp DESC, a.primary_sec DESC
+                        ) AS _rn
+                    FROM sf_world_d a
+                    LEFT JOIN obs_main b ON a.id = b.id AND a.eom = b.eom
+                )
+                SELECT
+                    id, excntry, exch_main, common, primary_sec, bidask, curcd, fx,
+                    date, eom, adjfct, shares, me, dolvol, tvol, prc, prc_high, prc_low,
+                    ret_local, ret, ret_exc, ret_lag_dif, source_crsp, obs_main
+                FROM ranked
+                WHERE _rn = 1
+                ORDER BY id, date
+            ) TO 'world_dsf.parquet' (FORMAT PARQUET)
+        """)
+    finally:
+        con.close()
+        Path("aux_combine_sf.ddb").unlink(missing_ok=True)
 
 
 @measure_time
