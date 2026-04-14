@@ -13,7 +13,8 @@ from typing import Any
 
 import numpy as np
 import polars as pl
-from aux_functions import (
+
+from jkp_data.aux_functions import (
     ami,
     capm,
     capm_ext,

@@ -15,7 +15,7 @@ class TestBuildProjection:
 
     def test_no_special_columns(self):
         """When no special columns present, return simple wildcard."""
-        from aux_functions import build_projection
+        from jkp_data.aux_functions import build_projection
 
         cols = ["date", "value", "name"]
         result = build_projection(cols)
@@ -23,7 +23,7 @@ class TestBuildProjection:
 
     def test_permno_column_cast(self):
         """permno column should be cast to BIGINT."""
-        from aux_functions import build_projection
+        from jkp_data.aux_functions import build_projection
 
         cols = ["permno", "date", "ret"]
         result = build_projection(cols)
@@ -32,7 +32,7 @@ class TestBuildProjection:
 
     def test_multiple_special_columns(self):
         """Multiple special columns should all be cast."""
-        from aux_functions import build_projection
+        from jkp_data.aux_functions import build_projection
 
         cols = ["permno", "permco", "sic", "sich", "date"]
         result = build_projection(cols)
@@ -47,7 +47,7 @@ class TestGenWrdsConnectionInfo:
 
     def test_connection_string_format(self):
         """Connection string should have correct format."""
-        from aux_functions import gen_wrds_connection_info
+        from jkp_data.aux_functions import gen_wrds_connection_info
 
         result = gen_wrds_connection_info("testuser", "testpass")
 
@@ -69,7 +69,7 @@ class TestDownloadRawDataTablesBranching:
     @pytest.fixture
     def mock_duckdb(self):
         """Create a mock DuckDB connection."""
-        with patch("aux_functions.duckdb") as mock:
+        with patch("jkp_data.aux_functions.duckdb") as mock:
             mock_conn = MagicMock()
             mock.connect.return_value = mock_conn
             mock_result = MagicMock()
@@ -79,7 +79,7 @@ class TestDownloadRawDataTablesBranching:
 
     def test_persistent_connection_false_uses_postgres_scan(self, mock_duckdb):
         """When persistent_connection=False, should use postgres_scan()."""
-        from aux_functions import download_raw_data_tables
+        from jkp_data.aux_functions import download_raw_data_tables
 
         mock, mock_conn = mock_duckdb
 
@@ -97,7 +97,7 @@ class TestDownloadRawDataTablesBranching:
 
     def test_persistent_connection_true_uses_attach(self, mock_duckdb):
         """When persistent_connection=True, should use ATTACH."""
-        from aux_functions import download_raw_data_tables
+        from jkp_data.aux_functions import download_raw_data_tables
 
         mock, mock_conn = mock_duckdb
 
@@ -116,7 +116,7 @@ class TestDownloadRawDataTablesBranching:
 
     def test_persistent_connection_true_single_attach(self, mock_duckdb):
         """Persistent connection should only ATTACH once for all tables."""
-        from aux_functions import download_raw_data_tables
+        from jkp_data.aux_functions import download_raw_data_tables
 
         mock, mock_conn = mock_duckdb
 
@@ -136,7 +136,7 @@ class TestDownloadRawDataTablesBranching:
 
     def test_connection_closed_after_download(self, mock_duckdb):
         """Connection should be closed after download completes."""
-        from aux_functions import download_raw_data_tables
+        from jkp_data.aux_functions import download_raw_data_tables
 
         mock, mock_conn = mock_duckdb
 
@@ -154,7 +154,7 @@ class TestGetColumnsAttached:
 
     def test_returns_column_names(self):
         """Should extract column names from query description."""
-        from aux_functions import get_columns_attached
+        from jkp_data.aux_functions import get_columns_attached
 
         mock_conn = MagicMock()
         mock_result = MagicMock()
@@ -167,7 +167,7 @@ class TestGetColumnsAttached:
 
     def test_queries_attached_database(self):
         """Should query the attached database with correct syntax."""
-        from aux_functions import get_columns_attached
+        from jkp_data.aux_functions import get_columns_attached
 
         mock_conn = MagicMock()
         mock_result = MagicMock()
@@ -186,7 +186,7 @@ class TestDownloadWrdsTableAttached:
 
     def test_copies_to_parquet(self):
         """Should execute COPY TO parquet command."""
-        from aux_functions import download_wrds_table_attached
+        from jkp_data.aux_functions import download_wrds_table_attached
 
         mock_conn = MagicMock()
         mock_result = MagicMock()

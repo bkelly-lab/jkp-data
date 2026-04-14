@@ -536,7 +536,7 @@ def _duckdb_combine_crsp_comp_sf(tmp: Path) -> tuple[pl.DataFrame, pl.DataFrame]
     import sys
 
     sys.path.insert(0, str(Path(__file__).parent.parent.parent / "code"))
-    from aux_functions import combine_crsp_comp_sf
+    from jkp_data.aux_functions import combine_crsp_comp_sf
 
     orig_dir = os.getcwd()
     os.chdir(str(tmp))

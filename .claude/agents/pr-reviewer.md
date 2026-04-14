@@ -70,8 +70,8 @@ Review each dimension. Only report findings — skip dimensions with no issues.
 
 ## Cross-referencing
 
-- Read relevant sections of `code/aux_functions.py` to check for duplicated logic
-- Read `code/main.py` or `code/portfolio.py` to verify new functions are properly integrated
+- Read relevant sections of `src/jkp_data/aux_functions.py` to check for duplicated logic
+- Read `src/jkp_data/main.py` or `src/jkp_data/portfolio.py` to verify new functions are properly integrated
 - Check `CLAUDE.md` for any relevant conventions not covered by code-critic
 
 ## Output format

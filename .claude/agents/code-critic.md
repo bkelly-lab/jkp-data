@@ -25,7 +25,7 @@ Apply these checks in order of severity:
 - **C1 — `safe_div()` required:** All division on Polars expressions must use `safe_div()` from `aux_functions`. Flag any raw `/` operator on `pl.col(...)` or Polars expression chains. Ignore plain arithmetic on Python scalars.
 - **C2 — No new SAS-style functions:** Flag any use of `sum_sas` or `sub_sas` in new code. These are legacy functions for backward compatibility only. New code should use standard Polars null propagation, or explicit `pl.coalesce()` when null-as-zero behavior is needed.
 - **C3 — No new DuckDB/Ibis:** Flag any new `import duckdb`, `import ibis`, or usage of DuckDB/Ibis APIs. Existing usage is grandfathered.
-- **C4 — No duplicate helpers:** Flag reimplementations of `safe_div`, `fl_none`, `bo_false`, or `collect_and_write`. Check `code/aux_functions.py` for the canonical versions.
+- **C4 — No duplicate helpers:** Flag reimplementations of `safe_div`, `fl_none`, `bo_false`, or `collect_and_write`. Check `src/jkp_data/aux_functions.py` for the canonical versions.
 
 ### Important (C5–C7)
 

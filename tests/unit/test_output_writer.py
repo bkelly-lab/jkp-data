@@ -6,7 +6,8 @@ from pathlib import Path
 
 import polars as pl
 import pytest
-from output_writer import (
+
+from jkp_data.output_writer import (
     OutputFormat,
     _collect_dataframe,
     configure_output_format,

@@ -1,52 +1,22 @@
-import argparse
 import os
 import time
 import warnings
 
 import polars as pl
-from config import END_DATE
-from output_writer import (
-    VALID_OUTPUT_FORMATS,
+from tqdm import tqdm
+
+from .config import END_DATE
+from .output_writer import (
     configure_output_format,
     convert_outputs_to_csv,
     write_dataframe,
 )
-from tqdm import tqdm
 
 warnings.filterwarnings(
     "ignore",
     category=UserWarning,
     message=r"Sortedness.*by.*provided",
 )
-
-
-def parse_args() -> argparse.Namespace:
-    """Parse command line arguments for portfolio generation.
-
-    Description:
-        Parse CLI arguments for output format selection.
-    Steps:
-        1) Create argument parser with output-format option.
-        2) Parse and return the arguments.
-    Output:
-        argparse.Namespace with output_format attribute.
-    """
-    parser = argparse.ArgumentParser(
-        description="Generate JKP portfolio data.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  uv run python code/portfolio.py                      # Default: parquet output
-  uv run python code/portfolio.py --output-format csv  # CSV output with quoted strings
-        """,
-    )
-    parser.add_argument(
-        "--output-format",
-        choices=VALID_OUTPUT_FORMATS,
-        default="parquet",
-        help="Output file format (default: parquet)",
-    )
-    return parser.parse_args()
 
 
 # =============================================================================
@@ -603,8 +573,8 @@ def regional_data(
 # =============================================================================
 
 
-def main() -> None:
-    """Main entry point for JKP portfolio generation.
+def run_portfolio(*, output_format: str = "parquet") -> None:
+    """Run JKP portfolio generation.
 
     Description:
         Orchestrate portfolio construction: parse arguments, configure output
@@ -618,10 +588,7 @@ def main() -> None:
     Output:
         Portfolio files written to data/processed/portfolios/.
     """
-    args = parse_args()
-
-    # Configure output format
-    configure_output_format(args.output_format)
+    configure_output_format(output_format)
 
     # Setting data path and output path
     data_path = "data/processed"
@@ -1420,7 +1387,3 @@ def main() -> None:
         f"End            : {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))}",
         flush=True,
     )
-
-
-if __name__ == "__main__":
-    main()

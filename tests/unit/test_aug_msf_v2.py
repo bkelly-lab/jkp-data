@@ -12,7 +12,8 @@ from pathlib import Path
 
 import polars as pl
 import pytest
-from aux_functions import aug_msf_v2
+
+from jkp_data.aux_functions import aug_msf_v2
 
 
 def _write_aug_msf_fixtures(raw_tables: Path) -> None:

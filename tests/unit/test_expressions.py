@@ -21,7 +21,7 @@ import polars as pl
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "code"))
 
-from aux_functions import bo_false, fl_none, safe_div, sub_sas, sum_sas
+from jkp_data.aux_functions import bo_false, fl_none, safe_div, sub_sas, sum_sas
 
 # safe_div modes:
 #   1 = protect zero denominator (den != 0)

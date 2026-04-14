@@ -10,7 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "code"))
 
-from aux_functions import _parse_siccodes_file, ff_ind_class
+from jkp_data.aux_functions import _parse_siccodes_file, ff_ind_class
 
 # =============================================================================
 # Fixtures

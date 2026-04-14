@@ -53,7 +53,7 @@ body:
       label: Steps to Reproduce
       description: Steps to reproduce the behavior
       placeholder: |
-        1. Run `uv run python code/main.py`
+        1. Run `jkp build`
         2. Wait for WRDS authentication
         3. See error at step X
     validations:
@@ -76,7 +76,7 @@ body:
       render: shell
       placeholder: |
         Traceback (most recent call last):
-          File "code/main.py", line X, in <module>
+          File "src/jkp_data/main.py", line X, in run_pipeline
             ...
         Error: ...
     validations:
