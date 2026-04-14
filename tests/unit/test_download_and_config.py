@@ -1,11 +1,12 @@
 """
-Tests for WRDS download functions and config module.
+Tests for WRDS download functions, config module, and filter functions.
 
 These tests cover:
 - download_wrds_table: WHERE clause generation for date-filtered downloads
 - download_raw_data_tables: date_columns mapping passed correctly to download_wrds_table
-- save_main_data: filtering logic (no end_date parameter)
-- config: END_DATE constant
+- save_main_data: me_lag1 computation and output (no filtering, no end_date parameter)
+- filter_dsf, filter_msf, filter_world: MAIN_FILTERS screening
+- config: END_DATE and MAIN_FILTERS constants
 
 Paper Reference: Jensen, Kelly, Pedersen (2023), "Is There a Replication Crisis in Finance?"
 """
@@ -22,7 +23,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "code"))
 
-from config import END_DATE
+from config import END_DATE, MAIN_FILTERS
 
 # =============================================================================
 # Tests: config
@@ -43,6 +44,24 @@ class TestConfig:
         assert END_DATE.day == last_day, (
             f"END_DATE ({END_DATE}) is not the last day of its month (expected day {last_day})"
         )
+
+    def test_main_filters_is_dict(self):
+        """MAIN_FILTERS should be a dict."""
+        assert isinstance(MAIN_FILTERS, dict), (
+            f"MAIN_FILTERS should be a dict, got {type(MAIN_FILTERS)}"
+        )
+
+    def test_main_filters_has_expected_keys(self):
+        """MAIN_FILTERS should contain the four standard screening columns."""
+        expected = {"primary_sec", "common", "obs_main", "exch_main"}
+        assert set(MAIN_FILTERS.keys()) == expected, (
+            f"MAIN_FILTERS keys should be {expected}, got {set(MAIN_FILTERS.keys())}"
+        )
+
+    def test_main_filters_values_are_one(self):
+        """All MAIN_FILTERS values should be 1 (the passing value)."""
+        for k, v in MAIN_FILTERS.items():
+            assert v == 1, f"MAIN_FILTERS['{k}'] should be 1, got {v}"
 
 
 # =============================================================================
@@ -221,9 +240,9 @@ class TestDownloadRawDataTables:
 class TestSaveMainData:
     """Tests for save_main_data().
 
-    This function filters world_data to main securities. The key change
-    is the removal of the end_date parameter — data is now pre-filtered
-    at download time. Tests verify the filter conditions.
+    This function computes lagged market equity and exports country-level files.
+    Filtering is now done upstream by filter_world(). Tests verify me_lag1
+    computation and that all rows pass through.
     """
 
     def test_no_end_date_parameter(self):
@@ -258,8 +277,8 @@ class TestSaveMainData:
         finally:
             os.chdir(original_cwd)
 
-    def test_filters_to_main_securities(self, tmp_path):
-        """Output should only contain rows where primary_sec, common, obs_main, exch_main are all 1."""
+    def test_all_rows_pass_through(self, tmp_path):
+        """save_main_data should not filter — all rows should appear in output."""
         world_data = pl.DataFrame(
             {
                 "id": ["A", "B", "C", "D"],
@@ -272,15 +291,14 @@ class TestSaveMainData:
                 "excntry": ["USA"] * 4,
             }
         )
-        world_data.write_parquet(tmp_path / "world_data.parquet")
+        world_data.write_parquet(tmp_path / "world_data_output.parquet")
         self._run_save_main_data(tmp_path)
 
-        output = pl.read_parquet(tmp_path / "world_data_filtered.parquet")
-        assert len(output) == 1, f"Expected 1 row after filtering, got {len(output)}"
-        assert output["id"][0] == "A", f"Expected row A, got {output['id'][0]}"
+        output = pl.read_parquet(tmp_path / "world_data_output.parquet")
+        assert len(output) == 4, f"Expected all 4 rows (no filtering), got {len(output)}"
 
-    def test_eom_date_filter_drops_post_end_date_rows(self, tmp_path):
-        """Belt-and-suspenders: rows with eom > END_DATE must be dropped before output."""
+    def test_no_eom_date_filter(self, tmp_path):
+        """All dates should pass through — there should be no eom <= end_date filter."""
         world_data = pl.DataFrame(
             {
                 "id": ["A", "A"],
@@ -293,128 +311,215 @@ class TestSaveMainData:
                 "excntry": ["USA"] * 2,
             }
         )
-        world_data.write_parquet(tmp_path / "world_data.parquet")
+        world_data.write_parquet(tmp_path / "world_data_output.parquet")
         self._run_save_main_data(tmp_path)
 
-        output = pl.read_parquet(tmp_path / "world_data_filtered.parquet")
-        assert len(output) == 1, f"Expected only the in-sample row, got {len(output)}"
-        assert output["eom"][0] == date(2020, 1, 31)
-        assert output["eom"].max() <= END_DATE
+        output = pl.read_parquet(tmp_path / "world_data_output.parquet")
+        assert len(output) == 2, f"Expected both rows (no date filter), got {len(output)}"
+
+    def test_me_lag1_computed(self, tmp_path):
+        """save_main_data should add me_lag1 column with lagged market equity."""
+        world_data = pl.DataFrame(
+            {
+                "id": ["A", "A", "A"],
+                "eom": [date(2020, 1, 31), date(2020, 2, 29), date(2020, 3, 31)],
+                "me": [100.0, 200.0, 300.0],
+                "primary_sec": [1, 1, 1],
+                "common": [1, 1, 1],
+                "obs_main": [1, 1, 1],
+                "exch_main": [1, 1, 1],
+                "excntry": ["USA"] * 3,
+            }
+        )
+        world_data.write_parquet(tmp_path / "world_data_output.parquet")
+        self._run_save_main_data(tmp_path)
+
+        output = pl.read_parquet(tmp_path / "world_data_output.parquet").sort("eom")
+        assert "me_lag1" in output.columns, "me_lag1 column should be present"
+        assert output["me_lag1"][0] is None or output["me_lag1"][0] != output["me_lag1"][0]
+        assert output["me_lag1"][1] == pytest.approx(100.0)
+        assert output["me_lag1"][2] == pytest.approx(200.0)
 
 
 # =============================================================================
-# Tests: save_daily_ret
+# Tests: filter functions
 # =============================================================================
 
 
-class TestSaveDailyRet:
-    """Tests for save_daily_ret().
+class TestFilterFunctions:
+    """Tests for filter_dsf(), filter_msf(), and filter_world().
 
-    The function reads ../interim/world_dsf.parquet and writes
-    ../interim/daily_returns_temp.parquet before partitioning by country via
-    DuckDB. We mock duckdb/os.system/os.chdir and verify the temp parquet only
-    contains in-sample rows (date <= END_DATE).
+    These functions apply MAIN_FILTERS screening to interim parquet files,
+    keeping only rows where all four filter columns equal 1.
     """
 
-    def _run_save_daily_ret(self, work_dir: Path) -> None:
-        """Chdir to work_dir and run save_daily_ret with side effects mocked."""
+    @staticmethod
+    def _make_test_data() -> pl.DataFrame:
+        """Create a toy DataFrame with mixed filter values."""
+        return pl.DataFrame(
+            {
+                "id": ["A", "B", "C", "D", "E"],
+                "eom": [date(2020, 1, 31)] * 5,
+                "me": [100.0, 200.0, 300.0, 400.0, 500.0],
+                "ret": [0.01, 0.02, 0.03, 0.04, 0.05],
+                "primary_sec": [1, 0, 1, 1, 1],
+                "common": [1, 1, 0, 1, 1],
+                "obs_main": [1, 1, 1, 0, 1],
+                "exch_main": [1, 1, 1, 1, 0],
+                "excntry": ["USA"] * 5,
+            }
+        )
+
+    def _run_filter(self, tmp_path: Path, func_name: str, source: str, output: str) -> pl.DataFrame:
+        """Write test data, run a filter function, and return the result."""
         import os
 
-        from aux_functions import save_daily_ret
+        import aux_functions
+
+        data = self._make_test_data()
+        data.write_parquet(tmp_path / source)
 
         original_cwd = os.getcwd()
-        os.chdir(str(work_dir))
+        os.chdir(str(tmp_path))
         try:
-            with (
-                patch("aux_functions.os.system"),
-                patch("aux_functions.duckdb") as mock_duckdb,
-            ):
-                mock_duckdb.connect.return_value = MagicMock()
-                save_daily_ret()
+            getattr(aux_functions, func_name)()
         finally:
             os.chdir(original_cwd)
 
-    def test_date_filter_drops_post_end_date_rows(self, tmp_path):
-        """Belt-and-suspenders: rows with date > END_DATE must be dropped before output."""
-        work_dir = tmp_path / "work"
-        interim_dir = tmp_path / "interim"
-        work_dir.mkdir()
-        interim_dir.mkdir()
+        return pl.read_parquet(tmp_path / output)
 
-        world_dsf = pl.DataFrame(
+    def test_filter_dsf_keeps_only_passing_rows(self, tmp_path):
+        """filter_dsf should keep only rows where all four filter columns are 1."""
+        result = self._run_filter(
+            tmp_path, "filter_dsf", "world_dsf.parquet", "world_dsf_output.parquet"
+        )
+        assert len(result) == 1, f"Expected 1 passing row, got {len(result)}"
+        assert result["id"][0] == "A"
+
+    def test_filter_msf_keeps_only_passing_rows(self, tmp_path):
+        """filter_msf should keep only rows where all four filter columns are 1."""
+        result = self._run_filter(
+            tmp_path, "filter_msf", "world_msf.parquet", "world_msf_output.parquet"
+        )
+        assert len(result) == 1, f"Expected 1 passing row, got {len(result)}"
+        assert result["id"][0] == "A"
+
+    def test_filter_world_keeps_only_passing_rows(self, tmp_path):
+        """filter_world should keep only rows where all four filter columns are 1."""
+        result = self._run_filter(
+            tmp_path, "filter_world", "world_data.parquet", "world_data_output.parquet"
+        )
+        assert len(result) == 1, f"Expected 1 passing row, got {len(result)}"
+        assert result["id"][0] == "A"
+
+    def test_filter_preserves_all_columns(self, tmp_path):
+        """Filtered output should retain all original columns."""
+        original_cols = set(self._make_test_data().columns)
+        result = self._run_filter(
+            tmp_path, "filter_world", "world_data.parquet", "world_data_output.parquet"
+        )
+        assert set(result.columns) == original_cols, (
+            f"Column mismatch: expected {original_cols}, got {set(result.columns)}"
+        )
+
+    def test_filter_does_not_modify_source(self, tmp_path):
+        """Source file should be unchanged after filtering."""
+        import os
+
+        import aux_functions
+
+        data = self._make_test_data()
+        data.write_parquet(tmp_path / "world_data.parquet")
+
+        original_cwd = os.getcwd()
+        os.chdir(str(tmp_path))
+        try:
+            aux_functions.filter_world()
+        finally:
+            os.chdir(original_cwd)
+
+        source = pl.read_parquet(tmp_path / "world_data.parquet")
+        assert len(source) == 5, f"Source should be unchanged (5 rows), got {len(source)}"
+
+    def test_filter_is_idempotent(self, tmp_path):
+        """Running filter twice should produce the same result."""
+        import os
+
+        import aux_functions
+
+        data = self._make_test_data()
+        data.write_parquet(tmp_path / "world_data.parquet")
+
+        original_cwd = os.getcwd()
+        os.chdir(str(tmp_path))
+        try:
+            aux_functions.filter_world()
+            first_run = pl.read_parquet(tmp_path / "world_data_output.parquet")
+            aux_functions.filter_world()
+            second_run = pl.read_parquet(tmp_path / "world_data_output.parquet")
+        finally:
+            os.chdir(original_cwd)
+
+        assert first_run.equals(second_run), "Second run should produce identical output"
+
+    def test_filter_all_pass(self, tmp_path):
+        """When all rows pass the filter, all should be retained."""
+        import os
+
+        import aux_functions
+
+        data = pl.DataFrame(
             {
-                "excntry": ["USA", "USA"],
-                "id": ["A", "A"],
-                "date": [date(2020, 6, 15), date(2099, 12, 31)],
+                "id": ["A", "B"],
+                "eom": [date(2020, 1, 31)] * 2,
                 "me": [100.0, 200.0],
                 "ret": [0.01, 0.02],
-                "ret_exc": [0.005, 0.015],
-                "ret_exc_wins": [0.005, 0.015],
+                "primary_sec": [1, 1],
+                "common": [1, 1],
+                "obs_main": [1, 1],
+                "exch_main": [1, 1],
+                "excntry": ["USA"] * 2,
             }
         )
-        world_dsf.write_parquet(interim_dir / "world_dsf.parquet")
-
-        self._run_save_daily_ret(work_dir)
-
-        output = pl.read_parquet(interim_dir / "daily_returns_temp.parquet")
-        assert len(output) == 1, f"Expected only the in-sample row, got {len(output)}"
-        assert output["date"][0] == date(2020, 6, 15)
-        assert output["date"].max() <= END_DATE
-
-
-# =============================================================================
-# Tests: save_monthly_ret
-# =============================================================================
-
-
-class TestSaveMonthlyRet:
-    """Tests for save_monthly_ret().
-
-    The function reads ../interim/world_msf.parquet and writes
-    return_data/world_ret_monthly.parquet. We chdir into a temp work dir with
-    a sibling interim/ dir holding the input fixture and a return_data/
-    subdir for the output.
-    """
-
-    def _run_save_monthly_ret(self, work_dir: Path) -> None:
-        """Chdir to work_dir and run save_monthly_ret."""
-        import os
-
-        from aux_functions import save_monthly_ret
+        data.write_parquet(tmp_path / "world_data.parquet")
 
         original_cwd = os.getcwd()
-        os.chdir(str(work_dir))
+        os.chdir(str(tmp_path))
         try:
-            save_monthly_ret()
+            aux_functions.filter_world()
         finally:
             os.chdir(original_cwd)
 
-    def test_eom_date_filter_drops_post_end_date_rows(self, tmp_path):
-        """Belt-and-suspenders: rows with eom > END_DATE must be dropped before output."""
-        work_dir = tmp_path / "work"
-        interim_dir = tmp_path / "interim"
-        work_dir.mkdir()
-        interim_dir.mkdir()
-        (work_dir / "return_data").mkdir()
+        result = pl.read_parquet(tmp_path / "world_data_output.parquet")
+        assert len(result) == 2, f"Expected both rows to pass, got {len(result)}"
 
-        world_msf = pl.DataFrame(
+    def test_filter_none_pass(self, tmp_path):
+        """When no rows pass the filter, output should be empty."""
+        import os
+
+        import aux_functions
+
+        data = pl.DataFrame(
             {
-                "excntry": ["USA", "USA"],
-                "id": ["A", "A"],
-                "source_crsp": [1, 1],
-                "eom": [date(2020, 1, 31), date(2099, 12, 31)],
-                "me": [100.0, 200.0],
-                "ret_exc": [0.01, 0.02],
-                "ret": [0.015, 0.025],
-                "ret_local": [0.012, 0.022],
-                "ret_exc_wins": [0.01, 0.02],
+                "id": ["A"],
+                "eom": [date(2020, 1, 31)],
+                "me": [100.0],
+                "ret": [0.01],
+                "primary_sec": [0],
+                "common": [0],
+                "obs_main": [0],
+                "exch_main": [0],
+                "excntry": ["USA"],
             }
         )
-        world_msf.write_parquet(interim_dir / "world_msf.parquet")
+        data.write_parquet(tmp_path / "world_data.parquet")
 
-        self._run_save_monthly_ret(work_dir)
+        original_cwd = os.getcwd()
+        os.chdir(str(tmp_path))
+        try:
+            aux_functions.filter_world()
+        finally:
+            os.chdir(original_cwd)
 
-        output = pl.read_parquet(work_dir / "return_data" / "world_ret_monthly.parquet")
-        assert len(output) == 1, f"Expected only the in-sample row, got {len(output)}"
-        assert output["eom"][0] == date(2020, 1, 31)
-        assert output["eom"].max() <= END_DATE
+        result = pl.read_parquet(tmp_path / "world_data_output.parquet")
+        assert len(result) == 0, f"Expected 0 rows, got {len(result)}"
