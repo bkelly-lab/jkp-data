@@ -5,9 +5,7 @@ from aux_functions import (
     acc_chars_list,
     add_ret_exc_wins,
     ap_factors,
-    aug_msf_v2,
     bidask_hl,
-    build_mcti,
     classify_stocks_size_groups,
     combine_ann_qtr_chars,
     combine_crsp_comp_sf,
@@ -67,8 +65,6 @@ download_raw_data_tables(
     end_date=END_DATE,
     persistent_connection=args.persistent_connection,
 )
-aug_msf_v2()
-build_mcti()
 gen_raw_data_dfs()
 prepare_comp_sf("both")
 prepare_crsp_sf("m")

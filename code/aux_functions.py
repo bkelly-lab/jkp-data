@@ -388,8 +388,10 @@ def gen_raw_data_dfs():
         2) Derive SIC/NAICS (NA & Global), GICS (NA & Global), delist files (CRSP m/d),
         security info (NA & Global), T-bill return, FF monthly factors, exchange code map,
         exchange→country map, company headers (NA+Global), and CRSP security files (m & d).
-        3) Standardize types/columns, sort/deduplicate where needed.
-        4) Write all to raw_data_dfs/*.parquet.
+        3) Call build_mcti() to derive the CRSP 30-Year Treasury index table.
+        4) Call aug_msf_v2() to augment the monthly CRSP file with daily high/low prices.
+        5) Standardize types/columns, sort/deduplicate where needed.
+        6) Write all to raw_data_dfs/*.parquet.
 
     Output:
         Multiple helper Parquets under raw_data_dfs/ used in later pipelines.
@@ -450,9 +452,8 @@ def gen_raw_data_dfs():
         ]
     )
     collect_and_write(__sec_info, "raw_data_dfs/__sec_info.parquet")
-    crsp_mcti_t30ret = pl.scan_parquet("../raw/raw_tables/crsp_mcti.parquet").select(
-        ["caldt", "t30ret"]
-    )
+    build_mcti()
+    crsp_mcti_t30ret = pl.scan_parquet("raw_data_dfs/crsp_mcti.parquet").select(["caldt", "t30ret"])
     collect_and_write(crsp_mcti_t30ret, "raw_data_dfs/crsp_mcti_t30ret.parquet")
     ff_factors_monthly = pl.scan_parquet("../raw/raw_tables/ff_factors_monthly.parquet").select(
         ["date", "rf"]
@@ -476,6 +477,7 @@ def gen_raw_data_dfs():
     )
     gen_prihist_files()
     gen_fx1()
+    aug_msf_v2()
     gen_crsp_sf("m").to_parquet("raw_data_dfs/__crsp_sf_m.parquet")
     gen_crsp_sf("d").to_parquet("raw_data_dfs/__crsp_sf_d.parquet")
 
@@ -497,7 +499,12 @@ def gen_crsp_sf(freq):
         Ibis table (not written) with standardized CRSP {m|d} security fields.
     """
     con = ibis.duckdb.connect(threads=os.cpu_count())
-    sf = con.read_parquet(f"../raw/raw_tables/crsp_{freq}sf_v2.parquet")
+    if freq == "m":
+        sf = con.read_parquet("raw_data_dfs/crsp_msf_v2_aug.parquet")
+    elif freq == "d":
+        sf = con.read_parquet("../raw/raw_tables/crsp_dsf_v2.parquet")
+    else:
+        raise ValueError(f"Unknown freq: {freq}")
     senames = con.read_parquet("../raw/raw_tables/crsp_stksecurityinfohist.parquet")
     ccmxpf_lnkhist = con.read_parquet("../raw/raw_tables/crsp_ccmxpf_lnkhist.parquet")
 
@@ -513,7 +520,7 @@ def gen_crsp_sf(freq):
         cfacshr_expr = sf.mthcumfacshr
         askhi_expr = sf.mthaskhi
         bidlo_expr = sf.mthbidlo
-    else:
+    else:  # freq == "d", validated above
         date_expr = sf.dlycaldt.cast("date")
         prc_expr = sf.dlyprc
         prcflg_expr = sf.dlyprcflg
@@ -839,26 +846,27 @@ def download_raw_data_tables(
     con.close()
 
 
+@measure_time
 def aug_msf_v2():
     """
     Description:
         Add month-level high/low transaction-price fields to the CRSP CIZ monthly file (msf_v2)
         using the CRSP CIZ daily file (dsf_v2). Keep all msf_v2 rows; set the new fields to
-        missing for non-TR monthly rows (e.g., BA).
+        missing for non-TR monthly rows (e.g., BA). Called from gen_raw_data_dfs().
 
     Steps:
-        1) Read msf_v2 (monthly) and dsf_v2 (daily) from parquet.
+        1) Read msf_v2 (monthly) and dsf_v2 (daily) from raw_tables parquet.
         2) Filter dsf_v2 to dlyprcflg == "TR", construct yyyymm from dlycaldt, and keep (permno, yyyymm, dlyprc).
         3) For each (permno, yyyymm), compute:
            - mthaskhi = max(dlyprc)
            - mthbidlo = min(dlyprc)
         4) Left-join these two fields onto msf_v2 by (permno, yyyymm).
         5) Set mthaskhi/mthbidlo to NULL when mthprcflg != "TR".
-        6) Overwrite crsp_msf_v2.parquet (via a temp file).
+        6) Write augmented table to raw_data_dfs/crsp_msf_v2_aug.parquet.
 
     Output:
-        Overwrites ../raw/raw_tables/crsp_msf_v2.parquet with two new columns:
-        mthaskhi and mthbidlo.
+        Writes raw_data_dfs/crsp_msf_v2_aug.parquet with all original columns
+        plus mthaskhi and mthbidlo.
     """
     con = ibis.duckdb.connect(threads=os.cpu_count())
     msf = con.read_parquet("../raw/raw_tables/crsp_msf_v2.parquet")
@@ -897,10 +905,10 @@ def aug_msf_v2():
         ),
     )
 
-    msf_aug.to_parquet("../raw/raw_tables/crsp_msf_v2.parquet.tmp")
-    os.replace("../raw/raw_tables/crsp_msf_v2.parquet.tmp", "../raw/raw_tables/crsp_msf_v2.parquet")
+    msf_aug.to_parquet("raw_data_dfs/crsp_msf_v2_aug.parquet")
 
 
+@measure_time
 def build_mcti():
     """
     Description:
@@ -910,10 +918,10 @@ def build_mcti():
         1) Read indmthseriesdata and indseriesinfohdr from parquet.
         2) Inner join indmthseriesdata with indseriesinfohdr on "indno".
         4) Filter for CRSP 30-Year Treasury Returns (indno == 1000708).
-        5) Write parquet to ../raw/raw_tables/crsp_mcti.parquet
+        5) Write parquet to raw_data_dfs/crsp_mcti.parquet
 
     Output:
-        Polars DataFrame (also written to parquet).
+        Writes raw_data_dfs/crsp_mcti.parquet (no return value).
     """
 
     a = pl.read_parquet("../raw/raw_tables/crsp_indmthseriesdata_ind.parquet")
@@ -927,8 +935,8 @@ def build_mcti():
         .rename({"mthcaldt": "caldt", "mthtotret": "t30ret"})
     )
 
-    os.makedirs("../raw/raw_tables", exist_ok=True)
-    out.write_parquet("../raw/raw_tables/crsp_mcti.parquet")
+    os.makedirs("raw_data_dfs", exist_ok=True)
+    out.write_parquet("raw_data_dfs/crsp_mcti.parquet")
 
 
 @measure_time
@@ -6271,7 +6279,7 @@ def firm_age(data_path):
         )
     )
     crsp_age = (
-        con.read_parquet("../raw/raw_tables/crsp_msf_v2.parquet")
+        con.read_parquet("raw_data_dfs/crsp_msf_v2_aug.parquet")
         .group_by("permco")
         .agg(crsp_first=_.mthcaldt.min())
     )
