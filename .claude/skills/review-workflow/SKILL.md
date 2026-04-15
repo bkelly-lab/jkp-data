@@ -12,6 +12,34 @@ If no PR number was provided, ask the reviewer for it.
 
 ---
 
+## Step 0 — Re-review detection
+
+Before running the full review workflow, check whether this is a re-review. If the current reviewer has already left a structured review comment on this PR, offer to delegate to `/verify-review` instead of re-running Phase 1–3.
+
+1. Get the current user:
+   ```
+   gh api user --jq .login
+   ```
+
+2. Fetch PR comments:
+   ```
+   gh pr view <PR> --json comments
+   ```
+
+3. Scan comments from the current user for any body containing `### Required Changes` or `### Suggestions` (the markers posted by `/draft-pr-comment`).
+
+4. **If a prior structured comment is found**, tell the reviewer:
+   > "It looks like you've already reviewed this PR (found a structured comment from <date>). This looks like a re-review. How would you like to proceed?
+   > (a) Run `/verify-review` to check whether the author addressed your prior feedback (recommended)
+   > (b) Force a full re-review via Phase 1–3 anyway"
+
+   - If (a): follow the `/verify-review` skill instructions for this PR and stop. Do not run Phase 1–3.
+   - If (b): proceed to Phase 1.
+
+5. **If no prior structured comment is found**: proceed to Phase 1.
+
+---
+
 ## Phase 1 — Setup
 
 ### 1.1 Fetch PR metadata
@@ -74,30 +102,36 @@ Run all resolve mutations in parallel.
 
 ### 2.4 Self-check: run tests and linter
 
-Run tests and linting on the PR's changed files as a concrete verification step — don't just trust CI status.
+Run tests and linting on the PR's changed files as a concrete verification step — don't just trust CI status. Use a git worktree so the reviewer's working tree and current branch are untouched regardless of whether they have uncommitted changes.
 
-0. Check out the PR branch so the changed files are available locally. Record the current branch so you can switch back afterward:
+0. Create a worktree for the PR branch. This works for fork PRs via the `pull/<PR>/head` virtual ref:
    ```
-   gh pr checkout <PR>
+   git fetch origin pull/<PR>/head:pr-<PR>-review
+   ```
+   ```
+   git worktree add ../jkp-data-review-pr<PR> pr-<PR>-review
    ```
 
 1. Identify changed Python files from the diff (step 2.2 already has this).
 
-2. Run linter on changed production code:
+2. Run linter on changed production code (use `--directory` to target the worktree without `cd`):
    ```
-   uv run --group lint ruff check <changed .py files in code/>
+   uv run --directory ../jkp-data-review-pr<PR> --group lint ruff check <changed .py files in code/>
    ```
 
 3. If the PR includes new or changed test files, run them:
    ```
-   uv run --group test pytest <changed test files> -v --no-header
+   uv run --directory ../jkp-data-review-pr<PR> --group test pytest <changed test files> -v --no-header
    ```
 
 4. Include pass/fail results in the combined findings. If tests fail locally, flag this even if CI says "pass" — it may indicate environment-dependent behavior.
 
-5. Switch back to the original branch:
+5. Clean up the worktree and temporary ref:
    ```
-   git checkout <original branch>
+   git worktree remove ../jkp-data-review-pr<PR>
+   ```
+   ```
+   git branch -D pr-<PR>-review
    ```
 
 ### 2.5 Present combined findings
@@ -168,16 +202,3 @@ Follow the `/approve-pr` skill instructions. Run pre-flight checks, present summ
 ### If (c) — Add observations
 
 Ask the reviewer to describe their observations. Incorporate them into the review findings, then re-ask options (a) or (b).
-
----
-
-## Phase 4 — Re-review (when re-invoked on the same PR)
-
-When this skill is run on a PR that already has review comments from the reviewer:
-
-Follow the `/verify-review` skill instructions for this PR. This handles:
-- Finding the prior review comment and parsing checklist items
-- Identifying response commits and computing the scoped diff
-- Verifying each item against the diff
-- Running lightweight new-issue detection (code-critic on response diff only)
-- Presenting a decision point (approve, request further changes, or manual review)
