@@ -32,8 +32,8 @@ uv run pytest tests/unit/test_expressions.py::TestSumSas
 uv run pytest
 
 # Run the full pipeline (requires WRDS credentials and ~450 GB RAM)
-jkp build                           # stock returns and firm characteristics
-jkp portfolio                       # factor returns (run after jkp build)
+jkp build data/                     # stock returns and firm characteristics
+jkp portfolio data/                 # factor returns (run after jkp build)
 
 # WRDS connection management
 jkp connect                         # test connection

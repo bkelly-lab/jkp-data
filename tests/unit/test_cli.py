@@ -35,11 +35,13 @@ class TestCliHelp:
         result = runner.invoke(app, ["build", "--help"])
         assert result.exit_code == 0
         assert "--persistent-connection" in _strip_ansi(result.output)
+        assert "OUTPUT_DIR" in _strip_ansi(result.output)
 
     def test_portfolio_help(self):
         result = runner.invoke(app, ["portfolio", "--help"])
         assert result.exit_code == 0
         assert "factor portfolios" in result.output.lower()
+        assert "OUTPUT_DIR" in _strip_ansi(result.output)
 
     def test_connect_help(self):
         result = runner.invoke(app, ["connect", "--help"])
@@ -52,22 +54,26 @@ class TestBuildCommand:
     """Test the build command routes to run_pipeline correctly."""
 
     @patch("jkp.data.main.run_pipeline")
-    def test_build_calls_run_pipeline(self, mock_run_pipeline):
+    def test_build_calls_run_pipeline(self, mock_run_pipeline, tmp_path):
+        result = runner.invoke(app, ["build", str(tmp_path)])
+        assert result.exit_code == 0
+        mock_run_pipeline.assert_called_once_with(persistent_connection=False, output_dir=tmp_path)
+
+    @patch("jkp.data.main.run_pipeline")
+    def test_build_persistent_connection(self, mock_run_pipeline, tmp_path):
+        result = runner.invoke(app, ["build", str(tmp_path), "--persistent-connection"])
+        assert result.exit_code == 0
+        mock_run_pipeline.assert_called_once_with(persistent_connection=True, output_dir=tmp_path)
+
+    @patch("jkp.data.main.run_pipeline")
+    def test_build_persistent_connection_short(self, mock_run_pipeline, tmp_path):
+        result = runner.invoke(app, ["build", str(tmp_path), "-p"])
+        assert result.exit_code == 0
+        mock_run_pipeline.assert_called_once_with(persistent_connection=True, output_dir=tmp_path)
+
+    def test_build_missing_output_dir(self):
         result = runner.invoke(app, ["build"])
-        assert result.exit_code == 0
-        mock_run_pipeline.assert_called_once_with(persistent_connection=False)
-
-    @patch("jkp.data.main.run_pipeline")
-    def test_build_persistent_connection(self, mock_run_pipeline):
-        result = runner.invoke(app, ["build", "--persistent-connection"])
-        assert result.exit_code == 0
-        mock_run_pipeline.assert_called_once_with(persistent_connection=True)
-
-    @patch("jkp.data.main.run_pipeline")
-    def test_build_persistent_connection_short(self, mock_run_pipeline):
-        result = runner.invoke(app, ["build", "-p"])
-        assert result.exit_code == 0
-        mock_run_pipeline.assert_called_once_with(persistent_connection=True)
+        assert result.exit_code != 0
 
 
 @pytest.mark.unit
@@ -75,16 +81,20 @@ class TestPortfolioCommand:
     """Test the portfolio command routes to run_portfolio correctly."""
 
     @patch("jkp.data.portfolio.run_portfolio")
-    def test_portfolio_calls_run_portfolio(self, mock_run_portfolio):
-        result = runner.invoke(app, ["portfolio"])
+    def test_portfolio_calls_run_portfolio(self, mock_run_portfolio, tmp_path):
+        result = runner.invoke(app, ["portfolio", str(tmp_path)])
         assert result.exit_code == 0
-        mock_run_portfolio.assert_called_once_with(output_format="parquet")
+        mock_run_portfolio.assert_called_once_with(output_format="parquet", output_dir=tmp_path)
 
     @patch("jkp.data.portfolio.run_portfolio")
-    def test_portfolio_csv_format(self, mock_run_portfolio):
-        result = runner.invoke(app, ["portfolio", "--output-format", "csv"])
+    def test_portfolio_csv_format(self, mock_run_portfolio, tmp_path):
+        result = runner.invoke(app, ["portfolio", str(tmp_path), "--output-format", "csv"])
         assert result.exit_code == 0
-        mock_run_portfolio.assert_called_once_with(output_format="csv")
+        mock_run_portfolio.assert_called_once_with(output_format="csv", output_dir=tmp_path)
+
+    def test_portfolio_missing_output_dir(self):
+        result = runner.invoke(app, ["portfolio"])
+        assert result.exit_code != 0
 
 
 @pytest.mark.unit

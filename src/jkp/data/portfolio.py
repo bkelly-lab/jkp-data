@@ -1,6 +1,7 @@
 import os
 import time
 import warnings
+from pathlib import Path
 
 import polars as pl
 from tqdm import tqdm
@@ -573,7 +574,7 @@ def regional_data(
 # =============================================================================
 
 
-def run_portfolio(*, output_format: str = "parquet") -> None:
+def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
     """Run JKP portfolio generation.
 
     Description:
@@ -591,8 +592,8 @@ def run_portfolio(*, output_format: str = "parquet") -> None:
     configure_output_format(output_format)
 
     # Setting data path and output path
-    data_path = "data/processed"
-    output_path = "data/processed/portfolios"
+    data_path = str(output_dir / "processed")
+    output_path = str(output_dir / "processed" / "portfolios")
 
     # Get list of countries from characteristics files
     countries = []
@@ -796,9 +797,11 @@ def run_portfolio(*, output_format: str = "parquet") -> None:
         .select([pl.col("abr_jkp").alias("characteristic"), pl.col("direction").cast(pl.Int32)])
     )
 
-    # Read country classification details from Excel file
+    # Read country classification details from bundled Excel file
+    from .paths import get_cluster_labels_path, get_country_classification_path
+
     country_classification = pl.read_excel(
-        "https://github.com/bkelly-lab/ReplicationCrisis/raw/master/GlobalFactors/Country%20Classification.xlsx",
+        get_country_classification_path(),
         sheet_name="countries",
     )
 
@@ -834,9 +837,9 @@ def run_portfolio(*, output_format: str = "parquet") -> None:
         }
     )
 
-    # Read cluster labels details from Excel file
+    # Read cluster labels from bundled CSV file
     cluster_labels = pl.read_csv(
-        "https://raw.githubusercontent.com/bkelly-lab/ReplicationCrisis/refs/heads/master/GlobalFactors/Cluster%20Labels.csv",
+        get_cluster_labels_path(),
         infer_schema_length=int(1e10),
     )
 

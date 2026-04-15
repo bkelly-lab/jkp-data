@@ -41,26 +41,23 @@ This repo contains Python code to generate the global dataset of factor returns,
 
      In an interactive session, run:
      ```sh
-     jkp build
+     jkp build data/
      ```
      to create the stock returns and firm characteristics, and
      ```sh
-     jkp portfolio
+     jkp portfolio data/
      ```
      to create the factor returns.
 
-   **IMPORTANT:** When starting the code, you may be prompted to grant access to WRDS using two-factor authentication, for example via a Duo notification. You need to approve this request, as the program will otherwise fail. After a few seconds or minutes, you should see data being created in `data/raw`. If that is not the case, please check your internet connection or credentials.
+   **IMPORTANT:** When starting the code, you may be prompted to grant access to WRDS using two-factor authentication, for example via a Duo notification. You need to approve this request, as the program will otherwise fail. After a few seconds or minutes, you should see data being created in the output directory. If that is not the case, please check your internet connection or credentials.
 
-When the code is finished, you can find the output in:
-```
-data/processed/
-```
+When the code is finished, you can find the output in the `processed/` subdirectory of your output directory (e.g. `data/processed/`).
 Please see the release notes (`documentation/release_notes.html`) for a description of the output files and a comparison between the output of the SAS/R codebase and the new Python codebase.
 
 ## Notes
 - By default, output files are written in Parquet format. To output CSV files instead (with quoted strings to preserve leading zeros in identifiers like `gvkey`), run:
   ```sh
-  jkp portfolio --output-format csv
+  jkp portfolio data/ --output-format csv
   ```
 
 - By default, the end date for the data in the code is 2025-12-31, which you can change by editing the `end_date` assignment in `src/jkp/data/config.py`. For example, for May 6, 1992, use: `END_DATE = date(1992, 5, 6)`.
@@ -70,7 +67,7 @@ Please see the release notes (`documentation/release_notes.html`) for a descript
   To avoid this, use the `--persistent-connection` flag, which maintains a single database connection throughout the download process:
   ```sh
   # Interactive session
-  jkp build --persistent-connection
+  jkp build data/ --persistent-connection
 
   # Slurm job (set environment variable)
   sbatch --export=ALL,PERSISTENT_WRDS_CONNECTION=1 slurm/submit_job_som_hpc.slurm

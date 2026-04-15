@@ -68,22 +68,29 @@ def measure_time(func):
 
 
 @measure_time
-def setup_folder_structure():
+def setup_folder_structure(paths):
     """
     Description:
-        Create the project’s folder structure if missing.
+        Create the pipeline’s folder structure under the user-specified output directory.
 
     Steps:
-        1) Make directories: raw_tables, raw_data_dfs, characteristics, return_data, accounting_data, other_output.
+        1) Create directories: raw_tables, raw_data_dfs, characteristics, return_data, accounting_data, other_output, portfolios.
+        2) Change working directory to interim_dir for subsequent pipeline functions.
 
     Output:
-        Folders created on disk (no return value).
+        Folders created on disk (no return value). Working directory set to paths.interim_dir.
     """
-    os.chdir(os.path.join(os.path.dirname(__file__), "..", "..", "..", "data/interim"))
-    os.system(
-        "mkdir -p raw_data_dfs ../raw/raw_tables ../processed/characteristics ../processed/return_data ../processed/accounting_data ../processed/other_output"
+    paths.interim_dir.mkdir(parents=True, exist_ok=True)
+    (paths.interim_dir / "raw_data_dfs").mkdir(exist_ok=True)
+    paths.raw_tables_dir.mkdir(parents=True, exist_ok=True)
+    (paths.processed_dir / "characteristics").mkdir(parents=True, exist_ok=True)
+    (paths.processed_dir / "return_data" / "daily_rets_by_country").mkdir(
+        parents=True, exist_ok=True
     )
-    os.system("mkdir -p ../processed/return_data/daily_rets_by_country")
+    (paths.processed_dir / "accounting_data").mkdir(parents=True, exist_ok=True)
+    (paths.processed_dir / "other_output").mkdir(parents=True, exist_ok=True)
+    (paths.processed_dir / "portfolios").mkdir(parents=True, exist_ok=True)
+    os.chdir(paths.interim_dir)
 
 
 def collect_and_write(df, filename, collect_streaming=False):
@@ -2560,8 +2567,9 @@ def ff_ind_class(data_path: str) -> None:
     """
     # The parser can handle other Fama-French classifications
     # (e.g., Siccodes5.txt through Siccodes48.txt).
-    raw_dir = os.path.join(os.path.dirname(__file__), "..", "..", "..", "data", "raw")
-    mapping = _parse_siccodes_file(os.path.join(raw_dir, "Siccodes49.txt"), label="ff49").lazy()
+    from .paths import get_siccodes_path
+
+    mapping = _parse_siccodes_file(str(get_siccodes_path()), label="ff49").lazy()
     data = pl.scan_parquet(data_path)
     data.join(mapping, on="sic", how="left").collect().write_parquet("__msf_world3.parquet")
 
@@ -7704,7 +7712,7 @@ def filter_world():
 
 
 @measure_time
-def save_main_data():
+def save_main_data(paths=None):
     """
     Description:
         Compute lagged market equity and export country-level files.
@@ -7733,7 +7741,7 @@ def save_main_data():
     data.select(pl.all().shrink_dtype()).sink_parquet("world_data_output_temp.parquet")
     os.replace("world_data_output_temp.parquet", "world_data_output.parquet")
 
-    os.chdir(os.path.join(os.path.dirname(__file__), "..", "..", "..", "data/processed"))
+    os.chdir(paths.processed_dir)
 
     OUT_DIR = "characteristics"
     con = duckdb.connect()

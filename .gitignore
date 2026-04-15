@@ -40,15 +40,6 @@ env/
 *.sqlite
 outputs/
 output/
-data/*
-!data/.gitkeep
-!data/README.md
-!data/factor_details.xlsx
-!data/country_classification.xlsx
-!data/cluster_labels.csv
-!data/raw/Siccodes49.txt
-!data/**/
-!data/**/.gitkeep
 # ==========================================
 # OS-specific junk
 # ==========================================
@@ -64,7 +55,6 @@ desktop.ini
 *.out
 *.err
 *.txt
-!data/raw/Siccodes49.txt
 *.txt~
 *~
 
@@ -115,3 +105,6 @@ documentation/**/*.toc
 # Temporary test databases
 aux_*.ddb
 *.ddb.wal
+
+# Bundled package resources (override earlier exclusions)
+!src/jkp/data/resources/*

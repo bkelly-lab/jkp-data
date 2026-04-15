@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import polars as pl
 
 from .aux_functions import (
@@ -46,13 +48,15 @@ from .aux_functions import (
     standardized_accounting_data,
 )
 from .config import END_DATE
+from .paths import DataPaths
 from .wrds_credentials import get_wrds_credentials
 
 
-def run_pipeline(*, persistent_connection: bool = False) -> None:
+def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> None:
     """Run the full JKP data generation pipeline."""
+    paths = DataPaths(base_dir=output_dir.resolve())
     creds = get_wrds_credentials()
-    setup_folder_structure()
+    setup_folder_structure(paths)
     download_raw_data_tables(
         username=creds.username,
         password=creds.password,
@@ -148,7 +152,7 @@ def run_pipeline(*, persistent_connection: bool = False) -> None:
     filter_dsf()
     filter_msf()
     filter_world()
-    save_main_data()
+    save_main_data(paths)
     save_daily_ret()
     save_monthly_ret()
     save_accounting_data()
