@@ -27,10 +27,11 @@ dependencies = [
 ]
 
 [project.scripts]
-jkp = "jkp_data.cli:app"
+jkp = "jkp.data.cli:app"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+namespaces = true
 
 [dependency-groups]
 dev = [
@@ -56,7 +57,7 @@ addopts = [
     "-v",
     "--tb=short",
     "-ra",
-    "--cov=src/jkp_data",
+    "--cov=src/jkp/data",
     "--cov-report=term-missing",
 ]
 filterwarnings = [
@@ -73,10 +74,10 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["src/jkp_data"]
+source = ["src/jkp/data"]
 branch = true
 omit = [
-    "src/jkp_data/wrds_credentials.py",
+    "src/jkp/data/wrds_credentials.py",
     "*/__pycache__/*",
 ]
 

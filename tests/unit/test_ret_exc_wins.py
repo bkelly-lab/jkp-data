@@ -15,7 +15,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from jkp_data.aux_functions import add_ret_exc_wins
+from jkp.data.aux_functions import add_ret_exc_wins
 
 
 @pytest.fixture()

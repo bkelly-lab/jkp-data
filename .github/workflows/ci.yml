@@ -48,14 +48,14 @@ jobs:
         run: uv sync --frozen --group lint --group test
 
       - name: Ruff lint
-        run: uv run ruff check --output-format=github src/jkp_data/ tests/
+        run: uv run ruff check --output-format=github src/jkp/data/ tests/
 
       - name: Ruff format check
-        run: uv run ruff format --check src/jkp_data/ tests/
+        run: uv run ruff format --check src/jkp/data/ tests/
 
       - name: Type check (pyright)
         continue-on-error: true  # Informational until type issues are resolved
-        run: uv run pyright src/jkp_data/
+        run: uv run pyright src/jkp/data/
 
   # ============================================================
   # Job 2: Unit Tests (fast, isolated)

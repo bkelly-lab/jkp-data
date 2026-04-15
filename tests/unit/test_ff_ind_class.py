@@ -7,7 +7,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from jkp_data.aux_functions import _parse_siccodes_file, ff_ind_class
+from jkp.data.aux_functions import _parse_siccodes_file, ff_ind_class
 
 # =============================================================================
 # Fixtures

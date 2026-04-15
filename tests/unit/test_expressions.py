@@ -15,7 +15,7 @@ from __future__ import annotations
 import numpy as np
 import polars as pl
 
-from jkp_data.aux_functions import bo_false, fl_none, safe_div, sub_sas, sum_sas
+from jkp.data.aux_functions import bo_false, fl_none, safe_div, sub_sas, sum_sas
 
 # safe_div modes:
 #   1 = protect zero denominator (den != 0)

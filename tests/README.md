@@ -90,7 +90,7 @@ import numpy as np
 import pytest
 
 # Import the functions you're testing
-from jkp_data.aux_functions import my_function, another_function
+from jkp.data.aux_functions import my_function, another_function
 
 
 class TestMyFunction:
@@ -402,7 +402,7 @@ def test_my_dataframe_function(self):
 Many utility functions return Polars expressions rather than DataFrames. Test these within a DataFrame context:
 
 ```python
-from jkp_data.aux_functions import safe_div
+from jkp.data.aux_functions import safe_div
 
 def test_safe_div_in_dataframe(self):
     df = pl.DataFrame({
@@ -466,7 +466,7 @@ Fixtures defined in `conftest.py` are available to all tests automatically. Fixt
 
 ### "Module not found" errors
 
-The `jkp_data` package is installed as an editable package via `uv sync`. If you get import errors:
+The `jkp.data` package is installed as an editable package via `uv sync`. If you get import errors:
 
 ```bash
 # Make sure you're running from the repository root
@@ -502,7 +502,7 @@ After running tests, you'll see a coverage report like this:
 ```
 Name                         Stmts   Miss Branch BrPart  Cover   Missing
 ------------------------------------------------------------------------
-src/jkp_data/aux_functions.py  1373   1071    136      5    21%   41-62, 79-83, ...
+src/jkp/data/aux_functions.py  1373   1071    136      5    21%   41-62, 79-83, ...
 ```
 
 The columns mean:

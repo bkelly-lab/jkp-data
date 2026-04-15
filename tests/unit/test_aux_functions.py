@@ -13,7 +13,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from jkp_data.aux_functions import aug_msf_v2, gen_crsp_sf
+from jkp.data.aux_functions import aug_msf_v2, gen_crsp_sf
 
 
 def _write_lookup_tables(raw_tables: Path) -> None:

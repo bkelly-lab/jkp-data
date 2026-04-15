@@ -15,11 +15,11 @@ For complete setup and contribution instructions, see [CONTRIBUTING.md](CONTRIBU
 uv sync
 
 # Run linting
-uv run ruff check src/jkp_data/ tests/
-uv run ruff format --check src/jkp_data/ tests/
+uv run ruff check src/jkp/data/ tests/
+uv run ruff format --check src/jkp/data/ tests/
 
 # Run type checking (informational, not blocking in CI)
-uv run pyright src/jkp_data/
+uv run pyright src/jkp/data/
 
 # Run all unit tests
 uv run pytest tests/unit/
@@ -45,7 +45,7 @@ jkp connect --reset                 # reset stored credentials
 
 The pipeline has two entry points that run sequentially:
 
-**`src/jkp_data/main.py`** produces stock returns and firm characteristics:
+**`src/jkp/data/main.py`** produces stock returns and firm characteristics:
 1. Download raw data from WRDS (CRSP, Compustat)
 2. Prepare and merge data sources (augmented monthly stock file, market cap/trading info)
 3. Classify stocks by industry (Fama-French 49) and size (NYSE quintile cutoffs)
@@ -53,14 +53,14 @@ The pipeline has two entry points that run sequentially:
 5. Calculate rolling daily metrics (volatility, beta, skewness) across 21d/126d/252d/1260d windows
 6. Save outputs as parquet files to `data/processed/`
 
-**`src/jkp_data/portfolio.py`** constructs factor portfolios from the characteristics output by `main.py`, using ECDF ranking and value-weighting by market cap.
+**`src/jkp/data/portfolio.py`** constructs factor portfolios from the characteristics output by `main.py`, using ECDF ranking and value-weighting by market cap.
 
 ### Key source files
 
-- `src/jkp_data/main.py` — Pipeline orchestration; calls functions from `aux_functions` in sequence
-- `src/jkp_data/aux_functions.py` — Core library: all characteristic calculations, data transformations, and I/O utilities
-- `src/jkp_data/portfolio.py` — Standalone factor portfolio construction script
-- `src/jkp_data/wrds_credentials.py` — Keyring-based WRDS credential management
+- `src/jkp/data/main.py` — Pipeline orchestration; calls functions from `aux_functions` in sequence
+- `src/jkp/data/aux_functions.py` — Core library: all characteristic calculations, data transformations, and I/O utilities
+- `src/jkp/data/portfolio.py` — Standalone factor portfolio construction script
+- `src/jkp/data/wrds_credentials.py` — Keyring-based WRDS credential management
 
 ### Data flow
 
@@ -140,7 +140,7 @@ Additional Claude Code-specific steps when making changes:
 4. **Verify before opening a PR:**
    - All existing tests pass: `uv run pytest tests/unit/`
    - New functions have corresponding unit tests (use the test-scaffolder agent if needed)
-   - Code passes lint and format checks: `uv run ruff check src/jkp_data/ tests/ && uv run ruff format --check src/jkp_data/ tests/`
+   - Code passes lint and format checks: `uv run ruff check src/jkp/data/ tests/ && uv run ruff format --check src/jkp/data/ tests/`
    - Changed code follows project conventions: run `/review-code`
 
 5. **Open a pull request** — Reference the issue in the PR description. The PR template will guide you through the required sections.

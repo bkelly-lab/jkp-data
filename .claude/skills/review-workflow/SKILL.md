@@ -116,7 +116,7 @@ Run tests and linting on the PR's changed files as a concrete verification step 
 
 2. Run linter on changed production code (use `--directory` to target the worktree without `cd`):
    ```
-   uv run --directory ../jkp-data-review-pr<PR> --group lint ruff check <changed .py files in src/jkp_data/>
+   uv run --directory ../jkp-data-review-pr<PR> --group lint ruff check <changed .py files in src/jkp/data/>
    ```
 
 3. If the PR includes new or changed test files, run them:

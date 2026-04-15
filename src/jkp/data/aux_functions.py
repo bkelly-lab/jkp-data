@@ -79,7 +79,7 @@ def setup_folder_structure():
     Output:
         Folders created on disk (no return value).
     """
-    os.chdir(os.path.join(os.path.dirname(__file__), "..", "..", "data/interim"))
+    os.chdir(os.path.join(os.path.dirname(__file__), "..", "..", "..", "data/interim"))
     os.system(
         "mkdir -p raw_data_dfs ../raw/raw_tables ../processed/characteristics ../processed/return_data ../processed/accounting_data ../processed/other_output"
     )
@@ -2560,7 +2560,7 @@ def ff_ind_class(data_path: str) -> None:
     """
     # The parser can handle other Fama-French classifications
     # (e.g., Siccodes5.txt through Siccodes48.txt).
-    raw_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data", "raw")
+    raw_dir = os.path.join(os.path.dirname(__file__), "..", "..", "..", "data", "raw")
     mapping = _parse_siccodes_file(os.path.join(raw_dir, "Siccodes49.txt"), label="ff49").lazy()
     data = pl.scan_parquet(data_path)
     data.join(mapping, on="sic", how="left").collect().write_parquet("__msf_world3.parquet")
@@ -7733,7 +7733,7 @@ def save_main_data():
     data.select(pl.all().shrink_dtype()).sink_parquet("world_data_output_temp.parquet")
     os.replace("world_data_output_temp.parquet", "world_data_output.parquet")
 
-    os.chdir(os.path.join(os.path.dirname(__file__), "..", "..", "data/processed"))
+    os.chdir(os.path.join(os.path.dirname(__file__), "..", "..", "..", "data/processed"))
 
     OUT_DIR = "characteristics"
     con = duckdb.connect()

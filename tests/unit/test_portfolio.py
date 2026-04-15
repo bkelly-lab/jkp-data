@@ -10,11 +10,11 @@ class TestOutputFormatIntegration:
         """run_portfolio() defaults to parquet format."""
         from unittest.mock import patch
 
-        from jkp_data.portfolio import run_portfolio
+        from jkp.data.portfolio import run_portfolio
 
         # configure_output_format raises to bail out early — proves it was called
         with patch(
-            "jkp_data.portfolio.configure_output_format",
+            "jkp.data.portfolio.configure_output_format",
             side_effect=SystemExit("bail"),
         ) as mock_configure:
             with pytest.raises(SystemExit):
@@ -25,10 +25,10 @@ class TestOutputFormatIntegration:
         """run_portfolio(output_format='csv') forwards 'csv' to configure_output_format."""
         from unittest.mock import patch
 
-        from jkp_data.portfolio import run_portfolio
+        from jkp.data.portfolio import run_portfolio
 
         with patch(
-            "jkp_data.portfolio.configure_output_format",
+            "jkp.data.portfolio.configure_output_format",
             side_effect=SystemExit("bail"),
         ) as mock_configure:
             with pytest.raises(SystemExit):

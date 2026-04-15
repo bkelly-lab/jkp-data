@@ -76,7 +76,7 @@ body:
       render: shell
       placeholder: |
         Traceback (most recent call last):
-          File "src/jkp_data/main.py", line X, in run_pipeline
+          File "src/jkp/data/main.py", line X, in run_pipeline
             ...
         Error: ...
     validations:

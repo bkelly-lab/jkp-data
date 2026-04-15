@@ -46,16 +46,16 @@ We use [ruff](https://docs.astral.sh/ruff/) for linting and formatting. Before s
 
 ```bash
 # Check for lint errors
-ruff check src/jkp_data/ tests/
+ruff check src/jkp/data/ tests/
 
 # Auto-fix what can be fixed
-ruff check --fix src/jkp_data/ tests/
+ruff check --fix src/jkp/data/ tests/
 
 # Check formatting
-ruff format --check src/jkp_data/ tests/
+ruff format --check src/jkp/data/ tests/
 
 # Auto-format
-ruff format src/jkp_data/ tests/
+ruff format src/jkp/data/ tests/
 ```
 
 ## Type Checking
@@ -63,7 +63,7 @@ ruff format src/jkp_data/ tests/
 We use [pyright](https://github.com/microsoft/pyright) for static type checking:
 
 ```bash
-pyright src/jkp_data/
+pyright src/jkp/data/
 ```
 
 Pyright runs in CI but does not currently block PRs. It surfaces potential bugs and type inconsistencies. If you see errors related to your changes, consider fixing them.
@@ -81,8 +81,8 @@ Pyright runs in CI but does not currently block PRs. It surfaces potential bugs 
 
 4. **Run the linter** and fix any issues:
    ```bash
-   ruff check src/jkp_data/ tests/
-   ruff format --check src/jkp_data/ tests/
+   ruff check src/jkp/data/ tests/
+   ruff format --check src/jkp/data/ tests/
    ```
 
 5. **Push and open a PR**. The CI pipeline will run automatically.
@@ -96,14 +96,15 @@ Pyright runs in CI but does not currently block PRs. It surfaces potential bugs 
 ```
 jkp-data/
 ├── src/
-│   └── jkp_data/            # Main source package
-│       ├── __init__.py
-│       ├── cli.py           # CLI entry point (jkp command)
-│       ├── aux_functions.py # Core utility functions and characteristics
-│       ├── main.py          # Pipeline orchestration
-│       ├── portfolio.py     # Factor portfolio construction
-│       ├── config.py        # Pipeline configuration
-│       └── wrds_credentials.py # WRDS credential management
+│   └── jkp/                    # Namespace package (no __init__.py)
+│       └── data/               # Main source package
+│           ├── __init__.py
+│           ├── cli.py           # CLI entry point (jkp command)
+│           ├── aux_functions.py # Core utility functions and characteristics
+│           ├── main.py          # Pipeline orchestration
+│           ├── portfolio.py     # Factor portfolio construction
+│           ├── config.py        # Pipeline configuration
+│           └── wrds_credentials.py # WRDS credential management
 ├── tests/                   # Test suite
 │   ├── conftest.py          # Shared fixtures
 │   └── unit/                # Unit tests

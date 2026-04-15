@@ -20,7 +20,7 @@ from unittest.mock import MagicMock, patch
 import polars as pl
 import pytest
 
-from jkp_data.config import END_DATE, MAIN_FILTERS
+from jkp.data.config import END_DATE, MAIN_FILTERS
 
 # =============================================================================
 # Tests: config
@@ -78,8 +78,8 @@ class TestDownloadWrdsTable:
     def _patch_helpers(self):
         """Patch get_columns and build_projection for all tests."""
         with (
-            patch("jkp_data.aux_functions.get_columns", return_value=["col_a", "col_b"]),
-            patch("jkp_data.aux_functions.build_projection", return_value="*"),
+            patch("jkp.data.aux_functions.get_columns", return_value=["col_a", "col_b"]),
+            patch("jkp.data.aux_functions.build_projection", return_value="*"),
         ):
             yield
 
@@ -89,7 +89,7 @@ class TestDownloadWrdsTable:
         end_date: date | None = None,
     ) -> str:
         """Call download_wrds_table with a mock conn and return the executed SQL."""
-        from jkp_data.aux_functions import download_wrds_table
+        from jkp.data.aux_functions import download_wrds_table
 
         mock_conn = MagicMock()
         download_wrds_table(
@@ -160,14 +160,14 @@ class TestDownloadRawDataTables:
     def captured_calls(self):
         """Run download_raw_data_tables and capture all download_wrds_table calls."""
         with (
-            patch("jkp_data.aux_functions.gen_wrds_connection_info", return_value="host=test"),
-            patch("jkp_data.aux_functions.duckdb") as mock_duckdb,
-            patch("jkp_data.aux_functions.download_wrds_table") as mock_download,
+            patch("jkp.data.aux_functions.gen_wrds_connection_info", return_value="host=test"),
+            patch("jkp.data.aux_functions.duckdb") as mock_duckdb,
+            patch("jkp.data.aux_functions.download_wrds_table") as mock_download,
         ):
             mock_conn = MagicMock()
             mock_duckdb.connect.return_value = mock_conn
 
-            from jkp_data.aux_functions import download_raw_data_tables
+            from jkp.data.aux_functions import download_raw_data_tables
 
             download_raw_data_tables("user", "pass", end_date=date(2025, 12, 31))
             yield mock_download.call_args_list
@@ -246,7 +246,7 @@ class TestSaveMainData:
         """save_main_data should accept no arguments (end_date removed)."""
         import inspect
 
-        from jkp_data.aux_functions import save_main_data
+        from jkp.data.aux_functions import save_main_data
 
         # measure_time wraps the function; inspect the inner function via closure
         inner_func = save_main_data.__closure__[0].cell_contents
@@ -259,15 +259,15 @@ class TestSaveMainData:
         """Chdir to tmp_path, run save_main_data, and restore cwd."""
         import os
 
-        from jkp_data.aux_functions import save_main_data
+        from jkp.data.aux_functions import save_main_data
 
         original_cwd = os.getcwd()
         os.chdir(str(tmp_path))
         try:
             with (
-                patch("jkp_data.aux_functions.os.chdir"),
-                patch("jkp_data.aux_functions.os.system"),
-                patch("jkp_data.aux_functions.duckdb") as mock_duckdb,
+                patch("jkp.data.aux_functions.os.chdir"),
+                patch("jkp.data.aux_functions.os.system"),
+                patch("jkp.data.aux_functions.duckdb") as mock_duckdb,
             ):
                 mock_duckdb.connect.return_value = MagicMock()
                 save_main_data()
@@ -371,7 +371,7 @@ class TestFilterFunctions:
         """Write test data, run a filter function, and return the result."""
         import os
 
-        import jkp_data.aux_functions as aux_functions
+        import jkp.data.aux_functions as aux_functions
 
         data = self._make_test_data()
         data.write_parquet(tmp_path / source)
@@ -423,7 +423,7 @@ class TestFilterFunctions:
         """Source file should be unchanged after filtering."""
         import os
 
-        import jkp_data.aux_functions as aux_functions
+        import jkp.data.aux_functions as aux_functions
 
         data = self._make_test_data()
         data.write_parquet(tmp_path / "world_data.parquet")
@@ -442,7 +442,7 @@ class TestFilterFunctions:
         """Running filter twice should produce the same result."""
         import os
 
-        import jkp_data.aux_functions as aux_functions
+        import jkp.data.aux_functions as aux_functions
 
         data = self._make_test_data()
         data.write_parquet(tmp_path / "world_data.parquet")
@@ -463,7 +463,7 @@ class TestFilterFunctions:
         """When all rows pass the filter, all should be retained."""
         import os
 
-        import jkp_data.aux_functions as aux_functions
+        import jkp.data.aux_functions as aux_functions
 
         data = pl.DataFrame(
             {
@@ -494,7 +494,7 @@ class TestFilterFunctions:
         """When no rows pass the filter, output should be empty."""
         import os
 
-        import jkp_data.aux_functions as aux_functions
+        import jkp.data.aux_functions as aux_functions
 
         data = pl.DataFrame(
             {

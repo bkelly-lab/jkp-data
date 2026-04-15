@@ -65,7 +65,7 @@ class TestFunctionName:
 - **DataFrames:** `pl.DataFrame({"col": [values]})` — small, focused test data
 - **Numerical assertions:** Use `ToleranceSpec.STANDARD` by default; `TIGHT` for exact, `LOOSE`/`VERY_LOOSE` for inherently imprecise calculations
 - **Null handling tests are mandatory** — verify behavior with partial and complete null inputs
-- **Import from:** `from jkp_data.aux_functions import <function>`
+- **Import from:** `from jkp.data.aux_functions import <function>`
 - **Markers:** Do not add explicit `@pytest.mark.unit`; tests under `tests/unit/` are auto-marked via `tests/conftest.py`.
 
 ## What to generate

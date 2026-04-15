@@ -40,7 +40,7 @@
 ## Checklist
 
 - [ ] I have run the tests locally (`pytest`)
-- [ ] I have run the linter locally (`ruff check src/jkp_data/ tests/`)
+- [ ] I have run the linter locally (`ruff check src/jkp/data/ tests/`)
 - [ ] I have verified the pipeline runs successfully after my changes
 - [ ] I have updated documentation if needed
 - [ ] I have considered whether this change affects factor calculations

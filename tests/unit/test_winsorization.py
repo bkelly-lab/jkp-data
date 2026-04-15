@@ -11,7 +11,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from jkp_data.aux_functions import (
+from jkp.data.aux_functions import (
     add_cutoffs_and_winsorize,
     drop_non_trading_days,
     load_mkt_returns_params,
