@@ -787,10 +787,16 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
     )
 
     # Extract Necessary Information
-    # Read Factor details from Excel file
+    # Read Factor details from bundled Excel file
+    from .paths import (
+        get_cluster_labels_path,
+        get_country_classification_path,
+        get_factor_details_path,
+    )
+
     char_info = (
         pl.read_excel(
-            "https://github.com/bkelly-lab/ReplicationCrisis/raw/master/GlobalFactors/Factor%20Details.xlsx",
+            get_factor_details_path(),
             sheet_name="details",
         )
         .filter(pl.col("abr_jkp").is_not_null())
@@ -798,7 +804,6 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
     )
 
     # Read country classification details from bundled Excel file
-    from .paths import get_cluster_labels_path, get_country_classification_path
 
     country_classification = pl.read_excel(
         get_country_classification_path(),
@@ -1384,7 +1389,7 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
                     write_dataframe(filtered_df_daily, file_path_daily)
 
     # Convert to CSV if configured
-    convert_outputs_to_csv()
+    convert_outputs_to_csv(processed_dir=data_path)
 
     print(
         f"End            : {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))}",

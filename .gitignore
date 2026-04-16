@@ -6,6 +6,8 @@ __pycache__/
 *$py.class
 *.pyo
 *.egg-info/
+build/
+dist/
 *.log
 *.tmp
 *.bak

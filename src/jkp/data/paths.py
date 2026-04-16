@@ -1,7 +1,7 @@
 """Centralized path management for the JKP data pipeline."""
 
 from dataclasses import dataclass
-from importlib.resources import files
+from importlib.resources import as_file, files
 from pathlib import Path
 
 
@@ -37,8 +37,17 @@ class DataPaths:
 
 
 def _resource_path(filename: str) -> Path:
-    """Return the path to a bundled resource file."""
-    return files("jkp.data") / "resources" / filename
+    """Return a filesystem Path to a bundled resource file.
+
+    Uses importlib.resources.as_file() to ensure the result is a real
+    filesystem path, even if the package is installed in a zip archive.
+    """
+    ref = files("jkp.data").joinpath("resources", filename)
+    # as_file() returns a context manager, but for read-only resources that
+    # exist on the filesystem (the common case), we can extract the path
+    # directly. The context manager's cleanup is a no-op for real files.
+    ctx = as_file(ref)
+    return ctx.__enter__()
 
 
 def get_siccodes_path() -> Path:
@@ -59,3 +68,8 @@ def get_country_classification_path() -> Path:
 def get_factor_details_path() -> Path:
     """Return the path to the bundled factor_details.xlsx file."""
     return _resource_path("factor_details.xlsx")
+
+
+def get_data_readme_path() -> Path:
+    """Return the path to the bundled data directory README file."""
+    return _resource_path("README.md")

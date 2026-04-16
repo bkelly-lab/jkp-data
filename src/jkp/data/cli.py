@@ -1,8 +1,17 @@
 """JKP Data CLI - Factor data generation pipeline."""
 
+from enum import Enum
 from pathlib import Path
 
 import typer
+
+
+class OutputFormat(str, Enum):
+    """Supported output file formats."""
+
+    parquet = "parquet"
+    csv = "csv"
+
 
 app = typer.Typer(
     name="jkp",
@@ -22,9 +31,21 @@ def build(
         "-p",
         help="Use a single persistent WRDS connection (reduces MFA prompts on NAT-rotated networks).",
     ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        "-f",
+        help="Overwrite existing data in output directory without prompting.",
+    ),
 ) -> None:
     """Run the full data generation pipeline."""
     from .main import run_pipeline
+
+    if not force and output_dir.exists() and any(output_dir.iterdir()):
+        typer.confirm(
+            f"Output directory '{output_dir}' already contains data. Overwrite?",
+            abort=True,
+        )
 
     run_pipeline(persistent_connection=persistent_connection, output_dir=output_dir)
 
@@ -34,16 +55,16 @@ def portfolio(
     output_dir: Path = typer.Argument(
         help="Directory containing pipeline output (must match output_dir from build).",
     ),
-    output_format: str = typer.Option(
-        "parquet",
+    output_format: OutputFormat = typer.Option(
+        OutputFormat.parquet,
         "--output-format",
-        help="Output file format (parquet or csv).",
+        help="Output file format.",
     ),
 ) -> None:
     """Generate factor portfolios from characteristics data."""
     from .portfolio import run_portfolio
 
-    run_portfolio(output_format=output_format, output_dir=output_dir)
+    run_portfolio(output_format=output_format.value, output_dir=output_dir)
 
 
 @app.command()

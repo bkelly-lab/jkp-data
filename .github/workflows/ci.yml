@@ -95,6 +95,13 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen --group test
 
+      - name: CLI smoke test
+        run: |
+          uv run jkp --help
+          uv run jkp build --help
+          uv run jkp portfolio --help
+          uv run jkp connect --help
+
       - name: Run unit tests
         run: |
           uv run pytest tests/unit/ \

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import datetime
 import functools
 import operator
@@ -7,6 +9,10 @@ import time
 from datetime import date
 from math import exp, sqrt
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .paths import DataPaths
 
 import duckdb
 import ibis
@@ -68,18 +74,23 @@ def measure_time(func):
 
 
 @measure_time
-def setup_folder_structure(paths):
+def setup_folder_structure(paths: DataPaths) -> None:
     """
     Description:
         Create the pipeline’s folder structure under the user-specified output directory.
 
     Steps:
         1) Create directories: raw_tables, raw_data_dfs, characteristics, return_data, accounting_data, other_output, portfolios.
-        2) Change working directory to interim_dir for subsequent pipeline functions.
+        2) Copy the data README (license and citation info) into the output directory.
+        3) Change working directory to interim_dir for subsequent pipeline functions.
 
     Output:
         Folders created on disk (no return value). Working directory set to paths.interim_dir.
     """
+    import shutil
+
+    from .paths import get_data_readme_path
+
     paths.interim_dir.mkdir(parents=True, exist_ok=True)
     (paths.interim_dir / "raw_data_dfs").mkdir(exist_ok=True)
     paths.raw_tables_dir.mkdir(parents=True, exist_ok=True)
@@ -90,6 +101,7 @@ def setup_folder_structure(paths):
     (paths.processed_dir / "accounting_data").mkdir(parents=True, exist_ok=True)
     (paths.processed_dir / "other_output").mkdir(parents=True, exist_ok=True)
     (paths.processed_dir / "portfolios").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(get_data_readme_path(), paths.base_dir / "README.md")
     os.chdir(paths.interim_dir)
 
 
@@ -7712,7 +7724,7 @@ def filter_world():
 
 
 @measure_time
-def save_main_data(paths=None):
+def save_main_data(paths: DataPaths) -> None:
     """
     Description:
         Compute lagged market equity and export country-level files.
