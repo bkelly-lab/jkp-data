@@ -21,6 +21,8 @@ This document explains how to set up a development environment and contribute co
 
    This installs the base dependencies plus tools for testing (pytest, pytest-cov) and linting (ruff, pyright).
 
+> **Note:** The commands below assume the project's dependencies are available in your current environment. The exact invocation may vary slightly depending on your package manager — for example, you may need to activate a virtualenv first, or prefix commands with `uv run` if using uv.
+
 ## Running Tests
 
 Tests live in the `tests/` directory. Run them with:
