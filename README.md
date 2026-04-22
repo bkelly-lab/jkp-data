@@ -21,11 +21,11 @@ This repo contains Python code to generate the global dataset of factor returns,
 
    - To save your WRDS credentials, navigate to the `jkp-data/` folder and run:
      ```sh
-     uv run python code/wrds_credentials.py
+     jkp connect
      ```
      Kindly follow the prompts.
 
-     Note: If you need to change your password or credentials, run `uv run python code/wrds_credentials.py --reset` and then `uv run python code/wrds_credentials.py`
+     Note: If you need to change your password or credentials, run `jkp connect --reset` and then `jkp connect`
 
 3. **Run the script**
 
@@ -41,36 +41,33 @@ This repo contains Python code to generate the global dataset of factor returns,
 
      In an interactive session, run:
      ```sh
-     uv run python code/main.py
+     jkp build data/
      ```
      to create the stock returns and firm characteristics, and
      ```sh
-     uv run python code/portfolio.py
+     jkp portfolio data/
      ```
      to create the factor returns.
 
-   **IMPORTANT:** When starting the code, you may be prompted to grant access to WRDS using two-factor authentication, for example via a Duo notification. You need to approve this request, as the program will otherwise fail. After a few seconds or minutes, you should see data being created in `data/raw`. If that is not the case, please check your internet connection or credentials.
+   **IMPORTANT:** When starting the code, you may be prompted to grant access to WRDS using two-factor authentication, for example via a Duo notification. You need to approve this request, as the program will otherwise fail. After a few seconds or minutes, you should see data being created in the output directory. If that is not the case, please check your internet connection or credentials.
 
-When the code is finished, you can find the output in:
-```
-data/processed/
-```
+When the code is finished, you can find the output in the `processed/` subdirectory of your output directory (e.g. `data/processed/`).
 Please see the release notes (`documentation/release_notes.html`) for a description of the output files and a comparison between the output of the SAS/R codebase and the new Python codebase.
 
 ## Notes
 - By default, output files are written in Parquet format. To output CSV files instead (with quoted strings to preserve leading zeros in identifiers like `gvkey`), run:
   ```sh
-  uv run python code/portfolio.py --output-format csv
+  jkp portfolio data/ --output-format csv
   ```
 
-- By default, the end date for the data in the code is 2024-12-31, which you can change by editing the `end_date` assignment near the top of `code/main.py`. For example, for May 6, 1992, use: `end_date = pl.datetime(1992, 5, 6)`.
+- By default, the end date for the data in the code is 2025-12-31, which you can change by editing the `end_date` assignment in `src/jkp/data/config.py`. For example, for May 6, 1992, use: `END_DATE = date(1992, 5, 6)`.
 
 - **Persistent WRDS Connection**: If you're running on an HPC cluster with NAT IP rotation (such as Yale's Bouchet cluster), you may receive many MFA prompts during data download. This happens because each database query creates a new TCP connection, and the NAT gateway assigns a random outbound IP to each connection. WRDS sees these as connections from different locations and triggers MFA for each.
 
   To avoid this, use the `--persistent-connection` flag, which maintains a single database connection throughout the download process:
   ```sh
   # Interactive session
-  uv run python code/main.py --persistent-connection
+  jkp build data/ --persistent-connection
 
   # Slurm job (set environment variable)
   sbatch --export=ALL,PERSISTENT_WRDS_CONNECTION=1 slurm/submit_job_som_hpc.slurm

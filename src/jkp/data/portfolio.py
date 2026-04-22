@@ -1,52 +1,23 @@
-import argparse
 import os
 import time
 import warnings
+from pathlib import Path
 
 import polars as pl
-from config import END_DATE
-from output_writer import (
-    VALID_OUTPUT_FORMATS,
+from tqdm import tqdm
+
+from .config import END_DATE
+from .output_writer import (
     configure_output_format,
     convert_outputs_to_csv,
     write_dataframe,
 )
-from tqdm import tqdm
 
 warnings.filterwarnings(
     "ignore",
     category=UserWarning,
     message=r"Sortedness.*by.*provided",
 )
-
-
-def parse_args() -> argparse.Namespace:
-    """Parse command line arguments for portfolio generation.
-
-    Description:
-        Parse CLI arguments for output format selection.
-    Steps:
-        1) Create argument parser with output-format option.
-        2) Parse and return the arguments.
-    Output:
-        argparse.Namespace with output_format attribute.
-    """
-    parser = argparse.ArgumentParser(
-        description="Generate JKP portfolio data.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  uv run python code/portfolio.py                      # Default: parquet output
-  uv run python code/portfolio.py --output-format csv  # CSV output with quoted strings
-        """,
-    )
-    parser.add_argument(
-        "--output-format",
-        choices=VALID_OUTPUT_FORMATS,
-        default="parquet",
-        help="Output file format (default: parquet)",
-    )
-    return parser.parse_args()
 
 
 # =============================================================================
@@ -603,8 +574,8 @@ def regional_data(
 # =============================================================================
 
 
-def main() -> None:
-    """Main entry point for JKP portfolio generation.
+def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
+    """Run JKP portfolio generation.
 
     Description:
         Orchestrate portfolio construction: parse arguments, configure output
@@ -618,14 +589,11 @@ def main() -> None:
     Output:
         Portfolio files written to data/processed/portfolios/.
     """
-    args = parse_args()
-
-    # Configure output format
-    configure_output_format(args.output_format)
+    configure_output_format(output_format)
 
     # Setting data path and output path
-    data_path = "data/processed"
-    output_path = "data/processed/portfolios"
+    data_path = str(output_dir / "processed")
+    output_path = str(output_dir / "processed" / "portfolios")
 
     # Get list of countries from characteristics files
     countries = []
@@ -819,19 +787,26 @@ def main() -> None:
     )
 
     # Extract Necessary Information
-    # Read Factor details from Excel file
+    # Read Factor details from bundled Excel file
+    from .paths import (
+        get_cluster_labels_path,
+        get_country_classification_path,
+        get_factor_details_path,
+    )
+
     char_info = (
         pl.read_excel(
-            "https://github.com/bkelly-lab/ReplicationCrisis/raw/master/GlobalFactors/Factor%20Details.xlsx",
+            get_factor_details_path(),
             sheet_name="details",
         )
         .filter(pl.col("abr_jkp").is_not_null())
         .select([pl.col("abr_jkp").alias("characteristic"), pl.col("direction").cast(pl.Int32)])
     )
 
-    # Read country classification details from Excel file
+    # Read country classification details from bundled Excel file
+
     country_classification = pl.read_excel(
-        "https://github.com/bkelly-lab/ReplicationCrisis/raw/master/GlobalFactors/Country%20Classification.xlsx",
+        get_country_classification_path(),
         sheet_name="countries",
     )
 
@@ -867,9 +842,9 @@ def main() -> None:
         }
     )
 
-    # Read cluster labels details from Excel file
+    # Read cluster labels from bundled CSV file
     cluster_labels = pl.read_csv(
-        "https://raw.githubusercontent.com/bkelly-lab/ReplicationCrisis/refs/heads/master/GlobalFactors/Cluster%20Labels.csv",
+        get_cluster_labels_path(),
         infer_schema_length=int(1e10),
     )
 
@@ -1414,13 +1389,9 @@ def main() -> None:
                     write_dataframe(filtered_df_daily, file_path_daily)
 
     # Convert to CSV if configured
-    convert_outputs_to_csv()
+    convert_outputs_to_csv(processed_dir=data_path)
 
     print(
         f"End            : {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))}",
         flush=True,
     )
-
-
-if __name__ == "__main__":
-    main()

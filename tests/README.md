@@ -10,22 +10,22 @@ The test suite uses [pytest](https://docs.pytest.org/), a widely-used Python tes
 
 ```bash
 # Run all tests
-uv run pytest
+pytest
 
 # Run only unit tests
-uv run pytest tests/unit/
+pytest tests/unit/
 
 # Run with verbose output (shows each test name as it runs)
-uv run pytest -v
+pytest -v
 
 # Run a specific test file
-uv run pytest tests/unit/test_expressions.py
+pytest tests/unit/test_expressions.py
 
 # Run a specific test class
-uv run pytest tests/unit/test_expressions.py::TestSumSas
+pytest tests/unit/test_expressions.py::TestSumSas
 
 # Run a specific test method
-uv run pytest tests/unit/test_expressions.py::TestSumSas::test_sum_sas_both_non_null
+pytest tests/unit/test_expressions.py::TestSumSas::test_sum_sas_both_non_null
 ```
 
 If tests fail, pytest will show you which assertions failed and why. The `-v` (verbose) flag is helpful when debugging because it shows each test name as it executes.
@@ -90,7 +90,7 @@ import numpy as np
 import pytest
 
 # Import the functions you're testing
-from aux_functions import my_function, another_function
+from jkp.data.aux_functions import my_function, another_function
 
 
 class TestMyFunction:
@@ -339,10 +339,10 @@ To run only tests with a specific marker, use the `-m` flag:
 
 ```bash
 # Run only unit tests
-uv run pytest -m unit
+pytest -m unit
 
 # Run everything except slow tests (if we had them)
-uv run pytest -m "not slow"
+pytest -m "not slow"
 ```
 
 To manually mark a test:
@@ -370,7 +370,7 @@ If tests fail, the PR cannot be merged. This protects the main branch from broke
 To avoid surprises, **always run tests locally before pushing**:
 
 ```bash
-uv run pytest tests/unit/ -v
+pytest tests/unit/ -v
 ```
 
 ## Common Patterns
@@ -402,7 +402,7 @@ def test_my_dataframe_function(self):
 Many utility functions return Polars expressions rather than DataFrames. Test these within a DataFrame context:
 
 ```python
-from aux_functions import safe_div
+from jkp.data.aux_functions import safe_div
 
 def test_safe_div_in_dataframe(self):
     df = pl.DataFrame({
@@ -466,12 +466,12 @@ Fixtures defined in `conftest.py` are available to all tests automatically. Fixt
 
 ### "Module not found" errors
 
-The test configuration adds the `code/` directory to the Python path. If you still get import errors:
+The `jkp.data` package is installed as an editable package via `uv sync`. If you get import errors:
 
 ```bash
 # Make sure you're running from the repository root
 cd /path/to/jkp-data
-uv run pytest tests/unit/
+pytest tests/unit/
 ```
 
 ### Tests pass locally but fail in CI
@@ -502,7 +502,7 @@ After running tests, you'll see a coverage report like this:
 ```
 Name                         Stmts   Miss Branch BrPart  Cover   Missing
 ------------------------------------------------------------------------
-code/aux_functions.py         1373   1071    136      5    21%   41-62, 79-83, ...
+src/jkp/data/aux_functions.py  1373   1071    136      5    21%   41-62, 79-83, ...
 ```
 
 The columns mean:
@@ -529,7 +529,7 @@ For this repository:
 For a detailed, browsable coverage report:
 
 ```bash
-uv run pytest --cov-report=html
+pytest --cov-report=html
 
 # Open the report
 open htmlcov/index.html  # macOS

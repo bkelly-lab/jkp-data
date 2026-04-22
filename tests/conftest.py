@@ -10,7 +10,6 @@ Paper Reference: Jensen, Kelly, Pedersen (2023), "Is There a Replication Crisis 
 
 from __future__ import annotations
 
-import sys
 from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -18,10 +17,6 @@ from typing import TYPE_CHECKING
 import numpy as np
 import polars as pl
 import pytest
-
-# Add the code directory to the path so we can import from it
-CODE_DIR = Path(__file__).parent.parent / "code"
-sys.path.insert(0, str(CODE_DIR))
 
 if TYPE_CHECKING:
     from collections.abc import Generator
