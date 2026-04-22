@@ -2,17 +2,12 @@
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(_REPO_ROOT / "code"))
-
-from portfolio import portfolios  # noqa: E402
-
-from tests.unit.test_portfolio_parity import (  # noqa: E402
+from jkp.data.portfolio import portfolios
+from tests.unit.test_portfolio_parity import (
     SYNTHETIC_CHARS,
     _assert_frames_parity,
     _make_cutoffs,
@@ -20,40 +15,32 @@ from tests.unit.test_portfolio_parity import (  # noqa: E402
 )
 
 
-class TestParseArgs:
-    """Tests for parse_args function."""
+class TestOutputFormatIntegration:
+    """Tests that run_portfolio() forwards output_format to configure_output_format."""
 
-    def test_default_format_is_parquet(self, monkeypatch):
-        """Default output format should be parquet when no args provided."""
-        monkeypatch.setattr("sys.argv", ["portfolio.py"])
-        from portfolio import parse_args
+    def test_default_format_is_parquet(self, tmp_path):
+        """run_portfolio() defaults to parquet format."""
+        from jkp.data.portfolio import run_portfolio
 
-        args = parse_args()
-        assert args.output_format == "parquet"
+        with patch(
+            "jkp.data.portfolio.configure_output_format",
+            side_effect=SystemExit("bail"),
+        ) as mock_configure:
+            with pytest.raises(SystemExit):
+                run_portfolio(output_dir=tmp_path)
+            mock_configure.assert_called_once_with("parquet")
 
-    def test_can_specify_csv_format(self, monkeypatch):
-        """Can specify CSV output format via command line."""
-        monkeypatch.setattr("sys.argv", ["portfolio.py", "--output-format", "csv"])
-        from portfolio import parse_args
+    def test_csv_format_passed_through(self, tmp_path):
+        """run_portfolio(output_format='csv') forwards 'csv' to configure_output_format."""
+        from jkp.data.portfolio import run_portfolio
 
-        args = parse_args()
-        assert args.output_format == "csv"
-
-    def test_can_specify_parquet_format(self, monkeypatch):
-        """Can explicitly specify parquet output format."""
-        monkeypatch.setattr("sys.argv", ["portfolio.py", "--output-format", "parquet"])
-        from portfolio import parse_args
-
-        args = parse_args()
-        assert args.output_format == "parquet"
-
-    def test_invalid_format_raises_error(self, monkeypatch):
-        """Invalid output format raises SystemExit."""
-        monkeypatch.setattr("sys.argv", ["portfolio.py", "--output-format", "json"])
-        from portfolio import parse_args
-
-        with pytest.raises(SystemExit):
-            parse_args()
+        with patch(
+            "jkp.data.portfolio.configure_output_format",
+            side_effect=SystemExit("bail"),
+        ) as mock_configure:
+            with pytest.raises(SystemExit):
+                run_portfolio(output_format="csv", output_dir=tmp_path)
+            mock_configure.assert_called_once_with("csv")
 
 
 _TIGHT = {"rtol": 1e-10, "atol": 1e-12}

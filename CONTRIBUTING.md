@@ -13,7 +13,7 @@ This document explains how to set up a development environment and contribute co
 
 2. **Install dependencies**
 
-   We use [uv](https://docs.astral.sh/uv/) for dependency management. Install all development dependencies:
+   Install all development dependencies using your preferred Python package manager. With [uv](https://docs.astral.sh/uv/):
 
    ```bash
    uv sync --group dev --group test --group lint
@@ -21,19 +21,21 @@ This document explains how to set up a development environment and contribute co
 
    This installs the base dependencies plus tools for testing (pytest, pytest-cov) and linting (ruff, pyright).
 
+> **Note:** The commands below assume the project's dependencies are available in your current environment. The exact invocation may vary slightly depending on your package manager — for example, you may need to activate a virtualenv first, or prefix commands with `uv run` if using uv.
+
 ## Running Tests
 
 Tests live in the `tests/` directory. Run them with:
 
 ```bash
 # Run all tests with coverage
-uv run pytest
+pytest
 
 # Run with verbose output
-uv run pytest -v
+pytest -v
 
 # Run a specific test file
-uv run pytest tests/unit/test_expressions.py
+pytest tests/unit/test_expressions.py
 ```
 
 Coverage is enabled by default. After each run, you'll see which lines of code were exercised by tests.
@@ -46,16 +48,16 @@ We use [ruff](https://docs.astral.sh/ruff/) for linting and formatting. Before s
 
 ```bash
 # Check for lint errors
-uv run ruff check code/ tests/
+ruff check src/jkp/data/ tests/
 
 # Auto-fix what can be fixed
-uv run ruff check --fix code/ tests/
+ruff check --fix src/jkp/data/ tests/
 
 # Check formatting
-uv run ruff format --check code/ tests/
+ruff format --check src/jkp/data/ tests/
 
 # Auto-format
-uv run ruff format code/ tests/
+ruff format src/jkp/data/ tests/
 ```
 
 ## Type Checking
@@ -63,7 +65,7 @@ uv run ruff format code/ tests/
 We use [pyright](https://github.com/microsoft/pyright) for static type checking:
 
 ```bash
-uv run pyright code/
+pyright src/jkp/data/
 ```
 
 Pyright runs in CI but does not currently block PRs. It surfaces potential bugs and type inconsistencies. If you see errors related to your changes, consider fixing them.
@@ -76,13 +78,13 @@ Pyright runs in CI but does not currently block PRs. It surfaces potential bugs 
 
 3. **Run tests locally** before pushing:
    ```bash
-   uv run pytest
+   pytest
    ```
 
 4. **Run the linter** and fix any issues:
    ```bash
-   uv run ruff check code/ tests/
-   uv run ruff format --check code/ tests/
+   ruff check src/jkp/data/ tests/
+   ruff format --check src/jkp/data/ tests/
    ```
 
 5. **Push and open a PR**. The CI pipeline will run automatically.
@@ -95,15 +97,21 @@ Pyright runs in CI but does not currently block PRs. It surfaces potential bugs 
 
 ```
 jkp-data/
-├── code/                # Main source code
-│   ├── aux_functions.py # Core utility functions and characteristics
-│   ├── main.py          # Pipeline entry point
-│   └── portfolio.py     # Factor portfolio construction
-├── tests/               # Test suite
-│   ├── conftest.py      # Shared fixtures
-│   └── unit/            # Unit tests
-├── data/                # Data directory (not in git)
-└── documentation/       # Release notes and docs
+├── src/
+│   └── jkp/                    # Namespace package (no __init__.py)
+│       └── data/               # Main source package
+│           ├── __init__.py
+│           ├── cli.py           # CLI entry point (jkp command)
+│           ├── aux_functions.py # Core utility functions and characteristics
+│           ├── main.py          # Pipeline orchestration
+│           ├── portfolio.py     # Factor portfolio construction
+│           ├── config.py        # Pipeline configuration
+│           └── wrds_credentials.py # WRDS credential management
+├── tests/                   # Test suite
+│   ├── conftest.py          # Shared fixtures
+│   └── unit/                # Unit tests
+├── data/                    # Data directory (not in git)
+└── documentation/           # Release notes and docs
 ```
 
 ## Questions

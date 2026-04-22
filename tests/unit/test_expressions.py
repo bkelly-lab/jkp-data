@@ -12,16 +12,10 @@ Paper Reference: Jensen, Kelly, Pedersen (2023), "Is There a Replication Crisis 
 
 from __future__ import annotations
 
-# Import the functions we're testing
-import sys
-from pathlib import Path
-
 import numpy as np
 import polars as pl
 
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "code"))
-
-from aux_functions import bo_false, fl_none, safe_div, sub_sas, sum_sas
+from jkp.data.aux_functions import bo_false, fl_none, safe_div, sub_sas, sum_sas
 
 # safe_div modes:
 #   1 = protect zero denominator (den != 0)
