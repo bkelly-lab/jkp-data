@@ -1057,7 +1057,7 @@ def main() -> None:
         }
     )
 
-    # Read cluster lables details from Excel file
+    # Read cluster labels details from Excel file
     cluster_labels = pl.read_csv(
         "https://raw.githubusercontent.com/bkelly-lab/ReplicationCrisis/refs/heads/master/GlobalFactors/Cluster%20Labels.csv",
         infer_schema_length=int(1e10),
