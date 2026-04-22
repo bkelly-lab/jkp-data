@@ -1009,7 +1009,7 @@ def main() -> None:
         f"Start          : {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))}",
         flush=True,
     )
-    # Extract Neccesary Information
+    # Extract Necessary Information
     # Read Factor details from Excel file
     char_info = (
         pl.read_excel(
