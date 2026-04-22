@@ -23,13 +23,16 @@ export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 export MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 export NUMEXPR_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 
+# Activate the project's virtual environment so the jkp CLI is on PATH
+source .venv/bin/activate
+
 # Create char data
 # Set PERSISTENT_WRDS_CONNECTION=1 to use a single WRDS connection (reduces MFA on NAT-rotated networks)
 if [ "${PERSISTENT_WRDS_CONNECTION:-0}" = "1" ]; then
-    uv run python code/main.py --persistent-connection
+    jkp build data --persistent-connection
 else
-    uv run python code/main.py
+    jkp build data
 fi
 
 # Create portfolio data
-uv run python code/portfolio.py
+jkp portfolio data
