@@ -233,18 +233,93 @@ class TestPortfoliosCore:
 
     def test_ret_exc_lead1m_winsorized_for_compustat(self, tmp_path: Path, seed: int):
         """Compustat rows (source_crsp == 0) should have ret_exc_lead1m
-        clipped to [p001, p999] from ret_cutoffs.
+        clipped to [p001, p999] from ret_cutoffs, while CRSP rows remain
+        unchanged.
         """
         data_root = tmp_path / "processed"
         data_root.mkdir(parents=True, exist_ok=True)
         char_df, _ = _write_synthetic_country(
             data_root=data_root, excntry="SYN", chars=SYNTHETIC_CHARS, seed=seed
         )
-        # Read back the characteristics data to verify winsorization
+        eoms = char_df["eom"].unique().sort().to_list()
+        nyse_cut, ret_cut, _ = _make_cutoffs(eoms)
+
         raw = pl.read_parquet(data_root / "characteristics" / "SYN.parquet")
         compustat_rows = raw.filter(pl.col("source_crsp") == 0)
-        # At least some compustat rows exist in our synthetic data
+        crsp_rows = raw.filter(pl.col("source_crsp") == 1)
         assert compustat_rows.height > 0
+        assert crsp_rows.height > 0
+
+        # Inject extreme ret_exc_lead1m values that will exceed tight cutoffs.
+        raw = raw.with_columns(
+            pl.when(pl.col("source_crsp") == 0)
+            .then(pl.lit(0.9))
+            .otherwise(pl.col("ret_exc_lead1m"))
+            .alias("ret_exc_lead1m")
+        )
+        raw.write_parquet(data_root / "characteristics" / "SYN.parquet")
+
+        # Use tight cutoffs so 0.9 exceeds the upper bound.
+        tight_ret_cut = ret_cut.with_columns(
+            pl.lit(-0.10).alias("ret_exc_0_1"),
+            pl.lit(0.10).alias("ret_exc_99_9"),
+        )
+
+        test_char = SYNTHETIC_CHARS[0]
+
+        result_win = portfolios(
+            data_path=str(data_root),
+            excntry="SYN",
+            chars=[test_char],
+            pfs=1,
+            bps="non_mc",
+            bp_min_n=1,
+            nyse_size_cutoffs=nyse_cut,
+            source=["CRSP", "COMPUSTAT"],
+            wins_ret=True,
+            cmp_key=False,
+            signals=False,
+            daily_pf=False,
+            ind_pf=False,
+            ret_cutoffs=tight_ret_cut,
+            ret_cutoffs_daily=None,
+        )
+        result_no_win = portfolios(
+            data_path=str(data_root),
+            excntry="SYN",
+            chars=[test_char],
+            pfs=1,
+            bps="non_mc",
+            bp_min_n=1,
+            nyse_size_cutoffs=nyse_cut,
+            source=["CRSP", "COMPUSTAT"],
+            wins_ret=False,
+            cmp_key=False,
+            signals=False,
+            daily_pf=False,
+            ind_pf=False,
+            ret_cutoffs=tight_ret_cut,
+            ret_cutoffs_daily=None,
+        )
+
+        pf_win = (
+            result_win["pf_returns"]
+            .filter((pl.col("characteristic") == test_char) & (pl.col("pf") == 1))
+            .sort("eom")
+        )
+        pf_no_win = (
+            result_no_win["pf_returns"]
+            .filter((pl.col("characteristic") == test_char) & (pl.col("pf") == 1))
+            .sort("eom")
+        )
+
+        # Winsorized and non-winsorized returns should differ because
+        # Compustat ret_exc_lead1m (0.9) exceeds p999 (0.10).
+        assert not np.allclose(
+            pf_win["ret_ew"].to_numpy(),
+            pf_no_win["ret_ew"].to_numpy(),
+            atol=1e-12,
+        )
 
 
 # =============================================================================

@@ -48,12 +48,6 @@ warnings.filterwarnings(
     message=r"Sortedness.*by.*provided",
 )
 
-# Larger streaming chunks than polars' default give substantially better
-# throughput on the production 450 GB HPC box where memory is abundant. This
-# is a module-level tuning knob — harmless on smaller machines (polars still
-# bounds memory per chunk) and free for eager queries that don't stream.
-pl.Config.set_streaming_chunk_size(1_000_000)
-
 # setting data path and output path
 data_path = "data/processed"
 output_path = "data/processed/portfolios"
@@ -1165,7 +1159,7 @@ def main() -> None:
             [
                 sub_data["pf_daily"]
                 for sub_key, sub_data in portfolio_data.items()
-                if sub_data and "pf_returns" in sub_data
+                if sub_data and "pf_daily" in sub_data
             ]
         )
         # pf_daily = pl.concat([portfolio_data[sub_dict]['pf_daily']
