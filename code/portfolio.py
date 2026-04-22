@@ -1026,8 +1026,7 @@ def main() -> None:
         sheet_name="countries",
     )
 
-    # getting relevannt information from country classification file loaded at the start loaded at the start.
-    # Select columns
+    # Select the relevant columns from the previously loaded country classification data.
     country_classification = country_classification.select(
         ["excntry", "msci_development", "region"]
     )
