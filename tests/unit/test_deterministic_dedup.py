@@ -1,12 +1,11 @@
 """
 Tests for deterministic deduplication in the Compustat stock file pipeline.
 
-Verifies that the three dedup locations in aux_functions.py resolve duplicates
+Verifies that the dedup locations covered in this file resolve duplicates
 using economically meaningful tie-breaking rules (issue #69):
 
-1. gen_comp_msf(): keep latest datadate per {gvkey, iid, eom}
-2. add_primary_sec(): prefer primary_sec=1 over primary_sec=0
-3. gen_returns_df(): keep highest prcstd per {gvkey, iid, datadate}
+1. add_primary_sec(): prefer primary_sec=1 over primary_sec=0
+2. gen_returns_df(): keep highest prcstd per {gvkey, iid, datadate}
 """
 
 from __future__ import annotations
