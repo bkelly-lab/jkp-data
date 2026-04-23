@@ -83,7 +83,7 @@ class TestAddPrimarySecDedup:
         the output should deterministically keep primary_sec=1."""
         monkeypatch.chdir(work_dir)
 
-        from aux_functions import add_primary_sec
+        from jkp.data.aux_functions import add_primary_sec
 
         add_primary_sec(
             str(work_dir / "input.parquet"),
@@ -107,7 +107,7 @@ class TestAddPrimarySecDedup:
         """Securities that don't match any prihist record should get primary_sec=0."""
         monkeypatch.chdir(work_dir)
 
-        from aux_functions import add_primary_sec
+        from jkp.data.aux_functions import add_primary_sec
 
         add_primary_sec(
             str(work_dir / "input.parquet"),
@@ -160,7 +160,7 @@ class TestGenReturnsDfDedup:
         )
         df.write_parquet(tmp_path / "__comp_msf.parquet")
 
-        from aux_functions import gen_returns_df
+        from jkp.data.aux_functions import gen_returns_df
 
         result = gen_returns_df("m")
 
@@ -198,7 +198,7 @@ class TestGenReturnsDfDedup:
         )
         df.write_parquet(tmp_path / "__comp_msf.parquet")
 
-        from aux_functions import gen_returns_df
+        from jkp.data.aux_functions import gen_returns_df
 
         result = gen_returns_df("m")
         assert len(result) == 3
