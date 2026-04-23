@@ -31,13 +31,11 @@ import numpy as np
 import polars as pl
 import pytest
 
-# Ensure both the legacy fixture and the current code/portfolio.py are importable.
+# Ensure the legacy fixture is importable.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_REPO_ROOT))
-sys.path.insert(0, str(_REPO_ROOT / "code"))
 
-from portfolio import portfolios as current_portfolios  # noqa: E402
-
+from jkp.data.portfolio import portfolios as current_portfolios  # noqa: E402
 from tests.fixtures.portfolio_legacy import (  # noqa: E402
     portfolios as legacy_portfolios,
 )

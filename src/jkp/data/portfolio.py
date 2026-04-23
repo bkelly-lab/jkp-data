@@ -1,46 +1,16 @@
-import argparse
 import os
 import time
 import warnings
+from pathlib import Path
 
 import polars as pl
-from config import END_DATE
-from output_writer import (
-    VALID_OUTPUT_FORMATS,
+
+from .config import END_DATE
+from .output_writer import (
     configure_output_format,
     convert_outputs_to_csv,
     write_dataframe,
 )
-
-
-def parse_args() -> argparse.Namespace:
-    """Parse command line arguments for portfolio generation.
-
-    Description:
-        Parse CLI arguments for output format selection.
-    Steps:
-        1) Create argument parser with output-format option.
-        2) Parse and return the arguments.
-    Output:
-        argparse.Namespace with output_format attribute.
-    """
-    parser = argparse.ArgumentParser(
-        description="Generate JKP portfolio data.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  uv run python code/portfolio.py                      # Default: parquet output
-  uv run python code/portfolio.py --output-format csv  # CSV output with quoted strings
-        """,
-    )
-    parser.add_argument(
-        "--output-format",
-        choices=VALID_OUTPUT_FORMATS,
-        default="parquet",
-        help="Output file format (default: parquet)",
-    )
-    return parser.parse_args()
-
 
 warnings.filterwarnings(
     "ignore",
@@ -48,188 +18,10 @@ warnings.filterwarnings(
     message=r"Sortedness.*by.*provided",
 )
 
-# setting data path and output path
-data_path = "data/processed"
-output_path = "data/processed/portfolios"
 
-# characteristics
-chars = [
-    "age",
-    "aliq_at",
-    "aliq_mat",
-    "ami_126d",
-    "at_be",
-    "at_gr1",
-    "at_me",
-    "at_turnover",
-    "be_gr1a",
-    "be_me",
-    "beta_60m",
-    "beta_dimson_21d",
-    "betabab_1260d",
-    "betadown_252d",
-    "bev_mev",
-    "bidaskhl_21d",
-    "capex_abn",
-    "capx_gr1",
-    "capx_gr2",
-    "capx_gr3",
-    "cash_at",
-    "chcsho_12m",
-    "coa_gr1a",
-    "col_gr1a",
-    "cop_at",
-    "cop_atl1",
-    "corr_1260d",
-    "coskew_21d",
-    "cowc_gr1a",
-    "dbnetis_at",
-    "debt_gr3",
-    "debt_me",
-    "dgp_dsale",
-    "div12m_me",
-    "dolvol_126d",
-    "dolvol_var_126d",
-    "dsale_dinv",
-    "dsale_drec",
-    "dsale_dsga",
-    "earnings_variability",
-    "ebit_bev",
-    "ebit_sale",
-    "ebitda_mev",
-    "emp_gr1",
-    "eq_dur",
-    "eqnetis_at",
-    "eqnpo_12m",
-    "eqnpo_me",
-    "eqpo_me",
-    "f_score",
-    "fcf_me",
-    "fnl_gr1a",
-    "gp_at",
-    "gp_atl1",
-    "ival_me",
-    "inv_gr1",
-    "inv_gr1a",
-    "iskew_capm_21d",
-    "iskew_ff3_21d",
-    "iskew_hxz4_21d",
-    "ivol_capm_21d",
-    "ivol_capm_252d",
-    "ivol_ff3_21d",
-    "ivol_hxz4_21d",
-    "kz_index",
-    "lnoa_gr1a",
-    "lti_gr1a",
-    "market_equity",
-    "mispricing_mgmt",
-    "mispricing_perf",
-    "ncoa_gr1a",
-    "ncol_gr1a",
-    "netdebt_me",
-    "netis_at",
-    "nfna_gr1a",
-    "ni_ar1",
-    "ni_be",
-    "ni_inc8q",
-    "ni_ivol",
-    "ni_me",
-    "niq_at",
-    "niq_at_chg1",
-    "niq_be",
-    "niq_be_chg1",
-    "niq_su",
-    "nncoa_gr1a",
-    "noa_at",
-    "noa_gr1a",
-    "o_score",
-    "oaccruals_at",
-    "oaccruals_ni",
-    "ocf_at",
-    "ocf_at_chg1",
-    "ocf_me",
-    "ocfq_saleq_std",
-    "op_at",
-    "op_atl1",
-    "ope_be",
-    "ope_bel1",
-    "opex_at",
-    "pi_nix",
-    "ppeinv_gr1a",
-    "prc",
-    "prc_highprc_252d",
-    "qmj",
-    "qmj_growth",
-    "qmj_prof",
-    "qmj_safety",
-    "rd_me",
-    "rd_sale",
-    "rd5_at",
-    "resff3_12_1",
-    "resff3_6_1",
-    "ret_1_0",
-    "ret_12_1",
-    "ret_12_7",
-    "ret_3_1",
-    "ret_6_1",
-    "ret_60_12",
-    "ret_9_1",
-    "rmax1_21d",
-    "rmax5_21d",
-    "rmax5_rvol_21d",
-    "rskew_21d",
-    "rvol_21d",
-    "sale_bev",
-    "sale_emp_gr1",
-    "sale_gr1",
-    "sale_gr3",
-    "sale_me",
-    "saleq_gr1",
-    "saleq_su",
-    "seas_1_1an",
-    "seas_1_1na",
-    "seas_11_15an",
-    "seas_11_15na",
-    "seas_16_20an",
-    "seas_16_20na",
-    "seas_2_5an",
-    "seas_2_5na",
-    "seas_6_10an",
-    "seas_6_10na",
-    "sti_gr1a",
-    "taccruals_at",
-    "taccruals_ni",
-    "tangibility",
-    "tax_gr1a",
-    "turnover_126d",
-    "turnover_var_126d",
-    "z_score",
-    "zero_trades_126d",
-    "zero_trades_21d",
-    "zero_trades_252d",
-]
-
-# a dictionary which has the parameters for constructing portfolios.
-settings = {
-    "end_date": END_DATE,
-    "pfs": 3,
-    "source": ["CRSP", "COMPUSTAT"],
-    "wins_ret": True,
-    "bps": "non_mc",
-    "bp_min_n": 10,
-    "cmp": {"us": True, "int": False},
-    "signals": {"us": False, "int": False, "standardize": True, "weight": "vw_cap"},
-    "regional_pfs": {
-        "ret_type": "vw_cap",
-        "country_excl": ["ZWE", "VEN"],
-        "country_weights": "market_cap",
-        "stocks_min": 5,
-        "months_min": 5 * 12,
-        "countries_min": 3,
-    },
-    "daily_pf": True,
-    "ind_pf": True,
-}
+# =============================================================================
+# Helper Functions
+# =============================================================================
 
 
 def add_ecdf(
@@ -242,10 +34,7 @@ def add_ecdf(
         Builds the ECDF of the ``var`` column over rows where ``bp_stock``
         is true (the breakpoint sample), then asof-joins the CDF values back
         onto every row of ``df`` — bp and non-bp alike — within each group
-        defined by ``group_cols``. For the upcoming vectorized path, callers
-        pass ``group_cols=["characteristic", "eom"]`` so every
-        ``(characteristic, eom)`` partition gets its own ECDF in a single
-        pass; the legacy per-char path passes the default ``["eom"]``.
+        defined by ``group_cols``.
 
     Steps:
         1) Count ``var`` occurrences per distinct value within each group on
@@ -290,6 +79,74 @@ def add_ecdf(
         .drop("cdf_val")
     )
     return out
+
+
+def _build_industry_daily_returns(
+    data: pl.DataFrame,
+    daily: pl.DataFrame,
+    industry_col: str,
+    bp_min_n: int,
+    excntry: str,
+    industry_transform: pl.Expr | None = None,
+) -> pl.DataFrame:
+    """Description:
+        Build daily industry portfolio returns from monthly formation-month weights.
+    Steps:
+        1) Filter to rows where industry_col is non-null; select id, eom, industry, me, me_cap.
+        2) Optionally apply industry_transform to recode the industry column.
+        3) Drop industry-month groups with fewer than bp_min_n stocks.
+        4) Compute EW/VW/VW-cap weights within each (eom, industry) group.
+        5) Join weights to daily returns for the following month.
+        6) Aggregate weighted returns by (industry, date).
+    Output:
+        DataFrame with columns [industry_col, date, n, ret_ew, ret_vw, ret_vw_cap, excntry].
+    """
+    weights_data = data.filter(pl.col(industry_col).is_not_null()).select(
+        ["id", "eom", industry_col, "me", "me_cap"]
+    )
+    if industry_transform is not None:
+        weights_data = weights_data.with_columns(industry_transform)
+
+    weights_data = (
+        weights_data.with_columns(pl.len().over([industry_col, "eom"]).alias("bp_n"))
+        .filter(pl.col("bp_n") >= bp_min_n)
+        .drop("bp_n")
+    )
+
+    weights = (
+        weights_data.group_by(["eom", industry_col])
+        .agg(
+            [
+                pl.col("id"),
+                (1 / pl.len()).alias("w_ew"),
+                (pl.col("me") / pl.col("me").sum()).alias("w_vw"),
+                (pl.col("me_cap") / pl.col("me_cap").sum()).alias("w_vw_cap"),
+            ]
+        )
+        .explode("id", "w_vw", "w_vw_cap")
+    )
+
+    result = (
+        weights.lazy()
+        .join(
+            daily.lazy(),
+            left_on=["id", "eom"],
+            right_on=["id", "eom_lag1"],
+            how="left",
+        )
+        .filter(pl.col(industry_col).is_not_null() & pl.col("ret_exc").is_not_null())
+        .group_by([industry_col, "date"])
+        .agg(
+            [
+                pl.len().alias("n"),
+                (pl.col("w_ew") * pl.col("ret_exc")).sum().alias("ret_ew"),
+                (pl.col("w_vw") * pl.col("ret_exc")).sum().alias("ret_vw"),
+                (pl.col("w_vw_cap") * pl.col("ret_exc")).sum().alias("ret_vw_cap"),
+            ]
+        )
+        .collect()
+    )
+    return result.with_columns(pl.lit(excntry).str.to_uppercase().alias("excntry"))
 
 
 # main portfolios function to create the portfolios
@@ -429,8 +286,10 @@ def portfolios(
             )
 
     # Collect the lazy chain once — the single fused read + preprocess pass.
-    # `data` is used by industry/cmp/signals sections that need eager access.
     data = data_lazy.collect()
+
+    # Collect daily lazy frame if present (needed for industry returns and per-char daily).
+    daily = daily_lazy.collect() if daily_lazy is not None else None
 
     # standardizing signals
     if signals_standardize and signals:
@@ -454,11 +313,9 @@ def portfolios(
 
     if ind_pf:
         # Filter data where 'gics' is not null and select required columns
-        ind_data = data.filter(
-            pl.col("gics").is_not_null()
-        ).select(
+        ind_data = data.filter(pl.col("gics").is_not_null()).select(
             ["eom", "gics", "excntry", "ret_exc_lead1m", "me", "me_cap"]
-        )  # original code didn;t select 'excntry' in the above steps in the data table, updating that
+        )
 
         # Process GICS codes (extract first 2 digits and convert to numeric)
         ind_data = ind_data.with_columns(
@@ -508,106 +365,26 @@ def portfolios(
             ind_ff49 = ind_ff49.filter(pl.col("n") >= bp_min_n)
 
         if daily_pf:
-            # Daily industry returns: weights are formed from monthly end-of-
-            # formation-month `me` and applied to every trading day of the
-            # following month (rebalanced daily back to beginning-of-month
-            # weights). Mirrors the char factor daily logic below and keeps
-            # coverage aligned with the monthly industry output.
-            gics_weights_data = (
-                data.filter(pl.col("gics").is_not_null())
-                .select(["id", "eom", "gics", "me", "me_cap"])
-                .with_columns(
-                    pl.col("gics").cast(pl.Utf8).str.slice(0, 2).cast(pl.Int64).alias("gics")
-                )
-            )
-            gics_weights_data = (
-                gics_weights_data.with_columns(pl.len().over(["gics", "eom"]).alias("bp_n"))
-                .filter(pl.col("bp_n") >= bp_min_n)
-                .drop("bp_n")
-            )
-
-            gics_weights = (
-                gics_weights_data.group_by(["eom", "gics"])
-                .agg(
-                    [
-                        pl.col("id"),
-                        (1 / pl.len()).alias("w_ew"),
-                        (pl.col("me") / pl.col("me").sum()).alias("w_vw"),
-                        (pl.col("me_cap") / pl.col("me_cap").sum()).alias("w_vw_cap"),
-                    ]
-                )
-                .explode("id", "w_vw", "w_vw_cap")
-            )
-
-            ind_gics_daily = (
-                gics_weights.lazy()
-                .join(
-                    daily_lazy,
-                    left_on=["id", "eom"],
-                    right_on=["id", "eom_lag1"],
-                    how="left",
-                )
-                .filter(pl.col("gics").is_not_null() & pl.col("ret_exc").is_not_null())
-                .group_by(["gics", "date"])
-                .agg(
-                    [
-                        pl.len().alias("n"),
-                        (pl.col("w_ew") * pl.col("ret_exc")).sum().alias("ret_ew"),
-                        (pl.col("w_vw") * pl.col("ret_exc")).sum().alias("ret_vw"),
-                        (pl.col("w_vw_cap") * pl.col("ret_exc")).sum().alias("ret_vw_cap"),
-                    ]
-                )
-                .collect()
-            )
-            ind_gics_daily = ind_gics_daily.with_columns(
-                pl.lit(excntry).str.to_uppercase().alias("excntry")
+            ind_gics_daily = _build_industry_daily_returns(
+                data,
+                daily,
+                "gics",
+                bp_min_n,
+                excntry,
+                industry_transform=pl.col("gics")
+                .cast(pl.Utf8)
+                .str.slice(0, 2)
+                .cast(pl.Int64)
+                .alias("gics"),
             )
 
             if excntry.lower() == "usa":
-                ff49_weights_data = data.filter(pl.col("ff49").is_not_null()).select(
-                    ["id", "eom", "ff49", "me", "me_cap"]
-                )
-                ff49_weights_data = (
-                    ff49_weights_data.with_columns(pl.len().over(["ff49", "eom"]).alias("bp_n"))
-                    .filter(pl.col("bp_n") >= bp_min_n)
-                    .drop("bp_n")
-                )
-
-                ff49_weights = (
-                    ff49_weights_data.group_by(["eom", "ff49"])
-                    .agg(
-                        [
-                            pl.col("id"),
-                            (1 / pl.len()).alias("w_ew"),
-                            (pl.col("me") / pl.col("me").sum()).alias("w_vw"),
-                            (pl.col("me_cap") / pl.col("me_cap").sum()).alias("w_vw_cap"),
-                        ]
-                    )
-                    .explode("id", "w_vw", "w_vw_cap")
-                )
-
-                ind_ff49_daily = (
-                    ff49_weights.lazy()
-                    .join(
-                        daily_lazy,
-                        left_on=["id", "eom"],
-                        right_on=["id", "eom_lag1"],
-                        how="left",
-                    )
-                    .filter(pl.col("ff49").is_not_null() & pl.col("ret_exc").is_not_null())
-                    .group_by(["ff49", "date"])
-                    .agg(
-                        [
-                            pl.len().alias("n"),
-                            (pl.col("w_ew") * pl.col("ret_exc")).sum().alias("ret_ew"),
-                            (pl.col("w_vw") * pl.col("ret_exc")).sum().alias("ret_vw"),
-                            (pl.col("w_vw_cap") * pl.col("ret_exc")).sum().alias("ret_vw_cap"),
-                        ]
-                    )
-                    .collect()
-                )
-                ind_ff49_daily = ind_ff49_daily.with_columns(
-                    pl.lit(excntry).str.to_uppercase().alias("excntry")
+                ind_ff49_daily = _build_industry_daily_returns(
+                    data,
+                    daily,
+                    "ff49",
+                    bp_min_n,
+                    excntry,
                 )
 
     # Creating portfolios for all the characteristics.
@@ -747,7 +524,7 @@ def portfolios(
                     .explode("id", "w_vw", "w_vw_cap")
                 )
                 daily_sub = weights.join(
-                    daily_lazy,
+                    daily.lazy(),
                     left_on=["id", "eom"],
                     right_on=["id", "eom_lag1"],
                     how="left",
@@ -782,7 +559,7 @@ def portfolios(
                     .explode("id", "w_vw", "w_vw_cap")
                 )
                 daily_sub = weights.join(
-                    daily_lazy,
+                    daily.lazy(),
                     left_on=["id", "eom"],
                     right_on=["id", "eom_lag1"],
                     how="left",
@@ -839,13 +616,13 @@ def portfolios(
         output["pf_daily"] = pf_daily_df
     # Handle industry portfolio returns if ind_pf is true
     if ind_pf:
-        output["gics_returns"] = ind_gics  # Assuming ind_gics is a DataFrame
+        output["gics_returns"] = ind_gics
         if excntry.lower() == "usa":
-            output["ff49_returns"] = ind_ff49.clone()  # Assuming ind_ff49 is a DataFrame
+            output["ff49_returns"] = ind_ff49
         if daily_pf:
             output["gics_daily"] = ind_gics_daily
             if excntry.lower() == "usa":
-                output["ff49_daily"] = ind_ff49_daily.clone()
+                output["ff49_daily"] = ind_ff49_daily
 
     # Add excntry to pf_returns and pf_daily, and aggregate signals
     if len(output) > 0:
@@ -864,7 +641,6 @@ def portfolios(
                 )
 
     results = []
-    # if (excntry=='usa' and cmp_key['us']) or (excntry!='usa' and cmp_key['int']):
     if cmp_key:
         for x in chars:
             print(f"   CMP - {x}: {chars.index(x) + 1} out of {len(chars)}")
@@ -988,39 +764,247 @@ def regional_data(
     return pf
 
 
-def main() -> None:
-    args = parse_args()
-    configure_output_format(args.output_format)
+# =============================================================================
+# Main Entry Point
+# =============================================================================
 
+
+def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
+    """Run JKP portfolio generation.
+
+    Description:
+        Orchestrate portfolio construction: parse arguments, configure output
+        format, build factor portfolios for each country, and write results.
+    Steps:
+        1) Parse CLI arguments and configure output format.
+        2) Load country list and characteristic definitions.
+        3) Construct portfolios per country (monthly, daily, industry).
+        4) Aggregate cross-country results and compute long-minus-short factors.
+        5) Write output files and optionally convert to CSV.
+    Output:
+        Portfolio files written to data/processed/portfolios/.
+    """
+    configure_output_format(output_format)
+
+    # Setting data path and output path
+    data_path = str(output_dir / "processed")
+    output_path = str(output_dir / "processed" / "portfolios")
+
+    # Get list of countries from characteristics files
     countries = []
-    # Iterate through all files in the folder
     for file in os.listdir(os.path.join(data_path, "characteristics")):
         if file.endswith(".parquet") and "world" not in file:
             countries.append(file.replace(".parquet", ""))
     countries = sorted(countries)
 
+    # Characteristics to process
+    chars = [
+        "age",
+        "aliq_at",
+        "aliq_mat",
+        "ami_126d",
+        "at_be",
+        "at_gr1",
+        "at_me",
+        "at_turnover",
+        "be_gr1a",
+        "be_me",
+        "beta_60m",
+        "beta_dimson_21d",
+        "betabab_1260d",
+        "betadown_252d",
+        "bev_mev",
+        "bidaskhl_21d",
+        "capex_abn",
+        "capx_gr1",
+        "capx_gr2",
+        "capx_gr3",
+        "cash_at",
+        "chcsho_12m",
+        "coa_gr1a",
+        "col_gr1a",
+        "cop_at",
+        "cop_atl1",
+        "corr_1260d",
+        "coskew_21d",
+        "cowc_gr1a",
+        "dbnetis_at",
+        "debt_gr3",
+        "debt_me",
+        "dgp_dsale",
+        "div12m_me",
+        "dolvol_126d",
+        "dolvol_var_126d",
+        "dsale_dinv",
+        "dsale_drec",
+        "dsale_dsga",
+        "earnings_variability",
+        "ebit_bev",
+        "ebit_sale",
+        "ebitda_mev",
+        "emp_gr1",
+        "eq_dur",
+        "eqnetis_at",
+        "eqnpo_12m",
+        "eqnpo_me",
+        "eqpo_me",
+        "f_score",
+        "fcf_me",
+        "fnl_gr1a",
+        "gp_at",
+        "gp_atl1",
+        "ival_me",
+        "inv_gr1",
+        "inv_gr1a",
+        "iskew_capm_21d",
+        "iskew_ff3_21d",
+        "iskew_hxz4_21d",
+        "ivol_capm_21d",
+        "ivol_capm_252d",
+        "ivol_ff3_21d",
+        "ivol_hxz4_21d",
+        "kz_index",
+        "lnoa_gr1a",
+        "lti_gr1a",
+        "market_equity",
+        "mispricing_mgmt",
+        "mispricing_perf",
+        "ncoa_gr1a",
+        "ncol_gr1a",
+        "netdebt_me",
+        "netis_at",
+        "nfna_gr1a",
+        "ni_ar1",
+        "ni_be",
+        "ni_inc8q",
+        "ni_ivol",
+        "ni_me",
+        "niq_at",
+        "niq_at_chg1",
+        "niq_be",
+        "niq_be_chg1",
+        "niq_su",
+        "nncoa_gr1a",
+        "noa_at",
+        "noa_gr1a",
+        "o_score",
+        "oaccruals_at",
+        "oaccruals_ni",
+        "ocf_at",
+        "ocf_at_chg1",
+        "ocf_me",
+        "ocfq_saleq_std",
+        "op_at",
+        "op_atl1",
+        "ope_be",
+        "ope_bel1",
+        "opex_at",
+        "pi_nix",
+        "ppeinv_gr1a",
+        "prc",
+        "prc_highprc_252d",
+        "qmj",
+        "qmj_growth",
+        "qmj_prof",
+        "qmj_safety",
+        "rd_me",
+        "rd_sale",
+        "rd5_at",
+        "resff3_12_1",
+        "resff3_6_1",
+        "ret_1_0",
+        "ret_12_1",
+        "ret_12_7",
+        "ret_3_1",
+        "ret_6_1",
+        "ret_60_12",
+        "ret_9_1",
+        "rmax1_21d",
+        "rmax5_21d",
+        "rmax5_rvol_21d",
+        "rskew_21d",
+        "rvol_21d",
+        "sale_bev",
+        "sale_emp_gr1",
+        "sale_gr1",
+        "sale_gr3",
+        "sale_me",
+        "saleq_gr1",
+        "saleq_su",
+        "seas_1_1an",
+        "seas_1_1na",
+        "seas_11_15an",
+        "seas_11_15na",
+        "seas_16_20an",
+        "seas_16_20na",
+        "seas_2_5an",
+        "seas_2_5na",
+        "seas_6_10an",
+        "seas_6_10na",
+        "sti_gr1a",
+        "taccruals_at",
+        "taccruals_ni",
+        "tangibility",
+        "tax_gr1a",
+        "turnover_126d",
+        "turnover_var_126d",
+        "z_score",
+        "zero_trades_126d",
+        "zero_trades_21d",
+        "zero_trades_252d",
+    ]
+
+    # Portfolio construction settings
+    settings = {
+        "end_date": END_DATE,
+        "pfs": 3,
+        "source": ["CRSP", "COMPUSTAT"],
+        "wins_ret": True,
+        "bps": "non_mc",
+        "bp_min_n": 10,
+        "cmp": {"us": True, "int": False},
+        "signals": {"us": False, "int": False, "standardize": True, "weight": "vw_cap"},
+        "regional_pfs": {
+            "ret_type": "vw_cap",
+            "country_excl": ["ZWE", "VEN"],
+            "country_weights": "market_cap",
+            "stocks_min": 5,
+            "months_min": 5 * 12,
+            "countries_min": 3,
+        },
+        "daily_pf": True,
+        "ind_pf": True,
+    }
+
     print(
         f"Start          : {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))}",
         flush=True,
     )
+
     # Extract Necessary Information
-    # Read Factor details from Excel file
+    # Read Factor details from bundled Excel file
+    from .paths import (
+        get_cluster_labels_path,
+        get_country_classification_path,
+        get_factor_details_path,
+    )
+
     char_info = (
         pl.read_excel(
-            "https://github.com/bkelly-lab/ReplicationCrisis/raw/master/GlobalFactors/Factor%20Details.xlsx",
+            get_factor_details_path(),
             sheet_name="details",
         )
         .filter(pl.col("abr_jkp").is_not_null())
         .select([pl.col("abr_jkp").alias("characteristic"), pl.col("direction").cast(pl.Int32)])
     )
 
-    # Read country classification details from Excel file
+    # Read country classification details from bundled Excel file
     country_classification = pl.read_excel(
-        "https://github.com/bkelly-lab/ReplicationCrisis/raw/master/GlobalFactors/Country%20Classification.xlsx",
+        get_country_classification_path(),
         sheet_name="countries",
     )
 
-    # Select the relevant columns from the previously loaded country classification data.
+    # Getting relevant information from country classification file
     country_classification = country_classification.select(
         ["excntry", "msci_development", "region"]
     )
@@ -1051,19 +1035,17 @@ def main() -> None:
         }
     )
 
-    # Read cluster labels details from Excel file
+    # Read cluster labels from bundled CSV file
     cluster_labels = pl.read_csv(
-        "https://raw.githubusercontent.com/bkelly-lab/ReplicationCrisis/refs/heads/master/GlobalFactors/Cluster%20Labels.csv",
+        get_cluster_labels_path(),
         infer_schema_length=int(1e10),
     )
 
     # nyse_cutoffs
     nyse_size_cutoffs = pl.read_parquet(f"{data_path}/other_output/nyse_cutoffs.parquet")
-    # nyse_size_cutoffs = nyse_size_cutoffs.with_columns(pl.col("eom").cast(pl.Utf8).str.strptime(pl.Date, format="%Y%m%d").alias("eom"))
 
     # return_cutoffs
     ret_cutoffs = pl.read_parquet(f"{data_path}/other_output/return_cutoffs.parquet")
-    # ret_cutoffs = ret_cutoffs.with_columns(pl.col("eom").cast(pl.Utf8).str.strptime(pl.Date, format="%Y%m%d").alias("eom"))
     ret_cutoffs = ret_cutoffs.with_columns(
         (pl.col("eom").dt.month_start().dt.offset_by("-1d")).alias("eom_lag1")
     )
@@ -1074,14 +1056,12 @@ def main() -> None:
 
     # market_returns
     market = pl.read_parquet(f"{data_path}/other_output/market_returns.parquet")
-    # market = market.with_columns(pl.col("eom").cast(pl.Utf8).str.strptime(pl.Date, format="%Y%m%d").alias("eom"))
 
     # daily_market_returns
     if settings["daily_pf"]:
         market_daily = pl.read_parquet(f"{data_path}/other_output/market_returns_daily.parquet")
-        # market_daily = market_daily.with_columns(pl.col("date").cast(pl.Utf8).str.strptime(pl.Date, format="%Y%m%d").alias("date"))
 
-    # creating portfolios by using the portfolios function
+    # Creating portfolios by using the portfolios function
     portfolio_data = {}
     for ex in countries:
         print(f"{ex}: {countries.index(ex) + 1} out of {len(countries)}")
@@ -1089,44 +1069,26 @@ def main() -> None:
             data_path=data_path,
             excntry=ex,
             chars=chars,
-            pfs=settings["pfs"],  # Number of portfolios
-            bps=settings[
-                "bps"
-            ],  # What should breakpoints be based on? Non-Microcap stocks ("non_mc") or NYSE stocks "nyse"
-            bp_min_n=settings["bp_min_n"],  # Minimum number of stocks used for breakpoints
-            nyse_size_cutoffs=nyse_size_cutoffs,  # Data frame with NYSE size breakpoints
-            source=settings[
-                "source"
-            ],  # Use data from "CRSP", "Compustat" or both: c("CRSP", "COMPUSTAT")
-            wins_ret=settings[
-                "wins_ret"
-            ],  # Should Compustat returns be winsorized at the 0.1% and 99.9% of CRSP returns?
-            cmp_key=settings["cmp"]["us"]
-            if ex.lower() == "usa"
-            else settings["cmp"]["int"],  # Create characteristics managed size portfolios?
+            pfs=settings["pfs"],
+            bps=settings["bps"],
+            bp_min_n=settings["bp_min_n"],
+            nyse_size_cutoffs=nyse_size_cutoffs,
+            source=settings["source"],
+            wins_ret=settings["wins_ret"],
+            cmp_key=settings["cmp"]["us"] if ex.lower() == "usa" else settings["cmp"]["int"],
             signals=settings["signals"]["us"]
             if ex.lower() == "usa"
-            else settings["signals"]["int"],  # Create portfolio signals?
-            signals_standardize=settings["signals"]["standardize"],  # Map chars to [-0.5, +0.5]?,
-            signals_w=settings["signals"][
-                "weight"
-            ],  # Weighting for signals: in c("ew", "vw", "vw_cap")
-            daily_pf=settings["daily_pf"],  # Should daily return be estimated
-            ind_pf=settings["ind_pf"],  # Should industry portfolio returns be estimated
-            ret_cutoffs=ret_cutoffs,  # Data frame for monthly winsorization. Neccesary when wins_ret=T
-            ret_cutoffs_daily=ret_cutoffs_daily,  # Data frame for daily winsorization. Neccesary when wins_ret=T and daily_pf=T
+            else settings["signals"]["int"],
+            signals_standardize=settings["signals"]["standardize"],
+            signals_w=settings["signals"]["weight"],
+            daily_pf=settings["daily_pf"],
+            ind_pf=settings["ind_pf"],
+            ret_cutoffs=ret_cutoffs,
+            ret_cutoffs_daily=ret_cutoffs_daily,
         )
         portfolio_data[ex] = result
 
-    # aggregating portfolio returns
-    # pf_returns = pl.concat([portfolio_data[sub_dict]['pf_returns']
-    #                         for sub_dict in portfolio_data
-    #                         if 'pf_returns' in portfolio_data[sub_dict]])
-
-    # pf_returns = pl.concat([portfolio_data[sub_dict]['pf_returns']
-    #                         for sub_dict in portfolio_data
-    #                          if sub_dict in portfolio_data and 'pf_returns' in portfolio_data[sub_dict]])
-
+    # Aggregating portfolio returns
     if any(sub_data and "pf_returns" in sub_data for sub_key, sub_data in portfolio_data.items()):
         pf_returns = pl.concat(
             [
@@ -1162,14 +1124,11 @@ def main() -> None:
                 if sub_data and "pf_daily" in sub_data
             ]
         )
-        # pf_daily = pl.concat([portfolio_data[sub_dict]['pf_daily']
-        #                     for sub_dict in portfolio_data
-        #                     if 'pf_daily' in portfolio_data[sub_dict]])
         pf_daily = pf_daily.sort(["excntry", "characteristic", "pf", "date"])
     else:
         pf_daily = None
 
-    # aggregating industry classification returns
+    # Aggregating industry classification returns
     # GICS Returns
     if settings["ind_pf"] and any(
         sub_data and "gics_returns" in sub_data for sub_key, sub_data in portfolio_data.items()
@@ -1181,10 +1140,6 @@ def main() -> None:
                 if sub_data and "gics_returns" in sub_data
             ]
         )
-
-        # gics_returns =pl.concat([portfolio_data[sub_dict]['gics_returns']
-        #                     for sub_dict in portfolio_data
-        #                     if 'gics_returns' in portfolio_data[sub_dict]])
         gics_returns = gics_returns.sort(["excntry", "gics", "eom"])
     else:
         gics_returns = None
@@ -1204,7 +1159,7 @@ def main() -> None:
     else:
         ff49_returns = None
 
-    # aggregating daily industry classification returns
+    # Aggregating daily industry classification returns
     if (
         settings["ind_pf"]
         and settings["daily_pf"]
@@ -1287,7 +1242,7 @@ def main() -> None:
         hml_returns = None
         lms_returns = None
 
-    # daily hml and lms
+    # Daily hml and lms
     if settings["daily_pf"] and pf_daily is not None and pf_daily.height > 0:
         hml_daily = pf_daily.group_by(["excntry", "characteristic", "date"]).agg(
             [
@@ -1338,7 +1293,6 @@ def main() -> None:
     else:
         # Handle the empty list case here
         print("No 'cmp' keys found")
-        cmp_returns = None
 
     # Create Clustered Portfolios
     if lms_returns is not None:
@@ -1374,7 +1328,7 @@ def main() -> None:
     else:
         cluster_pfs_daily = None
 
-    # creating regional portfolios
+    # Creating regional portfolios
     if lms_returns is not None:
         regional_pfs = []
         for i in range(regions.height):
@@ -1406,7 +1360,7 @@ def main() -> None:
             )
             regional_pfs.append(reg_pf)
 
-        regional_pfs = pl.concat(regional_pfs)  # .explode('direction')
+        regional_pfs = pl.concat(regional_pfs)
 
     else:
         regional_pfs = None
@@ -1440,23 +1394,20 @@ def main() -> None:
                     "mkt_vw_exc",
                 ]
             )
-
-            regional_pfs_daily.append(reg_pf)  # .explode('direction')
+            regional_pfs_daily.append(reg_pf)
 
         regional_pfs_daily = pl.concat(regional_pfs_daily)
 
     else:
         regional_pfs_daily = None
 
-    # creating regional clusters
+    # Creating regional clusters
     if cluster_pfs is not None:
         regional_clusters = []
         for i in range(regions.height):
             info = regions[i][0]
             reg_pf = cluster_pfs.rename({"n_factors": "n_stocks_min"})
-            reg_pf = reg_pf.with_columns(
-                pl.lit(None).cast(pl.Float64).alias("direction")
-            )  # Adding 'direction' column with NA values
+            reg_pf = reg_pf.with_columns(pl.lit(None).cast(pl.Float64).alias("direction"))
             reg_pf = regional_data(
                 data=reg_pf,
                 mkt=market,
@@ -1481,7 +1432,6 @@ def main() -> None:
                     "mkt_vw_exc",
                 ]
             )
-
             regional_clusters.append(reg_pf)
 
         regional_clusters = pl.concat(regional_clusters)
@@ -1493,9 +1443,7 @@ def main() -> None:
         for i in range(regions.height):
             info = regions[i][0]
             reg_pf = cluster_pfs_daily.rename({"n_factors": "n_stocks_min"})
-            reg_pf = reg_pf.with_columns(
-                pl.lit(None).cast(pl.Float64).alias("direction")
-            )  # Adding 'direction' column with NA values
+            reg_pf = reg_pf.with_columns(pl.lit(None).cast(pl.Float64).alias("direction"))
             reg_pf = regional_data(
                 data=reg_pf,
                 mkt=market_daily,
@@ -1542,7 +1490,7 @@ def main() -> None:
             lms_returns.filter(pl.col("eom") <= settings["end_date"]),
             f"{output_path}/lms.parquet",
         )
-    if cmp_returns is not None:
+    if cmp_list:
         write_dataframe(
             cmp_returns.filter(pl.col("eom") <= settings["end_date"]),
             f"{output_path}/cmp.parquet",
@@ -1605,7 +1553,7 @@ def main() -> None:
         if not os.path.exists(reg_folder):
             os.makedirs(reg_folder)
 
-        # Write regional portfolios to parquet files
+        # Write regional portfolios to files
         for reg in regional_pfs["region"].unique():
             filtered_df = regional_pfs.filter(
                 (pl.col("eom") <= settings["end_date"]) & (pl.col("region") == reg)
@@ -1621,7 +1569,7 @@ def main() -> None:
             if not os.path.exists(reg_folder_daily):
                 os.makedirs(reg_folder_daily)
 
-            # Write daily regional portfolios to parquet files
+            # Write daily regional portfolios to files
             for reg in regional_pfs_daily["region"].unique():
                 filtered_df_daily = regional_pfs_daily.filter(
                     (pl.col("date") <= settings["end_date"]) & (pl.col("region") == reg)
@@ -1635,7 +1583,7 @@ def main() -> None:
         if not os.path.exists(reg_folder):
             os.makedirs(reg_folder)
 
-        # Write regional clusters to parquet files
+        # Write regional clusters to files
         for reg in regional_clusters["region"].unique():
             filtered_df = regional_clusters.filter(
                 (pl.col("eom") <= settings["end_date"]) & (pl.col("region") == reg)
@@ -1651,7 +1599,7 @@ def main() -> None:
             if not os.path.exists(reg_folder_daily):
                 os.makedirs(reg_folder_daily)
 
-            # Write daily regional clusters to parquet files
+            # Write daily regional clusters to files
             for reg in regional_clusters_daily["region"].unique():
                 filtered_df_daily = regional_clusters_daily.filter(
                     (pl.col("date") <= settings["end_date"]) & (pl.col("region") == reg)
@@ -1665,7 +1613,7 @@ def main() -> None:
         if not os.path.exists(cnt_folder):
             os.makedirs(cnt_folder)
 
-        # Write country factors to parquet files
+        # Write country factors to files
         for exc in lms_returns["excntry"].unique():
             if exc:
                 filtered_df = lms_returns.filter(
@@ -1682,7 +1630,7 @@ def main() -> None:
             if not os.path.exists(cnt_folder_daily):
                 os.makedirs(cnt_folder_daily)
 
-            # Write daily country factors to parquet files
+            # Write daily country factors to files
             for exc in lms_daily["excntry"].unique():
                 if exc:
                     filtered_df_daily = lms_daily.filter(
@@ -1691,13 +1639,10 @@ def main() -> None:
                     file_path_daily = os.path.join(cnt_folder_daily, f"{exc}.parquet")
                     write_dataframe(filtered_df_daily, file_path_daily)
 
-    convert_outputs_to_csv()
+    # Convert to CSV if configured
+    convert_outputs_to_csv(processed_dir=data_path)
 
     print(
         f"End            : {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))}",
         flush=True,
     )
-
-
-if __name__ == "__main__":
-    main()

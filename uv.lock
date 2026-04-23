@@ -8,6 +8,15 @@ resolution-markers = [
 ]
 
 [[package]]
+name = "annotated-doc"
+version = "0.0.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/57/ba/046ceea27344560984e26a590f90bc7f4a75b06701f653222458922b558c/annotated_doc-0.0.4.tar.gz", hash = "sha256:fbcda96e87e9c92ad167c2e53839e57503ecfda18804ea28102353485033faa4", size = 7288, upload-time = "2025-11-10T22:07:42.062Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1e/d3/26bf1008eb3d2daa8ef4cacc7f3bfdc11818d111f7e2d0201bc6e3b49d45/annotated_doc-0.0.4-py3-none-any.whl", hash = "sha256:571ac1dc6991c450b25a9c2d84a3705e2ae7a53467b5d111c24fa8baabbed320", size = 5303, upload-time = "2025-11-10T22:07:40.673Z" },
+]
+
+[[package]]
 name = "anyio"
 version = "4.12.0"
 source = { registry = "https://pypi.org/simple" }
@@ -322,6 +331,18 @@ wheels = [
 ]
 
 [[package]]
+name = "click"
+version = "8.3.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "colorama", marker = "sys_platform == 'win32'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/57/75/31212c6bf2503fdf920d87fee5d7a86a2e3bcf444984126f13d8e4016804/click-8.3.2.tar.gz", hash = "sha256:14162b8b3b3550a7d479eafa77dfd3c38d9dc8951f6f69c78913a8f9a7540fd5", size = 302856, upload-time = "2026-04-03T19:14:45.118Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e4/20/71885d8b97d4f3dde17b1fdb92dbd4908b00541c5a3379787137285f602e/click-8.3.2-py3-none-any.whl", hash = "sha256:1924d2c27c5653561cd2cae4548d1406039cb79b858b747cfea24924bbc1616d", size = 108379, upload-time = "2026-04-03T19:14:43.505Z" },
+]
+
+[[package]]
 name = "colorama"
 version = "0.4.6"
 source = { registry = "https://pypi.org/simple" }
@@ -568,19 +589,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/a9/95/a3dbbb5028f35eafb79008e7522a75244477d2838f38cbb722248dabc2a8/cycler-0.12.1.tar.gz", hash = "sha256:88bb128f02ba341da8ef447245a9e138fae777f6a23943da4540077d3601eb1c", size = 7615, upload-time = "2023-10-07T05:32:18.335Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e7/05/c19819d5e3d95294a6f5947fb9b9629efb316b96de511b418c53d245aae6/cycler-0.12.1-py3-none-any.whl", hash = "sha256:85cef7cff222d8644161529808465972e51340599459b8ac3ccbac5a854e0d30", size = 8321, upload-time = "2023-10-07T05:32:16.783Z" },
-]
-
-[[package]]
-name = "datetime"
-version = "5.4"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "pytz" },
-    { name = "zope-interface" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/7e/86/2bd8fa8b63c91008c4f26fb2c7b4d661abf5a151db474e298e1c572caa57/DateTime-5.4.tar.gz", hash = "sha256:568ea851d40773d846c0b5efe260aecb717c2b933c052a3c13b712809c16b57d", size = 63415, upload-time = "2023-12-15T13:46:15.483Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/ff/d5/f508192a563ab7415d1efbbe8d39cb9f0e510a1f6aaee3ca7d4ffed2a194/DateTime-5.4-py3-none-any.whl", hash = "sha256:88caf4d2441fe479038f4740a1071953686f7c1ed6c9e8c7df9ebe84e592f0c6", size = 52512, upload-time = "2023-12-15T13:46:07.638Z" },
 ]
 
 [[package]]
@@ -1068,9 +1076,8 @@ wheels = [
 [[package]]
 name = "jkp-data"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
-    { name = "datetime" },
     { name = "duckdb" },
     { name = "fastexcel" },
     { name = "ibis-framework", extra = ["duckdb", "postgres"] },
@@ -1084,6 +1091,7 @@ dependencies = [
     { name = "pycryptodomex" },
     { name = "sqlalchemy" },
     { name = "tqdm" },
+    { name = "typer" },
 ]
 
 [package.dev-dependencies]
@@ -1104,20 +1112,20 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "datetime", specifier = "==5.4" },
-    { name = "duckdb", specifier = "==1.4.3" },
+    { name = "duckdb", specifier = ">=1.4.3" },
     { name = "fastexcel", specifier = ">=0.16.0" },
-    { name = "ibis-framework", extras = ["duckdb", "postgres"], specifier = "==11.0" },
-    { name = "keyring", specifier = "==25.6.0" },
-    { name = "keyrings-alt", specifier = "==5.0.2" },
-    { name = "numpy", specifier = "==1.26.4" },
-    { name = "polars", specifier = "==1.34.0" },
-    { name = "polars-ds", specifier = "==0.10.2" },
-    { name = "polars-ols", specifier = "==0.3.5" },
-    { name = "pyarrow", specifier = "==16.1.0" },
-    { name = "pycryptodomex", specifier = "==3.23.0" },
-    { name = "sqlalchemy", specifier = "==1.4.49" },
-    { name = "tqdm", specifier = "==4.66.5" },
+    { name = "ibis-framework", extras = ["duckdb", "postgres"], specifier = ">=11.0" },
+    { name = "keyring", specifier = ">=25.6.0" },
+    { name = "keyrings-alt", specifier = ">=5.0.2" },
+    { name = "numpy", specifier = ">=1.26.4" },
+    { name = "polars", specifier = ">=1.34.0" },
+    { name = "polars-ds", specifier = ">=0.10.2" },
+    { name = "polars-ols", specifier = ">=0.3.5" },
+    { name = "pyarrow", specifier = ">=16.1.0" },
+    { name = "pycryptodomex", specifier = ">=3.23.0" },
+    { name = "sqlalchemy", specifier = ">=1.4.49" },
+    { name = "tqdm", specifier = ">=4.66.5" },
+    { name = "typer", specifier = ">=0.15.0" },
 ]
 
 [package.metadata.requires-dev]
@@ -2747,6 +2755,15 @@ wheels = [
 ]
 
 [[package]]
+name = "shellingham"
+version = "1.5.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/58/15/8b3609fd3830ef7b27b655beb4b4e9c62313a4e8da8c676e142cc210d58e/shellingham-1.5.4.tar.gz", hash = "sha256:8dbca0739d487e5bd35ab3ca4b36e11c4078f3a234bfce294b0a0291363404de", size = 10310, upload-time = "2023-10-24T04:13:40.426Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e0/f9/0595336914c5619e5f28a1fb793285925a8cd4b432c9da0a987836c7f822/shellingham-1.5.4-py2.py3-none-any.whl", hash = "sha256:7ecfff8f2fd72616f7481040475a65b2bf8af90a56c89140852d1120324e8686", size = 9755, upload-time = "2023-10-24T04:13:38.866Z" },
+]
+
+[[package]]
 name = "six"
 version = "1.17.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2938,6 +2955,21 @@ wheels = [
 ]
 
 [[package]]
+name = "typer"
+version = "0.24.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "annotated-doc" },
+    { name = "click" },
+    { name = "rich" },
+    { name = "shellingham" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f5/24/cb09efec5cc954f7f9b930bf8279447d24618bb6758d4f6adf2574c41780/typer-0.24.1.tar.gz", hash = "sha256:e39b4732d65fbdcde189ae76cf7cd48aeae72919dea1fdfc16593be016256b45", size = 118613, upload-time = "2026-02-21T16:54:40.609Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4a/91/48db081e7a63bb37284f9fbcefda7c44c277b18b0e13fbc36ea2335b71e6/typer-0.24.1-py3-none-any.whl", hash = "sha256:112c1f0ce578bfb4cab9ffdabc68f031416ebcc216536611ba21f04e9aa84c9e", size = 56085, upload-time = "2026-02-21T16:54:41.616Z" },
+]
+
+[[package]]
 name = "typing-extensions"
 version = "4.15.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3025,30 +3057,4 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/e3/02/0f2892c661036d50ede074e376733dca2ae7c6eb617489437771209d4180/zipp-3.23.0.tar.gz", hash = "sha256:a07157588a12518c9d4034df3fbbee09c814741a33ff63c05fa29d26a2404166", size = 25547, upload-time = "2025-06-08T17:06:39.4Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/2e/54/647ade08bf0db230bfea292f893923872fd20be6ac6f53b2b936ba839d75/zipp-3.23.0-py3-none-any.whl", hash = "sha256:071652d6115ed432f5ce1d34c336c0adfd6a884660d1e9712a256d3d3bd4b14e", size = 10276, upload-time = "2025-06-08T17:06:38.034Z" },
-]
-
-[[package]]
-name = "zope-interface"
-version = "8.0.1"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/88/3a/7fcf02178b8fad0a51e67e32765cd039ae505d054d744d76b8c2bbcba5ba/zope_interface-8.0.1.tar.gz", hash = "sha256:eba5610d042c3704a48222f7f7c6ab5b243ed26f917e2bc69379456b115e02d1", size = 253746, upload-time = "2025-09-25T05:55:51.285Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/f2/2f/c10c739bcb9b072090c97c2e08533777497190daa19d190d72b4cce9c7cb/zope_interface-8.0.1-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:4bd01022d2e1bce4a4a4ed9549edb25393c92e607d7daa6deff843f1f68b479d", size = 207903, upload-time = "2025-09-25T05:58:21.671Z" },
-    { url = "https://files.pythonhosted.org/packages/b5/e1/9845ac3697f108d9a1af6912170c59a23732090bbfb35955fe77e5544955/zope_interface-8.0.1-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:29be8db8b712d94f1c05e24ea230a879271d787205ba1c9a6100d1d81f06c69a", size = 208345, upload-time = "2025-09-25T05:58:24.217Z" },
-    { url = "https://files.pythonhosted.org/packages/f2/49/6573bc8b841cfab18e80c8e8259f1abdbbf716140011370de30231be79ad/zope_interface-8.0.1-cp311-cp311-manylinux1_i686.manylinux2014_i686.manylinux_2_17_i686.manylinux_2_5_i686.whl", hash = "sha256:51ae1b856565b30455b7879fdf0a56a88763b401d3f814fa9f9542d7410dbd7e", size = 255027, upload-time = "2025-09-25T05:58:19.975Z" },
-    { url = "https://files.pythonhosted.org/packages/e2/fd/908b0fd4b1ab6e412dfac9bd2b606f2893ef9ba3dd36d643f5e5b94c57b3/zope_interface-8.0.1-cp311-cp311-manylinux1_x86_64.manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:d2e7596149cb1acd1d4d41b9f8fe2ffc0e9e29e2e91d026311814181d0d9efaf", size = 259800, upload-time = "2025-09-25T05:58:11.487Z" },
-    { url = "https://files.pythonhosted.org/packages/dc/78/8419a2b4e88410520ed4b7f93bbd25a6d4ae66c4e2b131320f2b90f43077/zope_interface-8.0.1-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:b2737c11c34fb9128816759864752d007ec4f987b571c934c30723ed881a7a4f", size = 260978, upload-time = "2025-09-25T06:26:24.483Z" },
-    { url = "https://files.pythonhosted.org/packages/e5/90/caf68152c292f1810e2bd3acd2177badf08a740aa8a348714617d6c9ad0b/zope_interface-8.0.1-cp311-cp311-win_amd64.whl", hash = "sha256:cf66e4bf731aa7e0ced855bb3670e8cda772f6515a475c6a107bad5cb6604103", size = 212155, upload-time = "2025-09-25T05:59:40.318Z" },
-    { url = "https://files.pythonhosted.org/packages/dc/a6/0f08713ddda834c428ebf97b2a7fd8dea50c0100065a8955924dbd94dae8/zope_interface-8.0.1-cp312-cp312-macosx_10_9_x86_64.whl", hash = "sha256:115f27c1cc95ce7a517d960ef381beedb0a7ce9489645e80b9ab3cbf8a78799c", size = 208609, upload-time = "2025-09-25T05:58:53.698Z" },
-    { url = "https://files.pythonhosted.org/packages/e9/5e/d423045f54dc81e0991ec655041e7a0eccf6b2642535839dd364b35f4d7f/zope_interface-8.0.1-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:af655c573b84e3cb6a4f6fd3fbe04e4dc91c63c6b6f99019b3713ef964e589bc", size = 208797, upload-time = "2025-09-25T05:58:56.258Z" },
-    { url = "https://files.pythonhosted.org/packages/c6/43/39d4bb3f7a80ebd261446792493cfa4e198badd47107224f5b6fe1997ad9/zope_interface-8.0.1-cp312-cp312-manylinux1_i686.manylinux2014_i686.manylinux_2_17_i686.manylinux_2_5_i686.whl", hash = "sha256:23f82ef9b2d5370750cc1bf883c3b94c33d098ce08557922a3fbc7ff3b63dfe1", size = 259242, upload-time = "2025-09-25T05:58:21.602Z" },
-    { url = "https://files.pythonhosted.org/packages/da/29/49effcff64ef30731e35520a152a9dfcafec86cf114b4c2aff942e8264ba/zope_interface-8.0.1-cp312-cp312-manylinux1_x86_64.manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:35a1565d5244997f2e629c5c68715b3d9d9036e8df23c4068b08d9316dcb2822", size = 264696, upload-time = "2025-09-25T05:58:13.351Z" },
-    { url = "https://files.pythonhosted.org/packages/c7/39/b947673ec9a258eeaa20208dd2f6127d9fbb3e5071272a674ebe02063a78/zope_interface-8.0.1-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:029ea1db7e855a475bf88d9910baab4e94d007a054810e9007ac037a91c67c6f", size = 264229, upload-time = "2025-09-25T06:26:26.226Z" },
-    { url = "https://files.pythonhosted.org/packages/8f/ee/eed6efd1fc3788d1bef7a814e0592d8173b7fe601c699b935009df035fc2/zope_interface-8.0.1-cp312-cp312-win_amd64.whl", hash = "sha256:0beb3e7f7dc153944076fcaf717a935f68d39efa9fce96ec97bafcc0c2ea6cab", size = 212270, upload-time = "2025-09-25T05:58:53.584Z" },
-    { url = "https://files.pythonhosted.org/packages/5f/dc/3c12fca01c910c793d636ffe9c0984e0646abaf804e44552070228ed0ede/zope_interface-8.0.1-cp313-cp313-macosx_10_9_x86_64.whl", hash = "sha256:c7cc027fc5c61c5d69e5080c30b66382f454f43dc379c463a38e78a9c6bab71a", size = 208992, upload-time = "2025-09-25T05:58:40.712Z" },
-    { url = "https://files.pythonhosted.org/packages/46/71/6127b7282a3e380ca927ab2b40778a9c97935a4a57a2656dadc312db5f30/zope_interface-8.0.1-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:fcf9097ff3003b7662299f1c25145e15260ec2a27f9a9e69461a585d79ca8552", size = 209051, upload-time = "2025-09-25T05:58:42.182Z" },
-    { url = "https://files.pythonhosted.org/packages/56/86/4387a9f951ee18b0e41fda77da77d59c33e59f04660578e2bad688703e64/zope_interface-8.0.1-cp313-cp313-manylinux1_i686.manylinux2014_i686.manylinux_2_17_i686.manylinux_2_5_i686.whl", hash = "sha256:6d965347dd1fb9e9a53aa852d4ded46b41ca670d517fd54e733a6b6a4d0561c2", size = 259223, upload-time = "2025-09-25T05:58:23.191Z" },
-    { url = "https://files.pythonhosted.org/packages/61/08/ce60a114466abc067c68ed41e2550c655f551468ae17b4b17ea360090146/zope_interface-8.0.1-cp313-cp313-manylinux1_x86_64.manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:9a3b8bb77a4b89427a87d1e9eb969ab05e38e6b4a338a9de10f6df23c33ec3c2", size = 264690, upload-time = "2025-09-25T05:58:15.052Z" },
-    { url = "https://files.pythonhosted.org/packages/36/9a/62a9ba3a919594605a07c34eee3068659bbd648e2fa0c4a86d876810b674/zope_interface-8.0.1-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:87e6b089002c43231fb9afec89268391bcc7a3b66e76e269ffde19a8112fb8d5", size = 264201, upload-time = "2025-09-25T06:26:27.797Z" },
-    { url = "https://files.pythonhosted.org/packages/da/06/8fe88bd7edef60566d21ef5caca1034e10f6b87441ea85de4bbf9ea74768/zope_interface-8.0.1-cp313-cp313-win_amd64.whl", hash = "sha256:64a43f5280aa770cbafd0307cb3d1ff430e2a1001774e8ceb40787abe4bb6658", size = 212273, upload-time = "2025-09-25T06:00:25.398Z" },
 ]

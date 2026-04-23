@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import datetime
 import functools
 import operator
@@ -7,15 +9,20 @@ import time
 from datetime import date
 from math import exp, sqrt
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .paths import DataPaths
 
 import duckdb
 import ibis
 import polars as pl
 import polars_ds as pds
 import polars_ols  # noqa: F401 - required for least_squares method on polars expressions
-from config import MAIN_FILTERS
 from ibis import _
 from polars import col
+
+from .config import MAIN_FILTERS
 
 
 def fl_none():
@@ -67,22 +74,35 @@ def measure_time(func):
 
 
 @measure_time
-def setup_folder_structure():
+def setup_folder_structure(paths: DataPaths) -> None:
     """
     Description:
-        Create the project’s folder structure if missing.
+        Create the pipeline’s folder structure under the user-specified output directory.
 
     Steps:
-        1) Make directories: raw_tables, raw_data_dfs, characteristics, return_data, accounting_data, other_output.
+        1) Create directories: raw_tables, raw_data_dfs, characteristics, return_data, accounting_data, other_output, portfolios.
+        2) Copy the data README (license and citation info) into the output directory.
+        3) Change working directory to interim_dir for subsequent pipeline functions.
 
     Output:
-        Folders created on disk (no return value).
+        Folders created on disk (no return value). Working directory set to paths.interim_dir.
     """
-    os.chdir(os.path.join(os.path.dirname(__file__), "..", "data/interim"))
-    os.system(
-        "mkdir -p raw_data_dfs ../raw/raw_tables ../processed/characteristics ../processed/return_data ../processed/accounting_data ../processed/other_output"
+    import shutil
+
+    from .paths import get_data_readme_path
+
+    paths.interim_dir.mkdir(parents=True, exist_ok=True)
+    (paths.interim_dir / "raw_data_dfs").mkdir(exist_ok=True)
+    paths.raw_tables_dir.mkdir(parents=True, exist_ok=True)
+    (paths.processed_dir / "characteristics").mkdir(parents=True, exist_ok=True)
+    (paths.processed_dir / "return_data" / "daily_rets_by_country").mkdir(
+        parents=True, exist_ok=True
     )
-    os.system("mkdir -p ../processed/return_data/daily_rets_by_country")
+    (paths.processed_dir / "accounting_data").mkdir(parents=True, exist_ok=True)
+    (paths.processed_dir / "other_output").mkdir(parents=True, exist_ok=True)
+    (paths.processed_dir / "portfolios").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(get_data_readme_path(), paths.base_dir / "README.md")
+    os.chdir(paths.interim_dir)
 
 
 def collect_and_write(df, filename, collect_streaming=False):
@@ -1346,7 +1366,8 @@ def gen_comp_msf():
         2) Load both; select a common column set and cast types consistently.
         3) UNION the two sources; for each {gvkey,iid,eom} window count n rows.
         4) Keep either the single row (n=1) or, if n=2, prefer source=1 (SECD).
-        5) Drop helper columns and deduplicate on {gvkey, iid, eom}.
+        5) Drop helper columns and deduplicate on {gvkey, iid, eom}, keeping the
+           row with the latest datadate (closest to month-end).
         6) Write to __comp_msf.parquet.
 
     Output:
@@ -1393,12 +1414,22 @@ def gen_comp_msf():
         .cast({"ajexdi": "float", "prc_local": "float"})
     )
     window = ibis.window(group_by=["gvkey", "iid", "eom"], order_by="datadate")
+    # Deterministic dedup: keep latest datadate per {gvkey, iid, eom}.
+    # Investigation (issue #69) found 0 duplicates in current data, but the
+    # original .distinct() was non-deterministic — different runs/engines could
+    # pick different rows if duplicates appear in a future data vintage.
+    dedup_window = ibis.window(
+        group_by=["gvkey", "iid", "eom"],
+        order_by=ibis.desc("datadate"),
+    )
     __comp_msf = (
         secd.union(secm)
         .mutate(n=_.gvkey.count().over(window))
         .filter([(_.n == 1) | ((_.n == 2) & (_.source == 1))])
         .drop(["n", "source"])
-        .distinct(on=["gvkey", "iid", "eom"])
+        .mutate(_rn=ibis.row_number().over(dedup_window))
+        .filter(_._rn == 0)
+        .drop("_rn")
     )
     __comp_msf.to_parquet("__comp_msf.parquet")
     con.disconnect()
@@ -1501,7 +1532,8 @@ def add_primary_sec(data_path, datevar, file_name):
         2) Range-join each PRI table on {gvkey} where datevar ∈ [effdate, thrudate]; drop join keys.
         3) Left-join header; coalesce prihist* with pri* when historical value is null.
         4) Compute primary_sec = 1 if iid matches any of {prihistrow, prihistusa, prihistcan}; else 0.
-        5) Clean columns, cast to int, deduplicate on (gvkey,iid,datadate), sort, and write file_name.
+        5) Deduplicate on (gvkey, iid, datadate), preferring primary_sec=1 when
+           range-join fan-out produces conflicting classifications; sort and write file_name.
 
     Output:
         Parquet at file_name with a new integer column primary_sec ∈ {0,1}.
@@ -1563,9 +1595,17 @@ def add_primary_sec(data_path, datevar, file_name):
         FROM __data1
         ORDER BY gvkey, iid, datadate;
 
-        COPY
-            (SELECT * FROM __data2)
-        TO '{file_name}' (FORMAT parquet);
+        -- Deterministic dedup: prefer primary_sec=1 when range-join fan-out
+        -- produces conflicting classifications for the same (gvkey, iid, datadate).
+        -- Investigation (issue #69) found 40 affected groups in current data,
+        -- all for gvkey 327360 (iids 02W, 38W) where overlapping prihist records
+        -- yield both primary_sec=0 and primary_sec=1 for the same observation.
+        -- Preferring primary_sec=1 avoids wrongly excluding primary securities.
+        COPY (
+            SELECT DISTINCT ON (gvkey, iid, {datevar}) *
+            FROM __data2
+            ORDER BY gvkey, iid, {datevar}, primary_sec DESC
+        ) TO '{file_name}' (FORMAT parquet);
     """)
 
     con.close()
@@ -1607,7 +1647,8 @@ def gen_returns_df(freq):
 
     Steps:
         1) Determine ret_lag_dif: monthly via MMYY difference; daily via day difference.
-        2) Filter valid rows (ri not null; prcstd in {3,4,10}); unique and sort.
+        2) Filter valid rows (ri not null; prcstd in {3,4,10}); deduplicate on
+           {gvkey,iid,datadate} keeping highest prcstd (best data quality); sort.
         3) Compute ret and ret_local as pct_change of ri and ri_local over (gvkey,iid).
         4) If iid unchanged but currency changed, set ret_local = ret (reset local base).
         5) Null-out ±∞/NaN returns; select core columns and collect.
@@ -1625,8 +1666,15 @@ def gen_returns_df(freq):
 
     base = pl.scan_parquet(f"__comp_{freq}sf.parquet")
     __returns = (
+        # Deterministic dedup: keep highest prcstd (Compustat data-quality ranking:
+        # 3=bid/ask avg, 4=official close, 10=last available price).
+        # Investigation (issue #69) found 0 duplicates in current monthly and daily
+        # data, but the original .unique() was non-deterministic. The upstream
+        # FULL OUTER JOIN in gen_comp_dsf() could produce duplicates if NA and
+        # Global Compustat have differing computed values for the same security-date.
         base.filter((col("ri").is_not_null()) & (col("prcstd").is_in([3, 4, 10])))
-        .unique(["gvkey", "iid", "datadate"])
+        .sort(["gvkey", "iid", "datadate", "prcstd"])
+        .unique(["gvkey", "iid", "datadate"], keep="last")
         .sort(["gvkey", "iid", "datadate"])
         .with_columns(
             ret=col("ri").pct_change().over(["gvkey", "iid"]),
@@ -2559,8 +2607,9 @@ def ff_ind_class(data_path: str) -> None:
     """
     # The parser can handle other Fama-French classifications
     # (e.g., Siccodes5.txt through Siccodes48.txt).
-    raw_dir = os.path.join(os.path.dirname(__file__), "..", "data", "raw")
-    mapping = _parse_siccodes_file(os.path.join(raw_dir, "Siccodes49.txt"), label="ff49").lazy()
+    from .paths import get_siccodes_path
+
+    mapping = _parse_siccodes_file(str(get_siccodes_path()), label="ff49").lazy()
     data = pl.scan_parquet(data_path)
     data.join(mapping, on="sic", how="left").collect().write_parquet("__msf_world3.parquet")
 
@@ -7703,7 +7752,7 @@ def filter_world():
 
 
 @measure_time
-def save_main_data():
+def save_main_data(paths: DataPaths) -> None:
     """
     Description:
         Compute lagged market equity and export country-level files.
@@ -7732,7 +7781,7 @@ def save_main_data():
     data.select(pl.all().shrink_dtype()).sink_parquet("world_data_output_temp.parquet")
     os.replace("world_data_output_temp.parquet", "world_data_output.parquet")
 
-    os.chdir(os.path.join(os.path.dirname(__file__), "..", "data/processed"))
+    os.chdir(paths.processed_dir)
 
     OUT_DIR = "characteristics"
     con = duckdb.connect()

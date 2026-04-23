@@ -13,7 +13,6 @@ Paper Reference: Jensen, Kelly, Pedersen (2023), "Is There a Replication Crisis 
 
 from __future__ import annotations
 
-import sys
 from datetime import date
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -21,9 +20,7 @@ from unittest.mock import MagicMock, patch
 import polars as pl
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "code"))
-
-from config import END_DATE, MAIN_FILTERS
+from jkp.data.config import END_DATE, MAIN_FILTERS
 
 # =============================================================================
 # Tests: config
@@ -81,8 +78,8 @@ class TestDownloadWrdsTable:
     def _patch_helpers(self):
         """Patch get_columns and build_projection for all tests."""
         with (
-            patch("aux_functions.get_columns", return_value=["col_a", "col_b"]),
-            patch("aux_functions.build_projection", return_value="*"),
+            patch("jkp.data.aux_functions.get_columns", return_value=["col_a", "col_b"]),
+            patch("jkp.data.aux_functions.build_projection", return_value="*"),
         ):
             yield
 
@@ -92,7 +89,7 @@ class TestDownloadWrdsTable:
         end_date: date | None = None,
     ) -> str:
         """Call download_wrds_table with a mock conn and return the executed SQL."""
-        from aux_functions import download_wrds_table
+        from jkp.data.aux_functions import download_wrds_table
 
         mock_conn = MagicMock()
         download_wrds_table(
@@ -163,14 +160,14 @@ class TestDownloadRawDataTables:
     def captured_calls(self):
         """Run download_raw_data_tables and capture all download_wrds_table calls."""
         with (
-            patch("aux_functions.gen_wrds_connection_info", return_value="host=test"),
-            patch("aux_functions.duckdb") as mock_duckdb,
-            patch("aux_functions.download_wrds_table") as mock_download,
+            patch("jkp.data.aux_functions.gen_wrds_connection_info", return_value="host=test"),
+            patch("jkp.data.aux_functions.duckdb") as mock_duckdb,
+            patch("jkp.data.aux_functions.download_wrds_table") as mock_download,
         ):
             mock_conn = MagicMock()
             mock_duckdb.connect.return_value = mock_conn
 
-            from aux_functions import download_raw_data_tables
+            from jkp.data.aux_functions import download_raw_data_tables
 
             download_raw_data_tables("user", "pass", end_date=date(2025, 12, 31))
             yield mock_download.call_args_list
@@ -245,35 +242,38 @@ class TestSaveMainData:
     computation and that all rows pass through.
     """
 
-    def test_no_end_date_parameter(self):
-        """save_main_data should accept no arguments (end_date removed)."""
+    def test_accepts_paths_parameter(self):
+        """save_main_data should accept a paths parameter."""
         import inspect
 
-        from aux_functions import save_main_data
+        from jkp.data.aux_functions import save_main_data
 
         # measure_time wraps the function; inspect the inner function via closure
         inner_func = save_main_data.__closure__[0].cell_contents
         sig = inspect.signature(inner_func)
-        assert len(sig.parameters) == 0, (
-            f"save_main_data should take no parameters, got: {list(sig.parameters)}"
+        assert "paths" in sig.parameters, (
+            f"save_main_data should accept 'paths' parameter, got: {list(sig.parameters)}"
         )
 
     def _run_save_main_data(self, tmp_path: Path) -> None:
         """Chdir to tmp_path, run save_main_data, and restore cwd."""
         import os
 
-        from aux_functions import save_main_data
+        from jkp.data.aux_functions import save_main_data
+        from jkp.data.paths import DataPaths
+
+        paths = DataPaths(base_dir=tmp_path)
 
         original_cwd = os.getcwd()
         os.chdir(str(tmp_path))
         try:
             with (
-                patch("aux_functions.os.chdir"),
-                patch("aux_functions.os.system"),
-                patch("aux_functions.duckdb") as mock_duckdb,
+                patch("jkp.data.aux_functions.os.chdir"),
+                patch("jkp.data.aux_functions.os.system"),
+                patch("jkp.data.aux_functions.duckdb") as mock_duckdb,
             ):
                 mock_duckdb.connect.return_value = MagicMock()
-                save_main_data()
+                save_main_data(paths)
         finally:
             os.chdir(original_cwd)
 
@@ -374,7 +374,7 @@ class TestFilterFunctions:
         """Write test data, run a filter function, and return the result."""
         import os
 
-        import aux_functions
+        import jkp.data.aux_functions as aux_functions
 
         data = self._make_test_data()
         data.write_parquet(tmp_path / source)
@@ -426,7 +426,7 @@ class TestFilterFunctions:
         """Source file should be unchanged after filtering."""
         import os
 
-        import aux_functions
+        import jkp.data.aux_functions as aux_functions
 
         data = self._make_test_data()
         data.write_parquet(tmp_path / "world_data.parquet")
@@ -445,7 +445,7 @@ class TestFilterFunctions:
         """Running filter twice should produce the same result."""
         import os
 
-        import aux_functions
+        import jkp.data.aux_functions as aux_functions
 
         data = self._make_test_data()
         data.write_parquet(tmp_path / "world_data.parquet")
@@ -466,7 +466,7 @@ class TestFilterFunctions:
         """When all rows pass the filter, all should be retained."""
         import os
 
-        import aux_functions
+        import jkp.data.aux_functions as aux_functions
 
         data = pl.DataFrame(
             {
@@ -497,7 +497,7 @@ class TestFilterFunctions:
         """When no rows pass the filter, output should be empty."""
         import os
 
-        import aux_functions
+        import jkp.data.aux_functions as aux_functions
 
         data = pl.DataFrame(
             {
