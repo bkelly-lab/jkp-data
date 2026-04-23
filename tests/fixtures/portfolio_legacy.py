@@ -351,7 +351,9 @@ def portfolios(
 
     # creating portfolios for all the characteristics
     char_pfs = []
-    for _i, x in enumerate(tqdm(chars, desc="Processing chars", unit="char", ncols=80)):
+    for _i, x in enumerate(
+        tqdm(chars, desc="Processing chars", unit="char", ncols=80, disable=True)
+    ):
         op = {}
 
         data = data.with_columns(pl.col(x).cast(pl.Float64).alias("var"))
