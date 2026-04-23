@@ -10,17 +10,13 @@ Paper Reference: Jensen, Kelly, Pedersen (2023), "Is There a Replication Crisis 
 
 from __future__ import annotations
 
-import sys
 from datetime import date
-from pathlib import Path
 
 import numpy as np
 import polars as pl
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "code"))
-
-from aux_functions import altman_z, intrinsic_value, kz_index, ohlson_o, pitroski_f
+from jkp.data.aux_functions import altman_z, intrinsic_value, kz_index, ohlson_o, pitroski_f
 
 
 def _make_date(year: int, month: int, day: int) -> date:

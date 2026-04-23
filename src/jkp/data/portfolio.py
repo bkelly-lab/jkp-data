@@ -1,17 +1,16 @@
-import argparse
 import os
 import time
 import warnings
+from pathlib import Path
 
 import polars as pl
-from config import END_DATE
-from output_writer import (
-    VALID_OUTPUT_FORMATS,
+
+from .config import END_DATE
+from .output_writer import (
     configure_output_format,
     convert_outputs_to_csv,
     write_dataframe,
 )
-from tqdm import tqdm
 
 warnings.filterwarnings(
     "ignore",
@@ -20,41 +19,36 @@ warnings.filterwarnings(
 )
 
 
-def parse_args() -> argparse.Namespace:
-    """Parse command line arguments for portfolio generation.
-
-    Description:
-        Parse CLI arguments for output format selection.
-    Steps:
-        1) Create argument parser with output-format option.
-        2) Parse and return the arguments.
-    Output:
-        argparse.Namespace with output_format attribute.
-    """
-    parser = argparse.ArgumentParser(
-        description="Generate JKP portfolio data.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  uv run python code/portfolio.py                      # Default: parquet output
-  uv run python code/portfolio.py --output-format csv  # CSV output with quoted strings
-        """,
-    )
-    parser.add_argument(
-        "--output-format",
-        choices=VALID_OUTPUT_FORMATS,
-        default="parquet",
-        help="Output file format (default: parquet)",
-    )
-    return parser.parse_args()
-
-
 # =============================================================================
 # Helper Functions
 # =============================================================================
 
 
-def add_ecdf(df: pl.DataFrame, group_cols: list[str] | None = None) -> pl.DataFrame:
+def add_ecdf(
+    df: pl.DataFrame | pl.LazyFrame,
+    group_cols: list[str] | None = None,
+) -> pl.DataFrame | pl.LazyFrame:
+    """Attach an empirical-CDF ``cdf`` column per group.
+
+    Description:
+        Builds the ECDF of the ``var`` column over rows where ``bp_stock``
+        is true (the breakpoint sample), then asof-joins the CDF values back
+        onto every row of ``df`` — bp and non-bp alike — within each group
+        defined by ``group_cols``.
+
+    Steps:
+        1) Count ``var`` occurrences per distinct value within each group on
+           the bp-stock sub-frame.
+        2) Build ``cdf_val`` as a cumulative share within each group.
+        3) Asof-join ``(var)`` within ``group_cols`` onto the full input
+           frame; non-bp rows pick up the cdf of the nearest bp value ≤ their
+           own ``var``, and rows below any bp value fall back to ``0.0``.
+
+    Output:
+        Returns the same container type as the input — LazyFrame in, LazyFrame
+        out; DataFrame in, DataFrame out — with a ``cdf`` column appended and
+        the original columns preserved.
+    """
     if group_cols is None:
         group_cols = ["eom"]
     # 1) counts of reference sample per distinct var within each group
@@ -85,6 +79,74 @@ def add_ecdf(df: pl.DataFrame, group_cols: list[str] | None = None) -> pl.DataFr
         .drop("cdf_val")
     )
     return out
+
+
+def _build_industry_daily_returns(
+    data: pl.DataFrame,
+    daily: pl.DataFrame,
+    industry_col: str,
+    bp_min_n: int,
+    excntry: str,
+    industry_transform: pl.Expr | None = None,
+) -> pl.DataFrame:
+    """Description:
+        Build daily industry portfolio returns from monthly formation-month weights.
+    Steps:
+        1) Filter to rows where industry_col is non-null; select id, eom, industry, me, me_cap.
+        2) Optionally apply industry_transform to recode the industry column.
+        3) Drop industry-month groups with fewer than bp_min_n stocks.
+        4) Compute EW/VW/VW-cap weights within each (eom, industry) group.
+        5) Join weights to daily returns for the following month.
+        6) Aggregate weighted returns by (industry, date).
+    Output:
+        DataFrame with columns [industry_col, date, n, ret_ew, ret_vw, ret_vw_cap, excntry].
+    """
+    weights_data = data.filter(pl.col(industry_col).is_not_null()).select(
+        ["id", "eom", industry_col, "me", "me_cap"]
+    )
+    if industry_transform is not None:
+        weights_data = weights_data.with_columns(industry_transform)
+
+    weights_data = (
+        weights_data.with_columns(pl.len().over([industry_col, "eom"]).alias("bp_n"))
+        .filter(pl.col("bp_n") >= bp_min_n)
+        .drop("bp_n")
+    )
+
+    weights = (
+        weights_data.group_by(["eom", industry_col])
+        .agg(
+            [
+                pl.col("id"),
+                (1 / pl.len()).alias("w_ew"),
+                (pl.col("me") / pl.col("me").sum()).alias("w_vw"),
+                (pl.col("me_cap") / pl.col("me_cap").sum()).alias("w_vw_cap"),
+            ]
+        )
+        .explode("id", "w_vw", "w_vw_cap")
+    )
+
+    result = (
+        weights.lazy()
+        .join(
+            daily.lazy(),
+            left_on=["id", "eom"],
+            right_on=["id", "eom_lag1"],
+            how="left",
+        )
+        .filter(pl.col(industry_col).is_not_null() & pl.col("ret_exc").is_not_null())
+        .group_by([industry_col, "date"])
+        .agg(
+            [
+                pl.len().alias("n"),
+                (pl.col("w_ew") * pl.col("ret_exc")).sum().alias("ret_ew"),
+                (pl.col("w_vw") * pl.col("ret_exc")).sum().alias("ret_vw"),
+                (pl.col("w_vw_cap") * pl.col("ret_exc")).sum().alias("ret_vw_cap"),
+            ]
+        )
+        .collect()
+    )
+    return result.with_columns(pl.lit(excntry).str.to_uppercase().alias("excntry"))
 
 
 # main portfolios function to create the portfolios
@@ -131,83 +193,103 @@ def portfolios(
         + ["excntry"]
     )
 
-    # Load the data
-    data = pl.read_parquet(file_path, columns=columns)
+    # Build the full preprocessing chain as a single lazy pipeline. This lets
+    # polars push predicate/null filters into the parquet reader (skipping row
+    # groups on real production files) and fuse the ~15 intermediate steps into
+    # one pass instead of allocating ~15 intermediate DataFrames.
+    cast_exclude = {"id", "eom", "source_crsp", "size_grp", "excntry"}
+    cast_cols = [c for c in columns if c not in cast_exclude]
 
-    # capping me at nyse cut-off
-    data = data.join(nyse_size_cutoffs.select(["eom", "nyse_p80"]), on="eom", how="left")
-    data = data.with_columns(
-        pl.min_horizontal(pl.col("me"), pl.col("nyse_p80")).alias("me_cap")
-    ).drop("nyse_p80")
+    if bps == "nyse":
+        bp_stock_expr = (
+            ((pl.col("crsp_exchcd") == 1) & pl.col("comp_exchg").is_null())
+            | ((pl.col("comp_exchg") == 11) & pl.col("crsp_exchcd").is_null())
+        ).alias("bp_stock")
+    else:  # "non_mc"
+        bp_stock_expr = pl.col("size_grp").is_in(["mega", "large", "small"]).alias("bp_stock")
 
-    # ensuring numerical columns are float-added later:
-    exclude = ["id", "eom", "source_crsp", "size_grp", "excntry"]
-    for i in data.columns:
-        if i not in exclude:
-            data = data.with_columns(pl.col(i).cast(pl.Float64))
-
-    # Screens
-    if len(source) == 1:
-        if source[0] == "CRSP":
-            data = data.filter(pl.col("source_crsp") == 1)
-        elif source[0] == "COMPUSTAT":
-            data = data.filter(pl.col("source_crsp") == 0)
-    data = data.filter(
-        (pl.col("size_grp").is_not_null())
-        & (pl.col("me").is_not_null())
-        & (pl.col("ret_exc_lead1m").is_not_null())
+    data_lazy = (
+        pl.scan_parquet(file_path)
+        .select(columns)
+        .join(nyse_size_cutoffs.lazy().select(["eom", "nyse_p80"]), on="eom", how="left")
+        .with_columns(pl.min_horizontal(pl.col("me"), pl.col("nyse_p80")).alias("me_cap"))
+        .drop("nyse_p80")
+        .with_columns([pl.col(c).cast(pl.Float64) for c in cast_cols])
+        .filter(
+            (pl.col("size_grp").is_not_null())
+            & (pl.col("me").is_not_null())
+            & (pl.col("ret_exc_lead1m").is_not_null())
+        )
+        .with_columns(bp_stock_expr)
     )
 
-    # Daily Returns
+    # Conditional source screen
+    if len(source) == 1:
+        if source[0] == "CRSP":
+            data_lazy = data_lazy.filter(pl.col("source_crsp") == 1)
+        elif source[0] == "COMPUSTAT":
+            data_lazy = data_lazy.filter(pl.col("source_crsp") == 0)
+
+    # Daily returns as a lazy chain (scan_parquet + winsorization).
+    daily_file_path = f"{data_path}/return_data/daily_rets_by_country/{excntry}.parquet"
     if daily_pf:
-        daily_file_path = f"{data_path}/return_data/daily_rets_by_country/{excntry}.parquet"
-        daily = pl.read_parquet(daily_file_path, columns=["id", "date", "ret_exc"])
-        # daily = daily.with_columns(pl.col("date").cast(pl.Utf8).str.strptime(pl.Date, format="%Y%m%d").alias("date"))
-        daily = daily.with_columns(
-            (pl.col("date").dt.month_start().dt.offset_by("-1d")).alias("eom_lag1")
+        daily_lazy = (
+            pl.scan_parquet(daily_file_path)
+            .select(["id", "date", "ret_exc"])
+            .with_columns((pl.col("date").dt.month_start().dt.offset_by("-1d")).alias("eom_lag1"))
+            .with_columns(pl.col("ret_exc").cast(pl.Float64))
         )
-        # ensuring numerical columns are float-added later:
-        daily = daily.with_columns(pl.col("ret_exc").cast(pl.Float64))
+    else:
+        daily_lazy = None
 
+    # Monthly winsorization: clip Compustat ret_exc_lead1m to CRSP quantiles.
     if wins_ret:
-        data = data.join(
-            ret_cutoffs.select(["eom_lag1", "ret_exc_0_1", "ret_exc_99_9"]).rename(
-                {"eom_lag1": "eom", "ret_exc_0_1": "p001", "ret_exc_99_9": "p999"}
-            ),
-            on="eom",
-            how="left",
-        )
-        data = data.with_columns(
-            pl.when((pl.col("source_crsp") == 0) & (pl.col("ret_exc_lead1m") > pl.col("p999")))
-            .then(pl.col("p999"))
-            .when((pl.col("source_crsp") == 0) & (pl.col("ret_exc_lead1m") < pl.col("p001")))
-            .then(pl.col("p001"))
-            .otherwise(pl.col("ret_exc_lead1m"))
-            .alias("ret_exc_lead1m")
-        ).drop(["source_crsp", "p001", "p999"])
-
-        if daily_pf:
-            # Derive eom from date for joining with daily return cutoffs
-            daily = daily.with_columns(pl.col("date").dt.month_end().alias("eom"))
-
-            # Joining with daily return cutoffs
-            daily = daily.join(
-                ret_cutoffs_daily.select(["eom", "ret_exc_0_1", "ret_exc_99_9"]).rename(
-                    {"ret_exc_0_1": "p001", "ret_exc_99_9": "p999"}
-                ),
+        data_lazy = (
+            data_lazy.join(
+                ret_cutoffs.lazy()
+                .select(["eom_lag1", "ret_exc_0_1", "ret_exc_99_9"])
+                .rename({"eom_lag1": "eom", "ret_exc_0_1": "p001", "ret_exc_99_9": "p999"}),
                 on="eom",
                 how="left",
             )
-
-            # Applying winsorization to daily returns for Compustat data (id > 99999)
-            daily = daily.with_columns(
-                pl.when((pl.col("id") > 99999) & (pl.col("ret_exc") > pl.col("p999")))
+            .with_columns(
+                pl.when((pl.col("source_crsp") == 0) & (pl.col("ret_exc_lead1m") > pl.col("p999")))
                 .then(pl.col("p999"))
-                .when((pl.col("id") > 99999) & (pl.col("ret_exc") < pl.col("p001")))
+                .when((pl.col("source_crsp") == 0) & (pl.col("ret_exc_lead1m") < pl.col("p001")))
                 .then(pl.col("p001"))
-                .otherwise(pl.col("ret_exc"))
-                .alias("ret_exc")
-            ).drop(["p001", "p999", "eom"])
+                .otherwise(pl.col("ret_exc_lead1m"))
+                .alias("ret_exc_lead1m")
+            )
+            .drop(["source_crsp", "p001", "p999"])
+        )
+
+        # Daily winsorization
+        if daily_pf:
+            daily_lazy = (
+                daily_lazy.with_columns(pl.col("date").dt.month_end().alias("eom"))
+                .join(
+                    ret_cutoffs_daily.lazy()
+                    .select(["eom", "ret_exc_0_1", "ret_exc_99_9"])
+                    .rename({"ret_exc_0_1": "p001", "ret_exc_99_9": "p999"}),
+                    on="eom",
+                    how="left",
+                )
+                .with_columns(
+                    pl.when((pl.col("id") > 99999) & (pl.col("ret_exc") > pl.col("p999")))
+                    .then(pl.col("p999"))
+                    .when((pl.col("id") > 99999) & (pl.col("ret_exc") < pl.col("p001")))
+                    .then(pl.col("p001"))
+                    .otherwise(pl.col("ret_exc"))
+                    .alias("ret_exc")
+                )
+                .drop(["p001", "p999", "eom"])
+            )
+
+    # Collect the lazy chain once — the single fused read + preprocess pass.
+    data = data_lazy.collect()
+
+    # Collect daily lazy frame if present (needed for industry returns and per-char daily).
+    daily = daily_lazy.collect() if daily_lazy is not None else None
 
     # standardizing signals
     if signals_standardize and signals:
@@ -231,11 +313,9 @@ def portfolios(
 
     if ind_pf:
         # Filter data where 'gics' is not null and select required columns
-        ind_data = data.filter(
-            pl.col("gics").is_not_null()
-        ).select(
+        ind_data = data.filter(pl.col("gics").is_not_null()).select(
             ["eom", "gics", "excntry", "ret_exc_lead1m", "me", "me_cap"]
-        )  # original code didn;t select 'excntry' in the above steps in the data table, updating that
+        )
 
         # Process GICS codes (extract first 2 digits and convert to numeric)
         ind_data = ind_data.with_columns(
@@ -262,7 +342,7 @@ def portfolios(
         ind_gics = ind_gics.filter(pl.col("n") >= bp_min_n)
 
         # Estimate industry portfolios by Fama-French portfolios for US data
-        if excntry == "usa":
+        if excntry.lower() == "usa":
             ind_data = data.filter(pl.col("ff49").is_not_null()).select(
                 ["eom", "ff49", "ret_exc_lead1m", "me", "me_cap"]
             )
@@ -284,16 +364,53 @@ def portfolios(
             )
             ind_ff49 = ind_ff49.filter(pl.col("n") >= bp_min_n)
 
-    # creating portfolios for all the characteristics
-    char_pfs = []
-    for _i, x in enumerate(tqdm(chars, desc="Processing chars", unit="char", ncols=80)):
-        op = {}
+        if daily_pf:
+            ind_gics_daily = _build_industry_daily_returns(
+                data,
+                daily,
+                "gics",
+                bp_min_n,
+                excntry,
+                industry_transform=pl.col("gics")
+                .cast(pl.Utf8)
+                .str.slice(0, 2)
+                .cast(pl.Int64)
+                .alias("gics"),
+            )
 
-        data = data.with_columns(pl.col(x).cast(pl.Float64).alias("var"))
+            if excntry.lower() == "usa":
+                ind_ff49_daily = _build_industry_daily_returns(
+                    data,
+                    daily,
+                    "ff49",
+                    bp_min_n,
+                    excntry,
+                )
+
+    # Creating portfolios for all the characteristics.
+    #
+    # Each characteristic builds a per-char lazy pipeline (ECDF -> pf
+    # assignment -> monthly/daily aggregation).  The pipelines accumulate in
+    # ``pf_returns_lazys`` / ``pf_daily_lazys`` and are batch-collected via
+    # ``pl.collect_all`` so polars can execute them concurrently on its thread
+    # pool.  The signals=True branch is the exception: it needs the
+    # intermediate ``sub`` frame alive after each collect to compute
+    # pf_signals, so it collects eagerly per-char.
+    pf_returns_lazys: list[pl.LazyFrame] = []
+    pf_daily_lazys: list[pl.LazyFrame] = []
+    char_pfs: list[dict] = []  # populated only when signals=True
+
+    # Single shared LazyFrame node for the preprocessed data. All per-char
+    # pipelines branch off this node, enabling polars' common-subplan
+    # elimination (CSE) in collect_all to avoid redundant scans.
+    data_lazy = data.lazy()
+
+    for x in chars:
+        # Alias current char into a 'var' column on the per-char subset.
+        # Operate on `sub` only -- `data` is not mutated.
         if not signals:
-            # Select rows where 'var' is not missing and only specific columns
             sub = (
-                data.lazy()
+                data_lazy.with_columns(pl.col(x).cast(pl.Float64).alias("var"))
                 .filter(pl.col("var").is_not_null())
                 .select(
                     [
@@ -306,53 +423,44 @@ def portfolios(
                         "me_cap",
                         "crsp_exchcd",
                         "comp_exchg",
+                        "bp_stock",
                     ]
                 )
             )
         else:
-            # Select rows where 'var' is not missing, retaining all columns
-            sub = data.lazy().filter(pl.col("var").is_not_null())
-
-        if bps == "nyse":
-            # Create 'bp_stock' column for NYSE criteria
-            sub = sub.with_columns(
-                (
-                    ((pl.col("crsp_exchcd") == 1) & pl.col("comp_exchg").is_null())
-                    | ((pl.col("comp_exchg") == 11) & pl.col("crsp_exchcd").is_null())
-                ).alias("bp_stock")
-            )
-
-        elif bps == "non_mc":
-            # Create 'bp_stock' column for non-microcap criteria
-            sub = sub.with_columns(
-                pl.col("size_grp").is_in(["mega", "large", "small"]).alias("bp_stock")
+            sub = data_lazy.with_columns(pl.col(x).cast(pl.Float64).alias("var")).filter(
+                pl.col("var").is_not_null()
             )
 
         sub = sub.with_columns(bp_n=pl.sum("bp_stock").over("eom")).filter(
             pl.col("bp_n") >= bp_min_n
         )
 
-        # Ensure that 'sub' is not empty
-        if sub.limit(1).collect().height > 0:
-            sub = add_ecdf(sub)
+        # Skip chars with no data after the bp_n filter.  For the
+        # collect_all path we cannot cheaply check emptiness without an
+        # eager collect, so we optimistically build the lazy pipeline and
+        # drop empty results after the batch collect.  For signals=True
+        # we still need the eager gate because the pf_signals block
+        # requires intermediate access to ``sub``.
+        if signals and sub.limit(1).collect().height == 0:
+            continue
 
-            # Step 1: Find the minimum CDF value within each 'eom' group
-            sub = sub.with_columns(pl.col("cdf").min().over("eom").alias("min_cdf"))
+        sub = add_ecdf(sub)
+        sub = sub.with_columns(pl.col("cdf").min().over("eom").alias("min_cdf"))
+        sub = sub.with_columns(
+            pl.when(pl.col("cdf") == pl.col("min_cdf"))
+            .then(0.00000001)
+            .otherwise(pl.col("cdf"))
+            .alias("cdf")
+        )
+        sub = sub.with_columns(
+            (pl.col("cdf") * pfs).ceil().clip(lower_bound=1, upper_bound=pfs).alias("pf")
+        )
 
-            # Step 2: Adjust CDF values for the lowest value in each group
-            sub = sub.with_columns(
-                pl.when(pl.col("cdf") == pl.col("min_cdf"))
-                .then(0.00000001)
-                .otherwise(pl.col("cdf"))
-                .alias("cdf")
-            )
-
-            # Step 3: Calculate portfolio assignments and adjust portfolio numbers (Happens when non-bp stocks extend beyond the bp stock range)
-            sub = sub.with_columns(
-                (pl.col("cdf") * pfs).ceil().clip(lower_bound=1, upper_bound=pfs).alias("pf")
-            )
-
-            pf_returns = sub.group_by(["pf", "eom"]).agg(
+        # Monthly pf_returns lazy frame for this char.
+        pf_returns_x = (
+            sub.group_by(["pf", "eom"])
+            .agg(
                 [
                     pl.lit(x).alias("characteristic"),
                     pl.len().alias("n"),
@@ -366,44 +474,41 @@ def portfolios(
                     ).alias("ret_vw_cap"),
                 ]
             )
-            pf_returns = pf_returns.with_columns(
-                pl.col("eom").dt.offset_by("1mo").dt.month_end().alias("eom")
-            )
-            op["pf_returns"] = pf_returns.collect()
+            .with_columns(pl.col("eom").dt.offset_by("1mo").dt.month_end().alias("eom"))
+        )
 
-            if signals:
-                if signals_w == "ew":
-                    sub = sub.with_columns((1 / pl.col("eom").len()).over(["pf", "eom"]).alias("w"))
-                elif signals_w == "vw":
-                    sub = sub.with_columns(
-                        (pl.col("me") / pl.col("me").sum()).over(["pf", "eom"]).alias("w")
-                    )
-                elif signals_w == "vw_cap":
-                    sub = sub.with_columns(
-                        (pl.col("me_cap") / pl.col("me_cap").sum()).over(["pf", "eom"]).alias("w")
-                    )
+        if signals:
+            # Eager path: collect immediately, then compute pf_signals.
+            op: dict = {}
+            op["pf_returns"] = pf_returns_x.collect()
 
+            if signals_w == "ew":
+                sub = sub.with_columns((1 / pl.col("eom").len()).over(["pf", "eom"]).alias("w"))
+            elif signals_w == "vw":
                 sub = sub.with_columns(
-                    [
-                        pl.when(pl.col(var).is_null())
-                        .then(pl.lit(0))
-                        .otherwise(pl.col(var))
-                        .alias(var)
-                        for var in chars
-                    ]
+                    (pl.col("me") / pl.col("me").sum()).over(["pf", "eom"]).alias("w")
                 )
-                pf_signals = sub.with_columns(
-                    [(pl.col("w") * pl.col(var)).sum().over(["pf", "eom"]) for var in chars]
+            elif signals_w == "vw_cap":
+                sub = sub.with_columns(
+                    (pl.col("me_cap") / pl.col("me_cap").sum()).over(["pf", "eom"]).alias("w")
                 )
 
-                pf_signals = pf_signals.with_columns(
-                    [
-                        pl.lit(x).alias("characteristic"),
-                        pl.col("eom").dt.offset_by("1mo").dt.month_end().alias("eom"),
-                    ]
-                )
-                signals = pf_signals.clone()  # store in dictionary later
-                op["signals"] = signals.collect()
+            sub = sub.with_columns(
+                [
+                    pl.when(pl.col(var).is_null()).then(pl.lit(0)).otherwise(pl.col(var)).alias(var)
+                    for var in chars
+                ]
+            )
+            pf_signals = sub.with_columns(
+                [(pl.col("w") * pl.col(var)).sum().over(["pf", "eom"]) for var in chars]
+            )
+            pf_signals = pf_signals.with_columns(
+                [
+                    pl.lit(x).alias("characteristic"),
+                    pl.col("eom").dt.offset_by("1mo").dt.month_end().alias("eom"),
+                ]
+            )
+            op["signals"] = pf_signals.collect()
 
             if daily_pf:
                 weights = (
@@ -418,15 +523,13 @@ def portfolios(
                     )
                     .explode("id", "w_vw", "w_vw_cap")
                 )
-
                 daily_sub = weights.join(
                     daily.lazy(),
                     left_on=["id", "eom"],
                     right_on=["id", "eom_lag1"],
                     how="left",
                 ).filter((pl.col("pf").is_not_null()) & (pl.col("ret_exc").is_not_null()))
-
-                pf_daily = daily_sub.group_by(["pf", "date"]).agg(
+                pf_daily_x = daily_sub.group_by(["pf", "date"]).agg(
                     [
                         pl.lit(x).alias("characteristic"),
                         pl.len().alias("n"),
@@ -435,27 +538,91 @@ def portfolios(
                         ((pl.col("w_vw_cap") * pl.col("ret_exc")).sum()).alias("ret_vw_cap"),
                     ]
                 )
-                op["pf_daily"] = pf_daily.collect()
+                op["pf_daily"] = pf_daily_x.collect()
 
             char_pfs.append(op)
+        else:
+            # Lazy path: accumulate LazyFrames for batch collect_all.
+            pf_returns_lazys.append(pf_returns_x)
+
+            if daily_pf:
+                weights = (
+                    sub.group_by(["eom", "pf"])
+                    .agg(
+                        [
+                            pl.col("id"),
+                            (1 / pl.len()).alias("w_ew"),
+                            (pl.col("me") / pl.col("me").sum()).alias("w_vw"),
+                            (pl.col("me_cap") / pl.col("me_cap").sum()).alias("w_vw_cap"),
+                        ]
+                    )
+                    .explode("id", "w_vw", "w_vw_cap")
+                )
+                daily_sub = weights.join(
+                    daily.lazy(),
+                    left_on=["id", "eom"],
+                    right_on=["id", "eom_lag1"],
+                    how="left",
+                ).filter((pl.col("pf").is_not_null()) & (pl.col("ret_exc").is_not_null()))
+                pf_daily_x = daily_sub.group_by(["pf", "date"]).agg(
+                    [
+                        pl.lit(x).alias("characteristic"),
+                        pl.len().alias("n"),
+                        ((pl.col("w_ew") * pl.col("ret_exc")).sum()).alias("ret_ew"),
+                        ((pl.col("w_vw") * pl.col("ret_exc")).sum()).alias("ret_vw"),
+                        ((pl.col("w_vw_cap") * pl.col("ret_exc")).sum()).alias("ret_vw_cap"),
+                    ]
+                )
+                pf_daily_lazys.append(pf_daily_x)
+
+    # Batch-collect per-char lazy pipelines in chunks to bound peak memory.
+    # Each chunk runs its LazyFrames concurrently via collect_all; chunks are
+    # processed sequentially so at most COLLECT_CHUNK_SIZE chars' worth of
+    # sort buffers / join hash tables live simultaneously.
+    COLLECT_CHUNK_SIZE = 20
+    pf_returns_df: pl.DataFrame | None = None
+    pf_daily_df: pl.DataFrame | None = None
+
+    if signals and char_pfs:
+        pf_returns_df = pl.concat([op["pf_returns"] for op in char_pfs])
+        if daily_pf:
+            pf_daily_df = pl.concat([op["pf_daily"] for op in char_pfs])
+    elif pf_returns_lazys:
+        ret_dfs: list[pl.DataFrame] = []
+        daily_dfs: list[pl.DataFrame] = []
+        n_chars = len(pf_returns_lazys)
+        n_chunks = (n_chars + COLLECT_CHUNK_SIZE - 1) // COLLECT_CHUNK_SIZE
+        for chunk_idx, start in enumerate(range(0, n_chars, COLLECT_CHUNK_SIZE)):
+            end = min(start + COLLECT_CHUNK_SIZE, n_chars)
+            print(
+                f"   Chars {start + 1}-{end} of {n_chars} (chunk {chunk_idx + 1}/{n_chunks})",
+                flush=True,
+            )
+            chunk_ret = pf_returns_lazys[start:end]
+            chunk_daily = pf_daily_lazys[start:end] if daily_pf else []
+            collected = pl.collect_all(chunk_ret + chunk_daily)
+            n_ret_chunk = len(chunk_ret)
+            ret_dfs.extend(df for df in collected[:n_ret_chunk] if df.height > 0)
+            if daily_pf:
+                daily_dfs.extend(df for df in collected[n_ret_chunk:] if df.height > 0)
+        pf_returns_df = pl.concat(ret_dfs) if ret_dfs else None
+        if daily_pf:
+            pf_daily_df = pl.concat(daily_dfs) if daily_dfs else None
 
     output = {}
-
-    # Aggregate pf_returns
-    if len([op["pf_returns"] for op in char_pfs]) > 0:
-        output["pf_returns"] = pl.concat([op["pf_returns"] for op in char_pfs])
-    else:
-        pass
-    # Aggregate pf_daily if daily_pf is true
-    if (daily_pf) and len([op["pf_daily"] for op in char_pfs]) > 0:
-        output["pf_daily"] = pl.concat([op["pf_daily"] for op in char_pfs])
-    else:
-        pass
+    if pf_returns_df is not None:
+        output["pf_returns"] = pf_returns_df
+    if daily_pf and pf_daily_df is not None:
+        output["pf_daily"] = pf_daily_df
     # Handle industry portfolio returns if ind_pf is true
     if ind_pf:
-        output["gics_returns"] = ind_gics  # Assuming ind_gics is a DataFrame
-        if excntry == "usa":
-            output["ff49_returns"] = ind_ff49.clone()  # Assuming ind_ff49 is a DataFrame
+        output["gics_returns"] = ind_gics
+        if excntry.lower() == "usa":
+            output["ff49_returns"] = ind_ff49
+        if daily_pf:
+            output["gics_daily"] = ind_gics_daily
+            if excntry.lower() == "usa":
+                output["ff49_daily"] = ind_ff49_daily
 
     # Add excntry to pf_returns and pf_daily, and aggregate signals
     if len(output) > 0:
@@ -474,7 +641,6 @@ def portfolios(
                 )
 
     results = []
-    # if (excntry=='usa' and cmp_key['us']) or (excntry!='usa' and cmp_key['int']):
     if cmp_key:
         for x in chars:
             print(f"   CMP - {x}: {chars.index(x) + 1} out of {len(chars)}")
@@ -603,8 +769,8 @@ def regional_data(
 # =============================================================================
 
 
-def main() -> None:
-    """Main entry point for JKP portfolio generation.
+def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
+    """Run JKP portfolio generation.
 
     Description:
         Orchestrate portfolio construction: parse arguments, configure output
@@ -618,14 +784,11 @@ def main() -> None:
     Output:
         Portfolio files written to data/processed/portfolios/.
     """
-    args = parse_args()
-
-    # Configure output format
-    configure_output_format(args.output_format)
+    configure_output_format(output_format)
 
     # Setting data path and output path
-    data_path = "data/processed"
-    output_path = "data/processed/portfolios"
+    data_path = str(output_dir / "processed")
+    output_path = str(output_dir / "processed" / "portfolios")
 
     # Get list of countries from characteristics files
     countries = []
@@ -819,24 +982,29 @@ def main() -> None:
     )
 
     # Extract Necessary Information
-    # Read Factor details from Excel file
+    # Read Factor details from bundled Excel file
+    from .paths import (
+        get_cluster_labels_path,
+        get_country_classification_path,
+        get_factor_details_path,
+    )
+
     char_info = (
         pl.read_excel(
-            "https://github.com/bkelly-lab/ReplicationCrisis/raw/master/GlobalFactors/Factor%20Details.xlsx",
+            get_factor_details_path(),
             sheet_name="details",
         )
         .filter(pl.col("abr_jkp").is_not_null())
         .select([pl.col("abr_jkp").alias("characteristic"), pl.col("direction").cast(pl.Int32)])
     )
 
-    # Read country classification details from Excel file
+    # Read country classification details from bundled Excel file
     country_classification = pl.read_excel(
-        "https://github.com/bkelly-lab/ReplicationCrisis/raw/master/GlobalFactors/Country%20Classification.xlsx",
+        get_country_classification_path(),
         sheet_name="countries",
     )
 
     # Getting relevant information from country classification file
-    # Select columns
     country_classification = country_classification.select(
         ["excntry", "msci_development", "region"]
     )
@@ -867,9 +1035,9 @@ def main() -> None:
         }
     )
 
-    # Read cluster labels details from Excel file
+    # Read cluster labels from bundled CSV file
     cluster_labels = pl.read_csv(
-        "https://raw.githubusercontent.com/bkelly-lab/ReplicationCrisis/refs/heads/master/GlobalFactors/Cluster%20Labels.csv",
+        get_cluster_labels_path(),
         infer_schema_length=int(1e10),
     )
 
@@ -907,8 +1075,10 @@ def main() -> None:
             nyse_size_cutoffs=nyse_size_cutoffs,
             source=settings["source"],
             wins_ret=settings["wins_ret"],
-            cmp_key=settings["cmp"]["us"] if ex == "usa" else settings["cmp"]["int"],
-            signals=settings["signals"]["us"] if ex == "usa" else settings["signals"]["int"],
+            cmp_key=settings["cmp"]["us"] if ex.lower() == "usa" else settings["cmp"]["int"],
+            signals=settings["signals"]["us"]
+            if ex.lower() == "usa"
+            else settings["signals"]["int"],
             signals_standardize=settings["signals"]["standardize"],
             signals_w=settings["signals"]["weight"],
             daily_pf=settings["daily_pf"],
@@ -971,16 +1141,60 @@ def main() -> None:
             ]
         )
         gics_returns = gics_returns.sort(["excntry", "gics", "eom"])
-
-        # FF49 Returns
-        if "usa" in countries:
-            ff49_returns = portfolio_data["usa"]["ff49_returns"]
-            ff49_returns = ff49_returns.sort(["excntry", "ff49", "eom"])
-        else:
-            ff49_returns = None
     else:
         gics_returns = None
+
+    # FF49 Returns
+    if settings["ind_pf"] and any(
+        sub_data and "ff49_returns" in sub_data for sub_key, sub_data in portfolio_data.items()
+    ):
+        ff49_returns = pl.concat(
+            [
+                sub_data["ff49_returns"]
+                for sub_key, sub_data in portfolio_data.items()
+                if sub_data and "ff49_returns" in sub_data
+            ]
+        )
+        ff49_returns = ff49_returns.sort(["excntry", "ff49", "eom"])
+    else:
         ff49_returns = None
+
+    # Aggregating daily industry classification returns
+    if (
+        settings["ind_pf"]
+        and settings["daily_pf"]
+        and any(
+            sub_data and "gics_daily" in sub_data for sub_key, sub_data in portfolio_data.items()
+        )
+    ):
+        gics_daily = pl.concat(
+            [
+                sub_data["gics_daily"]
+                for sub_key, sub_data in portfolio_data.items()
+                if sub_data and "gics_daily" in sub_data
+            ]
+        )
+        gics_daily = gics_daily.sort(["excntry", "gics", "date"])
+    else:
+        gics_daily = None
+
+    if (
+        settings["ind_pf"]
+        and settings["daily_pf"]
+        and any(
+            sub_data and "ff49_daily" in sub_data for sub_key, sub_data in portfolio_data.items()
+        )
+    ):
+        ff49_daily = pl.concat(
+            [
+                sub_data["ff49_daily"]
+                for sub_key, sub_data in portfolio_data.items()
+                if sub_data and "ff49_daily" in sub_data
+            ]
+        )
+        ff49_daily = ff49_daily.sort(["excntry", "ff49", "date"])
+    else:
+        ff49_daily = None
 
     # Create HML Returns
     if pf_returns is not None and pf_returns.height > 0:
@@ -1321,6 +1535,18 @@ def main() -> None:
                 f"{output_path}/industry_ff49.parquet",
             )
 
+    if settings["ind_pf"] and settings["daily_pf"]:
+        if gics_daily is not None:
+            write_dataframe(
+                gics_daily.filter(pl.col("date") <= settings["end_date"]),
+                f"{output_path}/industry_gics_daily.parquet",
+            )
+        if ff49_daily is not None:
+            write_dataframe(
+                ff49_daily.filter(pl.col("date") <= settings["end_date"]),
+                f"{output_path}/industry_ff49_daily.parquet",
+            )
+
     # Create directory for Regional Factors
     if regional_pfs is not None:
         reg_folder = os.path.join(output_path, "regional_factors")
@@ -1414,13 +1640,9 @@ def main() -> None:
                     write_dataframe(filtered_df_daily, file_path_daily)
 
     # Convert to CSV if configured
-    convert_outputs_to_csv()
+    convert_outputs_to_csv(processed_dir=data_path)
 
     print(
         f"End            : {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))}",
         flush=True,
     )
-
-
-if __name__ == "__main__":
-    main()
