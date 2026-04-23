@@ -58,6 +58,74 @@ def add_ecdf(df: pl.DataFrame, group_cols: list[str] | None = None) -> pl.DataFr
     return out
 
 
+def _build_industry_daily_returns(
+    data: pl.DataFrame,
+    daily: pl.DataFrame,
+    industry_col: str,
+    bp_min_n: int,
+    excntry: str,
+    industry_transform: pl.Expr | None = None,
+) -> pl.DataFrame:
+    """Description:
+        Build daily industry portfolio returns from monthly formation-month weights.
+    Steps:
+        1) Filter to rows where industry_col is non-null; select id, eom, industry, me, me_cap.
+        2) Optionally apply industry_transform to recode the industry column.
+        3) Drop industry-month groups with fewer than bp_min_n stocks.
+        4) Compute EW/VW/VW-cap weights within each (eom, industry) group.
+        5) Join weights to daily returns for the following month.
+        6) Aggregate weighted returns by (industry, date).
+    Output:
+        DataFrame with columns [industry_col, date, n, ret_ew, ret_vw, ret_vw_cap, excntry].
+    """
+    weights_data = data.filter(pl.col(industry_col).is_not_null()).select(
+        ["id", "eom", industry_col, "me", "me_cap"]
+    )
+    if industry_transform is not None:
+        weights_data = weights_data.with_columns(industry_transform)
+
+    weights_data = (
+        weights_data.with_columns(pl.len().over([industry_col, "eom"]).alias("bp_n"))
+        .filter(pl.col("bp_n") >= bp_min_n)
+        .drop("bp_n")
+    )
+
+    weights = (
+        weights_data.group_by(["eom", industry_col])
+        .agg(
+            [
+                pl.col("id"),
+                (1 / pl.len()).alias("w_ew"),
+                (pl.col("me") / pl.col("me").sum()).alias("w_vw"),
+                (pl.col("me_cap") / pl.col("me_cap").sum()).alias("w_vw_cap"),
+            ]
+        )
+        .explode("id", "w_vw", "w_vw_cap")
+    )
+
+    result = (
+        weights.lazy()
+        .join(
+            daily.lazy(),
+            left_on=["id", "eom"],
+            right_on=["id", "eom_lag1"],
+            how="left",
+        )
+        .filter(pl.col(industry_col).is_not_null() & pl.col("ret_exc").is_not_null())
+        .group_by([industry_col, "date"])
+        .agg(
+            [
+                pl.len().alias("n"),
+                (pl.col("w_ew") * pl.col("ret_exc")).sum().alias("ret_ew"),
+                (pl.col("w_vw") * pl.col("ret_exc")).sum().alias("ret_vw"),
+                (pl.col("w_vw_cap") * pl.col("ret_exc")).sum().alias("ret_vw_cap"),
+            ]
+        )
+        .collect()
+    )
+    return result.with_columns(pl.lit(excntry).str.to_uppercase().alias("excntry"))
+
+
 # main portfolios function to create the portfolios
 def portfolios(
     data_path,
@@ -233,7 +301,7 @@ def portfolios(
         ind_gics = ind_gics.filter(pl.col("n") >= bp_min_n)
 
         # Estimate industry portfolios by Fama-French portfolios for US data
-        if excntry == "usa":
+        if excntry.lower() == "usa":
             ind_data = data.filter(pl.col("ff49").is_not_null()).select(
                 ["eom", "ff49", "ret_exc_lead1m", "me", "me_cap"]
             )
@@ -254,6 +322,34 @@ def portfolios(
                 (pl.col("eom").dt.offset_by("1mo").dt.month_end()).alias("eom")
             )
             ind_ff49 = ind_ff49.filter(pl.col("n") >= bp_min_n)
+
+        if daily_pf:
+            # Daily industry returns: weights are formed from monthly end-of-
+            # formation-month `me` and applied to every trading day of the
+            # following month (rebalanced daily back to beginning-of-month
+            # weights). Mirrors the char factor daily logic below and keeps
+            # coverage aligned with the monthly industry output.
+            ind_gics_daily = _build_industry_daily_returns(
+                data,
+                daily,
+                "gics",
+                bp_min_n,
+                excntry,
+                industry_transform=pl.col("gics")
+                .cast(pl.Utf8)
+                .str.slice(0, 2)
+                .cast(pl.Int64)
+                .alias("gics"),
+            )
+
+            if excntry.lower() == "usa":
+                ind_ff49_daily = _build_industry_daily_returns(
+                    data,
+                    daily,
+                    "ff49",
+                    bp_min_n,
+                    excntry,
+                )
 
     # creating portfolios for all the characteristics
     char_pfs = []
@@ -425,8 +521,12 @@ def portfolios(
     # Handle industry portfolio returns if ind_pf is true
     if ind_pf:
         output["gics_returns"] = ind_gics  # Assuming ind_gics is a DataFrame
-        if excntry == "usa":
-            output["ff49_returns"] = ind_ff49.clone()  # Assuming ind_ff49 is a DataFrame
+        if excntry.lower() == "usa":
+            output["ff49_returns"] = ind_ff49
+        if daily_pf:
+            output["gics_daily"] = ind_gics_daily
+            if excntry.lower() == "usa":
+                output["ff49_daily"] = ind_ff49_daily
 
     # Add excntry to pf_returns and pf_daily, and aggregate signals
     if len(output) > 0:
@@ -882,8 +982,10 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
             nyse_size_cutoffs=nyse_size_cutoffs,
             source=settings["source"],
             wins_ret=settings["wins_ret"],
-            cmp_key=settings["cmp"]["us"] if ex == "usa" else settings["cmp"]["int"],
-            signals=settings["signals"]["us"] if ex == "usa" else settings["signals"]["int"],
+            cmp_key=settings["cmp"]["us"] if ex.lower() == "usa" else settings["cmp"]["int"],
+            signals=settings["signals"]["us"]
+            if ex.lower() == "usa"
+            else settings["signals"]["int"],
             signals_standardize=settings["signals"]["standardize"],
             signals_w=settings["signals"]["weight"],
             daily_pf=settings["daily_pf"],
@@ -946,16 +1048,60 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
             ]
         )
         gics_returns = gics_returns.sort(["excntry", "gics", "eom"])
-
-        # FF49 Returns
-        if "usa" in countries:
-            ff49_returns = portfolio_data["usa"]["ff49_returns"]
-            ff49_returns = ff49_returns.sort(["excntry", "ff49", "eom"])
-        else:
-            ff49_returns = None
     else:
         gics_returns = None
+
+    # FF49 Returns
+    if settings["ind_pf"] and any(
+        sub_data and "ff49_returns" in sub_data for sub_key, sub_data in portfolio_data.items()
+    ):
+        ff49_returns = pl.concat(
+            [
+                sub_data["ff49_returns"]
+                for sub_key, sub_data in portfolio_data.items()
+                if sub_data and "ff49_returns" in sub_data
+            ]
+        )
+        ff49_returns = ff49_returns.sort(["excntry", "ff49", "eom"])
+    else:
         ff49_returns = None
+
+    # Aggregating daily industry classification returns
+    if (
+        settings["ind_pf"]
+        and settings["daily_pf"]
+        and any(
+            sub_data and "gics_daily" in sub_data for sub_key, sub_data in portfolio_data.items()
+        )
+    ):
+        gics_daily = pl.concat(
+            [
+                sub_data["gics_daily"]
+                for sub_key, sub_data in portfolio_data.items()
+                if sub_data and "gics_daily" in sub_data
+            ]
+        )
+        gics_daily = gics_daily.sort(["excntry", "gics", "date"])
+    else:
+        gics_daily = None
+
+    if (
+        settings["ind_pf"]
+        and settings["daily_pf"]
+        and any(
+            sub_data and "ff49_daily" in sub_data for sub_key, sub_data in portfolio_data.items()
+        )
+    ):
+        ff49_daily = pl.concat(
+            [
+                sub_data["ff49_daily"]
+                for sub_key, sub_data in portfolio_data.items()
+                if sub_data and "ff49_daily" in sub_data
+            ]
+        )
+        ff49_daily = ff49_daily.sort(["excntry", "ff49", "date"])
+    else:
+        ff49_daily = None
 
     # Create HML Returns
     if pf_returns is not None and pf_returns.height > 0:
@@ -1294,6 +1440,18 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
             write_dataframe(
                 ff49_returns.filter(pl.col("eom") <= settings["end_date"]),
                 f"{output_path}/industry_ff49.parquet",
+            )
+
+    if settings["ind_pf"] and settings["daily_pf"]:
+        if gics_daily is not None:
+            write_dataframe(
+                gics_daily.filter(pl.col("date") <= settings["end_date"]),
+                f"{output_path}/industry_gics_daily.parquet",
+            )
+        if ff49_daily is not None:
+            write_dataframe(
+                ff49_daily.filter(pl.col("date") <= settings["end_date"]),
+                f"{output_path}/industry_ff49_daily.parquet",
             )
 
     # Create directory for Regional Factors
