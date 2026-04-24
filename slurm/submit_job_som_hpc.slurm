@@ -29,10 +29,10 @@ source .venv/bin/activate
 # Create char data
 # Set PERSISTENT_WRDS_CONNECTION=1 to use a single WRDS connection (reduces MFA on NAT-rotated networks)
 if [ "${PERSISTENT_WRDS_CONNECTION:-0}" = "1" ]; then
-    jkp build data --persistent-connection
+    uv run jkp build data --persistent-connection
 else
-    jkp build data
+    uv run jkp build data
 fi
 
 # Create portfolio data
-jkp portfolio data
+uv run jkp portfolio data
