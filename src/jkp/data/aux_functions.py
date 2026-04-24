@@ -6733,17 +6733,24 @@ def prepare_daily(data_path, fcts_path):
         Build daily dataset: align returns with factors, shrink dtypes, and create helpers.
 
     Steps:
-        1) Join daily stock data with daily factors; filter rows with mktrf.
-        2) Create zero_obs flags per (id,eom); cap returns to lag ≤14 days; compute prc_adj.
-        3) Write dsf1.parquet and id_int_key.parquet.
-        4) Build market lead/lag series per day and write mkt_lead_lag.parquet.
+        1) Attach 1-day lead/lag of mktrf to factors (per excntry, within eom for lead).
+        2) Join daily stock data with daily factors; filter rows with mktrf.
+        3) Create zero_obs flags per (id,eom); cap returns to lag ≤14 days; compute prc_adj.
+        4) Write dsf1.parquet and id_int_key.parquet.
         5) Build 3-day rolling sums for stock and market excess returns for correlations; write corr_data.parquet.
 
     Output:
-        Parquets: dsf1.parquet, id_int_key.parquet, mkt_lead_lag.parquet, corr_data.parquet.
+        Parquets: dsf1.parquet, id_int_key.parquet, corr_data.parquet.
     """
     data = pl.scan_parquet(data_path)
-    fcts = pl.scan_parquet(fcts_path)
+    fcts = (
+        pl.scan_parquet(fcts_path)
+        .sort(["excntry", "date"])
+        .with_columns(
+            mktrf_ld1=col("mktrf").shift(-1).over(["excntry", col("date").dt.month_end()]),
+            mktrf_lg1=col("mktrf").shift(1).over(["excntry"]),
+        )
+    )
     dsf1 = (
         data.select(
             [
@@ -6785,21 +6792,6 @@ def prepare_daily(data_path, fcts_path):
 
     id_int_key = pl.scan_parquet("dsf1.parquet").select(["id", "id_int"]).unique()
     id_int_key.collect().write_parquet("id_int_key.parquet")
-
-    mkt_lead_lag = (
-        fcts.select(["excntry", "date", "mktrf", col("date").dt.month_end().alias("eom")])
-        .sort(["excntry", "date"])
-        .with_columns(
-            mktrf_ld1=col("mktrf").shift(-1).over(["excntry", "eom"]),
-            mktrf_lg1=col("mktrf").shift(1).over(["excntry"]),
-        )
-        # Drop rows without both lead and lag: dimsonbeta regression needs all three
-        # market terms, so storing them pre-filtered avoids re-dropping on every consumer.
-        .drop_nulls(["mktrf_ld1", "mktrf_lg1"])
-        .select(pl.all().shrink_dtype())
-        .sort(["excntry", "date"])
-    )
-    mkt_lead_lag.sink_parquet("mkt_lead_lag.parquet")
 
     corr_data = (
         pl.scan_parquet("dsf1.parquet")
@@ -8210,6 +8202,13 @@ def base_data_filter_exp(stat):
         return col("tvol").is_not_null()
     elif stat == "mktcorr":
         return (col("ret_exc_3l").is_not_null()) & (col("zero_obs") < 10)
+    elif stat == "dimsonbeta":
+        return (
+            (col("ret_exc").is_not_null())
+            & (col("zero_obs") < 10)
+            & (col("mktrf_ld1").is_not_null())
+            & (col("mktrf_lg1").is_not_null())
+        )
     else:
         return (col("ret_exc").is_not_null()) & (col("zero_obs") < 10)
 
@@ -8223,8 +8222,6 @@ def prepare_base_data(stat):
         1) Read 'corr_data.parquet' (mktcorr) or 'dsf1.parquet' (others).
         2) Add integer aux_date via gen_MMYY_column('eom').
         3) Filter using base_data_filter_exp(stat).
-        4) For 'dimsonbeta', join lead/lag market returns.
-
     Output:
         LazyFrame base_data ready for grouping.
     """
@@ -8234,12 +8231,6 @@ def prepare_base_data(stat):
         .with_columns(aux_date=gen_MMYY_column("eom"))
         .filter(base_data_filter_exp(stat))
     )
-
-    if stat == "dimsonbeta":
-        lead_lag = pl.scan_parquet("mkt_lead_lag.parquet").select(
-            ["excntry", "date", "mktrf_lg1", "mktrf_ld1"]
-        )
-        base_data = base_data.join(lead_lag, how="inner", on=["excntry", "date"])
 
     return base_data
 
@@ -8785,23 +8776,22 @@ def dimsonbeta(df, sfx, __min):
     Output:
         LazyFrame with f'beta_dimson{sfx}'.
     """
-    coef_exp = pds.lin_reg(
-        "mktrf",
-        "mktrf_ld1",
-        "mktrf_lg1",
-        target="ret_exc",
-        add_bias=True,  # intercept is the last element
+    beta_exp = (
+        pds.lin_reg(
+            "mktrf",
+            "mktrf_ld1",
+            "mktrf_lg1",
+            target="ret_exc",
+            add_bias=True,  # intercept is the last element
+        )
+        .list.head(3)
+        .list.sum()
+        .alias(f"beta_dimson{sfx}")
     )
     df = (
         df.group_by(["id_int", "group_number"])
-        .agg(coeffs=coef_exp, n=pl.count("ret_exc"))
+        .agg(beta_exp, n=pl.count("ret_exc"))
         .filter(pl.col("n") >= __min)
-        .select(
-            [
-                "id_int",
-                "group_number",
-                pl.col("coeffs").list.head(3).list.sum().alias(f"beta_dimson{sfx}"),
-            ]
-        )
+        .select(["id_int", "group_number", f"beta_dimson{sfx}"])
     )
     return df
