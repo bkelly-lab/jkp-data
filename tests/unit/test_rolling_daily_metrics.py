@@ -1141,7 +1141,7 @@ class TestDimsonbeta:
             ]
         )
 
-        result = dimsonbeta(df, "_21d", __min=15).sort(["id_int", "group_number"])
+        result = dimsonbeta(df, "_21d", __min=5).sort(["id_int", "group_number"])
 
         np.testing.assert_allclose(
             result["beta_dimson_21d"].to_list(),
@@ -1150,8 +1150,8 @@ class TestDimsonbeta:
             err_msg=f"Unexpected beta_dimson_21d values: {result['beta_dimson_21d'].to_list()}",
         )
 
-    def test_dimsonbeta_ignores_min_parameter(self):
-        """dimsonbeta currently does not use __min and should still return grouped output."""
+    def test_dimsonbeta_enforces_min_parameter(self):
+        """dimsonbeta filters groups with fewer than __min non-null ret_exc observations."""
         df = pl.DataFrame(
             {
                 "id_int": [1, 1, 1, 1, 1],
@@ -1163,7 +1163,7 @@ class TestDimsonbeta:
             }
         )
         result = dimsonbeta(df, "_21d", __min=10_000)
-        assert len(result) == 1
+        assert len(result) == 0
 
     def test_dimsonbeta_empty_input_returns_empty(self):
         df = _empty_df(

@@ -6793,10 +6793,13 @@ def prepare_daily(data_path, fcts_path):
             mktrf_ld1=col("mktrf").shift(-1).over(["excntry", "eom"]),
             mktrf_lg1=col("mktrf").shift(1).over(["excntry"]),
         )
+        # Drop rows without both lead and lag: dimsonbeta regression needs all three
+        # market terms, so storing them pre-filtered avoids re-dropping on every consumer.
+        .drop_nulls(["mktrf_ld1", "mktrf_lg1"])
         .select(pl.all().shrink_dtype())
         .sort(["excntry", "date"])
     )
-    mkt_lead_lag.collect().write_parquet("mkt_lead_lag.parquet")
+    mkt_lead_lag.sink_parquet("mkt_lead_lag.parquet")
 
     corr_data = (
         pl.scan_parquet("dsf1.parquet")
@@ -8233,7 +8236,9 @@ def prepare_base_data(stat):
     )
 
     if stat == "dimsonbeta":
-        lead_lag = pl.scan_parquet("mkt_lead_lag.parquet").drop(["eom", "mktrf"])
+        lead_lag = pl.scan_parquet("mkt_lead_lag.parquet").select(
+            ["excntry", "date", "mktrf_lg1", "mktrf_ld1"]
+        )
         base_data = base_data.join(lead_lag, how="inner", on=["excntry", "date"])
 
     return base_data
@@ -8252,18 +8257,8 @@ def apply_group_filter(df, stat, min_obs):
     Output:
         Filtered LazyFrame for subsequent aggregation/regression.
     """
-    if stat == "turnover" or stat == "mktcorr":
+    if stat == "turnover" or stat == "mktcorr" or stat == "dimsonbeta":
         pass
-    elif stat == "dimsonbeta":
-        df = df.with_columns(
-            n1=pl.len().over(["id_int", "eom"]),
-            n2=pl.count("ret_exc").over(["id_int", "group_number"]),
-        ).filter(
-            (col("n1") >= min_obs - 1)
-            & (col("n2") >= min_obs)
-            & (col("mktrf_lg1").is_not_null())
-            & (col("mktrf_ld1").is_not_null())
-        )
     else:
         if stat == "zero_trades":
             filter_var = "tvol"
@@ -8790,18 +8785,23 @@ def dimsonbeta(df, sfx, __min):
     Output:
         LazyFrame with f'beta_dimson{sfx}'.
     """
-    beta_exp = col("coeffs").list.head(3).list.sum()
+    coef_exp = pds.lin_reg(
+        "mktrf",
+        "mktrf_ld1",
+        "mktrf_lg1",
+        target="ret_exc",
+        add_bias=True,  # intercept is the last element
+    )
     df = (
         df.group_by(["id_int", "group_number"])
-        .agg(
-            coeffs=pds.lin_reg(
-                "mktrf",
-                "mktrf_ld1",
-                "mktrf_lg1",
-                target="ret_exc",
-                add_bias=True,  # intercept will be the last element
-            )
+        .agg(coeffs=coef_exp, n=pl.count("ret_exc"))
+        .filter(pl.col("n") >= __min)
+        .select(
+            [
+                "id_int",
+                "group_number",
+                pl.col("coeffs").list.head(3).list.sum().alias(f"beta_dimson{sfx}"),
+            ]
         )
-        .select(["id_int", "group_number", beta_exp.alias(f"beta_dimson{sfx}")])
     )
     return df
