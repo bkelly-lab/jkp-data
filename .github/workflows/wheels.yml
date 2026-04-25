@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - "plugin-v*"
+    branches:
+      - "dimson_beta_plugin"
   workflow_dispatch: {}
 
 jobs:
