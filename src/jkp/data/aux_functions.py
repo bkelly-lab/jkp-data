@@ -8241,15 +8241,20 @@ def apply_group_filter(df, stat, min_obs):
         Apply per-stat observation-count filters within groups.
 
     Steps:
-        1) For 'dimsonbeta': require counts by (id_int,eom) and (id_int,group_number) and non-null lags.
+        1) For 'dimsonbeta': require counts by (id_int,eom) and (id_int,group_number).
         2) For zero_trades/dolvol/others: count needed column within (id_int,group_number), require ≥ min_obs.
         3) Pass-through for 'turnover' and 'mktcorr' (later filters inside function).
 
     Output:
         Filtered LazyFrame for subsequent aggregation/regression.
     """
-    if stat == "turnover" or stat == "mktcorr" or stat == "dimsonbeta":
+    if stat == "turnover" or stat == "mktcorr":
         pass
+    elif stat == "dimsonbeta":
+        df = df.with_columns(
+            n1=pl.len().over(["id_int", "eom"]),
+            n2=pl.count("ret_exc").over(["id_int", "group_number"]),
+        ).filter((col("n1") >= min_obs - 1) & (col("n2") >= min_obs))
     else:
         if stat == "zero_trades":
             filter_var = "tvol"
@@ -8776,22 +8781,18 @@ def dimsonbeta(df, sfx, __min):
     Output:
         LazyFrame with f'beta_dimson{sfx}'.
     """
-    beta_exp = (
-        pds.lin_reg(
-            "mktrf",
-            "mktrf_ld1",
-            "mktrf_lg1",
-            target="ret_exc",
-            add_bias=True,  # intercept is the last element
-        )
-        .list.head(3)
-        .list.sum()
-        .alias(f"beta_dimson{sfx}")
-    )
+    beta_exp = col("coeffs").list.head(3).list.sum()
     df = (
         df.group_by(["id_int", "group_number"])
-        .agg(beta_exp, n=pl.count("ret_exc"))
-        .filter(pl.col("n") >= __min)
-        .select(["id_int", "group_number", f"beta_dimson{sfx}"])
+        .agg(
+            coeffs=pds.lin_reg(
+                "mktrf",
+                "mktrf_ld1",
+                "mktrf_lg1",
+                target="ret_exc",
+                add_bias=True,  # intercept will be the last element
+            )
+        )
+        .select(["id_int", "group_number", beta_exp.alias(f"beta_dimson{sfx}")])
     )
     return df

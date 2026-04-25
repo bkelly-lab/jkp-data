@@ -16,6 +16,7 @@ import polars as pl
 
 from jkp.data.aux_functions import (
     ami,
+    apply_group_filter,
     capm,
     capm_ext,
     dimsonbeta,
@@ -1151,19 +1152,51 @@ class TestDimsonbeta:
         )
 
     def test_dimsonbeta_enforces_min_parameter(self):
-        """dimsonbeta filters groups with fewer than __min non-null ret_exc observations."""
+        """apply_group_filter drops dimsonbeta groups with fewer than min_obs observations."""
         df = pl.DataFrame(
             {
                 "id_int": [1, 1, 1, 1, 1],
                 "group_number": [10, 10, 10, 10, 10],
+                "eom": [date(2020, 1, 31)] * 5,
                 "mktrf": [0.0, 1.0, 2.0, 3.0, 4.0],
                 "mktrf_ld1": [1.0, 0.0, 1.0, 0.0, 1.0],
                 "mktrf_lg1": [0.0, 1.0, 0.0, 1.0, 0.0],
                 "ret_exc": [1.0, 2.0, 3.0, 4.0, 5.0],
             }
         )
-        result = dimsonbeta(df, "_21d", __min=10_000)
+        filtered = apply_group_filter(df, "dimsonbeta", min_obs=10_000)
+        result = dimsonbeta(filtered, "_21d", __min=10_000)
         assert len(result) == 0
+
+    def test_dimsonbeta_drops_undersized_via_apply_group_filter(self):
+        """apply_group_filter strips groups with n < k+1 so the OLS plugin never crashes."""
+        small = pl.DataFrame(
+            {
+                "id_int": [1, 1, 1],
+                "group_number": [10, 10, 10],
+                "eom": [date(2020, 1, 31)] * 3,
+                "mktrf": [0.0, 1.0, 2.0],
+                "mktrf_ld1": [1.0, 0.0, 1.0],
+                "mktrf_lg1": [0.0, 1.0, 0.0],
+                "ret_exc": [1.0, 2.0, 3.0],
+            }
+        )
+        big = pl.DataFrame(
+            {
+                "id_int": [2] * 10,
+                "group_number": [20] * 10,
+                "eom": [date(2020, 1, 31)] * 10,
+                "mktrf": np.arange(10, dtype=float),
+                "mktrf_ld1": np.arange(10, 20, dtype=float),
+                "mktrf_lg1": np.arange(20, 30, dtype=float),
+                "ret_exc": np.arange(30, 40, dtype=float),
+            }
+        )
+        df = pl.concat([small, big])
+        filtered = apply_group_filter(df, "dimsonbeta", min_obs=5)
+        result = dimsonbeta(filtered, "_21d", __min=5)
+        assert result["id_int"].to_list() == [2]
+        assert result["group_number"].to_list() == [20]
 
     def test_dimsonbeta_empty_input_returns_empty(self):
         df = _empty_df(
