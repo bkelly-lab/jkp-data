@@ -17,9 +17,9 @@ if TYPE_CHECKING:
 import duckdb
 import ibis
 import polars as pl
-import polars_ds as pds
 import polars_ols  # noqa: F401 - required for least_squares method on polars expressions
 from ibis import _
+from jkp_plugin import dimson_beta as _dimson_beta_plugin
 from polars import col
 
 from .config import MAIN_FILTERS
@@ -8241,20 +8241,17 @@ def apply_group_filter(df, stat, min_obs):
         Apply per-stat observation-count filters within groups.
 
     Steps:
-        1) For 'dimsonbeta': require counts by (id_int,eom) and (id_int,group_number).
-        2) For zero_trades/dolvol/others: count needed column within (id_int,group_number), require ≥ min_obs.
-        3) Pass-through for 'turnover' and 'mktcorr' (later filters inside function).
+        1) For zero_trades/dolvol/others: count needed column within (id_int,group_number), require ≥ min_obs.
+        2) Pass-through for 'turnover', 'mktcorr', 'dimsonbeta' (each handles its own gating).
 
     Output:
         Filtered LazyFrame for subsequent aggregation/regression.
     """
-    if stat == "turnover" or stat == "mktcorr":
+    if stat == "turnover" or stat == "mktcorr" or stat == "dimsonbeta":
+        # dimsonbeta: plugin handles undersized groups internally (returns null,
+        # filtered downstream). The previous n1/n2 pre-filter wiped all rows for
+        # _126d/_252d/_1260d because n1 counted obs per calendar month.
         pass
-    elif stat == "dimsonbeta":
-        df = df.with_columns(
-            n1=pl.len().over(["id_int", "eom"]),
-            n2=pl.count("ret_exc").over(["id_int", "group_number"]),
-        ).filter((col("n1") >= min_obs - 1) & (col("n2") >= min_obs))
     else:
         if stat == "zero_trades":
             filter_var = "tvol"
@@ -8775,24 +8772,24 @@ def dimsonbeta(df, sfx, __min):
         Dimson beta (lead-lag adjusted market beta) per window.
 
     Steps:
-        1) OLS: ret_exc ~ mktrf + mktrf_ld1 + mktrf_lg1; get coefficients per group.
-        2) Sum coefficients on market terms.
+        1) OLS: ret_exc ~ mktrf + mktrf_ld1 + mktrf_lg1 with intercept, per group.
+        2) Sum the three market coefficients (intercept excluded) inside the kernel.
+        3) Drop groups whose regression returned null (n < __min or singular X'X).
 
     Output:
         LazyFrame with f'beta_dimson{sfx}'.
     """
-    beta_exp = col("coeffs").list.head(3).list.sum()
-    df = (
+    beta_col = f"beta_dimson{sfx}"
+    return (
         df.group_by(["id_int", "group_number"])
         .agg(
-            coeffs=pds.lin_reg(
-                "mktrf",
-                "mktrf_ld1",
-                "mktrf_lg1",
-                target="ret_exc",
-                add_bias=True,  # intercept will be the last element
-            )
+            _dimson_beta_plugin(
+                col("ret_exc"),
+                col("mktrf"),
+                col("mktrf_ld1"),
+                col("mktrf_lg1"),
+                min_obs=__min,
+            ).alias(beta_col)
         )
-        .select(["id_int", "group_number", beta_exp.alias(f"beta_dimson{sfx}")])
+        .filter(col(beta_col).is_not_null())
     )
-    return df

@@ -1181,15 +1181,20 @@ class TestDimsonbeta:
                 "ret_exc": [1.0, 2.0, 3.0],
             }
         )
+        rng = np.random.default_rng(0)
+        n_big = 10
+        mktrf = rng.standard_normal(n_big)
+        mktrf_ld1 = rng.standard_normal(n_big)
+        mktrf_lg1 = rng.standard_normal(n_big)
         big = pl.DataFrame(
             {
-                "id_int": [2] * 10,
-                "group_number": [20] * 10,
-                "eom": [date(2020, 1, 31)] * 10,
-                "mktrf": np.arange(10, dtype=float),
-                "mktrf_ld1": np.arange(10, 20, dtype=float),
-                "mktrf_lg1": np.arange(20, 30, dtype=float),
-                "ret_exc": np.arange(30, 40, dtype=float),
+                "id_int": [2] * n_big,
+                "group_number": [20] * n_big,
+                "eom": [date(2020, 1, 31)] * n_big,
+                "mktrf": mktrf,
+                "mktrf_ld1": mktrf_ld1,
+                "mktrf_lg1": mktrf_lg1,
+                "ret_exc": 1.0 + 0.5 * mktrf + 0.2 * mktrf_ld1 + 0.3 * mktrf_lg1,
             }
         )
         df = pl.concat([small, big])
@@ -1211,3 +1216,60 @@ class TestDimsonbeta:
         )
         result = dimsonbeta(df, "_21d", __min=15)
         assert len(result) == 0
+
+    def test_dimsonbeta_drops_singular_design(self):
+        """Singular X'X (perfectly collinear regressors) yields a null beta and is dropped."""
+        n = 20
+        mkt = np.linspace(-1.0, 1.0, n)
+        df = pl.DataFrame(
+            {
+                "id_int": [1] * n,
+                "group_number": [10] * n,
+                "mktrf": mkt,
+                "mktrf_ld1": 2.0 * mkt + 1.0,  # perfectly collinear with mktrf + intercept
+                "mktrf_lg1": -mkt + 0.5,  # also collinear
+                "ret_exc": 0.5 * mkt + 0.1,
+            }
+        )
+        result = dimsonbeta(df, "_21d", __min=15)
+        assert len(result) == 0
+
+    def test_dimsonbeta_long_window_produces_output(self, tolerance):
+        """_126d window with min_obs=60: plugin gates on actual group size, not per-month count.
+
+        Regression test for the latent pre-filter bug where n1 = pl.len().over([id_int, eom])
+        compared a per-calendar-month count against window-sized min_obs (≥59), wiping all rows
+        for windows other than _21d.
+        """
+        rng = np.random.default_rng(7)
+        n = 126
+        mkt = rng.standard_normal(n)
+        mkt_ld = rng.standard_normal(n)
+        mkt_lg = rng.standard_normal(n)
+        # 6 distinct months inside the window
+        months = np.repeat([1, 2, 3, 4, 5, 6], 21)
+        eoms = [date(2020, int(m), 28) for m in months]
+        df = pl.DataFrame(
+            {
+                "id_int": [1] * n,
+                "group_number": [10] * n,
+                "eom": eoms,
+                "mktrf": mkt,
+                "mktrf_ld1": mkt_ld,
+                "mktrf_lg1": mkt_lg,
+                "ret_exc": 1.0
+                + 0.4 * mkt
+                + 0.3 * mkt_ld
+                + 0.2 * mkt_lg
+                + 0.1 * rng.standard_normal(n),
+            }
+        )
+        filtered = apply_group_filter(df, "dimsonbeta", min_obs=60)
+        result = dimsonbeta(filtered, "_126d", __min=60)
+        assert len(result) == 1
+        # Sum of true coefficients ~ 0.9 plus small OLS noise
+        np.testing.assert_allclose(
+            result["beta_dimson_126d"].to_list(),
+            [0.9],
+            atol=0.1,
+        )

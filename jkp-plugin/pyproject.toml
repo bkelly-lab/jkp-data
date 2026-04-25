@@ -1,0 +1,21 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "jkp-plugin"
+version = "0.1.0"
+description = "Polars expression plugins for jkp-data (Dimson beta and friends)."
+requires-python = ">=3.11"
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+]
+dependencies = [
+    "polars>=1.34.0",
+]
+
+[tool.maturin]
+module-name = "jkp_plugin._internal"
+python-source = "."
+features = ["pyo3/extension-module"]
