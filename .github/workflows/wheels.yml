@@ -5,7 +5,7 @@ on:
     tags:
       - "plugin-v*"
     branches:
-      - "dimson_beta_plugin"
+      - "dimson_beta"
   workflow_dispatch: {}
 
 jobs:
