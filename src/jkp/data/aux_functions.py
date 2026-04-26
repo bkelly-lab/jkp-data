@@ -866,7 +866,6 @@ def download_raw_data_tables(
     con.close()
 
 
-@measure_time
 def aug_msf_v2():
     """
     Description:
@@ -928,7 +927,6 @@ def aug_msf_v2():
     msf_aug.to_parquet("raw_data_dfs/crsp_msf_v2_aug.parquet")
 
 
-@measure_time
 def build_mcti():
     """
     Description:
