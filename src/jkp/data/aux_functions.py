@@ -8719,36 +8719,31 @@ def turnover(df, sfx, __min):
         Turnover level and variability within window.
 
     Steps:
-        1) Build list turnover_d = tvol/(shares*1e6) (guard shares>0).
-        2) Compute mean(turnover_d), std/mean, and n; require n ≥ __min.
+        1) Compute scalar mean and std of turnover_d = tvol/(shares*1e6) (guard shares>0)
+           and total row count n per (id_int,group_number) in one .agg call.
+        2) Derive variability ratio std/mean; require n ≥ __min.
 
     Output:
         LazyFrame with [f'turnover{sfx}', f'turnover_var{sfx}'].
     """
-    aux_1 = (
-        pl.when(col("turnover_d").list.mean() != 0)
-        .then(col("turnover_d").list.std() / col("turnover_d").list.mean())
-        .otherwise(fl_none())
+    turnover_d = (
+        pl.when(col("shares") != 0).then(col("tvol") / (col("shares") * 1e6)).otherwise(fl_none())
     )
     df = (
         df.group_by(["id_int", "group_number"])
         .agg(
-            [
-                pl.when(col("shares") != 0)
-                .then(col("tvol") / (col("shares") * 1e6))
-                .otherwise(fl_none())
-                .alias("turnover_d")
-            ]
+            turnover_d.mean().alias(f"turnover{sfx}"),
+            turnover_d.std().alias("turnover_std"),
+            pl.len().alias("n"),
         )
         .with_columns(
-            [
-                col("turnover_d").list.mean().alias(f"turnover{sfx}"),
-                aux_1.alias(f"turnover_var{sfx}"),
-                (col("turnover_d").list.len()).alias("n"),
-            ]
+            pl.when(col(f"turnover{sfx}") != 0)
+            .then(col("turnover_std") / col(f"turnover{sfx}"))
+            .otherwise(fl_none())
+            .alias(f"turnover_var{sfx}"),
         )
         .filter(col("n") >= __min)
-        .drop(["n", "turnover_d"])
+        .drop(["turnover_std", "n"])
     )
     return df
 
