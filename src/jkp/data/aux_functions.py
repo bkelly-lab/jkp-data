@@ -8254,12 +8254,12 @@ def apply_group_filter(df, stat, min_obs):
     if stat == "turnover" or stat == "mktcorr":
         pass
     elif stat == "dimsonbeta":
+        # SAS parity: group by (id, calc_date) and require count(*) >= __min - 1.
+        # The "-1" matches the SAS comment: one obs lost to the lead-1 lookahead-bias gate.
         df = df.with_columns(
-            n1=pl.len().over(["id_int", "eom"]),
             n2=pl.count("ret_exc").over(["id_int", "group_number"]),
         ).filter(
-            (col("n1") >= min_obs - 1)
-            & (col("n2") >= min_obs)
+            (col("n2") >= min_obs - 1)
             & (col("mktrf_lg1").is_not_null())
             & (col("mktrf_ld1").is_not_null())
         )
