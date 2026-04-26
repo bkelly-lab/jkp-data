@@ -866,6 +866,7 @@ def download_raw_data_tables(
     con.close()
 
 
+@measure_time
 def aug_msf_v2():
     """
     Description:
@@ -927,6 +928,7 @@ def aug_msf_v2():
     msf_aug.to_parquet("raw_data_dfs/crsp_msf_v2_aug.parquet")
 
 
+@measure_time
 def build_mcti():
     """
     Description:
@@ -6730,24 +6732,17 @@ def prepare_daily(data_path, fcts_path):
         Build daily dataset: align returns with factors, shrink dtypes, and create helpers.
 
     Steps:
-        1) Attach 1-day lead/lag of mktrf to factors (per excntry, within eom for lead).
-        2) Join daily stock data with daily factors; filter rows with mktrf.
-        3) Create zero_obs flags per (id,eom); cap returns to lag ≤14 days; compute prc_adj.
-        4) Write dsf1.parquet and id_int_key.parquet.
+        1) Join daily stock data with daily factors; filter rows with mktrf.
+        2) Create zero_obs flags per (id,eom); cap returns to lag ≤14 days; compute prc_adj.
+        3) Write dsf1.parquet and id_int_key.parquet.
+        4) Build market lead/lag series per day and write mkt_lead_lag.parquet.
         5) Build 3-day rolling sums for stock and market excess returns for correlations; write corr_data.parquet.
 
     Output:
-        Parquets: dsf1.parquet, id_int_key.parquet, corr_data.parquet.
+        Parquets: dsf1.parquet, id_int_key.parquet, mkt_lead_lag.parquet, corr_data.parquet.
     """
     data = pl.scan_parquet(data_path)
-    fcts = (
-        pl.scan_parquet(fcts_path)
-        .sort(["excntry", "date"])
-        .with_columns(
-            mktrf_ld1=col("mktrf").shift(-1).over(["excntry", col("date").dt.month_end()]),
-            mktrf_lg1=col("mktrf").shift(1).over(["excntry"]),
-        )
-    )
+    fcts = pl.scan_parquet(fcts_path)
     dsf1 = (
         data.select(
             [
@@ -6789,6 +6784,18 @@ def prepare_daily(data_path, fcts_path):
 
     id_int_key = pl.scan_parquet("dsf1.parquet").select(["id", "id_int"]).unique()
     id_int_key.collect().write_parquet("id_int_key.parquet")
+
+    mkt_lead_lag = (
+        fcts.select(["excntry", "date", "mktrf", col("date").dt.month_end().alias("eom")])
+        .sort(["excntry", "date"])
+        .with_columns(
+            mktrf_ld1=col("mktrf").shift(-1).over(["excntry", "eom"]),
+            mktrf_lg1=col("mktrf").shift(1).over(["excntry"]),
+        )
+        .select(pl.all().shrink_dtype())
+        .sort(["excntry", "date"])
+    )
+    mkt_lead_lag.collect().write_parquet("mkt_lead_lag.parquet")
 
     corr_data = (
         pl.scan_parquet("dsf1.parquet")
@@ -8199,14 +8206,6 @@ def base_data_filter_exp(stat):
         return col("tvol").is_not_null()
     elif stat == "mktcorr":
         return (col("ret_exc_3l").is_not_null()) & (col("zero_obs") < 10)
-    elif stat == "dimsonbeta":
-        return (
-            col("ret_exc").is_not_null()
-            & col("mktrf").is_not_null()
-            & col("mktrf_ld1").is_not_null()
-            & col("mktrf_lg1").is_not_null()
-            & (col("zero_obs") < 10)
-        )
     else:
         return (col("ret_exc").is_not_null()) & (col("zero_obs") < 10)
 
@@ -8220,6 +8219,8 @@ def prepare_base_data(stat):
         1) Read 'corr_data.parquet' (mktcorr) or 'dsf1.parquet' (others).
         2) Add integer aux_date via gen_MMYY_column('eom').
         3) Filter using base_data_filter_exp(stat).
+        4) For 'dimsonbeta', join lead/lag market returns.
+
     Output:
         LazyFrame base_data ready for grouping.
     """
@@ -8230,6 +8231,10 @@ def prepare_base_data(stat):
         .filter(base_data_filter_exp(stat))
     )
 
+    if stat == "dimsonbeta":
+        lead_lag = pl.scan_parquet("mkt_lead_lag.parquet").drop(["eom", "mktrf"])
+        base_data = base_data.join(lead_lag, how="inner", on=["excntry", "date"])
+
     return base_data
 
 
@@ -8239,14 +8244,25 @@ def apply_group_filter(df, stat, min_obs):
         Apply per-stat observation-count filters within groups.
 
     Steps:
-        1) For zero_trades/dolvol/others: count needed column within (id_int,group_number), require ≥ min_obs.
-        2) Pass-through for 'turnover', 'mktcorr' (each handles its own gating).
+        1) For 'dimsonbeta': require counts by (id_int,eom) and (id_int,group_number) and non-null lags.
+        2) For zero_trades/dolvol/others: count needed column within (id_int,group_number), require ≥ min_obs.
+        3) Pass-through for 'turnover' and 'mktcorr' (later filters inside function).
 
     Output:
         Filtered LazyFrame for subsequent aggregation/regression.
     """
     if stat == "turnover" or stat == "mktcorr":
         pass
+    elif stat == "dimsonbeta":
+        df = df.with_columns(
+            n1=pl.len().over(["id_int", "eom"]),
+            n2=pl.count("ret_exc").over(["id_int", "group_number"]),
+        ).filter(
+            (col("n1") >= min_obs - 1)
+            & (col("n2") >= min_obs)
+            & (col("mktrf_lg1").is_not_null())
+            & (col("mktrf_ld1").is_not_null())
+        )
     else:
         if stat == "zero_trades":
             filter_var = "tvol"
@@ -8783,7 +8799,7 @@ def _solve_beta_sum_sym3(c00, c01, c02, c11, c12, c22, v0, v1, v2):
     det_S = det(col0, col1, col2)
     num = det(v, col1, col2) + det(col0, v, col2) + det(col0, col1, v)
     rcond = det_S.abs() / (c00 * c11 * c22).abs()
-    return pl.when(rcond > 1e-10).then(num / det_S).otherwise(None)
+    return pl.when(rcond > 1e-16).then(num / det_S).otherwise(None)
 
 
 @functools.cache
