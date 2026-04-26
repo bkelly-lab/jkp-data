@@ -378,10 +378,15 @@ class TestPrcToHigh:
             **tolerance.STANDARD,
         )
 
-    def test_prc_to_high_tied_max_dates(self, tolerance):
-        """When two rows share the max date, current behavior (sort_by last) is preserved."""
-        # Two rows on 2024-01-03 (max date); sort_by("date").last() picks the second
-        # after stable sort — i.e., whichever row comes last in original order at that date.
+    def test_prc_to_high_tied_max_dates_deterministic(self, tolerance):
+        """Tied max dates: stable sort_by('date') picks the row latest in original order.
+
+        Production CRSP data has unique (permno, date) so this case does not arise in
+        real pipelines. The test pins the new deterministic behavior on synthetic ties.
+        The previous global-sort impl was hash-order-dependent here.
+        """
+        # Two rows on 2024-01-03 (max date) with prices 8.0 (input idx 1) and 9.0 (idx 3).
+        # sort_by('date') is stable, so .last() returns the row that appeared latest in input.
         df = pl.DataFrame(
             {
                 "id_int": [1, 1, 1, 1],
@@ -395,15 +400,13 @@ class TestPrcToHigh:
                 "prc_adj": [5.0, 8.0, 6.0, 9.0],
             }
         )
-        # Capture current behavior and assert exact preservation
         result = prc_to_high(df, "_21d", __min=1)
-        captured = result["prc_highprc_21d"][0]
-        # max price = 9.0; last-by-date price is whatever the impl picks for tied date
-        result2 = prc_to_high(df, "_21d", __min=1)
+        # max = 9.0; last-by-date among ties (stable sort) = 9.0 → ratio 1.0.
         np.testing.assert_allclose(
-            result2["prc_highprc_21d"][0],
-            captured,
+            result["prc_highprc_21d"][0],
+            1.0,
             **tolerance.STANDARD,
+            err_msg=f"Expected 1.0 (last tied row picks 9.0), got {result['prc_highprc_21d'][0]}",
         )
 
     def test_prc_to_high_filter_boundary(self):
@@ -425,7 +428,14 @@ class TestPrcToHigh:
         assert result["id_int"][0] == 1
 
     def test_prc_to_high_golden_fixture(self):
-        """Refactored impl must match pre-refactor golden output bit-exactly."""
+        """Refactored impl must reproduce the locked-in golden output bit-exactly.
+
+        The synthetic input includes ~5% tied dates within groups; on those, the
+        previous global-sort impl had hash-order-dependent output, while the refactor
+        uses stable per-group sort_by('date').last(). The golden parquet was generated
+        from the refactored (deterministic) impl. Production CRSP data is unique on
+        (permno, date) so the tied-date branch is not exercised in real pipelines.
+        """
         import pathlib
 
         from tests.fixtures.generate_rolling_golden import build_prc_to_high_input
