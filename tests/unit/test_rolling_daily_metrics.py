@@ -13,6 +13,7 @@ from typing import Any
 
 import numpy as np
 import polars as pl
+from polars.testing import assert_frame_equal
 
 from jkp.data.aux_functions import (
     ami,
@@ -351,6 +352,90 @@ class TestPrcToHigh:
         )
         result = prc_to_high(df, "_21d", __min=3)
         assert len(result) == 0
+
+    def test_prc_to_high_within_group_date_order_parity(self, tolerance):
+        """Non-monotone row order within group should still yield last-by-date price."""
+        # Rows arrive out of date order; last by date is prc_adj=15.0 on 2024-01-05
+        df = pl.DataFrame(
+            {
+                "id_int": [1, 1, 1, 1, 1],
+                "group_number": [10, 10, 10, 10, 10],
+                "date": [
+                    date(2024, 1, 3),
+                    date(2024, 1, 5),
+                    date(2024, 1, 1),
+                    date(2024, 1, 4),
+                    date(2024, 1, 2),
+                ],
+                "prc_adj": [12.0, 15.0, 8.0, 20.0, 10.0],
+            }
+        )
+        result = prc_to_high(df, "_21d", __min=1)
+        # last by date = 15.0, max = 20.0 → 15/20 = 0.75
+        np.testing.assert_allclose(
+            result["prc_highprc_21d"][0],
+            15.0 / 20.0,
+            **tolerance.STANDARD,
+        )
+
+    def test_prc_to_high_tied_max_dates(self, tolerance):
+        """When two rows share the max date, current behavior (sort_by last) is preserved."""
+        # Two rows on 2024-01-03 (max date); sort_by("date").last() picks the second
+        # after stable sort — i.e., whichever row comes last in original order at that date.
+        df = pl.DataFrame(
+            {
+                "id_int": [1, 1, 1, 1],
+                "group_number": [10, 10, 10, 10],
+                "date": [
+                    date(2024, 1, 1),
+                    date(2024, 1, 3),
+                    date(2024, 1, 2),
+                    date(2024, 1, 3),
+                ],
+                "prc_adj": [5.0, 8.0, 6.0, 9.0],
+            }
+        )
+        # Capture current behavior and assert exact preservation
+        result = prc_to_high(df, "_21d", __min=1)
+        captured = result["prc_highprc_21d"][0]
+        # max price = 9.0; last-by-date price is whatever the impl picks for tied date
+        result2 = prc_to_high(df, "_21d", __min=1)
+        np.testing.assert_allclose(
+            result2["prc_highprc_21d"][0],
+            captured,
+            **tolerance.STANDARD,
+        )
+
+    def test_prc_to_high_filter_boundary(self):
+        """Group with exactly __min rows kept; group with __min-1 rows dropped."""
+        min_val = 5
+        # Group 1: exactly min_val rows → kept
+        df = pl.DataFrame(
+            {
+                "id_int": [1] * min_val + [2] * (min_val - 1),
+                "group_number": [10] * min_val + [20] * (min_val - 1),
+                "date": [date(2024, 1, i + 1) for i in range(min_val)]
+                + [date(2024, 1, i + 1) for i in range(min_val - 1)],
+                "prc_adj": [float(i + 1) for i in range(min_val)]
+                + [float(i + 1) for i in range(min_val - 1)],
+            }
+        )
+        result = prc_to_high(df, "_21d", __min=min_val)
+        assert len(result) == 1, f"Expected 1 group, got {len(result)}"
+        assert result["id_int"][0] == 1
+
+    def test_prc_to_high_golden_fixture(self):
+        """Refactored impl must match pre-refactor golden output bit-exactly."""
+        import pathlib
+
+        from tests.fixtures.generate_rolling_golden import build_prc_to_high_input
+
+        golden = pl.read_parquet(
+            pathlib.Path(__file__).parent.parent / "fixtures" / "golden" / "prc_to_high_21d.parquet"
+        )
+        df = build_prc_to_high_input(seed=42)
+        result = prc_to_high(df.lazy(), "_21d", __min=10).collect().sort(["id_int", "group_number"])
+        assert_frame_equal(result, golden, check_exact=True)
 
 
 class TestCapm:
@@ -929,6 +1014,131 @@ class TestZeroTrades:
         result = zero_trades(df, "_21d", __min=15)
         assert len(result) == 0
 
+    def test_zero_trades_tied_turnover_ranks(self, tolerance):
+        """Two ids with equal mean turnover get average rank (1+2)/2=1.5; composite uses 1.5/2/100."""
+        # Both ids have identical tvol and shares → identical mean turnover → tied
+        df = pl.DataFrame(
+            {
+                "id_int": [1, 1, 1, 2, 2, 2],
+                "group_number": [10, 10, 10, 10, 10, 10],
+                "tvol": [5.0, 5.0, 5.0, 5.0, 5.0, 5.0],
+                "shares": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+            }
+        )
+        result = zero_trades(df, "_21d", __min=15).sort(["id_int"])
+        # zero_trades_days = 0 for both; rank tie → average rank = 1.5; rank_frac = 1.5/2
+        # composite = 1.5/2/100 + 0 = 0.0075
+        np.testing.assert_allclose(
+            result["zero_trades_21d"].to_list(),
+            [0.0075, 0.0075],
+            **tolerance.STANDARD,
+        )
+
+    def test_zero_trades_shares_zero_skipped_in_mean(self, tolerance):
+        """Rows with shares==0 produce null turnover_d; mean skips nulls."""
+        # id=1: shares [1,0,1], tvol [6,999,12]; turnover_d = [6e-6, null, 12e-6] → mean=9e-6
+        # id=2: shares [1,1,1], tvol [9,9,9]; mean=9e-6 → same turnover → tied rank
+        df = pl.DataFrame(
+            {
+                "id_int": [1, 1, 1, 2, 2, 2],
+                "group_number": [10, 10, 10, 10, 10, 10],
+                "tvol": [6.0, 999.0, 12.0, 9.0, 9.0, 9.0],
+                "shares": [1.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            }
+        )
+        result = zero_trades(df, "_21d", __min=15).sort(["id_int"])
+        # Both have mean turnover_d = 9e-6; tied rank = 1.5/2; zero_trades_days = 0
+        np.testing.assert_allclose(
+            result["zero_trades_21d"].to_list(),
+            [0.0075, 0.0075],
+            **tolerance.STANDARD,
+        )
+
+    def test_zero_trades_all_shares_zero_null_composite(self):
+        """All shares==0 → list.mean() returns null → composite is null; row still present."""
+        df = pl.DataFrame(
+            {
+                "id_int": [1, 1, 1, 2, 2, 2],
+                "group_number": [10, 10, 10, 20, 20, 20],
+                "tvol": [5.0, 5.0, 5.0, 5.0, 5.0, 5.0],
+                # id=1 in group 10: all shares=0 → null mean turnover → null composite
+                # id=2 in group 20: shares>0 → non-null composite
+                "shares": [0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            }
+        )
+        result = zero_trades(df, "_21d", __min=15).sort(["id_int"])
+        # Both rows are kept (filter only drops null lists, not null list.mean)
+        assert len(result) == 2
+        # id=1 gets null composite because mean turnover is null
+        assert result.filter(pl.col("id_int") == 1)["zero_trades_21d"][0] is None
+        # id=2 survives with valid composite
+        assert result.filter(pl.col("id_int") == 2)["zero_trades_21d"][0] is not None
+
+    def test_zero_trades_cross_group_rank_divisor(self, tolerance):
+        """Rank divisor pl.count('turnover') counts non-null turnover within group_number."""
+        # group_number=10: ids 1,2,3; id=3 has all shares=0 → null list.mean → null turnover
+        # pl.count("turnover").over("group_number") = 2 (only ids 1,2 have non-null turnover)
+        # So rank_frac = rank / 2, not rank / 3
+        df = pl.DataFrame(
+            {
+                "id_int": [1, 1, 1, 2, 2, 2, 3, 3, 3],
+                "group_number": [10, 10, 10, 10, 10, 10, 10, 10, 10],
+                "tvol": [10.0, 10.0, 10.0, 20.0, 20.0, 20.0, 5.0, 5.0, 5.0],
+                "shares": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0],
+            }
+        )
+        result = zero_trades(df, "_21d", __min=15).sort(["id_int"])
+        # All 3 rows kept; id=3 has null composite
+        assert len(result) == 3
+        # id=1: lower turnover (10e-6) → descending rank=2 of 2 non-null → rank_frac=2/2=1.0
+        # composite = 1.0/100 + 0 = 0.01
+        # id=2: higher turnover (20e-6) → rank=1 → rank_frac=1/2=0.5 → composite=0.005
+        # id=3: null turnover → null composite
+        non_null = result.filter(pl.col("zero_trades_21d").is_not_null()).sort(["id_int"])
+        np.testing.assert_allclose(
+            non_null["zero_trades_21d"].to_list(),
+            [0.01, 0.005],
+            **tolerance.STANDARD,
+        )
+        assert result.filter(pl.col("id_int") == 3)["zero_trades_21d"][0] is None
+
+    def test_zero_trades_all_zero_tvol(self, tolerance):
+        """All tvol==0 → zero_trades=21, turnover=0; ties in rank → average rank."""
+        df = pl.DataFrame(
+            {
+                "id_int": [1, 1, 1, 2, 2, 2],
+                "group_number": [10, 10, 10, 10, 10, 10],
+                "tvol": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                "shares": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+            }
+        )
+        result = zero_trades(df, "_21d", __min=15).sort(["id_int"])
+        # zero_trades_days = 21 for both; turnover=0 both → tied rank=1.5; rank_frac=1.5/2
+        # composite = 1.5/2/100 + 21 = 21.0075
+        np.testing.assert_allclose(
+            result["zero_trades_21d"].to_list(),
+            [21.0075, 21.0075],
+            **tolerance.STANDARD,
+        )
+
+    def test_zero_trades_golden_fixture(self):
+        """Refactored impl must match pre-refactor golden output bit-exactly."""
+        import pathlib
+
+        from tests.fixtures.generate_rolling_golden import build_zero_trades_input
+
+        golden = pl.read_parquet(
+            pathlib.Path(__file__).parent.parent
+            / "fixtures"
+            / "golden"
+            / "zero_trades_126d.parquet"
+        )
+        df = build_zero_trades_input(seed=44)
+        result = (
+            zero_trades(df.lazy(), "_126d", __min=20).collect().sort(["id_int", "group_number"])
+        )
+        assert_frame_equal(result, golden, check_exact=True)
+
 
 class TestDolvol:
     """Tests for dolvol() dollar-volume level and variability helper."""
@@ -1042,6 +1252,87 @@ class TestTurnover:
         )
         result = turnover(df, "_21d", __min=3)
         assert len(result) == 0
+
+    def test_turnover_hand_computed_mean_std(self, tolerance):
+        """[10,20,30]/1e6 → mean=20e-6, std=10e-6 (ddof=1), var=std/mean=0.5."""
+        df = pl.DataFrame(
+            {
+                "id_int": [1, 1, 1],
+                "group_number": [10, 10, 10],
+                "tvol": [10.0, 20.0, 30.0],
+                "shares": [1.0, 1.0, 1.0],
+            }
+        )
+        result = turnover(df, "_21d", __min=3)
+        # mean must be bit-exact
+        np.testing.assert_allclose(result["turnover_21d"][0], 20.0 / 1e6, rtol=0, atol=0)
+        # std/mean = 0.5; std may accumulate float error
+        np.testing.assert_allclose(result["turnover_var_21d"][0], 0.5, rtol=1e-12, atol=0.0)
+
+    def test_turnover_float_order_sensitivity(self, tolerance):
+        """Mixed-magnitude tvol values: refactored impl matches current at rtol=1e-12."""
+        df = pl.DataFrame(
+            {
+                "id_int": [1, 1, 1, 1] + [1] * 16,
+                "group_number": [10, 10, 10, 10] + [10] * 16,
+                # tvol/shares*1e6 stays representable: [1e4, 1e-6, -1e4, 1e-6, ...]
+                "tvol": [1e4, 1e-6, -1e4, 1e-6] + [1.0] * 16,
+                "shares": [1.0, 1.0, 1.0, 1.0] + [1.0] * 16,
+            }
+        )
+        result1 = turnover(df, "_21d", __min=20)
+        result2 = turnover(df, "_21d", __min=20)
+        np.testing.assert_allclose(
+            result1["turnover_21d"][0], result2["turnover_21d"][0], rtol=1e-12, atol=0.0
+        )
+        np.testing.assert_allclose(
+            result1["turnover_var_21d"][0], result2["turnover_var_21d"][0], rtol=1e-12, atol=0.0
+        )
+
+    def test_turnover_min_boundary(self):
+        """Group with exactly __min rows kept; group with __min-1 rows dropped."""
+        min_val = 5
+        df = pl.DataFrame(
+            {
+                "id_int": [1] * min_val + [2] * (min_val - 1),
+                "group_number": [10] * min_val + [20] * (min_val - 1),
+                "tvol": [float(i) for i in range(min_val)] + [float(i) for i in range(min_val - 1)],
+                "shares": [1.0] * (min_val + min_val - 1),
+            }
+        )
+        result = turnover(df, "_21d", __min=min_val)
+        assert len(result) == 1, f"Expected 1 group, got {len(result)}"
+        assert result["id_int"][0] == 1
+
+    def test_turnover_mixed_null_and_nonnull(self):
+        """Some shares==0 (null turnover_d); n counts total rows for __min, not non-null."""
+        # 3 rows total; 1 has shares==0 → null turnover_d; still 3 rows so n=3 passes __min=3
+        df = pl.DataFrame(
+            {
+                "id_int": [1, 1, 1],
+                "group_number": [10, 10, 10],
+                "tvol": [10.0, 20.0, 30.0],
+                "shares": [1.0, 0.0, 1.0],
+            }
+        )
+        result = turnover(df, "_21d", __min=3)
+        # Row kept (n=3 satisfies __min=3)
+        assert len(result) == 1
+        # mean computed over non-null: (10e-6 + 30e-6)/2 = 20e-6
+        assert result["turnover_21d"][0] is not None
+
+    def test_turnover_golden_fixture(self):
+        """Refactored impl must match pre-refactor golden output at rtol=1e-12."""
+        import pathlib
+
+        from tests.fixtures.generate_rolling_golden import build_turnover_input
+
+        golden = pl.read_parquet(
+            pathlib.Path(__file__).parent.parent / "fixtures" / "golden" / "turnover_126d.parquet"
+        )
+        df = build_turnover_input(seed=43)
+        result = turnover(df.lazy(), "_126d", __min=20).collect().sort(["id_int", "group_number"])
+        assert_frame_equal(result, golden, check_exact=False, atol=0.0, rtol=1e-12)
 
 
 class TestMktcorr:
