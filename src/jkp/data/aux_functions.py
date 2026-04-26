@@ -8660,30 +8660,32 @@ def zero_trades(df, sfx, __min):
         Zero-trade days and turnover-based illiquidity composite.
 
     Steps:
-        1) zero_trades = mean(tvol==0) * 21.
-        2) turnover = tvol/(shares*1e6) when shares>0; take group mean.
-        3) Rank turnover within group_number; composite = rank/100 + zero_trades.
+        1) For each (id_int,group_number): zero_trades = mean(tvol==0)*21;
+           turnover = mean(tvol/(shares*1e6)) for rows with shares>0.
+        2) Drop groups where zero_trades is null.
+        3) Rank turnover descending within group_number (method="average");
+           composite = rank/count/100 + zero_trades.
 
     Output:
         LazyFrame with f'zero_trades{sfx}'.
     """
 
-    aux_1 = (pl.col("tvol") == 0).mean() * 21
-    aux_2 = (
-        pl.when(pl.col("shares") != 0)
-        .then(pl.col("tvol") / (pl.col("shares") * 1e6))
-        .otherwise(fl_none())
+    turnover_d = (
+        pl.when(col("shares") != 0).then(col("tvol") / (col("shares") * 1e6)).otherwise(fl_none())
     )
-    aux_3 = (
-        pl.col("turnover").rank(descending=True, method="average") / pl.count("turnover")
-    ).over("group_number")
-    aux_4 = (aux_3 / 100) + pl.col("zero_trades")
     df = (
         df.group_by(["id_int", "group_number"])
-        .agg([aux_1.alias("zero_trades"), aux_2.alias("turnover")])
-        .filter(pl.col("zero_trades").is_not_null() & pl.col("turnover").is_not_null())
-        .with_columns(pl.col("turnover").list.mean())
-        .with_columns(aux_4.alias(f"zero_trades{sfx}"))
+        .agg(
+            ((col("tvol") == 0).mean() * 21).alias("zero_trades"),
+            turnover_d.mean().alias("turnover"),
+        )
+        .filter(col("zero_trades").is_not_null())
+        .with_columns(
+            (col("turnover").rank(descending=True, method="average") / pl.count("turnover"))
+            .over("group_number")
+            .alias("rank_frac"),
+        )
+        .with_columns((col("rank_frac") / 100 + col("zero_trades")).alias(f"zero_trades{sfx}"))
         .select(["id_int", "group_number", f"zero_trades{sfx}"])
     )
     return df
