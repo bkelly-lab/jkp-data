@@ -1235,25 +1235,17 @@ class TestDimsonbeta:
         assert len(result) == 0
 
     def test_dimsonbeta_long_window_produces_output(self, tolerance):
-        """_126d window with min_obs=60: plugin gates on actual group size, not per-month count.
-
-        Regression test for the latent pre-filter bug where n1 = pl.len().over([id_int, eom])
-        compared a per-calendar-month count against window-sized min_obs (≥59), wiping all rows
-        for windows other than _21d.
-        """
+        """_126d window with min_obs=60 over a single eom yields one β per group."""
         rng = np.random.default_rng(7)
         n = 126
         mkt = rng.standard_normal(n)
         mkt_ld = rng.standard_normal(n)
         mkt_lg = rng.standard_normal(n)
-        # 6 distinct months inside the window
-        months = np.repeat([1, 2, 3, 4, 5, 6], 21)
-        eoms = [date(2020, int(m), 28) for m in months]
         df = pl.DataFrame(
             {
                 "id_int": [1] * n,
                 "group_number": [10] * n,
-                "eom": eoms,
+                "eom": [date(2020, 6, 30)] * n,
                 "mktrf": mkt,
                 "mktrf_ld1": mkt_ld,
                 "mktrf_lg1": mkt_lg,

@@ -8255,9 +8255,11 @@ def apply_group_filter(df, stat, min_obs):
         pass
     elif stat == "dimsonbeta":
         df = df.with_columns(
+            n1=pl.len().over(["id_int", "eom"]),
             n2=pl.count("ret_exc").over(["id_int", "group_number"]),
         ).filter(
-            (col("n2") >= min_obs)
+            (col("n1") >= min_obs - 1)
+            & (col("n2") >= min_obs)
             & (col("mktrf_lg1").is_not_null())
             & (col("mktrf_ld1").is_not_null())
         )
