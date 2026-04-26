@@ -32,6 +32,7 @@ env/
 *.ddb
 !documentation/sas_to_python/data/*.parquet
 !tests/golden/fixtures/**/*.parquet
+!tests/fixtures/golden/*.parquet
 *.csv
 *.xlsx
 *.xls
