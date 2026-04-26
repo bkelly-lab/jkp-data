@@ -8782,7 +8782,7 @@ def _solve_beta_sum_sym3(c00, c01, c02, c11, c12, c22, v0, v1, v2):
 
     S has columns (c00,c01,c02), (c01,c11,c12), (c02,c12,c22); v = (v0,v1,v2).
     Numerator = Σ det(S with column i replaced by v).
-    Returns null when |det(S)| / (c00·c11·c22) ≤ 1e-10 (near-singular).
+    Returns null when |det(S)| / (c00·c11·c22) ≤ 1e-11 (near-singular).
     """
     col0 = (c00, c01, c02)
     col1 = (c01, c11, c12)
@@ -8799,7 +8799,7 @@ def _solve_beta_sum_sym3(c00, c01, c02, c11, c12, c22, v0, v1, v2):
     det_S = det(col0, col1, col2)
     num = det(v, col1, col2) + det(col0, v, col2) + det(col0, col1, v)
     rcond = det_S.abs() / (c00 * c11 * c22).abs()
-    return pl.when(rcond > 1e-12).then(num / det_S).otherwise(None)
+    return pl.when(rcond > 1e-11).then(num / det_S).otherwise(None)
 
 
 @functools.cache
