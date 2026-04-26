@@ -19,7 +19,6 @@ import ibis
 import polars as pl
 import polars_ols  # noqa: F401 - required for least_squares method on polars expressions
 from ibis import _
-from jkp_plugin import dimson_beta as _dimson_beta_plugin
 from polars import col
 
 from .config import MAIN_FILTERS
@@ -8204,10 +8203,11 @@ def base_data_filter_exp(stat):
         return (col("ret_exc_3l").is_not_null()) & (col("zero_obs") < 10)
     elif stat == "dimsonbeta":
         return (
-            (col("ret_exc").is_not_null())
+            col("ret_exc").is_not_null()
+            & col("mktrf").is_not_null()
+            & col("mktrf_ld1").is_not_null()
+            & col("mktrf_lg1").is_not_null()
             & (col("zero_obs") < 10)
-            & (col("mktrf_ld1").is_not_null())
-            & (col("mktrf_lg1").is_not_null())
         )
     else:
         return (col("ret_exc").is_not_null()) & (col("zero_obs") < 10)
@@ -8242,15 +8242,12 @@ def apply_group_filter(df, stat, min_obs):
 
     Steps:
         1) For zero_trades/dolvol/others: count needed column within (id_int,group_number), require ≥ min_obs.
-        2) Pass-through for 'turnover', 'mktcorr', 'dimsonbeta' (each handles its own gating).
+        2) Pass-through for 'turnover', 'mktcorr' (each handles its own gating).
 
     Output:
         Filtered LazyFrame for subsequent aggregation/regression.
     """
-    if stat == "turnover" or stat == "mktcorr" or stat == "dimsonbeta":
-        # dimsonbeta: plugin handles undersized groups internally (returns null,
-        # filtered downstream). The previous n1/n2 pre-filter wiped all rows for
-        # _126d/_252d/_1260d because n1 counted obs per calendar month.
+    if stat == "turnover" or stat == "mktcorr":
         pass
     else:
         if stat == "zero_trades":
@@ -8766,30 +8763,59 @@ def mktcorr(df, sfx, __min):
     return df
 
 
-def dimsonbeta(df, sfx, __min):
+def _solve_beta_sum_sym3(c00, c01, c02, c11, c12, c22, v0, v1, v2):
+    """β_sum = 1ᵀ S⁻¹ v for symmetric 3×3 S via Cramer's rule.
+
+    S has columns (c00,c01,c02), (c01,c11,c12), (c02,c12,c22); v = (v0,v1,v2).
+    Numerator = Σ det(S with column i replaced by v).
+    Returns null when |det(S)| / (c00·c11·c22) ≤ 1e-10 (near-singular).
+    """
+    col0 = (c00, c01, c02)
+    col1 = (c01, c11, c12)
+    col2 = (c02, c12, c22)
+    v = (v0, v1, v2)
+
+    def det(a, b, c):
+        return (
+            a[0] * (b[1] * c[2] - b[2] * c[1])
+            - b[0] * (a[1] * c[2] - a[2] * c[1])
+            + c[0] * (a[1] * b[2] - a[2] * b[1])
+        )
+
+    det_S = det(col0, col1, col2)
+    num = det(v, col1, col2) + det(col0, v, col2) + det(col0, col1, v)
+    rcond = det_S.abs() / (c00 * c11 * c22).abs()
+    return pl.when(rcond > 1e-10).then(num / det_S).otherwise(None)
+
+
+@functools.cache
+def _dimson_exprs():
+    """Build and cache (agg_exprs, beta_expr) for Dimson β. Run once on first call."""
+    X = ("mktrf_lg1", "mktrf", "mktrf_ld1")
+    y = "ret_exc"
+    # Upper-triangle of symmetric S (row-major: c00,c01,c02,c11,c12,c22), then Xᵀy.
+    pairs = [(X[i], X[j]) for i in range(3) for j in range(i, 3)] + [(x, y) for x in X]
+    agg = tuple(
+        (pl.var(a) if a == b else pl.cov(a, b)).alias(f"m{k}") for k, (a, b) in enumerate(pairs)
+    )
+    beta = _solve_beta_sum_sym3(*(pl.col(f"m{k}") for k in range(9)))
+    return agg, beta
+
+
+def dimsonbeta(df: pl.LazyFrame, sfx: str, __min: int) -> pl.LazyFrame:
     """
     Description:
-        Dimson beta (lead-lag adjusted market beta) per window.
-
-    Steps:
-        1) OLS: ret_exc ~ mktrf + mktrf_ld1 + mktrf_lg1 with intercept, per group.
-        2) Sum the three market coefficients (intercept excluded) inside the kernel.
-        3) Drop groups whose regression returned null (n < __min or singular X'X).
-
+        Dimson β = sum of slopes from OLS ret_exc ~ mktrf_{-1,0,+1} per
+        (id_int, group_number). Closed-form via Cramer's rule on per-group
+        covariances; fully lazy, single pass.
     Output:
         LazyFrame with f'beta_dimson{sfx}'.
     """
-    beta_col = f"beta_dimson{sfx}"
+    name = f"beta_dimson{sfx}"
+    agg, beta = _dimson_exprs()
     return (
         df.group_by(["id_int", "group_number"])
-        .agg(
-            _dimson_beta_plugin(
-                col("ret_exc"),
-                col("mktrf"),
-                col("mktrf_ld1"),
-                col("mktrf_lg1"),
-                min_obs=__min,
-            ).alias(beta_col)
-        )
-        .filter(col(beta_col).is_not_null())
+        .agg(*agg)
+        .select("id_int", "group_number", beta.alias(name))
+        .filter(pl.col(name).is_not_null())
     )

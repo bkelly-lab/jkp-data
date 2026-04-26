@@ -28,7 +28,6 @@ dependencies = [
     "duckdb>=1.4.3",
     "fastexcel>=0.16.0",
     "ibis-framework[duckdb,postgres]>=11.0",
-    "jkp-plugin",
     "keyring>=25.6.0",
     "keyrings-alt>=5.0.2",
     "numpy>=1.26.4",
@@ -39,22 +38,6 @@ dependencies = [
     "sqlalchemy>=1.4.49",
     "tqdm>=4.66.5",
     "typer>=0.15.0",
-]
-
-[tool.uv]
-environments = [
-    "sys_platform == 'darwin' and platform_machine == 'arm64'",
-    "sys_platform == 'darwin' and platform_machine == 'x86_64'",
-    "sys_platform == 'linux' and platform_machine == 'x86_64'",
-    "sys_platform == 'linux' and platform_machine == 'aarch64'",
-]
-
-[tool.uv.sources]
-jkp-plugin = [
-    { path = "wheels/jkp_plugin-0.1.0-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
-    { path = "wheels/jkp_plugin-0.1.0-cp311-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", marker = "sys_platform == 'linux' and platform_machine == 'aarch64'" },
-    { path = "wheels/jkp_plugin-0.1.0-cp311-abi3-macosx_11_0_arm64.whl", marker = "sys_platform == 'darwin' and platform_machine == 'arm64'" },
-    { path = "wheels/jkp_plugin-0.1.0-cp311-abi3-macosx_10_12_x86_64.whl", marker = "sys_platform == 'darwin' and platform_machine == 'x86_64'" },
 ]
 
 [project.urls]
@@ -78,7 +61,6 @@ dev = [
     "ipykernel>=7.1.0",
     "jupyter>=1.1.1",
     "matplotlib>=3.10.8",
-    "maturin>=1.13.1",
 ]
 test = [
     "pytest>=8.0.0",
