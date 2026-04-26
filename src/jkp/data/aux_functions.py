@@ -8799,7 +8799,7 @@ def _solve_beta_sum_sym3(c00, c01, c02, c11, c12, c22, v0, v1, v2):
     det_S = det(col0, col1, col2)
     num = det(v, col1, col2) + det(col0, v, col2) + det(col0, col1, v)
     rcond = det_S.abs() / (c00 * c11 * c22).abs()
-    return pl.when(rcond > 1e-16).then(num / det_S).otherwise(None)
+    return pl.when(rcond > 1e-12).then(num / det_S).otherwise(None)
 
 
 @functools.cache
