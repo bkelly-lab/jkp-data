@@ -18,8 +18,9 @@ MAIN_FILTERS = {
 }
 
 # Number of per-characteristic lazy pipelines collected concurrently per
-# chunk in `run_portfolio` (bounds peak memory of sort buffers / join hash
-# tables when running over hundreds of characteristics).
+# chunk in `portfolios()`' chunked `collect_all` logic (bounds peak memory
+# of sort buffers / join hash tables when running over hundreds of
+# characteristics).
 COLLECT_CHUNK_SIZE = 20
 
 # Number of portfolios characteristics are sorted into (e.g. 3 -> tertiles).
