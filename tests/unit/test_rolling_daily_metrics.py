@@ -1169,7 +1169,7 @@ class TestDimsonbeta:
         assert len(result) == 0
 
     def test_dimsonbeta_drops_undersized_via_apply_group_filter(self):
-        """apply_group_filter strips groups with n < k+1 so the OLS plugin never crashes."""
+        """apply_group_filter strips groups that are too small for dimsonbeta to evaluate."""
         small = pl.DataFrame(
             {
                 "id_int": [1, 1, 1],
