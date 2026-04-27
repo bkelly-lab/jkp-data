@@ -7959,7 +7959,8 @@ def merge_roll_apply_daily_results():
 
     Steps:
         1) Build date index from earliest to current month.
-        2) Load id_int mapping and all '__roll*' parquet files.
+        2) Load id_int mapping and all '__roll*' parquet files (sorted for
+           deterministic join order).
         3) Outer join them on (id_int, aux_date).
         4) Map aux_date to calendar eom and join id keys.
         5) Save consolidated roll_apply_daily.parquet.
@@ -7979,22 +7980,17 @@ def merge_roll_apply_daily_results():
         col("aux_date").cast(pl.Int64),
     )
     df_id = pl.scan_parquet("id_int_key.parquet")
-    file_paths = [i for i in os.listdir() if i.startswith("__roll")]
+    file_paths = sorted(i for i in os.listdir() if i.startswith("__roll"))
     if len(file_paths) != 1:
         joint_file = pl.scan_parquet(file_paths[0])
         for i in file_paths[1:]:
             df_aux = pl.scan_parquet(i)
             joint_file = joint_file.join(df_aux, how="outer_coalesce", on=["id_int", "aux_date"])
-        joint_file.with_columns(col("aux_date").cast(pl.Int64)).join(
-            df_dates.lazy(), how="left", on="aux_date"
-        ).join(df_id, how="left", on="id_int").drop(["aux_date", "id_int"]).collect().write_parquet(
-            "roll_apply_daily.parquet"
-        )
     else:
         joint_file = pl.scan_parquet(file_paths[0])
 
     joint_file.with_columns(col("aux_date").cast(pl.Int64)).join(
-        df_dates.lazy().with_columns(col("aux_date").cast(pl.Int64)),
+        df_dates.lazy(),
         how="left",
         on="aux_date",
     ).join(df_id, how="left", on="id_int").drop(["aux_date", "id_int"]).collect().write_parquet(
