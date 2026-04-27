@@ -13,7 +13,12 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from jkp.data.aux_functions import aug_msf_v2, gen_crsp_sf, merge_roll_apply_daily_results
+from jkp.data.aux_functions import (
+    aug_msf_v2,
+    gen_crsp_sf,
+    merge_roll_apply_daily_results,
+    prepare_daily,
+)
 
 
 def _write_lookup_tables(raw_tables: Path) -> None:
@@ -181,6 +186,64 @@ def test_aug_msf_v2_writes_augmented_file_and_is_idempotent(
 
     # Idempotency: a second invocation must not raise.
     aug_msf_v2()
+
+
+def test_dsf1_unique_id_int_date(temp_data_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """dsf1.parquet must be unique on (id_int, date).
+
+    prc_to_high() relies on this invariant: its simplification (within-group
+    sort_by('date').last()) is byte-exact vs the previous global-sort impl only
+    when the input has no rows sharing (id_int, date) within a group_number.
+    The invariant is established upstream by combine_crsp_comp_sf's ROW_NUMBER
+    dedup over (id, date) (asserted by test_no_duplicates_daily) and preserved
+    through prepare_daily — this test locks the post-prepare_daily property.
+    """
+    code_dir = temp_data_dir / "code"
+    code_dir.mkdir(exist_ok=True)
+    monkeypatch.chdir(code_dir)
+
+    # Synthetic world_dsf with two ids across three dates each.
+    rows = []
+    for id_val in [101, 202]:
+        for d in [date(2020, 1, 2), date(2020, 1, 3), date(2020, 1, 6)]:
+            rows.append(
+                {
+                    "excntry": "USA",
+                    "id": id_val,
+                    "date": d,
+                    "eom": date(2020, 1, 31),
+                    "prc": 100.0,
+                    "adjfct": 1.0,
+                    "ret": 0.01,
+                    "ret_exc": 0.005,
+                    "dolvol": 1000.0,
+                    "shares": 10.0,
+                    "tvol": 100.0,
+                    "ret_lag_dif": 1,
+                    "ret_local": 0.01,
+                }
+            )
+    pl.DataFrame(rows).write_parquet(code_dir / "world_dsf.parquet")
+
+    # Synthetic ap_factors_daily — unique on (excntry, date).
+    pl.DataFrame(
+        {
+            "excntry": ["USA"] * 3,
+            "date": [date(2020, 1, 2), date(2020, 1, 3), date(2020, 1, 6)],
+            "mktrf": [0.001, 0.002, 0.003],
+            "hml": [0.0, 0.0, 0.0],
+            "smb_ff": [0.0, 0.0, 0.0],
+            "inv": [0.0, 0.0, 0.0],
+            "roe": [0.0, 0.0, 0.0],
+            "smb_hxz": [0.0, 0.0, 0.0],
+        }
+    ).write_parquet(code_dir / "ap_factors_daily.parquet")
+
+    prepare_daily("world_dsf.parquet", "ap_factors_daily.parquet")
+
+    dsf1 = pl.read_parquet(code_dir / "dsf1.parquet")
+    dup_count = dsf1.select(["id_int", "date"]).is_duplicated().sum()
+    assert dup_count == 0, f"dsf1 has {dup_count} duplicate (id_int, date) rows"
 
 
 def test_merge_roll_apply_daily_results_writes_once_with_deterministic_order(

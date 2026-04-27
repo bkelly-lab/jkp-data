@@ -6743,7 +6743,7 @@ def prepare_daily(data_path, fcts_path):
         2) Create zero_obs flags per (id,eom); cap returns to lag ≤14 days; compute prc_adj.
         3) Write dsf1.parquet and id_int_key.parquet.
         4) Build market lead/lag series per day and write mkt_lead_lag.parquet.
-        5) Build 3-day rolling sums for stock and market excess returns for correlations; write corr_data.parquet.
+        5) Build 3-day rolling sums for stock and market excess returns; filter to non-null sums and zero_obs<10; write corr_data.parquet.
 
     Output:
         Parquets: dsf1.parquet, id_int_key.parquet, mkt_lead_lag.parquet, corr_data.parquet.
@@ -6806,7 +6806,7 @@ def prepare_daily(data_path, fcts_path):
 
     corr_data = (
         pl.scan_parquet("dsf1.parquet")
-        .select(["ret_exc", "id", "id_int", "date", "mktrf", "eom", "zero_obs"])
+        .select(["ret_exc", "id_int", "date", "mktrf", "eom", "zero_obs"])
         .sort(["id_int", "date"])
         .with_columns(
             ret_exc_3l=(col("ret_exc") + col("ret_exc").shift(1) + col("ret_exc").shift(2)).over(
@@ -6816,7 +6816,12 @@ def prepare_daily(data_path, fcts_path):
                 ["id_int"]
             ),
         )
-        .select(["id_int", "eom", "zero_obs", "ret_exc_3l", "mkt_exc_3l"])
+        .filter(
+            col("ret_exc_3l").is_not_null()
+            & col("mkt_exc_3l").is_not_null()
+            & (col("zero_obs") < 10)
+        )
+        .select(["id_int", "eom", "ret_exc_3l", "mkt_exc_3l"])
         .select(pl.all().shrink_dtype())
         .sort(["id_int", "eom"])
     )
@@ -8210,7 +8215,8 @@ def base_data_filter_exp(stat):
     elif stat == "turnover":
         return col("tvol").is_not_null()
     elif stat == "mktcorr":
-        return (col("ret_exc_3l").is_not_null()) & (col("zero_obs") < 10)
+        # corr_data.parquet is pre-filtered in prepare_daily; nothing to drop at read time.
+        return pl.lit(True)
     else:
         return (col("ret_exc").is_not_null()) & (col("zero_obs") < 10)
 
@@ -8454,20 +8460,29 @@ def prc_to_high(df, sfx, __min):
         Price-to-high: last price over group max price, with min obs filter.
 
     Steps:
-        1) Sort by (id_int,date).
-        2) For each (id_int,group_number), compute last(prc_adj)/max(prc_adj) and count.
-        3) Keep groups with n ≥ __min.
+        1) For each (id_int,group_number), compute last(prc_adj sorted by date)/max(prc_adj)
+           and count.
+        2) Keep groups with n ≥ __min.
 
     Output:
         LazyFrame with f'prc_highprc{sfx}'.
+
+    Note:
+        Bit-exact vs the prior global-sort impl on production data: dsf1.parquet is
+        unique on (id_int, date) (combine_crsp_comp_sf ROW_NUMBER dedup at
+        aux_functions.py:2251-2266 + injective id_int = rank(method='min') +
+        ap_factors_daily pivot uniqueness). The two impls differ only on rows sharing
+        (id_int, date) within a group_number, which the production pipeline cannot
+        produce. The dsf1 invariant is locked by test_dsf1_unique_id_int_date.
     """
 
     df = (
-        df.sort(["id_int", "date"])
-        .group_by(["id_int", "group_number"])
+        df.group_by(["id_int", "group_number"])
         .agg(
             [
-                (col("prc_adj").last() / col("prc_adj").max()).alias(f"prc_highprc{sfx}"),
+                (col("prc_adj").sort_by("date").last() / col("prc_adj").max()).alias(
+                    f"prc_highprc{sfx}"
+                ),
                 pl.count("prc_adj").alias("n"),
             ]
         )
@@ -8663,30 +8678,32 @@ def zero_trades(df, sfx, __min):
         Zero-trade days and turnover-based illiquidity composite.
 
     Steps:
-        1) zero_trades = mean(tvol==0) * 21.
-        2) turnover = tvol/(shares*1e6) when shares>0; take group mean.
-        3) Rank turnover within group_number; composite = rank/100 + zero_trades.
+        1) For each (id_int,group_number): zero_trades = mean(tvol==0)*21;
+           turnover = mean(tvol/(shares*1e6)) for rows with shares>0.
+        2) Drop groups where zero_trades is null.
+        3) Rank turnover descending within group_number (method="average");
+           composite = rank/count/100 + zero_trades.
 
     Output:
         LazyFrame with f'zero_trades{sfx}'.
     """
 
-    aux_1 = (pl.col("tvol") == 0).mean() * 21
-    aux_2 = (
-        pl.when(pl.col("shares") != 0)
-        .then(pl.col("tvol") / (pl.col("shares") * 1e6))
-        .otherwise(fl_none())
+    turnover_d = (
+        pl.when(col("shares") != 0).then(col("tvol") / (col("shares") * 1e6)).otherwise(fl_none())
     )
-    aux_3 = (
-        pl.col("turnover").rank(descending=True, method="average") / pl.count("turnover")
-    ).over("group_number")
-    aux_4 = (aux_3 / 100) + pl.col("zero_trades")
     df = (
         df.group_by(["id_int", "group_number"])
-        .agg([aux_1.alias("zero_trades"), aux_2.alias("turnover")])
-        .filter(pl.col("zero_trades").is_not_null() & pl.col("turnover").is_not_null())
-        .with_columns(pl.col("turnover").list.mean())
-        .with_columns(aux_4.alias(f"zero_trades{sfx}"))
+        .agg(
+            ((col("tvol") == 0).mean() * 21).alias("zero_trades"),
+            turnover_d.mean().alias("turnover"),
+        )
+        .filter(col("zero_trades").is_not_null())
+        .with_columns(
+            (col("turnover").rank(descending=True, method="average") / pl.count("turnover"))
+            .over("group_number")
+            .alias("rank_frac"),
+        )
+        .with_columns((col("rank_frac") / 100 + col("zero_trades")).alias(f"zero_trades{sfx}"))
         .select(["id_int", "group_number", f"zero_trades{sfx}"])
     )
     return df
@@ -8722,36 +8739,31 @@ def turnover(df, sfx, __min):
         Turnover level and variability within window.
 
     Steps:
-        1) Build list turnover_d = tvol/(shares*1e6) (guard shares>0).
-        2) Compute mean(turnover_d), std/mean, and n; require n ≥ __min.
+        1) Compute scalar mean and std of turnover_d = tvol/(shares*1e6) (guard shares>0)
+           and total row count n per (id_int,group_number) in one .agg call.
+        2) Derive variability ratio std/mean; require n ≥ __min.
 
     Output:
         LazyFrame with [f'turnover{sfx}', f'turnover_var{sfx}'].
     """
-    aux_1 = (
-        pl.when(col("turnover_d").list.mean() != 0)
-        .then(col("turnover_d").list.std() / col("turnover_d").list.mean())
-        .otherwise(fl_none())
+    turnover_d = (
+        pl.when(col("shares") != 0).then(col("tvol") / (col("shares") * 1e6)).otherwise(fl_none())
     )
     df = (
         df.group_by(["id_int", "group_number"])
         .agg(
-            [
-                pl.when(col("shares") != 0)
-                .then(col("tvol") / (col("shares") * 1e6))
-                .otherwise(fl_none())
-                .alias("turnover_d")
-            ]
+            turnover_d.mean().alias(f"turnover{sfx}"),
+            turnover_d.std().alias("turnover_std"),
+            pl.len().alias("n"),
         )
         .with_columns(
-            [
-                col("turnover_d").list.mean().alias(f"turnover{sfx}"),
-                aux_1.alias(f"turnover_var{sfx}"),
-                (col("turnover_d").list.len()).alias("n"),
-            ]
+            pl.when(col(f"turnover{sfx}") != 0)
+            .then(col("turnover_std") / col(f"turnover{sfx}"))
+            .otherwise(fl_none())
+            .alias(f"turnover_var{sfx}"),
         )
         .filter(col("n") >= __min)
-        .drop(["n", "turnover_d"])
+        .drop(["turnover_std", "n"])
     )
     return df
 
@@ -8762,24 +8774,23 @@ def mktcorr(df, sfx, __min):
         Rolling correlation between 3-day summed stock and market excess returns.
 
     Steps:
-        1) Group by (id_int,group_number); count obs for ret_exc_3l and mkt_exc_3l.
-        2) Require both counts ≥ __min; compute Pearson corr.
+        1) Group by (id_int, group_number); count rows.
+        2) Require count >= __min; compute Pearson corr.
 
     Output:
         LazyFrame with f'corr{sfx}'.
     """
-    df = (
+    # pl.len() is sound because prepare_daily writes corr_data.parquet pre-filtered
+    # to ret_exc_3l/mkt_exc_3l non-null; len == count(ret_exc_3l) == count(mkt_exc_3l).
+    return (
         df.group_by(["id_int", "group_number"])
         .agg(
-            [
-                pl.min_horizontal([pl.count("ret_exc_3l"), pl.count("mkt_exc_3l")]).alias("n"),
-                pl.corr("ret_exc_3l", "mkt_exc_3l").alias(f"corr{sfx}"),
-            ]
+            pl.len().alias("n"),
+            pl.corr("ret_exc_3l", "mkt_exc_3l").alias(f"corr{sfx}"),
         )
         .filter(col("n") >= __min)
         .drop("n")
     )
-    return df
 
 
 def _solve_beta_sum_sym3(c00, c01, c02, c11, c12, c22, v0, v1, v2):

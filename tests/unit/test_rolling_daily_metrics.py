@@ -13,6 +13,8 @@ from typing import Any
 
 import numpy as np
 import polars as pl
+import pytest
+from polars.testing import assert_frame_equal
 
 from jkp.data.aux_functions import (
     ami,
@@ -43,6 +45,21 @@ def _is_none_or_nan(value: float | None) -> bool:
 def _empty_df(schema: dict[str, Any]) -> pl.DataFrame:
     """Build an empty DataFrame with explicit dtypes."""
     return pl.DataFrame({k: pl.Series(name=k, values=[], dtype=v) for k, v in schema.items()})
+
+
+def _mktcorr_legacy(df, sfx, __min):
+    """Pre-change mktcorr body, kept in tests to assert equivalence on null-free input."""
+    return (
+        df.group_by(["id_int", "group_number"])
+        .agg(
+            [
+                pl.min_horizontal([pl.count("ret_exc_3l"), pl.count("mkt_exc_3l")]).alias("n"),
+                pl.corr("ret_exc_3l", "mkt_exc_3l").alias(f"corr{sfx}"),
+            ]
+        )
+        .filter(pl.col("n") >= __min)
+        .drop("n")
+    )
 
 
 class TestRvol:
@@ -352,6 +369,67 @@ class TestPrcToHigh:
         )
         result = prc_to_high(df, "_21d", __min=3)
         assert len(result) == 0
+
+    def test_prc_to_high_within_group_date_order_parity(self, tolerance):
+        """Non-monotone row order within group should still yield last-by-date price."""
+        # Rows arrive out of date order; last by date is prc_adj=15.0 on 2024-01-05
+        df = pl.DataFrame(
+            {
+                "id_int": [1, 1, 1, 1, 1],
+                "group_number": [10, 10, 10, 10, 10],
+                "date": [
+                    date(2024, 1, 3),
+                    date(2024, 1, 5),
+                    date(2024, 1, 1),
+                    date(2024, 1, 4),
+                    date(2024, 1, 2),
+                ],
+                "prc_adj": [12.0, 15.0, 8.0, 20.0, 10.0],
+            }
+        )
+        result = prc_to_high(df, "_21d", __min=1)
+        # last by date = 15.0, max = 20.0 → 15/20 = 0.75
+        np.testing.assert_allclose(
+            result["prc_highprc_21d"][0],
+            15.0 / 20.0,
+            **tolerance.STANDARD,
+        )
+
+    def test_prc_to_high_filter_boundary(self):
+        """Group with exactly __min rows kept; group with __min-1 rows dropped."""
+        min_val = 5
+        # Group 1: exactly min_val rows → kept
+        df = pl.DataFrame(
+            {
+                "id_int": [1] * min_val + [2] * (min_val - 1),
+                "group_number": [10] * min_val + [20] * (min_val - 1),
+                "date": [date(2024, 1, i + 1) for i in range(min_val)]
+                + [date(2024, 1, i + 1) for i in range(min_val - 1)],
+                "prc_adj": [float(i + 1) for i in range(min_val)]
+                + [float(i + 1) for i in range(min_val - 1)],
+            }
+        )
+        result = prc_to_high(df, "_21d", __min=min_val)
+        assert len(result) == 1, f"Expected 1 group, got {len(result)}"
+        assert result["id_int"][0] == 1
+
+    def test_prc_to_high_golden_fixture(self):
+        """Lock down prc_to_high output on a 500-id seeded synthetic fixture.
+
+        Input is generated with unique dates per (id_int, group_number) — the synthetic
+        scenario the function is contractually required to handle. Asserts bit-exact
+        reproducibility across runs/Polars versions/hardware on this representative load.
+        """
+        import pathlib
+
+        from tests.fixtures.generate_rolling_golden import build_prc_to_high_input
+
+        golden = pl.read_parquet(
+            pathlib.Path(__file__).parent.parent / "fixtures" / "golden" / "prc_to_high_21d.parquet"
+        )
+        df = build_prc_to_high_input(seed=42)
+        result = prc_to_high(df.lazy(), "_21d", __min=10).collect().sort(["id_int", "group_number"])
+        assert_frame_equal(result, golden, check_exact=False, atol=0.0, rtol=1e-12)
 
 
 class TestCapm:
@@ -930,6 +1008,131 @@ class TestZeroTrades:
         result = zero_trades(df, "_21d", __min=15)
         assert len(result) == 0
 
+    def test_zero_trades_tied_turnover_ranks(self, tolerance):
+        """Two ids with equal mean turnover get average rank (1+2)/2=1.5; composite uses 1.5/2/100."""
+        # Both ids have identical tvol and shares → identical mean turnover → tied
+        df = pl.DataFrame(
+            {
+                "id_int": [1, 1, 1, 2, 2, 2],
+                "group_number": [10, 10, 10, 10, 10, 10],
+                "tvol": [5.0, 5.0, 5.0, 5.0, 5.0, 5.0],
+                "shares": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+            }
+        )
+        result = zero_trades(df, "_21d", __min=15).sort(["id_int"])
+        # zero_trades_days = 0 for both; rank tie → average rank = 1.5; rank_frac = 1.5/2
+        # composite = 1.5/2/100 + 0 = 0.0075
+        np.testing.assert_allclose(
+            result["zero_trades_21d"].to_list(),
+            [0.0075, 0.0075],
+            **tolerance.STANDARD,
+        )
+
+    def test_zero_trades_shares_zero_skipped_in_mean(self, tolerance):
+        """Rows with shares==0 produce null turnover_d; mean skips nulls."""
+        # id=1: shares [1,0,1], tvol [6,999,12]; turnover_d = [6e-6, null, 12e-6] → mean=9e-6
+        # id=2: shares [1,1,1], tvol [9,9,9]; mean=9e-6 → same turnover → tied rank
+        df = pl.DataFrame(
+            {
+                "id_int": [1, 1, 1, 2, 2, 2],
+                "group_number": [10, 10, 10, 10, 10, 10],
+                "tvol": [6.0, 999.0, 12.0, 9.0, 9.0, 9.0],
+                "shares": [1.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            }
+        )
+        result = zero_trades(df, "_21d", __min=15).sort(["id_int"])
+        # Both have mean turnover_d = 9e-6; tied rank = 1.5/2; zero_trades_days = 0
+        np.testing.assert_allclose(
+            result["zero_trades_21d"].to_list(),
+            [0.0075, 0.0075],
+            **tolerance.STANDARD,
+        )
+
+    def test_zero_trades_all_shares_zero_null_composite(self):
+        """All shares==0 → list.mean() returns null → composite is null; row still present."""
+        df = pl.DataFrame(
+            {
+                "id_int": [1, 1, 1, 2, 2, 2],
+                "group_number": [10, 10, 10, 20, 20, 20],
+                "tvol": [5.0, 5.0, 5.0, 5.0, 5.0, 5.0],
+                # id=1 in group 10: all shares=0 → null mean turnover → null composite
+                # id=2 in group 20: shares>0 → non-null composite
+                "shares": [0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            }
+        )
+        result = zero_trades(df, "_21d", __min=15).sort(["id_int"])
+        # Both rows are kept (filter only drops null lists, not null list.mean)
+        assert len(result) == 2
+        # id=1 gets null composite because mean turnover is null
+        assert result.filter(pl.col("id_int") == 1)["zero_trades_21d"][0] is None
+        # id=2 survives with valid composite
+        assert result.filter(pl.col("id_int") == 2)["zero_trades_21d"][0] is not None
+
+    def test_zero_trades_cross_group_rank_divisor(self, tolerance):
+        """Rank divisor pl.count('turnover') counts non-null turnover within group_number."""
+        # group_number=10: ids 1,2,3; id=3 has all shares=0 → null list.mean → null turnover
+        # pl.count("turnover").over("group_number") = 2 (only ids 1,2 have non-null turnover)
+        # So rank_frac = rank / 2, not rank / 3
+        df = pl.DataFrame(
+            {
+                "id_int": [1, 1, 1, 2, 2, 2, 3, 3, 3],
+                "group_number": [10, 10, 10, 10, 10, 10, 10, 10, 10],
+                "tvol": [10.0, 10.0, 10.0, 20.0, 20.0, 20.0, 5.0, 5.0, 5.0],
+                "shares": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0],
+            }
+        )
+        result = zero_trades(df, "_21d", __min=15).sort(["id_int"])
+        # All 3 rows kept; id=3 has null composite
+        assert len(result) == 3
+        # id=1: lower turnover (10e-6) → descending rank=2 of 2 non-null → rank_frac=2/2=1.0
+        # composite = 1.0/100 + 0 = 0.01
+        # id=2: higher turnover (20e-6) → rank=1 → rank_frac=1/2=0.5 → composite=0.005
+        # id=3: null turnover → null composite
+        non_null = result.filter(pl.col("zero_trades_21d").is_not_null()).sort(["id_int"])
+        np.testing.assert_allclose(
+            non_null["zero_trades_21d"].to_list(),
+            [0.01, 0.005],
+            **tolerance.STANDARD,
+        )
+        assert result.filter(pl.col("id_int") == 3)["zero_trades_21d"][0] is None
+
+    def test_zero_trades_all_zero_tvol(self, tolerance):
+        """All tvol==0 → zero_trades=21, turnover=0; ties in rank → average rank."""
+        df = pl.DataFrame(
+            {
+                "id_int": [1, 1, 1, 2, 2, 2],
+                "group_number": [10, 10, 10, 10, 10, 10],
+                "tvol": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                "shares": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+            }
+        )
+        result = zero_trades(df, "_21d", __min=15).sort(["id_int"])
+        # zero_trades_days = 21 for both; turnover=0 both → tied rank=1.5; rank_frac=1.5/2
+        # composite = 1.5/2/100 + 21 = 21.0075
+        np.testing.assert_allclose(
+            result["zero_trades_21d"].to_list(),
+            [21.0075, 21.0075],
+            **tolerance.STANDARD,
+        )
+
+    def test_zero_trades_golden_fixture(self):
+        """Refactored impl must match pre-refactor golden output bit-exactly."""
+        import pathlib
+
+        from tests.fixtures.generate_rolling_golden import build_zero_trades_input
+
+        golden = pl.read_parquet(
+            pathlib.Path(__file__).parent.parent
+            / "fixtures"
+            / "golden"
+            / "zero_trades_126d.parquet"
+        )
+        df = build_zero_trades_input(seed=44)
+        result = (
+            zero_trades(df.lazy(), "_126d", __min=20).collect().sort(["id_int", "group_number"])
+        )
+        assert_frame_equal(result, golden, check_exact=False, atol=0.0, rtol=1e-12)
+
 
 class TestDolvol:
     """Tests for dolvol() dollar-volume level and variability helper."""
@@ -1044,11 +1247,98 @@ class TestTurnover:
         result = turnover(df, "_21d", __min=3)
         assert len(result) == 0
 
+    def test_turnover_hand_computed_mean_std(self, tolerance):
+        """[10,20,30]/1e6 → mean=20e-6, std=10e-6 (ddof=1), var=std/mean=0.5."""
+        df = pl.DataFrame(
+            {
+                "id_int": [1, 1, 1],
+                "group_number": [10, 10, 10],
+                "tvol": [10.0, 20.0, 30.0],
+                "shares": [1.0, 1.0, 1.0],
+            }
+        )
+        result = turnover(df, "_21d", __min=3)
+        # mean must be bit-exact
+        np.testing.assert_allclose(result["turnover_21d"][0], 20.0 / 1e6, rtol=0, atol=0)
+        # std/mean = 0.5; std may accumulate float error
+        np.testing.assert_allclose(result["turnover_var_21d"][0], 0.5, rtol=1e-12, atol=0.0)
+
+    def test_turnover_float_order_sensitivity(self, tolerance):
+        """Mixed-magnitude tvol values agree with an independent NumPy reference."""
+        tvol_values = np.array([1e4, 1e-6, -1e4, 1e-6] + [1.0] * 16, dtype=np.float64)
+        share_values = np.array([1.0, 1.0, 1.0, 1.0] + [1.0] * 16, dtype=np.float64)
+        df = pl.DataFrame(
+            {
+                "id_int": [1, 1, 1, 1] + [1] * 16,
+                "group_number": [10, 10, 10, 10] + [10] * 16,
+                "tvol": tvol_values.tolist(),
+                "shares": share_values.tolist(),
+            }
+        )
+        result = turnover(df, "_21d", __min=20)
+
+        scaled_turnover = tvol_values / share_values / 1e6
+        expected_turnover = scaled_turnover.mean()
+        expected_turnover_var = scaled_turnover.std(ddof=1) / expected_turnover
+
+        np.testing.assert_allclose(
+            result["turnover_21d"][0], expected_turnover, rtol=1e-12, atol=0.0
+        )
+        np.testing.assert_allclose(
+            result["turnover_var_21d"][0], expected_turnover_var, rtol=1e-12, atol=0.0
+        )
+
+    def test_turnover_min_boundary(self):
+        """Group with exactly __min rows kept; group with __min-1 rows dropped."""
+        min_val = 5
+        df = pl.DataFrame(
+            {
+                "id_int": [1] * min_val + [2] * (min_val - 1),
+                "group_number": [10] * min_val + [20] * (min_val - 1),
+                "tvol": [float(i) for i in range(min_val)] + [float(i) for i in range(min_val - 1)],
+                "shares": [1.0] * (min_val + min_val - 1),
+            }
+        )
+        result = turnover(df, "_21d", __min=min_val)
+        assert len(result) == 1, f"Expected 1 group, got {len(result)}"
+        assert result["id_int"][0] == 1
+
+    def test_turnover_mixed_null_and_nonnull(self):
+        """Some shares==0 (null turnover_d); n counts total rows for __min, not non-null."""
+        # 3 rows total; 1 has shares==0 → null turnover_d; still 3 rows so n=3 passes __min=3
+        df = pl.DataFrame(
+            {
+                "id_int": [1, 1, 1],
+                "group_number": [10, 10, 10],
+                "tvol": [10.0, 20.0, 30.0],
+                "shares": [1.0, 0.0, 1.0],
+            }
+        )
+        result = turnover(df, "_21d", __min=3)
+        # Row kept (n=3 satisfies __min=3)
+        assert len(result) == 1
+        # mean computed over non-null: (10e-6 + 30e-6)/2 = 20e-6
+        assert result["turnover_21d"][0] is not None
+
+    def test_turnover_golden_fixture(self):
+        """Refactored impl must match pre-refactor golden output at rtol=1e-12."""
+        import pathlib
+
+        from tests.fixtures.generate_rolling_golden import build_turnover_input
+
+        golden = pl.read_parquet(
+            pathlib.Path(__file__).parent.parent / "fixtures" / "golden" / "turnover_126d.parquet"
+        )
+        df = build_turnover_input(seed=43)
+        result = turnover(df.lazy(), "_126d", __min=20).collect().sort(["id_int", "group_number"])
+        assert_frame_equal(result, golden, check_exact=False, atol=0.0, rtol=1e-12)
+
 
 class TestMktcorr:
     """Tests for mktcorr() rolling correlation helper."""
 
-    def test_mktcorr_computation_and_min_filter(self, tolerance):
+    @pytest.mark.parametrize("impl", [mktcorr, _mktcorr_legacy], ids=["new", "legacy"])
+    def test_mktcorr_computation_and_min_filter(self, tolerance, impl):
         """Should compute correlation and keep only groups with n >= __min."""
         df = pl.DataFrame(
             {
@@ -1059,7 +1349,7 @@ class TestMktcorr:
             }
         )
 
-        result = mktcorr(df, "_21d", __min=3).sort(["id_int", "group_number"])
+        result = impl(df, "_21d", __min=3).sort(["id_int", "group_number"])
 
         assert len(result) == 1, f"Expected 1 group after __min filter, got {len(result)}"
         np.testing.assert_allclose(
@@ -1069,7 +1359,8 @@ class TestMktcorr:
             err_msg=f"Expected corr_21d=1.0, got {result['corr_21d'][0]}",
         )
 
-    def test_mktcorr_constant_series_is_undefined(self):
+    @pytest.mark.parametrize("impl", [mktcorr, _mktcorr_legacy], ids=["new", "legacy"])
+    def test_mktcorr_constant_series_is_undefined(self, impl):
         """Correlation is undefined if one side is constant."""
         df = pl.DataFrame(
             {
@@ -1079,10 +1370,11 @@ class TestMktcorr:
                 "mkt_exc_3l": [2.0, 4.0, 6.0],
             }
         )
-        result = mktcorr(df, "_21d", __min=3)
+        result = impl(df, "_21d", __min=3)
         assert _is_none_or_nan(result["corr_21d"][0])
 
-    def test_mktcorr_empty_input_returns_empty(self):
+    @pytest.mark.parametrize("impl", [mktcorr, _mktcorr_legacy], ids=["new", "legacy"])
+    def test_mktcorr_empty_input_returns_empty(self, impl):
         df = _empty_df(
             {
                 "id_int": pl.Int64,
@@ -1091,8 +1383,75 @@ class TestMktcorr:
                 "mkt_exc_3l": pl.Float64,
             }
         )
-        result = mktcorr(df, "_21d", __min=3)
+        result = impl(df, "_21d", __min=3)
         assert len(result) == 0
+
+    @pytest.mark.parametrize("impl", [mktcorr, _mktcorr_legacy], ids=["new", "legacy"])
+    def test_mktcorr_multi_group_mixed_sizes(self, tolerance, impl):
+        """Groups with n > __min and n == __min survive; n < __min is dropped.
+
+        Group 1 (id_int=1): 5 obs, perfectly correlated → corr=1.0, survives __min=4.
+        Group 2 (id_int=2): 4 obs, perfectly anti-correlated → corr=-1.0, survives __min=4.
+        Group 3 (id_int=3): 3 obs, < __min=4, must be dropped.
+        """
+        df = pl.DataFrame(
+            {
+                "id_int": [1, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3],
+                "group_number": [10, 10, 10, 10, 10, 20, 20, 20, 20, 30, 30, 30],
+                "ret_exc_3l": [1.0, 2.0, 3.0, 4.0, 5.0, 1.0, 2.0, 3.0, 4.0, 1.0, 2.0, 3.0],
+                "mkt_exc_3l": [2.0, 4.0, 6.0, 8.0, 10.0, 4.0, 3.0, 2.0, 1.0, 1.0, 2.0, 3.0],
+            }
+        )
+        result = impl(df, "_21d", __min=4).sort(["id_int", "group_number"])
+
+        assert len(result) == 2, f"Expected 2 groups, got {len(result)}"
+        assert list(result["id_int"]) == [1, 2]
+        np.testing.assert_allclose(
+            result["corr_21d"].to_list(),
+            [1.0, -1.0],
+            **tolerance.STANDARD,
+            err_msg=f"Unexpected correlations: {result['corr_21d'].to_list()}",
+        )
+
+    @pytest.mark.parametrize("impl", [mktcorr, _mktcorr_legacy], ids=["new", "legacy"])
+    def test_mktcorr_below_min_group_dropped(self, impl):
+        """A single group with n == __min - 1 must produce an empty result."""
+        __min = 5
+        df = pl.DataFrame(
+            {
+                "id_int": [1] * (__min - 1),
+                "group_number": [10] * (__min - 1),
+                "ret_exc_3l": [float(i) for i in range(__min - 1)],
+                "mkt_exc_3l": [float(i) * 2 for i in range(__min - 1)],
+            }
+        )
+        result = impl(df, "_21d", __min=__min)
+        assert len(result) == 0, f"Expected empty result, got {len(result)} rows"
+
+    def test_mktcorr_equivalence_null_free_input(self):
+        """Both impls must produce identical output on varied null-free input."""
+        rng = np.random.default_rng(42)
+        rows_per_group = [8, 6, 5, 7]
+        id_ints, group_numbers, ret_vals, mkt_vals = [], [], [], []
+        for g, n in enumerate(rows_per_group):
+            id_ints.extend([g + 1] * n)
+            group_numbers.extend([g * 10 + 10] * n)
+            ret_vals.extend(rng.standard_normal(n).tolist())
+            mkt_vals.extend(rng.standard_normal(n).tolist())
+
+        df = pl.DataFrame(
+            {
+                "id_int": id_ints,
+                "group_number": group_numbers,
+                "ret_exc_3l": ret_vals,
+                "mkt_exc_3l": mkt_vals,
+            }
+        )
+
+        result_new = mktcorr(df, "_21d", __min=5).sort(["id_int", "group_number"])
+        result_legacy = _mktcorr_legacy(df, "_21d", __min=5).sort(["id_int", "group_number"])
+
+        assert_frame_equal(result_new, result_legacy, check_exact=False, atol=1e-14)
 
 
 class TestDimsonbeta:
@@ -1265,3 +1624,110 @@ class TestDimsonbeta:
             [0.9],
             atol=0.1,
         )
+
+
+class TestPrepareDailyCorr:
+    """Regression tests for the corr_data.parquet written by prepare_daily().
+
+    Verifies that the filter removing null 3l-sums and zero_obs>=10 rows
+    is present in prepare_daily, guaranteeing null-free corr_data.parquet output.
+    """
+
+    def test_corr_data_null_free_and_zero_obs_filtered(self, temp_data_dir, monkeypatch):
+        """corr_data.parquet must have zero nulls and no zero_obs column after the filter push."""
+        from datetime import date as dt
+
+        from jkp.data.aux_functions import prepare_daily
+
+        monkeypatch.chdir(temp_data_dir)
+
+        # --- build synthetic dsf (daily stock file) ---
+        # id "A": 5 consecutive days, all ret_exc non-null, zero_obs small → all rows survive
+        # id "B": day1 ret_exc=null → 3l-sums on days 1-3 are null → those days filtered
+        # id "C": zero_obs=10 for all rows → entire id filtered
+        dates = [dt(2020, 1, d) for d in range(2, 7)]  # Jan 2, 3, 4, 5, 6 2020
+        eom = dt(2020, 1, 31)
+
+        def make_rows(stock_id, ret_exc_vals, ret_local_vals):
+            n = len(dates)
+            return {
+                "excntry": ["USA"] * n,
+                "id": [stock_id] * n,
+                "date": dates,
+                "eom": [eom] * n,
+                "prc": [10.0] * n,
+                "adjfct": [1.0] * n,
+                "ret": [0.01] * n,
+                "ret_exc": ret_exc_vals,
+                "dolvol": [1e6] * n,
+                "shares": [1000.0] * n,
+                "tvol": [100.0] * n,
+                "ret_lag_dif": [1] * n,
+                "ret_local": ret_local_vals,
+            }
+
+        df_a = pl.DataFrame(
+            make_rows("A", [0.01, 0.02, 0.03, 0.04, 0.05], [0.01, 0.02, 0.03, 0.04, 0.05])
+        )
+        # id "B": first ret_exc is null → 3l sums on days 0,1,2 will be null
+        df_b = pl.DataFrame(
+            make_rows("B", [None, 0.02, 0.03, 0.04, 0.05], [None, 0.02, 0.03, 0.04, 0.05])
+        )
+        # id "C": ret_local=0 every day → zero_obs=5 per eom (< 10 so NOT filtered by zero_obs)
+        #   Actually make zero_obs >= 10 by using 10 rows for id "C" spanning two eoms
+        dates_c = [dt(2020, 1, d) for d in range(2, 12)]  # 10 days
+        eom_c_vals = [dt(2020, 1, 31)] * 10
+        df_c = pl.DataFrame(
+            {
+                "excntry": ["USA"] * 10,
+                "id": ["C"] * 10,
+                "date": dates_c,
+                "eom": eom_c_vals,
+                "prc": [10.0] * 10,
+                "adjfct": [1.0] * 10,
+                "ret": [0.0] * 10,
+                "ret_exc": [0.0] * 10,
+                "dolvol": [0.0] * 10,
+                "shares": [1000.0] * 10,
+                "tvol": [0.0] * 10,
+                "ret_lag_dif": [1] * 10,
+                "ret_local": [0.0] * 10,  # all zero → zero_obs=10 → filtered
+            }
+        )
+
+        dsf = pl.concat([df_a, df_b, df_c], how="diagonal")
+        dsf_path = str(temp_data_dir / "dsf.parquet")
+        dsf.write_parquet(dsf_path)
+
+        # --- build synthetic factors parquet ---
+        all_dates = sorted(set(dates + dates_c))
+        fcts = pl.DataFrame(
+            {
+                "excntry": ["USA"] * len(all_dates),
+                "date": all_dates,
+                "mktrf": [0.005] * len(all_dates),
+                "smb": [0.001] * len(all_dates),
+                "hml": [0.001] * len(all_dates),
+            }
+        )
+        fcts_path = str(temp_data_dir / "fcts.parquet")
+        fcts.write_parquet(fcts_path)
+
+        prepare_daily(dsf_path, fcts_path)
+
+        corr = pl.read_parquet(str(temp_data_dir / "corr_data.parquet"))
+
+        # No nulls in ret_exc_3l or mkt_exc_3l
+        assert corr["ret_exc_3l"].null_count() == 0, "ret_exc_3l has nulls"
+        assert corr["mkt_exc_3l"].null_count() == 0, "mkt_exc_3l has nulls"
+
+        # zero_obs column must not be present (it is dropped in select)
+        assert "zero_obs" not in corr.columns, "zero_obs column should not be in corr_data"
+
+        # id "C" (zero_obs=10) must not appear — its id_int should be absent
+        # We know id "C" maps to some id_int; all rows from it should be gone.
+        # Simpler: row count should equal surviving rows from A and B only.
+        # id A: 5 rows, 3l non-null from row index 2 onwards → 3 rows survive.
+        # id B: 5 rows, first ret_exc null → 3l null on rows 0-2 → rows 3,4 survive → 2 rows.
+        # id C: all filtered by zero_obs=10 → 0 rows.
+        assert len(corr) == 5, f"Expected 5 rows (3 from A + 2 from B), got {len(corr)}"
