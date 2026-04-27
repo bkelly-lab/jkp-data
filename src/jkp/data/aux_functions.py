@@ -8450,20 +8450,29 @@ def prc_to_high(df, sfx, __min):
         Price-to-high: last price over group max price, with min obs filter.
 
     Steps:
-        1) Sort by (id_int,date).
-        2) For each (id_int,group_number), compute last(prc_adj)/max(prc_adj) and count.
-        3) Keep groups with n ≥ __min.
+        1) For each (id_int,group_number), compute last(prc_adj sorted by date)/max(prc_adj)
+           and count.
+        2) Keep groups with n ≥ __min.
 
     Output:
         LazyFrame with f'prc_highprc{sfx}'.
+
+    Note:
+        Bit-exact vs the prior global-sort impl on production data: dsf1.parquet is
+        unique on (id_int, date) (combine_crsp_comp_sf ROW_NUMBER dedup at
+        aux_functions.py:2251-2266 + injective id_int = rank(method='min') +
+        ap_factors_daily pivot uniqueness). The two impls differ only on rows sharing
+        (id_int, date) within a group_number, which the production pipeline cannot
+        produce. The dsf1 invariant is locked by test_dsf1_unique_id_int_date.
     """
 
     df = (
-        df.sort(["id_int", "date"])
-        .group_by(["id_int", "group_number"])
+        df.group_by(["id_int", "group_number"])
         .agg(
             [
-                (col("prc_adj").last() / col("prc_adj").max()).alias(f"prc_highprc{sfx}"),
+                (col("prc_adj").sort_by("date").last() / col("prc_adj").max()).alias(
+                    f"prc_highprc{sfx}"
+                ),
                 pl.count("prc_adj").alias("n"),
             ]
         )
