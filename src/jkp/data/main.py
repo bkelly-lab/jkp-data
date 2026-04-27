@@ -76,8 +76,10 @@ def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> No
     return_cutoffs("d", 0)
     add_ret_exc_wins("m")
     add_ret_exc_wins("d")
-    market_returns("world_dsf.parquet", "d", 1, "return_cutoffs_daily.parquet")
-    market_returns("world_msf.parquet", "m", 1, "return_cutoffs.parquet")
+    market_returns(
+        "world_dsf.parquet", "d", 1, "return_cutoffs_daily.parquet", "nyse_cutoffs.parquet"
+    )
+    market_returns("world_msf.parquet", "m", 1, "return_cutoffs.parquet", "nyse_cutoffs.parquet")
     standardized_accounting_data("world", 1, "world_msf.parquet", 1, ACCOUNTING_START_DATE)
     create_acc_chars(
         "acc_std_ann.parquet",

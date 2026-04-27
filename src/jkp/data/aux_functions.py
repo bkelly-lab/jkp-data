@@ -2948,6 +2948,7 @@ def apply_stock_filter_and_compute_indexes(df, dt_col, max_date_lag):
             aux1=col("ret_local") * col("me_lag1"),
             aux2=col("ret") * col("me_lag1"),
             aux3=col("ret_exc") * col("me_lag1"),
+            aux4=col("ret_exc") * col("me_cap_lag1"),
         )
         .group_by(["excntry", dt_col])
         .agg(
@@ -2960,6 +2961,7 @@ def apply_stock_filter_and_compute_indexes(df, dt_col, max_date_lag):
             mkt_ew=pl.mean("ret"),
             mkt_vw_exc=sas_sum_agg("aux3") / sas_sum_agg("me_lag1"),
             mkt_ew_exc=pl.mean("ret_exc"),
+            mkt_vw_cap_exc=sas_sum_agg("aux4") / sas_sum_agg("me_cap_lag1"),
         )
     )
     return df
@@ -2990,7 +2992,7 @@ def drop_non_trading_days(df, n_col, dt_col, over_vars, thresh_fraction):
 
 
 @measure_time
-def market_returns(data_path, freq, wins_comp, wins_data_path):
+def market_returns(data_path, freq, wins_comp, wins_data_path, nyse_cutoffs_path):
     """
     Description:
         Build country-level market returns (daily or monthly), optional winsorization, and save to disk.
@@ -2999,9 +3001,10 @@ def market_returns(data_path, freq, wins_comp, wins_data_path):
         1) Load params from freq; scan data; keep common-stock fields; sort by [id, dt].
         2) Add lags me_lag1, dolvol_lag1 per id.
         3) If wins_comp, join cutoffs and winsorize returns.
-        4) Apply stock filters & compute VW/EW country returns.
-        5) If daily, drop low-coverage trading days.
-        6) Sort and write 'market_returns{_daily}.parquet'.
+        4) Join NYSE P80 cutoffs and compute me_cap_lag1.
+        5) Apply stock filters & compute VW/EW country returns (including capped VW).
+        6) If daily, drop low-coverage trading days.
+        7) Sort and write 'market_returns{_daily}.parquet'.
 
     Output:
         Parquet file of country × date market returns.
@@ -3021,6 +3024,10 @@ def market_returns(data_path, freq, wins_comp, wins_data_path):
         __common_stocks = add_cutoffs_and_winsorize(
             __common_stocks, wins_data_path, group_vars, dt_col
         )
+    nyse = pl.scan_parquet(nyse_cutoffs_path).select(["eom", "nyse_p80"])
+    __common_stocks = __common_stocks.join(nyse, on="eom", how="left").with_columns(
+        me_cap_lag1=pl.min_horizontal(col("me_lag1"), col("nyse_p80"))
+    )
     __common_stocks = apply_stock_filter_and_compute_indexes(__common_stocks, dt_col, max_date_lag)
     if freq == "d":
         __common_stocks = drop_non_trading_days(
