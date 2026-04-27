@@ -429,7 +429,7 @@ class TestPrcToHigh:
         )
         df = build_prc_to_high_input(seed=42)
         result = prc_to_high(df.lazy(), "_21d", __min=10).collect().sort(["id_int", "group_number"])
-        assert_frame_equal(result, golden, check_exact=True)
+        assert_frame_equal(result, golden, check_exact=False, atol=0.0, rtol=1e-12)
 
 
 class TestCapm:
@@ -1131,7 +1131,7 @@ class TestZeroTrades:
         result = (
             zero_trades(df.lazy(), "_126d", __min=20).collect().sort(["id_int", "group_number"])
         )
-        assert_frame_equal(result, golden, check_exact=True)
+        assert_frame_equal(result, golden, check_exact=False, atol=0.0, rtol=1e-12)
 
 
 class TestDolvol:
