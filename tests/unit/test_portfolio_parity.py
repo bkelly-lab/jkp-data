@@ -450,9 +450,8 @@ class TestPortfoliosParity:
             label="gics_daily",
         )
 
+    @pytest.mark.parametrize("synthetic_setup", ["USA"], indirect=True)
     def test_ff49_returns_parity_usa_only(self, synthetic_setup):
-        if synthetic_setup["excntry"].lower() != "usa":
-            pytest.skip("ff49_returns only produced for USA")
         legacy = legacy_portfolios(**synthetic_setup)
         current = current_portfolios(**synthetic_setup)
         _assert_frames_parity(
@@ -463,9 +462,8 @@ class TestPortfoliosParity:
             label="ff49_returns",
         )
 
+    @pytest.mark.parametrize("synthetic_setup", ["USA"], indirect=True)
     def test_ff49_daily_parity_usa_only(self, synthetic_setup):
-        if synthetic_setup["excntry"].lower() != "usa":
-            pytest.skip("ff49_daily only produced for USA")
         legacy = legacy_portfolios(**synthetic_setup)
         current = current_portfolios(**synthetic_setup)
         _assert_frames_parity(
@@ -476,9 +474,8 @@ class TestPortfoliosParity:
             label="ff49_daily",
         )
 
+    @pytest.mark.parametrize("synthetic_setup", ["SYN"], indirect=True)
     def test_ff49_not_in_output_for_non_usa(self, synthetic_setup):
-        if synthetic_setup["excntry"].lower() == "usa":
-            pytest.skip("non-USA case only")
         legacy = legacy_portfolios(**synthetic_setup)
         current = current_portfolios(**synthetic_setup)
         assert "ff49_returns" not in legacy

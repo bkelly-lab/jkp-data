@@ -17,7 +17,6 @@ if TYPE_CHECKING:
 import duckdb
 import ibis
 import polars as pl
-import polars_ds as pds
 import polars_ols  # noqa: F401 - required for least_squares method on polars expressions
 from ibis import _
 from polars import col
@@ -8783,30 +8782,61 @@ def mktcorr(df, sfx, __min):
     return df
 
 
-def dimsonbeta(df, sfx, __min):
+def _solve_beta_sum_sym3(c00, c01, c02, c11, c12, c22, v0, v1, v2):
+    """β_sum = 1ᵀ S⁻¹ v for symmetric 3×3 S via Cramer's rule.
+
+    S has columns (c00,c01,c02), (c01,c11,c12), (c02,c12,c22); v = (v0,v1,v2).
+    Numerator = Σ det(S with column i replaced by v).
+    Returns null when |det(S)| / (c00·c11·c22) ≤ 1e-12 (near-singular).
+    """
+    col0 = (c00, c01, c02)
+    col1 = (c01, c11, c12)
+    col2 = (c02, c12, c22)
+    v = (v0, v1, v2)
+
+    def det(a, b, c):
+        return (
+            a[0] * (b[1] * c[2] - b[2] * c[1])
+            - b[0] * (a[1] * c[2] - a[2] * c[1])
+            + c[0] * (a[1] * b[2] - a[2] * b[1])
+        )
+
+    det_S = det(col0, col1, col2)
+    num = det(v, col1, col2) + det(col0, v, col2) + det(col0, col1, v)
+    rcond = det_S.abs() / (c00 * c11 * c22).abs()
+    return pl.when(rcond > 1e-12).then(num / det_S).otherwise(None)
+
+
+@functools.cache
+def _dimson_exprs():
+    """Build and cache (agg_exprs, beta_expr) for Dimson β. Run once on first call."""
+    X = ("mktrf_lg1", "mktrf", "mktrf_ld1")
+    y = "ret_exc"
+    # Upper-triangle of symmetric S (row-major: c00,c01,c02,c11,c12,c22), then Xᵀy.
+    pairs = [(X[i], X[j]) for i in range(3) for j in range(i, 3)] + [(x, y) for x in X]
+    agg = tuple(
+        (pl.var(a) if a == b else pl.cov(a, b)).alias(f"m{k}") for k, (a, b) in enumerate(pairs)
+    )
+    beta = _solve_beta_sum_sym3(*(pl.col(f"m{k}") for k in range(9)))
+    return agg, beta
+
+
+def dimsonbeta(
+    df: pl.DataFrame | pl.LazyFrame, sfx: str, __min: int
+) -> pl.DataFrame | pl.LazyFrame:
     """
     Description:
-        Dimson beta (lead-lag adjusted market beta) per window.
-
-    Steps:
-        1) OLS: ret_exc ~ mktrf + mktrf_ld1 + mktrf_lg1; get coefficients per group.
-        2) Sum coefficients on market terms.
-
+        Dimson β = sum of slopes from OLS ret_exc ~ mktrf_{-1,0,+1} per
+        (id_int, group_number). Closed-form via Cramer's rule on per-group
+        covariances; fully lazy, single pass.
     Output:
         LazyFrame with f'beta_dimson{sfx}'.
     """
-    beta_exp = col("coeffs").list.head(3).list.sum()
-    df = (
+    name = f"beta_dimson{sfx}"
+    agg, beta = _dimson_exprs()
+    return (
         df.group_by(["id_int", "group_number"])
-        .agg(
-            coeffs=pds.lin_reg(
-                "mktrf",
-                "mktrf_ld1",
-                "mktrf_lg1",
-                target="ret_exc",
-                add_bias=True,  # intercept will be the last element
-            )
-        )
-        .select(["id_int", "group_number", beta_exp.alias(f"beta_dimson{sfx}")])
+        .agg(*agg)
+        .select("id_int", "group_number", beta.alias(name))
+        .filter(pl.col(name).is_not_null())
     )
-    return df
