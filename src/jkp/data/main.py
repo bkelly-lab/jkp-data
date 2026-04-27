@@ -1,7 +1,5 @@
 from pathlib import Path
 
-import polars as pl
-
 from .aux_functions import (
     acc_chars_list,
     add_ret_exc_wins,
@@ -47,7 +45,7 @@ from .aux_functions import (
     setup_folder_structure,
     standardized_accounting_data,
 )
-from .config import END_DATE
+from .config import ACCOUNTING_START_DATE, END_DATE
 from .paths import DataPaths
 from .wrds_credentials import get_wrds_credentials
 
@@ -78,9 +76,11 @@ def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> No
     return_cutoffs("d", 0)
     add_ret_exc_wins("m")
     add_ret_exc_wins("d")
-    market_returns("world_dsf.parquet", "d", 1, "return_cutoffs_daily.parquet")
-    market_returns("world_msf.parquet", "m", 1, "return_cutoffs.parquet")
-    standardized_accounting_data("world", 1, "world_msf.parquet", 1, pl.datetime(1949, 12, 31))
+    market_returns(
+        "world_dsf.parquet", "d", 1, "return_cutoffs_daily.parquet", "nyse_cutoffs.parquet"
+    )
+    market_returns("world_msf.parquet", "m", 1, "return_cutoffs.parquet", "nyse_cutoffs.parquet")
+    standardized_accounting_data("world", 1, "world_msf.parquet", 1, ACCOUNTING_START_DATE)
     create_acc_chars(
         "acc_std_ann.parquet",
         "achars_world.parquet",

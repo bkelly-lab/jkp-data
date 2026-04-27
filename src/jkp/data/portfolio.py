@@ -5,7 +5,16 @@ from pathlib import Path
 
 import polars as pl
 
-from .config import END_DATE
+from .config import (
+    COLLECT_CHUNK_SIZE,
+    END_DATE,
+    PORTFOLIO_BP_MIN_N,
+    PORTFOLIO_PFS,
+    REGIONAL_COUNTRIES_MIN,
+    REGIONAL_COUNTRY_EXCL,
+    REGIONAL_MONTHS_MIN,
+    REGIONAL_STOCKS_MIN,
+)
 from .output_writer import (
     configure_output_format,
     convert_outputs_to_csv,
@@ -575,11 +584,8 @@ def portfolios(
                 )
                 pf_daily_lazys.append(pf_daily_x)
 
-    # Batch-collect per-char lazy pipelines in chunks to bound peak memory.
-    # Each chunk runs its LazyFrames concurrently via collect_all; chunks are
-    # processed sequentially so at most COLLECT_CHUNK_SIZE chars' worth of
-    # sort buffers / join hash tables live simultaneously.
-    COLLECT_CHUNK_SIZE = 20
+    # Batch-collect per-char lazy pipelines in chunks to bound peak memory
+    # (see COLLECT_CHUNK_SIZE in config.py).
     pf_returns_df: pl.DataFrame | None = None
     pf_daily_df: pl.DataFrame | None = None
 
@@ -957,20 +963,20 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
     # Portfolio construction settings
     settings = {
         "end_date": END_DATE,
-        "pfs": 3,
+        "pfs": PORTFOLIO_PFS,
         "source": ["CRSP", "COMPUSTAT"],
         "wins_ret": True,
         "bps": "non_mc",
-        "bp_min_n": 10,
+        "bp_min_n": PORTFOLIO_BP_MIN_N,
         "cmp": {"us": True, "int": False},
         "signals": {"us": False, "int": False, "standardize": True, "weight": "vw_cap"},
         "regional_pfs": {
             "ret_type": "vw_cap",
-            "country_excl": ["ZWE", "VEN"],
+            "country_excl": list(REGIONAL_COUNTRY_EXCL),
             "country_weights": "market_cap",
-            "stocks_min": 5,
-            "months_min": 5 * 12,
-            "countries_min": 3,
+            "stocks_min": REGIONAL_STOCKS_MIN,
+            "months_min": REGIONAL_MONTHS_MIN,
+            "countries_min": REGIONAL_COUNTRIES_MIN,
         },
         "daily_pf": True,
         "ind_pf": True,

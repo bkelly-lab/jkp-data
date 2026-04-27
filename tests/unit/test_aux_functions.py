@@ -13,7 +13,12 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from jkp.data.aux_functions import aug_msf_v2, gen_crsp_sf, prepare_daily
+from jkp.data.aux_functions import (
+    aug_msf_v2,
+    gen_crsp_sf,
+    merge_roll_apply_daily_results,
+    prepare_daily,
+)
 
 
 def _write_lookup_tables(raw_tables: Path) -> None:
@@ -239,3 +244,63 @@ def test_dsf1_unique_id_int_date(temp_data_dir: Path, monkeypatch: pytest.Monkey
     dsf1 = pl.read_parquet(code_dir / "dsf1.parquet")
     dup_count = dsf1.select(["id_int", "date"]).is_duplicated().sum()
     assert dup_count == 0, f"dsf1 has {dup_count} duplicate (id_int, date) rows"
+
+
+def test_merge_roll_apply_daily_results_writes_once_with_deterministic_order(
+    temp_data_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """merge_roll_apply_daily_results() must produce a single output with deterministic
+    column ordering (sorted by source __roll* filename) and be re-run safe."""
+    code_dir = temp_data_dir / "code"
+    code_dir.mkdir(exist_ok=True)
+
+    pl.DataFrame({"id_int": [1, 2], "id": [10001, 10002]}).write_parquet(
+        code_dir / "id_int_key.parquet"
+    )
+
+    # Use the function's hardcoded start index (23113) so this test stays
+    # valid regardless of system date. The function generates aux_date in
+    # [23113, today.year*12 + today.month + 1].
+    aux_date_val = 23113
+    # Write fixtures in non-alphabetical order to exercise sorted() determinism:
+    # filesystem-order would be insertion-order on most FSes, so writing __roll_b_*
+    # first ensures the test fails without the sorted() fix.
+    pl.DataFrame(
+        {
+            "id_int": [1, 2],
+            "aux_date": [aux_date_val, aux_date_val],
+            "rmax": [0.5, 0.6],
+        }
+    ).write_parquet(code_dir / "__roll_b_rmax.parquet")
+    pl.DataFrame(
+        {
+            "id_int": [1, 2],
+            "aux_date": [aux_date_val, aux_date_val],
+            "rvol": [0.1, 0.2],
+        }
+    ).write_parquet(code_dir / "__roll_a_rvol.parquet")
+
+    monkeypatch.chdir(code_dir)
+    merge_roll_apply_daily_results()
+
+    out = code_dir / "roll_apply_daily.parquet"
+    assert out.exists(), f"Expected output at {out}"
+
+    df = pl.read_parquet(out)
+    assert {"id", "eom", "rvol", "rmax"}.issubset(df.columns), (
+        f"Missing expected columns: {df.columns}"
+    )
+    # Deterministic order: sorted file_paths puts __roll_a_rvol before __roll_b_rmax,
+    # so rvol must precede rmax in the merged schema.
+    assert df.columns.index("rvol") < df.columns.index("rmax"), (
+        f"Expected rvol before rmax (sorted file order), got {df.columns}"
+    )
+    # Outer join on shared (id_int, aux_date) keys = 2 rows.
+    assert df.height == 2
+    assert set(df["id"].to_list()) == {10001, 10002}
+
+    # Re-run must produce identical content (idempotent + single-write safety).
+    merge_roll_apply_daily_results()
+    df2 = pl.read_parquet(out)
+    assert df.equals(df2)
