@@ -20,7 +20,18 @@ from unittest.mock import MagicMock, patch
 import polars as pl
 import pytest
 
-from jkp.data.config import END_DATE, MAIN_FILTERS
+from jkp.data.config import (
+    ACCOUNTING_START_DATE,
+    COLLECT_CHUNK_SIZE,
+    END_DATE,
+    MAIN_FILTERS,
+    PORTFOLIO_BP_MIN_N,
+    PORTFOLIO_PFS,
+    REGIONAL_COUNTRIES_MIN,
+    REGIONAL_COUNTRY_EXCL,
+    REGIONAL_MONTHS_MIN,
+    REGIONAL_STOCKS_MIN,
+)
 
 # =============================================================================
 # Tests: config
@@ -59,6 +70,63 @@ class TestConfig:
         """All MAIN_FILTERS values should be 1 (the passing value)."""
         for k, v in MAIN_FILTERS.items():
             assert v == 1, f"MAIN_FILTERS['{k}'] should be 1, got {v}"
+
+    def test_accounting_start_date_is_polars_expr(self):
+        """ACCOUNTING_START_DATE should be a Polars expression (consumed inline)."""
+        assert isinstance(ACCOUNTING_START_DATE, pl.Expr), (
+            f"ACCOUNTING_START_DATE should be pl.Expr, got {type(ACCOUNTING_START_DATE)}"
+        )
+
+    def test_accounting_start_date_value(self):
+        """ACCOUNTING_START_DATE should evaluate to 1949-12-31."""
+        evaluated = pl.select(ACCOUNTING_START_DATE).item()
+        assert evaluated.date() == date(1949, 12, 31), (
+            f"ACCOUNTING_START_DATE should be 1949-12-31, got {evaluated}"
+        )
+
+    def test_collect_chunk_size_is_positive_int(self):
+        """COLLECT_CHUNK_SIZE must be a positive int (used as a slice step)."""
+        assert isinstance(COLLECT_CHUNK_SIZE, int) and COLLECT_CHUNK_SIZE > 0, (
+            f"COLLECT_CHUNK_SIZE should be a positive int, got {COLLECT_CHUNK_SIZE!r}"
+        )
+
+    def test_portfolio_pfs_value(self):
+        """PORTFOLIO_PFS pins the portfolio sort count (tertiles by default)."""
+        assert PORTFOLIO_PFS == 3, f"PORTFOLIO_PFS expected 3, got {PORTFOLIO_PFS}"
+
+    def test_portfolio_bp_min_n_value(self):
+        """PORTFOLIO_BP_MIN_N pins the per-(industry, month) breakpoint min."""
+        assert PORTFOLIO_BP_MIN_N == 10, f"PORTFOLIO_BP_MIN_N expected 10, got {PORTFOLIO_BP_MIN_N}"
+
+    def test_regional_stocks_min_value(self):
+        """REGIONAL_STOCKS_MIN pins the per-country-month minimum."""
+        assert REGIONAL_STOCKS_MIN == 5, (
+            f"REGIONAL_STOCKS_MIN expected 5, got {REGIONAL_STOCKS_MIN}"
+        )
+
+    def test_regional_months_min_value(self):
+        """REGIONAL_MONTHS_MIN pins the 5-year history minimum."""
+        assert REGIONAL_MONTHS_MIN == 60, (
+            f"REGIONAL_MONTHS_MIN expected 60 months, got {REGIONAL_MONTHS_MIN}"
+        )
+
+    def test_regional_countries_min_value(self):
+        """REGIONAL_COUNTRIES_MIN pins the regional aggregation minimum."""
+        assert REGIONAL_COUNTRIES_MIN == 3, (
+            f"REGIONAL_COUNTRIES_MIN expected 3, got {REGIONAL_COUNTRIES_MIN}"
+        )
+
+    def test_regional_country_excl_is_immutable(self):
+        """REGIONAL_COUNTRY_EXCL must be a tuple to prevent accidental mutation."""
+        assert isinstance(REGIONAL_COUNTRY_EXCL, tuple), (
+            f"REGIONAL_COUNTRY_EXCL should be a tuple, got {type(REGIONAL_COUNTRY_EXCL)}"
+        )
+
+    def test_regional_country_excl_value(self):
+        """REGIONAL_COUNTRY_EXCL pins the excluded ISO-3 codes."""
+        assert REGIONAL_COUNTRY_EXCL == ("ZWE", "VEN"), (
+            f"REGIONAL_COUNTRY_EXCL expected ('ZWE', 'VEN'), got {REGIONAL_COUNTRY_EXCL}"
+        )
 
 
 # =============================================================================
