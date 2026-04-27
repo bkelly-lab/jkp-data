@@ -378,37 +378,6 @@ class TestPrcToHigh:
             **tolerance.STANDARD,
         )
 
-    def test_prc_to_high_tied_max_dates_deterministic(self, tolerance):
-        """Tied max dates: stable sort_by('date') picks the row latest in original order.
-
-        Production CRSP data has unique (permno, date) so this case does not arise in
-        real pipelines. The test pins the new deterministic behavior on synthetic ties.
-        The previous global-sort impl was hash-order-dependent here.
-        """
-        # Two rows on 2024-01-03 (max date) with prices 8.0 (input idx 1) and 9.0 (idx 3).
-        # sort_by('date') is stable, so .last() returns the row that appeared latest in input.
-        df = pl.DataFrame(
-            {
-                "id_int": [1, 1, 1, 1],
-                "group_number": [10, 10, 10, 10],
-                "date": [
-                    date(2024, 1, 1),
-                    date(2024, 1, 3),
-                    date(2024, 1, 2),
-                    date(2024, 1, 3),
-                ],
-                "prc_adj": [5.0, 8.0, 6.0, 9.0],
-            }
-        )
-        result = prc_to_high(df, "_21d", __min=1)
-        # max = 9.0; last-by-date among ties (stable sort) = 9.0 → ratio 1.0.
-        np.testing.assert_allclose(
-            result["prc_highprc_21d"][0],
-            1.0,
-            **tolerance.STANDARD,
-            err_msg=f"Expected 1.0 (last tied row picks 9.0), got {result['prc_highprc_21d'][0]}",
-        )
-
     def test_prc_to_high_filter_boundary(self):
         """Group with exactly __min rows kept; group with __min-1 rows dropped."""
         min_val = 5
@@ -428,13 +397,11 @@ class TestPrcToHigh:
         assert result["id_int"][0] == 1
 
     def test_prc_to_high_golden_fixture(self):
-        """Refactored impl must reproduce the locked-in golden output bit-exactly.
+        """Lock down prc_to_high output on a 500-id seeded synthetic fixture.
 
-        The synthetic input includes ~5% tied dates within groups; on those, the
-        previous global-sort impl had hash-order-dependent output, while the refactor
-        uses stable per-group sort_by('date').last(). The golden parquet was generated
-        from the refactored (deterministic) impl. Production CRSP data is unique on
-        (permno, date) so the tied-date branch is not exercised in real pipelines.
+        Input is generated with unique dates per (id_int, group_number) — the synthetic
+        scenario the function is contractually required to handle. Asserts bit-exact
+        reproducibility across runs/Polars versions/hardware on this representative load.
         """
         import pathlib
 

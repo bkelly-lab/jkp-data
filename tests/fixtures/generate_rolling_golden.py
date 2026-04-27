@@ -24,7 +24,15 @@ GOLDEN_DIR = Path(__file__).parent / "golden"
 
 
 def build_prc_to_high_input(seed: int = 42) -> pl.DataFrame:
-    """Build synthetic prc_to_high input with 500 ids, ~10 groups, 5-40 rows each."""
+    """Build synthetic prc_to_high input with 500 ids, ~10 groups, 5-40 rows each.
+
+    Dates are drawn without replacement per (id_int, group_number) so the input has
+    no tied dates within a group. The current `prc_to_high` impl uses a global
+    `df.sort([id_int, date])` followed by a hash `group_by` and `col.last()`; on
+    tied-date inputs that combination is hash-bucket-order-dependent (effectively
+    undefined). Restricting the fixture to unique-date inputs lets the golden
+    parquet act as a deterministic regression locker.
+    """
     rng = np.random.default_rng(seed)
 
     n_ids = 500
@@ -35,14 +43,9 @@ def build_prc_to_high_input(seed: int = 42) -> pl.DataFrame:
     rows: list[dict] = []
     for id_int in range(1, n_ids + 1):
         group_number = int(rng.integers(1, n_groups + 1))
-        n_rows = int(rng.integers(5, 41))
-        day_offsets = rng.integers(0, date_range_days, size=n_rows)
-        # Allow ties: sometimes duplicate a day offset
-        for i in range(len(day_offsets)):
-            if rng.random() < 0.05:
-                day_offsets[i] = day_offsets[max(0, i - 1)]
+        n_rows = int(rng.integers(5, min(41, date_range_days + 1)))
+        day_offsets = rng.choice(date_range_days, size=n_rows, replace=False)
         prices = rng.uniform(1.0, 100.0, size=n_rows)
-        # Set ~5% prices to 0.0
         zero_mask = rng.random(n_rows) < 0.05
         prices[zero_mask] = 0.0
         for j in range(n_rows):

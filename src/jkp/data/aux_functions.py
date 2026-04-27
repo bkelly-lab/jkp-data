@@ -8450,21 +8450,20 @@ def prc_to_high(df, sfx, __min):
         Price-to-high: last price over group max price, with min obs filter.
 
     Steps:
-        1) For each (id_int,group_number), compute last(prc_adj sorted by date)/max(prc_adj)
-           and count.
-        2) Keep groups with n ≥ __min.
+        1) Sort by (id_int,date).
+        2) For each (id_int,group_number), compute last(prc_adj)/max(prc_adj) and count.
+        3) Keep groups with n ≥ __min.
 
     Output:
         LazyFrame with f'prc_highprc{sfx}'.
     """
 
     df = (
-        df.group_by(["id_int", "group_number"])
+        df.sort(["id_int", "date"])
+        .group_by(["id_int", "group_number"])
         .agg(
             [
-                (col("prc_adj").sort_by("date").last() / col("prc_adj").max()).alias(
-                    f"prc_highprc{sfx}"
-                ),
+                (col("prc_adj").last() / col("prc_adj").max()).alias(f"prc_highprc{sfx}"),
                 pl.count("prc_adj").alias("n"),
             ]
         )
