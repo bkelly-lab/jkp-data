@@ -62,7 +62,10 @@ def build_prc_to_high_input(seed: int = 42) -> pl.DataFrame:
 
 
 def build_turnover_input(seed: int = 43) -> pl.DataFrame:
-    """Build synthetic turnover input with 500 ids × 5 groups, ~30 rows each."""
+    """Build synthetic turnover input with 500 ids across 5 groups, ~30 rows per id.
+
+    Each `id_int` is assigned exactly one `group_number` from {10, 20, 30, 40, 50}.
+    """
     rng = np.random.default_rng(seed)
 
     n_ids = 500
@@ -117,7 +120,11 @@ def build_turnover_input(seed: int = 43) -> pl.DataFrame:
 
 
 def build_zero_trades_input(seed: int = 44) -> pl.DataFrame:
-    """Build synthetic zero_trades input with 500 ids × 5 groups, ~30 rows each."""
+    """Build synthetic zero_trades input with 500 ids across 5 groups, ~30 rows per id.
+
+    Each `id_int` is assigned to exactly one `group_number` chosen from
+    `[10, 20, 30, 40, 50]`.
+    """
     rng = np.random.default_rng(seed)
 
     n_ids = 500

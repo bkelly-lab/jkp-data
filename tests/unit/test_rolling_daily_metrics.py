@@ -1263,23 +1263,28 @@ class TestTurnover:
         np.testing.assert_allclose(result["turnover_var_21d"][0], 0.5, rtol=1e-12, atol=0.0)
 
     def test_turnover_float_order_sensitivity(self, tolerance):
-        """Mixed-magnitude tvol values: refactored impl matches current at rtol=1e-12."""
+        """Mixed-magnitude tvol values agree with an independent NumPy reference."""
+        tvol_values = np.array([1e4, 1e-6, -1e4, 1e-6] + [1.0] * 16, dtype=np.float64)
+        share_values = np.array([1.0, 1.0, 1.0, 1.0] + [1.0] * 16, dtype=np.float64)
         df = pl.DataFrame(
             {
                 "id_int": [1, 1, 1, 1] + [1] * 16,
                 "group_number": [10, 10, 10, 10] + [10] * 16,
-                # tvol/shares*1e6 stays representable: [1e4, 1e-6, -1e4, 1e-6, ...]
-                "tvol": [1e4, 1e-6, -1e4, 1e-6] + [1.0] * 16,
-                "shares": [1.0, 1.0, 1.0, 1.0] + [1.0] * 16,
+                "tvol": tvol_values.tolist(),
+                "shares": share_values.tolist(),
             }
         )
-        result1 = turnover(df, "_21d", __min=20)
-        result2 = turnover(df, "_21d", __min=20)
+        result = turnover(df, "_21d", __min=20)
+
+        scaled_turnover = tvol_values / share_values / 1e6
+        expected_turnover = scaled_turnover.mean()
+        expected_turnover_var = scaled_turnover.std(ddof=1) / expected_turnover
+
         np.testing.assert_allclose(
-            result1["turnover_21d"][0], result2["turnover_21d"][0], rtol=1e-12, atol=0.0
+            result["turnover_21d"][0], expected_turnover, rtol=1e-12, atol=0.0
         )
         np.testing.assert_allclose(
-            result1["turnover_var_21d"][0], result2["turnover_var_21d"][0], rtol=1e-12, atol=0.0
+            result["turnover_var_21d"][0], expected_turnover_var, rtol=1e-12, atol=0.0
         )
 
     def test_turnover_min_boundary(self):
@@ -1422,8 +1427,7 @@ class TestMktcorr:
         result = impl(df, "_21d", __min=__min)
         assert len(result) == 0, f"Expected empty result, got {len(result)} rows"
 
-    @pytest.mark.parametrize("impl", [mktcorr, _mktcorr_legacy], ids=["new", "legacy"])
-    def test_mktcorr_equivalence_null_free_input(self, impl):
+    def test_mktcorr_equivalence_null_free_input(self):
         """Both impls must produce identical output on varied null-free input."""
         rng = np.random.default_rng(42)
         rows_per_group = [8, 6, 5, 7]
