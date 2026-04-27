@@ -6737,7 +6737,7 @@ def prepare_daily(data_path, fcts_path):
         2) Create zero_obs flags per (id,eom); cap returns to lag ≤14 days; compute prc_adj.
         3) Write dsf1.parquet and id_int_key.parquet.
         4) Build market lead/lag series per day and write mkt_lead_lag.parquet.
-        5) Build 3-day rolling sums for stock and market excess returns for correlations; write corr_data.parquet.
+        5) Build 3-day rolling sums for stock and market excess returns; filter to non-null sums and zero_obs<10; write corr_data.parquet.
 
     Output:
         Parquets: dsf1.parquet, id_int_key.parquet, mkt_lead_lag.parquet, corr_data.parquet.
@@ -6800,7 +6800,7 @@ def prepare_daily(data_path, fcts_path):
 
     corr_data = (
         pl.scan_parquet("dsf1.parquet")
-        .select(["ret_exc", "id", "id_int", "date", "mktrf", "eom", "zero_obs"])
+        .select(["ret_exc", "id_int", "date", "mktrf", "eom", "zero_obs"])
         .sort(["id_int", "date"])
         .with_columns(
             ret_exc_3l=(col("ret_exc") + col("ret_exc").shift(1) + col("ret_exc").shift(2)).over(
@@ -6810,7 +6810,12 @@ def prepare_daily(data_path, fcts_path):
                 ["id_int"]
             ),
         )
-        .select(["id_int", "eom", "zero_obs", "ret_exc_3l", "mkt_exc_3l"])
+        .filter(
+            col("ret_exc_3l").is_not_null()
+            & col("mkt_exc_3l").is_not_null()
+            & (col("zero_obs") < 10)
+        )
+        .select(["id_int", "eom", "ret_exc_3l", "mkt_exc_3l"])
         .select(pl.all().shrink_dtype())
         .sort(["id_int", "eom"])
     )
@@ -8206,7 +8211,8 @@ def base_data_filter_exp(stat):
     elif stat == "turnover":
         return col("tvol").is_not_null()
     elif stat == "mktcorr":
-        return (col("ret_exc_3l").is_not_null()) & (col("zero_obs") < 10)
+        # corr_data.parquet is pre-filtered in prepare_daily; nothing to drop at read time.
+        return pl.lit(True)
     else:
         return (col("ret_exc").is_not_null()) & (col("zero_obs") < 10)
 
@@ -8764,24 +8770,23 @@ def mktcorr(df, sfx, __min):
         Rolling correlation between 3-day summed stock and market excess returns.
 
     Steps:
-        1) Group by (id_int,group_number); count obs for ret_exc_3l and mkt_exc_3l.
-        2) Require both counts ≥ __min; compute Pearson corr.
+        1) Group by (id_int, group_number); count rows.
+        2) Require count >= __min; compute Pearson corr.
 
     Output:
         LazyFrame with f'corr{sfx}'.
     """
-    df = (
+    # pl.len() is sound because prepare_daily writes corr_data.parquet pre-filtered
+    # to ret_exc_3l/mkt_exc_3l non-null; len == count(ret_exc_3l) == count(mkt_exc_3l).
+    return (
         df.group_by(["id_int", "group_number"])
         .agg(
-            [
-                pl.min_horizontal([pl.count("ret_exc_3l"), pl.count("mkt_exc_3l")]).alias("n"),
-                pl.corr("ret_exc_3l", "mkt_exc_3l").alias(f"corr{sfx}"),
-            ]
+            pl.len().alias("n"),
+            pl.corr("ret_exc_3l", "mkt_exc_3l").alias(f"corr{sfx}"),
         )
         .filter(col("n") >= __min)
         .drop("n")
     )
-    return df
 
 
 def dimsonbeta(df, sfx, __min):
