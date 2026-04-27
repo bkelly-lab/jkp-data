@@ -18,6 +18,7 @@ from polars.testing import assert_frame_equal
 
 from jkp.data.aux_functions import (
     ami,
+    apply_group_filter,
     capm,
     capm_ext,
     dimsonbeta,
@@ -1500,7 +1501,7 @@ class TestDimsonbeta:
             ]
         )
 
-        result = dimsonbeta(df, "_21d", __min=15).sort(["id_int", "group_number"])
+        result = dimsonbeta(df, "_21d", __min=5).sort(["id_int", "group_number"])
 
         np.testing.assert_allclose(
             result["beta_dimson_21d"].to_list(),
@@ -1509,20 +1510,57 @@ class TestDimsonbeta:
             err_msg=f"Unexpected beta_dimson_21d values: {result['beta_dimson_21d'].to_list()}",
         )
 
-    def test_dimsonbeta_ignores_min_parameter(self):
-        """dimsonbeta currently does not use __min and should still return grouped output."""
+    def test_dimsonbeta_enforces_min_parameter(self):
+        """apply_group_filter drops dimsonbeta groups with fewer than min_obs observations."""
         df = pl.DataFrame(
             {
                 "id_int": [1, 1, 1, 1, 1],
                 "group_number": [10, 10, 10, 10, 10],
+                "eom": [date(2020, 1, 31)] * 5,
                 "mktrf": [0.0, 1.0, 2.0, 3.0, 4.0],
                 "mktrf_ld1": [1.0, 0.0, 1.0, 0.0, 1.0],
                 "mktrf_lg1": [0.0, 1.0, 0.0, 1.0, 0.0],
                 "ret_exc": [1.0, 2.0, 3.0, 4.0, 5.0],
             }
         )
-        result = dimsonbeta(df, "_21d", __min=10_000)
-        assert len(result) == 1
+        filtered = apply_group_filter(df, "dimsonbeta", min_obs=10_000)
+        result = dimsonbeta(filtered, "_21d", __min=10_000)
+        assert len(result) == 0
+
+    def test_dimsonbeta_drops_undersized_via_apply_group_filter(self):
+        """apply_group_filter strips groups that are too small for dimsonbeta to evaluate."""
+        small = pl.DataFrame(
+            {
+                "id_int": [1, 1, 1],
+                "group_number": [10, 10, 10],
+                "eom": [date(2020, 1, 31)] * 3,
+                "mktrf": [0.0, 1.0, 2.0],
+                "mktrf_ld1": [1.0, 0.0, 1.0],
+                "mktrf_lg1": [0.0, 1.0, 0.0],
+                "ret_exc": [1.0, 2.0, 3.0],
+            }
+        )
+        rng = np.random.default_rng(0)
+        n_big = 10
+        mktrf = rng.standard_normal(n_big)
+        mktrf_ld1 = rng.standard_normal(n_big)
+        mktrf_lg1 = rng.standard_normal(n_big)
+        big = pl.DataFrame(
+            {
+                "id_int": [2] * n_big,
+                "group_number": [20] * n_big,
+                "eom": [date(2020, 1, 31)] * n_big,
+                "mktrf": mktrf,
+                "mktrf_ld1": mktrf_ld1,
+                "mktrf_lg1": mktrf_lg1,
+                "ret_exc": 1.0 + 0.5 * mktrf + 0.2 * mktrf_ld1 + 0.3 * mktrf_lg1,
+            }
+        )
+        df = pl.concat([small, big])
+        filtered = apply_group_filter(df, "dimsonbeta", min_obs=5)
+        result = dimsonbeta(filtered, "_21d", __min=5)
+        assert result["id_int"].to_list() == [2]
+        assert result["group_number"].to_list() == [20]
 
     def test_dimsonbeta_empty_input_returns_empty(self):
         df = _empty_df(
@@ -1537,6 +1575,55 @@ class TestDimsonbeta:
         )
         result = dimsonbeta(df, "_21d", __min=15)
         assert len(result) == 0
+
+    def test_dimsonbeta_drops_singular_design(self):
+        """Singular X'X (perfectly collinear regressors) yields a null beta and is dropped."""
+        n = 20
+        mkt = np.linspace(-1.0, 1.0, n)
+        df = pl.DataFrame(
+            {
+                "id_int": [1] * n,
+                "group_number": [10] * n,
+                "mktrf": mkt,
+                "mktrf_ld1": 2.0 * mkt + 1.0,  # perfectly collinear with mktrf + intercept
+                "mktrf_lg1": -mkt + 0.5,  # also collinear
+                "ret_exc": 0.5 * mkt + 0.1,
+            }
+        )
+        result = dimsonbeta(df, "_21d", __min=15)
+        assert len(result) == 0
+
+    def test_dimsonbeta_long_window_produces_output(self, tolerance):
+        """_126d window with min_obs=60 over a single eom yields one β per group."""
+        rng = np.random.default_rng(7)
+        n = 126
+        mkt = rng.standard_normal(n)
+        mkt_ld = rng.standard_normal(n)
+        mkt_lg = rng.standard_normal(n)
+        df = pl.DataFrame(
+            {
+                "id_int": [1] * n,
+                "group_number": [10] * n,
+                "eom": [date(2020, 6, 30)] * n,
+                "mktrf": mkt,
+                "mktrf_ld1": mkt_ld,
+                "mktrf_lg1": mkt_lg,
+                "ret_exc": 1.0
+                + 0.4 * mkt
+                + 0.3 * mkt_ld
+                + 0.2 * mkt_lg
+                + 0.1 * rng.standard_normal(n),
+            }
+        )
+        filtered = apply_group_filter(df, "dimsonbeta", min_obs=60)
+        result = dimsonbeta(filtered, "_126d", __min=60)
+        assert len(result) == 1
+        # Sum of true coefficients ~ 0.9 plus small OLS noise
+        np.testing.assert_allclose(
+            result["beta_dimson_126d"].to_list(),
+            [0.9],
+            atol=0.1,
+        )
 
 
 class TestPrepareDailyCorr:

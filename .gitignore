@@ -111,3 +111,7 @@ aux_*.ddb
 
 # Bundled package resources (override earlier exclusions)
 !src/jkp/data/resources/*
+
+# Rust plugin build artifacts
+jkp-plugin/target/
+jkp-plugin/Cargo.lock

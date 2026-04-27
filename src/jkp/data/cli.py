@@ -1,12 +1,12 @@
 """JKP Data CLI - Factor data generation pipeline."""
 
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 
 import typer
 
 
-class OutputFormat(str, Enum):
+class OutputFormat(StrEnum):
     """Supported output file formats."""
 
     parquet = "parquet"
