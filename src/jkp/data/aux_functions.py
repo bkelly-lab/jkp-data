@@ -7981,13 +7981,15 @@ def merge_roll_apply_daily_results():
     )
     df_id = pl.scan_parquet("id_int_key.parquet")
     file_paths = sorted(i for i in os.listdir() if i.startswith("__roll"))
-    if len(file_paths) != 1:
-        joint_file = pl.scan_parquet(file_paths[0])
-        for i in file_paths[1:]:
-            df_aux = pl.scan_parquet(i)
-            joint_file = joint_file.join(df_aux, how="outer_coalesce", on=["id_int", "aux_date"])
-    else:
-        joint_file = pl.scan_parquet(file_paths[0])
+    if not file_paths:
+        raise FileNotFoundError(
+            "No '__roll*' parquet files found in current directory; "
+            "run roll_apply_daily(...) first."
+        )
+    joint_file = pl.scan_parquet(file_paths[0])
+    for i in file_paths[1:]:
+        df_aux = pl.scan_parquet(i)
+        joint_file = joint_file.join(df_aux, how="outer_coalesce", on=["id_int", "aux_date"])
 
     joint_file.with_columns(col("aux_date").cast(pl.Int64)).join(
         df_dates.lazy(),

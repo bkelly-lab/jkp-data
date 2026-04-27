@@ -196,9 +196,10 @@ def test_merge_roll_apply_daily_results_writes_once_with_deterministic_order(
         code_dir / "id_int_key.parquet"
     )
 
-    # aux_date 24300 corresponds to 2025-01; in-range for any run after Jan 2025
-    # (date_idx in the function is today.year * 12 + today.month).
-    aux_date_val = 24300
+    # Use the function's hardcoded start index (23113) so this test stays
+    # valid regardless of system date. The function generates aux_date in
+    # [23113, today.year*12 + today.month + 1].
+    aux_date_val = 23113
     # Write fixtures in non-alphabetical order to exercise sorted() determinism:
     # filesystem-order would be insertion-order on most FSes, so writing __roll_b_*
     # first ensures the test fails without the sorted() fix.
