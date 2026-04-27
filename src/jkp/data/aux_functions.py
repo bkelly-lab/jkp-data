@@ -8816,7 +8816,9 @@ def _dimson_exprs():
     return agg, beta
 
 
-def dimsonbeta(df: pl.LazyFrame, sfx: str, __min: int) -> pl.LazyFrame:
+def dimsonbeta(
+    df: pl.DataFrame | pl.LazyFrame, sfx: str, __min: int
+) -> pl.DataFrame | pl.LazyFrame:
     """
     Description:
         Dimson β = sum of slopes from OLS ret_exc ~ mktrf_{-1,0,+1} per

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import resource
+import sys
 import time
 
 import numpy as np
@@ -30,8 +31,10 @@ PRESETS = {
 
 def _peak_rss_mb() -> float:
     rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    # macOS reports bytes, Linux reports kilobytes.
-    return rss / (1024 * 1024) if rss > 1_000_000 else rss / 1024
+    # ru_maxrss units: bytes on macOS, kibibytes on Linux/BSD.
+    if sys.platform == "darwin":
+        return rss / (1024 * 1024)
+    return rss / 1024
 
 
 def build_panel(n_stocks: int, n_days: int, seed: int = 0) -> pl.DataFrame:
