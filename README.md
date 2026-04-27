@@ -21,7 +21,7 @@ This repo contains Python code to generate the global dataset of factor returns,
 
    - To save your WRDS credentials, navigate to the `jkp-data/` folder and run:
      ```sh
-     jkp connect
+     uv run jkp connect
      ```
      Kindly follow the prompts.
 
