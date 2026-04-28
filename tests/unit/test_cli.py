@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from typer.testing import CliRunner
 
+from jkp.data import __version__
 from jkp.data.cli import app
 
 runner = CliRunner()
@@ -47,6 +48,23 @@ class TestCliHelp:
         result = runner.invoke(app, ["connect", "--help"])
         assert result.exit_code == 0
         assert "--reset" in _strip_ansi(result.output)
+
+
+@pytest.mark.unit
+class TestVersionFlag:
+    """Test that --version prints the package version and exits."""
+
+    def test_version_prints_package_version(self):
+        result = runner.invoke(app, ["--version"])
+        assert result.exit_code == 0
+        assert __version__ in result.output
+
+    def test_version_does_not_invoke_subcommand(self):
+        # --version should short-circuit before any subcommand runs
+        with patch("jkp.data.main.run_pipeline") as mock_run:
+            result = runner.invoke(app, ["--version", "build", "/tmp/whatever"])
+            assert result.exit_code == 0
+            mock_run.assert_not_called()
 
 
 @pytest.mark.unit
