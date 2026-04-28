@@ -189,13 +189,13 @@ def load_market_returns_daily(interim: Path) -> pl.LazyFrame:
 
 
 def raw_tables_dir(interim: Path) -> Path:
-    """Sibling data/raw_tables/ — same level as interim."""
-    return interim.parent / "raw_tables"
+    """data/raw/raw_tables/ — sibling of interim under raw/."""
+    return interim.parent / "raw" / "raw_tables"
 
 
 def raw_dfs_dir(interim: Path) -> Path:
-    """Sibling data/raw_data_dfs/ — same level as interim."""
-    return interim.parent / "raw_data_dfs"
+    """data/interim/raw_data_dfs/ — inside interim."""
+    return interim / "raw_data_dfs"
 
 
 def load_comp_g_security(interim: Path) -> pl.LazyFrame:
