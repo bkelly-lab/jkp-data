@@ -1,7 +1,7 @@
 # Data Directory
 
 Data files in this directory authored by Jensen, Kelly, and Pedersen are
-licensed under [CC BY-NC 4.0](../DATA_LICENSE)
+licensed under [CC BY-NC 4.0](https://github.com/bkelly-lab/jkp-data/blob/main/DATA_LICENSE)
 (Creative Commons Attribution-NonCommercial 4.0). When this file appears in
 your output directory, it accompanies generated factor portfolios, stock
 returns, and firm characteristics; those outputs are also subject to your
