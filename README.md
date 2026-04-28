@@ -2,6 +2,12 @@
 
 This repo contains Python code to generate the global dataset of factor returns, stock returns, and firm characteristics from [“Is there a Replication Crisis in Finance?”](https://onlinelibrary.wiley.com/doi/full/10.1111/jofi.13249) by Jensen, Kelly, and Pedersen (Journal of Finance, 2023).
 
+## Data Usage
+
+This package requires a valid [WRDS](https://wrds-www.wharton.upenn.edu/) subscription. The authors do not distribute WRDS, CRSP, Compustat, or IBES data; this tool only orchestrates the user's own licensed downloads and transformations. Outputs generated locally are derived from your licensed WRDS data and remain subject to your WRDS and vendor license terms.
+
+If you do not have a WRDS subscription, you can still access pre-computed factor portfolios at [jkpfactors.com](https://jkpfactors.com) and pre-computed stock returns and firm characteristics at the [WRDS Global Factor Data page](https://wrds-www.wharton.upenn.edu/pages/get-data/contributed-data-forms/global-factor-data/).
+
 ## Instructions
 
 ### Prerequisites
