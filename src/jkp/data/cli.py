@@ -5,6 +5,8 @@ from pathlib import Path
 
 import typer
 
+from . import __version__
+
 
 class OutputFormat(StrEnum):
     """Supported output file formats."""
@@ -18,6 +20,25 @@ app = typer.Typer(
     help="JKP Factor Data generation pipeline.",
     no_args_is_help=True,
 )
+
+
+def _version_callback(value: bool) -> None:
+    if value:
+        typer.echo(__version__)
+        raise typer.Exit()
+
+
+@app.callback()
+def main(
+    version: bool = typer.Option(
+        False,
+        "--version",
+        callback=_version_callback,
+        is_eager=True,
+        help="Show the package version and exit.",
+    ),
+) -> None:
+    """JKP Factor Data generation pipeline."""
 
 
 @app.command()
