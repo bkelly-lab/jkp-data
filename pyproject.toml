@@ -54,7 +54,7 @@ where = ["src"]
 namespaces = true
 
 [tool.setuptools.package-data]
-"jkp.data" = ["resources/*"]
+"jkp.data" = ["py.typed", "resources/*"]
 
 [dependency-groups]
 dev = [
