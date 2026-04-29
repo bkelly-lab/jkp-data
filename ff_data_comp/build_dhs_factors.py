@@ -205,7 +205,7 @@ def build_link_table(interim: Path) -> pl.LazyFrame:
         .select(
             "date",
             pl.col("gvkey").cast(pl.Utf8),
-            pl.col("lpermno").cast(pl.Utf8).alias("id"),
+            pl.col("lpermno").cast(pl.Int64).alias("id"),
         )
         .unique()
     )
