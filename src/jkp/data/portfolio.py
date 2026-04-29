@@ -444,8 +444,6 @@ def portfolios(
                         "ret_exc_lead1m",
                         "me",
                         "me_cap",
-                        "crsp_exchcd",
-                        "comp_exchg",
                         "bp_stock",
                     ]
                 )
@@ -470,9 +468,8 @@ def portfolios(
 
         sub = (
             add_ecdf(sub)
-            .with_columns(pl.col("cdf").min().over("eom").alias("min_cdf"))
             .with_columns(
-                pl.when(pl.col("cdf") == pl.col("min_cdf"))
+                pl.when(pl.col("cdf") == pl.col("cdf").min().over("eom"))
                 .then(0.00000001)
                 .otherwise(pl.col("cdf"))
                 .alias("cdf")
@@ -657,8 +654,7 @@ def portfolios(
                     pl.lit(excntry).str.to_uppercase().alias("excntry")
                 )
             if signals and "signals" in output:
-                output["signals"] = pl.concat([op["signals"] for op in char_pfs])
-                output["signals"] = output["signals"].with_columns(
+                output["signals"] = pl.concat([op["signals"] for op in char_pfs]).with_columns(
                     pl.lit(excntry).str.to_uppercase().alias("excntry")
                 )
 
@@ -717,9 +713,9 @@ def portfolios(
             results.append(cmp)
 
     if len(results) > 0:
-        output_cmp = pl.concat(results)
-        output_cmp = output_cmp.with_columns(pl.col("excntry").str.to_uppercase().alias("excntry"))
-        output["cmp"] = output_cmp
+        output["cmp"] = pl.concat(results).with_columns(
+            pl.col("excntry").str.to_uppercase().alias("excntry")
+        )
 
     return output
 
@@ -1112,11 +1108,11 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
         portfolio_data[ex] = result
 
     # Aggregating portfolio returns
-    if any(sub_data and "pf_returns" in sub_data for sub_key, sub_data in portfolio_data.items()):
+    if any(sub_data and "pf_returns" in sub_data for _, sub_data in portfolio_data.items()):
         pf_returns = pl.concat(
             [
                 sub_data["pf_returns"]
-                for sub_key, sub_data in portfolio_data.items()
+                for _, sub_data in portfolio_data.items()
                 if sub_data and "pf_returns" in sub_data
             ]
         )
@@ -1138,12 +1134,12 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
         pf_returns = None
 
     if settings["daily_pf"] and any(
-        sub_data and "pf_daily" in sub_data for sub_key, sub_data in portfolio_data.items()
+        sub_data and "pf_daily" in sub_data for _, sub_data in portfolio_data.items()
     ):
         pf_daily = pl.concat(
             [
                 sub_data["pf_daily"]
-                for sub_key, sub_data in portfolio_data.items()
+                for _, sub_data in portfolio_data.items()
                 if sub_data and "pf_daily" in sub_data
             ]
         )
@@ -1154,12 +1150,12 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
     # Aggregating industry classification returns
     # GICS Returns
     if settings["ind_pf"] and any(
-        sub_data and "gics_returns" in sub_data for sub_key, sub_data in portfolio_data.items()
+        sub_data and "gics_returns" in sub_data for _, sub_data in portfolio_data.items()
     ):
         gics_returns = pl.concat(
             [
                 sub_data["gics_returns"]
-                for sub_key, sub_data in portfolio_data.items()
+                for _, sub_data in portfolio_data.items()
                 if sub_data and "gics_returns" in sub_data
             ]
         )
@@ -1169,12 +1165,12 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
 
     # FF49 Returns
     if settings["ind_pf"] and any(
-        sub_data and "ff49_returns" in sub_data for sub_key, sub_data in portfolio_data.items()
+        sub_data and "ff49_returns" in sub_data for _, sub_data in portfolio_data.items()
     ):
         ff49_returns = pl.concat(
             [
                 sub_data["ff49_returns"]
-                for sub_key, sub_data in portfolio_data.items()
+                for _, sub_data in portfolio_data.items()
                 if sub_data and "ff49_returns" in sub_data
             ]
         )
@@ -1186,14 +1182,12 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
     if (
         settings["ind_pf"]
         and settings["daily_pf"]
-        and any(
-            sub_data and "gics_daily" in sub_data for sub_key, sub_data in portfolio_data.items()
-        )
+        and any(sub_data and "gics_daily" in sub_data for _, sub_data in portfolio_data.items())
     ):
         gics_daily = pl.concat(
             [
                 sub_data["gics_daily"]
-                for sub_key, sub_data in portfolio_data.items()
+                for _, sub_data in portfolio_data.items()
                 if sub_data and "gics_daily" in sub_data
             ]
         )
@@ -1204,14 +1198,12 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
     if (
         settings["ind_pf"]
         and settings["daily_pf"]
-        and any(
-            sub_data and "ff49_daily" in sub_data for sub_key, sub_data in portfolio_data.items()
-        )
+        and any(sub_data and "ff49_daily" in sub_data for _, sub_data in portfolio_data.items())
     ):
         ff49_daily = pl.concat(
             [
                 sub_data["ff49_daily"]
-                for sub_key, sub_data in portfolio_data.items()
+                for _, sub_data in portfolio_data.items()
                 if sub_data and "ff49_daily" in sub_data
             ]
         )
@@ -1262,7 +1254,7 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
         # Define columns to be modified
         resign_cols = ["signal", "ret_ew", "ret_vw", "ret_vw_cap"]
         lms_returns = lms_returns.with_columns(
-            [pl.col(var) * pl.col("direction").alias(var) for var in resign_cols]
+            [(pl.col(var) * pl.col("direction")).alias(var) for var in resign_cols]
         )
     else:
         hml_returns = None
