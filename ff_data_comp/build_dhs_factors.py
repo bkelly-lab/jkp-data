@@ -18,40 +18,18 @@ Caches IBES download + augmented acc chars. Delete those parquets to refresh.
 
 from __future__ import annotations
 
-import functools
-import time
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 
 import duckdb
 import polars as pl
 
+from jkp.data.aux_functions import (
+    download_wrds_table,
+    gen_wrds_connection_info,
+    measure_time,
+)
 from jkp.data.wrds_credentials import get_wrds_credentials
-
-
-# Inlined from aux_functions.py:36 (measure_time) and aux_functions.py:659
-# (gen_wrds_connection_info). Avoid importing aux_functions to skip its
-# top-level `import ibis` — DHS pipeline uses DuckDB directly, no ibis.
-def measure_time(func):
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        start = time.time()
-        print(f"[{func.__name__}] start {datetime.now():%H:%M:%S}", flush=True)
-        result = func(*args, **kwargs)
-        elapsed = time.time() - start
-        print(f"[{func.__name__}] done  {elapsed // 60:.0f}m {elapsed % 60:.1f}s", flush=True)
-        return result
-
-    return wrapper
-
-
-def gen_wrds_connection_info(user: str, password: str) -> str:
-    return (
-        f"host=wrds-pgdata.wharton.upenn.edu "
-        f"port=9737 dbname=wrds "
-        f"user={user} password={password} sslmode=require"
-    )
-
 
 # ---------------------------------------------------------------------------
 # Universe filter — used for non-USA branches and global daily screens.
@@ -76,13 +54,7 @@ def download_ibes_actuals(out_path: Path) -> None:
 
     con = duckdb.connect(":memory:")
     con.execute("INSTALL postgres; LOAD postgres;")
-    con.execute(f"""
-        COPY (
-          SELECT *
-          FROM postgres_scan('{conninfo}', 'ibes', 'actu_epsint')
-        )
-        TO '{out_path}' (FORMAT PARQUET);
-    """)
+    download_wrds_table(conninfo, con, "ibes.actu_epsint", str(out_path))
 
 
 @measure_time
