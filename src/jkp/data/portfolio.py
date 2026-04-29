@@ -158,6 +158,58 @@ def _build_industry_daily_returns(
     return result.with_columns(pl.lit(excntry).str.to_uppercase().alias("excntry"))
 
 
+def _build_industry_monthly_returns(
+    data: pl.DataFrame,
+    industry_col: str,
+    bp_min_n: int,
+    excntry: str,
+    industry_transform: pl.Expr | None = None,
+) -> pl.DataFrame:
+    """Build monthly industry portfolio returns.
+
+    Description:
+        Group `data` by `(industry_col, eom)` and compute EW / VW / VW-cap
+        returns of `ret_exc_lead1m`. Optionally recode the industry column
+        before grouping (e.g. extracting the first 2 GICS digits).
+    Steps:
+        1) Filter rows where `industry_col` is non-null; select required cols.
+        2) Optionally apply `industry_transform`.
+        3) Group by `(industry_col, eom)` and aggregate (n, ret_ew, ret_vw,
+           ret_vw_cap).
+        4) Attach uppercase `excntry`, advance `eom` by 1mo to month-end,
+           and drop industry-month groups with fewer than `bp_min_n` stocks.
+    Output:
+        DataFrame with columns [industry_col, eom, n, ret_ew, ret_vw,
+        ret_vw_cap, excntry].
+    """
+    ind_data = data.filter(pl.col(industry_col).is_not_null()).select(
+        ["eom", industry_col, "ret_exc_lead1m", "me", "me_cap"]
+    )
+    if industry_transform is not None:
+        ind_data = ind_data.with_columns(industry_transform)
+
+    return (
+        ind_data.group_by([industry_col, "eom"])
+        .agg(
+            [
+                pl.len().alias("n"),
+                (pl.col("ret_exc_lead1m").mean()).alias("ret_ew"),
+                ((pl.col("ret_exc_lead1m") * pl.col("me")).sum() / pl.col("me").sum()).alias(
+                    "ret_vw"
+                ),
+                (
+                    (pl.col("ret_exc_lead1m") * pl.col("me_cap")).sum() / pl.col("me_cap").sum()
+                ).alias("ret_vw_cap"),
+            ]
+        )
+        .with_columns(
+            pl.lit(excntry).str.to_uppercase().alias("excntry"),
+            (pl.col("eom").dt.offset_by("1mo").dt.month_end()).alias("eom"),
+        )
+        .filter(pl.col("n") >= bp_min_n)
+    )
+
+
 # main portfolios function to create the portfolios
 def portfolios(
     data_path,
@@ -321,55 +373,19 @@ def portfolios(
         )
 
     if ind_pf:
-        # Filter data where 'gics' is not null and select required columns
-        ind_data = data.filter(pl.col("gics").is_not_null()).select(
-            ["eom", "gics", "excntry", "ret_exc_lead1m", "me", "me_cap"]
+        ind_gics = _build_industry_monthly_returns(
+            data,
+            "gics",
+            bp_min_n,
+            excntry,
+            industry_transform=(
+                pl.col("gics").cast(pl.Utf8).str.slice(0, 2).cast(pl.Int64).alias("gics")
+            ),
         )
-
-        # Process GICS codes (extract first 2 digits and convert to numeric)
-        ind_data = ind_data.with_columns(
-            (pl.col("gics").cast(pl.Utf8).str.slice(0, 2).cast(pl.Int64)).alias("gics")
-        )
-
-        # Calculate industry returns based on GICS
-        ind_gics = ind_data.group_by(["gics", "eom"]).agg(
-            [
-                pl.len().alias("n"),
-                (pl.col("ret_exc_lead1m").mean()).alias("ret_ew"),
-                ((pl.col("ret_exc_lead1m") * pl.col("me")).sum() / pl.col("me").sum()).alias(
-                    "ret_vw"
-                ),
-                (
-                    (pl.col("ret_exc_lead1m") * pl.col("me_cap")).sum() / pl.col("me_cap").sum()
-                ).alias("ret_vw_cap"),
-            ]
-        )
-        ind_gics = ind_gics.with_columns(
-            pl.lit(excntry).str.to_uppercase().alias("excntry"),
-            (pl.col("eom").dt.offset_by("1mo").dt.month_end()).alias("eom"),
-        ).filter(pl.col("n") >= bp_min_n)
 
         # Estimate industry portfolios by Fama-French portfolios for US data
         if excntry.lower() == "usa":
-            ind_data = data.filter(pl.col("ff49").is_not_null()).select(
-                ["eom", "ff49", "ret_exc_lead1m", "me", "me_cap"]
-            )
-            ind_ff49 = ind_data.group_by(["ff49", "eom"]).agg(
-                [
-                    pl.len().alias("n"),
-                    (pl.col("ret_exc_lead1m").mean()).alias("ret_ew"),
-                    ((pl.col("ret_exc_lead1m") * pl.col("me")).sum() / pl.col("me").sum()).alias(
-                        "ret_vw"
-                    ),
-                    (
-                        (pl.col("ret_exc_lead1m") * pl.col("me_cap")).sum() / pl.col("me_cap").sum()
-                    ).alias("ret_vw_cap"),
-                ]
-            )
-            ind_ff49 = ind_ff49.with_columns(
-                pl.lit(excntry).str.to_uppercase().alias("excntry"),
-                (pl.col("eom").dt.offset_by("1mo").dt.month_end()).alias("eom"),
-            ).filter(pl.col("n") >= bp_min_n)
+            ind_ff49 = _build_industry_monthly_returns(data, "ff49", bp_min_n, excntry)
 
         if daily_pf:
             ind_gics_daily = _build_industry_daily_returns(
