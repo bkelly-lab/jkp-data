@@ -344,11 +344,10 @@ def portfolios(
                 ).alias("ret_vw_cap"),
             ]
         )
-        ind_gics = ind_gics.with_columns(pl.lit(excntry).str.to_uppercase().alias("excntry"))
         ind_gics = ind_gics.with_columns(
-            (pl.col("eom").dt.offset_by("1mo").dt.month_end()).alias("eom")
-        )
-        ind_gics = ind_gics.filter(pl.col("n") >= bp_min_n)
+            pl.lit(excntry).str.to_uppercase().alias("excntry"),
+            (pl.col("eom").dt.offset_by("1mo").dt.month_end()).alias("eom"),
+        ).filter(pl.col("n") >= bp_min_n)
 
         # Estimate industry portfolios by Fama-French portfolios for US data
         if excntry.lower() == "usa":
@@ -367,11 +366,10 @@ def portfolios(
                     ).alias("ret_vw_cap"),
                 ]
             )
-            ind_ff49 = ind_ff49.with_columns(pl.lit(excntry).str.to_uppercase().alias("excntry"))
             ind_ff49 = ind_ff49.with_columns(
-                (pl.col("eom").dt.offset_by("1mo").dt.month_end()).alias("eom")
-            )
-            ind_ff49 = ind_ff49.filter(pl.col("n") >= bp_min_n)
+                pl.lit(excntry).str.to_uppercase().alias("excntry"),
+                (pl.col("eom").dt.offset_by("1mo").dt.month_end()).alias("eom"),
+            ).filter(pl.col("n") >= bp_min_n)
 
         if daily_pf:
             ind_gics_daily = _build_industry_daily_returns(
@@ -454,16 +452,18 @@ def portfolios(
         if signals and sub.limit(1).collect().height == 0:
             continue
 
-        sub = add_ecdf(sub)
-        sub = sub.with_columns(pl.col("cdf").min().over("eom").alias("min_cdf"))
-        sub = sub.with_columns(
-            pl.when(pl.col("cdf") == pl.col("min_cdf"))
-            .then(0.00000001)
-            .otherwise(pl.col("cdf"))
-            .alias("cdf")
-        )
-        sub = sub.with_columns(
-            (pl.col("cdf") * pfs).ceil().clip(lower_bound=1, upper_bound=pfs).alias("pf")
+        sub = (
+            add_ecdf(sub)
+            .with_columns(pl.col("cdf").min().over("eom").alias("min_cdf"))
+            .with_columns(
+                pl.when(pl.col("cdf") == pl.col("min_cdf"))
+                .then(0.00000001)
+                .otherwise(pl.col("cdf"))
+                .alias("cdf")
+            )
+            .with_columns(
+                (pl.col("cdf") * pfs).ceil().clip(lower_bound=1, upper_bound=pfs).alias("pf")
+            )
         )
 
         # Monthly pf_returns lazy frame for this char.
@@ -692,8 +692,11 @@ def portfolios(
             )
 
             # Post-processing
-            cmp = cmp.filter(pl.col("sd_var") != 0).drop("sd_var")
-            cmp = cmp.with_columns((pl.col("eom").dt.offset_by("1mo").dt.month_end()).alias("eom"))
+            cmp = (
+                cmp.filter(pl.col("sd_var") != 0)
+                .drop("sd_var")
+                .with_columns((pl.col("eom").dt.offset_by("1mo").dt.month_end()).alias("eom"))
+            )
 
             results.append(cmp)
 
@@ -1010,12 +1013,10 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
         sheet_name="countries",
     )
 
-    # Getting relevant information from country classification file
+    # Drop rows with NA in 'excntry' and exclude specific countries
     country_classification = country_classification.select(
         ["excntry", "msci_development", "region"]
-    )
-    # Filter out rows with NA in 'excntry' and exclude specific countries
-    country_classification = country_classification.filter(
+    ).filter(
         (pl.col("excntry").is_not_null())
         & (~pl.col("excntry").is_in(settings["regional_pfs"]["country_excl"]))
     )
@@ -1233,8 +1234,11 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
             ]
         )
 
-        hml_returns = hml_returns.filter(pl.col("pfs") == 2).drop("pfs")
-        hml_returns = hml_returns.sort(["excntry", "characteristic", "eom"])
+        hml_returns = (
+            hml_returns.filter(pl.col("pfs") == 2)
+            .drop("pfs")
+            .sort(["excntry", "characteristic", "eom"])
+        )
 
         # Create Long-Short Factors [Sign Returns to be consistent with original paper]
         lms_returns = char_info.join(hml_returns, on="characteristic", how="left")
@@ -1275,8 +1279,11 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
             ]
         )
 
-        hml_daily = hml_daily.filter(pl.col("pfs") == 2).drop("pfs")
-        hml_daily = hml_daily.sort(["excntry", "characteristic", "date"])
+        hml_daily = (
+            hml_daily.filter(pl.col("pfs") == 2)
+            .drop("pfs")
+            .sort(["excntry", "characteristic", "date"])
+        )
 
         lms_daily = char_info.join(hml_daily, on="characteristic", how="left")
         resign_cols = ["ret_ew", "ret_vw", "ret_vw_cap"]
