@@ -162,6 +162,152 @@ class TestAddEcdf:
         assert "cdf" in result.columns
 
 
+def _add_ecdf_legacy(
+    df: pl.DataFrame | pl.LazyFrame,
+    group_cols: list[str] | None = None,
+) -> pl.DataFrame | pl.LazyFrame:
+    """Pre-refactor implementation, kept here for the parity test below."""
+    if group_cols is None:
+        group_cols = ["eom"]
+    ref_counts = df.filter(pl.col("bp_stock")).group_by(group_cols + ["var"]).agg(n_ref=pl.len())
+    ref_steps = (
+        ref_counts.sort(group_cols + ["var"])
+        .with_columns(cdf_val=(pl.cum_sum("n_ref") / pl.sum("n_ref")).over(group_cols))
+        .select(group_cols + ["var", "cdf_val"])
+    )
+    left = df.sort(group_cols + ["var"])
+    right = ref_steps.sort(group_cols + ["var"])
+    return (
+        left.join_asof(right, on="var", by=group_cols, strategy="backward")
+        .with_columns(pl.col("cdf_val").fill_null(0.0).alias("cdf"))
+        .drop("cdf_val")
+    )
+
+
+class TestAddEcdfLegacyParity:
+    """Refactored ``add_ecdf`` must produce identical output to the pre-refactor version."""
+
+    @staticmethod
+    def _build(seed: int, n_groups: int = 3, n_per_group: int = 40) -> pl.DataFrame:
+        rng = np.random.default_rng(seed)
+        eoms = [date(2020, m, 28) for m in range(1, n_groups + 1)]
+        rows = []
+        for eom in eoms:
+            # Mix of breakpoint and non-breakpoint stocks; force duplicate var
+            # values across both classes; include rows with var below any bp.
+            for _ in range(n_per_group):
+                rows.append(
+                    {
+                        "eom": eom,
+                        "var": float(rng.integers(0, 12)),  # repeated integers as floats
+                        "bp_stock": bool(rng.integers(0, 2)),
+                    }
+                )
+            # Force a non-bp row strictly below the minimum bp value in this group.
+            rows.append({"eom": eom, "var": -100.0, "bp_stock": False})
+            # Force a non-bp row that lands strictly between two bp values.
+            rows.append({"eom": eom, "var": 5.5, "bp_stock": False})
+        return pl.DataFrame(rows)
+
+    @staticmethod
+    def _assert_equal(a: pl.DataFrame, b: pl.DataFrame) -> None:
+        a_sorted = a.sort(["eom", "var", "bp_stock"])
+        b_sorted = b.sort(["eom", "var", "bp_stock"])
+        assert a_sorted.height == b_sorted.height
+        assert a_sorted.columns == b_sorted.columns
+        for col in a_sorted.columns:
+            if a_sorted.schema[col] == pl.Float64:
+                np.testing.assert_allclose(
+                    a_sorted[col].to_numpy(),
+                    b_sorted[col].to_numpy(),
+                    rtol=1e-12,
+                    atol=1e-14,
+                )
+            else:
+                assert a_sorted[col].to_list() == b_sorted[col].to_list()
+
+    def test_eager_parity_default_group(self):
+        df = self._build(seed=1)
+        legacy = _add_ecdf_legacy(df)
+        new = add_ecdf(df)
+        self._assert_equal(legacy, new)
+
+    def test_lazy_parity_default_group(self):
+        df = self._build(seed=2).lazy()
+        legacy = _add_ecdf_legacy(df).collect()
+        new = add_ecdf(df).collect()
+        self._assert_equal(legacy, new)
+
+    def test_lazy_returns_lazyframe(self):
+        df = self._build(seed=3).lazy()
+        out = add_ecdf(df)
+        assert isinstance(out, pl.LazyFrame)
+
+    def test_duplicate_var_values_in_bp_sample(self):
+        """Duplicate bp ``var`` values must contribute their full count to the CDF."""
+        df = pl.DataFrame(
+            {
+                "eom": [date(2020, 1, 31)] * 8,
+                "var": [1.0, 1.0, 1.0, 2.0, 3.0, 3.0, 4.0, 5.0],
+                "bp_stock": [True] * 8,
+            }
+        )
+        self._assert_equal(_add_ecdf_legacy(df), add_ecdf(df))
+
+    def test_non_bp_between_breakpoints(self):
+        """A non-bp row with var between two bp values gets the lower bp's CDF."""
+        df = pl.DataFrame(
+            {
+                "eom": [date(2020, 1, 31)] * 5,
+                "var": [1.0, 2.0, 3.0, 1.5, 2.5],
+                "bp_stock": [True, True, True, False, False],
+            }
+        )
+        self._assert_equal(_add_ecdf_legacy(df), add_ecdf(df))
+
+    def test_rows_below_minimum_breakpoint(self):
+        """Rows with var below the smallest bp value get cdf == 0.0."""
+        df = pl.DataFrame(
+            {
+                "eom": [date(2020, 1, 31)] * 4,
+                "var": [10.0, 20.0, 5.0, -1.0],
+                "bp_stock": [True, True, False, False],
+            }
+        )
+        new = add_ecdf(df)
+        assert new.filter(pl.col("var") == -1.0)["cdf"].to_list() == [0.0]
+        self._assert_equal(_add_ecdf_legacy(df), new)
+
+    def test_multi_group_independence(self):
+        """ECDFs must be computed per ``eom`` group, independently."""
+        df = pl.DataFrame(
+            {
+                "eom": [date(2020, 1, 31), date(2020, 1, 31), date(2020, 2, 29), date(2020, 2, 29)],
+                "var": [1.0, 2.0, 100.0, 200.0],
+                "bp_stock": [True, True, True, True],
+            }
+        )
+        new = add_ecdf(df)
+        # In each group of 2 distinct values, smallest gets 0.5, largest gets 1.0.
+        for eom in [date(2020, 1, 31), date(2020, 2, 29)]:
+            grp = new.filter(pl.col("eom") == eom).sort("var")
+            assert grp["cdf"].to_list() == [0.5, 1.0]
+        self._assert_equal(_add_ecdf_legacy(df), new)
+
+    def test_custom_group_cols(self):
+        df = pl.DataFrame(
+            {
+                "eom": [date(2020, 1, 31)] * 6,
+                "size": ["L", "L", "L", "S", "S", "S"],
+                "var": [1.0, 2.0, 3.0, 1.0, 2.0, 3.0],
+                "bp_stock": [True] * 6,
+            }
+        )
+        legacy = _add_ecdf_legacy(df, group_cols=["eom", "size"])
+        new = add_ecdf(df, group_cols=["eom", "size"])
+        self._assert_equal(legacy, new)
+
+
 # =============================================================================
 # TestPortfoliosCore
 # =============================================================================

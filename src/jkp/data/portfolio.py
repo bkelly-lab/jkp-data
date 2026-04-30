@@ -34,31 +34,27 @@ def add_ecdf(
 ) -> pl.DataFrame | pl.LazyFrame:
     """Attach an empirical-CDF ``cdf`` column per group.
 
-    Description:
-        Builds the ECDF of the ``var`` column over rows where ``bp_stock``
-        is true (the breakpoint sample), then asof-joins the CDF values back
-        onto every row of ``df`` — bp and non-bp alike — within each group
-        defined by ``group_cols``.
+    Build the ECDF of ``var`` over the rows where ``bp_stock`` is true (the
+    breakpoint sample), then asof-join the CDF values back onto every row of
+    ``df`` within each group defined by ``group_cols``. Non-breakpoint rows
+    receive the CDF of the nearest breakpoint ``var`` ≤ their own; rows
+    below any breakpoint value receive ``0.0``.
 
-    Steps:
-        1) Count ``var`` occurrences per distinct value within each group on
-           the bp-stock sub-frame.
-        2) Build ``cdf_val`` as a cumulative share within each group.
-        3) Asof-join ``(var)`` within ``group_cols`` onto the full input
-           frame; non-bp rows pick up the cdf of the nearest bp value ≤ their
-           own ``var``, and rows below any bp value fall back to ``0.0``.
+    Args:
+        df: Frame containing ``var`` and boolean ``bp_stock`` columns.
+        group_cols: Columns defining the ECDF groups. Defaults to ``["eom"]``.
 
-    Output:
-        Returns the same container type as the input — LazyFrame in, LazyFrame
-        out; DataFrame in, DataFrame out — with a ``cdf`` column appended and
-        the original columns preserved.
+    Returns:
+        Same container type as ``df`` (eager → eager, lazy → lazy) with a
+        ``cdf`` column appended; original columns are preserved and rows
+        are sorted by ``group_cols + ["var"]``.
     """
-    group_cols = group_cols or ["eom"]
+    group_cols = ["eom"] if group_cols is None else list(group_cols)
     sort_cols = group_cols + ["var"]
 
-    # ECDF on the bp-stock reference sample: cumulative share of distinct
-    # var values within each group, sorted by var so cum_sum runs in order.
-    ref = (
+    # ECDF on the breakpoint sample: cumulative share of distinct var values
+    # within each group, sorted by var so cum_sum runs in ascending order.
+    bp_ecdf = (
         df.filter(pl.col("bp_stock"))
         .group_by(sort_cols)
         .agg(pl.len().alias("n_ref"))
@@ -66,15 +62,15 @@ def add_ecdf(
         .select(
             *group_cols,
             "var",
-            ((pl.cum_sum("n_ref") / pl.sum("n_ref")).over(group_cols)).alias("cdf"),
+            (pl.col("n_ref").cum_sum() / pl.col("n_ref").sum()).over(group_cols).alias("cdf"),
         )
     )
 
-    # asof-join the ref ECDF onto every row; rows below any bp value get null,
-    # which we fill with 0.0.
+    # asof-join the ECDF onto every row; rows below any bp value get null,
+    # filled with 0.0 to match the convention expected downstream.
     res = (
         df.sort(sort_cols)
-        .join_asof(ref, on="var", by=group_cols, strategy="backward")
+        .join_asof(bp_ecdf, on="var", by=group_cols, strategy="backward")
         .with_columns(pl.col("cdf").fill_null(0.0))
     )
     return res
