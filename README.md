@@ -27,6 +27,26 @@ This repo contains Python code to generate the global dataset of factor returns,
 
      Note: If you need to change your password or credentials, run `jkp connect --reset` and then `jkp connect`
 
+   - **Credential precedence.** When the pipeline needs WRDS credentials, it
+     looks for them in this order:
+
+     1. `WRDS_USERNAME` and `WRDS_PASSWORD` environment variables. Useful for
+        containers and shared service accounts where the source of truth
+        shouldn't live in a per-user filesystem location.
+     2. The system keyring (Keychain on macOS, Secret Service on Linux desktop,
+        Credential Vault on Windows). The default for interactive sessions.
+     3. The file-backed keyring (`keyrings.alt.file.PlaintextKeyring`), which
+        stores the password in a mode-600 file under
+        `~/.local/share/python_keyring/`. Selected **only when**
+        `JKP_ALLOW_PLAINTEXT_KEYRING=1` is set; appropriate for headless
+        environments (HPC compute nodes, minimal Docker images) where no
+        system keyring daemon is available. The package emits a warning each
+        time the swap occurs so the change of backend is never silent.
+
+   On a Slurm/HPC compute node, run `jkp connect` once on the login node
+   under `JKP_ALLOW_PLAINTEXT_KEYRING=1` to populate the file keyring, then
+   set the same variable in the batch script before invoking `jkp build`.
+
 3. **Run the script**
 
    - We run the code via a Slurm scheduler, but we also show how to run it in an interactive Python session.
