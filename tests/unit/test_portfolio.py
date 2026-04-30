@@ -741,6 +741,172 @@ class TestRegionalData:
         assert "ret_ew" in result.columns
 
 
+def _regional_data_legacy(
+    data: pl.DataFrame,
+    mkt: pl.DataFrame,
+    date_col: str,
+    char_col: str,
+    countries: pl.Series,
+    weighting: str,
+    countries_min: int,
+    periods_min: int,
+    stocks_min: int,
+) -> pl.DataFrame:
+    """Pre-stage-refactor implementation, kept here for the parity test below."""
+    weights = mkt.select(
+        "excntry",
+        date_col,
+        "mkt_vw_exc",
+        pl.when(weighting == "market_cap")
+        .then(pl.col("me_lag1"))
+        .when(weighting == "stocks")
+        .then(pl.col("stocks").cast(pl.Float64))
+        .when(weighting == "ew")
+        .then(pl.lit(1.0))
+        .alias("country_weight"),
+    )
+    cw = pl.col("country_weight")
+    weighted_means = [
+        ((pl.col(c) * cw).sum() / cw.sum()).alias(c)
+        for c in ("ret_ew", "ret_vw", "ret_vw_cap", "mkt_vw_exc")
+    ]
+    return (
+        data.filter(pl.col("excntry").is_in(countries) & (pl.col("n_stocks_min") >= stocks_min))
+        .join(weights, on=["excntry", date_col], how="left")
+        .filter(pl.col("mkt_vw_exc").is_not_null())
+        .group_by(char_col, date_col)
+        .agg(pl.len().alias("n_countries"), pl.col("direction").first(), *weighted_means)
+        .filter(pl.col("n_countries") >= countries_min)
+        .filter(pl.len().over(char_col) >= periods_min)
+        .sort(char_col, date_col)
+    )
+
+
+class TestRegionalDataLegacyParity:
+    """Refactored ``regional_data`` must produce identical output to the prior version."""
+
+    @staticmethod
+    def _build(seed: int = 7, n_countries: int = 5, n_months: int = 18, n_chars: int = 3):
+        rng = np.random.default_rng(seed)
+        countries = [f"C{i:02d}" for i in range(n_countries)]
+        eoms = _month_ends(n_months)
+        chars = [f"factor_{j}" for j in range(n_chars)]
+        rows = []
+        for c in countries:
+            for eom in eoms:
+                for ch in chars:
+                    rows.append(
+                        {
+                            "excntry": c,
+                            "characteristic": ch,
+                            "direction": 1 if hash(ch) % 2 == 0 else -1,
+                            "eom": eom,
+                            "n_stocks": int(rng.integers(5, 50)),
+                            "n_stocks_min": int(rng.integers(1, 30)),
+                            "signal": float(rng.normal()),
+                            "ret_ew": float(rng.normal(0, 0.05)),
+                            "ret_vw": float(rng.normal(0, 0.05)),
+                            "ret_vw_cap": float(rng.normal(0, 0.05)),
+                        }
+                    )
+        data = pl.DataFrame(rows)
+
+        mkt_rows = []
+        for c in countries:
+            for eom in eoms:
+                # Force one (country, eom) cell to have null mkt_vw_exc.
+                mkt_vw = (
+                    None if (c == countries[0] and eom == eoms[0]) else float(rng.normal(0, 0.04))
+                )
+                mkt_rows.append(
+                    {
+                        "excntry": c,
+                        "eom": eom,
+                        "mkt_vw_exc": mkt_vw,
+                        "me_lag1": float(np.exp(rng.normal(10, 1))),
+                        "stocks": int(rng.integers(50, 500)),
+                    }
+                )
+        mkt = pl.DataFrame(mkt_rows)
+        return data, mkt, pl.Series(countries)
+
+    @staticmethod
+    def _kwargs(countries, **overrides):
+        defaults = {
+            "date_col": "eom",
+            "char_col": "characteristic",
+            "countries": countries,
+            "weighting": "market_cap",
+            "countries_min": 1,
+            "periods_min": 1,
+            "stocks_min": 1,
+        }
+        defaults.update(overrides)
+        return defaults
+
+    def _assert_equal(self, a: pl.DataFrame, b: pl.DataFrame) -> None:
+        assert a.columns == b.columns
+        a_s = a.sort(["characteristic", "eom"])
+        b_s = b.sort(["characteristic", "eom"])
+        assert a_s.height == b_s.height
+        for col in a.columns:
+            if a.schema[col] == pl.Float64:
+                np.testing.assert_allclose(
+                    a_s[col].to_numpy(), b_s[col].to_numpy(), rtol=1e-12, atol=1e-14
+                )
+            else:
+                assert a_s[col].to_list() == b_s[col].to_list()
+
+    @pytest.mark.parametrize("weighting", ["market_cap", "stocks", "ew"])
+    def test_parity_each_weighting_mode(self, weighting: str):
+        data, mkt, countries = self._build()
+        kw = self._kwargs(countries, weighting=weighting)
+        self._assert_equal(_regional_data_legacy(data, mkt, **kw), regional_data(data, mkt, **kw))
+
+    def test_drops_rows_with_missing_mkt_vw_exc(self):
+        data, mkt, countries = self._build()
+        # The synthetic builder injects one null mkt_vw_exc cell. Confirm both
+        # implementations exclude it (and otherwise agree).
+        kw = self._kwargs(countries)
+        out = regional_data(data, mkt, **kw)
+        # That (C00, eoms[0]) cell has mkt_vw_exc=null; n_countries should
+        # therefore be one less for the date that lost C00 (compared to other dates).
+        first_eom = data["eom"].min()
+        assert (
+            out.filter(pl.col("eom") == first_eom)["n_countries"].max()
+            < out.filter(pl.col("eom") != first_eom)["n_countries"].max()
+        )
+        self._assert_equal(_regional_data_legacy(data, mkt, **kw), out)
+
+    def test_excludes_countries_outside_set(self):
+        data, mkt, countries = self._build()
+        subset = pl.Series(countries.to_list()[:2])  # keep only first two
+        kw = self._kwargs(subset)
+        new = regional_data(data, mkt, **kw)
+        legacy = _regional_data_legacy(data, mkt, **kw)
+        assert new["n_countries"].max() <= 2
+        self._assert_equal(legacy, new)
+
+    def test_stocks_min_filters_rows(self):
+        data, mkt, countries = self._build(seed=11)
+        kw = self._kwargs(countries, stocks_min=25)
+        legacy = _regional_data_legacy(data, mkt, **kw)
+        new = regional_data(data, mkt, **kw)
+        # Stricter threshold should drop at least one (char, date) row.
+        kw_loose = self._kwargs(countries, stocks_min=1)
+        assert new.height < regional_data(data, mkt, **kw_loose).height
+        self._assert_equal(legacy, new)
+
+    def test_periods_min_filters_chars(self):
+        data, mkt, countries = self._build(n_months=4)
+        # Ask for more periods than the data could ever yield → empty output.
+        kw = self._kwargs(countries, periods_min=99)
+        legacy = _regional_data_legacy(data, mkt, **kw)
+        new = regional_data(data, mkt, **kw)
+        assert new.height == 0
+        self._assert_equal(legacy, new)
+
+
 class TestBuildRegionalLoop:
     """Tests for ``_build_regional_loop()``.
 

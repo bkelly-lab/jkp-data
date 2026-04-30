@@ -757,50 +757,67 @@ def regional_data(
     """Aggregate per-country factor returns up to a region.
 
     Description:
-        Build per-country weights from ``weighting`` ∈ ``{"market_cap",
-        "stocks", "ew"}``, value-weight each (char, date) cohort across
-        countries, then drop sparse rows: cohorts with fewer than
-        ``countries_min`` countries and chars with fewer than ``periods_min``
-        total dates.
+        Combine factor returns from each country in ``countries`` into a
+        single regional series per (characteristic, date). Country weights
+        come from ``weighting`` ∈ ``{"market_cap", "stocks", "ew"}``. Sparse
+        rows are dropped at two stages: cohorts with fewer than
+        ``countries_min`` countries, then characteristics with fewer than
+        ``periods_min`` total dates.
+    Steps:
+        1) Build per-(country, date) weights from ``mkt``.
+        2) Restrict ``data`` to in-scope countries with enough stocks.
+        3) Join weights; drop rows where the country has no market return.
+        4) Aggregate to one row per (char, date).
+        5) Apply sparsity filters.
+        6) Sort.
     Output:
         DataFrame with columns ``[char_col, date_col, n_countries, direction,
         ret_ew, ret_vw, ret_vw_cap, mkt_vw_exc]``, sorted by
         ``(char_col, date_col)``.
     """
-    weights = mkt.select(
-        "excntry",
-        date_col,
-        "mkt_vw_exc",
+    # 1) Per-country weights — one row per (excntry, date).
+    country_weight_expr = (
         pl.when(weighting == "market_cap")
         .then(pl.col("me_lag1"))
         .when(weighting == "stocks")
         .then(pl.col("stocks").cast(pl.Float64))
         .when(weighting == "ew")
         .then(pl.lit(1.0))
-        .alias("country_weight"),
+        .alias("country_weight")
+    )
+    country_weights = mkt.select("excntry", date_col, "mkt_vw_exc", country_weight_expr)
+
+    # 2) Restrict input to in-scope countries with enough stocks.
+    in_scope = data.filter(
+        pl.col("excntry").is_in(countries) & (pl.col("n_stocks_min") >= stocks_min)
     )
 
+    # 3) Attach country weights; drop rows missing market data for that date.
+    joined = in_scope.join(country_weights, on=["excntry", date_col], how="left").filter(
+        pl.col("mkt_vw_exc").is_not_null()
+    )
+
+    # 4) Aggregate to one row per (char, date) — country-weighted means
+    #    plus the count of contributing countries and the (constant) direction.
     cw = pl.col("country_weight")
     weighted_means = [
         ((pl.col(c) * cw).sum() / cw.sum()).alias(c)
         for c in ("ret_ew", "ret_vw", "ret_vw_cap", "mkt_vw_exc")
     ]
-
-    res = (
-        data.filter(pl.col("excntry").is_in(countries) & (pl.col("n_stocks_min") >= stocks_min))
-        .join(weights, on=["excntry", date_col], how="left")
-        .filter(pl.col("mkt_vw_exc").is_not_null())
-        .group_by(char_col, date_col)
-        .agg(
-            pl.len().alias("n_countries"),
-            pl.col("direction").first(),
-            *weighted_means,
-        )
-        .filter(pl.col("n_countries") >= countries_min)
-        .filter(pl.len().over(char_col) >= periods_min)
-        .sort(char_col, date_col)
+    aggregated = joined.group_by(char_col, date_col).agg(
+        pl.len().alias("n_countries"),
+        pl.col("direction").first(),
+        *weighted_means,
     )
-    return res
+
+    # 5) Sparsity filters: drop cohorts with too few countries, then chars
+    #    with too few surviving dates.
+    dense = aggregated.filter(pl.col("n_countries") >= countries_min).filter(
+        pl.len().over(char_col) >= periods_min
+    )
+
+    # 6) Deterministic ordering.
+    return dense.sort(char_col, date_col)
 
 
 def _build_regional_loop(
