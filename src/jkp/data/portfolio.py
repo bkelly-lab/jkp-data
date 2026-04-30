@@ -860,26 +860,41 @@ def _build_regional_loop(
     Output:
         Concatenated DataFrame with one block of rows per region.
     """
-    pieces = []
-    for i in range(regions.height):
-        info = regions[i][0]
-        reg_pf = (
-            regional_data(
-                data=data,
-                mkt=mkt,
-                countries=info["country_codes"][0],
-                date_col=date_col,
-                char_col=char_col,
-                weighting=weighting,
-                countries_min=info["countries_min"][0],
-                periods_min=periods_min,
-                stocks_min=stocks_min,
-            )
-            .with_columns(pl.lit(info["name"][0]).alias("region"))
-            .select(output_cols)
+    return pl.concat(
+        regional_data(
+            data=data,
+            mkt=mkt,
+            countries=region["country_codes"],
+            date_col=date_col,
+            char_col=char_col,
+            weighting=weighting,
+            countries_min=region["countries_min"],
+            periods_min=periods_min,
+            stocks_min=stocks_min,
         )
-        pieces.append(reg_pf)
-    return pl.concat(pieces)
+        .with_columns(pl.lit(region["name"]).alias("region"))
+        .select(output_cols)
+        for region in regions.iter_rows(named=True)
+    )
+
+
+def _stack_outputs(
+    portfolio_data: dict,
+    key: str,
+    sort_cols: list[str],
+    select_cols: list[str] | None = None,
+) -> pl.DataFrame | None:
+    """Concatenate per-country sub-results under `key`, sort, optionally project.
+
+    Returns None when no country produced this key.
+    """
+    pieces = [d[key] for d in portfolio_data.values() if d and key in d]
+    if not pieces:
+        return None
+    out = pl.concat(pieces)
+    if select_cols is not None:
+        out = out.select(select_cols)
+    return out.sort(sort_cols)
 
 
 def _write_filtered(
@@ -1236,108 +1251,42 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
         )
         portfolio_data[ex] = result
 
-    # Aggregating portfolio returns
-    if any(sub_data and "pf_returns" in sub_data for _, sub_data in portfolio_data.items()):
-        pf_returns = pl.concat(
-            [
-                sub_data["pf_returns"]
-                for _, sub_data in portfolio_data.items()
-                if sub_data and "pf_returns" in sub_data
-            ]
-        )
-        pf_returns = pf_returns.select(
-            [
-                "excntry",
-                "characteristic",
-                "pf",
-                "eom",
-                "n",
-                "signal",
-                "ret_ew",
-                "ret_vw",
-                "ret_vw_cap",
-            ]
-        )
-        pf_returns = pf_returns.sort(["excntry", "characteristic", "pf", "eom"])
-    else:
-        pf_returns = None
+    # Aggregating portfolio returns across countries
+    pf_returns = _stack_outputs(
+        portfolio_data,
+        "pf_returns",
+        sort_cols=["excntry", "characteristic", "pf", "eom"],
+        select_cols=[
+            "excntry",
+            "characteristic",
+            "pf",
+            "eom",
+            "n",
+            "signal",
+            "ret_ew",
+            "ret_vw",
+            "ret_vw_cap",
+        ],
+    )
+    pf_daily = (
+        _stack_outputs(portfolio_data, "pf_daily", ["excntry", "characteristic", "pf", "date"])
+        if settings["daily_pf"]
+        else None
+    )
 
-    if settings["daily_pf"] and any(
-        sub_data and "pf_daily" in sub_data for _, sub_data in portfolio_data.items()
-    ):
-        pf_daily = pl.concat(
-            [
-                sub_data["pf_daily"]
-                for _, sub_data in portfolio_data.items()
-                if sub_data and "pf_daily" in sub_data
-            ]
-        )
-        pf_daily = pf_daily.sort(["excntry", "characteristic", "pf", "date"])
-    else:
-        pf_daily = None
-
-    # Aggregating industry classification returns
-    # GICS Returns
-    if settings["ind_pf"] and any(
-        sub_data and "gics_returns" in sub_data for _, sub_data in portfolio_data.items()
-    ):
-        gics_returns = pl.concat(
-            [
-                sub_data["gics_returns"]
-                for _, sub_data in portfolio_data.items()
-                if sub_data and "gics_returns" in sub_data
-            ]
-        )
-        gics_returns = gics_returns.sort(["excntry", "gics", "eom"])
+    # Industry classification returns
+    if settings["ind_pf"]:
+        gics_returns = _stack_outputs(portfolio_data, "gics_returns", ["excntry", "gics", "eom"])
+        ff49_returns = _stack_outputs(portfolio_data, "ff49_returns", ["excntry", "ff49", "eom"])
     else:
         gics_returns = None
-
-    # FF49 Returns
-    if settings["ind_pf"] and any(
-        sub_data and "ff49_returns" in sub_data for _, sub_data in portfolio_data.items()
-    ):
-        ff49_returns = pl.concat(
-            [
-                sub_data["ff49_returns"]
-                for _, sub_data in portfolio_data.items()
-                if sub_data and "ff49_returns" in sub_data
-            ]
-        )
-        ff49_returns = ff49_returns.sort(["excntry", "ff49", "eom"])
-    else:
         ff49_returns = None
 
-    # Aggregating daily industry classification returns
-    if (
-        settings["ind_pf"]
-        and settings["daily_pf"]
-        and any(sub_data and "gics_daily" in sub_data for _, sub_data in portfolio_data.items())
-    ):
-        gics_daily = pl.concat(
-            [
-                sub_data["gics_daily"]
-                for _, sub_data in portfolio_data.items()
-                if sub_data and "gics_daily" in sub_data
-            ]
-        )
-        gics_daily = gics_daily.sort(["excntry", "gics", "date"])
+    if settings["ind_pf"] and settings["daily_pf"]:
+        gics_daily = _stack_outputs(portfolio_data, "gics_daily", ["excntry", "gics", "date"])
+        ff49_daily = _stack_outputs(portfolio_data, "ff49_daily", ["excntry", "ff49", "date"])
     else:
         gics_daily = None
-
-    if (
-        settings["ind_pf"]
-        and settings["daily_pf"]
-        and any(sub_data and "ff49_daily" in sub_data for _, sub_data in portfolio_data.items())
-    ):
-        ff49_daily = pl.concat(
-            [
-                sub_data["ff49_daily"]
-                for _, sub_data in portfolio_data.items()
-                if sub_data and "ff49_daily" in sub_data
-            ]
-        )
-        ff49_daily = ff49_daily.sort(["excntry", "ff49", "date"])
-    else:
         ff49_daily = None
 
     # Create HML / LMS Returns
@@ -1358,11 +1307,7 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
         lms_daily = None
 
     # Extract CMP returns
-    cmp_list = [
-        portfolio_data[sub_dict]["cmp"]
-        for sub_dict in portfolio_data
-        if "cmp" in portfolio_data[sub_dict]
-    ]
+    cmp_list = [d["cmp"] for d in portfolio_data.values() if "cmp" in d]
     if cmp_list:
         cmp_returns = pl.concat(cmp_list)
     else:
