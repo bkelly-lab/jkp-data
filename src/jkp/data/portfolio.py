@@ -113,14 +113,14 @@ def _build_industry_daily_returns(
         weights_data = weights_data.with_columns(industry_transform)
 
     grp = [industry_col, "eom"]
-    weights = weights_data.filter(pl.len().over(grp) >= bp_min_n).with_columns(
-        (1 / pl.len().over(grp)).alias("w_ew"),
-        (pl.col("me") / pl.col("me").sum().over(grp)).alias("w_vw"),
-        (pl.col("me_cap") / pl.col("me_cap").sum().over(grp)).alias("w_vw_cap"),
-    )
-
     return (
-        weights.join(daily.lazy(), left_on=["id", "eom"], right_on=["id", "eom_lag1"], how="left")
+        weights_data.filter(pl.len().over(grp) >= bp_min_n)
+        .with_columns(
+            (1 / pl.len().over(grp)).alias("w_ew"),
+            (pl.col("me") / pl.col("me").sum().over(grp)).alias("w_vw"),
+            (pl.col("me_cap") / pl.col("me_cap").sum().over(grp)).alias("w_vw_cap"),
+        )
+        .join(daily.lazy(), left_on=["id", "eom"], right_on=["id", "eom_lag1"], how="left")
         .filter(pl.col("ret_exc").is_not_null())
         .group_by(industry_col, "date")
         .agg(
