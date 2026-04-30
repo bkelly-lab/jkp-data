@@ -76,7 +76,21 @@ def connect(
         help="Reset stored WRDS credentials.",
     ),
 ) -> None:
-    """Test or configure WRDS connection."""
+    """Test or configure the WRDS connection.
+
+    Credential precedence (highest first):
+
+      1. WRDS_USERNAME and WRDS_PASSWORD environment variables. Useful for
+         containers and shared service accounts.
+      2. The system keyring (Keychain on macOS, Secret Service on Linux desktop,
+         Credential Vault on Windows). Default for interactive sessions.
+      3. The file-backed keyring (keyrings.alt.file.PlaintextKeyring), which
+         stores the password in a mode-600 file under
+         ~/.local/share/python_keyring/. Selected only when
+         JKP_ALLOW_PLAINTEXT_KEYRING=1 is set; appropriate for headless
+         environments (HPC compute nodes, minimal Docker images) where no
+         system keyring daemon is available.
+    """
     from .wrds_credentials import get_wrds_credentials, reset_credentials
 
     if reset:
