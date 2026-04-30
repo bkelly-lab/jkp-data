@@ -859,7 +859,7 @@ def _build_regional_loop(
         regional_data(
             data=data,
             mkt=mkt,
-            countries=region["country_codes"],
+            countries=pl.Series(region["country_codes"]),
             date_col=date_col,
             char_col=char_col,
             weighting=weighting,
