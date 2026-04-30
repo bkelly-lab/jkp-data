@@ -210,6 +210,62 @@ def _build_industry_monthly_returns(
     )
 
 
+def _build_hml_lms(
+    pf_df: pl.DataFrame,
+    char_info: pl.DataFrame,
+    n_pfs: int,
+    date_col: str,
+    include_signal: bool,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Build HML (top minus bottom pf) and signed LMS factor returns.
+
+    Description:
+        Group `pf_df` by ``["excntry", "characteristic", date_col]``, compute
+        top-minus-bottom-portfolio diffs for return columns (and optionally
+        ``signal``), keep only groups containing both extreme portfolios, then
+        join `char_info` and re-sign each factor by ``direction``.
+    Output:
+        ``(hml, lms)`` tuple of DataFrames.
+    """
+    diff = lambda c: (  # noqa: E731
+        pl.col(c).filter(pl.col("pf") == n_pfs).first()
+        - pl.col(c).filter(pl.col("pf") == 1).first()
+    )
+    agg_exprs = [pl.col("pf").is_in([n_pfs, 1]).sum().alias("pfs")]
+    if include_signal:
+        agg_exprs.append(diff("signal").alias("signal"))
+    agg_exprs.extend(
+        [
+            (
+                pl.col("n").filter(pl.col("pf") == n_pfs).first()
+                + pl.col("n").filter(pl.col("pf") == 1).first()
+            ).alias("n_stocks"),
+            pl.col("n").filter(pl.col("pf").is_in([n_pfs, 1])).min().alias("n_stocks_min"),
+            diff("ret_ew").alias("ret_ew"),
+            diff("ret_vw").alias("ret_vw"),
+            diff("ret_vw_cap").alias("ret_vw_cap"),
+        ]
+    )
+
+    hml = (
+        pf_df.group_by(["excntry", "characteristic", date_col])
+        .agg(agg_exprs)
+        .filter(pl.col("pfs") == 2)
+        .drop("pfs")
+        .sort(["excntry", "characteristic", date_col])
+    )
+
+    resign_cols = (
+        ["signal", "ret_ew", "ret_vw", "ret_vw_cap"]
+        if include_signal
+        else ["ret_ew", "ret_vw", "ret_vw_cap"]
+    )
+    lms = char_info.join(hml, on="characteristic", how="left").with_columns(
+        [(pl.col(c) * pl.col("direction")).alias(c) for c in resign_cols]
+    )
+    return hml, lms
+
+
 # main portfolios function to create the portfolios
 def portfolios(
     data_path,
@@ -1284,93 +1340,18 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
     else:
         ff49_daily = None
 
-    # Create HML Returns
+    # Create HML / LMS Returns
     if pf_returns is not None and pf_returns.height > 0:
-        hml_returns = pf_returns.group_by(["excntry", "characteristic", "eom"]).agg(
-            [
-                pl.col("pf").is_in([settings["pfs"], 1]).sum().alias("pfs"),
-                (
-                    pl.col("signal").filter(pl.col("pf") == settings["pfs"]).first()
-                    - pl.col("signal").filter(pl.col("pf") == 1).first()
-                ).alias("signal"),
-                (
-                    pl.col("n").filter(pl.col("pf") == settings["pfs"]).first()
-                    + pl.col("n").filter(pl.col("pf") == 1).first()
-                ).alias("n_stocks"),
-                (pl.col("n").filter(pl.col("pf").is_in([settings["pfs"], 1])).min()).alias(
-                    "n_stocks_min"
-                ),
-                (
-                    pl.col("ret_ew").filter(pl.col("pf") == settings["pfs"]).first()
-                    - pl.col("ret_ew").filter(pl.col("pf") == 1).first()
-                ).alias("ret_ew"),
-                (
-                    pl.col("ret_vw").filter(pl.col("pf") == settings["pfs"]).first()
-                    - pl.col("ret_vw").filter(pl.col("pf") == 1).first()
-                ).alias("ret_vw"),
-                (
-                    pl.col("ret_vw_cap").filter(pl.col("pf") == settings["pfs"]).first()
-                    - pl.col("ret_vw_cap").filter(pl.col("pf") == 1).first()
-                ).alias("ret_vw_cap"),
-            ]
-        )
-
-        hml_returns = (
-            hml_returns.filter(pl.col("pfs") == 2)
-            .drop("pfs")
-            .sort(["excntry", "characteristic", "eom"])
-        )
-
-        # Create Long-Short Factors [Sign Returns to be consistent with original paper]
-        lms_returns = char_info.join(hml_returns, on="characteristic", how="left")
-
-        # Define columns to be modified
-        resign_cols = ["signal", "ret_ew", "ret_vw", "ret_vw_cap"]
-        lms_returns = lms_returns.with_columns(
-            [(pl.col(var) * pl.col("direction")).alias(var) for var in resign_cols]
+        hml_returns, lms_returns = _build_hml_lms(
+            pf_returns, char_info, settings["pfs"], "eom", include_signal=True
         )
     else:
         hml_returns = None
         lms_returns = None
 
-    # Daily hml and lms
     if settings["daily_pf"] and pf_daily is not None and pf_daily.height > 0:
-        hml_daily = pf_daily.group_by(["excntry", "characteristic", "date"]).agg(
-            [
-                pl.col("pf").is_in([settings["pfs"], 1]).sum().alias("pfs"),
-                (
-                    pl.col("n").filter(pl.col("pf") == settings["pfs"]).first()
-                    + pl.col("n").filter(pl.col("pf") == 1).first()
-                ).alias("n_stocks"),
-                (pl.col("n").filter(pl.col("pf").is_in([settings["pfs"], 1])).min()).alias(
-                    "n_stocks_min"
-                ),
-                (
-                    pl.col("ret_ew").filter(pl.col("pf") == settings["pfs"]).first()
-                    - pl.col("ret_ew").filter(pl.col("pf") == 1).first()
-                ).alias("ret_ew"),
-                (
-                    pl.col("ret_vw").filter(pl.col("pf") == settings["pfs"]).first()
-                    - pl.col("ret_vw").filter(pl.col("pf") == 1).first()
-                ).alias("ret_vw"),
-                (
-                    pl.col("ret_vw_cap").filter(pl.col("pf") == settings["pfs"]).first()
-                    - pl.col("ret_vw_cap").filter(pl.col("pf") == 1).first()
-                ).alias("ret_vw_cap"),
-            ]
-        )
-
-        hml_daily = (
-            hml_daily.filter(pl.col("pfs") == 2)
-            .drop("pfs")
-            .sort(["excntry", "characteristic", "date"])
-        )
-
-        lms_daily = char_info.join(hml_daily, on="characteristic", how="left")
-        resign_cols = ["ret_ew", "ret_vw", "ret_vw_cap"]
-
-        lms_daily = lms_daily.with_columns(
-            [(pl.col(var) * pl.col("direction")).alias(var) for var in resign_cols]
+        hml_daily, lms_daily = _build_hml_lms(
+            pf_daily, char_info, settings["pfs"], "date", include_signal=False
         )
     else:
         hml_daily = None
