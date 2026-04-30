@@ -22,7 +22,12 @@ import numpy as np
 import polars as pl
 import pytest
 
-from jkp.data.portfolio import add_ecdf, portfolios, regional_data
+from jkp.data.portfolio import (
+    _build_regional_loop,
+    add_ecdf,
+    portfolios,
+    regional_data,
+)
 
 # Reuse synthetic helpers from the parity test module (avoids duplication).
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -588,6 +593,103 @@ class TestRegionalData:
         )
         assert result.height > 0
         assert "ret_ew" in result.columns
+
+
+class TestBuildRegionalLoop:
+    """Tests for ``_build_regional_loop()``.
+
+    Regression coverage: ``iter_rows(named=True)`` returns Python ``list``
+    for list columns, but ``regional_data`` calls ``.implode()`` which only
+    exists on ``pl.Series``. The helper must wrap ``country_codes`` in a
+    ``pl.Series`` before passing it through.
+    """
+
+    @staticmethod
+    def _sample_inputs(n_countries: int = 4, n_months: int = 12, n_chars: int = 2):
+        lms = TestRegionalData._sample_lms(
+            n_countries=n_countries, n_months=n_months, n_chars=n_chars
+        )
+        countries = lms["excntry"].unique().to_list()
+        mkt = TestRegionalData._sample_market(countries, _month_ends(n_months))
+        regions = pl.DataFrame(
+            {
+                "name": ["all", "subset"],
+                "country_codes": [countries, countries[:2]],
+                "countries_min": [1, 1],
+            }
+        )
+        output_cols = [
+            "region",
+            "characteristic",
+            "direction",
+            "eom",
+            "n_countries",
+            "ret_ew",
+            "ret_vw",
+            "ret_vw_cap",
+            "mkt_vw_exc",
+        ]
+        return lms, mkt, regions, output_cols
+
+    def test_runs_with_list_country_codes(self):
+        """Regression: list-typed country_codes must be wrapped in pl.Series for .implode()."""
+        lms, mkt, regions, output_cols = self._sample_inputs()
+        # Should NOT raise AttributeError("'list' object has no attribute 'implode'").
+        result = _build_regional_loop(
+            data=lms,
+            mkt=mkt,
+            regions=regions,
+            date_col="eom",
+            char_col="characteristic",
+            output_cols=output_cols,
+            weighting="market_cap",
+            periods_min=1,
+            stocks_min=1,
+        )
+        assert result.height > 0
+        assert set(result.columns) == set(output_cols)
+
+    def test_concatenates_one_block_per_region(self):
+        lms, mkt, regions, output_cols = self._sample_inputs()
+        result = _build_regional_loop(
+            data=lms,
+            mkt=mkt,
+            regions=regions,
+            date_col="eom",
+            char_col="characteristic",
+            output_cols=output_cols,
+            weighting="market_cap",
+            periods_min=1,
+            stocks_min=1,
+        )
+        assert set(result["region"].unique().to_list()) == {"all", "subset"}
+
+    def test_uses_per_region_countries_min(self):
+        """Each region's ``countries_min`` must be applied to its own block."""
+        lms, mkt, _, output_cols = self._sample_inputs(n_countries=3)
+        regions = pl.DataFrame(
+            {
+                "name": ["pass", "fail"],
+                "country_codes": [
+                    lms["excntry"].unique().to_list(),
+                    lms["excntry"].unique().to_list(),
+                ],
+                "countries_min": [1, 99],  # second region must filter to empty
+            }
+        )
+        result = _build_regional_loop(
+            data=lms,
+            mkt=mkt,
+            regions=regions,
+            date_col="eom",
+            char_col="characteristic",
+            output_cols=output_cols,
+            weighting="market_cap",
+            periods_min=1,
+            stocks_min=1,
+        )
+        assert "pass" in result["region"].unique().to_list()
+        assert "fail" not in result["region"].unique().to_list()
 
 
 class TestOutputFormatIntegration:
