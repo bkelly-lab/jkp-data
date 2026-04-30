@@ -799,15 +799,13 @@ def regional_data(
 
     # 4) Aggregate to one row per (char, date) — country-weighted means
     #    plus the count of contributing countries and the (constant) direction.
-    cw = pl.col("country_weight")
-    weighted_means = [
-        ((pl.col(c) * cw).sum() / cw.sum()).alias(c)
-        for c in ("ret_ew", "ret_vw", "ret_vw_cap", "mkt_vw_exc")
-    ]
     aggregated = joined.group_by(char_col, date_col).agg(
         pl.len().alias("n_countries"),
         pl.col("direction").first(),
-        *weighted_means,
+        *(
+            ((pl.col(c) * pl.col("country_weight")).sum() / pl.col("country_weight").sum()).alias(c)
+            for c in ("ret_ew", "ret_vw", "ret_vw_cap", "mkt_vw_exc")
+        ),
     )
 
     # 5) Sparsity filters: drop cohorts with too few countries, then chars
