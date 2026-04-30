@@ -743,69 +743,64 @@ def portfolios(
     return output
 
 
-# function for regional grouping of portfolios etc
 def regional_data(
-    data,
-    mkt,
-    date_col,
-    char_col,
-    countries,
-    weighting,
-    countries_min,
-    periods_min,
-    stocks_min,
-):
-    # Determine Country Weights
+    data: pl.DataFrame,
+    mkt: pl.DataFrame,
+    date_col: str,
+    char_col: str,
+    countries: pl.Series,
+    weighting: str,
+    countries_min: int,
+    periods_min: int,
+    stocks_min: int,
+) -> pl.DataFrame:
+    """Aggregate per-country factor returns up to a region.
+
+    Description:
+        Build per-country weights from ``weighting`` ∈ ``{"market_cap",
+        "stocks", "ew"}``, value-weight each (char, date) cohort across
+        countries, then drop sparse rows: cohorts with fewer than
+        ``countries_min`` countries and chars with fewer than ``periods_min``
+        total dates.
+    Output:
+        DataFrame with columns ``[char_col, date_col, n_countries, direction,
+        ret_ew, ret_vw, ret_vw_cap, mkt_vw_exc]``, sorted by
+        ``(char_col, date_col)``.
+    """
     weights = mkt.select(
-        [
-            pl.col("excntry"),
-            pl.col(date_col).alias(date_col),
-            pl.col("mkt_vw_exc"),
-            pl.when(weighting == "market_cap")
-            .then(pl.col("me_lag1"))
-            .when(weighting == "stocks")
-            .then(pl.col("stocks").cast(pl.Float64))
-            .when(weighting == "ew")
-            .then(1)
-            .alias("country_weight"),
-        ]
+        "excntry",
+        date_col,
+        "mkt_vw_exc",
+        pl.when(weighting == "market_cap")
+        .then(pl.col("me_lag1"))
+        .when(weighting == "stocks")
+        .then(pl.col("stocks").cast(pl.Float64))
+        .when(weighting == "ew")
+        .then(pl.lit(1.0))
+        .alias("country_weight"),
     )
-    # Portfolio Return
-    pf = data.filter(
-        (pl.col("excntry").is_in(countries.implode())) & (pl.col("n_stocks_min") >= stocks_min)
-    )
-    pf = pf.join(weights, on=["excntry", date_col], how="left")
-    pf = (
-        pf.filter(pl.col("mkt_vw_exc").is_not_null())
-        .group_by([char_col, date_col])
+
+    cw = pl.col("country_weight")
+    weighted_means = [
+        ((pl.col(c) * cw).sum() / cw.sum()).alias(c)
+        for c in ("ret_ew", "ret_vw", "ret_vw_cap", "mkt_vw_exc")
+    ]
+
+    res = (
+        data.filter(pl.col("excntry").is_in(countries) & (pl.col("n_stocks_min") >= stocks_min))
+        .join(weights, on=["excntry", date_col], how="left")
+        .filter(pl.col("mkt_vw_exc").is_not_null())
+        .group_by(char_col, date_col)
         .agg(
-            [
-                pl.len().alias("n_countries"),
-                pl.col("direction").first().alias("direction"),
-                (pl.col("ret_ew") * pl.col("country_weight")).sum()
-                / pl.col("country_weight").sum().alias("ret_ew"),
-                (pl.col("ret_vw") * pl.col("country_weight")).sum()
-                / pl.col("country_weight").sum().alias("ret_vw"),
-                (pl.col("ret_vw_cap") * pl.col("country_weight")).sum()
-                / pl.col("country_weight").sum().alias("ret_vw_cap"),
-                (pl.col("mkt_vw_exc") * pl.col("country_weight")).sum()
-                / pl.col("country_weight").sum().alias("mkt_vw_exc"),
-            ]
+            pl.len().alias("n_countries"),
+            pl.col("direction").first(),
+            *weighted_means,
         )
+        .filter(pl.col("n_countries") >= countries_min)
+        .filter(pl.len().over(char_col) >= periods_min)
+        .sort(char_col, date_col)
     )
-
-    # Minimum Requirement: Countries
-    pf = pf.filter(pl.col("n_countries") >= countries_min)
-
-    # Minimum Requirement: Months
-    pf = (
-        pf.with_columns(pl.len().over(char_col).alias("periods"))
-        .filter(pl.col("periods") >= periods_min)
-        .drop("periods")
-        .sort([char_col, date_col])
-    )
-
-    return pf
+    return res
 
 
 def _build_regional_loop(
