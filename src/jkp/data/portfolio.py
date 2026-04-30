@@ -826,6 +826,38 @@ def _build_regional_loop(
     return pl.concat(pieces)
 
 
+def _write_filtered(
+    df: pl.DataFrame,
+    path: str,
+    date_col: str,
+    end_date,
+) -> None:
+    """Filter `df` to rows where `date_col <= end_date` and write to `path`."""
+    write_dataframe(df.filter(pl.col(date_col) <= end_date), path)
+
+
+def _write_split_by_key(
+    df: pl.DataFrame,
+    folder_path: str,
+    key_col: str,
+    date_col: str,
+    end_date,
+) -> None:
+    """Partition `df` by `key_col` and write one parquet per key into `folder_path`.
+
+    Description:
+        Apply the `date_col <= end_date` filter, then for each unique non-null
+        truthy value of `key_col`, write the matching rows to
+        ``{folder_path}/{key}.parquet``.
+    """
+    os.makedirs(folder_path, exist_ok=True)
+    for key in df[key_col].unique():
+        if not key:
+            continue
+        filtered = df.filter((pl.col(date_col) <= end_date) & (pl.col(key_col) == key))
+        write_dataframe(filtered, os.path.join(folder_path, f"{key}.parquet"))
+
+
 # =============================================================================
 # Main Entry Point
 # =============================================================================
@@ -1483,170 +1515,97 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
     else:
         regional_clusters_daily = None
 
-    # Writing output
-    if pf_returns is not None:
-        write_dataframe(
-            pf_returns.filter(pl.col("eom") <= settings["end_date"]),
-            f"{output_path}/pfs.parquet",
-        )
-    if hml_returns is not None:
-        write_dataframe(
-            hml_returns.filter(pl.col("eom") <= settings["end_date"]),
-            f"{output_path}/hml.parquet",
-        )
-    if lms_returns is not None:
-        write_dataframe(
-            lms_returns.filter(pl.col("eom") <= settings["end_date"]),
-            f"{output_path}/lms.parquet",
-        )
+    end_date = settings["end_date"]
+
+    # Single-file outputs (monthly)
+    monthly_outputs = [
+        (pf_returns, "pfs.parquet"),
+        (hml_returns, "hml.parquet"),
+        (lms_returns, "lms.parquet"),
+        (cluster_pfs, "clusters.parquet"),
+    ]
+    for df, name in monthly_outputs:
+        if df is not None:
+            _write_filtered(df, f"{output_path}/{name}", "eom", end_date)
     if cmp_list:
-        write_dataframe(
-            cmp_returns.filter(pl.col("eom") <= settings["end_date"]),
-            f"{output_path}/cmp.parquet",
-        )
-    if cluster_pfs is not None:
-        write_dataframe(
-            cluster_pfs.filter(pl.col("eom") <= settings["end_date"]),
-            f"{output_path}/clusters.parquet",
-        )
+        _write_filtered(cmp_returns, f"{output_path}/cmp.parquet", "eom", end_date)
 
+    # Single-file outputs (daily)
     if settings["daily_pf"]:
-        if pf_daily is not None:
-            write_dataframe(
-                pf_daily.filter(pl.col("date") <= settings["end_date"]),
-                f"{output_path}/pfs_daily.parquet",
-            )
-        if hml_daily is not None:
-            write_dataframe(
-                hml_daily.filter(pl.col("date") <= settings["end_date"]),
-                f"{output_path}/hml_daily.parquet",
-            )
-        if lms_daily is not None:
-            write_dataframe(
-                lms_daily.filter(pl.col("date") <= settings["end_date"]),
-                f"{output_path}/lms_daily.parquet",
-            )
-        if cluster_pfs_daily is not None:
-            write_dataframe(
-                cluster_pfs_daily.filter(pl.col("date") <= settings["end_date"]),
-                f"{output_path}/clusters_daily.parquet",
-            )
+        daily_outputs = [
+            (pf_daily, "pfs_daily.parquet"),
+            (hml_daily, "hml_daily.parquet"),
+            (lms_daily, "lms_daily.parquet"),
+            (cluster_pfs_daily, "clusters_daily.parquet"),
+        ]
+        for df, name in daily_outputs:
+            if df is not None:
+                _write_filtered(df, f"{output_path}/{name}", "date", end_date)
 
+    # Industry returns
     if settings["ind_pf"]:
-        if gics_returns is not None:
-            write_dataframe(
-                gics_returns.filter(pl.col("eom") <= settings["end_date"]),
-                f"{output_path}/industry_gics.parquet",
-            )
-        if ff49_returns is not None:
-            write_dataframe(
-                ff49_returns.filter(pl.col("eom") <= settings["end_date"]),
-                f"{output_path}/industry_ff49.parquet",
-            )
+        ind_monthly = [
+            (gics_returns, "industry_gics.parquet"),
+            (ff49_returns, "industry_ff49.parquet"),
+        ]
+        for df, name in ind_monthly:
+            if df is not None:
+                _write_filtered(df, f"{output_path}/{name}", "eom", end_date)
 
     if settings["ind_pf"] and settings["daily_pf"]:
-        if gics_daily is not None:
-            write_dataframe(
-                gics_daily.filter(pl.col("date") <= settings["end_date"]),
-                f"{output_path}/industry_gics_daily.parquet",
-            )
-        if ff49_daily is not None:
-            write_dataframe(
-                ff49_daily.filter(pl.col("date") <= settings["end_date"]),
-                f"{output_path}/industry_ff49_daily.parquet",
-            )
+        ind_daily = [
+            (gics_daily, "industry_gics_daily.parquet"),
+            (ff49_daily, "industry_ff49_daily.parquet"),
+        ]
+        for df, name in ind_daily:
+            if df is not None:
+                _write_filtered(df, f"{output_path}/{name}", "date", end_date)
 
-    # Create directory for Regional Factors
+    # Partitioned outputs
     if regional_pfs is not None:
-        reg_folder = os.path.join(output_path, "regional_factors")
-        if not os.path.exists(reg_folder):
-            os.makedirs(reg_folder)
-
-        # Write regional portfolios to files
-        for reg in regional_pfs["region"].unique():
-            filtered_df = regional_pfs.filter(
-                (pl.col("eom") <= settings["end_date"]) & (pl.col("region") == reg)
-            )
-            file_path = os.path.join(reg_folder, f"{reg}.parquet")
-            write_dataframe(filtered_df, file_path)
-
-    # Conditional block for daily regional factors
-    if settings["daily_pf"]:
-        if regional_pfs_daily is not None:
-            # Create directory for Daily Regional Factors
-            reg_folder_daily = os.path.join(output_path, "regional_factors_daily")
-            if not os.path.exists(reg_folder_daily):
-                os.makedirs(reg_folder_daily)
-
-            # Write daily regional portfolios to files
-            for reg in regional_pfs_daily["region"].unique():
-                filtered_df_daily = regional_pfs_daily.filter(
-                    (pl.col("date") <= settings["end_date"]) & (pl.col("region") == reg)
-                )
-                file_path_daily = os.path.join(reg_folder_daily, f"{reg}.parquet")
-                write_dataframe(filtered_df_daily, file_path_daily)
-
-    # Create directory for Regional Clusters
+        _write_split_by_key(
+            regional_pfs, os.path.join(output_path, "regional_factors"), "region", "eom", end_date
+        )
+    if settings["daily_pf"] and regional_pfs_daily is not None:
+        _write_split_by_key(
+            regional_pfs_daily,
+            os.path.join(output_path, "regional_factors_daily"),
+            "region",
+            "date",
+            end_date,
+        )
     if regional_clusters is not None:
-        reg_folder = os.path.join(output_path, "regional_clusters")
-        if not os.path.exists(reg_folder):
-            os.makedirs(reg_folder)
-
-        # Write regional clusters to files
-        for reg in regional_clusters["region"].unique():
-            filtered_df = regional_clusters.filter(
-                (pl.col("eom") <= settings["end_date"]) & (pl.col("region") == reg)
-            )
-            file_path = os.path.join(reg_folder, f"{reg}.parquet")
-            write_dataframe(filtered_df, file_path)
-
-    # Conditional block for daily regional clusters
-    if settings["daily_pf"]:
-        if regional_clusters_daily is not None:
-            # Create directory for Daily Regional Clusters
-            reg_folder_daily = os.path.join(output_path, "regional_clusters_daily")
-            if not os.path.exists(reg_folder_daily):
-                os.makedirs(reg_folder_daily)
-
-            # Write daily regional clusters to files
-            for reg in regional_clusters_daily["region"].unique():
-                filtered_df_daily = regional_clusters_daily.filter(
-                    (pl.col("date") <= settings["end_date"]) & (pl.col("region") == reg)
-                )
-                file_path_daily = os.path.join(reg_folder_daily, f"{reg}.parquet")
-                write_dataframe(filtered_df_daily, file_path_daily)
-
-    # Create directory for Country Factors
+        _write_split_by_key(
+            regional_clusters,
+            os.path.join(output_path, "regional_clusters"),
+            "region",
+            "eom",
+            end_date,
+        )
+    if settings["daily_pf"] and regional_clusters_daily is not None:
+        _write_split_by_key(
+            regional_clusters_daily,
+            os.path.join(output_path, "regional_clusters_daily"),
+            "region",
+            "date",
+            end_date,
+        )
     if lms_returns is not None:
-        cnt_folder = os.path.join(output_path, "country_factors")
-        if not os.path.exists(cnt_folder):
-            os.makedirs(cnt_folder)
-
-        # Write country factors to files
-        for exc in lms_returns["excntry"].unique():
-            if exc:
-                filtered_df = lms_returns.filter(
-                    (pl.col("eom") <= settings["end_date"]) & (pl.col("excntry") == exc)
-                )
-                file_path = os.path.join(cnt_folder, f"{exc}.parquet")
-                write_dataframe(filtered_df, file_path)
-
-    # Conditional block for daily country factors
-    if settings["daily_pf"]:
-        if lms_daily is not None:
-            # Create directory for Daily Country Factors
-            cnt_folder_daily = os.path.join(output_path, "country_factors_daily")
-            if not os.path.exists(cnt_folder_daily):
-                os.makedirs(cnt_folder_daily)
-
-            # Write daily country factors to files
-            for exc in lms_daily["excntry"].unique():
-                if exc:
-                    filtered_df_daily = lms_daily.filter(
-                        (pl.col("date") <= settings["end_date"]) & (pl.col("excntry") == exc)
-                    )
-                    file_path_daily = os.path.join(cnt_folder_daily, f"{exc}.parquet")
-                    write_dataframe(filtered_df_daily, file_path_daily)
+        _write_split_by_key(
+            lms_returns,
+            os.path.join(output_path, "country_factors"),
+            "excntry",
+            "eom",
+            end_date,
+        )
+    if settings["daily_pf"] and lms_daily is not None:
+        _write_split_by_key(
+            lms_daily,
+            os.path.join(output_path, "country_factors_daily"),
+            "excntry",
+            "date",
+            end_date,
+        )
 
     # Convert to CSV if configured
     convert_outputs_to_csv(processed_dir=data_path)
