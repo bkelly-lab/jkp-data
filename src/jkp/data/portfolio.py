@@ -72,11 +72,12 @@ def add_ecdf(
 
     # asof-join the ref ECDF onto every row; rows below any bp value get null,
     # which we fill with 0.0.
-    return (
+    res = (
         df.sort(sort_cols)
         .join_asof(ref, on="var", by=group_cols, strategy="backward")
         .with_columns(pl.col("cdf").fill_null(0.0))
     )
+    return res
 
 
 def _build_industry_daily_returns(
