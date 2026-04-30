@@ -53,36 +53,30 @@ def add_ecdf(
         out; DataFrame in, DataFrame out — with a ``cdf`` column appended and
         the original columns preserved.
     """
-    if group_cols is None:
-        group_cols = ["eom"]
-    # 1) counts of reference sample per distinct var within each group
-    ref_counts = df.filter(pl.col("bp_stock")).group_by(group_cols + ["var"]).agg(n_ref=pl.len())
+    group_cols = group_cols or ["eom"]
+    sort_cols = group_cols + ["var"]
 
-    # 2) ECDF steps: cumulative share within each group
-    ref_steps = (
-        ref_counts.sort(group_cols + ["var"])
-        .with_columns(
-            # apply the window to the whole fraction to ensure same partition
-            cdf_val=(pl.cum_sum("n_ref") / pl.sum("n_ref")).over(group_cols)
+    # ECDF on the bp-stock reference sample: cumulative share of distinct
+    # var values within each group, sorted by var so cum_sum runs in order.
+    ref = (
+        df.filter(pl.col("bp_stock"))
+        .group_by(sort_cols)
+        .agg(pl.len().alias("n_ref"))
+        .sort(sort_cols)
+        .select(
+            *group_cols,
+            "var",
+            ((pl.cum_sum("n_ref") / pl.sum("n_ref")).over(group_cols)).alias("cdf"),
         )
-        .select(group_cols + ["var", "cdf_val"])
     )
 
-    # 3) MUST pre-sort both sides by group_cols + ["var"] for join_asof with 'by'
-    left = df.sort(group_cols + ["var"])
-    right = ref_steps.sort(group_cols + ["var"])  # already sorted above
-
-    out = (
-        left.join_asof(
-            right,
-            on="var",
-            by=group_cols,
-            strategy="backward",
-        )
-        .with_columns(pl.col("cdf_val").fill_null(0.0).alias("cdf"))
-        .drop("cdf_val")
+    # asof-join the ref ECDF onto every row; rows below any bp value get null,
+    # which we fill with 0.0.
+    return (
+        df.sort(sort_cols)
+        .join_asof(ref, on="var", by=group_cols, strategy="backward")
+        .with_columns(pl.col("cdf").fill_null(0.0))
     )
-    return out
 
 
 def _build_industry_daily_returns(
