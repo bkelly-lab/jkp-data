@@ -785,6 +785,47 @@ def regional_data(
     return pf
 
 
+def _build_regional_loop(
+    data: pl.DataFrame,
+    mkt: pl.DataFrame,
+    regions: pl.DataFrame,
+    date_col: str,
+    char_col: str,
+    output_cols: list[str],
+    weighting: str,
+    periods_min: int,
+    stocks_min: int,
+) -> pl.DataFrame:
+    """Aggregate `data` across all regions and concatenate.
+
+    Description:
+        Iterate over `regions`, call `regional_data` for each region's country
+        set, attach a `region` literal column, and project `output_cols`.
+    Output:
+        Concatenated DataFrame with one block of rows per region.
+    """
+    pieces = []
+    for i in range(regions.height):
+        info = regions[i][0]
+        reg_pf = (
+            regional_data(
+                data=data,
+                mkt=mkt,
+                countries=info["country_codes"][0],
+                date_col=date_col,
+                char_col=char_col,
+                weighting=weighting,
+                countries_min=info["countries_min"][0],
+                periods_min=periods_min,
+                stocks_min=stocks_min,
+            )
+            .with_columns(pl.lit(info["name"][0]).alias("region"))
+            .select(output_cols)
+        )
+        pieces.append(reg_pf)
+    return pl.concat(pieces)
+
+
 # =============================================================================
 # Main Entry Point
 # =============================================================================
@@ -1349,149 +1390,96 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
     else:
         cluster_pfs_daily = None
 
+    weighting = settings["regional_pfs"]["country_weights"]
+    months_min = settings["regional_pfs"]["months_min"]
+    stocks_min = settings["regional_pfs"]["stocks_min"]
+    lms_cols_monthly = [
+        "region",
+        "characteristic",
+        "direction",
+        "eom",
+        "n_countries",
+        "ret_ew",
+        "ret_vw",
+        "ret_vw_cap",
+        "mkt_vw_exc",
+    ]
+    lms_cols_daily = [c if c != "eom" else "date" for c in lms_cols_monthly]
+    cluster_cols_monthly = [
+        "region",
+        "cluster",
+        "eom",
+        "n_countries",
+        "ret_ew",
+        "ret_vw",
+        "ret_vw_cap",
+        "mkt_vw_exc",
+    ]
+    cluster_cols_daily = [c if c != "eom" else "date" for c in cluster_cols_monthly]
+
     # Creating regional portfolios
     if lms_returns is not None:
-        regional_pfs = []
-        for i in range(regions.height):
-            info = regions[i][0]
-            reg_pf = regional_data(
-                data=lms_returns,
-                mkt=market,
-                countries=info["country_codes"][0],
-                date_col="eom",
-                char_col="characteristic",
-                weighting=settings["regional_pfs"]["country_weights"],
-                countries_min=info["countries_min"][0],
-                periods_min=settings["regional_pfs"]["months_min"],
-                stocks_min=settings["regional_pfs"]["stocks_min"],
-            )
-            reg_pf = reg_pf.with_columns(pl.lit(info["name"][0]).alias("region"))
-            reg_pf = reg_pf.select(
-                [
-                    "region",
-                    "characteristic",
-                    "direction",
-                    "eom",
-                    "n_countries",
-                    "ret_ew",
-                    "ret_vw",
-                    "ret_vw_cap",
-                    "mkt_vw_exc",
-                ]
-            )
-            regional_pfs.append(reg_pf)
-
-        regional_pfs = pl.concat(regional_pfs)
-
+        regional_pfs = _build_regional_loop(
+            data=lms_returns,
+            mkt=market,
+            regions=regions,
+            date_col="eom",
+            char_col="characteristic",
+            output_cols=lms_cols_monthly,
+            weighting=weighting,
+            periods_min=months_min,
+            stocks_min=stocks_min,
+        )
     else:
         regional_pfs = None
 
     if settings["daily_pf"] and lms_daily is not None:
-        regional_pfs_daily = []
-        for i in range(regions.height):
-            info = regions[i][0]
-            reg_pf = regional_data(
-                data=lms_daily,
-                mkt=market_daily,
-                countries=info["country_codes"][0],
-                date_col="date",
-                char_col="characteristic",
-                weighting=settings["regional_pfs"]["country_weights"],
-                countries_min=info["countries_min"][0],
-                periods_min=settings["regional_pfs"]["months_min"] * 21,
-                stocks_min=settings["regional_pfs"]["stocks_min"],
-            )
-            reg_pf = reg_pf.with_columns(pl.lit(info["name"][0]).alias("region"))
-            reg_pf = reg_pf.select(
-                [
-                    "region",
-                    "characteristic",
-                    "direction",
-                    "date",
-                    "n_countries",
-                    "ret_ew",
-                    "ret_vw",
-                    "ret_vw_cap",
-                    "mkt_vw_exc",
-                ]
-            )
-            regional_pfs_daily.append(reg_pf)
-
-        regional_pfs_daily = pl.concat(regional_pfs_daily)
-
+        regional_pfs_daily = _build_regional_loop(
+            data=lms_daily,
+            mkt=market_daily,
+            regions=regions,
+            date_col="date",
+            char_col="characteristic",
+            output_cols=lms_cols_daily,
+            weighting=weighting,
+            periods_min=months_min * 21,
+            stocks_min=stocks_min,
+        )
     else:
         regional_pfs_daily = None
 
     # Creating regional clusters
     if cluster_pfs is not None:
-        regional_clusters = []
-        for i in range(regions.height):
-            info = regions[i][0]
-            reg_pf = cluster_pfs.rename({"n_factors": "n_stocks_min"})
-            reg_pf = reg_pf.with_columns(pl.lit(None).cast(pl.Float64).alias("direction"))
-            reg_pf = regional_data(
-                data=reg_pf,
-                mkt=market,
-                countries=info["country_codes"][0],
-                date_col="eom",
-                char_col="cluster",
-                weighting=settings["regional_pfs"]["country_weights"],
-                countries_min=info["countries_min"][0],
-                periods_min=settings["regional_pfs"]["months_min"],
-                stocks_min=1,
-            )
-            reg_pf = reg_pf.with_columns(pl.lit(info["name"][0]).alias("region"))
-            reg_pf = reg_pf.select(
-                [
-                    "region",
-                    "cluster",
-                    "eom",
-                    "n_countries",
-                    "ret_ew",
-                    "ret_vw",
-                    "ret_vw_cap",
-                    "mkt_vw_exc",
-                ]
-            )
-            regional_clusters.append(reg_pf)
-
-        regional_clusters = pl.concat(regional_clusters)
+        regional_clusters = _build_regional_loop(
+            data=cluster_pfs.rename({"n_factors": "n_stocks_min"}).with_columns(
+                pl.lit(None).cast(pl.Float64).alias("direction")
+            ),
+            mkt=market,
+            regions=regions,
+            date_col="eom",
+            char_col="cluster",
+            output_cols=cluster_cols_monthly,
+            weighting=weighting,
+            periods_min=months_min,
+            stocks_min=1,
+        )
     else:
         regional_clusters = None
 
     if settings["daily_pf"] and cluster_pfs_daily is not None:
-        regional_clusters_daily = []
-        for i in range(regions.height):
-            info = regions[i][0]
-            reg_pf = cluster_pfs_daily.rename({"n_factors": "n_stocks_min"})
-            reg_pf = reg_pf.with_columns(pl.lit(None).cast(pl.Float64).alias("direction"))
-            reg_pf = regional_data(
-                data=reg_pf,
-                mkt=market_daily,
-                countries=info["country_codes"][0],
-                date_col="date",
-                char_col="cluster",
-                weighting=settings["regional_pfs"]["country_weights"],
-                countries_min=info["countries_min"][0],
-                periods_min=settings["regional_pfs"]["months_min"] * 21,
-                stocks_min=1,
-            )
-            reg_pf = reg_pf.with_columns(pl.lit(info["name"][0]).alias("region"))
-            reg_pf = reg_pf.select(
-                [
-                    "region",
-                    "cluster",
-                    "date",
-                    "n_countries",
-                    "ret_ew",
-                    "ret_vw",
-                    "ret_vw_cap",
-                    "mkt_vw_exc",
-                ]
-            )
-            regional_clusters_daily.append(reg_pf)
-
-        regional_clusters_daily = pl.concat(regional_clusters_daily)
+        regional_clusters_daily = _build_regional_loop(
+            data=cluster_pfs_daily.rename({"n_factors": "n_stocks_min"}).with_columns(
+                pl.lit(None).cast(pl.Float64).alias("direction")
+            ),
+            mkt=market_daily,
+            regions=regions,
+            date_col="date",
+            char_col="cluster",
+            output_cols=cluster_cols_daily,
+            weighting=weighting,
+            periods_min=months_min * 21,
+            stocks_min=1,
+        )
     else:
         regional_clusters_daily = None
 
