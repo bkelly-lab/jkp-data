@@ -93,64 +93,45 @@ def _build_industry_daily_returns(
     excntry: str,
     industry_transform: pl.Expr | None = None,
 ) -> pl.DataFrame:
-    """Description:
-        Build daily industry portfolio returns from monthly formation-month weights.
-    Steps:
-        1) Filter to rows where industry_col is non-null; select id, eom, industry, me, me_cap.
-        2) Optionally apply industry_transform to recode the industry column.
-        3) Drop industry-month groups with fewer than bp_min_n stocks.
-        4) Compute EW/VW/VW-cap weights within each (eom, industry) group.
-        5) Join weights to daily returns for the following month.
-        6) Aggregate weighted returns by (industry, date).
+    """Build daily industry portfolio returns from monthly formation-month weights.
+
+    Description:
+        Form (industry, eom) weights on the monthly frame, then apply them to
+        the next month's daily returns. Weights are EW, VW (by ``me``), and
+        VW-cap (by ``me_cap``). Groups with fewer than ``bp_min_n`` stocks
+        are dropped.
     Output:
-        DataFrame with columns [industry_col, date, n, ret_ew, ret_vw, ret_vw_cap, excntry].
+        DataFrame with columns [industry_col, date, n, ret_ew, ret_vw,
+        ret_vw_cap, excntry].
     """
-    weights_data = data.filter(pl.col(industry_col).is_not_null()).select(
-        ["id", "eom", industry_col, "me", "me_cap"]
+    weights_data = (
+        data.lazy()
+        .filter(pl.col(industry_col).is_not_null())
+        .select("id", "eom", industry_col, "me", "me_cap")
     )
     if industry_transform is not None:
         weights_data = weights_data.with_columns(industry_transform)
 
-    weights_data = (
-        weights_data.with_columns(pl.len().over([industry_col, "eom"]).alias("bp_n"))
-        .filter(pl.col("bp_n") >= bp_min_n)
-        .drop("bp_n")
+    grp = [industry_col, "eom"]
+    weights = weights_data.filter(pl.len().over(grp) >= bp_min_n).with_columns(
+        (1 / pl.len().over(grp)).alias("w_ew"),
+        (pl.col("me") / pl.col("me").sum().over(grp)).alias("w_vw"),
+        (pl.col("me_cap") / pl.col("me_cap").sum().over(grp)).alias("w_vw_cap"),
     )
 
-    weights = (
-        weights_data.group_by(["eom", industry_col])
+    return (
+        weights.join(daily.lazy(), left_on=["id", "eom"], right_on=["id", "eom_lag1"], how="left")
+        .filter(pl.col("ret_exc").is_not_null())
+        .group_by(industry_col, "date")
         .agg(
-            [
-                pl.col("id"),
-                (1 / pl.len()).alias("w_ew"),
-                (pl.col("me") / pl.col("me").sum()).alias("w_vw"),
-                (pl.col("me_cap") / pl.col("me_cap").sum()).alias("w_vw_cap"),
-            ]
+            pl.len().alias("n"),
+            (pl.col("w_ew") * pl.col("ret_exc")).sum().alias("ret_ew"),
+            (pl.col("w_vw") * pl.col("ret_exc")).sum().alias("ret_vw"),
+            (pl.col("w_vw_cap") * pl.col("ret_exc")).sum().alias("ret_vw_cap"),
         )
-        .explode("id", "w_vw", "w_vw_cap")
-    )
-
-    result = (
-        weights.lazy()
-        .join(
-            daily.lazy(),
-            left_on=["id", "eom"],
-            right_on=["id", "eom_lag1"],
-            how="left",
-        )
-        .filter(pl.col(industry_col).is_not_null() & pl.col("ret_exc").is_not_null())
-        .group_by([industry_col, "date"])
-        .agg(
-            [
-                pl.len().alias("n"),
-                (pl.col("w_ew") * pl.col("ret_exc")).sum().alias("ret_ew"),
-                (pl.col("w_vw") * pl.col("ret_exc")).sum().alias("ret_vw"),
-                (pl.col("w_vw_cap") * pl.col("ret_exc")).sum().alias("ret_vw_cap"),
-            ]
-        )
+        .with_columns(pl.lit(excntry).str.to_uppercase().alias("excntry"))
         .collect()
     )
-    return result.with_columns(pl.lit(excntry).str.to_uppercase().alias("excntry"))
 
 
 def _build_industry_monthly_returns(
