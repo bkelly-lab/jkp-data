@@ -113,7 +113,7 @@ def _build_industry_daily_returns(
         weights_data = weights_data.with_columns(industry_transform)
 
     grp = [industry_col, "eom"]
-    return (
+    weights = (
         weights_data.filter(pl.len().over(grp) >= bp_min_n)
         .with_columns(
             (1 / pl.len().over(grp)).alias("w_ew"),
@@ -130,8 +130,8 @@ def _build_industry_daily_returns(
             (pl.col("w_vw_cap") * pl.col("ret_exc")).sum().alias("ret_vw_cap"),
         )
         .with_columns(pl.lit(excntry).str.to_uppercase().alias("excntry"))
-        .collect()
     )
+    return weights.collect()
 
 
 def _build_industry_monthly_returns(
