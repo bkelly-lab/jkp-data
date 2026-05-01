@@ -77,13 +77,13 @@ class TestDownloadRawDataTablesBranching:
             mock_conn.execute.return_value = mock_result
             yield mock, mock_conn
 
-    def test_persistent_connection_false_uses_postgres_scan(self, mock_duckdb):
+    def test_persistent_connection_false_uses_postgres_scan(self, mock_duckdb, test_paths):
         """When persistent_connection=False, should use postgres_scan()."""
         from jkp.data.aux_functions import download_raw_data_tables
 
         mock, mock_conn = mock_duckdb
 
-        download_raw_data_tables("user", "pass", persistent_connection=False)
+        download_raw_data_tables(test_paths, "user", "pass", persistent_connection=False)
 
         executed_sql = [
             str(c[0][0])
@@ -95,13 +95,13 @@ class TestDownloadRawDataTablesBranching:
         assert "postgres_scan" in sql_joined
         assert "ATTACH" not in sql_joined
 
-    def test_persistent_connection_true_uses_attach(self, mock_duckdb):
+    def test_persistent_connection_true_uses_attach(self, mock_duckdb, test_paths):
         """When persistent_connection=True, should use ATTACH."""
         from jkp.data.aux_functions import download_raw_data_tables
 
         mock, mock_conn = mock_duckdb
 
-        download_raw_data_tables("user", "pass", persistent_connection=True)
+        download_raw_data_tables(test_paths, "user", "pass", persistent_connection=True)
 
         executed_sql = [
             str(c[0][0])
@@ -114,13 +114,13 @@ class TestDownloadRawDataTablesBranching:
         assert "DETACH" in sql_joined
         assert "wrds." in sql_joined
 
-    def test_persistent_connection_true_single_attach(self, mock_duckdb):
+    def test_persistent_connection_true_single_attach(self, mock_duckdb, test_paths):
         """Persistent connection should only ATTACH once for all tables."""
         from jkp.data.aux_functions import download_raw_data_tables
 
         mock, mock_conn = mock_duckdb
 
-        download_raw_data_tables("user", "pass", persistent_connection=True)
+        download_raw_data_tables(test_paths, "user", "pass", persistent_connection=True)
 
         executed_sql = [
             str(c[0][0])
@@ -134,18 +134,18 @@ class TestDownloadRawDataTablesBranching:
         assert attach_count == 1, f"Expected 1 ATTACH, got {attach_count}"
         assert detach_count == 1, f"Expected 1 DETACH, got {detach_count}"
 
-    def test_connection_closed_after_download(self, mock_duckdb):
+    def test_connection_closed_after_download(self, mock_duckdb, test_paths):
         """Connection should be closed after download completes."""
         from jkp.data.aux_functions import download_raw_data_tables
 
         mock, mock_conn = mock_duckdb
 
-        download_raw_data_tables("user", "pass", persistent_connection=False)
+        download_raw_data_tables(test_paths, "user", "pass", persistent_connection=False)
         mock_conn.close.assert_called_once()
 
         mock_conn.reset_mock()
 
-        download_raw_data_tables("user", "pass", persistent_connection=True)
+        download_raw_data_tables(test_paths, "user", "pass", persistent_connection=True)
         mock_conn.close.assert_called_once()
 
 

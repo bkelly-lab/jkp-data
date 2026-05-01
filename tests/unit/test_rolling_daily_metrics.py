@@ -1618,11 +1618,9 @@ class TestPrepareDailyCorr:
     is present in prepare_daily, guaranteeing null-free corr_data.parquet output.
     """
 
-    def test_corr_data_null_free_and_zero_obs_filtered(self, temp_data_dir, monkeypatch):
+    def test_corr_data_null_free_and_zero_obs_filtered(self, test_paths):
         """corr_data.parquet has zero nulls and no zero_obs column."""
         from jkp.data.aux_functions import prepare_daily
-
-        monkeypatch.chdir(temp_data_dir)
 
         # id "A": 5 consecutive days, all ret_exc non-null → all rows survive.
         # id "B": day1 ret_exc null → 3l-sums on days 1-3 null → those days filtered.
@@ -1678,7 +1676,7 @@ class TestPrepareDailyCorr:
         )
 
         dsf = pl.concat([df_a, df_b, df_c], how="diagonal")
-        dsf_path = str(temp_data_dir / "dsf.parquet")
+        dsf_path = test_paths.interim_dir / "dsf.parquet"
         dsf.write_parquet(dsf_path)
 
         # --- build synthetic factors parquet ---
@@ -1692,12 +1690,12 @@ class TestPrepareDailyCorr:
                 "hml": [0.001] * len(all_dates),
             }
         )
-        fcts_path = str(temp_data_dir / "fcts.parquet")
+        fcts_path = test_paths.interim_dir / "fcts.parquet"
         fcts.write_parquet(fcts_path)
 
-        prepare_daily(dsf_path, fcts_path)
+        prepare_daily(test_paths, dsf_path, fcts_path)
 
-        corr = pl.read_parquet(str(temp_data_dir / "corr_data.parquet"))
+        corr = pl.read_parquet(test_paths.interim_dir / "corr_data.parquet")
 
         # No nulls in ret_exc_3l or mkt_exc_3l
         assert corr["ret_exc_3l"].null_count() == 0, "ret_exc_3l has nulls"

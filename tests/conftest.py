@@ -225,13 +225,25 @@ def reset_output_writer(monkeypatch: pytest.MonkeyPatch) -> None:
 def temp_data_dir(tmp_path: Path) -> Generator[Path, None, None]:
     """Provide a temporary directory for test data files.
 
-    Creates the standard subdirectory structure expected by the pipeline.
+    Creates the standard subdirectory structure expected by the pipeline,
+    matching the layout produced by ``DataPaths``.
     """
-    # Create expected subdirectories
-    (tmp_path / "raw_data_dfs").mkdir()
+    (tmp_path / "interim" / "raw_data_dfs").mkdir(parents=True)
     (tmp_path / "raw" / "raw_tables").mkdir(parents=True)
     (tmp_path / "processed" / "characteristics").mkdir(parents=True)
     (tmp_path / "processed" / "return_data").mkdir(parents=True)
     (tmp_path / "processed" / "other_output").mkdir(parents=True)
 
     yield tmp_path
+
+
+@pytest.fixture
+def test_paths(temp_data_dir: Path):
+    """Provide a ``DataPaths`` instance rooted at ``temp_data_dir``.
+
+    Tests that exercise pipeline functions taking a ``paths: DataPaths`` argument
+    should request this fixture and pass it directly.
+    """
+    from jkp.data.paths import DataPaths
+
+    return DataPaths(base_dir=temp_data_dir)

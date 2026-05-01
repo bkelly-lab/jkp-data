@@ -75,7 +75,8 @@ def _write_sf_fixture(raw_tables: Path, freq: str) -> tuple[date, date]:
                 "mthbidlo": [9.5, 10.5],
             }
         )
-        raw_data_dfs = raw_tables.parent.parent / "code" / "raw_data_dfs"
+        # raw_tables is paths.raw_tables_dir, so interim is its grandparent + interim.
+        raw_data_dfs = raw_tables.parent.parent / "interim" / "raw_data_dfs"
         raw_data_dfs.mkdir(parents=True, exist_ok=True)
         msf_df.write_parquet(raw_data_dfs / "crsp_msf_v2_aug.parquet")
         return matched_date, unmatched_date
@@ -100,22 +101,14 @@ def _write_sf_fixture(raw_tables: Path, freq: str) -> tuple[date, date]:
 
 
 @pytest.mark.parametrize("freq", ["m", "d"])
-def test_gen_crsp_sf_exposes_ticker_after_senames_join(
-    freq: str,
-    temp_data_dir: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_gen_crsp_sf_exposes_ticker_after_senames_join(freq: str, test_paths) -> None:
     """gen_crsp_sf() should keep ticker in the final output for monthly and daily data."""
-    raw_tables = temp_data_dir / "raw" / "raw_tables"
-    code_dir = temp_data_dir / "code"
-    code_dir.mkdir()
+    raw_tables = test_paths.raw_tables_dir
 
     _write_lookup_tables(raw_tables)
     matched_date, unmatched_date = _write_sf_fixture(raw_tables, freq)
 
-    monkeypatch.chdir(code_dir)
-
-    result = gen_crsp_sf(freq)
+    result = gen_crsp_sf(test_paths, freq)
     assert "ticker" in result.columns, f"Expected ticker in schema, got {result.columns}"
 
     df = result.to_polars().sort("date")
@@ -161,23 +154,13 @@ def _write_aug_msf_v2_fixtures(raw_tables: Path) -> None:
     ).write_parquet(raw_tables / "crsp_dsf_v2.parquet")
 
 
-def test_aug_msf_v2_writes_augmented_file_and_is_idempotent(
-    temp_data_dir: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_aug_msf_v2_writes_augmented_file_and_is_idempotent(test_paths) -> None:
     """aug_msf_v2() should produce the augmented parquet and be safe to re-run."""
-    raw_tables = temp_data_dir / "raw" / "raw_tables"
-    code_dir = temp_data_dir / "code"
-    code_dir.mkdir()
-    (code_dir / "raw_data_dfs").mkdir()
+    _write_aug_msf_v2_fixtures(test_paths.raw_tables_dir)
 
-    _write_aug_msf_v2_fixtures(raw_tables)
+    aug_msf_v2(test_paths)
 
-    monkeypatch.chdir(code_dir)
-
-    aug_msf_v2()
-
-    output_path = code_dir / "raw_data_dfs" / "crsp_msf_v2_aug.parquet"
+    output_path = test_paths.interim_dir / "raw_data_dfs" / "crsp_msf_v2_aug.parquet"
     assert output_path.exists(), f"Expected augmented file at {output_path}"
 
     schema = pl.scan_parquet(output_path).collect_schema().names()
@@ -185,20 +168,16 @@ def test_aug_msf_v2_writes_augmented_file_and_is_idempotent(
     assert "mthbidlo" in schema, f"Expected mthbidlo column in {schema}"
 
     # Idempotency: a second invocation must not raise.
-    aug_msf_v2()
+    aug_msf_v2(test_paths)
 
 
-def test_merge_roll_apply_daily_results_writes_once_with_deterministic_order(
-    temp_data_dir: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_merge_roll_apply_daily_results_writes_once_with_deterministic_order(test_paths) -> None:
     """merge_roll_apply_daily_results() must produce a single output with deterministic
     column ordering (sorted by source __roll* filename) and be re-run safe."""
-    code_dir = temp_data_dir / "code"
-    code_dir.mkdir(exist_ok=True)
+    interim = test_paths.interim_dir
 
     pl.DataFrame({"id_int": [1, 2], "id": [10001, 10002]}).write_parquet(
-        code_dir / "id_int_key.parquet"
+        interim / "id_int_key.parquet"
     )
 
     # Use the function's hardcoded start index (23113) so this test stays
@@ -214,19 +193,18 @@ def test_merge_roll_apply_daily_results_writes_once_with_deterministic_order(
             "aux_date": [aux_date_val, aux_date_val],
             "rmax": [0.5, 0.6],
         }
-    ).write_parquet(code_dir / "__roll_b_rmax.parquet")
+    ).write_parquet(interim / "__roll_b_rmax.parquet")
     pl.DataFrame(
         {
             "id_int": [1, 2],
             "aux_date": [aux_date_val, aux_date_val],
             "rvol": [0.1, 0.2],
         }
-    ).write_parquet(code_dir / "__roll_a_rvol.parquet")
+    ).write_parquet(interim / "__roll_a_rvol.parquet")
 
-    monkeypatch.chdir(code_dir)
-    merge_roll_apply_daily_results()
+    merge_roll_apply_daily_results(test_paths)
 
-    out = code_dir / "roll_apply_daily.parquet"
+    out = interim / "roll_apply_daily.parquet"
     assert out.exists(), f"Expected output at {out}"
 
     df = pl.read_parquet(out)
@@ -243,12 +221,12 @@ def test_merge_roll_apply_daily_results_writes_once_with_deterministic_order(
     assert set(df["id"].to_list()) == {10001, 10002}
 
     # Re-run must produce identical content (idempotent + single-write safety).
-    merge_roll_apply_daily_results()
+    merge_roll_apply_daily_results(test_paths)
     df2 = pl.read_parquet(out)
     assert df.equals(df2)
 
 
-def test_dsf1_unique_id_int_date(temp_data_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_dsf1_unique_id_int_date(test_paths) -> None:
     """dsf1.parquet (post-prepare_daily) must be unique on (id_int, date).
 
     prc_to_high's within-group sort_by('date').last() is well-defined only under this
@@ -256,10 +234,6 @@ def test_dsf1_unique_id_int_date(temp_data_dir: Path, monkeypatch: pytest.Monkey
     (id, date) (locked by test_no_duplicates_daily); this test locks the property
     after prepare_daily.
     """
-    code_dir = temp_data_dir / "code"
-    code_dir.mkdir(exist_ok=True)
-    monkeypatch.chdir(code_dir)
-
     # Synthetic world_dsf with two ids across three dates each.
     rows = []
     for id_val in [101, 202]:
@@ -281,9 +255,11 @@ def test_dsf1_unique_id_int_date(temp_data_dir: Path, monkeypatch: pytest.Monkey
                     "ret_local": 0.01,
                 }
             )
-    pl.DataFrame(rows).write_parquet(code_dir / "world_dsf.parquet")
+    world_dsf_path = test_paths.interim_dir / "world_dsf.parquet"
+    pl.DataFrame(rows).write_parquet(world_dsf_path)
 
     # Synthetic ap_factors_daily — unique on (excntry, date).
+    ap_factors_path = test_paths.interim_dir / "ap_factors_daily.parquet"
     pl.DataFrame(
         {
             "excntry": ["USA"] * 3,
@@ -295,10 +271,10 @@ def test_dsf1_unique_id_int_date(temp_data_dir: Path, monkeypatch: pytest.Monkey
             "roe": [0.0, 0.0, 0.0],
             "smb_hxz": [0.0, 0.0, 0.0],
         }
-    ).write_parquet(code_dir / "ap_factors_daily.parquet")
+    ).write_parquet(ap_factors_path)
 
-    prepare_daily("world_dsf.parquet", "ap_factors_daily.parquet")
+    prepare_daily(test_paths, world_dsf_path, ap_factors_path)
 
-    dsf1 = pl.read_parquet(code_dir / "dsf1.parquet")
+    dsf1 = pl.read_parquet(test_paths.interim_dir / "dsf1.parquet")
     dup_count = dsf1.select(["id_int", "date"]).is_duplicated().sum()
     assert dup_count == 0, f"dsf1 has {dup_count} duplicate (id_int, date) rows"

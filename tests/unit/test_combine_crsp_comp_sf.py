@@ -531,18 +531,28 @@ def _polars_combine_crsp_comp_sf(tmp: Path) -> tuple[pl.DataFrame, pl.DataFrame]
 # ---------------------------------------------------------------------------
 
 
-def _duckdb_combine_crsp_comp_sf(tmp: Path) -> tuple[pl.DataFrame, pl.DataFrame]:
-    """Run the DuckDB implementation and return (monthly_df, daily_df)."""
-    from jkp.data.aux_functions import combine_crsp_comp_sf
+def _make_test_layout(tmp_path: Path) -> Path:
+    """Create the DataPaths layout under tmp_path and return its interim dir."""
+    interim = tmp_path / "interim"
+    interim.mkdir(exist_ok=True)
+    (tmp_path / "raw" / "raw_tables").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "processed").mkdir(exist_ok=True)
+    return interim
 
-    orig_dir = os.getcwd()
-    os.chdir(str(tmp))
-    try:
-        combine_crsp_comp_sf()
-        msf = pl.read_parquet(str(tmp / "__msf_world.parquet"))
-        dsf = pl.read_parquet(str(tmp / "world_dsf.parquet"))
-    finally:
-        os.chdir(orig_dir)
+
+def _duckdb_combine_crsp_comp_sf(tmp: Path) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Run the DuckDB implementation and return (monthly_df, daily_df).
+
+    ``tmp`` is the interim directory; the function constructs a DataPaths whose
+    base_dir is ``tmp.parent`` (so that ``paths.interim_dir == tmp``).
+    """
+    from jkp.data.aux_functions import combine_crsp_comp_sf
+    from jkp.data.paths import DataPaths
+
+    paths = DataPaths(base_dir=tmp.parent)
+    combine_crsp_comp_sf(paths)
+    msf = pl.read_parquet(str(tmp / "__msf_world.parquet"))
+    dsf = pl.read_parquet(str(tmp / "world_dsf.parquet"))
     return msf, dsf
 
 
@@ -553,10 +563,18 @@ def _duckdb_combine_crsp_comp_sf(tmp: Path) -> tuple[pl.DataFrame, pl.DataFrame]
 
 @pytest.fixture(scope="module")
 def toy_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """Create HUGE toy datasets once for the whole module."""
-    tmp = tmp_path_factory.mktemp("combine_sf")
-    _write_all_fixtures(tmp)
-    return tmp
+    """Create HUGE toy datasets once for the whole module.
+
+    Returns the *interim* directory (where pipeline fixtures live and where
+    pipeline writes go); the pipeline base directory is ``interim.parent``.
+    """
+    base = tmp_path_factory.mktemp("combine_sf")
+    interim = base / "interim"
+    interim.mkdir()
+    (base / "raw" / "raw_tables").mkdir(parents=True)
+    (base / "processed").mkdir()
+    _write_all_fixtures(interim)
+    return interim
 
 
 @pytest.fixture(scope="module")
@@ -1124,12 +1142,13 @@ class TestDedupDeterminism:
                 "eom": pl.Date,
                 "ret_lag_dif": pl.Int64,
             }
-        ).write_parquet(tmp_path / "comp_msf.parquet")
-        _make_crsp_msf(tmp_path, n_permnos=0)
-        _make_crsp_dsf(tmp_path, n_permnos=1)
-        _make_comp_dsf(tmp_path, n_gvkeys=0)
+        ).write_parquet(_make_test_layout(tmp_path) / "comp_msf.parquet")
+        interim = _make_test_layout(tmp_path)
+        _make_crsp_msf(interim, n_permnos=0)
+        _make_crsp_dsf(interim, n_permnos=1)
+        _make_comp_dsf(interim, n_gvkeys=0)
 
-        msf, _ = _duckdb_combine_crsp_comp_sf(tmp_path)
+        msf, _ = _duckdb_combine_crsp_comp_sf(interim)
         # id construction: '1' || gvkey || iid[0:2] = '1' || '999000' || '07'
         expected_id = 199900007
         survivor = msf.filter((pl.col("id") == expected_id) & (pl.col("eom") == date(2020, 6, 30)))
@@ -1175,12 +1194,13 @@ class TestDedupDeterminism:
                 "datadate": pl.Date,
                 "ret_lag_dif": pl.Int64,
             }
-        ).write_parquet(tmp_path / "comp_dsf.parquet")
-        _make_crsp_msf(tmp_path, n_permnos=1)
-        _make_comp_msf(tmp_path, n_gvkeys=0)
-        _make_crsp_dsf(tmp_path, n_permnos=0)
+        ).write_parquet(_make_test_layout(tmp_path) / "comp_dsf.parquet")
+        interim = _make_test_layout(tmp_path)
+        _make_crsp_msf(interim, n_permnos=1)
+        _make_comp_msf(interim, n_gvkeys=0)
+        _make_crsp_dsf(interim, n_permnos=0)
 
-        _, dsf = _duckdb_combine_crsp_comp_sf(tmp_path)
+        _, dsf = _duckdb_combine_crsp_comp_sf(interim)
         expected_id = 199900007
         survivor = dsf.filter((pl.col("id") == expected_id) & (pl.col("date") == date(2020, 6, 15)))
         assert survivor.height == 1, f"expected single survivor, got {survivor.height}"
@@ -1322,12 +1342,13 @@ class TestEdgeCases:
 
     def test_empty_compustat_files(self, tmp_path: Path) -> None:
         """Pipeline works when comp files have zero rows."""
-        _make_crsp_msf(tmp_path, n_permnos=5)
-        _make_crsp_dsf(tmp_path, n_permnos=5)
+        interim = _make_test_layout(tmp_path)
+        _make_crsp_msf(interim, n_permnos=5)
+        _make_crsp_dsf(interim, n_permnos=5)
         # Create empty comp parquets with correct schema
-        _make_comp_msf(tmp_path, n_gvkeys=0)
-        _make_comp_dsf(tmp_path, n_gvkeys=0)
-        msf, dsf = _duckdb_combine_crsp_comp_sf(tmp_path)
+        _make_comp_msf(interim, n_gvkeys=0)
+        _make_comp_dsf(interim, n_gvkeys=0)
+        msf, dsf = _duckdb_combine_crsp_comp_sf(interim)
         assert msf.height > 0
         assert dsf.height > 0
         assert (msf["source_crsp"] == 1).all()
@@ -1335,11 +1356,12 @@ class TestEdgeCases:
 
     def test_single_row_inputs(self, tmp_path: Path) -> None:
         """Pipeline works with 1-row input files."""
-        _make_crsp_msf(tmp_path, n_permnos=1)
-        _make_comp_msf(tmp_path, n_gvkeys=1)
-        _make_crsp_dsf(tmp_path, n_permnos=1)
-        _make_comp_dsf(tmp_path, n_gvkeys=1)
-        msf, dsf = _duckdb_combine_crsp_comp_sf(tmp_path)
+        interim = _make_test_layout(tmp_path)
+        _make_crsp_msf(interim, n_permnos=1)
+        _make_comp_msf(interim, n_gvkeys=1)
+        _make_crsp_dsf(interim, n_permnos=1)
+        _make_comp_dsf(interim, n_gvkeys=1)
+        msf, dsf = _duckdb_combine_crsp_comp_sf(interim)
         assert msf.height >= 1
         assert dsf.height >= 1
 
@@ -1380,12 +1402,13 @@ class TestEdgeCases:
                 "date": pl.Date,
             }
         )
-        df.write_parquet(tmp_path / "crsp_msf.parquet")
-        _make_comp_msf(tmp_path, n_gvkeys=0)
-        _make_crsp_dsf(tmp_path, n_permnos=1)
-        _make_comp_dsf(tmp_path, n_gvkeys=0)
+        interim = _make_test_layout(tmp_path)
+        df.write_parquet(interim / "crsp_msf.parquet")
+        _make_comp_msf(interim, n_gvkeys=0)
+        _make_crsp_dsf(interim, n_permnos=1)
+        _make_comp_dsf(interim, n_gvkeys=0)
 
-        msf, _ = _duckdb_combine_crsp_comp_sf(tmp_path)
+        msf, _ = _duckdb_combine_crsp_comp_sf(interim)
         eoms = msf.sort("date")["eom"].to_list()
         assert eoms[0] == date(2019, 2, 28)  # Non-leap year
         assert eoms[1] == date(2020, 2, 29)  # Leap year
@@ -1439,10 +1462,11 @@ class TestEdgeCases:
                 "ret_lag_dif": pl.Int64,
             }
         )
-        df.write_parquet(tmp_path / "comp_msf.parquet")
-        _make_crsp_msf(tmp_path, n_permnos=0)
-        _make_crsp_dsf(tmp_path, n_permnos=1)
-        _make_comp_dsf(tmp_path, n_gvkeys=0)
+        interim = _make_test_layout(tmp_path)
+        df.write_parquet(interim / "comp_msf.parquet")
+        _make_crsp_msf(interim, n_permnos=0)
+        _make_crsp_dsf(interim, n_permnos=1)
+        _make_comp_dsf(interim, n_gvkeys=0)
 
-        msf, _ = _duckdb_combine_crsp_comp_sf(tmp_path)
+        msf, _ = _duckdb_combine_crsp_comp_sf(interim)
         assert msf["ret_exc_lead1m"].is_null().all()

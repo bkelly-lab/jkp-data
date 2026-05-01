@@ -11,7 +11,6 @@ using economically meaningful tie-breaking rules (issue #69):
 from __future__ import annotations
 
 from datetime import date
-from pathlib import Path
 
 import polars as pl
 import pytest
@@ -22,10 +21,11 @@ class TestAddPrimarySecDedup:
     fan-out produces conflicting classifications."""
 
     @pytest.fixture()
-    def work_dir(self, tmp_path: Path) -> Path:
-        """Set up minimal parquet files for add_primary_sec()."""
-        raw = tmp_path / "raw_data_dfs"
-        raw.mkdir()
+    def setup_paths(self, test_paths):
+        """Set up minimal parquet files for add_primary_sec() under DataPaths layout."""
+        raw_data_dfs = test_paths.interim_dir / "raw_data_dfs"
+        # raw_data_dfs is created by the temp_data_dir fixture; ensure exists.
+        raw_data_dfs.mkdir(parents=True, exist_ok=True)
 
         # Input security file: two securities for one company
         input_df = pl.DataFrame(
@@ -41,7 +41,8 @@ class TestAddPrimarySecDedup:
                 "prc": [10.0, 11.0, 20.0, 21.0],
             }
         )
-        input_df.write_parquet(tmp_path / "input.parquet")
+        input_path = test_paths.interim_dir / "input.parquet"
+        input_df.write_parquet(input_path)
 
         # prihistrow: TWO overlapping ranges for gvkey 001000
         # Range 1 says prihistrow="01", range 2 says prihistrow="02"
@@ -53,7 +54,7 @@ class TestAddPrimarySecDedup:
                 "effdate": [date(2023, 1, 1), date(2024, 1, 1)],
                 "thrudate": [date(2024, 6, 30), date(2024, 12, 31)],
             }
-        ).write_parquet(raw / "__prihistrow.parquet")
+        ).write_parquet(raw_data_dfs / "__prihistrow.parquet")
 
         # prihistusa / prihistcan: empty (no matches)
         for name in ["__prihistusa", "__prihistcan"]:
@@ -64,7 +65,7 @@ class TestAddPrimarySecDedup:
                     "effdate": pl.Series([], dtype=pl.Date),
                     "thrudate": pl.Series([], dtype=pl.Date),
                 }
-            ).write_parquet(raw / f"{name}.parquet")
+            ).write_parquet(raw_data_dfs / f"{name}.parquet")
 
         # header: fallback values (won't matter since prihistrow matches)
         pl.DataFrame(
@@ -74,24 +75,19 @@ class TestAddPrimarySecDedup:
                 "priusa": pl.Series([None], dtype=pl.Utf8),
                 "prican": pl.Series([None], dtype=pl.Utf8),
             }
-        ).write_parquet(raw / "__header.parquet")
+        ).write_parquet(raw_data_dfs / "__header.parquet")
 
-        return tmp_path
+        return test_paths, input_path, test_paths.interim_dir / "output.parquet"
 
-    def test_primary_sec_prefers_one(self, work_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_primary_sec_prefers_one(self, setup_paths) -> None:
         """When overlapping ranges produce both primary_sec=0 and primary_sec=1,
         the output should deterministically keep primary_sec=1."""
-        monkeypatch.chdir(work_dir)
-
         from jkp.data.aux_functions import add_primary_sec
 
-        add_primary_sec(
-            str(work_dir / "input.parquet"),
-            "datadate",
-            str(work_dir / "output.parquet"),
-        )
+        paths, input_path, output_path = setup_paths
+        add_primary_sec(paths, input_path, "datadate", output_path)
 
-        result = pl.read_parquet(work_dir / "output.parquet")
+        result = pl.read_parquet(output_path)
 
         # iid="01" should be primary (matches prihistrow="01" from range 1)
         iid01 = result.filter(pl.col("iid") == "01")
@@ -103,23 +99,16 @@ class TestAddPrimarySecDedup:
         key_counts = result.group_by(["gvkey", "iid", "datadate"]).len()
         assert key_counts["len"].max() == 1, "No duplicate rows should remain"
 
-    def test_non_primary_stays_zero(self, work_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_non_primary_stays_zero(self, setup_paths) -> None:
         """Securities that don't match any prihist record should get primary_sec=0."""
-        monkeypatch.chdir(work_dir)
-
         from jkp.data.aux_functions import add_primary_sec
 
-        add_primary_sec(
-            str(work_dir / "input.parquet"),
-            "datadate",
-            str(work_dir / "output.parquet"),
-        )
+        paths, input_path, output_path = setup_paths
+        add_primary_sec(paths, input_path, "datadate", output_path)
 
-        result = pl.read_parquet(work_dir / "output.parquet")
+        result = pl.read_parquet(output_path)
 
         # iid="02" matches prihistrow="02" from range 2, so it IS primary
-        # But from range 1, prihistrow="01" != "02", so that gives primary_sec=0
-        # The dedup should prefer primary_sec=1
         iid02 = result.filter(pl.col("iid") == "02")
         assert iid02["primary_sec"].to_list() == [1, 1], (
             "iid='02' matches prihistrow='02' from range 2, so primary_sec=1 should win"
@@ -130,11 +119,9 @@ class TestGenReturnsDfDedup:
     """Test that gen_returns_df() keeps the row with the highest prcstd
     when duplicates exist for the same {gvkey, iid, datadate}."""
 
-    def test_keeps_highest_prcstd(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_keeps_highest_prcstd(self, test_paths) -> None:
         """When two rows share {gvkey, iid, datadate} but differ in prcstd,
         the row with higher prcstd should survive."""
-        monkeypatch.chdir(tmp_path)
-
         # Build a minimal __comp_msf.parquet with duplicate rows
         df = pl.DataFrame(
             {
@@ -158,11 +145,11 @@ class TestGenReturnsDfDedup:
                 "curcdd": ["USD", "USD", "USD", "USD"],
             }
         )
-        df.write_parquet(tmp_path / "__comp_msf.parquet")
+        df.write_parquet(test_paths.interim_dir / "__comp_msf.parquet")
 
         from jkp.data.aux_functions import gen_returns_df
 
-        result = gen_returns_df("m")
+        result = gen_returns_df(test_paths, "m")
 
         # Should have 3 rows (duplicate resolved)
         assert len(result) == 3, f"Expected 3 rows after dedup, got {len(result)}"
@@ -180,10 +167,8 @@ class TestGenReturnsDfDedup:
             f"got {actual_ret}, expected {expected_ret}"
         )
 
-    def test_no_duplicates_unchanged(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_no_duplicates_unchanged(self, test_paths) -> None:
         """When no duplicates exist, the output should be the same as before."""
-        monkeypatch.chdir(tmp_path)
-
         df = pl.DataFrame(
             {
                 "gvkey": ["001", "001", "001"],
@@ -196,11 +181,11 @@ class TestGenReturnsDfDedup:
                 "curcdd": ["USD", "USD", "USD"],
             }
         )
-        df.write_parquet(tmp_path / "__comp_msf.parquet")
+        df.write_parquet(test_paths.interim_dir / "__comp_msf.parquet")
 
         from jkp.data.aux_functions import gen_returns_df
 
-        result = gen_returns_df("m")
+        result = gen_returns_df(test_paths, "m")
         assert len(result) == 3
 
         feb_ret = result.filter(pl.col("datadate") == date(2024, 2, 29))["ret"][0]

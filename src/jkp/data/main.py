@@ -54,102 +54,158 @@ def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> No
     """Run the full JKP data generation pipeline."""
     paths = DataPaths(base_dir=output_dir.resolve())
     creds = get_wrds_credentials()
+
+    interim = paths.interim_dir
+
     setup_folder_structure(paths)
     download_raw_data_tables(
+        paths,
         username=creds.username,
         password=creds.password,
         end_date=END_DATE,
         persistent_connection=persistent_connection,
     )
-    gen_raw_data_dfs()
-    prepare_comp_sf("both")
-    prepare_crsp_sf("m")
-    prepare_crsp_sf("d")
-    combine_crsp_comp_sf()
-    crsp_industry()
-    comp_industry()
-    merge_industry_to_world_msf()
-    ff_ind_class("__msf_world2.parquet")
-    nyse_size_cutoffs("__msf_world3.parquet")
-    classify_stocks_size_groups()
-    return_cutoffs("m", 0)
-    return_cutoffs("d", 0)
-    add_ret_exc_wins("m")
-    add_ret_exc_wins("d")
+    gen_raw_data_dfs(paths)
+    prepare_comp_sf(paths, "both")
+    prepare_crsp_sf(paths, "m")
+    prepare_crsp_sf(paths, "d")
+    combine_crsp_comp_sf(paths)
+    crsp_industry(paths)
+    comp_industry(paths)
+    merge_industry_to_world_msf(paths)
+    ff_ind_class(paths, interim / "__msf_world2.parquet")
+    nyse_size_cutoffs(paths, interim / "__msf_world3.parquet")
+    classify_stocks_size_groups(paths)
+    return_cutoffs(paths, "m", 0)
+    return_cutoffs(paths, "d", 0)
+    add_ret_exc_wins(paths, "m")
+    add_ret_exc_wins(paths, "d")
     market_returns(
-        "world_dsf.parquet", "d", 1, "return_cutoffs_daily.parquet", "nyse_cutoffs.parquet"
+        paths,
+        interim / "world_dsf.parquet",
+        "d",
+        1,
+        interim / "return_cutoffs_daily.parquet",
+        interim / "nyse_cutoffs.parquet",
     )
-    market_returns("world_msf.parquet", "m", 1, "return_cutoffs.parquet", "nyse_cutoffs.parquet")
-    standardized_accounting_data("world", 1, "world_msf.parquet", 1, ACCOUNTING_START_DATE)
+    market_returns(
+        paths,
+        interim / "world_msf.parquet",
+        "m",
+        1,
+        interim / "return_cutoffs.parquet",
+        interim / "nyse_cutoffs.parquet",
+    )
+    standardized_accounting_data(
+        paths, "world", 1, interim / "world_msf.parquet", 1, ACCOUNTING_START_DATE
+    )
     create_acc_chars(
-        "acc_std_ann.parquet",
-        "achars_world.parquet",
+        paths,
+        interim / "acc_std_ann.parquet",
+        interim / "achars_world.parquet",
         4,
         18,
         acc_chars_list(),
-        "world_msf.parquet",
+        interim / "world_msf.parquet",
         "",
     )
     create_acc_chars(
-        "acc_std_qtr.parquet",
-        "qchars_world.parquet",
+        paths,
+        interim / "acc_std_qtr.parquet",
+        interim / "qchars_world.parquet",
         4,
         18,
         acc_chars_list(),
-        "world_msf.parquet",
+        interim / "world_msf.parquet",
         "_qitem",
     )
     combine_ann_qtr_chars(
-        "achars_world.parquet", "qchars_world.parquet", acc_chars_list(), "_qitem"
+        paths,
+        interim / "achars_world.parquet",
+        interim / "qchars_world.parquet",
+        acc_chars_list(),
+        "_qitem",
     )
-    market_chars_monthly("world_msf.parquet", "market_returns.parquet")
+    market_chars_monthly(paths, interim / "world_msf.parquet", interim / "market_returns.parquet")
     create_world_data_prelim(
-        "world_msf.parquet",
-        "market_chars_m.parquet",
-        "acc_chars_world.parquet",
-        "world_data_prelim.parquet",
+        paths,
+        interim / "world_msf.parquet",
+        interim / "market_chars_m.parquet",
+        interim / "acc_chars_world.parquet",
+        interim / "world_data_prelim.parquet",
     )
     ap_factors(
-        "ap_factors_daily.parquet",
+        paths,
+        interim / "ap_factors_daily.parquet",
         "d",
-        "world_dsf.parquet",
-        "world_data_prelim.parquet",
-        "market_returns_daily.parquet",
+        interim / "world_dsf.parquet",
+        interim / "world_data_prelim.parquet",
+        interim / "market_returns_daily.parquet",
         10,
         3,
     )
     ap_factors(
-        "ap_factors_monthly.parquet",
+        paths,
+        interim / "ap_factors_monthly.parquet",
         "m",
-        "world_msf.parquet",
-        "world_data_prelim.parquet",
-        "market_returns.parquet",
+        interim / "world_msf.parquet",
+        interim / "world_data_prelim.parquet",
+        interim / "market_returns.parquet",
         10,
         3,
     )
-    firm_age("world_msf.parquet")
-    mispricing_factors("world_data_prelim.parquet", 10, min_fcts=3)
-    market_beta("beta_60m.parquet", "world_msf.parquet", "ap_factors_monthly.parquet", 60, 36)
-    residual_momentum(
-        "resmom_ff3", "world_msf.parquet", "ap_factors_monthly.parquet", 36, 24, 12, 1
+    firm_age(paths, interim / "world_msf.parquet")
+    mispricing_factors(paths, interim / "world_data_prelim.parquet", 10, min_fcts=3)
+    market_beta(
+        paths,
+        interim / "beta_60m.parquet",
+        interim / "world_msf.parquet",
+        interim / "ap_factors_monthly.parquet",
+        60,
+        36,
     )
-    residual_momentum("resmom_ff3", "world_msf.parquet", "ap_factors_monthly.parquet", 36, 24, 6, 1)
-    bidask_hl("corwin_schultz.parquet", "world_dsf.parquet", "market_returns_daily.parquet", 10)
-    prepare_daily("world_dsf.parquet", "ap_factors_daily.parquet")
+    residual_momentum(
+        paths,
+        "resmom_ff3",
+        interim / "world_msf.parquet",
+        interim / "ap_factors_monthly.parquet",
+        36,
+        24,
+        12,
+        1,
+    )
+    residual_momentum(
+        paths,
+        "resmom_ff3",
+        interim / "world_msf.parquet",
+        interim / "ap_factors_monthly.parquet",
+        36,
+        24,
+        6,
+        1,
+    )
+    bidask_hl(
+        paths,
+        interim / "corwin_schultz.parquet",
+        interim / "world_dsf.parquet",
+        interim / "market_returns_daily.parquet",
+        10,
+    )
+    prepare_daily(paths, interim / "world_dsf.parquet", interim / "ap_factors_daily.parquet")
     for sfx, min_obs, vars_ in ROLLING_DAILY_SPECS:
         for var in vars_:
-            roll_apply_daily(var, sfx, min_obs)
-    merge_roll_apply_daily_results()
-    finish_daily_chars("market_chars_d.parquet")
-    merge_world_data_prelim()
-    quality_minus_junk("world_data_-1.parquet", 10)
-    merge_qmj_to_world_data()
-    filter_dsf()
-    filter_msf()
-    filter_world()
+            roll_apply_daily(paths, var, sfx, min_obs)
+    merge_roll_apply_daily_results(paths)
+    finish_daily_chars(paths, interim / "market_chars_d.parquet")
+    merge_world_data_prelim(paths)
+    quality_minus_junk(paths, interim / "world_data_-1.parquet", 10)
+    merge_qmj_to_world_data(paths)
+    filter_dsf(paths)
+    filter_msf(paths)
+    filter_world(paths)
     save_main_data(paths)
-    save_daily_ret()
-    save_monthly_ret()
-    save_accounting_data()
-    save_output_files()
-    save_full_files_and_cleanup(clear_interim=True)
+    save_daily_ret(paths)
+    save_monthly_ret(paths)
+    save_accounting_data(paths)
+    save_output_files(paths)
+    save_full_files_and_cleanup(paths, clear_interim=True)
