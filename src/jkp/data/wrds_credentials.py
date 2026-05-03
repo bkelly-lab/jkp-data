@@ -54,6 +54,12 @@ def _maybe_use_file_keyring() -> None:
     """If the user explicitly opts in, switch the keyring backend to the
     file-backed ``keyrings.alt.file.PlaintextKeyring``.
 
+    Opt-in: set the ``JKP_ALLOW_PLAINTEXT_KEYRING`` environment variable to
+    exactly the string ``"1"``. Any other value (including ``"true"``,
+    ``"yes"``, ``"True"``, or ``"0"``) is treated as not set and the system
+    keyring is used. We use a strict comparison rather than truthy parsing so
+    that the opt-in is unambiguous and matches the documented form.
+
     Called at credential-resolution time, never at import. The backend stores
     the password in a mode-600 file under ``~/.local/share/python_keyring/``;
     the security posture is the same as any other user-private dotfile.
