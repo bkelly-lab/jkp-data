@@ -24,9 +24,7 @@ class TestEomOffset1MoMonthEnd:
         assert result == expected_eom
 
     def test_dec_to_jan_year_increment(self):
-        df = pl.DataFrame(
-            {"eom": pl.Series("eom", [date(2020, 12, 31)], dtype=pl.Date)}
-        )
+        df = pl.DataFrame({"eom": pl.Series("eom", [date(2020, 12, 31)], dtype=pl.Date)})
         result = df.with_columns(
             pl.col("eom").dt.offset_by("1mo").dt.month_end().alias("next_eom")
         )["next_eom"][0]
@@ -43,9 +41,7 @@ class TestEomLag1FromDate:
             (date(2020, 1, 1), date(2019, 12, 31)),
         ],
     )
-    def test_eom_lag1_via_month_start_minus_one_day(
-        self, input_date, expected_eom_lag1
-    ):
+    def test_eom_lag1_via_month_start_minus_one_day(self, input_date, expected_eom_lag1):
         df = pl.DataFrame({"date": pl.Series("date", [input_date], dtype=pl.Date)})
         result = df.with_columns(
             (pl.col("date").dt.month_start() - pl.duration(days=1)).alias("eom_lag1")
