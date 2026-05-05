@@ -22,12 +22,6 @@ warnings.filterwarnings(
     message=r"Sortedness.*by.*provided",
 )
 
-
-# =============================================================================
-# Helper Functions
-# =============================================================================
-
-
 def add_ecdf(
     df: pl.DataFrame | pl.LazyFrame,
     group_cols: list[str] | None = None,
@@ -880,11 +874,6 @@ def _write_split_by_key(
             continue
         filtered = df.filter((pl.col(date_col) <= end_date) & (pl.col(key_col) == key))
         write_dataframe(filtered, os.path.join(folder_path, f"{key}.parquet"))
-
-
-# =============================================================================
-# Main Entry Point
-# =============================================================================
 
 
 def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
