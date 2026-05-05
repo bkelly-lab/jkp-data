@@ -300,10 +300,7 @@ class TestClusterPortfolios:
         monkeypatch.setattr(pf_mod, "PORTFOLIO_CHARS", chars)
         monkeypatch.setattr(pf_mod, "PORTFOLIO_SETTINGS", lenient_settings)
 
-        try:
-            run_portfolio(output_dir=tmp_path)
-        except Exception as exc:  # pragma: no cover - diagnostic for CI
-            pytest.skip(f"run_portfolio e2e setup failed: {exc!r}")
+        run_portfolio(output_dir=tmp_path)
 
         clusters_path = tmp_path / "processed" / "portfolios" / "clusters.parquet"
         assert clusters_path.exists(), f"missing {clusters_path}"

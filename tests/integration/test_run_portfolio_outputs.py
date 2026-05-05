@@ -183,26 +183,43 @@ class TestRunPortfolioOutputs:
         # All parquet outputs should have been converted away.
         assert not list(out.rglob("*.parquet"))
 
-    def test_country_excl_drops_zwe_ven(
+    def test_country_excl_drops_zwe_from_regional_aggregation(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Default country_excl already drops ZWE/VEN; classification fixture
-        # already lists them. build_synthetic_data writes only the requested
-        # countries (no ZWE/VEN parquets), so they cannot show up downstream.
-        _setup(tmp_path, monkeypatch, countries=("USA", "GBR", "DEU"))
+        # ZWE is present in the synthetic input, classification, and per-country
+        # output, but the regional aggregation must not count it because
+        # country_excl=["ZWE","VEN"] removes it from country_classification.
+        _setup(
+            tmp_path,
+            monkeypatch,
+            countries=("USA", "GBR", "DEU", "ZWE"),
+            settings_overrides={
+                "regional_pfs": {
+                    "ret_type": "vw_cap",
+                    "country_excl": ["ZWE", "VEN"],
+                    "country_weights": "market_cap",
+                    "stocks_min": 1,
+                    "months_min": 1,
+                    "countries_min": 1,
+                }
+            },
+        )
         run_portfolio(output_format="parquet", output_dir=tmp_path)
 
         out = _portfolios_dir(tmp_path)
-        country_dir = out / "country_factors"
-        assert country_dir.exists()
-        names = {p.stem for p in country_dir.glob("*.parquet")}
-        assert "ZWE" not in names
-        assert "VEN" not in names
 
-        # And no regional partition should reference them either.
-        for region_file in (out / "regional_factors").glob("*.parquet"):
-            df = pl.read_parquet(region_file)
-            if "excntry" in df.columns:
-                vals = set(df["excntry"].unique().to_list())
-                assert "ZWE" not in vals
-                assert "VEN" not in vals
+        # ZWE survives in per-country outputs (country_excl does not gate them).
+        assert (out / "country_factors" / "ZWE.parquet").exists()
+
+        # Regional outputs must not count ZWE: n_countries reflects the
+        # excluded set. With 4 input countries and ZWE excluded, n_countries
+        # in any region containing ZWE must be ≤ 3.
+        regional_files = list((out / "regional_factors").glob("*.parquet"))
+        assert regional_files, "no regional_factors files written"
+        for f in regional_files:
+            df = pl.read_parquet(f)
+            if df.height == 0:
+                continue
+            assert df["n_countries"].max() <= 3, (
+                f"{f.name}: n_countries exceeds USA+GBR+DEU max of 3 → ZWE leaked in"
+            )

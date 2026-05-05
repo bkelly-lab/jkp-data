@@ -130,6 +130,22 @@ class TestWriteSplitByKey:
         assert folder.is_dir()
         assert list(folder.glob("*.parquet")) == []
 
+    def test_keeps_numeric_zero_keys(self, tmp_path: Path) -> None:
+        """Numeric keys including 0 must be kept (production never uses these,
+        but the helper's falsy-skip footgun is locked down here)."""
+        df = pl.DataFrame(
+            {
+                "key": [0, 1, 2],
+                "eom": [date(2020, 1, 31)] * 3,
+                "value": [1.0, 2.0, 3.0],
+            }
+        )
+        folder = tmp_path / "split"
+        _write_split_by_key(df, str(folder), "key", "eom", date(2020, 12, 31))
+
+        files = sorted(p.name for p in folder.glob("*.parquet"))
+        assert files == ["0.parquet", "1.parquet", "2.parquet"]
+
     def test_filename_is_flat_not_hive(self, tmp_path: Path) -> None:
         df = pl.DataFrame(
             {

@@ -780,8 +780,22 @@ def assert_frames_parity(
             )
 
 
-def get_numeric_spec(stem: str) -> dict[str, dict]:
-    """Return per-column tolerance spec for a parquet file stem."""
+def get_numeric_spec(stem: str, parent: str | None = None) -> dict[str, dict]:
+    """Return per-column tolerance spec for a parquet file stem.
+
+    `parent` is the name of the partition directory (e.g. "country_factors",
+    "regional_factors_daily"). It takes precedence over `stem` so that
+    per-country/per-region partitioned outputs route to the correct spec
+    (otherwise stems like "USA" / "world" fall through to the regional
+    default and skip n_stocks/n_stocks_min comparisons).
+    """
+    if parent:
+        if parent in ("country_factors", "country_factors_daily"):
+            return NUMERIC_COLS_BY_FILE["country"]
+        if parent in ("regional_factors", "regional_factors_daily"):
+            return NUMERIC_COLS_BY_FILE["regional"]
+        if parent in ("regional_clusters", "regional_clusters_daily"):
+            return NUMERIC_COLS_BY_FILE["clusters"]
     if stem in NUMERIC_COLS_BY_FILE:
         return NUMERIC_COLS_BY_FILE[stem]
     for prefix, spec in NUMERIC_COLS_BY_FILE.items():
@@ -824,6 +838,10 @@ def compare_parquets(path_a: Path, path_b: Path, label: str) -> list[str]:
     b = pl.read_parquet(path_b)
     if a.height != b.height:
         return [f"{label}: height mismatch {a.height} vs {b.height}"]
+    if set(a.columns) != set(b.columns):
+        only_a = sorted(set(a.columns) - set(b.columns))
+        only_b = sorted(set(b.columns) - set(a.columns))
+        return [f"{label}: column mismatch (only in A: {only_a}, only in B: {only_b})"]
     if a.height == 0:
         return []
 
@@ -834,7 +852,14 @@ def compare_parquets(path_a: Path, path_b: Path, label: str) -> list[str]:
     except Exception:
         pass
 
-    spec = get_numeric_spec(path_a.stem)
+    # Assert key/identifier columns are bit-equal; tolerance applies only to
+    # numeric data columns below.
+    for k in keys:
+        if not a[k].equals(b[k]):
+            failures.append(f"{label}: key column {k!r} differs")
+            return failures
+
+    spec = get_numeric_spec(path_a.stem, parent=path_a.parent.name)
     for col, tol in spec.items():
         if col not in a.columns or col not in b.columns:
             continue

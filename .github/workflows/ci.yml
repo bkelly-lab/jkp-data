@@ -111,6 +111,12 @@ jobs:
             -v --tb=short \
             --junitxml=pytest-unit.xml
 
+      - name: Run integration / property / golden tests
+        run: |
+          uv run pytest tests/integration/ tests/property/ tests/golden/ \
+            -v --tb=short \
+            --junitxml=pytest-integration.xml
+
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@v4

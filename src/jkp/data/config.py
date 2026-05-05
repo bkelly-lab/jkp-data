@@ -46,6 +46,9 @@ REGIONAL_COUNTRIES_MIN = 3
 # inflation / hyperinflation regimes that distort returns).
 REGIONAL_COUNTRY_EXCL = ("ZWE", "VEN")
 
+# Canonical list of stock characteristics that `portfolios()` constructs
+# breakpoints / portfolio sorts / HML-LMS factors for. Production default;
+# tests override via `monkeypatch.setattr(..., PORTFOLIO_CHARS, ...)`.
 PORTFOLIO_CHARS = [
     "age",
     "aliq_at",

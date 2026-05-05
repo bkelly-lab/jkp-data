@@ -860,13 +860,14 @@ def _write_split_by_key(
     """Partition `df` by `key_col` and write one parquet per key into `folder_path`.
 
     Description:
-        Apply the `date_col <= end_date` filter, then for each unique non-null
-        truthy value of `key_col`, write the matching rows to
-        ``{folder_path}/{key}.parquet``.
+        Apply the `date_col <= end_date` filter, then for each unique key value
+        that is neither None nor the empty string, write the matching rows to
+        ``{folder_path}/{key}.parquet``. Numeric/boolean keys (including 0 and
+        False) are kept; only None and "" are skipped.
     """
     os.makedirs(folder_path, exist_ok=True)
     for key in df[key_col].unique():
-        if not key:
+        if key is None or key == "":
             continue
         filtered = df.filter((pl.col(date_col) <= end_date) & (pl.col(key_col) == key))
         write_dataframe(filtered, os.path.join(folder_path, f"{key}.parquet"))

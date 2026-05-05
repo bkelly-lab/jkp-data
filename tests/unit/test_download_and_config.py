@@ -26,7 +26,9 @@ from jkp.data.config import (
     END_DATE,
     MAIN_FILTERS,
     PORTFOLIO_BP_MIN_N,
+    PORTFOLIO_CHARS,
     PORTFOLIO_PFS,
+    PORTFOLIO_SETTINGS,
     REGIONAL_COUNTRIES_MIN,
     REGIONAL_COUNTRY_EXCL,
     REGIONAL_MONTHS_MIN,
@@ -127,6 +129,60 @@ class TestConfig:
         assert REGIONAL_COUNTRY_EXCL == ("ZWE", "VEN"), (
             f"REGIONAL_COUNTRY_EXCL expected ('ZWE', 'VEN'), got {REGIONAL_COUNTRY_EXCL}"
         )
+
+    def test_portfolio_chars_is_unique_nonempty_str_list(self):
+        """PORTFOLIO_CHARS must be a list of unique non-empty strings."""
+        assert isinstance(PORTFOLIO_CHARS, list), (
+            f"PORTFOLIO_CHARS should be a list, got {type(PORTFOLIO_CHARS)}"
+        )
+        assert PORTFOLIO_CHARS, "PORTFOLIO_CHARS is empty"
+        assert all(isinstance(c, str) and c for c in PORTFOLIO_CHARS), (
+            "PORTFOLIO_CHARS entries must be non-empty strings"
+        )
+        assert len(PORTFOLIO_CHARS) == len(set(PORTFOLIO_CHARS)), (
+            "PORTFOLIO_CHARS contains duplicates"
+        )
+
+    def test_portfolio_chars_known_anchors(self):
+        """A handful of canonical characteristics must be present (typo guard)."""
+        anchors = {"market_equity", "ret_12_1", "be_me", "ivol_capm_21d", "qmj"}
+        missing = anchors - set(PORTFOLIO_CHARS)
+        assert not missing, f"PORTFOLIO_CHARS missing anchors: {sorted(missing)}"
+
+    def test_portfolio_settings_top_level_shape(self):
+        """PORTFOLIO_SETTINGS must carry the keys `portfolios()` reads at runtime."""
+        required = {
+            "end_date",
+            "pfs",
+            "source",
+            "wins_ret",
+            "bps",
+            "bp_min_n",
+            "cmp",
+            "signals",
+            "regional_pfs",
+            "daily_pf",
+            "ind_pf",
+        }
+        assert isinstance(PORTFOLIO_SETTINGS, dict)
+        missing = required - set(PORTFOLIO_SETTINGS)
+        assert not missing, f"PORTFOLIO_SETTINGS missing keys: {sorted(missing)}"
+
+    def test_portfolio_settings_nested_keys(self):
+        """Nested `cmp`/`signals`/`regional_pfs` blocks must keep their schema."""
+        assert set(PORTFOLIO_SETTINGS["cmp"]) == {"us", "int"}
+        assert set(PORTFOLIO_SETTINGS["signals"]) == {"us", "int", "standardize", "weight"}
+        assert set(PORTFOLIO_SETTINGS["regional_pfs"]) == {
+            "ret_type",
+            "country_excl",
+            "country_weights",
+            "stocks_min",
+            "months_min",
+            "countries_min",
+        }
+        assert PORTFOLIO_SETTINGS["regional_pfs"]["country_excl"] == list(REGIONAL_COUNTRY_EXCL)
+        assert PORTFOLIO_SETTINGS["pfs"] == PORTFOLIO_PFS
+        assert PORTFOLIO_SETTINGS["bp_min_n"] == PORTFOLIO_BP_MIN_N
 
 
 # =============================================================================
