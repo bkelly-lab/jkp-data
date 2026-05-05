@@ -417,8 +417,9 @@ class TestPrcToHigh:
         """Lock down prc_to_high output on a 500-id seeded synthetic fixture.
 
         Input is generated with unique dates per (id_int, group_number) — the synthetic
-        scenario the function is contractually required to handle. Asserts bit-exact
-        reproducibility across runs/Polars versions/hardware on this representative load.
+        scenario the function is contractually required to handle. Compares against the
+        golden parquet at rtol=1e-12 (loose enough to absorb cross-platform float
+        rounding, tight enough to catch any algorithmic regression).
         """
         import pathlib
 
@@ -1049,7 +1050,7 @@ class TestZeroTrades:
         )
 
     def test_zero_trades_all_shares_zero_null_composite(self):
-        """All shares==0 → list.mean() returns null → composite is null; row still present."""
+        """All shares==0 → scalar mean turnover is null → composite is null; row still present."""
         df = pl.DataFrame(
             {
                 "id_int": [1, 1, 1, 2, 2, 2],
@@ -1061,7 +1062,7 @@ class TestZeroTrades:
             }
         )
         result = zero_trades(df, "_21d", __min=15).sort(["id_int"])
-        # Both rows are kept (filter only drops null lists, not null list.mean)
+        # Both rows kept (filter drops only null zero_trades, not null turnover means)
         assert len(result) == 2
         # id=1 gets null composite because mean turnover is null
         assert result.filter(pl.col("id_int") == 1)["zero_trades_21d"][0] is None
@@ -1070,7 +1071,7 @@ class TestZeroTrades:
 
     def test_zero_trades_cross_group_rank_divisor(self, tolerance):
         """Rank divisor pl.count('turnover') counts non-null turnover within group_number."""
-        # group_number=10: ids 1,2,3; id=3 has all shares=0 → null list.mean → null turnover
+        # group_number=10: ids 1,2,3; id=3 has all shares=0 → null scalar mean → null turnover
         # pl.count("turnover").over("group_number") = 2 (only ids 1,2 have non-null turnover)
         # So rank_frac = rank / 2, not rank / 3
         df = pl.DataFrame(
@@ -1116,7 +1117,11 @@ class TestZeroTrades:
         )
 
     def test_zero_trades_golden_fixture(self):
-        """Refactored impl must match pre-refactor golden output bit-exactly."""
+        """Refactored impl must match pre-refactor golden output to within rtol=1e-12.
+
+        rtol is loose enough to absorb cross-platform float rounding, tight enough to
+        catch any algorithmic regression vs the pre-refactor list-aggregation impl.
+        """
         import pathlib
 
         from tests.fixtures.generate_rolling_golden import build_zero_trades_input

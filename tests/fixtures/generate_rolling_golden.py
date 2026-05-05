@@ -27,11 +27,13 @@ def build_prc_to_high_input(seed: int = 42) -> pl.DataFrame:
     """Build synthetic prc_to_high input with 500 ids, ~10 groups, 5-40 rows each.
 
     Dates are drawn without replacement per (id_int, group_number) so the input has
-    no tied dates within a group. The current `prc_to_high` impl uses a global
-    `df.sort([id_int, date])` followed by a hash `group_by` and `col.last()`; on
-    tied-date inputs that combination is hash-bucket-order-dependent (effectively
-    undefined). Restricting the fixture to unique-date inputs lets the golden
-    parquet act as a deterministic regression locker.
+    no tied dates within a group. The legacy `prc_to_high` impl used a global
+    `df.sort([id_int, date])` + hash `group_by` + `col.last()`, which on tied-date
+    inputs was hash-bucket-order-dependent (effectively undefined). The current impl
+    uses an in-aggregation `col("prc_adj").sort_by("date").last()`, which is also
+    only well-defined on unique-date inputs. Restricting the fixture to unique-date
+    inputs lets the golden parquet act as a deterministic regression locker for both
+    the legacy and current impls.
     """
     rng = np.random.default_rng(seed)
 
