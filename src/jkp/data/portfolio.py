@@ -681,63 +681,39 @@ def portfolios(
                     pl.lit(excntry).str.to_uppercase().alias("excntry")
                 )
 
-    results = []
     if cmp_key:
-        for x in chars:
-            print(f"   CMP - {x}: {chars.index(x) + 1} out of {len(chars)}")
+        # Vectorized over all characteristics: unpivot to long form, then compute
+        # ranks/weights/aggregates in a single lazy pipeline.
+        grp = ["characteristic", "size_grp", "eom"]
+        n_grp = pl.len().over(grp)
+        p_rank = pl.col("var").rank("average").over(grp) / (n_grp + 1)
+        p_rank_dev = p_rank - p_rank.mean().over(grp)
+        weight = p_rank_dev / (p_rank_dev.abs().sum().over(grp) / 2)
 
-            # Create a new column 'var' based on the current 'x'
-            data = data.with_columns(pl.col(x).alias("var"))
-
-            # Subsetting and ranking
-            sub = data.filter(pl.col("var").is_not_null()).select(
-                ["eom", "var", "size_grp", "ret_exc_lead1m"]
+        output["cmp"] = (
+            data.lazy()
+            .unpivot(
+                on=chars,
+                index=["eom", "size_grp", "ret_exc_lead1m"],
+                variable_name="characteristic",
+                value_name="var",
             )
-
-            # Calculate ranks, rank deviations, and weights
-            sub = (
-                sub.with_columns(
-                    (
-                        (pl.col("var").rank("average").over("size_grp", "eom"))
-                        / (pl.len().over("size_grp", "eom") + 1)
-                    ).alias("p_rank")
-                )
-                .with_columns(pl.col("p_rank").mean().over("size_grp", "eom").alias("mean_p_rank"))
-                .with_columns((pl.col("p_rank") - pl.col("mean_p_rank")).alias("p_rank_dev"))
-                .with_columns(
-                    (pl.col("p_rank_dev") / ((pl.col("p_rank_dev").abs().sum()) / 2))
-                    .over("size_grp", "eom")
-                    .alias("weight")
-                )
+            .filter(pl.col("var").is_not_null())
+            .with_columns(weight.alias("weight"))
+            .group_by(grp)
+            .agg(
+                pl.len().alias("n_stocks"),
+                (pl.col("ret_exc_lead1m") * pl.col("weight")).sum().alias("ret_weighted"),
+                (pl.col("var") * pl.col("weight")).sum().alias("signal_weighted"),
+                pl.col("var").std().alias("sd_var"),
             )
-
-            # Aggregation
-            cmp = (
-                sub.group_by(["size_grp", "eom"])
-                .agg(
-                    [
-                        pl.lit(x).alias("characteristic"),
-                        pl.len().alias("n_stocks"),
-                        ((pl.col("ret_exc_lead1m") * pl.col("weight")).sum()).alias("ret_weighted"),
-                        ((pl.col("var") * pl.col("weight")).sum()).alias("signal_weighted"),
-                        pl.col("var").std().alias("sd_var"),
-                    ]
-                )
-                .with_columns(pl.lit(excntry).alias("excntry"))
+            .filter(pl.col("sd_var") != 0)
+            .drop("sd_var")
+            .with_columns(
+                pl.col("eom").dt.offset_by("1mo").dt.month_end().alias("eom"),
+                pl.lit(excntry.upper()).alias("excntry"),
             )
-
-            # Post-processing
-            cmp = (
-                cmp.filter(pl.col("sd_var") != 0)
-                .drop("sd_var")
-                .with_columns((pl.col("eom").dt.offset_by("1mo").dt.month_end()).alias("eom"))
-            )
-
-            results.append(cmp)
-
-    if len(results) > 0:
-        output["cmp"] = pl.concat(results).with_columns(
-            pl.col("excntry").str.to_uppercase().alias("excntry")
+            .collect()
         )
 
     return output
