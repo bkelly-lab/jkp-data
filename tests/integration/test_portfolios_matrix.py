@@ -140,7 +140,7 @@ _MATRIX_CASES: list[dict] = [
         "daily_pf": False,
         "ind_pf": False,
         "excntry": "USA",
-        "n_chars": 1,  # signals=True multi-char hits dup-'w' bug
+        "n_chars": 2,
     },
     {
         "id": "non_mc-both-noSig-Cmp-winsT-dailyT-indT-USA",
@@ -273,9 +273,8 @@ def _expected_keys(config: dict) -> set[str]:
                 keys.add("ff49_daily")
     if config["cmp_key"]:
         keys.add("cmp")
-    # NOTE: signals=True does NOT currently surface a 'signals' key — see the
-    # known-bug xfail in tests/unit/portfolio/test_signals_branch.py. We omit
-    # it from the expected set so the matrix tests pass on the as-is code.
+    if config["signals"]:
+        keys.add("signals")
     return keys
 
 

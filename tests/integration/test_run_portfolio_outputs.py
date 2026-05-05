@@ -153,15 +153,6 @@ class TestRunPortfolioOutputs:
         assert not (out / "industry_gics_daily.parquet").exists()
         assert not (out / "industry_ff49_daily.parquet").exists()
 
-    @pytest.mark.xfail(
-        reason=(
-            "run_portfolio always passes ret_cutoffs_daily to portfolios(), but "
-            "only assigns it when settings['daily_pf'] is True (UnboundLocalError). "
-            "Pre-existing latent bug; harmless in production where daily_pf is on."
-        ),
-        strict=True,
-        raises=UnboundLocalError,
-    )
     def test_no_daily_files_when_daily_pf_false(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

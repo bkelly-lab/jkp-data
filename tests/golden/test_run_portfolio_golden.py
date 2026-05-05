@@ -121,19 +121,8 @@ def test_run_portfolio_golden(
     monkeypatch: pytest.MonkeyPatch,
     request: pytest.FixtureRequest,
 ) -> None:
-    # When ``daily_pf=False``, run_portfolio still references ``ret_cutoffs_daily``
-    # unconditionally on line ~1051 — UnboundLocalError. Mark these profiles xfail
-    # until that bug is fixed; ``full_daily`` is the only profile that runs clean.
-    if not PROFILES[profile]["daily_pf"]:
-        pytest.xfail(
-            "run_portfolio crashes with UnboundLocalError on ret_cutoffs_daily "
-            "when settings['daily_pf'] is False (see portfolio.py:1051)"
-        )
-
     cfg = PROFILES[profile]
-    # signals_on: use a single char to dodge the duplicate-`w`-column crash
-    # observed when signals.us=True is combined with multiple characteristics.
-    chars = ["char_a"] if profile == "signals_on" else CHARS
+    chars = CHARS
 
     build_synthetic_data(tmp_path, COUNTRIES, chars, seed=42)
 

@@ -22,6 +22,7 @@ warnings.filterwarnings(
     message=r"Sortedness.*by.*provided",
 )
 
+
 def add_ecdf(
     df: pl.DataFrame | pl.LazyFrame,
     group_cols: list[str] | None = None,
@@ -522,30 +523,25 @@ def portfolios(
             op["pf_returns"] = pf_returns_x.collect()
 
             if signals_w == "ew":
-                sub = sub.with_columns((1 / pl.col("eom").len()).over(["pf", "eom"]).alias("w"))
+                w_expr = (1 / pl.col("eom").len()).over(["pf", "eom"])
             elif signals_w == "vw":
-                sub = sub.with_columns(
-                    (pl.col("me") / pl.col("me").sum()).over(["pf", "eom"]).alias("w")
-                )
+                w_expr = (pl.col("me") / pl.col("me").sum()).over(["pf", "eom"])
             elif signals_w == "vw_cap":
-                sub = sub.with_columns(
-                    (pl.col("me_cap") / pl.col("me_cap").sum()).over(["pf", "eom"]).alias("w")
-                )
+                w_expr = (pl.col("me_cap") / pl.col("me_cap").sum()).over(["pf", "eom"])
 
-            sub = sub.with_columns(
-                [
-                    pl.when(pl.col(var).is_null()).then(pl.lit(0)).otherwise(pl.col(var)).alias(var)
-                    for var in chars
-                ]
-            )
-            pf_signals = sub.with_columns(
-                [(pl.col("w") * pl.col(var)).sum().over(["pf", "eom"]) for var in chars]
-            )
-            pf_signals = pf_signals.with_columns(
-                [
+            sub = sub.with_columns(w_expr.alias("w"))
+
+            # Aggregate to one row per (pf, eom): weighted sum of the current
+            # characteristic ``x`` (treating null var values as 0).
+            pf_signals = (
+                sub.group_by(["pf", "eom"])
+                .agg(
+                    (pl.col("w") * pl.col("var").fill_null(0)).sum().alias("signal"),
+                )
+                .with_columns(
                     pl.lit(x).alias("characteristic"),
                     pl.col("eom").dt.offset_by("1mo").dt.month_end().alias("eom"),
-                ]
+                )
             )
             op["signals"] = pf_signals.collect()
 
@@ -670,7 +666,7 @@ def portfolios(
                 output["pf_daily"] = output["pf_daily"].with_columns(
                     pl.lit(excntry).str.to_uppercase().alias("excntry")
                 )
-            if signals and "signals" in output:
+            if signals and char_pfs:
                 output["signals"] = pl.concat([op["signals"] for op in char_pfs]).with_columns(
                     pl.lit(excntry).str.to_uppercase().alias("excntry")
                 )
@@ -978,6 +974,7 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
     ret_cutoffs = ret_cutoffs.with_columns(
         (pl.col("eom").dt.month_start().dt.offset_by("-1d")).alias("eom_lag1")
     )
+    ret_cutoffs_daily = None
     if settings["daily_pf"]:
         ret_cutoffs_daily = pl.read_parquet(
             f"{data_path}/other_output/return_cutoffs_daily.parquet"
@@ -987,6 +984,7 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
     market = pl.read_parquet(f"{data_path}/other_output/market_returns.parquet")
 
     # daily_market_returns
+    market_daily = None
     if settings["daily_pf"]:
         market_daily = pl.read_parquet(f"{data_path}/other_output/market_returns_daily.parquet")
 

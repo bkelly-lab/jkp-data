@@ -128,13 +128,6 @@ class TestSignalsStandardize:
 class TestSignalsBranch:
     """Unit tests for the eager-collection branch (``signals=True``)."""
 
-    @pytest.mark.xfail(
-        reason=(
-            "Known bug: portfolio.py L679-682 gates output['signals'] on it "
-            "already being present in output, so the key is never added."
-        ),
-        strict=True,
-    )
     def test_signals_true_adds_signals_key_to_output(self, tmp_path: Path) -> None:
         """``signals=True`` should expose a non-empty ``signals`` DataFrame."""
         out = _run_portfolios(tmp_path, "USA", chars=["char_a"], signals=True)
@@ -148,14 +141,6 @@ class TestSignalsBranch:
         out = _run_portfolios(tmp_path, "USA", chars=["char_a"], signals=False)
         assert out.get("signals") is None
 
-    @pytest.mark.xfail(
-        reason=(
-            "Known bug pair: (1) signals=True with multiple chars hits a "
-            "duplicate-'w'-column error in pf_signals (L547-549); (2) the "
-            "'signals' key is never inserted into output."
-        ),
-        strict=True,
-    )
     def test_signals_true_per_char_per_eom_per_pf_rows(self, tmp_path: Path) -> None:
         """``output['signals'].height == n_chars * n_eoms * n_pfs`` after dropping empties."""
         chars = SYNTHETIC_CHARS[:3]
