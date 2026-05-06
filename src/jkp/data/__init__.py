@@ -17,8 +17,6 @@ try:
 except _PackageNotFoundError:  # pragma: no cover
     __version__ = "0.0.0+unknown"
 
-del _PackageNotFoundError, _version
-
 
 # Public API surface for the v0.x line. Adding a name here commits to keeping
 # it importable from `jkp.data` for the duration of v0.x — bumping these names

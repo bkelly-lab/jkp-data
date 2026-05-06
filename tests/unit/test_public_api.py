@@ -17,14 +17,25 @@ import pytest
 
 
 def _clean_env() -> dict[str, str]:
-    """Return an environment without pytest-cov subprocess hooks.
+    """Return an environment without coverage subprocess hooks.
 
-    pytest-cov sets ``COV_CORE_*`` env vars so that any subprocess Python
-    automatically activates coverage and imports the measured package — that
-    eager import would import the very heavy modules these tests are checking
-    for absence. Strip those vars so the subprocess sees a clean Python.
+    Both pytest-cov and coverage.py have mechanisms to auto-activate coverage
+    in subprocesses, which would force an eager import of the measured package
+    and defeat the lazy-import assertions below:
+
+      - Older pytest-cov (2.x/3.x) sets ``COV_CORE_*``.
+      - Modern coverage.py uses ``COVERAGE_PROCESS_START`` plus a ``.pth`` file
+        installed in site-packages; the ``.pth`` only activates when that env
+        var is set, so stripping it suppresses subprocess coverage.
+
+    Strip both prefixes so the subprocess Python sees no coverage hooks
+    regardless of which tooling configuration the project is using.
     """
-    return {k: v for k, v in os.environ.items() if not k.startswith("COV_")}
+    return {
+        k: v
+        for k, v in os.environ.items()
+        if not (k.startswith("COV_") or k.startswith("COVERAGE_"))
+    }
 
 
 # Names in __all__ that the package should expose. Updating this list
