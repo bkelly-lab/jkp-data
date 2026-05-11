@@ -45,7 +45,7 @@ from .aux_functions import (
     setup_folder_structure,
     standardized_accounting_data,
 )
-from .config import ACCOUNTING_START_DATE, END_DATE
+from .config import ACCOUNTING_START_DATE, END_DATE, ROLLING_DAILY_SPECS
 from .paths import DataPaths
 from .wrds_credentials import get_wrds_credentials
 
@@ -136,14 +136,9 @@ def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> No
     residual_momentum("resmom_ff3", "world_msf.parquet", "ap_factors_monthly.parquet", 36, 24, 6, 1)
     bidask_hl("corwin_schultz.parquet", "world_dsf.parquet", "market_returns_daily.parquet", 10)
     prepare_daily("world_dsf.parquet", "ap_factors_daily.parquet")
-    for var in ["rvol", "rmax", "skew", "capm_ext", "ff3", "hxz4", "dimsonbeta", "zero_trades"]:
-        roll_apply_daily(var, "_21d", 15)
-    for var in ["zero_trades", "turnover", "dolvol", "ami"]:
-        roll_apply_daily(var, "_126d", 60)
-    for var in ["rvol", "capm", "downbeta", "zero_trades", "prc_to_high", "mktvol"]:
-        roll_apply_daily(var, "_252d", 120)
-    for var in ["mktcorr"]:
-        roll_apply_daily(var, "_1260d", 750)
+    for sfx, min_obs, vars_ in ROLLING_DAILY_SPECS:
+        for var in vars_:
+            roll_apply_daily(var, sfx, min_obs)
     merge_roll_apply_daily_results()
     finish_daily_chars("market_chars_d.parquet")
     merge_world_data_prelim()
