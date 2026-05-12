@@ -249,14 +249,12 @@ def test_merge_roll_apply_daily_results_writes_once_with_deterministic_order(
 
 
 def test_dsf1_unique_id_int_date(temp_data_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """dsf1.parquet must be unique on (id_int, date).
+    """dsf1.parquet (post-prepare_daily) must be unique on (id_int, date).
 
-    prc_to_high() relies on this invariant: its simplification (within-group
-    sort_by('date').last()) is byte-exact vs the previous global-sort impl only
-    when the input has no rows sharing (id_int, date) within a group_number.
-    The invariant is established upstream by combine_crsp_comp_sf's ROW_NUMBER
-    dedup over (id, date) (asserted by test_no_duplicates_daily) and preserved
-    through prepare_daily — this test locks the post-prepare_daily property.
+    prc_to_high's within-group sort_by('date').last() is well-defined only under this
+    invariant. Upstream guarantee is combine_crsp_comp_sf's ROW_NUMBER dedup over
+    (id, date) (locked by test_no_duplicates_daily); this test locks the property
+    after prepare_daily.
     """
     code_dir = temp_data_dir / "code"
     code_dir.mkdir(exist_ok=True)

@@ -9,6 +9,7 @@ turnover, mktcorr, and dimsonbeta.
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -35,6 +36,8 @@ from jkp.data.aux_functions import (
     turnover,
     zero_trades,
 )
+
+GOLDEN_DIR = Path(__file__).parent.parent / "golden" / "fixtures"
 
 
 def _is_none_or_nan(value: float | None) -> bool:
@@ -414,20 +417,12 @@ class TestPrcToHigh:
         assert result["id_int"][0] == 1
 
     def test_prc_to_high_golden_fixture(self):
-        """Lock down prc_to_high output on a 500-id seeded synthetic fixture.
-
-        Input is generated with unique dates per (id_int, group_number) — the synthetic
-        scenario the function is contractually required to handle. Compares against the
-        golden parquet at rtol=1e-12 (loose enough to absorb cross-platform float
-        rounding, tight enough to catch any algorithmic regression).
+        """Lock prc_to_high output on a 500-id seeded synthetic fixture with unique
+        (id_int, group_number, date). rtol=1e-12 absorbs cross-platform float rounding.
         """
-        import pathlib
-
         from tests.golden.generate_rolling_golden import build_prc_to_high_input
 
-        golden = pl.read_parquet(
-            pathlib.Path(__file__).parent.parent / "golden" / "fixtures" / "prc_to_high_21d.parquet"
-        )
+        golden = pl.read_parquet(GOLDEN_DIR / "prc_to_high_21d.parquet")
         df = build_prc_to_high_input(seed=42)
         result = prc_to_high(df.lazy(), "_21d", __min=10).collect().sort(["id_int", "group_number"])
         assert_frame_equal(result, golden, check_exact=False, atol=0.0, rtol=1e-12)
@@ -1117,21 +1112,10 @@ class TestZeroTrades:
         )
 
     def test_zero_trades_golden_fixture(self):
-        """Refactored impl must match pre-refactor golden output to within rtol=1e-12.
-
-        rtol is loose enough to absorb cross-platform float rounding, tight enough to
-        catch any algorithmic regression vs the pre-refactor list-aggregation impl.
-        """
-        import pathlib
-
+        """Lock zero_trades output against golden parquet."""
         from tests.golden.generate_rolling_golden import build_zero_trades_input
 
-        golden = pl.read_parquet(
-            pathlib.Path(__file__).parent.parent
-            / "golden"
-            / "fixtures"
-            / "zero_trades_126d.parquet"
-        )
+        golden = pl.read_parquet(GOLDEN_DIR / "zero_trades_126d.parquet")
         df = build_zero_trades_input(seed=44)
         result = (
             zero_trades(df.lazy(), "_126d", __min=20).collect().sort(["id_int", "group_number"])
@@ -1326,14 +1310,10 @@ class TestTurnover:
         assert result["turnover_21d"][0] is not None
 
     def test_turnover_golden_fixture(self):
-        """Refactored impl must match pre-refactor golden output at rtol=1e-12."""
-        import pathlib
-
+        """Lock turnover output against golden parquet."""
         from tests.golden.generate_rolling_golden import build_turnover_input
 
-        golden = pl.read_parquet(
-            pathlib.Path(__file__).parent.parent / "golden" / "fixtures" / "turnover_126d.parquet"
-        )
+        golden = pl.read_parquet(GOLDEN_DIR / "turnover_126d.parquet")
         df = build_turnover_input(seed=43)
         result = turnover(df.lazy(), "_126d", __min=20).collect().sort(["id_int", "group_number"])
         assert_frame_equal(result, golden, check_exact=False, atol=0.0, rtol=1e-12)
@@ -1639,19 +1619,16 @@ class TestPrepareDailyCorr:
     """
 
     def test_corr_data_null_free_and_zero_obs_filtered(self, temp_data_dir, monkeypatch):
-        """corr_data.parquet must have zero nulls and no zero_obs column after the filter push."""
-        from datetime import date as dt
-
+        """corr_data.parquet has zero nulls and no zero_obs column."""
         from jkp.data.aux_functions import prepare_daily
 
         monkeypatch.chdir(temp_data_dir)
 
-        # --- build synthetic dsf (daily stock file) ---
-        # id "A": 5 consecutive days, all ret_exc non-null, zero_obs small → all rows survive
-        # id "B": day1 ret_exc=null → 3l-sums on days 1-3 are null → those days filtered
-        # id "C": zero_obs=10 for all rows → entire id filtered
-        dates = [dt(2020, 1, d) for d in range(2, 7)]  # Jan 2, 3, 4, 5, 6 2020
-        eom = dt(2020, 1, 31)
+        # id "A": 5 consecutive days, all ret_exc non-null → all rows survive.
+        # id "B": day1 ret_exc null → 3l-sums on days 1-3 null → those days filtered.
+        # id "C": zero_obs=10 every day → whole id filtered.
+        dates = [date(2020, 1, d) for d in range(2, 7)]
+        eom = date(2020, 1, 31)
 
         def make_rows(stock_id, ret_exc_vals, ret_local_vals):
             n = len(dates)
@@ -1680,8 +1657,8 @@ class TestPrepareDailyCorr:
         )
         # id "C": ret_local=0 every day → zero_obs=5 per eom (< 10 so NOT filtered by zero_obs)
         #   Actually make zero_obs >= 10 by using 10 rows for id "C" spanning two eoms
-        dates_c = [dt(2020, 1, d) for d in range(2, 12)]  # 10 days
-        eom_c_vals = [dt(2020, 1, 31)] * 10
+        dates_c = [date(2020, 1, d) for d in range(2, 12)]  # 10 days
+        eom_c_vals = [date(2020, 1, 31)] * 10
         df_c = pl.DataFrame(
             {
                 "excntry": ["USA"] * 10,

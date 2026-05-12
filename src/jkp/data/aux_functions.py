@@ -8214,7 +8214,7 @@ def base_data_filter_exp(stat):
     elif stat == "turnover":
         return col("tvol").is_not_null()
     elif stat == "mktcorr":
-        # corr_data.parquet is pre-filtered in prepare_daily; nothing to drop at read time.
+        # corr_data.parquet pre-filtered upstream in prepare_daily.
         return pl.lit(True)
     else:
         return (col("ret_exc").is_not_null()) & (col("zero_obs") < 10)
@@ -8467,12 +8467,8 @@ def prc_to_high(df, sfx, __min):
         LazyFrame with f'prc_highprc{sfx}'.
 
     Note:
-        Bit-exact vs the prior global-sort impl on production data: dsf1.parquet is
-        unique on (id_int, date) (combine_crsp_comp_sf ROW_NUMBER dedup at
-        aux_functions.py:2251-2266 + injective id_int = rank(method='min') +
-        ap_factors_daily pivot uniqueness). The two impls differ only on rows sharing
-        (id_int, date) within a group_number, which the production pipeline cannot
-        produce. The dsf1 invariant is locked by test_dsf1_unique_id_int_date.
+        Last-by-date is well-defined only when dsf1.parquet is unique on (id_int, date);
+        invariant locked by test_dsf1_unique_id_int_date.
     """
 
     df = (
@@ -8671,6 +8667,13 @@ def hxz4(df, sfx, __min):
     return df
 
 
+def _turnover_d_expr():
+    """tvol / (shares*1e6) when shares!=0, else null."""
+    return (
+        pl.when(col("shares") != 0).then(col("tvol") / (col("shares") * 1e6)).otherwise(fl_none())
+    )
+
+
 def zero_trades(df, sfx, __min):
     """
     Description:
@@ -8686,23 +8689,22 @@ def zero_trades(df, sfx, __min):
     Output:
         LazyFrame with f'zero_trades{sfx}'.
     """
-
-    turnover_d = (
-        pl.when(col("shares") != 0).then(col("tvol") / (col("shares") * 1e6)).otherwise(fl_none())
-    )
     df = (
         df.group_by(["id_int", "group_number"])
         .agg(
             ((col("tvol") == 0).mean() * 21).alias("zero_trades"),
-            turnover_d.mean().alias("turnover"),
+            _turnover_d_expr().mean().alias("turnover"),
         )
         .filter(col("zero_trades").is_not_null())
         .with_columns(
-            (col("turnover").rank(descending=True, method="average") / pl.count("turnover"))
-            .over("group_number")
-            .alias("rank_frac"),
+            (
+                (
+                    col("turnover").rank(descending=True, method="average") / pl.count("turnover")
+                ).over("group_number")
+                / 100
+                + col("zero_trades")
+            ).alias(f"zero_trades{sfx}")
         )
-        .with_columns((col("rank_frac") / 100 + col("zero_trades")).alias(f"zero_trades{sfx}"))
         .select(["id_int", "group_number", f"zero_trades{sfx}"])
     )
     return df
@@ -8745,9 +8747,7 @@ def turnover(df, sfx, __min):
     Output:
         LazyFrame with [f'turnover{sfx}', f'turnover_var{sfx}'].
     """
-    turnover_d = (
-        pl.when(col("shares") != 0).then(col("tvol") / (col("shares") * 1e6)).otherwise(fl_none())
-    )
+    turnover_d = _turnover_d_expr()
     df = (
         df.group_by(["id_int", "group_number"])
         .agg(
@@ -8779,8 +8779,6 @@ def mktcorr(df, sfx, __min):
     Output:
         LazyFrame with f'corr{sfx}'.
     """
-    # pl.len() is sound because prepare_daily writes corr_data.parquet pre-filtered
-    # to ret_exc_3l/mkt_exc_3l non-null; len == count(ret_exc_3l) == count(mkt_exc_3l).
     return (
         df.group_by(["id_int", "group_number"])
         .agg(
