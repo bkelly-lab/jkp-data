@@ -1,6 +1,7 @@
 import os
 import time
 import warnings
+from datetime import date
 from pathlib import Path
 
 import polars as pl
@@ -844,7 +845,7 @@ def _write_filtered(
     df: pl.DataFrame,
     path: str,
     date_col: str,
-    end_date,
+    end_date: date,
 ) -> None:
     """Filter `df` to rows where `date_col <= end_date` and write to `path`."""
     write_dataframe(df.filter(pl.col(date_col) <= end_date), path)
@@ -855,7 +856,7 @@ def _write_split_by_key(
     folder_path: str,
     key_col: str,
     date_col: str,
-    end_date,
+    end_date: date,
 ) -> None:
     """Partition `df` by `key_col` and write one parquet per key into `folder_path`.
 
@@ -1073,10 +1074,8 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
 
     # Extract CMP returns
     cmp_list = [d["cmp"] for d in portfolio_data.values() if "cmp" in d]
-    if cmp_list:
-        cmp_returns = pl.concat(cmp_list)
-    else:
-        # Handle the empty list case here
+    cmp_returns = pl.concat(cmp_list) if cmp_list else None
+    if cmp_returns is None:
         print("No 'cmp' keys found")
 
     # Create Clustered Portfolios
@@ -1218,7 +1217,7 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
     for df, name in monthly_outputs:
         if df is not None:
             _write_filtered(df, f"{output_path}/{name}", "eom", end_date)
-    if cmp_list:
+    if cmp_returns is not None:
         _write_filtered(cmp_returns, f"{output_path}/cmp.parquet", "eom", end_date)
 
     # Single-file outputs (daily)

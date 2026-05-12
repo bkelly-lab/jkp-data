@@ -33,6 +33,7 @@ from jkp.data.config import (
     REGIONAL_COUNTRY_EXCL,
     REGIONAL_MONTHS_MIN,
     REGIONAL_STOCKS_MIN,
+    ROLLING_DAILY_SPECS,
 )
 
 # =============================================================================
@@ -173,7 +174,6 @@ class TestConfig:
         assert set(PORTFOLIO_SETTINGS["cmp"]) == {"us", "int"}
         assert set(PORTFOLIO_SETTINGS["signals"]) == {"us", "int", "standardize", "weight"}
         assert set(PORTFOLIO_SETTINGS["regional_pfs"]) == {
-            "ret_type",
             "country_excl",
             "country_weights",
             "stocks_min",
@@ -183,6 +183,38 @@ class TestConfig:
         assert PORTFOLIO_SETTINGS["regional_pfs"]["country_excl"] == list(REGIONAL_COUNTRY_EXCL)
         assert PORTFOLIO_SETTINGS["pfs"] == PORTFOLIO_PFS
         assert PORTFOLIO_SETTINGS["bp_min_n"] == PORTFOLIO_BP_MIN_N
+
+
+class TestRollingDailySpecs:
+    """Integrity checks for ROLLING_DAILY_SPECS."""
+
+    KNOWN_SUFFIXES = {"_21d", "_126d", "_252d", "_1260d"}
+
+    def test_is_nonempty_list(self):
+        assert isinstance(ROLLING_DAILY_SPECS, list) and ROLLING_DAILY_SPECS
+
+    def test_suffixes_are_known(self):
+        """Every sfx must be in the set gen_aux_maps recognizes natively."""
+        sfxs = [sfx for sfx, _, _ in ROLLING_DAILY_SPECS]
+        unknown = set(sfxs) - self.KNOWN_SUFFIXES
+        assert not unknown, f"Unknown suffixes: {sorted(unknown)}"
+
+    def test_suffixes_are_unique(self):
+        sfxs = [sfx for sfx, _, _ in ROLLING_DAILY_SPECS]
+        assert len(sfxs) == len(set(sfxs)), f"Duplicate suffixes: {sfxs}"
+
+    def test_min_obs_positive_int(self):
+        for sfx, min_obs, _ in ROLLING_DAILY_SPECS:
+            assert isinstance(min_obs, int) and min_obs > 0, (
+                f"{sfx}: min_obs must be positive int, got {min_obs!r}"
+            )
+
+    def test_variables_are_nonempty_str_lists(self):
+        for sfx, _, vars_ in ROLLING_DAILY_SPECS:
+            assert isinstance(vars_, list) and vars_, f"{sfx}: variables list is empty"
+            assert all(isinstance(v, str) and v for v in vars_), (
+                f"{sfx}: variables must be non-empty strings, got {vars_!r}"
+            )
 
 
 # =============================================================================

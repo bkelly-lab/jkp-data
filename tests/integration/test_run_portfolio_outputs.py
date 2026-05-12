@@ -69,7 +69,6 @@ def _setup(
             "weight": "vw_cap",
         },
         "regional_pfs": {
-            "ret_type": "vw_cap",
             "country_excl": ["ZWE", "VEN"],
             "country_weights": "market_cap",
             "stocks_min": 1,
@@ -195,7 +194,6 @@ class TestRunPortfolioOutputs:
             countries=("USA", "GBR", "DEU", "ZWE"),
             settings_overrides={
                 "regional_pfs": {
-                    "ret_type": "vw_cap",
                     "country_excl": ["ZWE", "VEN"],
                     "country_weights": "market_cap",
                     "stocks_min": 1,

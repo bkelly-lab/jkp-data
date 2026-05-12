@@ -205,6 +205,16 @@ PORTFOLIO_CHARS = [
     "zero_trades_252d",
 ]
 
+# (window_suffix, min_obs, variables) triples driving roll_apply_daily.
+# min_obs is the per-group minimum observation count for each window.
+# Variables can repeat across windows (e.g. zero_trades runs at 21d/126d/252d).
+ROLLING_DAILY_SPECS: list[tuple[str, int, list[str]]] = [
+    ("_21d", 15, ["rvol", "rmax", "skew", "capm_ext", "ff3", "hxz4", "dimsonbeta", "zero_trades"]),
+    ("_126d", 60, ["zero_trades", "turnover", "dolvol", "ami"]),
+    ("_252d", 120, ["rvol", "capm", "downbeta", "zero_trades", "prc_to_high", "mktvol"]),
+    ("_1260d", 750, ["mktcorr"]),
+]
+
 PORTFOLIO_SETTINGS = {
     "end_date": END_DATE,
     "pfs": PORTFOLIO_PFS,
@@ -215,7 +225,6 @@ PORTFOLIO_SETTINGS = {
     "cmp": {"us": True, "int": False},
     "signals": {"us": False, "int": False, "standardize": True, "weight": "vw_cap"},
     "regional_pfs": {
-        "ret_type": "vw_cap",
         "country_excl": list(REGIONAL_COUNTRY_EXCL),
         "country_weights": "market_cap",
         "stocks_min": REGIONAL_STOCKS_MIN,

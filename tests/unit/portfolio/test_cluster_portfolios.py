@@ -287,7 +287,6 @@ class TestClusterPortfolios:
                 "weight": "vw_cap",
             },
             "regional_pfs": {
-                "ret_type": "vw_cap",
                 "country_excl": ["ZWE", "VEN"],
                 "country_weights": "market_cap",
                 "stocks_min": 1,
@@ -299,6 +298,7 @@ class TestClusterPortfolios:
         }
         monkeypatch.setattr(pf_mod, "PORTFOLIO_CHARS", chars)
         monkeypatch.setattr(pf_mod, "PORTFOLIO_SETTINGS", lenient_settings)
+        monkeypatch.setattr("jkp.data.output_writer._configured", False)
 
         run_portfolio(output_dir=tmp_path)
 
