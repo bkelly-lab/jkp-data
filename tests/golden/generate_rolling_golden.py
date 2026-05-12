@@ -2,7 +2,7 @@
 Generate golden fixture parquet files for prc_to_high, turnover, and zero_trades.
 
 Run with:
-    uv run python -m tests.fixtures.generate_rolling_golden
+    uv run python -m tests.golden.generate_rolling_golden
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import polars as pl
 
 from jkp.data.aux_functions import prc_to_high, turnover, zero_trades
 
-GOLDEN_DIR = Path(__file__).parent / "golden"
+GOLDEN_DIR = Path(__file__).parent / "fixtures"
 
 
 # ---------------------------------------------------------------------------

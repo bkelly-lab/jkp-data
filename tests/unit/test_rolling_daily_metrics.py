@@ -423,10 +423,10 @@ class TestPrcToHigh:
         """
         import pathlib
 
-        from tests.fixtures.generate_rolling_golden import build_prc_to_high_input
+        from tests.golden.generate_rolling_golden import build_prc_to_high_input
 
         golden = pl.read_parquet(
-            pathlib.Path(__file__).parent.parent / "fixtures" / "golden" / "prc_to_high_21d.parquet"
+            pathlib.Path(__file__).parent.parent / "golden" / "fixtures" / "prc_to_high_21d.parquet"
         )
         df = build_prc_to_high_input(seed=42)
         result = prc_to_high(df.lazy(), "_21d", __min=10).collect().sort(["id_int", "group_number"])
@@ -1124,12 +1124,12 @@ class TestZeroTrades:
         """
         import pathlib
 
-        from tests.fixtures.generate_rolling_golden import build_zero_trades_input
+        from tests.golden.generate_rolling_golden import build_zero_trades_input
 
         golden = pl.read_parquet(
             pathlib.Path(__file__).parent.parent
-            / "fixtures"
             / "golden"
+            / "fixtures"
             / "zero_trades_126d.parquet"
         )
         df = build_zero_trades_input(seed=44)
@@ -1329,10 +1329,10 @@ class TestTurnover:
         """Refactored impl must match pre-refactor golden output at rtol=1e-12."""
         import pathlib
 
-        from tests.fixtures.generate_rolling_golden import build_turnover_input
+        from tests.golden.generate_rolling_golden import build_turnover_input
 
         golden = pl.read_parquet(
-            pathlib.Path(__file__).parent.parent / "fixtures" / "golden" / "turnover_126d.parquet"
+            pathlib.Path(__file__).parent.parent / "golden" / "fixtures" / "turnover_126d.parquet"
         )
         df = build_turnover_input(seed=43)
         result = turnover(df.lazy(), "_126d", __min=20).collect().sort(["id_int", "group_number"])
