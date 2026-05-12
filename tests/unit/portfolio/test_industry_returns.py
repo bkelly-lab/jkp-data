@@ -20,6 +20,7 @@ from jkp.data.portfolio import (
 )
 from tests.unit.portfolio.conftest import (
     SYNTHETIC_CHARS,
+    assert_frames_parity,
     make_country_characteristics,
     make_cutoffs,
     make_daily_returns,
@@ -45,40 +46,6 @@ def _write_synthetic_country(
     daily_df = make_daily_returns(char_df, seed=seed + 1)
     daily_df.write_parquet(daily_dir / f"{excntry}.parquet")
     return char_df, daily_df
-
-
-def _assert_frames_parity(
-    actual: pl.DataFrame,
-    expected: pl.DataFrame,
-    key_cols: list[str],
-    numeric_cols: dict[str, dict[str, float]],
-    label: str,
-) -> None:
-    """Compare two frames: key cols exact, numeric cols within tolerance."""
-    import numpy as np
-
-    assert actual.height == expected.height, (
-        f"[{label}] height mismatch: {actual.height} vs {expected.height}"
-    )
-    assert actual.height > 0, f"[{label}] empty frame"
-    a = actual.sort(key_cols)
-    e = expected.sort(key_cols)
-    for col in key_cols:
-        assert a[col].to_list() == e[col].to_list(), f"[{label}] key {col!r} mismatch"
-    for col, tol in numeric_cols.items():
-        a_np = a[col].to_numpy().astype(np.float64)
-        e_np = e[col].to_numpy().astype(np.float64)
-        a_nan = np.isnan(a_np)
-        e_nan = np.isnan(e_np)
-        assert np.array_equal(a_nan, e_nan), f"[{label}] NaN positions differ in {col!r}"
-        mask = ~a_nan
-        if mask.any():
-            np.testing.assert_allclose(
-                a_np[mask],
-                e_np[mask],
-                err_msg=f"[{label}] {col!r} beyond tolerance",
-                **tol,
-            )
 
 
 # =============================================================================
@@ -493,14 +460,14 @@ class TestExcntryGating:
             "ret_vw_cap": _TIGHT,
         }
 
-        _assert_frames_parity(
+        assert_frames_parity(
             upper["ff49_returns"],
             lower["ff49_returns"],
             key_cols=["ff49", "eom", "excntry"],
             numeric_cols=ind_numeric,
             label="ff49_returns case parity",
         )
-        _assert_frames_parity(
+        assert_frames_parity(
             upper["ff49_daily"],
             lower["ff49_daily"],
             key_cols=[*ind_key_cols, "date"],
