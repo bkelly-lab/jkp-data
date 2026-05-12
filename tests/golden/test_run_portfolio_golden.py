@@ -119,6 +119,7 @@ def test_run_portfolio_golden(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     request: pytest.FixtureRequest,
+    reset_output_writer: None,
 ) -> None:
     cfg = PROFILES[profile]
     chars = CHARS
@@ -138,10 +139,6 @@ def test_run_portfolio_golden(
     monkeypatch.setattr("jkp.data.paths.get_cluster_labels_path", lambda: cl)
     monkeypatch.setattr("jkp.data.portfolio.PORTFOLIO_CHARS", chars)
     monkeypatch.setattr("jkp.data.portfolio.PORTFOLIO_SETTINGS", _build_settings(cfg))
-
-    # Reset one-shot output-writer state so each profile in the same pytest
-    # session can call configure_output_format("parquet") cleanly.
-    monkeypatch.setattr("jkp.data.output_writer._configured", False)
 
     from jkp.data.portfolio import run_portfolio
 

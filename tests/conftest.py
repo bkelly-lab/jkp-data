@@ -213,6 +213,15 @@ def make_dataframe():
 
 
 @pytest.fixture
+def reset_output_writer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reset ``output_writer._configured`` so the one-shot
+    ``configure_output_format`` call inside ``run_portfolio`` runs cleanly even
+    when an earlier test in the same session has already configured the writer.
+    """
+    monkeypatch.setattr("jkp.data.output_writer._configured", False)
+
+
+@pytest.fixture
 def temp_data_dir(tmp_path: Path) -> Generator[Path, None, None]:
     """Provide a temporary directory for test data files.
 

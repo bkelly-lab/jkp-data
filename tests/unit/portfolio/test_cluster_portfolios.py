@@ -224,7 +224,10 @@ class TestClusterPortfolios:
     # ------------------------------------------------------------------
 
     def test_run_portfolio_writes_clusters_parquet(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        reset_output_writer: None,
     ) -> None:
         # Stub resource files are written as parquet (see conftest); reroute
         # ``pl.read_excel``/``pl.scan_csv`` inside ``jkp.data.portfolio`` to
@@ -298,7 +301,6 @@ class TestClusterPortfolios:
         }
         monkeypatch.setattr(pf_mod, "PORTFOLIO_CHARS", chars)
         monkeypatch.setattr(pf_mod, "PORTFOLIO_SETTINGS", lenient_settings)
-        monkeypatch.setattr("jkp.data.output_writer._configured", False)
 
         run_portfolio(output_dir=tmp_path)
 
