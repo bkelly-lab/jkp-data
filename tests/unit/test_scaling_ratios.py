@@ -16,7 +16,6 @@ from datetime import date
 
 import numpy as np
 import polars as pl
-import pytest
 
 from jkp.data.aux_functions import (
     calculate_consecutive_earnings_increases,
@@ -36,7 +35,7 @@ from jkp.data.aux_functions import (
 
 
 def _monthly_dates(n: int, start_year: int = 2010) -> list[date]:
-    """Generate n month-end dates starting Jan of start_year."""
+    """Generate n monthly dates on the 28th starting Jan of start_year."""
     out: list[date] = []
     for i in range(n):
         year = start_year + i // 12
@@ -56,24 +55,6 @@ def _single_firm_panel(n: int, **cols: list) -> pl.DataFrame:
     for k, v in cols.items():
         data[k] = v
     return pl.DataFrame(data)
-
-
-@pytest.fixture
-def panel_13() -> pl.DataFrame:
-    """13-row single-firm panel (minimum length for shift(12))."""
-    return _single_firm_panel(13)
-
-
-@pytest.fixture
-def panel_24() -> pl.DataFrame:
-    """24-row single-firm panel."""
-    return _single_firm_panel(24)
-
-
-@pytest.fixture
-def panel_37() -> pl.DataFrame:
-    """37-row single-firm panel (minimum length for capex_abn count>36 gate)."""
-    return _single_firm_panel(37)
 
 
 # =============================================================================
