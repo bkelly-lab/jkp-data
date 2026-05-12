@@ -8798,9 +8798,9 @@ def dimsonbeta(
         df.group_by(["id_int", "group_number"])
         .agg(
             coeffs=pds.lin_reg(
+                "mktrf_lg1",
                 "mktrf",
                 "mktrf_ld1",
-                "mktrf_lg1",
                 target="ret_exc",
                 add_bias=True,
                 solver="cholesky",
