@@ -1218,8 +1218,11 @@ class TestDimsonbeta:
         assert len(result) == 0
 
     def test_dimsonbeta_handles_singular_design(self):
-        # pds.lin_reg uses QR (rank-revealing) and returns a finite min-norm
-        # solution when regressors are collinear, rather than a null beta.
+        # Regression check: on a collinear design, dimsonbeta returns a finite
+        # beta (no NaN / null / crash). polars-ds's Cholesky path tolerates the
+        # near-singular X'X produced by these inputs via tiny numerical noise on
+        # the diagonal — locking this behavior here so future solver swaps don't
+        # silently regress callers that assume a finite return.
         n = 20
         mkt = np.linspace(-1.0, 1.0, n)
         df = pl.DataFrame(

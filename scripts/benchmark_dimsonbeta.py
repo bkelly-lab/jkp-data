@@ -44,7 +44,16 @@ def dimsonbeta_pds(df: pl.DataFrame) -> pl.DataFrame:
     beta_expr = pl.col("coeffs").list.head(3).list.sum()
     return (
         df.group_by(["id_int", "group_number"])
-        .agg(coeffs=pds.lin_reg("mktrf", "mktrf_ld1", "mktrf_lg1", target="ret_exc", add_bias=True))
+        .agg(
+            coeffs=pds.lin_reg(
+                "mktrf_lg1",
+                "mktrf",
+                "mktrf_ld1",
+                target="ret_exc",
+                add_bias=True,
+                solver="cholesky",
+            )
+        )
         .select("id_int", "group_number", beta_expr.alias(name))
         .filter(pl.col(name).is_not_null() & pl.col(name).is_not_nan())
     )
