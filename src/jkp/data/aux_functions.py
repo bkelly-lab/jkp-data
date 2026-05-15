@@ -82,8 +82,6 @@ def setup_folder_structure(paths: DataPaths) -> None:
     Output:
         Folders created on disk (no return value).
     """
-    import shutil
-
     from .paths import get_data_readme_path
 
     paths.interim_dir.mkdir(parents=True, exist_ok=True)
@@ -7922,8 +7920,6 @@ def save_output_files(paths: DataPaths):
     Output:
         Files copied into 'other_output/' directory.
     """
-    import shutil
-
     other_output = paths.processed_dir / "other_output"
     for name in (
         "market_returns.parquet",
