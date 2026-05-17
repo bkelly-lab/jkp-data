@@ -6451,17 +6451,19 @@ def ap_factors(
 ):
     """
     Description:
-        Build AP-style factor panels (FF HML/SMB and HXZ INV/ROE/SMB) by country and month (or day).
+        Build AP-style factor panels (HXZ INV/ROE/SMB) by country and month (or day).
+        FF HML / SMB are produced by `gen_ff_portfolios` on the strict CIZ-FF
+        universe and live in ff_factors_<freq>.parquet — not here.
 
     Steps:
         1) Load security returns; winsorize ret_exc by eom at configurable percentile bounds.
         2) Load market characteristics; lag key vars 1 period with continuity guard; filter to eligible stocks.
-        3) Size-bucket each stock; run FF-style sorts for BE/ME, asset growth, and ROE.
-        4) Compose factors: mktrf from market file; HML/SMB (FF); INV/ROE/SMB (HXZ).
+        3) Size-bucket each stock; run FF-style sorts for asset growth and ROE.
+        4) Compose factors: mktrf from market file; INV/ROE/SMB (HXZ).
         5) Join and write factors to output_path.
 
     Output:
-        Parquet factor file with columns: [excntry, date/eom, mktrf, hml, smb_ff, inv, roe, smb_hxz].
+        Parquet factor file with columns: [excntry, date/eom, mktrf, inv, roe, smb_hxz].
     """
     date_col = "eom" if freq == "m" else "date"
     sf_cond = (col("ret_lag_dif") == 1) if freq == "m" else (col("ret_lag_dif") <= 5)
@@ -6547,9 +6549,6 @@ def ap_factors(
         )
     )
 
-    ff = sort_ff_style("be_me", min_stocks_bp, min_stocks_pf, date_col, base, world_sf2).rename(
-        {"lms": "hml", "smb": "smb_ff"}
-    )
     asset_growth = sort_ff_style(
         "at_gr1", min_stocks_bp, min_stocks_pf, date_col, base, world_sf2
     ).rename({"lms": "at_gr1_lms", "smb": "at_gr1_smb"})
@@ -6570,24 +6569,32 @@ def ap_factors(
         pl.scan_parquet(mkt_path)
         .select(["excntry", date_col, col("mkt_vw_exc").alias("mktrf")])
         .collect()
-        .join(ff, how="left", on=["excntry", date_col])
         .join(hxz, how="left", on=["excntry", date_col])
     )
     output.write_parquet(output_path)
 
 
-def prep_data_factor_regs(data_path, fcts_path, lower: float = 0.001, upper: float = 0.999):
+def prep_data_factor_regs(
+    data_path,
+    fcts_path,
+    ff_fcts_path,
+    lower: float = 0.001,
+    upper: float = 0.999,
+):
     """
     Description:
-        Prepare monthly panel for factor regressions (join data with factors, filter, winsorize).
+        Prepare monthly panel for factor regressions.
 
     Steps:
-        1) Create __msf1: join msf with factors on (excntry, eom); keep ret_exc, mktrf, hml, smb_ff and valid monthly obs.
-        2) Add integer date (aux_date) and cast id_int.
-        3) Winsorize ret_exc by eom at configurable percentile bounds into __msf2.
+        1) Join msf with ap_factors on (excntry, eom) to pick up mktrf.
+        2) Left-join FF factors (ff_factors_monthly.parquet) on eom to pick up
+           hml + smb_ff3 (renamed locally to smb_ff). FF is US-only, so its
+           values are broadcast to all excntry rows.
+        3) Add integer date (aux_date) and cast id_int.
+        4) Winsorize ret_exc by eom at configurable percentile bounds.
 
     Output:
-        DuckDB connection containing tables '__msf2' (ready for rolling regs).
+        DuckDB connection containing table '__msf2' (ready for rolling regs).
     """
 
     os.system("rm -f aux_factor_regs.ddb")
@@ -6602,6 +6609,10 @@ def prep_data_factor_regs(data_path, fcts_path, lower: float = 0.001, upper: flo
     SELECT *
     FROM read_parquet('{fcts_path}');
 
+    CREATE OR REPLACE VIEW ff_fcts AS
+    SELECT eom, hml, smb_ff3 AS smb_ff
+    FROM read_parquet('{ff_fcts_path}');
+
     CREATE OR REPLACE TABLE __msf2 AS
     WITH __msf1 AS (
     SELECT
@@ -6611,8 +6622,8 @@ def prep_data_factor_regs(data_path, fcts_path, lower: float = 0.001, upper: flo
         a.ret_exc,
         a.ret_lag_dif,
         b.mktrf,
-        b.hml,
-        b.smb_ff,
+        c.hml,
+        c.smb_ff,
         CAST(
             (EXTRACT(year FROM a.eom) * 12
              + EXTRACT(month FROM a.eom)
@@ -6623,6 +6634,8 @@ def prep_data_factor_regs(data_path, fcts_path, lower: float = 0.001, upper: flo
     LEFT JOIN fcts AS b
       ON a.excntry = b.excntry
      AND a.eom     = b.eom
+    LEFT JOIN ff_fcts AS c
+      ON a.eom = c.eom
     WHERE
         a.ret_local <> 0
         AND a.ret_exc   IS NOT NULL
@@ -6645,20 +6658,21 @@ def prep_data_factor_regs(data_path, fcts_path, lower: float = 0.001, upper: flo
 
 
 @measure_time
-def market_beta(output_path, data_path, fcts_path, __n, __min):
+def market_beta(output_path, data_path, fcts_path, ff_fcts_path, __n, __min):
     """
     Description:
         Estimate rolling CAPM betas and idiosyncratic vol for each stock.
 
     Steps:
-        1) Prep data via prep_data_factor_regs; load '__msf2' lazily.
+        1) Prep data via prep_data_factor_regs (ap_factors for mktrf,
+           ff_factors for hml + smb_ff); load '__msf2' lazily.
         2) Generate rolling-window mappings; run process_map_chunks(..., 'capm') per mapping.
         3) Map back to ids/dates; select beta_{__n}m and ivol_capm_{__n}m; sort.
 
     Output:
         Parquet at output_path with [id, eom, beta_{__n}m, ivol_capm_{__n}m].
     """
-    con = prep_data_factor_regs(data_path, fcts_path)
+    con = prep_data_factor_regs(data_path, fcts_path, ff_fcts_path)
     base_data = con.table("__msf2").to_polars().lazy()
     aux_maps = gen_aux_maps(__n)
     df = pl.concat(
@@ -6691,19 +6705,20 @@ def market_beta(output_path, data_path, fcts_path, __n, __min):
 
 
 @measure_time
-def residual_momentum(output_path, data_path, fcts_path, __n, __min, incl, skip):
+def residual_momentum(output_path, data_path, fcts_path, ff_fcts_path, __n, __min, incl, skip):
     """
     Description:
         Compute residual momentum from FF3 regressions with rolling windows and skip/inclusion rules.
 
     Steps:
-        1) Prep '__msf2'; build window mappings; run process_map_chunks(..., 'res_mom', __n, __min, incl, skip).
+        1) Prep '__msf2' (ap_factors for mktrf, ff_factors for hml + smb_ff);
+           build window mappings; run process_map_chunks(..., 'res_mom').
         2) Join back ids/dates and keep resff3_{incl}_{skip}; sort.
 
     Output:
         Parquet '{output_path}_{incl}_{skip}.parquet' with [id, eom, resff3_{incl}_{skip}].
     """
-    con = prep_data_factor_regs(data_path, fcts_path)
+    con = prep_data_factor_regs(data_path, fcts_path, ff_fcts_path)
     base_data = con.table("__msf2").to_polars().lazy()
     aux_maps = gen_aux_maps(__n)
     df = pl.concat(
@@ -8848,3 +8863,638 @@ def dimsonbeta(
         .select("id_int", "group_number", beta.alias(name))
         .filter(pl.col(name).is_not_null())
     )
+
+
+# =============================================================================
+# Fama-French 3/5-factor replication (US, CIZ universe).
+#
+# Strict-FF methodology: reads raw CRSP CIZ tables + Compustat funda, applies
+# CIZ universe filters, permco-level ME aggregation, NYSE QUANTILE_DISC
+# breakpoints, July-to-June portfolio assignment. The single entry point is
+# `gen_ff_portfolios()`; everything below it is implementation. Numerics
+# track the FF data-library reference within 1 ULP.
+# =============================================================================
+
+
+_FF_CRSP_SPECS = {
+    "monthly": ("crsp_msf_v2.parquet", "mth"),
+    "daily": ("crsp_dsf_v2.parquet", "dly"),
+}
+
+_FF_PORT_YEAR = (
+    pl.when(pl.col("date").dt.month() >= 7)
+    .then(pl.col("date").dt.year())
+    .otherwise(pl.col("date").dt.year() - 1)
+    .alias("port_year")
+)
+
+_FF_SORT_SPECS: dict[str, dict] = {
+    "bm": {
+        "value": "beme",
+        "breaks": ["beme30", "beme70"],
+        "labels": ["L", "M", "H"],
+        "port": "btmport",
+        "flag": "positivebeme",
+        "buckets": ["SL", "SM", "SH", "BL", "BM", "BH"],
+        "rename": {},
+    },
+    "op": {
+        "value": "op",
+        "breaks": ["op30", "op70"],
+        "labels": ["W", "N", "R"],
+        "port": "opport",
+        "flag": "nonmiss_op",
+        "buckets": ["SW", "SN", "SR", "BW", "BN", "BR"],
+        "rename": {"SN": "SN_op", "BN": "BN_op"},
+    },
+    "inv": {
+        "value": "inv",
+        "breaks": ["inv30", "inv70"],
+        "labels": ["C", "N", "A"],
+        "port": "invport",
+        "flag": "nonmiss_inv",
+        "buckets": ["SC", "SN", "SA", "BC", "BN", "BA"],
+        "rename": {"SN": "SN_inv", "BN": "BN_inv"},
+    },
+}
+
+_FF_PORT_COLS = (
+    "sizeport",
+    "btmport",
+    "positivebeme",
+    "opport",
+    "nonmiss_op",
+    "invport",
+    "nonmiss_inv",
+)
+
+
+def _ff_bm_eligible() -> pl.Expr:
+    return (pl.col("beme") > 0) & (pl.col("me") > 0) & (pl.col("count") >= 2)
+
+
+def _ff_op_eligible() -> pl.Expr:
+    return (
+        (pl.col("me") > 0)
+        & (pl.col("be") > 0)
+        & (pl.col("count") >= 2)
+        & pl.col("op").is_not_null()
+    )
+
+
+def _ff_inv_eligible() -> pl.Expr:
+    return (pl.col("me") > 0) & pl.col("inv").is_not_null()
+
+
+_FF_ELIGIBLE = {"bm": _ff_bm_eligible, "op": _ff_op_eligible, "inv": _ff_inv_eligible}
+
+
+def ff_load_compustat(raw_dir: Path, ff5: bool = False) -> pl.LazyFrame:
+    """
+    Description:
+        Load Compustat funda for FF book-equity (FF3) and optionally
+        operating-profit / investment (FF5).
+
+    Steps:
+        1) Scan raw_dir/comp_funda.parquet; cast numerics.
+        2) Apply CCM type filters (INDL/STD/D/C).
+        3) Compute ps, txditc (TXDITC in BE only for FY < 1993), BE.
+        4) If ff5: compute OP=(revt-cogs-xsga-xint)/BE and INV=Δat/at_lag
+           with strict 1-year FY gap.
+        5) Sort by (gvkey,datadate); compute count.
+
+    Output:
+        Lazy [gvkey, datadate, year, be, (op, inv,) count].
+    """
+    base = ["pstkrv", "pstkl", "pstk", "seq", "txditc"]
+    extra = ["revt", "cogs", "xsga", "xint", "at"]
+    floats = base + (extra if ff5 else [])
+    be_raw = pl.col("seq") + pl.col("txditc") - pl.col("ps")
+
+    lf = (
+        pl.scan_parquet(raw_dir / "comp_funda.parquet")
+        .with_columns(
+            pl.col("datadate").cast(pl.Date),
+            pl.col(*floats).cast(pl.Float64),
+        )
+        .filter(
+            (pl.col("indfmt") == "INDL")
+            & (pl.col("datafmt") == "STD")
+            & (pl.col("popsrc") == "D")
+            & (pl.col("consol") == "C")
+        )
+        .with_columns(
+            ps=pl.coalesce("pstkrv", "pstkl", "pstk", pl.lit(0.0)),
+            txditc=pl.when(pl.col("datadate").dt.year() < 1993)
+            .then(pl.col("txditc").fill_null(0.0))
+            .otherwise(pl.lit(0.0)),
+            year=pl.col("datadate").dt.year(),
+        )
+        .with_columns(be=pl.when(be_raw < 0).then(None).otherwise(be_raw))
+        .sort(["gvkey", "datadate"])
+    )
+
+    if ff5:
+        op_elig = pl.col("revt").is_not_null() & (
+            pl.col("cogs").is_not_null()
+            | pl.col("xsga").is_not_null()
+            | pl.col("xint").is_not_null()
+        )
+        op_num = (
+            pl.col("revt")
+            - pl.coalesce("cogs", pl.lit(0.0))
+            - pl.coalesce("xsga", pl.lit(0.0))
+            - pl.coalesce("xint", pl.lit(0.0))
+        )
+        fy_gap = pl.col("datadate").dt.year() - pl.col("datadate_lag").dt.year()
+        lf = lf.with_columns(
+            op=pl.when(op_elig & (pl.col("be") > 0)).then(op_num / pl.col("be")).otherwise(None),
+            at_lag=pl.col("at").shift(1).over("gvkey"),
+            datadate_lag=pl.col("datadate").shift(1).over("gvkey"),
+        ).with_columns(
+            inv=pl.when(
+                pl.col("at").is_not_null()
+                & pl.col("at_lag").is_not_null()
+                & (pl.col("at_lag") > 0)
+                & (fy_gap == 1)
+            )
+            .then((pl.col("at") - pl.col("at_lag")) / pl.col("at_lag"))
+            .otherwise(None),
+        )
+
+    keep = ["op", "inv"] if ff5 else []
+    return lf.with_columns(count=pl.int_range(pl.len()).over("gvkey") + 1).select(
+        ["gvkey", "datadate", "year", "be", *keep, "count"]
+    )
+
+
+def ff_load_crsp(raw_dir: Path, freq: str) -> pl.LazyFrame:
+    """
+    Description:
+        Load CRSP msf_v2 / dsf_v2 with strict CIZ universe filters.
+        Monthly path replaces the trading-day date with calendar end-of-month
+        so output keys join cleanly with pipeline `eom`.
+
+    Steps:
+        1) Scan raw parquet; cast types.
+        2) Filter CIZ universe (sharetype/securitytype/securitysubtype/
+           usincflg/issuertype/primaryexch).
+        3) Compute meq = |prc|*shrout, exchcd from primaryexch.
+        4) Monthly: replace date with last calendar day of month.
+
+    Output:
+        Lazy [permno, permco, date, retadj, retx, prc, shrout, meq, exchcd, shrcd].
+    """
+    pq, p = _FF_CRSP_SPECS[freq]
+    date_c, ret_c, retx_c, prc_c = f"{p}caldt", f"{p}ret", f"{p}retx", f"{p}prc"
+    lf = (
+        pl.scan_parquet(raw_dir / pq)
+        .with_columns(
+            pl.col(date_c).cast(pl.Date),
+            pl.col("permno", "permco").cast(pl.Int64),
+            pl.col(ret_c, retx_c, prc_c, "shrout").cast(pl.Float64),
+        )
+        .filter(
+            (pl.col("sharetype") == "NS")
+            & (pl.col("securitytype") == "EQTY")
+            & (pl.col("securitysubtype") == "COM")
+            & (pl.col("usincflg") == "Y")
+            & pl.col("issuertype").is_in(["ACOR", "CORP"])
+            & pl.col("primaryexch").is_in(["N", "A", "Q"])
+        )
+        .with_columns(
+            meq=pl.col(prc_c).abs() * pl.col("shrout"),
+            exchcd=pl.col("primaryexch").replace_strict(
+                {"N": 1, "A": 2, "Q": 3}, default=None, return_dtype=pl.Int64
+            ),
+            shrcd=pl.lit(10, dtype=pl.Int64),
+        )
+        .rename({date_c: "date", ret_c: "retadj", retx_c: "retx", prc_c: "prc"})
+    )
+    if freq == "monthly":
+        lf = lf.with_columns(date=pl.col("date").dt.month_end())
+    return lf.select(
+        "permno",
+        "permco",
+        "date",
+        "retadj",
+        "retx",
+        "prc",
+        "shrout",
+        "meq",
+        "exchcd",
+        "shrcd",
+    )
+
+
+def ff_aggregate_permco_me(crsp: pl.LazyFrame) -> pl.LazyFrame:
+    """Aggregate ME within (date, permco); assign to largest-MEq permno."""
+    return (
+        crsp.sort(["date", "permco", "meq"])
+        .with_columns(me=pl.col("meq").sum().over(["date", "permco"]))
+        .unique(subset=["date", "permco"], keep="last")
+        .drop("meq")
+    )
+
+
+def ff_link_compustat(comp: pl.DataFrame, lnkhist: pl.LazyFrame) -> pl.DataFrame:
+    """
+    Description:
+        CCM gvkey->permno link with FF-style June-end validity check.
+
+    Steps:
+        1) Filter ccmxpf_lnkhist to linktype starting with L and linkprim in {P,C}.
+        2) Cross-join compustat to link rows; filter by June-end window.
+        3) Dedup: prefer P over C on (datadate, permno), then last entry per
+           (permno, year).
+
+    Output:
+        Eager [gvkey, permno, year, datadate, be, (op, inv,) count, ...].
+    """
+    lnk = (
+        lnkhist.filter(
+            pl.col("linktype").str.starts_with("L") & pl.col("linkprim").is_in(["P", "C"])
+        )
+        .select("gvkey", "lpermno", "linkprim", "linkdt", "linkenddt")
+        .with_columns(
+            pl.col("lpermno").cast(pl.Int64),
+            pl.col("linkdt", "linkenddt").cast(pl.Date),
+        )
+    )
+    return (
+        comp.lazy()
+        .with_columns(jun_end=pl.date(pl.col("datadate").dt.year() + 1, 6, 30))
+        .join(lnk, on="gvkey", how="inner")
+        .filter(
+            (pl.col("linkdt") <= pl.col("jun_end"))
+            & (pl.col("linkenddt").is_null() | (pl.col("linkenddt") >= pl.col("jun_end")))
+        )
+        .rename({"lpermno": "permno"})
+        .sort(["datadate", "permno", "linkprim"], descending=[False, False, True])
+        .unique(subset=["datadate", "permno"], keep="first")
+        .sort(["permno", "year", "datadate"])
+        .unique(subset=["permno", "year"], keep="last")
+        .collect()
+    )
+
+
+def ff_build_crspjune(crspm3: pl.DataFrame, decme: pl.DataFrame) -> pl.DataFrame:
+    """Per-permno last June row; canonicalize date to June 30."""
+    return (
+        crspm3.filter(pl.col("date").dt.month() == 6)
+        .with_columns(june_year=pl.col("date").dt.year())
+        .sort(["permno", "june_year", "date"])
+        .unique(subset=["permno", "june_year"], keep="last")
+        .with_columns(date=pl.date(pl.col("june_year"), 6, 30))
+        .join(
+            decme.select("permno", june_year=pl.col("date").dt.year() + 1, dec_me="dec_me"),
+            on=["permno", "june_year"],
+            how="inner",
+        )
+        .drop("june_year")
+    )
+
+
+def ff_build_ccm2_june(
+    crspjune: pl.DataFrame,
+    ccm2a: pl.DataFrame,
+    comp_cols: tuple[str, ...] = ("be", "count"),
+) -> pl.DataFrame:
+    """Join formation-year Compustat onto June CRSP; compute beme."""
+    return (
+        crspjune.with_columns(crsp_year=pl.col("date").dt.year())
+        .join(
+            ccm2a.select("permno", *comp_cols, "datadate", cyp1=pl.col("year") + 1),
+            left_on=["permno", "crsp_year"],
+            right_on=["permno", "cyp1"],
+            how="inner",
+        )
+        .with_columns(
+            beme=(1000.0 * pl.col("be")) / pl.col("dec_me"),
+            dist=(pl.col("date").dt.year() - pl.col("datadate").dt.year()) * 12
+            + (pl.col("date").dt.month() - pl.col("datadate").dt.month()),
+        )
+    )
+
+
+def ff_build_crspm3_decme(crspm2a: pl.DataFrame, freq: str) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """
+    Description:
+        Single vectorized impl of FF weight_port / cumretx / Dec ME pipeline.
+
+    Period definition differs by frequency:
+      monthly: cum_sum(month==7) — resets only on actual July rows.
+      daily:   holding_year — resets at first trading day of July.
+    Within each (permno, period): me_base = lag_me at period start
+    (forward-filled), cumretx = cum_prod(1+retx_safe), weight_port =
+    me_base * lag(cumretx).
+    """
+    period = (
+        (pl.col("date").dt.month() == 7).cast(pl.Int32).cum_sum().over("permno")
+        if freq == "monthly"
+        else pl.when(pl.col("date").dt.month() >= 7)
+        .then(pl.col("date").dt.year())
+        .otherwise(pl.col("date").dt.year() - 1)
+    )
+    df = (
+        crspm2a.sort(["permno", "date"])
+        .with_columns(
+            period=period,
+            retx_safe=pl.col("retx").fill_null(0.0),
+            lag_me=pl.col("me").shift(1).over("permno"),
+        )
+        .with_columns(
+            me_base=pl.when(
+                (pl.col("period") != pl.col("period").shift(1).over("permno")).fill_null(True)
+            )
+            .then(pl.col("lag_me"))
+            .otherwise(None)
+            .forward_fill()
+            .over(["permno", "period"]),
+            cumretx=(1.0 + pl.col("retx_safe")).cum_prod().over(["permno", "period"]),
+        )
+        .with_columns(
+            weight_port=pl.when(pl.col("lag_me").is_not_null() & (pl.col("lag_me") > 0))
+            .then(
+                pl.col("me_base")
+                * pl.col("cumretx").shift(1).over(["permno", "period"]).fill_null(1.0)
+            )
+            .otherwise(None),
+        )
+    )
+    crspm3 = df.select("permno", "date", "retadj", "weight_port", "me", "exchcd", "shrcd")
+    decme = (
+        df.filter(pl.col("date").dt.month() == 12)
+        .sort(["permno", "date"])
+        .group_by("permno", pl.col("date").dt.year().alias("_y"))
+        .agg(pl.col("date").last(), pl.col("me").last().alias("dec_me"))
+        .filter(pl.col("dec_me") > 0)
+        .select("permno", "date", "dec_me")
+    )
+    return crspm3, decme
+
+
+def ff_nyse_breakpoints(
+    ccm2_june: pl.DataFrame,
+    specs: list[tuple[str, float, str]],
+    eligible: pl.Expr,
+) -> pl.DataFrame:
+    """NYSE-only per-date QUANTILE_DISC breakpoints. Preserves DuckDB
+    QUANTILE_DISC — empirically no Polars interpolation matches across all
+    sample sizes."""
+    cols = list({c for c, _, _ in specs})
+    breaks_sql = ", ".join(f"QUANTILE_DISC({c}, {q}) AS {a}" for c, q, a in specs)
+    return (
+        ccm2_june.filter((pl.col("exchcd") == 1) & eligible)
+        .select("date", *cols)
+        .sql(f"SELECT date, {breaks_sql} FROM self GROUP BY date")
+    )
+
+
+def ff_nyse_breaks_for_spec(
+    ccm2_june: pl.DataFrame, key: str, with_size_median: bool = False
+) -> pl.DataFrame:
+    """Per-sort NYSE 30/70 breaks (plus optional size median) from
+    `_FF_SORT_SPECS[key]`."""
+    s = _FF_SORT_SPECS[key]
+    specs: list[tuple[str, float, str]] = [("me", 0.50, "sizemedn")] if with_size_median else []
+    specs += [(s["value"], 0.30, s["breaks"][0]), (s["value"], 0.70, s["breaks"][1])]
+    return ff_nyse_breakpoints(ccm2_june, specs, _FF_ELIGIBLE[key]())
+
+
+def _ff_bucket(val: str, breaks: list[str], labels: list[str]) -> pl.Expr:
+    """Ladder label: `val <= breaks[i]` -> `labels[i]`, else `labels[-1]`.
+    Requires `len(labels) == len(breaks) + 1`."""
+    out = pl.when(pl.col(val) <= pl.col(breaks[0])).then(pl.lit(labels[0]))
+    for br, lab in zip(breaks[1:], labels[1:-1], strict=True):
+        out = out.when(pl.col(val) <= pl.col(br)).then(pl.lit(lab))
+    return out.otherwise(pl.lit(labels[-1]))
+
+
+def ff_assign_portfolios(
+    ccm2_june: pl.DataFrame,
+    nyse_tables: list[pl.DataFrame],
+    spec_keys: list[str],
+    size_gate: pl.Expr | None = None,
+) -> pl.DataFrame:
+    """Generic Size + value-sort assignment over one or more independent sorts.
+
+    First nyse table is inner-joined (must include `sizemedn`); rest are
+    left-joined. Per-spec port assignment requires firm eligibility AND
+    break-col-not-null.
+    """
+    df = ccm2_june
+    for i, n in enumerate(nyse_tables):
+        df = df.join(n, on="date", how="inner" if i == 0 else "left")
+
+    specs = [_FF_SORT_SPECS[k] for k in spec_keys]
+    if size_gate is None:
+        size_gate = _FF_ELIGIBLE[spec_keys[0]]()
+
+    cols = {
+        "sizeport": pl.when(size_gate)
+        .then(_ff_bucket("me", ["sizemedn"], ["S", "B"]))
+        .otherwise(None)
+    }
+    for k, s in zip(spec_keys, specs, strict=True):
+        elig = _FF_ELIGIBLE[k]() & pl.col(s["breaks"][0]).is_not_null()
+        cols[s["flag"]] = elig.cast(pl.Int64)
+        cols[s["port"]] = (
+            pl.when(elig).then(_ff_bucket(s["value"], s["breaks"], s["labels"])).otherwise(None)
+        )
+
+    out = ["permno", "date", "sizeport"]
+    for s in specs:
+        out.extend([s["port"], s["flag"]])
+    out.extend(["exchcd", "shrcd"])
+    return df.with_columns(**cols).select(*out)
+
+
+def ff_assign_portfolio_to_panel(
+    crspm3: pl.DataFrame,
+    june: pl.DataFrame,
+    port_cols: tuple[str, ...] = ("sizeport", "btmport", "positivebeme"),
+) -> pl.DataFrame:
+    """Broadcast June assignments to the full monthly/daily panel via holding
+    year (Jul(y)..Jun(y+1) -> formation-year y)."""
+    return (
+        crspm3.with_columns(_FF_PORT_YEAR)
+        .join(
+            june.select("permno", *port_cols, june_year=pl.col("date").dt.year()),
+            left_on=["permno", "port_year"],
+            right_on=["permno", "june_year"],
+            how="inner",
+        )
+        .drop("port_year")
+    )
+
+
+def _ff_vw_panel(ccm4: pl.DataFrame) -> pl.DataFrame:
+    """Universal VW-eligibility filter; pre-applied so multi-leg FF5 reuses
+    the same materialized panel."""
+    return ccm4.filter(
+        (pl.col("weight_port") > 0)
+        & pl.col("exchcd").is_in([1, 2, 3])
+        & pl.col("retadj").is_not_null()
+        & pl.col("sizeport").is_not_null()
+    )
+
+
+def _ff_vw_pivot(
+    panel: pl.DataFrame, sort_col: str, eligible_col: str, buckets: list[str]
+) -> pl.DataFrame:
+    """VW return per (date, sizeport+sort_col) bucket, pivoted wide."""
+    wide = (
+        panel.filter((pl.col(eligible_col) == 1) & pl.col(sort_col).is_not_null())
+        .with_columns(bucket=pl.col("sizeport") + pl.col(sort_col))
+        .group_by("date", "bucket")
+        .agg(vwret=(pl.col("retadj") * pl.col("weight_port")).sum() / pl.col("weight_port").sum())
+        .pivot(values="vwret", index="date", on="bucket")
+    )
+    missing = [c for c in buckets if c not in wide.columns]
+    if missing:
+        wide = wide.with_columns(*[pl.lit(None, dtype=pl.Float64).alias(c) for c in missing])
+    return wide.select("date", *buckets).sort("date")
+
+
+def _ff_vw_legs(ccm4: pl.DataFrame, keys: list[str]) -> pl.DataFrame:
+    """Compute VW bucket pivots for each spec in `keys`; rename per
+    SN/BN collision map; join legs on date."""
+    panel = _ff_vw_panel(ccm4)
+    legs = [
+        _ff_vw_pivot(
+            panel,
+            _FF_SORT_SPECS[k]["port"],
+            _FF_SORT_SPECS[k]["flag"],
+            _FF_SORT_SPECS[k]["buckets"],
+        ).rename(_FF_SORT_SPECS[k]["rename"])
+        for k in keys
+    ]
+    wide = legs[0]
+    for leg in legs[1:]:
+        wide = wide.join(leg, on="date", how="full", coalesce=True)
+    return wide.sort("date")
+
+
+def ff_compute_factors_merged(ccm4: pl.DataFrame) -> pl.DataFrame:
+    """3 independent 2x3 sorts -> [date, smb_ff3, smb_ff5, hml, rmw, cma].
+    smb_ff3 = BM size leg only; smb_ff5 = average of BM/OP/INV size legs."""
+    wide = _ff_vw_legs(ccm4, ["bm", "op", "inv"])
+    smb_bm = pl.mean_horizontal("SL", "SM", "SH", ignore_nulls=False) - pl.mean_horizontal(
+        "BL", "BM", "BH", ignore_nulls=False
+    )
+    smb_op = pl.mean_horizontal("SW", "SN_op", "SR", ignore_nulls=False) - pl.mean_horizontal(
+        "BW", "BN_op", "BR", ignore_nulls=False
+    )
+    smb_inv = pl.mean_horizontal("SC", "SN_inv", "SA", ignore_nulls=False) - pl.mean_horizontal(
+        "BC", "BN_inv", "BA", ignore_nulls=False
+    )
+    return wide.select(
+        pl.col("date"),
+        smb_ff3=smb_bm,
+        smb_ff5=(smb_bm + smb_op + smb_inv) / 3,
+        hml=pl.mean_horizontal("SH", "BH", ignore_nulls=False)
+        - pl.mean_horizontal("SL", "BL", ignore_nulls=False),
+        rmw=pl.mean_horizontal("SR", "BR", ignore_nulls=False)
+        - pl.mean_horizontal("SW", "BW", ignore_nulls=False),
+        cma=pl.mean_horizontal("SC", "BC", ignore_nulls=False)
+        - pl.mean_horizontal("SA", "BA", ignore_nulls=False),
+    )
+
+
+def ff_build_characteristics_merged(
+    crspm3: pl.DataFrame,
+    ccm2_june: pl.DataFrame,
+    june: pl.DataFrame,
+    freq: str,
+) -> pl.DataFrame:
+    """Stock-level FF characteristics on the monthly grid: date, permno,
+    me_ff, beme_ff, op_ff, inv_ff. Daily input downsampled to last trading
+    day per (permno, month)."""
+    panel = crspm3.with_columns(_FF_PORT_YEAR).join(
+        ccm2_june.select("permno", "date", "beme", "op", "inv")
+        .join(june.select("permno", "date"), on=["permno", "date"])
+        .select("permno", "beme", "op", "inv", fy=pl.col("date").dt.year()),
+        left_on=["permno", "port_year"],
+        right_on=["permno", "fy"],
+    )
+    if freq == "daily":
+        panel = (
+            panel.with_columns(_month=pl.col("date").dt.truncate("1mo"))
+            .sort(["permno", "date"])
+            .unique(subset=["permno", "_month"], keep="last")
+            .drop("_month")
+        )
+    return panel.select(
+        "date",
+        "permno",
+        me_ff=pl.col("me"),
+        beme_ff=pl.col("beme"),
+        op_ff=pl.col("op"),
+        inv_ff=pl.col("inv"),
+    ).sort("date", "permno")
+
+
+@measure_time
+def gen_ff_portfolios(
+    raw_dir: Path,
+    out_dir: Path,
+    freqs: tuple[str, ...] = ("monthly", "daily"),
+) -> None:
+    """
+    Description:
+        Build FF3/FF5 (SMB/HML/RMW/CMA) factor and characteristic files
+        on the strict CIZ-FF universe (US-only). Numerics match the FF
+        data-library reference within 1 ULP.
+
+    Steps:
+        1) Load Compustat funda (with FF5 OP/INV cols) and CCM link table.
+        2) For each freq: load CRSP, aggregate ME by permco, build the
+           weight_port / cumretx / Dec ME pipeline, join Compustat to the
+           June panel, compute NYSE breakpoints (BM size-median + 30/70,
+           OP 30/70, INV 30/70), assign size+sort portfolios, compute
+           factors.
+        3) Write one merged factor file per freq and one characteristics
+           file (from the monthly run).
+
+    Output:
+        - ff_factors_<freq>.parquet [eom/date, smb_ff3, smb_ff5, hml, rmw, cma]
+        - ff_characteristics.parquet [eom, permno, me_ff, beme_ff, op_ff, inv_ff]
+    """
+    raw_dir = Path(raw_dir)
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    comp = ff_load_compustat(raw_dir, ff5=True).collect()
+    lnkhist = pl.scan_parquet(raw_dir / "crsp_ccmxpf_lnkhist.parquet")
+    ccm2a = ff_link_compustat(comp, lnkhist)
+
+    chars_written = False
+    for freq in freqs:
+        crspm2a = ff_aggregate_permco_me(ff_load_crsp(raw_dir, freq)).collect()
+        crspm3, decme = ff_build_crspm3_decme(crspm2a, freq)
+        ccm2_june = ff_build_ccm2_june(
+            ff_build_crspjune(crspm3, decme),
+            ccm2a,
+            comp_cols=("be", "op", "inv", "count"),
+        )
+        nyse_bm = ff_nyse_breaks_for_spec(ccm2_june, "bm", with_size_median=True)
+        nyse_op = ff_nyse_breaks_for_spec(ccm2_june, "op")
+        nyse_inv = ff_nyse_breaks_for_spec(ccm2_june, "inv")
+        june = ff_assign_portfolios(
+            ccm2_june,
+            [nyse_bm, nyse_op, nyse_inv],
+            ["bm", "op", "inv"],
+            size_gate=(pl.col("me") > 0),
+        )
+        ccm4 = ff_assign_portfolio_to_panel(crspm3, june, port_cols=_FF_PORT_COLS)
+        factors = ff_compute_factors_merged(ccm4)
+
+        date_col = "eom" if freq == "monthly" else "date"
+        factors.rename({"date": date_col}).write_parquet(out_dir / f"ff_factors_{freq}.parquet")
+        if not chars_written:
+            chars = ff_build_characteristics_merged(crspm3, ccm2_june, june, freq).rename(
+                {"date": "eom"}
+            )
+            chars.write_parquet(out_dir / "ff_characteristics.parquet")
+            chars_written = True

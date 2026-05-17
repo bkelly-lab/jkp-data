@@ -19,6 +19,7 @@ from .aux_functions import (
     filter_world,
     finish_daily_chars,
     firm_age,
+    gen_ff_portfolios,
     gen_raw_data_dfs,
     market_beta,
     market_chars_monthly,
@@ -127,13 +128,40 @@ def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> No
         10,
         3,
     )
+    gen_ff_portfolios(
+        raw_dir=paths.raw_tables_dir,
+        out_dir=paths.processed_dir / "other_output",
+    )
     firm_age("world_msf.parquet")
     mispricing_factors("world_data_prelim.parquet", 10, min_fcts=3)
-    market_beta("beta_60m.parquet", "world_msf.parquet", "ap_factors_monthly.parquet", 60, 36)
-    residual_momentum(
-        "resmom_ff3", "world_msf.parquet", "ap_factors_monthly.parquet", 36, 24, 12, 1
+    market_beta(
+        "beta_60m.parquet",
+        "world_msf.parquet",
+        "ap_factors_monthly.parquet",
+        str(paths.processed_dir / "other_output" / "ff_factors_monthly.parquet"),
+        60,
+        36,
     )
-    residual_momentum("resmom_ff3", "world_msf.parquet", "ap_factors_monthly.parquet", 36, 24, 6, 1)
+    residual_momentum(
+        "resmom_ff3",
+        "world_msf.parquet",
+        "ap_factors_monthly.parquet",
+        str(paths.processed_dir / "other_output" / "ff_factors_monthly.parquet"),
+        36,
+        24,
+        12,
+        1,
+    )
+    residual_momentum(
+        "resmom_ff3",
+        "world_msf.parquet",
+        "ap_factors_monthly.parquet",
+        str(paths.processed_dir / "other_output" / "ff_factors_monthly.parquet"),
+        36,
+        24,
+        6,
+        1,
+    )
     bidask_hl("corwin_schultz.parquet", "world_dsf.parquet", "market_returns_daily.parquet", 10)
     prepare_daily("world_dsf.parquet", "ap_factors_daily.parquet")
     for sfx, min_obs, vars_ in ROLLING_DAILY_SPECS:
