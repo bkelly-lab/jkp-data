@@ -1576,6 +1576,7 @@ def add_primary_sec(paths: DataPaths, data_path, datevar, file_name):
     prihistusa_path = (raw_data_dfs / "__prihistusa.parquet").as_posix()
     prihistcan_path = (raw_data_dfs / "__prihistcan.parquet").as_posix()
     header_path = (raw_data_dfs / "__header.parquet").as_posix()
+    file_name_posix = Path(file_name).as_posix()
     con.execute(f"""
         CREATE OR REPLACE TABLE __data2 AS
         WITH data AS (
@@ -1641,7 +1642,7 @@ def add_primary_sec(paths: DataPaths, data_path, datevar, file_name):
             SELECT DISTINCT ON (gvkey, iid, {datevar}) *
             FROM __data2
             ORDER BY gvkey, iid, {datevar}, primary_sec DESC
-        ) TO '{file_name}' (FORMAT parquet);
+        ) TO '{file_name_posix}' (FORMAT parquet);
     """)
 
     con.close()
@@ -3073,7 +3074,8 @@ def market_returns(paths: DataPaths, data_path, freq, wins_comp, wins_data_path,
         4) Join NYSE P80 cutoffs and compute me_cap_lag1.
         5) Apply stock filters & compute VW/EW country returns (including capped VW).
         6) If daily, drop low-coverage trading days.
-        7) Sort and write 'market_returns{_daily}.parquet'.
+        7) Sort and write to ``paths.interim_dir / f"market_returns{path_aux}.parquet"``
+           (``path_aux`` is ``""`` for monthly and ``"_daily"`` for daily).
 
     Output:
         Parquet file of country × date market returns.
@@ -6542,6 +6544,8 @@ def ap_factors(
     Output:
         Parquet factor file with columns: [excntry, date/eom, mktrf, hml, smb_ff, inv, roe, smb_hxz].
     """
+    # `paths` is retained for the path-explicit convention but not used here:
+    # all inputs and the output are passed as fully-formed absolute paths.
     date_col = "eom" if freq == "m" else "date"
     sf_cond = (col("ret_lag_dif") == 1) if freq == "m" else (col("ret_lag_dif") <= 5)
     lag_vars = [
@@ -6786,7 +6790,10 @@ def residual_momentum(paths: DataPaths, output_path, data_path, fcts_path, __n, 
         2) Join back ids/dates and keep resff3_{incl}_{skip}; sort.
 
     Output:
-        Parquet '{output_path}_{incl}_{skip}.parquet' with [id, eom, resff3_{incl}_{skip}].
+        Parquet at ``paths.interim_dir / f"{output_path}_{incl}_{skip}.parquet"``
+        with [id, eom, resff3_{incl}_{skip}]. Note: ``output_path`` is used
+        as a *stem*, not a full path — the parameter name is a holdover from
+        the pre-refactor signature.
     """
     con = prep_data_factor_regs(paths, data_path, fcts_path)
     base_data = con.table("__msf2").to_polars().lazy()
@@ -7228,7 +7235,8 @@ def bidask_hl(paths: DataPaths, output_path, data_path, market_returns_daily_pat
     Output:
         '{output_path}' with monthly [id, eom, bidaskhl_21d, rvolhl_21d].
     """
-
+    # `paths` is retained for the path-explicit convention but not used here:
+    # all inputs and the output are passed as fully-formed absolute paths.
     market_returns_daily = pl.scan_parquet(market_returns_daily_path)
     __dsf = (
         pl.scan_parquet(data_path)
@@ -7261,6 +7269,8 @@ def create_world_data_prelim(
     Output:
         '{output_path}' parquet with merged stock, market, and accounting data.
     """
+    # `paths` is retained for the path-explicit convention but not used here:
+    # all inputs and the output are passed as fully-formed absolute paths.
     a = pl.scan_parquet(msf_path)
     b = pl.scan_parquet(market_chars_monthly_path)
     c = pl.scan_parquet(acc_chars_world_path)

@@ -21,6 +21,8 @@ import pytest
 if TYPE_CHECKING:
     from collections.abc import Generator
 
+    from jkp.data.paths import DataPaths
+
 
 # =============================================================================
 # Pytest Configuration
@@ -238,7 +240,7 @@ def temp_data_dir(tmp_path: Path) -> Generator[Path, None, None]:
 
 
 @pytest.fixture
-def test_paths(temp_data_dir: Path):
+def test_paths(temp_data_dir: Path) -> DataPaths:
     """Provide a ``DataPaths`` instance rooted at ``temp_data_dir``.
 
     Tests that exercise pipeline functions taking a ``paths: DataPaths`` argument

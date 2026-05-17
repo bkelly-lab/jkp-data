@@ -14,7 +14,6 @@ Paper Reference: Jensen, Kelly, Pedersen (2023), "Is There a Replication Crisis 
 from __future__ import annotations
 
 from datetime import date
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import polars as pl
@@ -313,7 +312,7 @@ class TestDownloadRawDataTables:
     """
 
     @pytest.fixture()
-    def captured_calls(self):
+    def captured_calls(self, test_paths):
         """Run download_raw_data_tables and capture all download_wrds_table calls."""
         with (
             patch("jkp.data.aux_functions.gen_wrds_connection_info", return_value="host=test"),
@@ -324,10 +323,9 @@ class TestDownloadRawDataTables:
             mock_duckdb.connect.return_value = mock_conn
 
             from jkp.data.aux_functions import download_raw_data_tables
-            from jkp.data.paths import DataPaths
 
             download_raw_data_tables(
-                DataPaths(base_dir=Path("/tmp")),
+                test_paths,
                 "user",
                 "pass",
                 end_date=date(2025, 12, 31),

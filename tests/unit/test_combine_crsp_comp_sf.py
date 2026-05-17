@@ -1130,6 +1130,7 @@ class TestDedupDeterminism:
             "div_cash": None,
             "div_spc": None,
         }
+        interim = _make_test_layout(tmp_path)
         pl.DataFrame([{**base, "primary_sec": 0}, {**base, "primary_sec": 1}]).cast(
             {
                 "gvkey": pl.Utf8,
@@ -1142,8 +1143,7 @@ class TestDedupDeterminism:
                 "eom": pl.Date,
                 "ret_lag_dif": pl.Int64,
             }
-        ).write_parquet(_make_test_layout(tmp_path) / "comp_msf.parquet")
-        interim = _make_test_layout(tmp_path)
+        ).write_parquet(interim / "comp_msf.parquet")
         _make_crsp_msf(interim, n_permnos=0)
         _make_crsp_dsf(interim, n_permnos=1)
         _make_comp_dsf(interim, n_gvkeys=0)
@@ -1184,6 +1184,7 @@ class TestDedupDeterminism:
             "ret_exc": 0.005,
             "ret_lag_dif": 1,
         }
+        interim = _make_test_layout(tmp_path)
         pl.DataFrame([{**base, "primary_sec": 0}, {**base, "primary_sec": 1}]).cast(
             {
                 "gvkey": pl.Utf8,
@@ -1194,8 +1195,7 @@ class TestDedupDeterminism:
                 "datadate": pl.Date,
                 "ret_lag_dif": pl.Int64,
             }
-        ).write_parquet(_make_test_layout(tmp_path) / "comp_dsf.parquet")
-        interim = _make_test_layout(tmp_path)
+        ).write_parquet(interim / "comp_dsf.parquet")
         _make_crsp_msf(interim, n_permnos=1)
         _make_comp_msf(interim, n_gvkeys=0)
         _make_crsp_dsf(interim, n_permnos=0)
