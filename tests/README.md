@@ -462,6 +462,26 @@ class TestReturnCalculations:
 
 Fixtures defined in `conftest.py` are available to all tests automatically. Fixtures defined in a test file are only available within that file.
 
+### Testing Pipeline Functions That Take `paths: DataPaths`
+
+Most filesystem-touching functions in `aux_functions.py` take a `paths: DataPaths` instance as their first argument and use it to construct absolute paths for all I/O. To test those functions, request the `test_paths` fixture from `conftest.py`:
+
+```python
+import polars as pl
+
+def test_my_pipeline_function(test_paths):
+    """Pipeline function reads inputs from interim/ and writes its output there."""
+    input_path = test_paths.interim_dir / "input.parquet"
+    pl.DataFrame({"x": [1, 2, 3]}).write_parquet(input_path)
+
+    my_pipeline_function(test_paths, input_path)
+
+    result = pl.read_parquet(test_paths.interim_dir / "output.parquet")
+    assert result.height == 3
+```
+
+`test_paths` is a `DataPaths` instance rooted at `temp_data_dir` (which is itself a per-test `tmp_path` with the pipeline subdirectory layout already created). Use this rather than constructing `DataPaths` manually or relying on `monkeypatch.chdir` — that pattern is being phased out.
+
 ## Troubleshooting
 
 ### "Module not found" errors
