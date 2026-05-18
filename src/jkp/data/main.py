@@ -130,7 +130,7 @@ def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> No
     )
     gen_ff_data(
         raw_dir=paths.raw_tables_dir,
-        out_dir=paths.processed_dir / "other_output",
+        out_dir=paths.interim_dir,
         interim_dir=paths.interim_dir,
     )
     # firm_age("world_msf.parquet")
@@ -139,7 +139,7 @@ def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> No
         "beta_60m.parquet",
         "world_msf.parquet",
         "ap_factors_monthly.parquet",
-        str(paths.processed_dir / "other_output" / "ff_factors_monthly.parquet"),
+        "ff_factors_monthly.parquet",
         60,
         36,
     )
@@ -147,7 +147,7 @@ def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> No
         "resmom_ff3",
         "world_msf.parquet",
         "ap_factors_monthly.parquet",
-        str(paths.processed_dir / "other_output" / "ff_factors_monthly.parquet"),
+        "ff_factors_monthly.parquet",
         36,
         24,
         12,
@@ -157,7 +157,7 @@ def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> No
         "resmom_ff3",
         "world_msf.parquet",
         "ap_factors_monthly.parquet",
-        str(paths.processed_dir / "other_output" / "ff_factors_monthly.parquet"),
+        "ff_factors_monthly.parquet",
         36,
         24,
         6,
@@ -167,7 +167,7 @@ def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> No
     prepare_daily(
         "world_dsf.parquet",
         "ap_factors_daily.parquet",
-        str(paths.processed_dir / "other_output" / "ff_factors_daily.parquet"),
+        "ff_factors_daily.parquet",
     )
     for sfx, min_obs, vars_ in ROLLING_DAILY_SPECS:
         for var in vars_:
