@@ -164,7 +164,11 @@ def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> No
         1,
     )
     # bidask_hl("corwin_schultz.parquet", "world_dsf.parquet", "market_returns_daily.parquet", 10)
-    prepare_daily("world_dsf.parquet", "ap_factors_daily.parquet")
+    prepare_daily(
+        "world_dsf.parquet",
+        "ap_factors_daily.parquet",
+        str(paths.processed_dir / "other_output" / "ff_factors_daily.parquet"),
+    )
     for sfx, min_obs, vars_ in ROLLING_DAILY_SPECS:
         for var in vars_:
             roll_apply_daily(var, sfx, min_obs)

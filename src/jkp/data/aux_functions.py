@@ -6758,13 +6758,15 @@ def residual_momentum(output_path, data_path, fcts_path, ff_fcts_path, __n, __mi
 
 
 @measure_time
-def prepare_daily(data_path, fcts_path):
+def prepare_daily(data_path, fcts_path, ff_fcts_path):
     """
     Description:
         Build daily dataset: align returns with factors, shrink dtypes, and create helpers.
 
     Steps:
-        1) Join daily stock data with daily factors; filter rows with mktrf.
+        1) Join daily stock data with AP daily factors (mktrf, hxz legs)
+           and FF daily factors (smb_ff3→smb_ff, hml) on (excntry, date);
+           filter rows with mktrf.
         2) Create zero_obs flags per (id,eom); cap returns to lag ≤14 days; compute prc_adj.
         3) Write dsf1.parquet and id_int_key.parquet.
         4) Build market lead/lag series per day and write mkt_lead_lag.parquet.
@@ -6775,6 +6777,9 @@ def prepare_daily(data_path, fcts_path):
     """
     data = pl.scan_parquet(data_path)
     fcts = pl.scan_parquet(fcts_path)
+    ff_fcts = pl.scan_parquet(ff_fcts_path).select(
+        ["excntry", "date", col("smb_ff3").alias("smb_ff"), "hml"]
+    )
     dsf1 = (
         data.select(
             [
@@ -6794,6 +6799,7 @@ def prepare_daily(data_path, fcts_path):
             ]
         )
         .join(fcts, how="left", on=["excntry", "date"])
+        .join(ff_fcts, how="left", on=["excntry", "date"])
         .filter(col("mktrf").is_not_null())
         .with_columns(
             zero_obs=pl.when(col("ret_local") == 0).then(1).otherwise(0),
