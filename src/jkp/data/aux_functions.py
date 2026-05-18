@@ -9447,29 +9447,43 @@ def ff_load_world_compustat(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
 
 def ff_load_world_panel(interim_dir: Path, freq: str) -> pl.DataFrame:
     """Scan world_{m|d}sf.parquet for ROW FF computation; drop USA + apply
-    universe (common/obs_main/primary_sec/exch_main/me/gvkey-not-null)."""
-    pq = "world_msf.parquet" if freq == "monthly" else "world_dsf.parquet"
-    dt = "eom" if freq == "monthly" else "date"
+    universe (common/obs_main/primary_sec/exch_main/me/gvkey-not-null).
+
+    Daily world_dsf lacks gvkey + size_grp (added only at monthly upstream
+    steps), so join those from world_msf on (id, eom)."""
+    base_filter = (
+        (pl.col("excntry") != US_EXCNTRY)
+        & (pl.col("common") == 1)
+        & (pl.col("obs_main") == 1)
+        & (pl.col("primary_sec") == 1)
+        & (pl.col("exch_main") == 1)
+        & pl.col("me").is_not_null()
+    )
+    if freq == "monthly":
+        return (
+            pl.scan_parquet(interim_dir / "world_msf.parquet")
+            .filter(base_filter & pl.col("gvkey").is_not_null())
+            .select(
+                "excntry",
+                "id",
+                "gvkey",
+                pl.col("eom").alias("date"),
+                "ret_exc",
+                "me",
+                "size_grp",
+            )
+            .collect()
+        )
+    msf_keys = pl.scan_parquet(interim_dir / "world_msf.parquet").select(
+        "id", "eom", "gvkey", "size_grp"
+    )
     return (
-        pl.scan_parquet(interim_dir / pq)
-        .filter(
-            (pl.col("excntry") != US_EXCNTRY)
-            & (pl.col("common") == 1)
-            & (pl.col("obs_main") == 1)
-            & (pl.col("primary_sec") == 1)
-            & (pl.col("exch_main") == 1)
-            & pl.col("me").is_not_null()
-            & pl.col("gvkey").is_not_null()
-        )
-        .select(
-            "excntry",
-            "id",
-            "gvkey",
-            pl.col(dt).alias("date"),
-            "ret_exc",
-            "me",
-            "size_grp",
-        )
+        pl.scan_parquet(interim_dir / "world_dsf.parquet")
+        .filter(base_filter)
+        .select("excntry", "id", "eom", pl.col("date"), "ret_exc", "me")
+        .join(msf_keys, on=["id", "eom"], how="inner")
+        .filter(pl.col("gvkey").is_not_null())
+        .select("excntry", "id", "gvkey", "date", "ret_exc", "me", "size_grp")
         .collect()
     )
 
