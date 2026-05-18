@@ -6452,7 +6452,7 @@ def ap_factors(
     """
     Description:
         Build AP-style factor panels (HXZ INV/ROE/SMB) by country and month (or day).
-        FF HML / SMB are produced by `gen_ff_portfolios` on the strict CIZ-FF
+        FF HML / SMB are produced by `gen_ff_data` on the strict CIZ-FF
         universe and live in ff_factors_<freq>.parquet — not here.
 
     Steps:
@@ -6587,9 +6587,9 @@ def prep_data_factor_regs(
 
     Steps:
         1) Join msf with ap_factors on (excntry, eom) to pick up mktrf.
-        2) Left-join FF factors (ff_factors_monthly.parquet) on eom to pick up
-           hml + smb_ff3 (renamed locally to smb_ff). FF is US-only, so its
-           values are broadcast to all excntry rows.
+        2) Left-join FF factors (ff_factors_monthly.parquet) on (excntry, eom)
+           to pick up hml + smb_ff3 (renamed locally to smb_ff). FF file
+           carries per-country factors (US + ROW).
         3) Add integer date (aux_date) and cast id_int.
         4) Winsorize ret_exc by eom at configurable percentile bounds.
 
@@ -6610,7 +6610,7 @@ def prep_data_factor_regs(
     FROM read_parquet('{fcts_path}');
 
     CREATE OR REPLACE VIEW ff_fcts AS
-    SELECT eom, hml, smb_ff3 AS smb_ff
+    SELECT excntry, eom, hml, smb_ff3 AS smb_ff
     FROM read_parquet('{ff_fcts_path}');
 
     CREATE OR REPLACE TABLE __msf2 AS
@@ -6635,7 +6635,8 @@ def prep_data_factor_regs(
       ON a.excntry = b.excntry
      AND a.eom     = b.eom
     LEFT JOIN ff_fcts AS c
-      ON a.eom = c.eom
+      ON a.excntry = c.excntry
+     AND a.eom     = c.eom
     WHERE
         a.ret_local <> 0
         AND a.ret_exc   IS NOT NULL
@@ -8871,7 +8872,7 @@ def dimsonbeta(
 # Strict-FF methodology: reads raw CRSP CIZ tables + Compustat funda, applies
 # CIZ universe filters, permco-level ME aggregation, NYSE QUANTILE_DISC
 # breakpoints, July-to-June portfolio assignment. The single entry point is
-# `gen_ff_portfolios()`; everything below it is implementation. Numerics
+# `gen_ff_data()`; everything below it is implementation. Numerics
 # track the FF data-library reference within 1 ULP.
 # =============================================================================
 
@@ -9435,42 +9436,527 @@ def ff_build_characteristics_merged(
     ).sort("date", "permno")
 
 
+# =============================================================================
+# Per-country (rest-of-world) FF helpers
+# -----------------------------------------------------------------------------
+# Reuses the universe flags already computed by `prepare_crsp_sf` /
+# `combine_crsp_comp_sf` on `world_msf.parquet` / `world_dsf.parquet` (common,
+# obs_main, primary_sec, exch_main, me, gvkey). Breakpoints are per
+# `(excntry, June(y))` over the country-main-exchange subset (NYSE analog).
+# Compustat sourced from raw comp.funda + comp.g_funda, BE converted to USD
+# via comp_exrt_dly so ratios match world_msf's USD `me`. Same SMB/HML/RMW/CMA
+# arithmetic as the US path, grouped by excntry.
+# =============================================================================
+
+
+_FF_WORLD_SOURCES = (
+    # (parquet, mode_filters_apply_global, prefer_indl)
+    ("comp_funda.parquet", False),
+    ("comp_g_funda.parquet", True),
+)
+
+
+def _ff_load_world_fx(raw_dir: Path) -> pl.DataFrame:
+    """Per-(curcd, datadate) FX-to-USD from comp_exrt_dly. Mirrors gen_fx1():
+    self-join exrt on (fromcurd='GBP', datadate) and divide partner exratd by
+    pivot exratd to get local→USD. USD rows trivially get fx=1."""
+    e = (
+        pl.scan_parquet(raw_dir / "comp_exrt_dly.parquet")
+        .with_columns(
+            pl.col("datadate").cast(pl.Date),
+            pl.col("exratd").cast(pl.Float64),
+        )
+        .filter(pl.col("fromcurd") == "GBP")
+    )
+    a = e.select("tocurd", "datadate", a_rate=pl.col("exratd"))
+    b = e.filter(pl.col("tocurd") == "USD").select("datadate", b_rate=pl.col("exratd"))
+    return (
+        a.join(b, on="datadate", how="inner")
+        .select(
+            curcd=pl.col("tocurd"),
+            datadate=pl.col("datadate"),
+            fx=pl.col("b_rate") / pl.col("a_rate"),
+        )
+        .unique(["curcd", "datadate"])
+        .sort(["curcd", "datadate"])
+        .collect()
+    )
+
+
+def _ff_compute_be_op_inv(lf: pl.LazyFrame, is_global: bool) -> pl.LazyFrame:
+    """ROW BE/OP/INV computation. BE follows the JKP formula with multi-source
+    fallbacks (seq → ceq+pstk → at−lt; txditc → txdb+itcb; pstkrv → pstkl →
+    pstk). No FASB-109 gate, no BE<0 → null cut. OP/INV use FF formulas
+    (Fama-French 2017 international).
+
+    `is_global=True` matches comp.g_funda quirks (pstkrv, pstkl, itcb absent —
+    materialized as null literals; pstk_x collapses to pstk; txditc fallback
+    collapses to txdb). NA branch (is_global=False) keeps the full fallback
+    chain — covers Canada and other NA-coverage non-US gvkeys, which retain
+    pstkrv/pstkl/itcb."""
+    if is_global:
+        ps_x = pl.col("pstk")
+        itcb_expr = pl.lit(None, dtype=pl.Float64)
+    else:
+        ps_x = pl.coalesce("pstkrv", "pstkl", "pstk")
+        itcb_expr = pl.col("itcb")
+    txditc_x = pl.coalesce("txditc", pl.col("txdb") + itcb_expr)
+    seq_x = pl.coalesce("seq", pl.col("ceq") + pl.coalesce(ps_x, 0.0), pl.col("at") - pl.col("lt"))
+    be_jkp = seq_x + pl.coalesce(txditc_x, 0.0) - pl.coalesce(ps_x, 0.0)
+
+    op_elig = pl.col("revt").is_not_null() & (
+        pl.col("cogs").is_not_null() | pl.col("xsga").is_not_null() | pl.col("xint").is_not_null()
+    )
+    op_num = (
+        pl.col("revt")
+        - pl.coalesce("cogs", pl.lit(0.0))
+        - pl.coalesce("xsga", pl.lit(0.0))
+        - pl.coalesce("xint", pl.lit(0.0))
+    )
+    fy_gap = pl.col("datadate").dt.year() - pl.col("datadate_lag").dt.year()
+    return (
+        lf.with_columns(be_local=be_jkp, year=pl.col("datadate").dt.year())
+        .sort(["gvkey", "datadate"])
+        .with_columns(
+            op=pl.when(op_elig & (pl.col("be_local") > 0))
+            .then(op_num / pl.col("be_local"))
+            .otherwise(None),
+            at_lag=pl.col("at").shift(1).over("gvkey"),
+            datadate_lag=pl.col("datadate").shift(1).over("gvkey"),
+        )
+        .with_columns(
+            inv=pl.when(
+                pl.col("at").is_not_null()
+                & pl.col("at_lag").is_not_null()
+                & (pl.col("at_lag") > 0)
+                & (fy_gap == 1)
+            )
+            .then((pl.col("at") - pl.col("at_lag")) / pl.col("at_lag"))
+            .otherwise(None),
+        )
+    )
+
+
+def _ff_load_world_funda(raw_dir: Path, parquet: str, is_global: bool) -> pl.LazyFrame:
+    """Load one funda source with the appropriate Compustat filters and
+    INDL-over-FS preference (Global only). Returns lazy with curcd preserved."""
+    base_floats = [
+        "pstk",
+        "seq",
+        "ceq",
+        "lt",
+        "txditc",
+        "txdb",
+        "revt",
+        "cogs",
+        "xsga",
+        "xint",
+        "at",
+    ]
+    floats = base_floats + ([] if is_global else ["pstkrv", "pstkl", "itcb"])
+    if is_global:
+        flt = (
+            pl.col("indfmt").is_in(["INDL", "FS"])
+            & (pl.col("datafmt") == "HIST_STD")
+            & (pl.col("popsrc") == "I")
+            & (pl.col("consol") == "C")
+        )
+    else:
+        flt = (
+            (pl.col("indfmt") == "INDL")
+            & (pl.col("datafmt") == "STD")
+            & (pl.col("popsrc") == "D")
+            & (pl.col("consol") == "C")
+        )
+    lf = (
+        pl.scan_parquet(raw_dir / parquet)
+        .with_columns(
+            pl.col("datadate").cast(pl.Date),
+            pl.col(*floats).cast(pl.Float64),
+        )
+        .filter(flt)
+    )
+    if is_global:
+        lf = (
+            lf.with_columns(_n=pl.len().over(["gvkey", "datadate"]))
+            .filter((pl.col("_n") == 1) | ((pl.col("_n") == 2) & (pl.col("indfmt") == "INDL")))
+            .drop("_n")
+        )
+    return lf
+
+
+def ff_load_world_compustat(raw_dir: Path) -> pl.DataFrame:
+    """
+    Description:
+        Build worldwide Compustat BE/OP/INV by unioning comp.funda (NA) and
+        comp.g_funda (Global). BE follows the JKP formula (multi-source
+        fallbacks for seq, txditc, pstk; no FASB-109 gate, no BE<0 cut).
+        OP/INV use FF formulas. BE converted local→USD via comp_exrt_dly.
+        ROW path only — US uses ff_load_compustat (strict-FF BE) directly.
+
+    Steps:
+        1) Load NA funda (INDL/STD/D/C) and Global g_funda (INDL or FS /
+           HIST_STD/I/C with INDL-over-FS dedup), each carrying curcd.
+        2) Compute BE per JKP, OP/INV per FF. Global branch: pstkrv/pstkl/itcb
+           absent in comp.g_funda → pstk_x=pstk and txditc fallback collapses
+           to txdb. NA branch (Canada + other NA-coverage non-US gvkeys) keeps
+           the full pstkrv→pstkl→pstk and txditc→txdb+itcb chains.
+        3) Concat, drop duplicates by (gvkey, datadate) preferring NA when
+           both exist (NA-USD already-clean).
+        4) As-of join FX (local→USD) at datadate per curcd; multiply BE.
+        5) Per-gvkey count.
+
+    Output:
+        Eager [gvkey, datadate, year, be, op, inv, count] (BE in USD,
+        OP/INV unitless).
+    """
+    na = _ff_compute_be_op_inv(
+        _ff_load_world_funda(raw_dir, "comp_funda.parquet", is_global=False),
+        is_global=False,
+    ).select("gvkey", "datadate", "year", "be_local", "op", "inv", "curcd", _src=pl.lit(0))
+    gl = _ff_compute_be_op_inv(
+        _ff_load_world_funda(raw_dir, "comp_g_funda.parquet", is_global=True),
+        is_global=True,
+    ).select("gvkey", "datadate", "year", "be_local", "op", "inv", "curcd", _src=pl.lit(1))
+    combined = (
+        pl.concat([na, gl], how="vertical_relaxed")
+        .sort(["gvkey", "datadate", "_src"])
+        .unique(subset=["gvkey", "datadate"], keep="first")
+        .drop("_src")
+        .collect()
+    )
+    fx = _ff_load_world_fx(raw_dir)
+    return (
+        combined.sort(["curcd", "datadate"])
+        .join_asof(fx, by="curcd", on="datadate", strategy="backward")
+        .with_columns(
+            be=pl.when(pl.col("curcd") == "USD")
+            .then(pl.col("be_local"))
+            .otherwise(pl.col("be_local") * pl.col("fx"))
+        )
+        .filter(
+            pl.col("be").is_not_null() | pl.col("op").is_not_null() | pl.col("inv").is_not_null()
+        )
+        .sort(["gvkey", "datadate"])
+        .with_columns(count=pl.int_range(pl.len()).over("gvkey") + 1)
+        .select("gvkey", "datadate", "year", "be", "op", "inv", "count")
+    )
+
+
+def ff_load_world_panel(interim_dir: Path, freq: str) -> pl.DataFrame:
+    """Scan world_{m|d}sf.parquet for ROW FF computation; drop USA + apply
+    universe (common/obs_main/primary_sec/exch_main/me/gvkey-not-null)."""
+    pq = "world_msf.parquet" if freq == "monthly" else "world_dsf.parquet"
+    dt = "eom" if freq == "monthly" else "date"
+    return (
+        pl.scan_parquet(interim_dir / pq)
+        .filter(
+            (pl.col("excntry") != "USA")
+            & (pl.col("common") == 1)
+            & (pl.col("obs_main") == 1)
+            & (pl.col("primary_sec") == 1)
+            & (pl.col("exch_main") == 1)
+            & pl.col("me").is_not_null()
+            & pl.col("gvkey").is_not_null()
+        )
+        .select(
+            "excntry",
+            "id",
+            "gvkey",
+            pl.col(dt).alias("date"),
+            "ret_exc",
+            "me",
+            "size_grp",
+        )
+        .collect()
+    )
+
+
+def ff_build_world_june(panel: pl.DataFrame, comp_world: pl.DataFrame, freq: str) -> pl.DataFrame:
+    """Per-(excntry, id, June(y)) formation panel with Dec(y-1) ME +
+    formation-year Compustat (be/op/inv from gvkey link). Mirrors the US
+    build_crspjune + build_ccm2_june but driven off world_msf flags."""
+    if freq == "daily":
+        # Reduce to month-end for formation logic; daily granularity unused for breakpoints
+        panel = (
+            panel.sort(["excntry", "id", "date"])
+            .with_columns(_m=pl.col("date").dt.truncate("1mo"))
+            .unique(subset=["excntry", "id", "_m"], keep="last")
+            .with_columns(date=pl.col("date").dt.month_end())
+            .drop("_m")
+        )
+    june = (
+        panel.filter(pl.col("date").dt.month() == 6)
+        .with_columns(june_year=pl.col("date").dt.year())
+        .with_columns(date=pl.date(pl.col("june_year"), 6, 30))
+    )
+    dec_me = (
+        panel.filter(pl.col("date").dt.month() == 12)
+        .filter(pl.col("me") > 0)
+        .select(
+            "excntry",
+            "id",
+            june_year=pl.col("date").dt.year() + 1,
+            dec_me=pl.col("me"),
+        )
+    )
+    j = june.join(dec_me, on=["excntry", "id", "june_year"], how="inner")
+    comp = comp_world.select(
+        "gvkey",
+        "be",
+        "op",
+        "inv",
+        "count",
+        "datadate",
+        cyp1=pl.col("year") + 1,
+    )
+    return (
+        j.join(
+            comp,
+            left_on=["gvkey", "june_year"],
+            right_on=["gvkey", "cyp1"],
+            how="inner",
+        )
+        .drop("june_year")
+        .with_columns(beme=pl.col("be") / pl.col("dec_me"))
+    )
+
+
+def ff_country_breakpoints(
+    june: pl.DataFrame, specs: list[tuple[str, float, str]], eligible: pl.Expr
+) -> pl.DataFrame:
+    """Per-(excntry, date) DuckDB QUANTILE_DISC over rows passing eligibility.
+    Country main-exchange (exch_main==1) gate applied upstream in
+    ff_load_world_panel — entire universe is already the NYSE analog pool.
+    Breakpoint pool further restricted to me >= US-NYSE p20 via
+    size_grp ∈ {small, large, mega} (drops micro/nano)."""
+    cols = list({c for c, _, _ in specs})
+    breaks_sql = ", ".join(f"QUANTILE_DISC({c}, {q}) AS {a}" for c, q, a in specs)
+    return (
+        june.filter(eligible & pl.col("size_grp").is_in(["small", "large", "mega"]))
+        .select("excntry", "date", *cols)
+        .sql(f"SELECT excntry, date, {breaks_sql} FROM self GROUP BY excntry, date")
+    )
+
+
+def ff_country_breaks_for_spec(
+    june: pl.DataFrame, key: str, with_size_median: bool = False
+) -> pl.DataFrame:
+    """Per-sort country 30/70 (plus optional size median) from _FF_SORT_SPECS[key]."""
+    s = _FF_SORT_SPECS[key]
+    specs: list[tuple[str, float, str]] = [("me", 0.50, "sizemedn")] if with_size_median else []
+    specs += [(s["value"], 0.30, s["breaks"][0]), (s["value"], 0.70, s["breaks"][1])]
+    return ff_country_breakpoints(june, specs, _FF_ELIGIBLE[key]())
+
+
+def ff_assign_portfolios_world(
+    june: pl.DataFrame,
+    bp_tables: list[pl.DataFrame],
+    spec_keys: list[str],
+    size_gate: pl.Expr | None = None,
+) -> pl.DataFrame:
+    """Country-by-date Size + sort assignment (analog of ff_assign_portfolios
+    but joining on (excntry, date))."""
+    df = june
+    for i, n in enumerate(bp_tables):
+        df = df.join(n, on=["excntry", "date"], how="inner" if i == 0 else "left")
+
+    specs = [_FF_SORT_SPECS[k] for k in spec_keys]
+    if size_gate is None:
+        size_gate = _FF_ELIGIBLE[spec_keys[0]]()
+
+    cols: dict[str, pl.Expr] = {
+        "sizeport": pl.when(size_gate)
+        .then(_ff_bucket("me", ["sizemedn"], ["S", "B"]))
+        .otherwise(None)
+    }
+    for k, s in zip(spec_keys, specs, strict=True):
+        elig = _FF_ELIGIBLE[k]() & pl.col(s["breaks"][0]).is_not_null()
+        cols[s["flag"]] = elig.cast(pl.Int64)
+        cols[s["port"]] = (
+            pl.when(elig).then(_ff_bucket(s["value"], s["breaks"], s["labels"])).otherwise(None)
+        )
+
+    out = ["excntry", "id", "date", "sizeport"]
+    for s in specs:
+        out.extend([s["port"], s["flag"]])
+    return df.with_columns(**cols).select(*out)
+
+
+def ff_assign_world_to_panel(
+    panel: pl.DataFrame,
+    june: pl.DataFrame,
+    port_cols: tuple[str, ...] = _FF_PORT_COLS,
+) -> pl.DataFrame:
+    """Broadcast (excntry, id, June(y)) assignments to the daily/monthly panel
+    via port_year (Jul(y)..Jun(y+1) → formation-year y)."""
+    return (
+        panel.with_columns(
+            port_year=pl.when(pl.col("date").dt.month() >= 7)
+            .then(pl.col("date").dt.year())
+            .otherwise(pl.col("date").dt.year() - 1)
+        )
+        .join(
+            june.select("excntry", "id", *port_cols, june_year=pl.col("date").dt.year()),
+            left_on=["excntry", "id", "port_year"],
+            right_on=["excntry", "id", "june_year"],
+            how="inner",
+        )
+        .drop("port_year")
+    )
+
+
+def _ff_world_vw_panel(ccm4: pl.DataFrame) -> pl.DataFrame:
+    """ROW VW eligibility: positive lagged ME, non-null return, assigned size."""
+    return (
+        ccm4.sort(["excntry", "id", "date"])
+        .with_columns(me_lag1=pl.col("me").shift(1).over("id"))
+        .filter(
+            (pl.col("me_lag1") > 0)
+            & pl.col("ret_exc").is_not_null()
+            & pl.col("sizeport").is_not_null()
+        )
+    )
+
+
+def _ff_world_vw_pivot(
+    panel: pl.DataFrame, sort_col: str, eligible_col: str, buckets: list[str]
+) -> pl.DataFrame:
+    """VW return per (excntry, date, sizeport+sort_col) bucket, pivoted wide."""
+    wide = (
+        panel.filter((pl.col(eligible_col) == 1) & pl.col(sort_col).is_not_null())
+        .with_columns(bucket=pl.col("sizeport") + pl.col(sort_col))
+        .group_by("excntry", "date", "bucket")
+        .agg(vwret=(pl.col("ret_exc") * pl.col("me_lag1")).sum() / pl.col("me_lag1").sum())
+        .pivot(values="vwret", index=["excntry", "date"], on="bucket")
+    )
+    missing = [c for c in buckets if c not in wide.columns]
+    if missing:
+        wide = wide.with_columns(*[pl.lit(None, dtype=pl.Float64).alias(c) for c in missing])
+    return wide.select("excntry", "date", *buckets).sort("excntry", "date")
+
+
+def _ff_world_vw_legs(ccm4: pl.DataFrame, keys: list[str]) -> pl.DataFrame:
+    panel = _ff_world_vw_panel(ccm4)
+    legs = [
+        _ff_world_vw_pivot(
+            panel,
+            _FF_SORT_SPECS[k]["port"],
+            _FF_SORT_SPECS[k]["flag"],
+            _FF_SORT_SPECS[k]["buckets"],
+        ).rename(_FF_SORT_SPECS[k]["rename"])
+        for k in keys
+    ]
+    wide = legs[0]
+    for leg in legs[1:]:
+        wide = wide.join(leg, on=["excntry", "date"], how="full", coalesce=True)
+    return wide.sort("excntry", "date")
+
+
+def ff_compute_factors_world(ccm4: pl.DataFrame) -> pl.DataFrame:
+    """ROW factors: same SMB/HML/RMW/CMA arithmetic as ff_compute_factors_merged
+    but per (excntry, date)."""
+    wide = _ff_world_vw_legs(ccm4, ["bm", "op", "inv"])
+    smb_bm = pl.mean_horizontal("SL", "SM", "SH", ignore_nulls=False) - pl.mean_horizontal(
+        "BL", "BM", "BH", ignore_nulls=False
+    )
+    smb_op = pl.mean_horizontal("SW", "SN_op", "SR", ignore_nulls=False) - pl.mean_horizontal(
+        "BW", "BN_op", "BR", ignore_nulls=False
+    )
+    smb_inv = pl.mean_horizontal("SC", "SN_inv", "SA", ignore_nulls=False) - pl.mean_horizontal(
+        "BC", "BN_inv", "BA", ignore_nulls=False
+    )
+    return wide.select(
+        pl.col("excntry"),
+        pl.col("date"),
+        smb_ff3=smb_bm,
+        smb_ff5=(smb_bm + smb_op + smb_inv) / 3,
+        hml=pl.mean_horizontal("SH", "BH", ignore_nulls=False)
+        - pl.mean_horizontal("SL", "BL", ignore_nulls=False),
+        rmw=pl.mean_horizontal("SR", "BR", ignore_nulls=False)
+        - pl.mean_horizontal("SW", "BW", ignore_nulls=False),
+        cma=pl.mean_horizontal("SC", "BC", ignore_nulls=False)
+        - pl.mean_horizontal("SA", "BA", ignore_nulls=False),
+    )
+
+
+def ff_build_characteristics_world(
+    panel: pl.DataFrame, june: pl.DataFrame, freq: str
+) -> pl.DataFrame:
+    """Per-(excntry, id, eom) ROW characteristics on monthly grid. Daily input
+    downsampled to last trading day per (excntry, id, month)."""
+    p = panel.with_columns(
+        port_year=pl.when(pl.col("date").dt.month() >= 7)
+        .then(pl.col("date").dt.year())
+        .otherwise(pl.col("date").dt.year() - 1)
+    ).join(
+        june.select("excntry", "id", "beme", "op", "inv", fy=pl.col("date").dt.year()),
+        left_on=["excntry", "id", "port_year"],
+        right_on=["excntry", "id", "fy"],
+    )
+    if freq == "daily":
+        p = (
+            p.with_columns(_month=pl.col("date").dt.truncate("1mo"))
+            .sort(["excntry", "id", "date"])
+            .unique(subset=["excntry", "id", "_month"], keep="last")
+            .drop("_month")
+        )
+    return p.select(
+        "date",
+        "excntry",
+        "id",
+        me_ff=pl.col("me"),
+        beme_ff=pl.col("beme"),
+        op_ff=pl.col("op"),
+        inv_ff=pl.col("inv"),
+    ).sort("date", "excntry", "id")
+
+
 @measure_time
-def gen_ff_portfolios(
+def gen_ff_data(
     raw_dir: Path,
     out_dir: Path,
+    interim_dir: Path,
     freqs: tuple[str, ...] = ("monthly", "daily"),
 ) -> None:
     """
     Description:
-        Build FF3/FF5 (SMB/HML/RMW/CMA) factor and characteristic files
-        on the strict CIZ-FF universe (US-only). Numerics match the FF
-        data-library reference within 1 ULP.
+        Build FF3/FF5 (SMB/HML/RMW/CMA) factor and characteristic files on
+        the strict CIZ-FF universe (US, raw CRSP CIZ) and the country-by-
+        country world panel (ROW). US numerics match the FF data-library
+        reference within 1 ULP; ROW factors are formed per excntry with the
+        country main exchange as the NYSE-analog breakpoint pool.
 
     Steps:
-        1) Load Compustat funda (with FF5 OP/INV cols) and CCM link table.
-        2) For each freq: load CRSP, aggregate ME by permco, build the
-           weight_port / cumretx / Dec ME pipeline, join Compustat to the
-           June panel, compute NYSE breakpoints (BM size-median + 30/70,
-           OP 30/70, INV 30/70), assign size+sort portfolios, compute
-           factors.
-        3) Write one merged factor file per freq and one characteristics
-           file (from the monthly run).
+        1) US: load Compustat funda (FF5 cols) + CCM link; per-freq build
+           the weight_port / cumretx / Dec ME pipeline, NYSE breakpoints,
+           portfolio assignment, factor compute.
+        2) ROW: load world Compustat (NA+Global union, BE→USD via FX);
+           per-freq scan world_{m|d}sf.parquet, build per-country June panel
+           with Dec(y-1) ME, country-main-exchange QUANTILE_DISC breakpoints,
+           assignment + VW factor compute grouped by excntry.
+        3) Concat US + ROW; write one merged factor file per freq and one
+           characteristics file (from the monthly run).
 
     Output:
-        - ff_factors_<freq>.parquet [eom/date, smb_ff3, smb_ff5, hml, rmw, cma]
-        - ff_characteristics.parquet [eom, permno, me_ff, beme_ff, op_ff, inv_ff]
+        - ff_factors_<freq>.parquet
+              [excntry, eom/date, smb_ff3, smb_ff5, hml, rmw, cma]
+        - ff_characteristics.parquet
+              [eom, excntry, id, me_ff, beme_ff, op_ff, inv_ff]
     """
     raw_dir = Path(raw_dir)
     out_dir = Path(out_dir)
+    interim_dir = Path(interim_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    comp = ff_load_compustat(raw_dir, ff5=True).collect()
+    comp_us = ff_load_compustat(raw_dir, ff5=True).collect()
     lnkhist = pl.scan_parquet(raw_dir / "crsp_ccmxpf_lnkhist.parquet")
-    ccm2a = ff_link_compustat(comp, lnkhist)
+    ccm2a = ff_link_compustat(comp_us, lnkhist)
+    comp_world = ff_load_world_compustat(raw_dir)
 
     chars_written = False
     for freq in freqs:
+        # ----- US (bit-identical to prior US-only output) -----
         crspm2a = ff_aggregate_permco_me(ff_load_crsp(raw_dir, freq)).collect()
         crspm3, decme = ff_build_crspm3_decme(crspm2a, freq)
         ccm2_june = ff_build_ccm2_june(
@@ -9481,20 +9967,56 @@ def gen_ff_portfolios(
         nyse_bm = ff_nyse_breaks_for_spec(ccm2_june, "bm", with_size_median=True)
         nyse_op = ff_nyse_breaks_for_spec(ccm2_june, "op")
         nyse_inv = ff_nyse_breaks_for_spec(ccm2_june, "inv")
-        june = ff_assign_portfolios(
+        june_us = ff_assign_portfolios(
             ccm2_june,
             [nyse_bm, nyse_op, nyse_inv],
             ["bm", "op", "inv"],
             size_gate=(pl.col("me") > 0),
         )
-        ccm4 = ff_assign_portfolio_to_panel(crspm3, june, port_cols=_FF_PORT_COLS)
-        factors = ff_compute_factors_merged(ccm4)
+        ccm4_us = ff_assign_portfolio_to_panel(crspm3, june_us, port_cols=_FF_PORT_COLS)
+        factors_us = ff_compute_factors_merged(ccm4_us).with_columns(excntry=pl.lit("USA"))
 
-        date_col = "eom" if freq == "monthly" else "date"
-        factors.rename({"date": date_col}).write_parquet(out_dir / f"ff_factors_{freq}.parquet")
+        # ----- ROW -----
+        panel_w = ff_load_world_panel(interim_dir, freq)
+        june_base = ff_build_world_june(panel_w, comp_world, freq)
+        bp_bm = ff_country_breaks_for_spec(june_base, "bm", with_size_median=True)
+        bp_op = ff_country_breaks_for_spec(june_base, "op")
+        bp_inv = ff_country_breaks_for_spec(june_base, "inv")
+        june_w = ff_assign_portfolios_world(
+            june_base,
+            [bp_bm, bp_op, bp_inv],
+            ["bm", "op", "inv"],
+            size_gate=(pl.col("me") > 0),
+        )
+        ccm4_w = ff_assign_world_to_panel(panel_w, june_w, port_cols=_FF_PORT_COLS)
+        factors_w = ff_compute_factors_world(ccm4_w)
+
+        # ----- Concat + write -----
+        dt = "eom" if freq == "monthly" else "date"
+        factor_cols = ("excntry", dt, "smb_ff3", "smb_ff5", "hml", "rmw", "cma")
+        factors = pl.concat(
+            [
+                factors_us.rename({"date": dt}).select(*factor_cols),
+                factors_w.rename({"date": dt}).select(*factor_cols),
+            ],
+            how="vertical_relaxed",
+        ).sort("excntry", dt)
+        factors.write_parquet(out_dir / f"ff_factors_{freq}.parquet")
+
         if not chars_written:
-            chars = ff_build_characteristics_merged(crspm3, ccm2_june, june, freq).rename(
-                {"date": "eom"}
+            chars_us = (
+                ff_build_characteristics_merged(crspm3, ccm2_june, june_us, freq)
+                .with_columns(excntry=pl.lit("USA"))
+                .rename({"date": "eom", "permno": "id"})
+                .select("eom", "excntry", "id", "me_ff", "beme_ff", "op_ff", "inv_ff")
+            )
+            chars_w = (
+                ff_build_characteristics_world(panel_w, june_w, freq)
+                .rename({"date": "eom"})
+                .select("eom", "excntry", "id", "me_ff", "beme_ff", "op_ff", "inv_ff")
+            )
+            chars = pl.concat([chars_us, chars_w], how="vertical_relaxed").sort(
+                "eom", "excntry", "id"
             )
             chars.write_parquet(out_dir / "ff_characteristics.parquet")
             chars_written = True

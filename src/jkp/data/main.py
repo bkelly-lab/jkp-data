@@ -19,7 +19,7 @@ from .aux_functions import (
     filter_world,
     finish_daily_chars,
     firm_age,
-    gen_ff_portfolios,
+    gen_ff_data,
     gen_raw_data_dfs,
     market_beta,
     market_chars_monthly,
@@ -128,9 +128,10 @@ def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> No
         10,
         3,
     )
-    gen_ff_portfolios(
+    gen_ff_data(
         raw_dir=paths.raw_tables_dir,
         out_dir=paths.processed_dir / "other_output",
+        interim_dir=paths.interim_dir,
     )
     firm_age("world_msf.parquet")
     mispricing_factors("world_data_prelim.parquet", 10, min_fcts=3)
