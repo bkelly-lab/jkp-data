@@ -215,6 +215,81 @@ ROLLING_DAILY_SPECS: list[tuple[str, int, list[str]]] = [
     ("_1260d", 750, ["mktcorr"]),
 ]
 
+# ============================================================================
+# FF factor pipeline (gen_ff_data)
+# ============================================================================
+
+# ISO-3 code for the United States; sentinel for excntry-branched filters in
+# the unified FF pipeline (US-strict NYSE breakpoint pool, US-bypassed
+# min-stocks gates).
+US_EXCNTRY = "USA"
+
+# Raw CRSP parquet + column-prefix per frequency. US-only.
+FF_CRSP_SPECS = {
+    "monthly": ("crsp_msf_v2.parquet", "mth"),
+    "daily": ("crsp_dsf_v2.parquet", "dly"),
+}
+
+# port_year = formation year y for any date t in Jul(y)..Jun(y+1).
+FF_PORT_YEAR = (
+    pl.when(pl.col("date").dt.month() >= 7)
+    .then(pl.col("date").dt.year())
+    .otherwise(pl.col("date").dt.year() - 1)
+    .alias("port_year")
+)
+
+# Per-sort definitions: value col, NYSE 30/70 break column names, bucket
+# labels (ladder), port column, eligibility flag, bucket label space, and
+# the SN/BN rename to disambiguate across OP/INV legs.
+FF_SORT_SPECS: dict[str, dict] = {
+    "bm": {
+        "value": "beme",
+        "breaks": ["beme30", "beme70"],
+        "labels": ["L", "M", "H"],
+        "port": "btmport",
+        "flag": "positivebeme",
+        "buckets": ["SL", "SM", "SH", "BL", "BM", "BH"],
+        "rename": {},
+    },
+    "op": {
+        "value": "op",
+        "breaks": ["op30", "op70"],
+        "labels": ["W", "N", "R"],
+        "port": "opport",
+        "flag": "nonmiss_op",
+        "buckets": ["SW", "SN", "SR", "BW", "BN", "BR"],
+        "rename": {"SN": "SN_op", "BN": "BN_op"},
+    },
+    "inv": {
+        "value": "inv",
+        "breaks": ["inv30", "inv70"],
+        "labels": ["C", "N", "A"],
+        "port": "invport",
+        "flag": "nonmiss_inv",
+        "buckets": ["SC", "SN", "SA", "BC", "BN", "BA"],
+        "rename": {"SN": "SN_inv", "BN": "BN_inv"},
+    },
+}
+
+# Portfolio assignment columns broadcast from June(y) to the daily/monthly
+# panel.
+FF_PORT_COLS = (
+    "sizeport",
+    "btmport",
+    "positivebeme",
+    "opport",
+    "nonmiss_op",
+    "invport",
+    "nonmiss_inv",
+)
+
+# Min firms per (excntry, June(y)) for ROW breakpoints; US bypassed.
+FF_MIN_STOCKS_BP = 10
+
+# Min firms per (excntry, date, bucket) for ROW VW; US bypassed.
+FF_MIN_STOCKS_PF = 3
+
+
 PORTFOLIO_SETTINGS = {
     "end_date": END_DATE,
     "pfs": PORTFOLIO_PFS,
