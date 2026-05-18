@@ -9484,10 +9484,13 @@ def _ff_load_world_fx(raw_dir: Path) -> pl.DataFrame:
 
 
 def _ff_compute_be_op_inv(lf: pl.LazyFrame, is_global: bool) -> pl.LazyFrame:
-    """ROW BE/OP/INV computation. BE follows the JKP formula with multi-source
-    fallbacks (seq → ceq+pstk → at−lt; txditc → txdb+itcb; pstkrv → pstkl →
-    pstk). No FASB-109 gate, no BE<0 → null cut. OP/INV use FF formulas
-    (Fama-French 2017 international).
+    """ROW BE/OP/INV per JKP. BE: multi-source fallbacks (seq → ceq+pstk →
+    at−lt; txditc → txdb+itcb; pstkrv → pstkl → pstk); no FASB-109 gate,
+    no BE<0 → null cut. OP: ope_x = ebitda_x − xint, ebitda_x = coalesce(
+    ebitda, oibdp, sale_x − opex_x), with sale_x = coalesce(sale, revt),
+    opex_x = coalesce(xopr, cogs + xsga); OP = ope_x / BE_local. INV: 1-yr
+    asset growth (at − at_lag) / at_lag with strict 1-FY gap (matches JKP
+    at_gr1 in annual data).
 
     `is_global=True` matches comp.g_funda quirks (pstkrv, pstkl, itcb absent —
     materialized as null literals; pstk_x collapses to pstk; txditc fallback
@@ -9504,22 +9507,18 @@ def _ff_compute_be_op_inv(lf: pl.LazyFrame, is_global: bool) -> pl.LazyFrame:
     seq_x = pl.coalesce("seq", pl.col("ceq") + pl.coalesce(ps_x, 0.0), pl.col("at") - pl.col("lt"))
     be_jkp = seq_x + pl.coalesce(txditc_x, 0.0) - pl.coalesce(ps_x, 0.0)
 
-    op_elig = pl.col("revt").is_not_null() & (
-        pl.col("cogs").is_not_null() | pl.col("xsga").is_not_null() | pl.col("xint").is_not_null()
-    )
-    op_num = (
-        pl.col("revt")
-        - pl.coalesce("cogs", pl.lit(0.0))
-        - pl.coalesce("xsga", pl.lit(0.0))
-        - pl.coalesce("xint", pl.lit(0.0))
-    )
+    sale_x = pl.coalesce("sale", "revt")
+    opex_x = pl.coalesce("xopr", pl.col("cogs") + pl.col("xsga"))
+    ebitda_x = pl.coalesce("ebitda", "oibdp", sale_x - opex_x)
+    ope_x = ebitda_x - pl.col("xint")
+
     fy_gap = pl.col("datadate").dt.year() - pl.col("datadate_lag").dt.year()
     return (
-        lf.with_columns(be_local=be_jkp, year=pl.col("datadate").dt.year())
+        lf.with_columns(be_local=be_jkp, ope_x=ope_x, year=pl.col("datadate").dt.year())
         .sort(["gvkey", "datadate"])
         .with_columns(
-            op=pl.when(op_elig & (pl.col("be_local") > 0))
-            .then(op_num / pl.col("be_local"))
+            op=pl.when(pl.col("ope_x").is_not_null() & (pl.col("be_local") > 0))
+            .then(pl.col("ope_x") / pl.col("be_local"))
             .otherwise(None),
             at_lag=pl.col("at").shift(1).over("gvkey"),
             datadate_lag=pl.col("datadate").shift(1).over("gvkey"),
@@ -9548,9 +9547,13 @@ def _ff_load_world_funda(raw_dir: Path, parquet: str, is_global: bool) -> pl.Laz
         "txditc",
         "txdb",
         "revt",
+        "sale",
         "cogs",
         "xsga",
+        "xopr",
         "xint",
+        "ebitda",
+        "oibdp",
         "at",
     ]
     floats = base_floats + ([] if is_global else ["pstkrv", "pstkl", "itcb"])
@@ -9597,10 +9600,12 @@ def ff_load_world_compustat(raw_dir: Path) -> pl.DataFrame:
     Steps:
         1) Load NA funda (INDL/STD/D/C) and Global g_funda (INDL or FS /
            HIST_STD/I/C with INDL-over-FS dedup), each carrying curcd.
-        2) Compute BE per JKP, OP/INV per FF. Global branch: pstkrv/pstkl/itcb
-           absent in comp.g_funda → pstk_x=pstk and txditc fallback collapses
-           to txdb. NA branch (Canada + other NA-coverage non-US gvkeys) keeps
-           the full pstkrv→pstkl→pstk and txditc→txdb+itcb chains.
+        2) Compute BE/OP/INV per JKP. BE: multi-source fallbacks; OP =
+           ope_x / be_local with ope_x = ebitda_x − xint; INV = 1-yr asset
+           growth. Global branch: pstkrv/pstkl/itcb absent in comp.g_funda
+           → pstk_x=pstk and txditc fallback collapses to txdb. NA branch
+           (Canada + other NA-coverage non-US gvkeys) keeps the full
+           pstkrv→pstkl→pstk and txditc→txdb+itcb chains.
         3) Concat, drop duplicates by (gvkey, datadate) preferring NA when
            both exist (NA-USD already-clean).
         4) As-of join FX (local→USD) at datadate per curcd; multiply BE.
