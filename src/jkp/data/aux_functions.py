@@ -9108,10 +9108,13 @@ def ff_prepare_chars_weights_rets(
     would add complexity for sub-1bp factor differences. me_lag1 also
     matches the JKP / ap_factors pipeline convention used elsewhere.
 
-    Returns (data_rets_weights, data_chars). Caller projects to a common
-    schema before concat.
+    Both outputs are projected to a common schema:
+      data_rets_weights: [excntry, id, date, ret, w, me, exchcd_us, size_grp]
+      data_chars:        [excntry, id, date, me, dec_me, be, op, inv, count,
+                          beme, exchcd_us, size_grp]
+    Disjoint cols (exchcd_us US-only, size_grp ROW-only) are null on the
+    other side so vertical_relaxed concat works directly.
     """
-    # ---- Branch 1: build per-(id, date) panel with weight column ----
     if is_us:
         period = (
             (pl.col("date").dt.month() == 7).cast(pl.Int32).cum_sum().over("permno")
@@ -9158,24 +9161,24 @@ def ff_prepare_chars_weights_rets(
         link_key = "gvkey"
         beme_scale = 1.0
 
-    # ---- Shared: month-end downsample (daily) + June + Dec ME + Compustat join ----
-    form = data_rets_weights
-    if freq == "daily":
-        form = (
-            form.with_columns(_m=pl.col("date").dt.truncate("1mo"))
-            .unique(subset=[*id_keys, "_m"], keep="last")
-            .with_columns(date=pl.col("date").dt.month_end())
-            .drop("_m")
+    # Per-month filter-then-dedup (cheap for daily; no-op dedup for monthly)
+    def _last_per_year(month: int) -> pl.DataFrame:
+        return (
+            data_rets_weights.filter(pl.col("date").dt.month() == month)
+            .with_columns(_y=pl.col("date").dt.year())
+            .sort([*id_keys, "_y", "date"])
+            .unique(subset=[*id_keys, "_y"], keep="last")
         )
+
     june_only = (
-        form.filter(pl.col("date").dt.month() == 6)
-        .with_columns(june_year=pl.col("date").dt.year())
-        .with_columns(date=pl.date(pl.col("june_year"), 6, 30))
+        _last_per_year(6)
+        .with_columns(date=pl.date(pl.col("_y"), 6, 30), june_year=pl.col("_y"))
+        .drop("_y")
     )
     dec_me = (
-        form.filter(pl.col("date").dt.month() == 12)
+        _last_per_year(12)
         .filter(pl.col("me") > 0)
-        .select(*id_keys, june_year=pl.col("date").dt.year() + 1, dec_me=pl.col("me"))
+        .select(*id_keys, june_year=pl.col("_y") + 1, dec_me=pl.col("me"))
     )
     data_chars = (
         june_only.join(dec_me, on=[*id_keys, "june_year"], how="inner")
@@ -9188,6 +9191,59 @@ def ff_prepare_chars_weights_rets(
         .drop("june_year")
         .with_columns(beme=beme_scale * pl.col("be") / pl.col("dec_me"))
     )
+
+    # Project both outputs to common schema for direct vertical_relaxed concat.
+    # Column order matters: vertical_relaxed requires identical schemas.
+    if is_us:
+        data_rets_weights = data_rets_weights.select(
+            excntry=pl.lit(US_EXCNTRY),
+            id=pl.col("permno"),
+            date=pl.col("date"),
+            ret=pl.col("retadj"),
+            w=pl.col("weight_port"),
+            me=pl.col("me"),
+            exchcd_us=pl.col("exchcd"),
+            size_grp=pl.lit(None, dtype=pl.Utf8),
+        )
+        data_chars = data_chars.select(
+            excntry=pl.lit(US_EXCNTRY),
+            id=pl.col("permno"),
+            date=pl.col("date"),
+            me=pl.col("me"),
+            dec_me=pl.col("dec_me"),
+            be=pl.col("be"),
+            op=pl.col("op"),
+            inv=pl.col("inv"),
+            count=pl.col("count"),
+            beme=pl.col("beme"),
+            exchcd_us=pl.col("exchcd"),
+            size_grp=pl.lit(None, dtype=pl.Utf8),
+        )
+    else:
+        data_rets_weights = data_rets_weights.select(
+            "excntry",
+            "id",
+            "date",
+            ret=pl.col("ret_exc"),
+            w=pl.col("w"),
+            me=pl.col("me"),
+            exchcd_us=pl.lit(None, dtype=pl.Int64),
+            size_grp=pl.col("size_grp"),
+        )
+        data_chars = data_chars.select(
+            "excntry",
+            "id",
+            "date",
+            "me",
+            "dec_me",
+            "be",
+            "op",
+            "inv",
+            "count",
+            "beme",
+            exchcd_us=pl.lit(None, dtype=pl.Int64),
+            size_grp=pl.col("size_grp"),
+        )
     return data_rets_weights, data_chars
 
 
@@ -9211,13 +9267,6 @@ def _ff_bucket(val: str, breaks: list[str], labels: list[str]) -> pl.Expr:
 # via comp_exrt_dly so ratios match world_msf's USD `me`. Same SMB/HML/RMW/CMA
 # arithmetic as the US path, grouped by excntry.
 # =============================================================================
-
-
-_FF_WORLD_SOURCES = (
-    # (parquet, mode_filters_apply_global, prefer_indl)
-    ("comp_funda.parquet", False),
-    ("comp_g_funda.parquet", True),
-)
 
 
 def _ff_compute_be_op_inv(lf: pl.LazyFrame, is_global: bool) -> pl.LazyFrame:
@@ -9440,13 +9489,14 @@ def ff_country_breakpoints(
     pool = ((pl.col("excntry") == US_EXCNTRY) & (pl.col("exchcd_us") == 1)) | (
         (pl.col("excntry") != US_EXCNTRY) & pl.col("size_grp").is_in(["small", "large", "mega"])
     )
-    pooled = june.filter(eligible & pool)
-    # Min-stocks filter (ROW only): keep (excntry, date) with >= FF_MIN_STOCKS_BP
-    pooled = pooled.with_columns(_n=pl.len().over("excntry", "date")).filter(
-        (pl.col("excntry") == US_EXCNTRY) | (pl.col("_n") >= FF_MIN_STOCKS_BP)
-    )
-    return pooled.select("excntry", "date", *cols).sql(
-        f"SELECT excntry, date, {breaks_sql} FROM self GROUP BY excntry, date"
+    return (
+        june.filter(eligible & pool)
+        .select("excntry", "date", *cols)
+        .sql(
+            f"SELECT excntry, date, {breaks_sql} FROM self "
+            f"GROUP BY excntry, date "
+            f"HAVING excntry = '{US_EXCNTRY}' OR COUNT(*) >= {FF_MIN_STOCKS_BP}"
+        )
     )
 
 
@@ -9656,68 +9706,15 @@ def gen_ff_data(
 
     chars_written = False
     for freq in freqs:
-        # ---- US ----
-        crspm2a = ff_load_crsp_panel(raw_dir, freq)
-        us_panel_raw, us_chars_raw = ff_prepare_chars_weights_rets(crspm2a, ccm2a, freq, is_us=True)
-        us_panel = us_panel_raw.select(
-            excntry=pl.lit(US_EXCNTRY),
-            id=pl.col("permno"),
-            date=pl.col("date"),
-            ret=pl.col("retadj"),
-            w=pl.col("weight_port"),
-            me=pl.col("me"),
-            exchcd_us=pl.col("exchcd"),
-            size_grp=pl.lit(None, dtype=pl.Utf8),
+        us_panel, us_chars = ff_prepare_chars_weights_rets(
+            ff_load_crsp_panel(raw_dir, freq), ccm2a, freq, is_us=True
         )
-        us_data_chars = us_chars_raw.select(
-            excntry=pl.lit(US_EXCNTRY),
-            id=pl.col("permno"),
-            date=pl.col("date"),
-            me=pl.col("me"),
-            dec_me=pl.col("dec_me"),
-            be=pl.col("be"),
-            op=pl.col("op"),
-            inv=pl.col("inv"),
-            count=pl.col("count"),
-            beme=pl.col("beme"),
-            exchcd_us=pl.col("exchcd"),
-            size_grp=pl.lit(None, dtype=pl.Utf8),
-        )
-
-        # ---- ROW ----
-        row_panel_raw, row_chars_raw = ff_prepare_chars_weights_rets(
+        row_panel, row_chars = ff_prepare_chars_weights_rets(
             ff_load_world_panel(interim_dir, freq), comp_world, freq, is_us=False
         )
-        row_panel = row_panel_raw.select(
-            "excntry",
-            "id",
-            "date",
-            ret=pl.col("ret_exc"),
-            w=pl.col("w"),
-            me=pl.col("me"),
-            exchcd_us=pl.lit(None, dtype=pl.Int64),
-            size_grp=pl.col("size_grp"),
-        )
-        row_data_chars = row_chars_raw.select(
-            "excntry",
-            "id",
-            "date",
-            "me",
-            "dec_me",
-            "be",
-            "op",
-            "inv",
-            "count",
-            "beme",
-            exchcd_us=pl.lit(None, dtype=pl.Int64),
-            size_grp=pl.col("size_grp"),
-        )
-
-        # ---- Concat ----
         panel = pl.concat([us_panel, row_panel], how="vertical_relaxed")
-        data_chars = pl.concat([us_data_chars, row_data_chars], how="vertical_relaxed")
+        data_chars = pl.concat([us_chars, row_chars], how="vertical_relaxed")
 
-        # ---- Shared downstream ----
         bp_bm = ff_country_breaks_for_spec(data_chars, "bm", with_size_median=True)
         bp_op = ff_country_breaks_for_spec(data_chars, "op")
         bp_inv = ff_country_breaks_for_spec(data_chars, "inv")
@@ -9727,8 +9724,7 @@ def gen_ff_data(
             ["bm", "op", "inv"],
             size_gate=(pl.col("me") > 0),
         )
-        ccm4 = ff_assign_to_panel(panel, ports)
-        factors = ff_compute_factors(ccm4)
+        factors = ff_compute_factors(ff_assign_to_panel(panel, ports))
 
         dt = "eom" if freq == "monthly" else "date"
         factors.rename({"date": dt}).write_parquet(out_dir / f"ff_factors_{freq}.parquet")
