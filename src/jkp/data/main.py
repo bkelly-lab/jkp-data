@@ -53,7 +53,7 @@ def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> No
     #     end_date=END_DATE,
     #     persistent_connection=persistent_connection,
     # )
-    # gen_raw_data_dfs()
+    gen_raw_data_dfs()
     prepare_comp_sf("both")
     prepare_crsp_sf("m")
     prepare_crsp_sf("d")
