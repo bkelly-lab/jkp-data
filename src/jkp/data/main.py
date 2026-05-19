@@ -74,7 +74,7 @@ def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> No
     create_acc_chars(
         "acc_std_ann.parquet",
         "achars_world.parquet",
-        4,
+        6,  # 6-month lag for annual data (q5 convention; original JKP used 4)
         18,
         acc_chars_list(),
         "world_msf.parquet",
@@ -83,7 +83,7 @@ def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> No
     create_acc_chars(
         "acc_std_qtr.parquet",
         "qchars_world.parquet",
-        4,
+        3,  # 3-month lag for quarterly data (q5 convention; original JKP used 4)
         18,
         acc_chars_list(),
         "world_msf.parquet",
