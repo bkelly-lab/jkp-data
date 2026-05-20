@@ -3,7 +3,7 @@ from pathlib import Path
 from .aux_functions import (
     acc_chars_list,
     add_ret_exc_wins,
-    ap_factors,
+    ap_factor_model_data,
     bidask_hl,
     classify_stocks_size_groups,
     combine_ann_qtr_chars,
@@ -111,24 +111,6 @@ def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> No
         "acc_chars_world.parquet",
         "world_data_prelim.parquet",
     )
-    ap_factors(
-        "ap_factors_daily.parquet",
-        "d",
-        "world_dsf.parquet",
-        "world_data_prelim.parquet",
-        "market_returns_daily.parquet",
-        10,
-        3,
-    )
-    ap_factors(
-        "ap_factors_monthly.parquet",
-        "m",
-        "world_msf.parquet",
-        "world_data_prelim.parquet",
-        "market_returns.parquet",
-        10,
-        3,
-    )
     gen_ff_data(
         "ff_factors_monthly.parquet",
         "ff_factors_daily.parquet",
@@ -139,13 +121,31 @@ def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> No
         "hxz_factors_daily.parquet",
         "hxz_characteristics.parquet",
     )
+    ap_factor_model_data(
+        monthly_factor_inputs=[
+            "ff_factors_monthly.parquet",
+            "hxz_factors_monthly.parquet",
+        ],
+        daily_factor_inputs=[
+            "ff_factors_daily.parquet",
+            "hxz_factors_daily.parquet",
+        ],
+        chars_inputs=[
+            "ff_characteristics.parquet",
+            "hxz_characteristics.parquet",
+        ],
+        mkt_monthly_path="market_returns.parquet",
+        mkt_daily_path="market_returns_daily.parquet",
+        out_monthly="ap_factors_monthly.parquet",
+        out_daily="ap_factors_daily.parquet",
+        out_chars="ap_factors_characteristics.parquet",
+    )
     firm_age("world_msf.parquet")
-    mispricing_factors("world_data_prelim.parquet", 10, min_fcts=3)
+    mispricing_factors(min_stks=30, min_fcts=3, min_obs=10)
     market_beta(
         "beta_60m.parquet",
         "world_msf.parquet",
         "ap_factors_monthly.parquet",
-        "ff_factors_monthly.parquet",
         60,
         36,
     )
@@ -153,7 +153,6 @@ def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> No
         "resmom_ff3",
         "world_msf.parquet",
         "ap_factors_monthly.parquet",
-        "ff_factors_monthly.parquet",
         36,
         24,
         12,
@@ -163,7 +162,6 @@ def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> No
         "resmom_ff3",
         "world_msf.parquet",
         "ap_factors_monthly.parquet",
-        "ff_factors_monthly.parquet",
         36,
         24,
         6,
@@ -173,7 +171,6 @@ def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> No
     prepare_daily(
         "world_dsf.parquet",
         "ap_factors_daily.parquet",
-        "ff_factors_daily.parquet",
     )
     for sfx, min_obs, vars_ in ROLLING_DAILY_SPECS:
         for var in vars_:
