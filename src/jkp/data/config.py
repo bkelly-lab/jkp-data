@@ -298,6 +298,17 @@ FF_MIN_STOCKS_BP = 10
 # Min firms per (excntry, date, bucket) for ROW VW; US bypassed.
 FF_MIN_STOCKS_PF = 3
 
+# CRSP -99.0 missing-return sentinel: treat as 0 return when compounding the
+# UMD prior-(2-12) signal, per FF convention.
+FF_MISSING_RET_CODE = -99.0
+FF_MISSING_RET_TOL = 1e-6
+
+# UMD signal window lengths (trading days for daily, calendar months for monthly).
+FF_UMD_DAILY_SKIP = 21
+FF_UMD_DAILY_LOOKBACK = 251
+FF_UMD_MONTHLY_LOOKBACK = 12
+FF_UMD_MONTHLY_SKIP = 1
+
 
 PORTFOLIO_SETTINGS = {
     "end_date": END_DATE,
