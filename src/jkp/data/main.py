@@ -45,14 +45,12 @@ def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> No
     paths = DataPaths(base_dir=output_dir.resolve())
     creds = get_wrds_credentials()
     setup_folder_structure(paths)
-    # TEMPORARY: raw WRDS parquets already on disk from previous download.
-    # Revert this commit before any build that needs fresh WRDS data.
-    # download_raw_data_tables(
-    #     username=creds.username,
-    #     password=creds.password,
-    #     end_date=END_DATE,
-    #     persistent_connection=persistent_connection,
-    # )
+    download_raw_data_tables(
+        username=creds.username,
+        password=creds.password,
+        end_date=END_DATE,
+        persistent_connection=persistent_connection,
+    )
     gen_raw_data_dfs()
     prepare_comp_sf("both")
     prepare_crsp_sf("m")
