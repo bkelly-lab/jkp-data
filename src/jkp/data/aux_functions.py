@@ -7873,6 +7873,8 @@ def save_output_files():
     os.system("cp ../interim/return_cutoffs_daily.parquet other_output/")
     os.system("cp ../interim/ap_factors_monthly.parquet other_output/")
     os.system("cp ../interim/ap_factors_daily.parquet other_output/")
+    os.system("cp ../interim/ff_factors_monthly.parquet other_output/")
+    os.system("cp ../interim/ff_factors_daily.parquet other_output/")
 
 
 @measure_time
@@ -8063,6 +8065,7 @@ def merge_world_data_prelim():
     e = pl.scan_parquet("mp_factors.parquet")
     f = pl.scan_parquet("market_chars_d.parquet")
     g = pl.scan_parquet("firm_age.parquet").select(["id", "eom", "age"])
+    h = pl.scan_parquet("ff_characteristics.parquet").drop("excntry")
     world_data = (
         a.join(b, how="left", on=["id", "eom"])
         .join(c, how="left", on=["id", "eom"])
@@ -8070,6 +8073,7 @@ def merge_world_data_prelim():
         .join(e, how="left", on=["id", "eom"])
         .join(f, how="left", on=["id", "eom"])
         .join(g, how="left", on=["id", "eom"])
+        .join(h, how="left", on=["id", "eom"])
     )
     world_data.collect().write_parquet("world_data_-1.parquet")
 
