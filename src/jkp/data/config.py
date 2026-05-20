@@ -210,9 +210,9 @@ PORTFOLIO_CHARS = [
 # Variables can repeat across windows (e.g. zero_trades runs at 21d/126d/252d).
 ROLLING_DAILY_SPECS: list[tuple[str, int, list[str]]] = [
     ("_21d", 15, ["ff3", "hxz4"]),
-    #("_126d", 60, ["zero_trades", "turnover", "dolvol", "ami"]),
-    #("_252d", 120, ["rvol", "capm", "downbeta", "zero_trades", "prc_to_high", "mktvol"]),
-    #("_1260d", 750, ["mktcorr"]),
+    # ("_126d", 60, ["zero_trades", "turnover", "dolvol", "ami"]),
+    # ("_252d", 120, ["rvol", "capm", "downbeta", "zero_trades", "prc_to_high", "mktvol"]),
+    # ("_1260d", 750, ["mktcorr"]),
 ]
 
 # ============================================================================
@@ -268,6 +268,15 @@ FF_SORT_SPECS: dict[str, dict] = {
         "flag": "nonmiss_inv",
         "buckets": ["SC", "SN", "SA", "BC", "BN", "BA"],
         "rename": {"SN": "SN_inv", "BN": "BN_inv"},
+    },
+    "mom": {
+        "value": "mom_2_12",
+        "breaks": ["mom30", "mom70"],
+        "labels": ["L", "N", "H"],
+        "port": "momport",
+        "flag": "nonmiss_mom",
+        "buckets": ["SL", "SN", "SH", "BL", "BN", "BH"],
+        "rename": {},
     },
 }
 

@@ -8914,7 +8914,16 @@ def _ff_inv_eligible() -> pl.Expr:
     return (pl.col("me") > 0) & pl.col("inv").is_not_null()
 
 
-_FF_ELIGIBLE = {"bm": _ff_bm_eligible, "op": _ff_op_eligible, "inv": _ff_inv_eligible}
+def _ff_mom_eligible() -> pl.Expr:
+    return pl.col("mom_2_12").is_not_null() & (pl.col("me_lag1") > 0)
+
+
+_FF_ELIGIBLE = {
+    "bm": _ff_bm_eligible,
+    "op": _ff_op_eligible,
+    "inv": _ff_inv_eligible,
+    "mom": _ff_mom_eligible,
+}
 
 
 def ff_load_compustat_us(raw_dir: Path, ff5: bool = False) -> pl.DataFrame:
@@ -9234,7 +9243,7 @@ def ff_prepare_chars_weights_rets(
             "excntry",
             "id",
             "date",
-            ret=pl.col("ret_exc"),
+            ret=pl.col("ret"),
             w=pl.col("w"),
             me=pl.col("me"),
             exchcd_us=pl.lit(None, dtype=pl.Int64),
@@ -9474,7 +9483,7 @@ def ff_load_world_panel(interim_dir: Path, freq: str) -> pl.DataFrame:
                 "id",
                 "gvkey",
                 pl.col("eom").alias("date"),
-                "ret_exc",
+                "ret",
                 "me",
                 "size_grp",
             )
@@ -9486,10 +9495,10 @@ def ff_load_world_panel(interim_dir: Path, freq: str) -> pl.DataFrame:
     return (
         pl.scan_parquet(interim_dir / "world_dsf.parquet")
         .filter(base_filter)
-        .select("excntry", "id", "eom", pl.col("date"), "ret_exc", "me")
+        .select("excntry", "id", "eom", pl.col("date"), "ret", "me")
         .join(msf_keys, on=["id", "eom"], how="inner")
         .filter(pl.col("gvkey").is_not_null())
-        .select("excntry", "id", "gvkey", "date", "ret_exc", "me", "size_grp")
+        .select("excntry", "id", "gvkey", "date", "ret", "me", "size_grp")
         .collect()
     )
 
@@ -9659,9 +9668,236 @@ def ff_compute_factors(ccm4: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def ff_build_characteristics(panel: pl.DataFrame, june: pl.DataFrame, freq: str) -> pl.DataFrame:
+_FF_UMD_MISSING_RET_CODE = -99.0
+_FF_UMD_MISSING_RET_TOL = 1e-6
+_FF_UMD_DAILY_SKIP = 21
+_FF_UMD_DAILY_LOOKBACK = 251
+
+
+def _ff_is_neg99(col: str) -> pl.Expr:
+    return pl.col(col).is_not_null() & (
+        (pl.col(col) - _FF_UMD_MISSING_RET_CODE).abs() < _FF_UMD_MISSING_RET_TOL
+    )
+
+
+def ff_build_mom_signal(panel: pl.DataFrame, freq: str) -> pl.DataFrame:
+    """Per-(excntry, id) prior (2-12) return signal + eligibility.
+
+    Mirrors ff3_replication/ff_umd.py (monthly) and ff_umd_daily.py
+    (daily-rebalance per Ken French). Calendar-month-indexed for monthly;
+    per-excntry trading-day-indexed for daily so non-US calendars don't
+    poison lags.
+
+    Output adds [me_lag1, mom_2_12, eligible_mom] to the panel.
+
+    Eligibility (monthly): me_lag1 > 0; ret_lag2 real (non-null,
+    non-sentinel); ret_lag3..12 either real or -99.0 sentinel; me_lag13
+    present; calendar gap == k for each k. -99.0 sentinel treated as 0
+    when compounding.
+
+    Eligibility (daily, FF-style): me_lag1 > 0; ret_lag21 real;
+    nothing-missing in window t-250..t-22 (sentinels OK); me_lag251
+    present (substitute for prc_lag251 since ROW daily lacks prc);
+    trading-day gap == k.
+    """
+    if freq == "monthly":
+        idx = pl.col("date").dt.year() * 12 + pl.col("date").dt.month()
+        df = panel.with_columns(mth_idx=idx.cast(pl.Int64)).sort(["excntry", "id", "mth_idx"])
+        lag_exprs: list[pl.Expr] = [
+            pl.col("me").shift(1).over(["excntry", "id"]).alias("me_lag1"),
+            pl.col("me").shift(13).over(["excntry", "id"]).alias("me_lag13"),
+        ]
+        for k in range(1, 13):
+            lag_exprs.append(pl.col("ret").shift(k).over(["excntry", "id"]).alias(f"ret_lag{k}"))
+        gap_exprs: list[pl.Expr] = [
+            (pl.col("mth_idx") - pl.col("mth_idx").shift(k).over(["excntry", "id"])).alias(
+                f"gap{k}"
+            )
+            for k in (*range(1, 13), 13)
+        ]
+        df = df.with_columns(*lag_exprs, *gap_exprs)
+        null_exprs: list[pl.Expr] = [
+            pl.when(pl.col("gap1") == 1).then(pl.col("me_lag1")).otherwise(None).alias("me_lag1"),
+            pl.when(pl.col("gap13") == 13)
+            .then(pl.col("me_lag13"))
+            .otherwise(None)
+            .alias("me_lag13"),
+        ]
+        for k in range(1, 13):
+            null_exprs.append(
+                pl.when(pl.col(f"gap{k}") == k)
+                .then(pl.col(f"ret_lag{k}"))
+                .otherwise(None)
+                .alias(f"ret_lag{k}")
+            )
+        df = df.with_columns(*null_exprs)
+
+        real_lag2 = pl.col("ret_lag2").is_not_null() & ~_ff_is_neg99("ret_lag2")
+        elig = (
+            pl.col("me_lag1").is_not_null()
+            & (pl.col("me_lag1") > 0)
+            & pl.col("me_lag13").is_not_null()
+            & real_lag2
+        )
+        for k in range(3, 13):
+            elig = elig & pl.col(f"ret_lag{k}").is_not_null()
+
+        prod_expr: pl.Expr | None = None
+        for k in range(2, 13):
+            c = pl.col(f"ret_lag{k}")
+            eff = (
+                pl.when((c - _FF_UMD_MISSING_RET_CODE).abs() < _FF_UMD_MISSING_RET_TOL)
+                .then(pl.lit(0.0))
+                .otherwise(c)
+            )
+            term = 1.0 + eff
+            prod_expr = term if prod_expr is None else prod_expr * term
+        mom_expr = prod_expr - 1.0
+
+        return df.with_columns(
+            eligible_mom=elig,
+            mom_2_12=pl.when(elig).then(mom_expr).otherwise(None),
+        ).select(
+            "excntry",
+            "id",
+            "date",
+            "ret",
+            "w",
+            "me",
+            "exchcd_us",
+            "size_grp",
+            "me_lag1",
+            "mom_2_12",
+            "eligible_mom",
+        )
+
+    # daily path
+    skip = _FF_UMD_DAILY_SKIP
+    look = _FF_UMD_DAILY_LOOKBACK
+    trading_idx = (
+        panel.select("excntry", "date")
+        .unique()
+        .sort(["excntry", "date"])
+        .with_columns(tidx=pl.int_range(0, pl.len()).cast(pl.Int64).over("excntry"))
+    )
+    df = panel.join(trading_idx, on=["excntry", "date"], how="left").sort(["excntry", "id", "tidx"])
+    df = df.with_columns(
+        is_sentinel=_ff_is_neg99("ret"),
+        is_null_ret=pl.col("ret").is_null(),
+    )
+    df = df.with_columns(
+        eff_for_cum=pl.when(pl.col("is_sentinel") | pl.col("is_null_ret"))
+        .then(0.0)
+        .otherwise(pl.col("ret")),
+    )
+    df = df.with_columns(
+        log_eff=(1.0 + pl.col("eff_for_cum")).log(),
+    )
+    df = df.with_columns(
+        cum_log=pl.col("log_eff").cum_sum().over(["excntry", "id"]),
+        cum_null=pl.col("is_null_ret").cast(pl.Int64).cum_sum().over(["excntry", "id"]),
+    )
+    df = df.with_columns(
+        tidx_lag_one=pl.col("tidx").shift(1).over(["excntry", "id"]),
+        tidx_lag_skip=pl.col("tidx").shift(skip + 1).over(["excntry", "id"]),
+        tidx_lag_look=pl.col("tidx").shift(look).over(["excntry", "id"]),
+        cum_log_lag_skip=pl.col("cum_log").shift(skip + 1).over(["excntry", "id"]),
+        cum_log_lag_look=pl.col("cum_log").shift(look + 1).over(["excntry", "id"]),
+        cum_null_lag_skip=pl.col("cum_null").shift(skip + 1).over(["excntry", "id"]),
+        cum_null_lag_look=pl.col("cum_null").shift(look + 1).over(["excntry", "id"]),
+        ret_lag_skip=pl.col("ret").shift(skip).over(["excntry", "id"]),
+        me_lag1=pl.col("me").shift(1).over(["excntry", "id"]),
+        me_lag_look=pl.col("me").shift(look).over(["excntry", "id"]),
+    )
+    df = df.with_columns(
+        mom_2_12=(pl.col("cum_log_lag_skip") - pl.col("cum_log_lag_look")).exp() - 1.0,
+        nulls_in_window=pl.col("cum_null_lag_skip") - pl.col("cum_null_lag_look"),
+        gap_one=pl.col("tidx") - pl.col("tidx_lag_one"),
+        gap_skip=pl.col("tidx") - pl.col("tidx_lag_skip"),
+        gap_look=pl.col("tidx") - pl.col("tidx_lag_look"),
+    )
+    real_lag_skip = pl.col("ret_lag_skip").is_not_null() & ~_ff_is_neg99("ret_lag_skip")
+    df = df.with_columns(
+        eligible_mom=(
+            (pl.col("gap_one") == 1)
+            & (pl.col("gap_skip") == skip + 1)
+            & (pl.col("gap_look") == look)
+            & pl.col("me_lag1").is_not_null()
+            & (pl.col("me_lag1") > 0)
+            & real_lag_skip
+            & pl.col("me_lag_look").is_not_null()
+            & (pl.col("nulls_in_window") == 0)
+        ),
+    )
+    df = df.with_columns(
+        mom_2_12=pl.when(pl.col("eligible_mom")).then(pl.col("mom_2_12")).otherwise(None)
+    )
+    return df.select(
+        "excntry",
+        "id",
+        "date",
+        "ret",
+        "w",
+        "me",
+        "exchcd_us",
+        "size_grp",
+        "me_lag1",
+        "mom_2_12",
+        "eligible_mom",
+    )
+
+
+def ff_compute_umd_factor(panel: pl.DataFrame) -> pl.DataFrame:
+    """2x3 size x mom_2_12 → per (excntry, date) umd_ff.
+
+    Mirrors the bm leg of ff_compute_factors: VW per (excntry, date,
+    bucket=sizeport+momport), ROW-only min-stocks gate via
+    FF_MIN_STOCKS_PF, UMD = 0.5*(SH+BH) - 0.5*(SL+BL).
+    """
+    src = panel.filter(
+        (pl.col("w") > 0)
+        & pl.col("ret").is_not_null()
+        & pl.col("sizeport").is_not_null()
+        & (pl.col("nonmiss_mom") == 1)
+        & pl.col("momport").is_not_null()
+    ).with_columns(bucket=pl.col("sizeport") + pl.col("momport"))
+    agg = (
+        src.group_by("excntry", "date", "bucket")
+        .agg(
+            vwret=(pl.col("ret") * pl.col("w")).sum() / pl.col("w").sum(),
+            _n=pl.len(),
+        )
+        .with_columns(
+            vwret=pl.when((pl.col("excntry") == US_EXCNTRY) | (pl.col("_n") >= FF_MIN_STOCKS_PF))
+            .then(pl.col("vwret"))
+            .otherwise(None)
+        )
+        .pivot(values="vwret", index=["excntry", "date"], on="bucket")
+    )
+    for c in ("SL", "SN", "SH", "BL", "BN", "BH"):
+        if c not in agg.columns:
+            agg = agg.with_columns(pl.lit(None, dtype=pl.Float64).alias(c))
+    return agg.select(
+        "excntry",
+        "date",
+        umd_ff=0.5 * (pl.col("SH") + pl.col("BH")) - 0.5 * (pl.col("SL") + pl.col("BL")),
+    ).sort("excntry", "date")
+
+
+def ff_build_characteristics(
+    panel: pl.DataFrame,
+    june: pl.DataFrame,
+    freq: str,
+    mom_signal: pl.DataFrame | None = None,
+) -> pl.DataFrame:
     """Per-(excntry, id, eom) characteristics on monthly grid. Daily input
-    downsampled to last trading day per (excntry, id, month)."""
+    downsampled to last trading day per (excntry, id, month).
+
+    If `mom_signal` is provided (output of `ff_build_mom_signal`), the
+    per-stock `mom_2_12` is joined on (excntry, id, date) and emitted as
+    `umd_ff`. Caller should pass the MONTHLY signal so the characteristic
+    aligns to monthly eom rows.
+    """
     p = panel.with_columns(FF_PORT_YEAR).join(
         june.select("excntry", "id", "beme", "op", "inv", fy=pl.col("date").dt.year()),
         left_on=["excntry", "id", "port_year"],
@@ -9674,15 +9910,21 @@ def ff_build_characteristics(panel: pl.DataFrame, june: pl.DataFrame, freq: str)
             .unique(subset=["excntry", "id", "_month"], keep="last")
             .drop("_month")
         )
-    return p.select(
-        "date",
-        "excntry",
-        "id",
-        me_ff=pl.col("me"),
-        beme_ff=pl.col("beme"),
-        op_ff=pl.col("op"),
-        inv_ff=pl.col("inv"),
-    ).sort("date", "excntry", "id")
+    if mom_signal is not None:
+        p = p.join(
+            mom_signal.select("excntry", "id", "date", "mom_2_12"),
+            on=["excntry", "id", "date"],
+            how="left",
+        )
+    cols = {
+        "me_ff": pl.col("me"),
+        "beme_ff": pl.col("beme"),
+        "op_ff": pl.col("op"),
+        "inv_ff": pl.col("inv"),
+    }
+    if mom_signal is not None:
+        cols["umd_ff"] = pl.col("mom_2_12")
+    return p.select("date", "excntry", "id", **cols).sort("date", "excntry", "id")
 
 
 @measure_time
@@ -9715,9 +9957,9 @@ def gen_ff_data(
 
     Output:
         - ff_factors_<freq>.parquet
-              [excntry, eom/date, smb_ff3, smb_ff5, hml, rmw, cma]
+              [excntry, eom/date, smb_ff3, smb_ff5, hml, rmw, cma, umd_ff]
         - ff_characteristics.parquet
-              [eom, excntry, id, me_ff, beme_ff, op_ff, inv_ff]
+              [eom, excntry, id, me_ff, beme_ff, op_ff, inv_ff, umd_ff]
     """
     raw_dir = Path(raw_dir)
     out_dir = Path(out_dir)
@@ -9752,10 +9994,31 @@ def gen_ff_data(
         )
         factors = ff_compute_factors(ff_assign_to_panel(panel, ports))
 
+        # UMD: monthly or daily-rebalance per freq; same per-country breakpoints
+        # + ROW min-stocks gates as the other FF sorts. mom_signal is also the
+        # source for the per-stock umd_ff characteristic.
+        mom_signal = ff_build_mom_signal(panel, freq)
+        bp_mom = ff_country_breaks_for_spec(mom_signal, "mom", with_size_median=True)
+        ports_mom = ff_assign_portfolios(
+            mom_signal,
+            [bp_mom],
+            ["mom"],
+            size_gate=(pl.col("eligible_mom") & (pl.col("me_lag1") > 0)),
+        )
+        umd_panel = mom_signal.join(
+            ports_mom.select("excntry", "id", "date", "sizeport", "momport", "nonmiss_mom"),
+            on=["excntry", "id", "date"],
+            how="left",
+        ).with_columns(w=pl.col("me_lag1"))
+        umd = ff_compute_umd_factor(umd_panel)
+        factors = factors.join(umd, on=["excntry", "date"], how="left")
+
         dt = "eom" if freq == "monthly" else "date"
         factors.rename({"date": dt}).write_parquet(out_dir / f"ff_factors_{freq}.parquet")
 
-        if not chars_written:
-            chars = ff_build_characteristics(panel, data_chars, freq).rename({"date": "eom"})
+        if not chars_written and freq == "monthly":
+            chars = ff_build_characteristics(panel, data_chars, freq, mom_signal=mom_signal).rename(
+                {"date": "eom"}
+            )
             chars.write_parquet(out_dir / "ff_characteristics.parquet")
             chars_written = True
