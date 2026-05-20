@@ -56,60 +56,60 @@ def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> No
     paths = DataPaths(base_dir=output_dir.resolve())
     creds = get_wrds_credentials()
     setup_folder_structure(paths)
-    # download_raw_data_tables(
-    #     username=creds.username,
-    #     password=creds.password,
-    #     end_date=END_DATE,
-    #     persistent_connection=persistent_connection,
-    # )
-    # gen_raw_data_dfs()
-    # prepare_comp_sf("both")
-    # prepare_crsp_sf("m")
-    # prepare_crsp_sf("d")
-    # combine_crsp_comp_sf()
-    # crsp_industry()
-    # comp_industry()
-    # merge_industry_to_world_msf()
-    # ff_ind_class("__msf_world2.parquet")
-    # nyse_size_cutoffs("__msf_world3.parquet")
-    # classify_stocks_size_groups()
-    # return_cutoffs("m", 0)
-    # return_cutoffs("d", 0)
-    # add_ret_exc_wins("m")
-    # add_ret_exc_wins("d")
-    # market_returns(
-    #     "world_dsf.parquet", "d", 1, "return_cutoffs_daily.parquet", "nyse_cutoffs.parquet"
-    # )
-    # market_returns("world_msf.parquet", "m", 1, "return_cutoffs.parquet", "nyse_cutoffs.parquet")
-    # standardized_accounting_data("world", 1, "world_msf.parquet", 1, ACCOUNTING_START_DATE)
-    # create_acc_chars(
-    #     "acc_std_ann.parquet",
-    #     "achars_world.parquet",
-    #     4,
-    #     18,
-    #     acc_chars_list(),
-    #     "world_msf.parquet",
-    #     "",
-    # )
-    # create_acc_chars(
-    #     "acc_std_qtr.parquet",
-    #     "qchars_world.parquet",
-    #     4,
-    #     18,
-    #     acc_chars_list(),
-    #     "world_msf.parquet",
-    #     "_qitem",
-    # )
-    # combine_ann_qtr_chars(
-    #     "achars_world.parquet", "qchars_world.parquet", acc_chars_list(), "_qitem"
-    # )
-    # market_chars_monthly("world_msf.parquet", "market_returns.parquet")
-    # create_world_data_prelim(
-    #     "world_msf.parquet",
-    #     "market_chars_m.parquet",
-    #     "acc_chars_world.parquet",
-    #     "world_data_prelim.parquet",
-    # )
+    download_raw_data_tables(
+        username=creds.username,
+        password=creds.password,
+        end_date=END_DATE,
+        persistent_connection=persistent_connection,
+    )
+    gen_raw_data_dfs()
+    prepare_comp_sf("both")
+    prepare_crsp_sf("m")
+    prepare_crsp_sf("d")
+    combine_crsp_comp_sf()
+    crsp_industry()
+    comp_industry()
+    merge_industry_to_world_msf()
+    ff_ind_class("__msf_world2.parquet")
+    nyse_size_cutoffs("__msf_world3.parquet")
+    classify_stocks_size_groups()
+    return_cutoffs("m", 0)
+    return_cutoffs("d", 0)
+    add_ret_exc_wins("m")
+    add_ret_exc_wins("d")
+    market_returns(
+        "world_dsf.parquet", "d", 1, "return_cutoffs_daily.parquet", "nyse_cutoffs.parquet"
+    )
+    market_returns("world_msf.parquet", "m", 1, "return_cutoffs.parquet", "nyse_cutoffs.parquet")
+    standardized_accounting_data("world", 1, "world_msf.parquet", 1, ACCOUNTING_START_DATE)
+    create_acc_chars(
+        "acc_std_ann.parquet",
+        "achars_world.parquet",
+        4,
+        18,
+        acc_chars_list(),
+        "world_msf.parquet",
+        "",
+    )
+    create_acc_chars(
+        "acc_std_qtr.parquet",
+        "qchars_world.parquet",
+        4,
+        18,
+        acc_chars_list(),
+        "world_msf.parquet",
+        "_qitem",
+    )
+    combine_ann_qtr_chars(
+        "achars_world.parquet", "qchars_world.parquet", acc_chars_list(), "_qitem"
+    )
+    market_chars_monthly("world_msf.parquet", "market_returns.parquet")
+    create_world_data_prelim(
+        "world_msf.parquet",
+        "market_chars_m.parquet",
+        "acc_chars_world.parquet",
+        "world_data_prelim.parquet",
+    )
     ap_factors(
         "ap_factors_daily.parquet",
         "d",
@@ -129,12 +129,12 @@ def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> No
         3,
     )
     gen_ff_data(
-        raw_dir=paths.raw_tables_dir,
-        out_dir=paths.interim_dir,
-        interim_dir=paths.interim_dir,
+        "ff_factors_monthly.parquet",
+        "ff_factors_daily.parquet",
+        "ff_characteristics.parquet",
     )
-    # firm_age("world_msf.parquet")
-    # mispricing_factors("world_data_prelim.parquet", 10, min_fcts=3)
+    firm_age("world_msf.parquet")
+    mispricing_factors("world_data_prelim.parquet", 10, min_fcts=3)
     market_beta(
         "beta_60m.parquet",
         "world_msf.parquet",
@@ -163,7 +163,7 @@ def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> No
         6,
         1,
     )
-    # bidask_hl("corwin_schultz.parquet", "world_dsf.parquet", "market_returns_daily.parquet", 10)
+    bidask_hl("corwin_schultz.parquet", "world_dsf.parquet", "market_returns_daily.parquet", 10)
     prepare_daily(
         "world_dsf.parquet",
         "ap_factors_daily.parquet",
@@ -172,17 +172,17 @@ def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> No
     for sfx, min_obs, vars_ in ROLLING_DAILY_SPECS:
         for var in vars_:
             roll_apply_daily(var, sfx, min_obs)
-    # merge_roll_apply_daily_results()
-    # finish_daily_chars("market_chars_d.parquet")
-    # merge_world_data_prelim()
-    # quality_minus_junk("world_data_-1.parquet", 10)
-    # merge_qmj_to_world_data()
-    # filter_dsf()
-    # filter_msf()
-    # filter_world()
-    # save_main_data(paths)
-    # save_daily_ret()
-    # save_monthly_ret()
-    # save_accounting_data()
-    # save_output_files()
-    # save_full_files_and_cleanup(clear_interim=True)
+    merge_roll_apply_daily_results()
+    finish_daily_chars("market_chars_d.parquet")
+    merge_world_data_prelim()
+    quality_minus_junk("world_data_-1.parquet", 10)
+    merge_qmj_to_world_data()
+    filter_dsf()
+    filter_msf()
+    filter_world()
+    save_main_data(paths)
+    save_daily_ret()
+    save_monthly_ret()
+    save_accounting_data()
+    save_output_files()
+    save_full_files_and_cleanup(clear_interim=True)

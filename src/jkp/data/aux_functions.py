@@ -9895,21 +9895,17 @@ def ff_build_characteristics(
 
 @measure_time
 def gen_ff_data(
-    raw_dir: Path,
-    out_dir: Path,
-    interim_dir: Path,
+    monthly_factors_path: str,
+    daily_factors_path: str,
+    chars_path: str,
     freqs: tuple[str, ...] = ("monthly", "daily"),
 ) -> None:
     """
     Description:
-        Build FF3/FF5 (SMB/HML/RMW/CMA) factor and characteristic files for
-        all countries. US upstream uses raw CRSP CIZ + CCM-linked FF-strict
-        Compustat — bit-identical to the standalone python replication. ROW
-        upstream uses pipeline world_msf/world_dsf + JKP-spec multi-fallback
-        Compustat (NA + Global). Both feed a single concatenated panel and
-        June-formation frame; shared breakpoint/assignment/sort helpers
-        compute factors per excntry. ROW-only min-stocks gates drop thin
-        country-dates; US bypassed.
+        Build FF3/FF5/UMD factor and characteristic files for all countries.
+        Runs from the pipeline cwd (= interim/), reading raw CRSP/Compustat
+        from `../raw/raw_tables/` and world_msf/world_dsf from cwd, matching
+        the convention of other steps in main.run_pipeline().
 
     Steps:
         1) Build US panel/June via raw CRSP path (FF-strict). Tag excntry,
@@ -9922,15 +9918,14 @@ def gen_ff_data(
            per (excntry, date, bucket) with ROW min-stocks gate, factors.
 
     Output:
-        - ff_factors_<freq>.parquet
+        - <monthly_factors_path>, <daily_factors_path>
               [excntry, eom/date, smb_ff3, smb_ff5, hml, rmw, cma, umd_ff]
-        - ff_characteristics.parquet
+        - <chars_path>
               [eom, excntry, id, me_ff, beme_ff, op_ff, inv_ff, umd_ff]
     """
-    raw_dir = Path(raw_dir)
-    out_dir = Path(out_dir)
-    interim_dir = Path(interim_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    raw_dir = Path("../raw/raw_tables")
+    interim_dir = Path(".")
+    out_paths = {"monthly": monthly_factors_path, "daily": daily_factors_path}
 
     # ---- US Compustat (FF-strict) ----
     ccm2a = ff_load_compustat_us(raw_dir, ff5=True)
@@ -9983,10 +9978,10 @@ def gen_ff_data(
         factors = factors.join(umd, on=["excntry", "date"], how="left")
 
         dt = "eom" if freq == "monthly" else "date"
-        factors.rename({"date": dt}).write_parquet(out_dir / f"ff_factors_{freq}.parquet")
+        factors.rename({"date": dt}).write_parquet(out_paths[freq])
 
         if freq == "monthly":
             chars = ff_build_characteristics(panel, data_chars, freq, mom_signal=mom_signal).rename(
                 {"date": "eom"}
             )
-            chars.write_parquet(out_dir / "ff_characteristics.parquet")
+            chars.write_parquet(chars_path)
