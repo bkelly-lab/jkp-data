@@ -20,6 +20,7 @@ from .aux_functions import (
     finish_daily_chars,
     firm_age,
     gen_ff_data,
+    gen_hxz_data,
     gen_raw_data_dfs,
     market_beta,
     market_chars_monthly,
@@ -132,6 +133,11 @@ def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> No
         "ff_factors_monthly.parquet",
         "ff_factors_daily.parquet",
         "ff_characteristics.parquet",
+    )
+    gen_hxz_data(
+        "hxz_factors_monthly.parquet",
+        "hxz_factors_daily.parquet",
+        "hxz_characteristics.parquet",
     )
     firm_age("world_msf.parquet")
     mispricing_factors("world_data_prelim.parquet", 10, min_fcts=3)
