@@ -12445,48 +12445,44 @@ def gen_ff_data(
         panel = pl.concat([us_panel, row_panel], how="vertical_relaxed")
         data_chars = pl.concat([us_chars, row_chars], how="vertical_relaxed")
 
-        bp_bm = ff_country_breaks_for_spec(data_chars, "bm", with_size_median=True)
-        bp_op = ff_country_breaks_for_spec(data_chars, "op")
-        bp_inv = ff_country_breaks_for_spec(data_chars, "inv")
         ports = ff_assign_portfolios(
             data_chars,
-            [bp_bm, bp_op, bp_inv],
+            [
+                ff_country_breaks_for_spec(data_chars, k, with_size_median=(k == "bm"))
+                for k in ("bm", "op", "inv")
+            ],
             ["bm", "op", "inv"],
             size_gate=(pl.col("me") > 0),
         )
         factors = ff_compute_factors(ff_assign_to_panel(panel, ports))
 
-        # UMD: monthly or daily-rebalance per freq; same per-country breakpoints
-        # + ROW min-stocks gates as the other FF sorts. mom_signal is also the
-        # source for the per-stock umd_ff characteristic.
-        # Size dimension for UMD is ME at end of t-1, not row-t ME, so swap
-        # me ← me_lag1 before breakpoints/assignment so the shared helpers
-        # (`me` column, "sizemedn") use the right value. me_lag1 is null when
-        # the prior-month observation is missing, so size_gate guards that.
+        # UMD: same per-country breakpoints + ROW gates as the other FF sorts.
+        # Size dimension is ME at end of t-1 (not row-t ME), so swap
+        # me ← me_lag1 before breakpoints/assignment. mom_signal is reused by
+        # ff_build_characteristics for the per-stock umd_ff column.
         mom_signal = ff_build_mom_signal(panel, freq).with_columns(me=pl.col("me_lag1"))
-        bp_mom = ff_country_breaks_for_spec(mom_signal, "mom", with_size_median=True)
         ports_mom = ff_assign_portfolios(
             mom_signal,
-            [bp_mom],
+            [ff_country_breaks_for_spec(mom_signal, "mom", with_size_median=True)],
             ["mom"],
             size_gate=(pl.col("eligible_mom") & (pl.col("me_lag1") > 0)),
         )
-        umd_panel = mom_signal.join(
-            ports_mom.select("excntry", "id", "date", "sizeport", "momport", "nonmiss_mom"),
-            on=["excntry", "id", "date"],
-            how="left",
-        ).with_columns(w=pl.col("me_lag1"))
-        umd = ff_compute_umd_factor(umd_panel)
+        umd = ff_compute_umd_factor(
+            mom_signal.join(
+                ports_mom.select("excntry", "id", "date", "sizeport", "momport", "nonmiss_mom"),
+                on=["excntry", "id", "date"],
+                how="left",
+            ).with_columns(w=pl.col("me_lag1"))
+        )
         factors = factors.join(umd, on=["excntry", "date"], how="left")
 
         dt = "eom" if freq == "monthly" else "date"
         factors.rename({"date": dt}).write_parquet(out_paths[freq])
 
         if freq == "monthly":
-            chars = ff_build_characteristics(panel, data_chars, freq, mom_signal=mom_signal).rename(
+            ff_build_characteristics(panel, data_chars, freq, mom_signal=mom_signal).rename(
                 {"date": "eom"}
-            )
-            chars.drop("excntry").write_parquet(chars_path)
+            ).drop("excntry").write_parquet(chars_path)
 
 
 # =============================================================================
