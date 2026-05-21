@@ -39,7 +39,6 @@ from .config import (
     MP_ANOMALY_LIST,
     MP_DISTRESS_BETAS,
     MP_LAG_M,
-    MP_MAIN_FILTERS_COLS,
     MP_MGMT_IDX,
     MP_MIN_OBS_PF_WORLD,
     MP_MIN_STKS_BP_WORLD,
@@ -8529,19 +8528,6 @@ def _mp_world_load_fundq_global() -> pl.DataFrame:
     fq_us = _mp_load_fundq().with_columns(excntry_src=pl.lit("USA"))
     # Global — comp.g_fundq, pulled by jkp.
     g_path = f"{_MP_RAW}/comp_g_fundq.parquet"
-    g_cols = _MP_FUNDQ_NUMERIC + [
-        "gvkey",
-        "datadate",
-        "fyearq",
-        "fqtr",
-        "fyr",
-        "rdq",
-        "indfmt",
-        "datafmt",
-        "popsrc",
-        "consol",
-        "curcdq",
-    ]
     fq_g = (
         pl.read_parquet(g_path)
         .with_columns(
