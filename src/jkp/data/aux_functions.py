@@ -11441,7 +11441,7 @@ _FF_ELIGIBLE = {
 }
 
 
-def ff_load_compustat_us(raw_dir: Path, ff5: bool = False) -> pl.DataFrame:
+def ff_load_compustat_us(raw_dir: Path, ff5: bool) -> pl.DataFrame:
     """
     Description:
         Load FF-strict Compustat NA funda and link gvkey→permno via CCM
@@ -12098,17 +12098,13 @@ def ff_assign_portfolios(
     return df.with_columns(**cols).select(*out)
 
 
-def ff_assign_to_panel(
-    panel: pl.DataFrame,
-    june: pl.DataFrame,
-    port_cols: tuple[str, ...] = FF_PORT_COLS,
-) -> pl.DataFrame:
+def ff_assign_to_panel(panel: pl.DataFrame, june: pl.DataFrame) -> pl.DataFrame:
     """Broadcast (excntry, id, June(y)) assignments to the daily/monthly panel
     via port_year (Jul(y)..Jun(y+1) → formation-year y)."""
     return (
         panel.with_columns(FF_PORT_YEAR)
         .join(
-            june.select("excntry", "id", *port_cols, june_year=pl.col("date").dt.year()),
+            june.select("excntry", "id", *FF_PORT_COLS, june_year=pl.col("date").dt.year()),
             left_on=["excntry", "id", "port_year"],
             right_on=["excntry", "id", "june_year"],
             how="inner",
@@ -12117,7 +12113,7 @@ def ff_assign_to_panel(
     )
 
 
-def _ff_vw_leg(panel: pl.DataFrame, spec_key: str, w_col: str = "w") -> pl.DataFrame:
+def _ff_vw_leg(panel: pl.DataFrame, spec_key: str) -> pl.DataFrame:
     """VW per (excntry, date, sizeport+<port>) bucket for one FF_SORT_SPECS entry.
 
     Applies ROW-only FF_MIN_STOCKS_PF gate (US bypassed) and pivots to wide
@@ -12126,7 +12122,7 @@ def _ff_vw_leg(panel: pl.DataFrame, spec_key: str, w_col: str = "w") -> pl.DataF
     s = FF_SORT_SPECS[spec_key]
     leg = (
         panel.filter(
-            (pl.col(w_col) > 0)
+            (pl.col("w") > 0)
             & pl.col("ret").is_not_null()
             & pl.col("sizeport").is_not_null()
             & (pl.col(s["flag"]) == 1)
@@ -12135,7 +12131,7 @@ def _ff_vw_leg(panel: pl.DataFrame, spec_key: str, w_col: str = "w") -> pl.DataF
         .with_columns(bucket=pl.col("sizeport") + pl.col(s["port"]))
         .group_by("excntry", "date", "bucket")
         .agg(
-            vwret=(pl.col("ret") * pl.col(w_col)).sum() / pl.col(w_col).sum(),
+            vwret=(pl.col("ret") * pl.col("w")).sum() / pl.col("w").sum(),
             _n=pl.len(),
         )
         .with_columns(
@@ -13047,14 +13043,14 @@ def _hxz_country_breaks(df: pl.DataFrame, specs: list[tuple[str, float, str]]) -
     )
 
 
-def hxz_compute_factors(panel: pl.DataFrame, weight: str = "me_lag1") -> pl.DataFrame:
+def hxz_compute_factors(panel: pl.DataFrame) -> pl.DataFrame:
     """18-bucket VW returns per (excntry, date) → HXZ formulas 1-3
     (me_hxz, ia_hxz, roe_hxz). US bypasses HXZ_MIN_STOCKS_PF gate."""
     buckets = [f"S{i}I{j}R{k}" for i in (1, 2) for j in (1, 2, 3) for k in (1, 2, 3)]
     bucket = (
         panel.filter(
-            (pl.col(weight) > 0)
-            & pl.col(weight).is_finite()
+            (pl.col("me_lag1") > 0)
+            & pl.col("me_lag1").is_finite()
             & pl.col("ret").is_not_null()
             & pl.col("ret").is_finite()
             & pl.col("sizeport").is_not_null()
@@ -13071,7 +13067,7 @@ def hxz_compute_factors(panel: pl.DataFrame, weight: str = "me_lag1") -> pl.Data
         )
         .group_by(["excntry", "date", "bucket"])
         .agg(
-            vwret=(pl.col("ret") * pl.col(weight)).sum() / pl.col(weight).sum(),
+            vwret=(pl.col("ret") * pl.col("me_lag1")).sum() / pl.col("me_lag1").sum(),
             _n=pl.len(),
         )
         .with_columns(
