@@ -310,6 +310,53 @@ FF_UMD_MONTHLY_LOOKBACK = 12
 FF_UMD_MONTHLY_SKIP = 1
 
 
+# ============================================================================
+# Mispricing Factors (Stambaugh-Yuan) — ported from MisprProject
+# ============================================================================
+
+# anomallist.sas7bdat (alphabetical, 1-indexed to match SAS macro args)
+MP_ANOMALY_LIST = [
+    "ACCRUAL_ADJ",      # 1
+    "ASSET_GROWTH",     # 2
+    "COMPOSITE_ISSUE",  # 3
+    "DISTRESS",         # 4
+    "GP_ADJ",           # 5
+    "INVASSET",         # 6
+    "MOMENTUM",         # 7
+    "NOA",              # 8
+    "OSCORE",           # 9
+    "ROA",              # 10
+    "STOCK_ISSUE",      # 11
+]
+MP_POSITIVE_ANOMALIES = {"GP_ADJ", "MOMENTUM", "ROA"}  # bucketed descending
+
+# Cal_M4 macro args. SAS final cols rename umo1->MGMT, umo2->PERF.
+# WARNING: SAS dump filenames are SWAPPED relative to leg content. Preserve verbatim.
+MP_MGMT_IDX = [6, 1, 3, 8, 2, 11]   # INVASSET, ACCRUAL_ADJ, COMPOSITE_ISSUE, NOA, ASSET_GROWTH, STOCK_ISSUE
+MP_PERF_IDX = [4, 9, 10, 7, 5]      # DISTRESS, OSCORE, ROA, MOMENTUM, GP_ADJ
+
+# CHS distress (Campbell-Hilscher-Szilagyi) coefficient set
+MP_DISTRESS_BETAS = {
+    "intercept": -9.164,
+    "NIMTAAVG": -20.264,
+    "TLMTA": 1.416,
+    "EXRETAVG": -7.129,
+    "SIGMA": 1.411,
+    "RSIZE": -0.045,
+    "CASHMTA": -2.132,
+    "MB": 0.075,
+    "PRICE": -0.058,
+}
+
+MP_LAG_M = 4
+MP_START_FACTOR_EOM = date(1963, 1, 31)
+
+# World extension constants (per-country breakpoint pool gates, mirrors jkp ROW gen_ff_data)
+MP_MAIN_FILTERS_COLS = ["primary_sec", "common", "obs_main", "exch_main"]
+MP_MIN_STKS_BP_WORLD = 10  # min stocks per (excntry, eom) for percentile rank inclusion
+MP_MIN_OBS_PF_WORLD = 3    # min stocks per (excntry, eom, bucket) for portfolio VW
+
+
 PORTFOLIO_SETTINGS = {
     "end_date": END_DATE,
     "pfs": PORTFOLIO_PFS,
