@@ -9212,9 +9212,12 @@ def _mp_world_build_portfolios_monthly(legs, smb_panel, min_obs):
 def _mp_world_vw_daily(panel, group_cols, mp_con):
     mp_con.register("panel_w", panel)
     group_sql = ", ".join(group_cols)
+    # group_cols (e.g. "excntry") exist on both panel_w (a) and world_dsf (b);
+    # qualify the SELECT with a.<col> to avoid DuckDB BinderError on JOIN.
+    group_sql_a = ", ".join(f"a.{c}" for c in group_cols)
     return mp_con.execute(f"""
         WITH joined AS (
-            SELECT b.date AS date, a.mktcap, b.ret AS ret_d, {group_sql}
+            SELECT b.date AS date, a.mktcap, b.ret AS ret_d, {group_sql_a}
             FROM panel_w a
             JOIN read_parquet('{_MP_INTERIM}/world_dsf.parquet') b
               ON a.id = b.id AND a.eom = b.eom

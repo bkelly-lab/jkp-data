@@ -32,6 +32,9 @@ env/
 *.ddb
 !documentation/sas_to_python/data/*.parquet
 !tests/golden/fixtures/**/*.parquet
+# WRDS slices are too big for git (~2GB); regenerate with
+# tests/golden/generate_wrds_slices.py against an existing pipeline data dir.
+tests/golden/fixtures/wrds_slices/
 *.csv
 *.xlsx
 *.xls
