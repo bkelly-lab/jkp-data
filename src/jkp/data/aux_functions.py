@@ -7502,19 +7502,17 @@ def _mp_compute_accrual():
             & col("dp").is_not_null()
         )
         .select("permno", "gvkey", "datadate", "act", "at", "che", "lct", "dlc", "dp")
-    )
-
-    txp = _mp_load_funda().select("gvkey", "datadate", "txp")
-    ca = (
-        ca.join(txp, on=["gvkey", "datadate"], how="left")
+        .join(
+            _mp_load_funda().select("gvkey", "datadate", "txp"),
+            on=["gvkey", "datadate"],
+            how="left",
+        )
         .filter(col("txp").is_not_null())
         .unique(subset=["permno", "datadate"], maintain_order=True)
         .sort("permno", "datadate")
         .with_columns(
-            [
-                col(c).shift(1).over("permno").alias(f"lag_{c}")
-                for c in ["act", "che", "lct", "dlc", "txp", "at"]
-            ]
+            col(c).shift(1).over("permno").alias(f"lag_{c}")
+            for c in ("act", "che", "lct", "dlc", "txp", "at")
         )
         .with_columns(
             accrual_adj=(
@@ -7536,11 +7534,14 @@ def _mp_compute_accrual():
 
 
 def _mp_compute_gross_profit():
-    fa = _mp_load_funda().select("gvkey", "datadate", "revt")
     ca = (
         _mp_read("compustat_annual")
         .select("permno", "gvkey", "datadate", "fyear", "fyr", "at", "cogs")
-        .join(fa, on=["gvkey", "datadate"], how="left")
+        .join(
+            _mp_load_funda().select("gvkey", "datadate", "revt"),
+            on=["gvkey", "datadate"],
+            how="left",
+        )
         .filter(
             col("permno").is_not_null()
             & col("fyear").is_not_null()
@@ -7562,11 +7563,14 @@ def _mp_compute_gross_profit():
 
 
 def _mp_compute_oscore():
-    sup = _mp_load_funda().select("gvkey", "datadate", "ni", "pi")
     base = (
         _mp_read("compustat_annual")
         .select("permno", "gvkey", "datadate", "fyear", "fyr", "at", "lt", "act", "lct")
-        .join(sup, on=["gvkey", "datadate"], how="left")
+        .join(
+            _mp_load_funda().select("gvkey", "datadate", "ni", "pi"),
+            on=["gvkey", "datadate"],
+            how="left",
+        )
         .filter(
             col("permno").is_not_null()
             & col("fyear").is_not_null()
@@ -7601,16 +7605,16 @@ def _mp_compute_oscore():
         intwo=pl.when((col("ni") < 0) & (col("lagni") < 0)).then(1).otherwise(0),
     )
 
-    cpi = (
-        pl.read_parquet(f"{_MP_RAW}/crsp_a_indexes_acti.parquet")
-        .with_columns(col("cpiind").cast(pl.Float64, strict=False))
-        .filter(col("caldt").dt.month() == 12)
-        .with_columns(cyear=col("caldt").dt.year() + 1)
-        .select("cyear", "cpiind")
-    )
-
     out = (
-        base.join(cpi, on="cyear", how="inner")
+        base.join(
+            pl.read_parquet(f"{_MP_RAW}/crsp_a_indexes_acti.parquet")
+            .with_columns(col("cpiind").cast(pl.Float64, strict=False))
+            .filter(col("caldt").dt.month() == 12)
+            .with_columns(cyear=col("caldt").dt.year() + 1)
+            .select("cyear", "cpiind"),
+            on="cyear",
+            how="inner",
+        )
         .with_columns(size=(100 * col("at") / col("cpiind")).log())
         .with_columns(
             oscore=-1.32
@@ -7632,7 +7636,6 @@ def _mp_compute_oscore():
 
 
 def _mp_compute_nsi_ag_inv_noa():
-    sup = _mp_load_funda().select("gvkey", "datadate", "adjex_c")
     base = (
         _mp_read("compustat_annual")
         .filter(
@@ -7657,7 +7660,11 @@ def _mp_compute_nsi_ag_inv_noa():
             "pstk",
             "ceq",
         )
-        .join(sup, on=["gvkey", "datadate"], how="left")
+        .join(
+            _mp_load_funda().select("gvkey", "datadate", "adjex_c"),
+            on=["gvkey", "datadate"],
+            how="left",
+        )
         .unique(subset=["permno", "datadate"], maintain_order=True)
         .sort("permno", "datadate")
         .with_columns(
