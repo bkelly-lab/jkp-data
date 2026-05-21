@@ -6682,7 +6682,9 @@ def market_beta(paths: DataPaths, output_path, data_path, factors_path, __n, __m
 
 
 @measure_time
-def residual_momentum(paths: DataPaths, output_path, data_path, factors_path, __n, __min, incl, skip):
+def residual_momentum(
+    paths: DataPaths, output_path, data_path, factors_path, __n, __min, incl, skip
+):
     """
     Description:
         Compute residual momentum from FF3 regressions with rolling windows and skip/inclusion rules.
@@ -7075,11 +7077,7 @@ def _mp_build_crsp_monthly() -> pl.DataFrame:
     # No delret fallback (legacy SIZ field, redundant under CIZ). No Shumway imputation
     # (DA-row carries realized delist return; no gap to patch).
     m4 = (
-        m3.with_columns(
-            ret=pl.when(col("ret").is_not_null())
-            .then(col("ret"))
-            .otherwise(None)
-        )
+        m3.with_columns(ret=pl.when(col("ret").is_not_null()).then(col("ret")).otherwise(None))
         .filter(
             col("permno").is_not_null()
             & col("prc").is_not_null()
@@ -9399,9 +9397,7 @@ def _mp_stage6_write_outputs(s5):
         )
     _mp_write(pm.sort("excntry", "eom"), "mp_factors_monthly")
 
-    pd_all = pd_us.select(
-        "date", "excntry", "smb_mispricing", "mispricing_mgmt", "mispricing_perf"
-    )
+    pd_all = pd_us.select("date", "excntry", "smb_mispricing", "mispricing_mgmt", "mispricing_perf")
     if pd_world is not None:
         pd_all = pl.concat(
             [
