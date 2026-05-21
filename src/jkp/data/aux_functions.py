@@ -8324,14 +8324,16 @@ def _mp_vw_daily(panel, group_cols, mp_con):
 
 
 def _mp_diff_legs(df, by, key_col, key_a, key_b, out_name):
-    a = df.filter(col(key_col) == key_a).select(by, col("vwret").alias("a"))
-    b = df.filter(col(key_col) == key_b).select(by, col("vwret").alias("b"))
-    return a.join(b, on=by, how="inner").with_columns((col("a") - col("b")).alias(out_name))
+    by_cols = [by] if isinstance(by, str) else list(by)
+    a = df.filter(col(key_col) == key_a).select(*by_cols, col("vwret").alias("a"))
+    b = df.filter(col(key_col) == key_b).select(*by_cols, col("vwret").alias("b"))
+    return a.join(b, on=by_cols, how="inner").with_columns((col("a") - col("b")).alias(out_name))
 
 
 def _mp_spread_per_size_then_diff(port_ret, by):
-    misp = port_ret.group_by(by, "port_var").agg(misp=col("vwret").mean())
-    return _mp_diff_legs(misp.rename({"misp": "vwret"}), by, "port_var", 1, 3, "umo")
+    by_cols = [by] if isinstance(by, str) else list(by)
+    misp = port_ret.group_by(*by_cols, "port_var").agg(misp=col("vwret").mean())
+    return _mp_diff_legs(misp.rename({"misp": "vwret"}), by_cols, "port_var", 1, 3, "umo")
 
 
 def _mp_build_mispricing_legs(mispricing_panel, min_fcts):
@@ -8347,14 +8349,13 @@ def _mp_build_mispricing_legs(mispricing_panel, min_fcts):
     }
 
 
-def _mp_smb_panel_from_legs(legs):
-    a = (
-        legs["mgmt"]
-        .filter(col("port_var") == 2)
-        .select("permno", "eom", "ret", "mktcap", "port_size")
-    )
-    b = legs["perf"].filter(col("port_var") == 2).select("permno", "eom", "port_size")
-    return a.join(b, on=["permno", "eom", "port_size"], how="inner")
+def _mp_smb_panel_from_legs(legs, key_cols=("permno",)):
+    """SMB neutral panel (port_var == 2 stocks). key_cols identifies the
+    stock: ("permno",) for US, ("id", "excntry") for world."""
+    keys = list(key_cols)
+    a = legs["mgmt"].filter(col("port_var") == 2).select(*keys, "eom", "ret", "mktcap", "port_size")
+    b = legs["perf"].filter(col("port_var") == 2).select(*keys, "eom", "port_size")
+    return a.join(b, on=[*keys, "eom", "port_size"], how="inner")
 
 
 def _mp_build_portfolios_monthly(legs, smb_panel, min_obs, out_name=None):
@@ -9151,36 +9152,11 @@ def _mp_world_build_mispricing_legs(mispricing_panel, min_fcts):
     }
 
 
-def _mp_world_smb_panel_from_legs(legs):
-    a = (
-        legs["mgmt"]
-        .filter(col("port_var") == 2)
-        .select("id", "excntry", "eom", "ret", "mktcap", "port_size")
-    )
-    b = legs["perf"].filter(col("port_var") == 2).select("id", "excntry", "eom", "port_size")
-    return a.join(b, on=["id", "excntry", "eom", "port_size"], how="inner")
-
-
-def _mp_world_vw_monthly(df, group_cols):
-    return df.group_by(group_cols).agg(vwret=_mp_vw_return(), _freq_=pl.len())
-
-
-def _mp_world_diff_legs(df, by_cols, key_col, key_a, key_b, out_name):
-    a = df.filter(col(key_col) == key_a).select(by_cols + [col("vwret").alias("a")])
-    b = df.filter(col(key_col) == key_b).select(by_cols + [col("vwret").alias("b")])
-    return a.join(b, on=by_cols, how="inner").with_columns((col("a") - col("b")).alias(out_name))
-
-
-def _mp_world_spread_per_size_then_diff(port_ret, by_cols):
-    misp = port_ret.group_by(by_cols + ["port_var"]).agg(misp=col("vwret").mean())
-    return _mp_world_diff_legs(misp.rename({"misp": "vwret"}), by_cols, "port_var", 1, 3, "umo")
-
-
 def _mp_world_build_portfolios_monthly(legs, smb_panel, min_obs):
     leg_umo = {}
     for name, panel in legs.items():
         pr = (
-            _mp_world_vw_monthly(
+            _mp_vw_monthly(
                 panel.filter(col("port_size").is_not_null() & col("port_var").is_not_null()),
                 ["excntry", "eom", "port_size", "port_var"],
             )
@@ -9190,19 +9166,19 @@ def _mp_world_build_portfolios_monthly(legs, smb_panel, min_obs):
             .drop("_n")
             .sort("excntry", "eom", "port_size", "port_var")
         )
-        leg_umo[name] = _mp_world_spread_per_size_then_diff(pr, ["excntry", "eom"]).select(
+        leg_umo[name] = _mp_spread_per_size_then_diff(pr, ["excntry", "eom"]).select(
             "excntry", "eom", col("umo").alias(f"mispricing_{name}")
         )
 
     smb_port = (
-        _mp_world_vw_monthly(smb_panel, ["excntry", "eom", "port_size"])
+        _mp_vw_monthly(smb_panel, ["excntry", "eom", "port_size"])
         .filter(col("_freq_") >= min_obs)
         .with_columns(_n=pl.len().over(["excntry", "eom"]))
         .filter(col("_n") == 2)
         .drop("_n")
         .sort("excntry", "eom", "port_size")
     )
-    smb_df = _mp_world_diff_legs(
+    smb_df = _mp_diff_legs(
         smb_port, ["excntry", "eom"], "port_size", 1, 2, "smb_mispricing"
     ).select("excntry", "eom", "smb_mispricing")
 
@@ -9251,7 +9227,7 @@ def _mp_world_build_portfolios_daily(legs, smb_panel, min_obs, mp_con):
             .drop("_n")
             .sort("excntry", "date", "port_size", "port_var")
         )
-        leg_umo[name] = _mp_world_spread_per_size_then_diff(pr, ["excntry", "date"]).select(
+        leg_umo[name] = _mp_spread_per_size_then_diff(pr, ["excntry", "date"]).select(
             "excntry", "date", col("umo").alias(f"mispricing_{name}")
         )
 
@@ -9264,7 +9240,7 @@ def _mp_world_build_portfolios_daily(legs, smb_panel, min_obs, mp_con):
         .drop("_n")
         .sort("excntry", "date", "port_size")
     )
-    smb_df = _mp_world_diff_legs(
+    smb_df = _mp_diff_legs(
         smb_port, ["excntry", "date"], "port_size", 1, 2, "smb_mispricing"
     ).select("excntry", "date", "smb_mispricing")
 
@@ -9349,7 +9325,7 @@ def _mp_stage4_form_portfolios(
         wm, wd, market_m, world_daily, min_stks_world, mp_con_world
     )
     world_legs = _mp_world_build_mispricing_legs(world_panel, min_fcts)
-    world_smb = _mp_world_smb_panel_from_legs(world_legs)
+    world_smb = _mp_smb_panel_from_legs(world_legs, key_cols=("id", "excntry"))
     return {
         "us_panel": us_panel,
         "us_legs": us_legs,
