@@ -11417,6 +11417,19 @@ _FF_ELIGIBLE = {
 }
 
 
+# CRSP CIZ universe filter shared by FF (ff_load_crsp_panel) and HXZ
+# (hxz_load_crsp). Mispricing has its own `_MP_UNIVERSE` with extra
+# conditionaltype / tradingstatusflg clauses; do not collapse those.
+_CIZ_UNIVERSE = (
+    (pl.col("sharetype") == "NS")
+    & (pl.col("securitytype") == "EQTY")
+    & (pl.col("securitysubtype") == "COM")
+    & (pl.col("usincflg") == "Y")
+    & pl.col("issuertype").is_in(["ACOR", "CORP"])
+    & pl.col("primaryexch").is_in(["N", "A", "Q"])
+)
+
+
 def ff_load_compustat_us(raw_dir: Path, ff5: bool) -> pl.DataFrame:
     """
     Description:
@@ -11552,14 +11565,7 @@ def ff_load_crsp_panel(raw_dir: Path, freq: str) -> pl.DataFrame:
             pl.col("permno", "permco").cast(pl.Int64),
             pl.col(ret_c, retx_c, prc_c, "shrout").cast(pl.Float64),
         )
-        .filter(
-            (pl.col("sharetype") == "NS")
-            & (pl.col("securitytype") == "EQTY")
-            & (pl.col("securitysubtype") == "COM")
-            & (pl.col("usincflg") == "Y")
-            & pl.col("issuertype").is_in(["ACOR", "CORP"])
-            & pl.col("primaryexch").is_in(["N", "A", "Q"])
-        )
+        .filter(_CIZ_UNIVERSE)
         .with_columns(
             meq=pl.col(prc_c).abs() * pl.col("shrout"),
             exchcd=pl.col("primaryexch").replace_strict(
@@ -12523,14 +12529,7 @@ def hxz_load_crsp(raw_dir: Path, freq: str, date_start: date | None = None) -> p
     lf = pl.scan_parquet(raw_dir / pq)
     if date_start is not None:
         lf = lf.filter(pl.col(date_c) >= date_start)
-    lf = lf.filter(
-        (pl.col("sharetype") == "NS")
-        & (pl.col("securitytype") == "EQTY")
-        & (pl.col("securitysubtype") == "COM")
-        & (pl.col("usincflg") == "Y")
-        & pl.col("issuertype").is_in(["ACOR", "CORP"])
-        & pl.col("primaryexch").is_in(["N", "A", "Q"])
-    ).with_columns(pl.col(ret_c, retx_c, prc_c).cast(pl.Float64))
+    lf = lf.filter(_CIZ_UNIVERSE).with_columns(pl.col(ret_c, retx_c, prc_c).cast(pl.Float64))
     lf = hxz_attach_siccd(lf, raw_dir, date_c)
     return lf.select(
         "permno",
