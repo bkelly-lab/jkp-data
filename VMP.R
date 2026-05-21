@@ -765,6 +765,232 @@ scatter_p1 <- ggplot(factors_vol_managed, aes(x = mkt_return_comp, y = mkt_exces
 print(scatter_p1)
 
 
+############################ PART 1b: Extended Sample (1926–2025) ##########################################
+# Tests whether Moreira & Muir (2017) results hold post-publication.
+# Reuses data already downloaded in Part 1 — no re-download needed.
+# Note: q5 series (ROE, IA) end at end of 2024; FF and BAB extend through 2025.
+
+end_date_full <- ymd("2025-12-31")
+
+# Rebuild factors_daily for the full sample (identical transformations to Part 1)
+factors_daily_full <- ff3_clean |>
+  left_join(ff5_clean, by = "date") |>
+  left_join(mom_clean, by = "date") |>
+  left_join(q_factors_clean |> select(date, ROE = r_roe, IA = r_ia), by = "date") |>
+  left_join(bab_clean |> select(date, BAB = usa), by = "date") |>
+  mutate(
+    date = ymd(date),
+    across(c(RF, `Mkt-RF`, SMB, HML, RMW, CMA, Mom, ROE, IA, BAB), ~as.numeric(.) / 100)
+  ) |>
+  select(date, RF, `Mkt-RF`, SMB, HML, RMW, CMA, Mom, ROE, IA, BAB) |>
+  rename_with(str_to_lower) |>
+  rename(mkt_excess = `mkt-rf`) |>
+  filter(date >= start_date & date <= end_date_full)
+
+cat("Part 1b — full-sample data range:",
+    format(min(factors_daily_full$date)), "to",
+    format(max(factors_daily_full$date)), "\n")
+
+# Monthly returns and variances
+data_monthly_full <- factors_daily_full |>
+  mutate(year_month = floor_date(date, "month")) |>
+  group_by(year_month) |>
+  summarize(
+    date            = max(date),
+    mkt_excess_var  = var(mkt_excess, na.rm = TRUE),
+    smb_var         = var(smb,        na.rm = TRUE),
+    hml_var         = var(hml,        na.rm = TRUE),
+    rmw_var         = var(rmw,        na.rm = TRUE),
+    cma_var         = var(cma,        na.rm = TRUE),
+    mom_var         = var(mom,        na.rm = TRUE),
+    roe_var         = var(roe,        na.rm = TRUE),
+    ia_var          = var(ia,         na.rm = TRUE),
+    bab_var         = var(bab,        na.rm = TRUE),
+    n_days          = n(),
+    rf_comp             = prod(1 + rf) - 1,
+    mkt_return_comp     = prod(1 + mkt_excess + rf) - 1 - (prod(1 + rf) - 1),
+    smb_return_comp     = prod(1 + smb) - 1,
+    hml_return_comp     = prod(1 + hml) - 1,
+    rmw_return_comp     = prod(1 + rmw) - 1,
+    cma_return_comp     = prod(1 + cma) - 1,
+    mom_return_comp     = prod(1 + mom) - 1,
+    roe_return_comp     = prod(1 + roe) - 1,
+    ia_return_comp      = prod(1 + ia)  - 1,
+    bab_return_comp     = prod(1 + bab) - 1,
+    .groups = "drop"
+  ) |>
+  select(-year_month)
+
+# Lag variances and compute unscaled portfolios
+data_unscaled_full <- data_monthly_full |>
+  mutate(
+    mkt_excess_var_lag = lag(mkt_excess_var),
+    smb_var_lag        = lag(smb_var),
+    hml_var_lag        = lag(hml_var),
+    rmw_var_lag        = lag(rmw_var),
+    cma_var_lag        = lag(cma_var),
+    mom_var_lag        = lag(mom_var),
+    roe_var_lag        = lag(roe_var),
+    ia_var_lag         = lag(ia_var),
+    bab_var_lag        = lag(bab_var)
+  ) |>
+  filter(!is.na(mkt_excess_var_lag)) |>
+  mutate(
+    mkt_excess_unscaled = mkt_return_comp / mkt_excess_var_lag,
+    smb_unscaled        = smb_return_comp  / smb_var_lag,
+    hml_unscaled        = hml_return_comp  / hml_var_lag,
+    rmw_unscaled        = rmw_return_comp  / rmw_var_lag,
+    cma_unscaled        = cma_return_comp  / cma_var_lag,
+    mom_unscaled        = mom_return_comp  / mom_var_lag,
+    roe_unscaled        = roe_return_comp  / roe_var_lag,
+    ia_unscaled         = ia_return_comp   / ia_var_lag,
+    bab_unscaled        = bab_return_comp  / bab_var_lag
+  )
+
+# Scaling constants (full sample)
+c_mkt_full <- sd(data_unscaled_full$mkt_return_comp, na.rm = TRUE) / sd(data_unscaled_full$mkt_excess_unscaled, na.rm = TRUE)
+c_smb_full <- sd(data_unscaled_full$smb_return_comp, na.rm = TRUE) / sd(data_unscaled_full$smb_unscaled,        na.rm = TRUE)
+c_hml_full <- sd(data_unscaled_full$hml_return_comp, na.rm = TRUE) / sd(data_unscaled_full$hml_unscaled,        na.rm = TRUE)
+c_rmw_full <- sd(data_unscaled_full$rmw_return_comp, na.rm = TRUE) / sd(data_unscaled_full$rmw_unscaled,        na.rm = TRUE)
+c_cma_full <- sd(data_unscaled_full$cma_return_comp, na.rm = TRUE) / sd(data_unscaled_full$cma_unscaled,        na.rm = TRUE)
+c_mom_full <- sd(data_unscaled_full$mom_return_comp, na.rm = TRUE) / sd(data_unscaled_full$mom_unscaled,        na.rm = TRUE)
+c_roe_full <- sd(data_unscaled_full$roe_return_comp, na.rm = TRUE) / sd(data_unscaled_full$roe_unscaled,        na.rm = TRUE)
+c_ia_full  <- sd(data_unscaled_full$ia_return_comp,  na.rm = TRUE) / sd(data_unscaled_full$ia_unscaled,         na.rm = TRUE)
+c_bab_full <- sd(data_unscaled_full$bab_return_comp, na.rm = TRUE) / sd(data_unscaled_full$bab_unscaled,        na.rm = TRUE)
+
+# Apply scaling → full-sample managed portfolios
+factors_vol_managed_full <- data_unscaled_full |>
+  mutate(
+    mkt_excess_managed = c_mkt_full * mkt_excess_unscaled,
+    smb_managed        = c_smb_full * smb_unscaled,
+    hml_managed        = c_hml_full * hml_unscaled,
+    rmw_managed        = c_rmw_full * rmw_unscaled,
+    cma_managed        = c_cma_full * cma_unscaled,
+    mom_managed        = c_mom_full * mom_unscaled,
+    roe_managed        = c_roe_full * roe_unscaled,
+    ia_managed         = c_ia_full  * ia_unscaled,
+    bab_managed        = c_bab_full * bab_unscaled,
+    var_quintile = ntile(mkt_excess_var_lag, 5),
+    var_quintile_labeled = factor(var_quintile, levels = 1:5,
+                                  labels = c("Low Vol", "2", "3", "4", "High Vol"),
+                                  ordered = TRUE)
+  ) |>
+  mutate(date_join = floor_date(date, "month")) |>
+  left_join(nber_data, by = "date_join") |>
+  select(-date_join)
+
+# --- Figure 1b: Market factor — does the MM2017 pattern hold in extended sample? ---
+quintile_summary_full <- factors_vol_managed_full |>
+  group_by(var_quintile_labeled) |>
+  summarize(
+    mean_ret_orig_ann = mean(mkt_return_comp, na.rm = TRUE) * 12,
+    sd_ret_orig_ann   = sd(mkt_return_comp,   na.rm = TRUE) * sqrt(12),
+    mean_var_orig     = mean(mkt_return_comp, na.rm = TRUE) / var(mkt_return_comp, na.rm = TRUE),
+    prob_recession    = mean(us_recession,    na.rm = TRUE),
+    .groups = "drop"
+  )
+
+p1b_ret <- ggplot(quintile_summary_full, aes(x = var_quintile_labeled, y = mean_ret_orig_ann * 100)) +
+  geom_bar(stat = "identity", fill = "darkblue") +
+  scale_y_continuous(limits = c(0, 12), breaks = seq(0, 12, 2)) +
+  labs(title = "Average Return", x = NULL, y = NULL) +
+  theme_minimal(base_size = 10) + theme(panel.grid.major.x = element_blank())
+
+p1b_sd <- ggplot(quintile_summary_full, aes(x = var_quintile_labeled, y = sd_ret_orig_ann * 100)) +
+  geom_bar(stat = "identity", fill = "darkblue") +
+  scale_y_continuous(limits = c(0, 40), breaks = seq(0, 40, 10)) +
+  labs(title = "Standard Deviation", x = NULL, y = NULL) +
+  theme_minimal(base_size = 10) + theme(panel.grid.major.x = element_blank())
+
+p1b_ratio <- ggplot(quintile_summary_full, aes(x = var_quintile_labeled, y = mean_var_orig)) +
+  geom_bar(stat = "identity", fill = "darkblue") +
+  scale_y_continuous(limits = c(0, 8), breaks = seq(0, 8, 2)) +
+  labs(title = "E[R]/Var(R)", x = NULL, y = NULL) +
+  theme_minimal(base_size = 10) + theme(panel.grid.major.x = element_blank())
+
+p1b_rec <- ggplot(quintile_summary_full, aes(x = var_quintile_labeled, y = prob_recession)) +
+  geom_bar(stat = "identity", fill = "darkblue") +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1),
+                     limits = c(0, 0.5), breaks = seq(0, 0.5, 0.1)) +
+  labs(title = "Probability of Recession", x = NULL, y = NULL) +
+  theme_minimal(base_size = 10) + theme(panel.grid.major.x = element_blank())
+
+figure_1b <- (p1b_ret + p1b_sd) / (p1b_ratio + p1b_rec) +
+  plot_annotation(
+    title    = "Figure 1b: Market Factor — Extended Sample (1926–2025)",
+    subtitle = "Replicates MM2017 Figure 1 on the full available sample"
+  )
+print(figure_1b)
+
+# --- Table 1b: Spanning regressions, all 9 factors, extended sample ---
+# Reuses get_column_data() and factor_map defined in Part 1.
+results_list_full <- list()
+for (f_name in names(factor_map)) {
+  cols <- factor_map[[f_name]]
+  results_list_full[[f_name]] <- get_column_data(factors_vol_managed_full, cols[1], cols[2], f_name)
+}
+
+table_data_full <- bind_rows(results_list_full, .id = "column_factor") |>
+  pivot_longer(cols = -column_factor) |>
+  pivot_wider(names_from = column_factor, values_from = value) |>
+  mutate(FX = NA_character_) |>
+  add_row(name = "FX") |>
+  relocate(FX, .after = CMA) |>
+  mutate(
+    FX = case_when(
+      name == "FX" ~ "NA",
+      name %in% c("Alpha", "N", "R2", "RMSE", "Alpha_FF3") ~ "NA",
+      TRUE ~ FX
+    )
+  ) |>
+  mutate(name = factor(name, levels = c(
+    "MktRF", "SMB", "HML", "Mom", "RMW", "CMA", "FX", "ROE", "IA", "BAB",
+    "Alpha", "N", "R2", "RMSE", "Alpha_FF3"
+  ))) |>
+  mutate(
+    panel_group = ifelse(name == "Alpha_FF3",
+                         "Panel B: Alphas controlling for FF3",
+                         "Panel A: Univariate Regressions"),
+    panel_group = factor(panel_group, levels = c("Panel A: Univariate Regressions",
+                                                  "Panel B: Alphas controlling for FF3"))
+  ) |>
+  arrange(panel_group, name)
+
+table_1b <- table_data_full |>
+  gt(groupname_col = "panel_group") |>
+  tab_header(title = "Table 1b: Extended Sample (1926–2025) — Replication of MM2017 Table I") |>
+  cols_label(
+    name  = "",
+    MktRF = html("(1)<br>Mkt<sup>&sigma;</sup>"),
+    SMB   = html("(2)<br>SMB<sup>&sigma;</sup>"),
+    HML   = html("(3)<br>HML<sup>&sigma;</sup>"),
+    Mom   = html("(4)<br>Mom<sup>&sigma;</sup>"),
+    RMW   = html("(5)<br>RMW<sup>&sigma;</sup>"),
+    CMA   = html("(6)<br>CMA<sup>&sigma;</sup>"),
+    FX    = html("(7)<br>FX<sup>&sigma;</sup>"),
+    ROE   = html("(8)<br>ROE<sup>&sigma;</sup>"),
+    IA    = html("(9)<br>IA<sup>&sigma;</sup>"),
+    BAB   = html("(10)<br>BAB<sup>&sigma;</sup>")
+  ) |>
+  text_transform(
+    locations = cells_body(columns = name),
+    fn = function(x) dplyr::case_when(x == "Alpha" ~ "Alpha (&alpha;)", x == "R2" ~ "R<sup>2</sup>", TRUE ~ x)
+  ) |>
+  fmt_markdown(columns = everything()) |>
+  cols_align(align = "center", columns = -name) |>
+  cols_align(align = "left",   columns = name) |>
+  sub_missing(columns = everything(), missing_text = "") |>
+  tab_options(
+    table.border.top.color = "black", table.border.top.width = px(2),
+    table.border.bottom.color = "black", table.border.bottom.width = px(2),
+    heading.align = "center",
+    column_labels.border.bottom.color = "black", column_labels.border.bottom.width = px(1),
+    table.font.size = 12,
+    row_group.font.weight = "bold", row_group.background.color = "#f0f0f0"
+  )
+print(table_1b)
+
+
 ############################ PART 2.  ##########################################
 
 # Define start and end dates for analysis
@@ -1420,8 +1646,8 @@ jkp_factors <- thesis_weights |>
   ) |>
   rename(date = eom)
 
-# --- Get original monthly factor returns from Part 1 ---
-original_factors <- factors_vol_managed |>
+# --- Get original monthly factor returns — extended sample from Part 1b (through 2025) ---
+original_factors <- factors_vol_managed_full |>
   select(
     date,
     orig_mktrf = mkt_return_comp,
@@ -1435,7 +1661,7 @@ original_factors <- factors_vol_managed |>
     orig_bab   = bab_return_comp
   )
 
-# --- Merge on common sample, starting 1964 ---
+# --- Merge on common sample, starting 1964 (no end-date cap — use all available data) ---
 comparison <- original_factors |>
   inner_join(jkp_factors, by = "date") |>
   filter(date >= ymd("1964-01-01"))
