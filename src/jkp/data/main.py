@@ -29,7 +29,7 @@ from .aux_functions import (
     merge_qmj_to_world_data,
     merge_roll_apply_daily_results,
     merge_world_data_prelim,
-    mispricing_factors,
+    gen_mispricing_data,
     nyse_size_cutoffs,
     prepare_comp_sf,
     prepare_crsp_sf,
@@ -121,18 +121,22 @@ def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> No
         "hxz_factors_daily.parquet",
         "hxz_characteristics.parquet",
     )
+    gen_mispricing_data(min_stks=30, min_fcts=3, min_obs=10)
     ap_factor_model_data(
         monthly_factor_inputs=[
             "ff_factors_monthly.parquet",
             "hxz_factors_monthly.parquet",
+            "mp_factors_monthly.parquet",
         ],
         daily_factor_inputs=[
             "ff_factors_daily.parquet",
             "hxz_factors_daily.parquet",
+            "mp_factors_daily.parquet",
         ],
         chars_inputs=[
             "ff_characteristics.parquet",
             "hxz_characteristics.parquet",
+            "mp_characteristics.parquet",
         ],
         mkt_monthly_path="market_returns.parquet",
         mkt_daily_path="market_returns_daily.parquet",
@@ -141,7 +145,6 @@ def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> No
         out_chars="ap_factors_characteristics.parquet",
     )
     firm_age("world_msf.parquet")
-    mispricing_factors(min_stks=30, min_fcts=3, min_obs=10)
     market_beta(
         "beta_60m.parquet",
         "world_msf.parquet",
