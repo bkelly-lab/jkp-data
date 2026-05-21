@@ -35,6 +35,8 @@ from .config import (
     FF_UMD_DAILY_SKIP,
     FF_UMD_MONTHLY_LOOKBACK,
     FF_UMD_MONTHLY_SKIP,
+    HXZ_MIN_STOCKS_BP,
+    HXZ_MIN_STOCKS_PF,
     MAIN_FILTERS,
     MP_ANOMALY_LIST,
     MP_DISTRESS_BETAS,
@@ -13029,7 +13031,7 @@ def hxz_load_panel_row(interim_dir: Path, freq: str) -> pl.DataFrame:
 def _hxz_country_breaks(df: pl.DataFrame, specs: list[tuple[str, float, str]]) -> pl.DataFrame:
     """Per-(excntry, date) breakpoints over ROW HXZ pool (size_grp ∈
     {small, large, mega} + elig). Drops (excntry, date) where COUNT(*) <
-    FF_MIN_STOCKS_BP."""
+    HXZ_MIN_STOCKS_BP."""
     cols = list({c for c, _, _ in specs})
     breaks_sql = ", ".join(f"QUANTILE_DISC({c}, {q}) AS {a}" for c, q, a in specs)
     return (
@@ -13038,14 +13040,14 @@ def _hxz_country_breaks(df: pl.DataFrame, specs: list[tuple[str, float, str]]) -
         .sql(
             f"SELECT excntry, date, {breaks_sql} FROM self "
             f"GROUP BY excntry, date "
-            f"HAVING COUNT(*) >= {FF_MIN_STOCKS_BP}"
+            f"HAVING COUNT(*) >= {HXZ_MIN_STOCKS_BP}"
         )
     )
 
 
 def hxz_compute_factors(panel: pl.DataFrame, weight: str = "me_lag1") -> pl.DataFrame:
     """18-bucket VW returns per (excntry, date) → HXZ formulas 1-3
-    (me_hxz, ia_hxz, roe_hxz). US bypasses FF_MIN_STOCKS_PF gate."""
+    (me_hxz, ia_hxz, roe_hxz). US bypasses HXZ_MIN_STOCKS_PF gate."""
     buckets = [f"S{i}I{j}R{k}" for i in (1, 2) for j in (1, 2, 3) for k in (1, 2, 3)]
     bucket = (
         panel.filter(
@@ -13071,7 +13073,7 @@ def hxz_compute_factors(panel: pl.DataFrame, weight: str = "me_lag1") -> pl.Data
             _n=pl.len(),
         )
         .with_columns(
-            vwret=pl.when((pl.col("excntry") == US_EXCNTRY) | (pl.col("_n") >= FF_MIN_STOCKS_PF))
+            vwret=pl.when((pl.col("excntry") == US_EXCNTRY) | (pl.col("_n") >= HXZ_MIN_STOCKS_PF))
             .then(pl.col("vwret"))
             .otherwise(None)
         )
@@ -13118,7 +13120,7 @@ def hxz_build_characteristics(panel_m: pl.DataFrame) -> pl.DataFrame:
 # Stage helpers for `gen_hxz_data` — six-stage pipeline (load returns / load
 # fundamentals / compute chars / classify portfolios / portfolio sorts /
 # output). Compute and classify are decoupled so country-aware breakpoints
-# (US: NYSE-only pool, ROW: size_grp pool with FF_MIN_STOCKS_BP gate) live in a
+# (US: NYSE-only pool, ROW: size_grp pool with HXZ_MIN_STOCKS_BP gate) live in a
 # single classifier rather than fused inside per-branch assign helpers.
 # =============================================================================
 
@@ -13397,7 +13399,7 @@ def hxz_compute_chars(
 
 def _hxz_classify_size_ia(size_ia_form: pl.DataFrame) -> pl.DataFrame:
     """Apply country-aware breakpoints + bucket cuts to June size+inv frame.
-    US: NYSE-only pool, per-date breaks. ROW: size_grp pool + FF_MIN_STOCKS_BP
+    US: NYSE-only pool, per-date breaks. ROW: size_grp pool + HXZ_MIN_STOCKS_BP
     gate, per-(excntry, date) breaks. Returns June-level classified frame
     with `sizeport`, `invport` (and `inv` preserved for downstream)."""
     us = size_ia_form.filter(pl.col("excntry") == US_EXCNTRY)
@@ -13461,7 +13463,7 @@ def _hxz_classify_size_ia(size_ia_form: pl.DataFrame) -> pl.DataFrame:
 def _hxz_classify_roe(roe_m: pl.DataFrame) -> pl.DataFrame:
     """Apply country-aware breakpoints + bucket cuts to monthly ROE frame.
     US: NYSE-only pool, per-date breaks. ROW: size_grp pool, per-(excntry,
-    date) breaks with FF_MIN_STOCKS_BP gate."""
+    date) breaks with HXZ_MIN_STOCKS_BP gate."""
     us = roe_m.filter(pl.col("excntry") == US_EXCNTRY).with_columns(
         elig=(~pl.col("is_fin")) & pl.col("roe").is_not_null()
     )
@@ -13515,7 +13517,7 @@ def hxz_classify_portfolios(
     Description:
         Stage 4 — classify stocks into HXZ 2×3×3 portfolios. Applies
         country-aware breakpoints (US: NYSE-only per-date; ROW: size_grp
-        pool per-(excntry, date) with FF_MIN_STOCKS_BP gate). Broadcasts
+        pool per-(excntry, date) with HXZ_MIN_STOCKS_BP gate). Broadcasts
         June (size, I/A) classification to all months Jul(y)..Jun(y+1)
         via FF_PORT_YEAR. Attaches monthly ROE classification on
         (excntry, id, date).
