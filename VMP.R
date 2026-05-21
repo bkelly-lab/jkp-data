@@ -922,6 +922,72 @@ figure_1b <- (p1b_ret + p1b_sd) / (p1b_ratio + p1b_rec) +
   )
 print(figure_1b)
 
+# --- Figure 1b (comparison): Original vs Managed — extended sample ---
+quintile_summary_full_comp <- factors_vol_managed_full |>
+  group_by(var_quintile_labeled) |>
+  summarize(
+    mean_ret_orig_ann = mean(mkt_return_comp,   na.rm = TRUE) * 12,
+    mean_ret_man_ann  = mean(mkt_excess_managed, na.rm = TRUE) * 12,
+    sd_ret_orig_ann   = sd(mkt_return_comp,      na.rm = TRUE) * sqrt(12),
+    sd_ret_man_ann    = sd(mkt_excess_managed,   na.rm = TRUE) * sqrt(12),
+    mean_var_orig     = mean(mkt_return_comp,    na.rm = TRUE) / var(mkt_return_comp,    na.rm = TRUE),
+    mean_var_man      = mean(mkt_excess_managed, na.rm = TRUE) / var(mkt_excess_managed, na.rm = TRUE),
+    prob_recession    = mean(us_recession,        na.rm = TRUE),
+    .groups = "drop"
+  )
+
+p1b_comp_ret <- quintile_summary_full_comp |>
+  select(var_quintile_labeled, mean_ret_orig_ann, mean_ret_man_ann) |>
+  pivot_longer(cols = -var_quintile_labeled, names_to = "portfolio", values_to = "return",
+               names_prefix = "mean_ret_") |>
+  mutate(portfolio = if_else(portfolio == "orig_ann", "Original", "Managed")) |>
+  ggplot(aes(x = var_quintile_labeled, y = return, fill = portfolio)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  scale_fill_manual(values = my_colors) +
+  labs(title = "Average Return", x = "Variance Quintile", y = "Annualized Return", fill = "Portfolio") +
+  theme_minimal() + theme(panel.grid.major.x = element_blank())
+
+p1b_comp_sd <- quintile_summary_full_comp |>
+  select(var_quintile_labeled, sd_ret_orig_ann, sd_ret_man_ann) |>
+  pivot_longer(cols = -var_quintile_labeled, names_to = "portfolio", values_to = "std_dev",
+               names_prefix = "sd_ret_") |>
+  mutate(portfolio = if_else(portfolio == "orig_ann", "Original", "Managed")) |>
+  ggplot(aes(x = var_quintile_labeled, y = std_dev, fill = portfolio)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  scale_fill_manual(values = my_colors) +
+  labs(title = "Standard Deviation", x = "Variance Quintile", y = "Annualized Std. Dev.", fill = "Portfolio") +
+  theme_minimal() + theme(panel.grid.major.x = element_blank())
+
+p1b_comp_ratio <- quintile_summary_full_comp |>
+  select(var_quintile_labeled, mean_var_orig, mean_var_man) |>
+  pivot_longer(cols = -var_quintile_labeled, names_to = "portfolio", values_to = "ratio",
+               names_prefix = "mean_var_") |>
+  mutate(portfolio = if_else(portfolio == "orig", "Original", "Managed")) |>
+  ggplot(aes(x = var_quintile_labeled, y = ratio, fill = portfolio)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_y_continuous(labels = scales::number_format(accuracy = 0.01)) +
+  scale_fill_manual(values = my_colors) +
+  labs(title = "E[R] / Var(R)", x = "Variance Quintile", y = "Ratio (Monthly)", fill = "Portfolio") +
+  theme_minimal() + theme(panel.grid.major.x = element_blank())
+
+p1b_comp_rec <- ggplot(quintile_summary_full_comp, aes(x = var_quintile_labeled, y = prob_recession)) +
+  geom_bar(stat = "identity", fill = "darkblue") +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  labs(title = "Probability of Recession", x = "Variance Quintile", y = "Probability") +
+  theme_minimal() + theme(panel.grid.major.x = element_blank())
+
+combined_plot_full <- (p1b_comp_ret + p1b_comp_sd) / (p1b_comp_ratio + p1b_comp_rec) +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "bottom")
+combined_plot_full <- combined_plot_full +
+  plot_annotation(
+    title    = "Figure 1b (Comparison): Original vs. Managed Market — Extended Sample (1926–2025)",
+    subtitle = "Market factor; variance quintiles based on lagged realized daily variance"
+  )
+print(combined_plot_full)
+
 # --- Table 1b: Spanning regressions, all 9 factors, extended sample ---
 # Reuses get_column_data() and factor_map defined in Part 1.
 results_list_full <- list()
