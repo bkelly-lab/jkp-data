@@ -23,6 +23,7 @@ import pytest
 
 import jkp.data.aux_functions as aux_functions
 from jkp.data.aux_functions import comp_hgics
+from jkp.data.paths import DataPaths
 
 
 def _write_minimal_hgics_fixture(raw_data_dfs: Path) -> None:
@@ -64,7 +65,7 @@ class TestCompHgics:
 
     @pytest.mark.regression
     def test_independent_of_wall_clock(
-        self, temp_data_dir: Path, monkeypatch: pytest.MonkeyPatch
+        self, test_paths: DataPaths, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """comp_hgics output must be identical regardless of `date.today()`.
 
@@ -73,19 +74,19 @@ class TestCompHgics:
         because their patched "today" values differ by 6 years — a difference that
         would show up as ~2,200 extra exploded daily rows per open-ended record.
         """
-        raw_data_dfs = temp_data_dir / "raw_data_dfs"
+        raw_data_dfs = test_paths.interim_dir / "raw_data_dfs"
         _write_minimal_hgics_fixture(raw_data_dfs)
-        monkeypatch.chdir(temp_data_dir)
+        output_path = test_paths.interim_dir / "na_hgics.parquet"
 
         monkeypatch.setattr(aux_functions, "date", _date_subclass_returning(_dt.date(2024, 1, 15)))
-        comp_hgics("national")
-        first = pl.read_parquet(temp_data_dir / "na_hgics.parquet")
+        comp_hgics(test_paths, "national")
+        first = pl.read_parquet(output_path)
 
-        (temp_data_dir / "na_hgics.parquet").unlink()
+        output_path.unlink()
 
         monkeypatch.setattr(aux_functions, "date", _date_subclass_returning(_dt.date(2030, 7, 15)))
-        comp_hgics("national")
-        second = pl.read_parquet(temp_data_dir / "na_hgics.parquet")
+        comp_hgics(test_paths, "national")
+        second = pl.read_parquet(output_path)
 
         assert first.equals(second), (
             "comp_hgics output must not depend on the wall-clock date; "

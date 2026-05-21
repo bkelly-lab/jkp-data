@@ -82,67 +82,69 @@ class TestFFIndClass:
     """Tests for ff_ind_class()."""
 
     @pytest.fixture(autouse=True)
-    def _setup_workdir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-        """Set working directory to temp path for parquet output."""
-        monkeypatch.chdir(tmp_path)
-        self._tmp = tmp_path
+    def _setup(self, test_paths):
+        """Provide a DataPaths-rooted layout for output."""
+        from jkp.data.paths import DataPaths
+
+        self.paths: DataPaths = test_paths
+        self.output_path = self.paths.interim_dir / "__msf_world3.parquet"
 
     def test_mapped_sic_gets_classification(self):
         """A known SIC code should receive FF classification values."""
         input_df = pl.DataFrame({"sic": [2011], "dummy": [1.0]})
-        input_path = str(self._tmp / "input.parquet")
+        input_path = self.paths.interim_dir / "input.parquet"
         input_df.write_parquet(input_path)
 
-        ff_ind_class(input_path)
+        ff_ind_class(self.paths, input_path)
 
-        result = pl.read_parquet("__msf_world3.parquet")
+        result = pl.read_parquet(self.output_path)
         row = result.row(0, named=True)
         assert row["ff49"] == 2  # Food Products
 
     def test_unmapped_sic_gets_null(self):
         """A SIC code not in any mapping should have null ff49."""
         input_df = pl.DataFrame({"sic": [50], "dummy": [1.0]})
-        input_path = str(self._tmp / "input.parquet")
+        input_path = self.paths.interim_dir / "input.parquet"
         input_df.write_parquet(input_path)
 
-        ff_ind_class(input_path)
+        ff_ind_class(self.paths, input_path)
 
-        result = pl.read_parquet("__msf_world3.parquet")
+        result = pl.read_parquet(self.output_path)
         row = result.row(0, named=True)
         assert row["ff49"] is None
 
     def test_null_sic_gets_null(self):
         """A null SIC should result in null ff49."""
         input_df = pl.DataFrame({"sic": [None]}, schema={"sic": pl.Int64})
-        input_path = str(self._tmp / "input.parquet")
+        input_path = self.paths.interim_dir / "input.parquet"
         input_df.write_parquet(input_path)
 
-        ff_ind_class(input_path)
+        ff_ind_class(self.paths, input_path)
 
-        result = pl.read_parquet("__msf_world3.parquet")
+        result = pl.read_parquet(self.output_path)
         row = result.row(0, named=True)
         assert row["ff49"] is None
 
     def test_preserves_all_input_rows(self):
         """Output should have the same number of rows as input."""
         input_df = pl.DataFrame({"sic": [100, 2011, 50, None, 3714]})
-        input_path = str(self._tmp / "input.parquet")
+        input_path = self.paths.interim_dir / "input.parquet"
         input_df.write_parquet(input_path)
 
-        ff_ind_class(input_path)
+        ff_ind_class(self.paths, input_path)
 
-        result = pl.read_parquet("__msf_world3.parquet")
+        result = pl.read_parquet(self.output_path)
         assert len(result) == len(input_df)
 
     def test_preserves_existing_columns(self):
         """Non-FF columns from input should be retained."""
         input_df = pl.DataFrame({"sic": [2011], "price": [42.5], "ticker": ["ACME"]})
-        input_path = str(self._tmp / "input.parquet")
+        input_path = self.paths.interim_dir / "input.parquet"
         input_df.write_parquet(input_path)
 
-        ff_ind_class(input_path)
+        ff_ind_class(self.paths, input_path)
 
-        result = pl.read_parquet("__msf_world3.parquet")
+        result = pl.read_parquet(self.output_path)
         assert "price" in result.columns
         assert "ticker" in result.columns
         assert result["price"][0] == 42.5

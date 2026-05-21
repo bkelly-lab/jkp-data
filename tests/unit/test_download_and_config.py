@@ -14,7 +14,6 @@ Paper Reference: Jensen, Kelly, Pedersen (2023), "Is There a Replication Crisis 
 from __future__ import annotations
 
 from datetime import date
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import polars as pl
@@ -313,7 +312,7 @@ class TestDownloadRawDataTables:
     """
 
     @pytest.fixture()
-    def captured_calls(self):
+    def captured_calls(self, test_paths):
         """Run download_raw_data_tables and capture all download_wrds_table calls."""
         with (
             patch("jkp.data.aux_functions.gen_wrds_connection_info", return_value="host=test"),
@@ -325,7 +324,12 @@ class TestDownloadRawDataTables:
 
             from jkp.data.aux_functions import download_raw_data_tables
 
-            download_raw_data_tables("user", "pass", end_date=date(2025, 12, 31))
+            download_raw_data_tables(
+                test_paths,
+                "user",
+                "pass",
+                end_date=date(2025, 12, 31),
+            )
             yield mock_download.call_args_list
 
     def test_date_filtered_tables_get_date_column(self, captured_calls):
@@ -411,29 +415,15 @@ class TestSaveMainData:
             f"save_main_data should accept 'paths' parameter, got: {list(sig.parameters)}"
         )
 
-    def _run_save_main_data(self, tmp_path: Path) -> None:
-        """Chdir to tmp_path, run save_main_data, and restore cwd."""
-        import os
-
+    def _run_save_main_data(self, paths) -> None:
+        """Run save_main_data with DuckDB mocked; the parquet read/write is what we test."""
         from jkp.data.aux_functions import save_main_data
-        from jkp.data.paths import DataPaths
 
-        paths = DataPaths(base_dir=tmp_path)
+        with patch("jkp.data.aux_functions.duckdb") as mock_duckdb:
+            mock_duckdb.connect.return_value = MagicMock()
+            save_main_data(paths)
 
-        original_cwd = os.getcwd()
-        os.chdir(str(tmp_path))
-        try:
-            with (
-                patch("jkp.data.aux_functions.os.chdir"),
-                patch("jkp.data.aux_functions.os.system"),
-                patch("jkp.data.aux_functions.duckdb") as mock_duckdb,
-            ):
-                mock_duckdb.connect.return_value = MagicMock()
-                save_main_data(paths)
-        finally:
-            os.chdir(original_cwd)
-
-    def test_all_rows_pass_through(self, tmp_path):
+    def test_all_rows_pass_through(self, test_paths):
         """save_main_data should not filter — all rows should appear in output."""
         world_data = pl.DataFrame(
             {
@@ -447,13 +437,14 @@ class TestSaveMainData:
                 "excntry": ["USA"] * 4,
             }
         )
-        world_data.write_parquet(tmp_path / "world_data_output.parquet")
-        self._run_save_main_data(tmp_path)
+        out_path = test_paths.interim_dir / "world_data_output.parquet"
+        world_data.write_parquet(out_path)
+        self._run_save_main_data(test_paths)
 
-        output = pl.read_parquet(tmp_path / "world_data_output.parquet")
+        output = pl.read_parquet(out_path)
         assert len(output) == 4, f"Expected all 4 rows (no filtering), got {len(output)}"
 
-    def test_no_eom_date_filter(self, tmp_path):
+    def test_no_eom_date_filter(self, test_paths):
         """All dates should pass through — there should be no eom <= end_date filter."""
         world_data = pl.DataFrame(
             {
@@ -467,13 +458,14 @@ class TestSaveMainData:
                 "excntry": ["USA"] * 2,
             }
         )
-        world_data.write_parquet(tmp_path / "world_data_output.parquet")
-        self._run_save_main_data(tmp_path)
+        out_path = test_paths.interim_dir / "world_data_output.parquet"
+        world_data.write_parquet(out_path)
+        self._run_save_main_data(test_paths)
 
-        output = pl.read_parquet(tmp_path / "world_data_output.parquet")
+        output = pl.read_parquet(out_path)
         assert len(output) == 2, f"Expected both rows (no date filter), got {len(output)}"
 
-    def test_me_lag1_computed(self, tmp_path):
+    def test_me_lag1_computed(self, test_paths):
         """save_main_data should add me_lag1 column with lagged market equity."""
         world_data = pl.DataFrame(
             {
@@ -487,10 +479,11 @@ class TestSaveMainData:
                 "excntry": ["USA"] * 3,
             }
         )
-        world_data.write_parquet(tmp_path / "world_data_output.parquet")
-        self._run_save_main_data(tmp_path)
+        out_path = test_paths.interim_dir / "world_data_output.parquet"
+        world_data.write_parquet(out_path)
+        self._run_save_main_data(test_paths)
 
-        output = pl.read_parquet(tmp_path / "world_data_output.parquet").sort("eom")
+        output = pl.read_parquet(out_path).sort("eom")
         assert "me_lag1" in output.columns, "me_lag1 column should be present"
         assert output["me_lag1"][0] is None or output["me_lag1"][0] != output["me_lag1"][0]
         assert output["me_lag1"][1] == pytest.approx(100.0)
@@ -526,102 +519,79 @@ class TestFilterFunctions:
             }
         )
 
-    def _run_filter(self, tmp_path: Path, func_name: str, source: str, output: str) -> pl.DataFrame:
+    def _run_filter(self, paths, func_name: str, source: str, output: str) -> pl.DataFrame:
         """Write test data, run a filter function, and return the result."""
-        import os
-
         import jkp.data.aux_functions as aux_functions
 
         data = self._make_test_data()
-        data.write_parquet(tmp_path / source)
+        data.write_parquet(paths.interim_dir / source)
 
-        original_cwd = os.getcwd()
-        os.chdir(str(tmp_path))
-        try:
-            getattr(aux_functions, func_name)()
-        finally:
-            os.chdir(original_cwd)
+        getattr(aux_functions, func_name)(paths)
 
-        return pl.read_parquet(tmp_path / output)
+        return pl.read_parquet(paths.interim_dir / output)
 
-    def test_filter_dsf_keeps_only_passing_rows(self, tmp_path):
+    def test_filter_dsf_keeps_only_passing_rows(self, test_paths):
         """filter_dsf should keep only rows where all four filter columns are 1."""
         result = self._run_filter(
-            tmp_path, "filter_dsf", "world_dsf.parquet", "world_dsf_output.parquet"
+            test_paths, "filter_dsf", "world_dsf.parquet", "world_dsf_output.parquet"
         )
         assert len(result) == 1, f"Expected 1 passing row, got {len(result)}"
         assert result["id"][0] == "A"
 
-    def test_filter_msf_keeps_only_passing_rows(self, tmp_path):
+    def test_filter_msf_keeps_only_passing_rows(self, test_paths):
         """filter_msf should keep only rows where all four filter columns are 1."""
         result = self._run_filter(
-            tmp_path, "filter_msf", "world_msf.parquet", "world_msf_output.parquet"
+            test_paths, "filter_msf", "world_msf.parquet", "world_msf_output.parquet"
         )
         assert len(result) == 1, f"Expected 1 passing row, got {len(result)}"
         assert result["id"][0] == "A"
 
-    def test_filter_world_keeps_only_passing_rows(self, tmp_path):
+    def test_filter_world_keeps_only_passing_rows(self, test_paths):
         """filter_world should keep only rows where all four filter columns are 1."""
         result = self._run_filter(
-            tmp_path, "filter_world", "world_data.parquet", "world_data_output.parquet"
+            test_paths, "filter_world", "world_data.parquet", "world_data_output.parquet"
         )
         assert len(result) == 1, f"Expected 1 passing row, got {len(result)}"
         assert result["id"][0] == "A"
 
-    def test_filter_preserves_all_columns(self, tmp_path):
+    def test_filter_preserves_all_columns(self, test_paths):
         """Filtered output should retain all original columns."""
         original_cols = set(self._make_test_data().columns)
         result = self._run_filter(
-            tmp_path, "filter_world", "world_data.parquet", "world_data_output.parquet"
+            test_paths, "filter_world", "world_data.parquet", "world_data_output.parquet"
         )
         assert set(result.columns) == original_cols, (
             f"Column mismatch: expected {original_cols}, got {set(result.columns)}"
         )
 
-    def test_filter_does_not_modify_source(self, tmp_path):
+    def test_filter_does_not_modify_source(self, test_paths):
         """Source file should be unchanged after filtering."""
-        import os
-
         import jkp.data.aux_functions as aux_functions
 
         data = self._make_test_data()
-        data.write_parquet(tmp_path / "world_data.parquet")
+        data.write_parquet(test_paths.interim_dir / "world_data.parquet")
 
-        original_cwd = os.getcwd()
-        os.chdir(str(tmp_path))
-        try:
-            aux_functions.filter_world()
-        finally:
-            os.chdir(original_cwd)
+        aux_functions.filter_world(test_paths)
 
-        source = pl.read_parquet(tmp_path / "world_data.parquet")
+        source = pl.read_parquet(test_paths.interim_dir / "world_data.parquet")
         assert len(source) == 5, f"Source should be unchanged (5 rows), got {len(source)}"
 
-    def test_filter_is_idempotent(self, tmp_path):
+    def test_filter_is_idempotent(self, test_paths):
         """Running filter twice should produce the same result."""
-        import os
-
         import jkp.data.aux_functions as aux_functions
 
         data = self._make_test_data()
-        data.write_parquet(tmp_path / "world_data.parquet")
+        data.write_parquet(test_paths.interim_dir / "world_data.parquet")
 
-        original_cwd = os.getcwd()
-        os.chdir(str(tmp_path))
-        try:
-            aux_functions.filter_world()
-            first_run = pl.read_parquet(tmp_path / "world_data_output.parquet")
-            aux_functions.filter_world()
-            second_run = pl.read_parquet(tmp_path / "world_data_output.parquet")
-        finally:
-            os.chdir(original_cwd)
+        aux_functions.filter_world(test_paths)
+        first_run = pl.read_parquet(test_paths.interim_dir / "world_data_output.parquet")
+        aux_functions.filter_world(test_paths)
+        second_run = pl.read_parquet(test_paths.interim_dir / "world_data_output.parquet")
 
         assert first_run.equals(second_run), "Second run should produce identical output"
 
-    def test_filter_all_pass(self, tmp_path):
+    def test_filter_all_pass(self, test_paths):
         """When all rows pass the filter, all should be retained."""
-        import os
-
         import jkp.data.aux_functions as aux_functions
 
         data = pl.DataFrame(
@@ -637,22 +607,15 @@ class TestFilterFunctions:
                 "excntry": ["USA"] * 2,
             }
         )
-        data.write_parquet(tmp_path / "world_data.parquet")
+        data.write_parquet(test_paths.interim_dir / "world_data.parquet")
 
-        original_cwd = os.getcwd()
-        os.chdir(str(tmp_path))
-        try:
-            aux_functions.filter_world()
-        finally:
-            os.chdir(original_cwd)
+        aux_functions.filter_world(test_paths)
 
-        result = pl.read_parquet(tmp_path / "world_data_output.parquet")
+        result = pl.read_parquet(test_paths.interim_dir / "world_data_output.parquet")
         assert len(result) == 2, f"Expected both rows to pass, got {len(result)}"
 
-    def test_filter_none_pass(self, tmp_path):
+    def test_filter_none_pass(self, test_paths):
         """When no rows pass the filter, output should be empty."""
-        import os
-
         import jkp.data.aux_functions as aux_functions
 
         data = pl.DataFrame(
@@ -668,14 +631,9 @@ class TestFilterFunctions:
                 "excntry": ["USA"],
             }
         )
-        data.write_parquet(tmp_path / "world_data.parquet")
+        data.write_parquet(test_paths.interim_dir / "world_data.parquet")
 
-        original_cwd = os.getcwd()
-        os.chdir(str(tmp_path))
-        try:
-            aux_functions.filter_world()
-        finally:
-            os.chdir(original_cwd)
+        aux_functions.filter_world(test_paths)
 
-        result = pl.read_parquet(tmp_path / "world_data_output.parquet")
+        result = pl.read_parquet(test_paths.interim_dir / "world_data_output.parquet")
         assert len(result) == 0, f"Expected 0 rows, got {len(result)}"

@@ -81,6 +81,7 @@ Static reference data (`data/cluster_labels.csv`, `data/country_classification.x
 - New pipeline functions should be added to `aux_functions.py` and called from `main.py`
 - Use the `@measure_time` decorator on pipeline-level functions
 - Use `collect_and_write()` for the lazy→eager→parquet workflow
+- Pipeline functions in `aux_functions.py` that touch the filesystem must accept `paths: DataPaths` as their first parameter and use it for all path construction (e.g. `paths.interim_dir / "foo.parquet"`, `paths.raw_tables_dir / ...`). Never use `os.chdir`, `os.system`, or bare relative path strings. DuckDB SQL strings should interpolate `Path.as_posix()` rather than rely on cwd.
 
 **Docstring format** (the codebase uses a consistent three-part format):
 ```
@@ -116,7 +117,7 @@ See [tests/README.md](tests/README.md) for full guidance on writing tests, numer
 Key conventions to know:
 - Tests live in `tests/unit/` with shared fixtures in `tests/conftest.py`
 - Available test markers: `unit`, `integration`, `methodology`, `regression`, `expensive`, `wrds`
-- Key fixtures: `tolerance` (pre-calibrated `ToleranceSpec` levels), `assert_series_equal` (NaN-aware series comparison), `make_dataframe` (test DataFrame factory), `temp_data_dir` (temp directory with pipeline subdirectories)
+- Key fixtures: `tolerance` (pre-calibrated `ToleranceSpec` levels), `assert_series_equal` (NaN-aware series comparison), `make_dataframe` (test DataFrame factory), `temp_data_dir` (temp directory with pipeline subdirectories), `test_paths` (`DataPaths` instance rooted at `temp_data_dir`; use this for any test of a pipeline function that takes `paths: DataPaths`)
 
 ## Development Workflow
 
