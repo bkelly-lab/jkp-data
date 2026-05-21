@@ -6554,6 +6554,7 @@ def sort_ff_style(char, min_stocks_bp, min_stocks_pf, date_col, data, sf):
 
 
 def prep_data_factor_regs(
+    paths: DataPaths,
     data_path,
     factors_path,
     lower: float = 0.001,
@@ -6580,7 +6581,7 @@ def prep_data_factor_regs(
     )
 
     data_path_posix = Path(data_path).as_posix()
-    fcts_path_posix = Path(fcts_path).as_posix()
+    factors_path_posix = Path(factors_path).as_posix()
     con.raw_sql(f"""
     CREATE OR REPLACE VIEW data_msf AS
     SELECT *
@@ -6588,7 +6589,7 @@ def prep_data_factor_regs(
 
     CREATE OR REPLACE VIEW fcts AS
     SELECT excntry, eom, mktrf, hml, smb_ff3 AS smb_ff
-    FROM read_parquet('{factors_path}');
+    FROM read_parquet('{factors_path_posix}');
 
     CREATE OR REPLACE TABLE __msf2 AS
     WITH __msf1 AS (
@@ -6633,7 +6634,7 @@ def prep_data_factor_regs(
 
 
 @measure_time
-def market_beta(output_path, data_path, factors_path, __n, __min):
+def market_beta(paths: DataPaths, output_path, data_path, factors_path, __n, __min):
     """
     Description:
         Estimate rolling CAPM betas and idiosyncratic vol for each stock.
@@ -6647,7 +6648,7 @@ def market_beta(output_path, data_path, factors_path, __n, __min):
     Output:
         Parquet at output_path with [id, eom, beta_{__n}m, ivol_capm_{__n}m].
     """
-    con = prep_data_factor_regs(data_path, factors_path)
+    con = prep_data_factor_regs(paths, data_path, factors_path)
     base_data = con.table("__msf2").to_polars().lazy()
     aux_maps = gen_aux_maps(__n)
     df = pl.concat(
@@ -6680,7 +6681,7 @@ def market_beta(output_path, data_path, factors_path, __n, __min):
 
 
 @measure_time
-def residual_momentum(output_path, data_path, factors_path, __n, __min, incl, skip):
+def residual_momentum(paths: DataPaths, output_path, data_path, factors_path, __n, __min, incl, skip):
     """
     Description:
         Compute residual momentum from FF3 regressions with rolling windows and skip/inclusion rules.
@@ -6696,7 +6697,7 @@ def residual_momentum(output_path, data_path, factors_path, __n, __min, incl, sk
         as a *stem*, not a full path — the parameter name is a holdover from
         the pre-refactor signature.
     """
-    con = prep_data_factor_regs(data_path, factors_path)
+    con = prep_data_factor_regs(paths, data_path, factors_path)
     base_data = con.table("__msf2").to_polars().lazy()
     aux_maps = gen_aux_maps(__n)
     df = pl.concat(
@@ -6725,7 +6726,7 @@ def residual_momentum(output_path, data_path, factors_path, __n, __min, incl, sk
 
 
 @measure_time
-def prepare_daily(data_path, factors_path):
+def prepare_daily(paths: DataPaths, data_path, factors_path):
     """
     Description:
         Build daily dataset: align returns with factors, shrink dtypes, and create helpers.

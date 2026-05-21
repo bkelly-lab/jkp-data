@@ -171,25 +171,28 @@ def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> No
     )
     firm_age("world_msf.parquet")
     market_beta(
-        "beta_60m.parquet",
-        "world_msf.parquet",
-        "ap_factors_monthly.parquet",
+        paths,
+        interim / "beta_60m.parquet",
+        interim / "world_msf.parquet",
+        interim / "ap_factors_monthly.parquet",
         60,
         36,
     )
     residual_momentum(
+        paths,
         "resmom_ff3",
-        "world_msf.parquet",
-        "ap_factors_monthly.parquet",
+        interim / "world_msf.parquet",
+        interim / "ap_factors_monthly.parquet",
         36,
         24,
         12,
         1,
     )
     residual_momentum(
+        paths,
         "resmom_ff3",
-        "world_msf.parquet",
-        "ap_factors_monthly.parquet",
+        interim / "world_msf.parquet",
+        interim / "ap_factors_monthly.parquet",
         36,
         24,
         6,
@@ -197,8 +200,9 @@ def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> No
     )
     bidask_hl("corwin_schultz.parquet", "world_dsf.parquet", "market_returns_daily.parquet", 10)
     prepare_daily(
-        "world_dsf.parquet",
-        "ap_factors_daily.parquet",
+        paths,
+        interim / "world_dsf.parquet",
+        interim / "ap_factors_daily.parquet",
     )
     for sfx, min_obs, vars_ in ROLLING_DAILY_SPECS:
         for var in vars_:
