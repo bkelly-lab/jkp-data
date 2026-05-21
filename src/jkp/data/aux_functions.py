@@ -7254,6 +7254,7 @@ _MP_FUNDQ_NUMERIC = [
 # ============================================================================
 
 
+@functools.cache
 def _mp_load_funda():
     df = pl.read_parquet(f"{_MP_RAW}/comp_funda.parquet").filter(
         (col("indfmt") == "INDL")
@@ -7266,6 +7267,7 @@ def _mp_load_funda():
     )
 
 
+@functools.cache
 def _mp_load_fundq():
     df = pl.read_parquet(f"{_MP_RAW}/comp_fundq.parquet").filter(
         (col("indfmt") == "INDL")
@@ -8145,9 +8147,9 @@ def _mp_compute_distress(mp_con):
     sigma = _mp_distress_sigma(_mp_read("crsp_daily"))
     distress = _mp_distress_final_score(dist4, sigma)
 
-    crsp_keys = _mp_read("crsp_monthly").select("permno", "eom")
     out = (
-        crsp_keys.join(distress, on=["permno", "eom"], how="left")
+        crsp_monthly_panel.select("permno", "eom")
+        .join(distress, on=["permno", "eom"], how="left")
         .unique(subset=["permno", "eom"], keep="first", maintain_order=True)
         .sort("permno", "eom")
         .select("eom", "permno", "distress")
@@ -8241,8 +8243,8 @@ def _mp_build_mispricing_panel(min_stks, mp_con):
     )
 
 
-def _mp_build_stock_scores(mispricing_panel, min_fcts, out_name=None):
-    out = (
+def _mp_build_stock_scores(mispricing_panel, min_fcts):
+    return (
         _mp_add_leg_score(
             mispricing_panel, _MP_MGMT_COLS, "mispricing_mgmt", "_n_mgmt", min_count=min_fcts
         )
@@ -8251,9 +8253,6 @@ def _mp_build_stock_scores(mispricing_panel, min_fcts, out_name=None):
         .sort("permno", "eom")
         .select(col("permno").alias("id"), "eom", "mispricing_mgmt", "mispricing_perf")
     )
-    if out_name is not None:
-        _mp_write(out, out_name)
-    return out
 
 
 # ---------- Factors: double-sort buckets, VW portfolio returns ----------
@@ -8349,16 +8348,19 @@ def _mp_build_mispricing_legs(mispricing_panel, min_fcts):
     }
 
 
-def _mp_smb_panel_from_legs(legs, key_cols=("permno",)):
+def _mp_smb_panel_from_legs(legs, key_cols):
     """SMB neutral panel (port_var == 2 stocks). key_cols identifies the
     stock: ("permno",) for US, ("id", "excntry") for world."""
-    keys = list(key_cols)
-    a = legs["mgmt"].filter(col("port_var") == 2).select(*keys, "eom", "ret", "mktcap", "port_size")
-    b = legs["perf"].filter(col("port_var") == 2).select(*keys, "eom", "port_size")
-    return a.join(b, on=[*keys, "eom", "port_size"], how="inner")
+    a = (
+        legs["mgmt"]
+        .filter(col("port_var") == 2)
+        .select(*key_cols, "eom", "ret", "mktcap", "port_size")
+    )
+    b = legs["perf"].filter(col("port_var") == 2).select(*key_cols, "eom", "port_size")
+    return a.join(b, on=[*key_cols, "eom", "port_size"], how="inner")
 
 
-def _mp_build_portfolios_monthly(legs, smb_panel, min_obs, out_name=None):
+def _mp_build_portfolios_monthly(legs, smb_panel, min_obs):
     leg_umo = {}
     for name, panel in legs.items():
         pr = (
@@ -8384,7 +8386,7 @@ def _mp_build_portfolios_monthly(legs, smb_panel, min_obs, out_name=None):
         "eom", "smb_mispricing"
     )
 
-    portfolios = (
+    return (
         leg_umo["mgmt"]
         .join(leg_umo["perf"], on="eom", how="inner")
         .join(smb_df, on="eom", how="inner")
@@ -8392,12 +8394,9 @@ def _mp_build_portfolios_monthly(legs, smb_panel, min_obs, out_name=None):
         .select("eom", "smb_mispricing", "mispricing_mgmt", "mispricing_perf")
         .sort("eom")
     )
-    if out_name is not None:
-        _mp_write(portfolios, out_name)
-    return portfolios
 
 
-def _mp_build_portfolios_daily(legs, smb_panel, min_obs, mp_con, out_name=None):
+def _mp_build_portfolios_daily(legs, smb_panel, min_obs, mp_con):
     leg_umo = {}
     for name, panel in legs.items():
         bucketed = panel.filter(
@@ -8425,7 +8424,7 @@ def _mp_build_portfolios_daily(legs, smb_panel, min_obs, mp_con, out_name=None):
     )
 
     daily_start = date(MP_START_FACTOR_EOM.year, MP_START_FACTOR_EOM.month, 1)
-    portfolios = (
+    return (
         leg_umo["mgmt"]
         .join(leg_umo["perf"], on="date", how="inner")
         .join(smb_df, on="date", how="inner")
@@ -8433,9 +8432,6 @@ def _mp_build_portfolios_daily(legs, smb_panel, min_obs, mp_con, out_name=None):
         .select("date", "smb_mispricing", "mispricing_mgmt", "mispricing_perf")
         .sort("date")
     )
-    if out_name is not None:
-        _mp_write(portfolios, out_name)
-    return portfolios
 
 
 # ============================================================================
@@ -9161,9 +9157,7 @@ def _mp_world_build_portfolios_monthly(legs, smb_panel, min_obs):
                 ["excntry", "eom", "port_size", "port_var"],
             )
             .filter(col("_freq_") >= min_obs)
-            .with_columns(_n=pl.len().over(["excntry", "eom"]))
-            .filter(col("_n") == 6)
-            .drop("_n")
+            .pipe(_mp_filter_full_buckets, 6, by=["excntry", "eom"])
             .sort("excntry", "eom", "port_size", "port_var")
         )
         leg_umo[name] = _mp_spread_per_size_then_diff(pr, ["excntry", "eom"]).select(
@@ -9173,9 +9167,7 @@ def _mp_world_build_portfolios_monthly(legs, smb_panel, min_obs):
     smb_port = (
         _mp_vw_monthly(smb_panel, ["excntry", "eom", "port_size"])
         .filter(col("_freq_") >= min_obs)
-        .with_columns(_n=pl.len().over(["excntry", "eom"]))
-        .filter(col("_n") == 2)
-        .drop("_n")
+        .pipe(_mp_filter_full_buckets, 2, by=["excntry", "eom"])
         .sort("excntry", "eom", "port_size")
     )
     smb_df = _mp_diff_legs(
@@ -9222,9 +9214,7 @@ def _mp_world_build_portfolios_daily(legs, smb_panel, min_obs, mp_con):
         pr = (
             _mp_world_vw_daily(bucketed, ["excntry", "port_size", "port_var"], mp_con)
             .filter(col("_freq_") >= min_obs)
-            .with_columns(_n=pl.len().over(["excntry", "date"]))
-            .filter(col("_n") == 6)
-            .drop("_n")
+            .pipe(_mp_filter_full_buckets, 6, by=["excntry", "date"])
             .sort("excntry", "date", "port_size", "port_var")
         )
         leg_umo[name] = _mp_spread_per_size_then_diff(pr, ["excntry", "date"]).select(
@@ -9235,9 +9225,7 @@ def _mp_world_build_portfolios_daily(legs, smb_panel, min_obs, mp_con):
     smb_port = (
         _mp_world_vw_daily(smb_daily, ["excntry", "port_size"], mp_con)
         .filter(col("_freq_") >= min_obs)
-        .with_columns(_n=pl.len().over(["excntry", "date"]))
-        .filter(col("_n") == 2)
-        .drop("_n")
+        .pipe(_mp_filter_full_buckets, 2, by=["excntry", "date"])
         .sort("excntry", "date", "port_size")
     )
     smb_df = _mp_diff_legs(
@@ -9317,7 +9305,7 @@ def _mp_stage4_form_portfolios(
     for US and world. Returns dict with US panel/legs/smb and world panel/legs/smb."""
     us_panel = _mp_build_mispricing_panel(min_stks, mp_con)
     us_legs = _mp_build_mispricing_legs(us_panel, min_fcts)
-    us_smb = _mp_smb_panel_from_legs(us_legs)
+    us_smb = _mp_smb_panel_from_legs(us_legs, key_cols=("permno",))
     wm = wd.select(
         "id", "permno", "gvkey", "excntry", "eom", "me", "prc", "ret", "adjfct", "shares"
     )
