@@ -7462,28 +7462,36 @@ def _mp_expand_to_crsp_window(anomaly_df: pl.DataFrame, value_col: str) -> pl.Da
     )
 
 
-def _mp_rolling_calendar_sum(df, value_col, *, lag_min, lag_max, n_required):
-    offsets = list(range(lag_min, lag_max + 1))
-    expanded = (
-        df.select("permno", "eom")
-        .with_columns(_off=pl.lit(offsets))
-        .explode("_off")
-        .with_columns(
-            eom_src=col("eom").dt.offset_by(pl.format("-{}mo", col("_off"))).dt.month_end()
+def _mp_rolling_calendar_sum(df, value_col, *, lag_min, lag_max, n_required, id_col="permno"):
+    """Calendar-aware rolling sum of `value_col` over the inclusive window
+    [eom - lag_max months, eom - lag_min months], per `id_col`.
+
+    Returns [id_col, eom, r] keyed by the same id+eom as `df`. `r` is null
+    when fewer than `n_required` non-null source values fall in the window.
+
+    Returning a keyed frame (not a positional `pl.Series`) lets callers join
+    by key, so polars' parallel hash join can permute row order freely
+    without misaligning the rolling sum onto the wrong rows.
+    """
+    return (
+        df.sort(id_col, "eom")
+        .rolling(
+            index_column="eom",
+            group_by=id_col,
+            period=f"{lag_max - lag_min}mo",
+            offset=f"-{lag_max}mo",
+            closed="both",
         )
-    )
-    src = df.select("permno", col("eom").alias("eom_src"), col(value_col).alias("_v"))
-    agg = (
-        expanded.join(src, on=["permno", "eom_src"], how="left")
-        .group_by("permno", "eom")
         .agg(
-            _sum=col("_v").sum(),
-            _cnt=col("_v").is_not_null().sum().cast(pl.Int64),
+            _sum=col(value_col).sum(),
+            _cnt=col(value_col).is_not_null().sum().cast(pl.Int64),
+        )
+        .select(
+            id_col,
+            "eom",
+            pl.when(col("_cnt") == n_required).then(col("_sum")).otherwise(None).alias("r"),
         )
     )
-    return df.join(agg, on=["permno", "eom"], how="left").select(
-        pl.when(col("_cnt") == n_required).then(col("_sum")).otherwise(None).alias("r")
-    )["r"]
 
 
 # ============================================================================
@@ -7738,8 +7746,14 @@ def _mp_compute_momentum():
         .select("permno", "eom", "RET")
         .with_columns(log_1p_ret=(1 + col("RET")).log())
     )
-    s = _mp_rolling_calendar_sum(m3, "log_1p_ret", lag_min=2, lag_max=12, n_required=11)
-    out = m3.select("eom", "permno").with_columns(momentum=s.exp() - 1).sort("permno", "eom")
+    roll = _mp_rolling_calendar_sum(m3, "log_1p_ret", lag_min=2, lag_max=12, n_required=11)
+    out = (
+        m3.select("permno", "eom")
+        .join(roll, on=["permno", "eom"], how="left")
+        .with_columns(momentum=col("r").exp() - 1)
+        .select("eom", "permno", "momentum")
+        .sort("permno", "eom")
+    )
     return _mp_write(out, "momentum")
 
 
@@ -7749,22 +7763,24 @@ def _mp_compute_composite_issue():
         .select("permno", "eom", "me", "RET")
         .with_columns(log_1p_ret=(1 + col("RET")).log())
     )
-    cumret_12 = _mp_rolling_calendar_sum(m3, "log_1p_ret", lag_min=0, lag_max=11, n_required=12)
-    me_targets = m3.select("permno", "eom", "me").with_columns(
-        eom_src=_mp_offset_months("eom", -12)
+    cumret = _mp_rolling_calendar_sum(m3, "log_1p_ret", lag_min=0, lag_max=11, n_required=12)
+    me_lag12 = m3.select("permno", "eom", col("me").alias("me_lag12")).with_columns(
+        eom=_mp_offset_months("eom", 12)
     )
-    me_src = m3.select("permno", col("eom").alias("eom_src"), col("me").alias("me_lag12"))
-    me_lagged = me_targets.join(me_src, on=["permno", "eom_src"], how="left")
-    composite_t = (me_lagged["me"] / me_lagged["me_lag12"]).log() - cumret_12
-
-    m3_c = m3.with_columns(composite_t=composite_t)
-    src_t = m3_c.select(
-        "permno", col("eom").alias("eom_src"), col("composite_t").alias("composite_issue")
+    composite_t = (
+        m3.select("permno", "eom", "me")
+        .join(me_lag12, on=["permno", "eom"], how="left")
+        .join(cumret, on=["permno", "eom"], how="left")
+        .select(
+            "permno",
+            col("eom").alias("eom_src"),
+            composite_issue=(col("me") / col("me_lag12")).log() - col("r"),
+        )
     )
     out = (
         m3.select("permno", "eom")
         .with_columns(eom_src=_mp_offset_months("eom", -5))
-        .join(src_t, on=["permno", "eom_src"], how="left")
+        .join(composite_t, on=["permno", "eom_src"], how="left")
         .select("eom", "permno", "composite_issue")
         .sort("permno", "eom")
     )
@@ -8566,11 +8582,16 @@ def _mp_world_compute_jkp_anomalies(wd: pl.DataFrame) -> dict[str, pl.DataFrame]
 def _mp_world_compute_momentum(wm: pl.DataFrame) -> pl.DataFrame:
     """11-month log-return momentum (months t-2..t-12), per id. wm has id, eom, ret."""
     m3 = wm.select("id", "excntry", "eom", "ret").with_columns(log_1p_ret=(1 + col("ret")).log())
-    # Reuse _mp_rolling_calendar_sum on id-grouped frame (works for any id)
-    s = _mp_rolling_calendar_sum_keyed(
+    roll = _mp_rolling_calendar_sum(
         m3, "log_1p_ret", lag_min=2, lag_max=12, n_required=11, id_col="id"
     )
-    return m3.select("id", "excntry", "eom").with_columns(momentum=s.exp() - 1).sort("id", "eom")
+    return (
+        m3.select("id", "excntry", "eom")
+        .join(roll, on=["id", "eom"], how="left")
+        .with_columns(momentum=col("r").exp() - 1)
+        .select("id", "excntry", "eom", "momentum")
+        .sort("id", "eom")
+    )
 
 
 def _mp_world_compute_composite_issue(wm: pl.DataFrame) -> pl.DataFrame:
@@ -8579,22 +8600,26 @@ def _mp_world_compute_composite_issue(wm: pl.DataFrame) -> pl.DataFrame:
     m3 = wm.select("id", "excntry", "eom", "me", "ret").with_columns(
         log_1p_ret=(1 + col("ret")).log()
     )
-    cumret_12 = _mp_rolling_calendar_sum_keyed(
+    cumret = _mp_rolling_calendar_sum(
         m3, "log_1p_ret", lag_min=0, lag_max=11, n_required=12, id_col="id"
     )
-    me_targets = m3.select("id", "eom", "me").with_columns(eom_src=_mp_offset_months("eom", -12))
-    me_src = m3.select("id", col("eom").alias("eom_src"), col("me").alias("me_lag12"))
-    me_lagged = me_targets.join(me_src, on=["id", "eom_src"], how="left")
-    composite_t = (me_lagged["me"] / me_lagged["me_lag12"]).log() - cumret_12
-
-    m3_c = m3.with_columns(composite_t=composite_t)
-    src_t = m3_c.select(
-        "id", col("eom").alias("eom_src"), col("composite_t").alias("composite_issue")
+    me_lag12 = m3.select("id", "eom", col("me").alias("me_lag12")).with_columns(
+        eom=_mp_offset_months("eom", 12)
+    )
+    composite_t = (
+        m3.select("id", "excntry", "eom", "me")
+        .join(me_lag12, on=["id", "eom"], how="left")
+        .join(cumret, on=["id", "eom"], how="left")
+        .select(
+            "id",
+            col("eom").alias("eom_src"),
+            composite_issue=(col("me") / col("me_lag12")).log() - col("r"),
+        )
     )
     return (
         m3.select("id", "excntry", "eom")
         .with_columns(eom_src=_mp_offset_months("eom", -5))
-        .join(src_t, on=["id", "eom_src"], how="left")
+        .join(composite_t, on=["id", "eom_src"], how="left")
         .select("eom", "id", "excntry", "composite_issue")
         .sort("id", "eom")
     )
@@ -8627,31 +8652,6 @@ def _mp_world_compute_stock_issue(wm: pl.DataFrame) -> pl.DataFrame:
         .select("eom", "id", "excntry", "stock_issue")
         .sort("id", "eom")
     )
-
-
-def _mp_rolling_calendar_sum_keyed(df, value_col, *, lag_min, lag_max, n_required, id_col="permno"):
-    """Same as _mp_rolling_calendar_sum but `id_col` parameterized (permno or id)."""
-    offsets = list(range(lag_min, lag_max + 1))
-    expanded = (
-        df.select(id_col, "eom")
-        .with_columns(_off=pl.lit(offsets))
-        .explode("_off")
-        .with_columns(
-            eom_src=col("eom").dt.offset_by(pl.format("-{}mo", col("_off"))).dt.month_end()
-        )
-    )
-    src = df.select(id_col, col("eom").alias("eom_src"), col(value_col).alias("_v"))
-    agg = (
-        expanded.join(src, on=[id_col, "eom_src"], how="left")
-        .group_by(id_col, "eom")
-        .agg(
-            _sum=col("_v").sum(),
-            _cnt=col("_v").is_not_null().sum().cast(pl.Int64),
-        )
-    )
-    return df.join(agg, on=[id_col, "eom"], how="left").select(
-        pl.when(col("_cnt") == n_required).then(col("_sum")).otherwise(None).alias("r")
-    )["r"]
 
 
 def _mp_world_compute_distress(
