@@ -10199,7 +10199,7 @@ def quality_minus_junk(paths: DataPaths, data_path, min_stks):
     qmj = pl.scan_parquet(data_path).filter(c1).select(cols).sort(["excntry", "eom"]).collect()
     for var_z, dir in zip(z_vars, direction, strict=True):
         __z = z_ranks(qmj, var_z, min_stks, dir)
-        qmj = qmj.join(__z, how="full", coalesce=True, on=["excntry", "eom", "id"])
+        qmj = qmj.join(__z, how="left", on=["excntry", "eom", "id"])
 
     qmj = qmj.with_columns(
         __prof=pl.mean_horizontal(
@@ -10219,9 +10219,9 @@ def quality_minus_junk(paths: DataPaths, data_path, min_stks):
     }
     qmj = (
         qmj.select(["excntry", "id", "eom"])
-        .join(ranks["prof"], how="full", coalesce=True, on=["excntry", "id", "eom"])
-        .join(ranks["growth"], how="full", coalesce=True, on=["excntry", "id", "eom"])
-        .join(ranks["safety"], how="full", coalesce=True, on=["excntry", "id", "eom"])
+        .join(ranks["prof"], how="left", on=["excntry", "id", "eom"])
+        .join(ranks["growth"], how="left", on=["excntry", "id", "eom"])
+        .join(ranks["safety"], how="left", on=["excntry", "id", "eom"])
         .with_columns(__qmj=(col("qmj_prof") + col("qmj_growth") + col("qmj_safety")) / 3)
     )
     __qmj = z_ranks(qmj, "__qmj", min_stks, "ascending").rename({"z___qmj": "qmj"})
