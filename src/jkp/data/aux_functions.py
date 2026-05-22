@@ -7046,7 +7046,12 @@ def _mp_build_crsp_monthly() -> pl.DataFrame:
     sf = (
         pl.read_parquet(f"{_MP_RAW}/crsp_msf_v2.parquet")
         .filter((col("mthcaldt") >= start_d) & (col("mthcaldt") <= end_d))
-        .unique(subset=["permno", "mthcaldt"], keep="first", maintain_order=False)
+        .sort(
+            ["permno", "mthcaldt", "mthret", "mthcap"],
+            descending=[False, False, True, True],
+            nulls_last=True,
+        )
+        .unique(subset=["permno", "mthcaldt"], keep="first", maintain_order=True)
         .with_columns([col(c).cast(pl.Float64, strict=False) for c in _MP_MSF_V2_NUMERIC if c])
     )
     m2 = sf.filter(_MP_UNIVERSE).rename(
@@ -7510,8 +7515,8 @@ def _mp_compute_accrual():
             how="left",
         )
         .filter(col("txp").is_not_null())
-        .unique(subset=["permno", "datadate"], maintain_order=True)
-        .sort("permno", "datadate")
+        .sort(["permno", "datadate", "gvkey"])
+        .unique(subset=["permno", "datadate"], keep="first", maintain_order=True)
         .with_columns(
             col(c).shift(1).over("permno").alias(f"lag_{c}")
             for c in ("act", "che", "lct", "dlc", "txp", "at")
@@ -7558,8 +7563,8 @@ def _mp_compute_gross_profit():
         .with_columns(gp_adj=(col("revt") - col("cogs")) / col("at"))
         .filter(col("gp_adj").is_not_null())
         .select("permno", "datadate", "gp_adj")
-        .unique(subset=["permno", "datadate"], maintain_order=True)
-        .sort("permno", "datadate")
+        .sort(["permno", "datadate", "gp_adj"], nulls_last=True)
+        .unique(subset=["permno", "datadate"], keep="first", maintain_order=True)
     )
     return _mp_write(_mp_expand_to_crsp_window(ca, "gp_adj"), "gp_adj")
 
@@ -7667,8 +7672,8 @@ def _mp_compute_nsi_ag_inv_noa():
             on=["gvkey", "datadate"],
             how="left",
         )
-        .unique(subset=["permno", "datadate"], maintain_order=True)
-        .sort("permno", "datadate")
+        .sort(["permno", "datadate", "gvkey"])
+        .unique(subset=["permno", "datadate"], keep="first", maintain_order=True)
         .with_columns(
             lag_csho=col("csho").shift(1).over("permno"),
             lag_adjexc=col("adjex_c").shift(1).over("permno"),
@@ -7945,6 +7950,7 @@ def _mp_distress_nimtaavg(dist3):
         dist3.join(nimta_mean.select("eom", "mean_NIMTA"), on="eom", how="left")
         .with_columns(adj_NIMTA=pl.coalesce(col("NIMTA"), col("mean_NIMTA")))
         .drop("mean_NIMTA")
+        .sort("permno", "eom")
     )
 
     scale_n = (1 - _MP_R**3) / (1 - _MP_R**12)
@@ -8722,7 +8728,11 @@ def _mp_world_compute_distress(
     # carry gvkey here; we'd need to add it). For simplicity, attach gvkey from wm.
     if "gvkey" not in wm.columns:
         raise RuntimeError("world wm must carry gvkey for distress linkage")
-    id_gvkey = wm.select("id", "gvkey", "eom").unique(subset=["id", "eom"], keep="first")
+    id_gvkey = (
+        wm.select("id", "gvkey", "eom")
+        .sort(["id", "eom", "gvkey"])
+        .unique(subset=["id", "eom"], keep="first", maintain_order=True)
+    )
 
     # Compute rdq_crsp + lead_rdq_crsp per (gvkey, datadate)
     fundq = (
@@ -8925,7 +8935,11 @@ def _mp_world_compute_distress(
 
     # Cross-sectional fill per (excntry, eom). Attach excntry first.
     sigma_with_x = sigma.join(
-        wm.select("id", "eom", "excntry").unique(["id", "eom"]), on=["id", "eom"], how="left"
+        wm.select("id", "eom", "excntry")
+        .sort(["id", "eom", "excntry"])
+        .unique(["id", "eom"], keep="first", maintain_order=True),
+        on=["id", "eom"],
+        how="left",
     )
     sigma_mean = (
         sigma_with_x.filter(col("SIGMA").is_not_null())
