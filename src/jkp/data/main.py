@@ -150,6 +150,7 @@ def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> No
     )
     gen_mispricing_data(paths, min_stks=30, min_fcts=3, min_obs=10)
     ap_factor_model_data(
+        paths,
         monthly_factor_inputs=[
             "ff_factors_monthly.parquet",
             "hxz_factors_monthly.parquet",
@@ -171,7 +172,7 @@ def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> No
         out_daily="ap_factors_daily.parquet",
         out_chars="ap_factors_characteristics.parquet",
     )
-    firm_age("world_msf.parquet")
+    firm_age(paths, interim / "world_msf.parquet")
     market_beta(
         paths,
         interim / "beta_60m.parquet",
@@ -200,7 +201,13 @@ def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> No
         6,
         1,
     )
-    bidask_hl("corwin_schultz.parquet", "world_dsf.parquet", "market_returns_daily.parquet", 10)
+    bidask_hl(
+        paths,
+        interim / "corwin_schultz.parquet",
+        interim / "world_dsf.parquet",
+        interim / "market_returns_daily.parquet",
+        10,
+    )
     prepare_daily(
         paths,
         interim / "world_dsf.parquet",

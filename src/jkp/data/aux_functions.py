@@ -13646,6 +13646,7 @@ def gen_hxz_data(
 
 @measure_time
 def ap_factor_model_data(
+    paths: DataPaths,
     monthly_factor_inputs: list[str],
     daily_factor_inputs: list[str],
     chars_inputs: list[str],
@@ -13683,26 +13684,27 @@ def ap_factor_model_data(
             frames,
         )
 
-    mkt_m = pl.scan_parquet(mkt_monthly_path).select(
+    interim = paths.interim_dir
+    mkt_m = pl.scan_parquet(interim / mkt_monthly_path).select(
         ["excntry", "eom", col("mkt_vw_exc").alias("mktrf")]
     )
     monthly = _outer_join_all(
-        [mkt_m, *(pl.scan_parquet(p) for p in monthly_factor_inputs)],
+        [mkt_m, *(pl.scan_parquet(interim / p) for p in monthly_factor_inputs)],
         ["excntry", "eom"],
     )
-    monthly.sink_parquet(out_monthly)
+    monthly.sink_parquet(interim / out_monthly)
 
-    mkt_d = pl.scan_parquet(mkt_daily_path).select(
+    mkt_d = pl.scan_parquet(interim / mkt_daily_path).select(
         ["excntry", "date", col("mkt_vw_exc").alias("mktrf")]
     )
     daily = _outer_join_all(
-        [mkt_d, *(pl.scan_parquet(p) for p in daily_factor_inputs)],
+        [mkt_d, *(pl.scan_parquet(interim / p) for p in daily_factor_inputs)],
         ["excntry", "date"],
     )
-    daily.sink_parquet(out_daily)
+    daily.sink_parquet(interim / out_daily)
 
     chars = _outer_join_all(
-        [pl.scan_parquet(p) for p in chars_inputs],
+        [pl.scan_parquet(interim / p) for p in chars_inputs],
         ["id", "eom"],
     )
-    chars.sink_parquet(out_chars)
+    chars.sink_parquet(interim / out_chars)
