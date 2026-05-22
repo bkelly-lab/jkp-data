@@ -57,7 +57,7 @@ def test_gen_mispricing_data_golden(test_paths: DataPaths, request: pytest.Fixtu
 
     stage_wrds_slices(test_paths)
     with cwd(test_paths.interim_dir):
-        gen_mispricing_data()
+        gen_mispricing_data(test_paths)
 
     regen = request.config.getoption("--regen-golden")
     failures: list[str] = []

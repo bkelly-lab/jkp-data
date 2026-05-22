@@ -9409,6 +9409,7 @@ def _mp_stage6_write_outputs(s5):
 
 @measure_time
 def gen_mispricing_data(
+    paths: DataPaths,
     min_stks: int = 30,
     min_fcts: int = 3,
     min_obs: int = 10,
@@ -9423,6 +9424,9 @@ def gen_mispricing_data(
       mp_factors_daily.parquet    — date, excntry, smb_mispricing, mispricing_mgmt, mispricing_perf (US + world)
       mp_characteristics.parquet  — id, eom, mispricing_mgmt, mispricing_perf
     """
+    global _MP_RAW, _MP_INTERIM
+    _MP_RAW = paths.raw_tables_dir.as_posix()
+    _MP_INTERIM = paths.interim_dir.as_posix()
     mp_con = duckdb.connect()
     mp_con_world = duckdb.connect()
     mp_con.execute("PRAGMA disable_progress_bar")
@@ -12384,6 +12388,7 @@ def ff_build_characteristics(
 
 @measure_time
 def gen_ff_data(
+    paths: DataPaths,
     monthly_factors_path: str,
     daily_factors_path: str,
     chars_path: str,
@@ -12412,9 +12417,13 @@ def gen_ff_data(
         - <chars_path>
               [eom, excntry, id, me_ff, beme_ff, op_ff, inv_ff, umd_ff]
     """
-    raw_dir = Path("../raw/raw_tables")
-    interim_dir = Path(".")
-    out_paths = {"monthly": monthly_factors_path, "daily": daily_factors_path}
+    raw_dir = paths.raw_tables_dir
+    interim_dir = paths.interim_dir
+    out_paths = {
+        "monthly": interim_dir / monthly_factors_path,
+        "daily": interim_dir / daily_factors_path,
+    }
+    chars_out = interim_dir / chars_path
 
     # ---- US Compustat (FF-strict) ----
     ccm2a = ff_load_compustat_us(raw_dir, ff5=True)
@@ -12469,7 +12478,7 @@ def gen_ff_data(
         if freq == "monthly":
             ff_build_characteristics(panel, data_chars, freq, mom_signal=mom_signal).rename(
                 {"date": "eom"}
-            ).drop("excntry").write_parquet(chars_path)
+            ).drop("excntry").write_parquet(chars_out)
 
 
 # =============================================================================
@@ -13551,6 +13560,7 @@ def hxz_classify_portfolios(
 
 @measure_time
 def gen_hxz_data(
+    paths: DataPaths,
     monthly_factors_path: str,
     daily_factors_path: str,
     chars_path: str,
@@ -13571,9 +13581,12 @@ def gen_hxz_data(
         - <daily_factors_path>    [excntry, date, me_hxz, ia_hxz, roe_hxz]
         - <chars_path>            [eom, excntry, id, me_hxz, ia_hxz, roe_hxz]
     """
-    raw_dir = Path("../raw/raw_tables")
-    interim_dir = Path(".")
+    raw_dir = paths.raw_tables_dir
+    interim_dir = paths.interim_dir
     output_start = date(1967, 1, 1)
+    monthly_out = interim_dir / monthly_factors_path
+    daily_out = interim_dir / daily_factors_path
+    chars_out = interim_dir / chars_path
 
     # ---- 1. Load + filter returns/me (monthly) ----
     panel_m_raw = hxz_load_returns(raw_dir, interim_dir, freq="monthly")
@@ -13595,9 +13608,9 @@ def gen_hxz_data(
             hxz_compute_factors(panel_m)
             .with_columns(eom=pl.col("date").dt.month_end())
             .drop("date")
-            .write_parquet(monthly_factors_path)
+            .write_parquet(monthly_out)
         )
-        hxz_build_characteristics(panel_m).drop("excntry").write_parquet(chars_path)
+        hxz_build_characteristics(panel_m).drop("excntry").write_parquet(chars_out)
 
     # ---- 5+6. Daily sorts + output ----
     if "daily" in freqs:
@@ -13620,7 +13633,7 @@ def gen_hxz_data(
             .join(port_assigns, on=["excntry", "id", "eom"], how="left")
             .drop("eom")
         )
-        hxz_compute_factors(panel_d).write_parquet(daily_factors_path)
+        hxz_compute_factors(panel_d).write_parquet(daily_out)
 
 
 @measure_time

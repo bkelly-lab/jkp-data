@@ -58,6 +58,7 @@ def test_gen_ff_data_golden(test_paths: DataPaths, request: pytest.FixtureReques
     stage_wrds_slices(test_paths)
     with cwd(test_paths.interim_dir):
         gen_ff_data(
+            test_paths,
             monthly_factors_path="ff_factors_monthly.parquet",
             daily_factors_path="ff_factors_daily.parquet",
             chars_path="ff_characteristics.parquet",

@@ -56,6 +56,7 @@ def test_gen_hxz_data_golden(test_paths: DataPaths, request: pytest.FixtureReque
     stage_wrds_slices(test_paths)
     with cwd(test_paths.interim_dir):
         gen_hxz_data(
+            test_paths,
             monthly_factors_path="hxz_factors_monthly.parquet",
             daily_factors_path="hxz_factors_daily.parquet",
             chars_path="hxz_characteristics.parquet",

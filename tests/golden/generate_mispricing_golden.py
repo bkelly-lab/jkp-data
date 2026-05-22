@@ -35,7 +35,7 @@ def regenerate(out_dir: Path, slices_dir: Path = WRDS_SLICES_DIR) -> None:
         paths.interim_dir.mkdir(parents=True, exist_ok=True)
         stage_wrds_slices(paths, slices_dir)
         with cwd(paths.interim_dir):
-            gen_mispricing_data()
+            gen_mispricing_data(paths)
         for name in OUTPUTS:
             shutil.copy2(paths.interim_dir / name, out_dir / name)
             print(f"wrote {out_dir / name}")

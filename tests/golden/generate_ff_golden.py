@@ -37,6 +37,7 @@ def regenerate(out_dir: Path, slices_dir: Path = WRDS_SLICES_DIR) -> None:
         stage_wrds_slices(paths, slices_dir)
         with cwd(paths.interim_dir):
             gen_ff_data(
+                paths,
                 monthly_factors_path="ff_factors_monthly.parquet",
                 daily_factors_path="ff_factors_daily.parquet",
                 chars_path="ff_characteristics.parquet",

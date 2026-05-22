@@ -137,16 +137,18 @@ def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> No
         interim / "world_data_prelim.parquet",
     )
     gen_ff_data(
+        paths,
         "ff_factors_monthly.parquet",
         "ff_factors_daily.parquet",
         "ff_characteristics.parquet",
     )
     gen_hxz_data(
+        paths,
         "hxz_factors_monthly.parquet",
         "hxz_factors_daily.parquet",
         "hxz_characteristics.parquet",
     )
-    gen_mispricing_data(min_stks=30, min_fcts=3, min_obs=10)
+    gen_mispricing_data(paths, min_stks=30, min_fcts=3, min_obs=10)
     ap_factor_model_data(
         monthly_factor_inputs=[
             "ff_factors_monthly.parquet",
