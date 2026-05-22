@@ -43,6 +43,7 @@ from jkp.data.aux_functions import (
     _mp_distress_nimtaavg,
     _mp_distress_sigma,
     _mp_filter_full_buckets,
+    _mp_rolling_calendar_sum,
     _mp_size_score_buckets,
     _mp_spread_per_size_then_diff,
     _mp_truncate_thin,
@@ -740,6 +741,144 @@ class TestNsiAgInvNoaFormulas:
 # ===========================================================================
 # TestMomentumFormula
 # ===========================================================================
+
+
+class TestRollingCalendarSum:
+    """Direct tests for `_mp_rolling_calendar_sum` — the calendar-aware
+    rolling sum behind momentum / composite_issue."""
+
+    @staticmethod
+    def _panel(eoms, vals, permno=1):
+        return pl.DataFrame(
+            {
+                "permno": [permno] * len(eoms),
+                "eom": eoms,
+                "v": vals,
+            }
+        )
+
+    def test_returns_keyed_dataframe_not_series(self):
+        """Helper must return a DataFrame keyed by (id_col, eom) — never a
+        positional Series. Positional binding by callers was the source of
+        the row-misalignment bug under polars' parallel hash join."""
+        df = self._panel([_eom(2020, m) for m in range(1, 14)], [1.0] * 13)
+        out = _mp_rolling_calendar_sum(df, "v", lag_min=2, lag_max=12, n_required=11)
+        assert isinstance(out, pl.DataFrame)
+        assert set(out.columns) == {"permno", "eom", "r"}
+        assert out.height == df.height
+
+    def test_full_window_sums_correctly(self, tolerance):
+        """13 consecutive monthly v=1 rows. At month 13, window covers months
+        1..11 (lags 2..12) = sum 11.0."""
+        df = self._panel([_eom(2020, m) for m in range(1, 14)], [1.0] * 13)
+        out = _mp_rolling_calendar_sum(df, "v", lag_min=2, lag_max=12, n_required=11).sort("eom")
+        # First 12 rows lack 11 prior months → null
+        assert out["r"][:12].null_count() == 12
+        # Row 13 = sum of v over months 1..11
+        np.testing.assert_allclose(out["r"][12], 11.0, **tolerance.TIGHT)
+
+    def test_window_includes_lag_min_and_lag_max(self, tolerance):
+        """Window is inclusive at both endpoints: [eom - lag_max·mo, eom - lag_min·mo]."""
+        # Build 13 months. Place a distinctive value at month 1 (lag 12) and
+        # month 11 (lag 2) at target month 13. Sum should include both.
+        vals = [0.0] * 13
+        vals[0] = 1.0  # month 1 → lag 12 from month 13
+        vals[10] = 2.0  # month 11 → lag 2 from month 13
+        df = self._panel([_eom(2020, m) for m in range(1, 14)], vals)
+        out = _mp_rolling_calendar_sum(df, "v", lag_min=2, lag_max=12, n_required=11).sort("eom")
+        np.testing.assert_allclose(out["r"][12], 3.0, **tolerance.TIGHT)
+
+    def test_window_excludes_lag_zero_when_lag_min_is_2(self):
+        """At lag_min=2, the row's own month (lag 0) and lag 1 must NOT be in
+        the window. Set lag 0 + lag 1 to large values; sum stays 0."""
+        vals = [0.0] * 13
+        vals[12] = 100.0  # lag 0 at month 13
+        vals[11] = 100.0  # lag 1 at month 13
+        df = self._panel([_eom(2020, m) for m in range(1, 14)], vals)
+        out = _mp_rolling_calendar_sum(df, "v", lag_min=2, lag_max=12, n_required=11).sort("eom")
+        assert out["r"][12] == 0.0
+
+    def test_lag_zero_includes_current_row(self, tolerance):
+        """lag_min=0 → window includes the row's own eom. composite_issue uses
+        this form."""
+        vals = [1.0] * 12
+        df = self._panel([_eom(2020, m) for m in range(1, 13)], vals)
+        out = _mp_rolling_calendar_sum(df, "v", lag_min=0, lag_max=11, n_required=12).sort("eom")
+        # Only the 12th month has 12 prior+including months
+        assert out["r"][:11].null_count() == 11
+        np.testing.assert_allclose(out["r"][11], 12.0, **tolerance.TIGHT)
+
+    def test_null_value_in_window_reduces_count(self):
+        """A null v in the window decreases _cnt below n_required → result null."""
+        vals = [1.0] * 13
+        vals[5] = None  # month 6 — within window for target month 13
+        df = self._panel([_eom(2020, m) for m in range(1, 14)], vals)
+        out = _mp_rolling_calendar_sum(df, "v", lag_min=2, lag_max=12, n_required=11).sort("eom")
+        assert out["r"][12] is None
+
+    def test_missing_month_row_reduces_count(self):
+        """Gap in monthly history → fewer than n_required values in window → null."""
+        eoms = [_eom(2020, m) for m in [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13]]  # skip month 6
+        vals = [1.0] * len(eoms)
+        df = self._panel(eoms, vals)
+        out = _mp_rolling_calendar_sum(df, "v", lag_min=2, lag_max=12, n_required=11).sort("eom")
+        # Target row at month 13: window covers months 1..11. Month 6 is missing
+        # → only 10 of 11 expected months present → null.
+        target_row = out.filter(col("eom") == _eom(2020, 13))
+        assert target_row["r"][0] is None
+
+    def test_per_id_independence(self, tolerance):
+        """Two permnos with disjoint histories — windows must not bleed across."""
+        eoms = [_eom(2020, m) for m in range(1, 14)]
+        df = pl.concat(
+            [
+                self._panel(eoms, [1.0] * 13, permno=1),
+                self._panel(eoms, [2.0] * 13, permno=2),
+            ]
+        )
+        out = _mp_rolling_calendar_sum(df, "v", lag_min=2, lag_max=12, n_required=11)
+        r1 = out.filter((col("permno") == 1) & (col("eom") == _eom(2020, 13)))["r"][0]
+        r2 = out.filter((col("permno") == 2) & (col("eom") == _eom(2020, 13)))["r"][0]
+        np.testing.assert_allclose(r1, 11.0, **tolerance.TIGHT)
+        np.testing.assert_allclose(r2, 22.0, **tolerance.TIGHT)
+
+    def test_id_col_param_keys_world_panel(self, tolerance):
+        """`id_col="id"` swaps the grouping key for world panels."""
+        eoms = [_eom(2020, m) for m in range(1, 14)]
+        df = pl.DataFrame({"id": ["A"] * 13, "eom": eoms, "v": [1.0] * 13})
+        out = _mp_rolling_calendar_sum(
+            df, "v", lag_min=2, lag_max=12, n_required=11, id_col="id"
+        ).sort("eom")
+        assert out.columns[0] == "id"
+        np.testing.assert_allclose(out["r"][12], 11.0, **tolerance.TIGHT)
+
+    def test_after_left_join_preserves_alignment_per_key(self, tolerance):
+        """End-to-end caller pattern. Build a 2-stock panel; compute momentum
+        via the new keyed helper; verify each stock's momentum matches the
+        analytical value at the stock's last row. This catches the
+        positional-binding bug — if the helper still returned a Series, an
+        unsorted input would route the wrong stock's sum into the wrong row."""
+        # Stock A: 11 returns of 0.01; stock B: 11 returns of -0.02
+        eoms = [_eom(2020, m) for m in range(1, 14)]
+        df = pl.DataFrame(
+            {
+                "permno": [1] * 13 + [2] * 13,
+                "eom": eoms + eoms,
+                "log_1p_ret": [math.log(1.01)] * 13 + [math.log(1 - 0.02)] * 13,
+            }
+        )
+        # SHUFFLE deliberately so positional binding would mis-route
+        df = df.sample(fraction=1.0, shuffle=True, seed=42)
+        roll = _mp_rolling_calendar_sum(df, "log_1p_ret", lag_min=2, lag_max=12, n_required=11)
+        out = (
+            df.select("permno", "eom")
+            .join(roll, on=["permno", "eom"], how="left")
+            .with_columns(momentum=col("r").exp() - 1)
+        )
+        m1 = out.filter((col("permno") == 1) & (col("eom") == _eom(2020, 13)))["momentum"][0]
+        m2 = out.filter((col("permno") == 2) & (col("eom") == _eom(2020, 13)))["momentum"][0]
+        np.testing.assert_allclose(m1, (1.01) ** 11 - 1, **tolerance.TIGHT)
+        np.testing.assert_allclose(m2, (0.98) ** 11 - 1, **tolerance.TIGHT)
 
 
 class TestMomentumFormula:
