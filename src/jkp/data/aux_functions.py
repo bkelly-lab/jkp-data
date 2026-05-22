@@ -7469,23 +7469,31 @@ def _mp_rolling_calendar_sum(df, value_col, *, lag_min, lag_max, n_required, id_
     Returns [id_col, eom, r] keyed by the same id+eom as `df`. `r` is null
     when fewer than `n_required` non-null source values fall in the window.
 
-    Returning a keyed frame (not a positional `pl.Series`) lets callers join
-    by key, so polars' parallel hash join can permute row order freely
-    without misaligning the rolling sum onto the wrong rows.
+    Window is computed on an integer month index (year*12 + month) — using
+    polars' date `offset_by` here would silently misalign because it is
+    day-preserving (e.g. 2019-02-28 - 2mo = 2018-12-28, which excludes the
+    2018-12-31 row that ought to be in the window).
+
+    Returning a keyed frame (not a positional `pl.Series`) lets callers
+    join by key, so polars' parallel hash join can permute row order
+    freely without misaligning the rolling sum onto the wrong rows.
     """
+    indexed = df.with_columns(_midx=col("eom").dt.year() * 12 + col("eom").dt.month()).sort(
+        id_col, "_midx"
+    )
+    rolled = indexed.rolling(
+        index_column="_midx",
+        group_by=id_col,
+        period=f"{lag_max - lag_min}i",
+        offset=f"-{lag_max}i",
+        closed="both",
+    ).agg(
+        _sum=col(value_col).sum(),
+        _cnt=col(value_col).is_not_null().sum().cast(pl.Int64),
+    )
     return (
-        df.sort(id_col, "eom")
-        .rolling(
-            index_column="eom",
-            group_by=id_col,
-            period=f"{lag_max - lag_min}mo",
-            offset=f"-{lag_max}mo",
-            closed="both",
-        )
-        .agg(
-            _sum=col(value_col).sum(),
-            _cnt=col(value_col).is_not_null().sum().cast(pl.Int64),
-        )
+        indexed.select(id_col, "eom", "_midx")
+        .join(rolled, on=[id_col, "_midx"], how="left")
         .select(
             id_col,
             "eom",
