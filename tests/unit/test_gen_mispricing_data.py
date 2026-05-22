@@ -852,6 +852,24 @@ class TestRollingCalendarSum:
         assert out.columns[0] == "id"
         np.testing.assert_allclose(out["r"][12], 11.0, **tolerance.TIGHT)
 
+    def test_short_month_target_includes_month_end_endpoints(self, tolerance):
+        """Regression: an earlier rewrite of this helper used
+        `rolling(index_column="eom", offset="-2mo", ...)`. That uses
+        polars' day-preserving date arithmetic, so a target eom of
+        2019-02-28 had window endpoint = 2019-02-28 - 2mo = 2018-12-28,
+        excluding the 2018-12-31 source row. This test pins target dates
+        spanning Feb-end / 30-day / 31-day months to lock down month-end
+        alignment regardless of the underlying rolling implementation."""
+        # 13 consecutive monthly v=1 rows starting Feb 2018 → target Feb 2019.
+        eoms = [_eom(2018, 2 + m) for m in range(13)]
+        df = self._panel(eoms, [1.0] * 13)
+        out = _mp_rolling_calendar_sum(df, "v", lag_min=2, lag_max=12, n_required=11).sort("eom")
+        # Target row 13 = 2019-02-28. Window [2018-02-28, 2018-12-31]
+        # inclusive → 11 source rows → sum = 11.0.
+        target = out.filter(col("eom") == _eom(2019, 2))
+        assert target.height == 1
+        np.testing.assert_allclose(target["r"][0], 11.0, **tolerance.TIGHT)
+
     def test_after_left_join_preserves_alignment_per_key(self, tolerance):
         """End-to-end caller pattern. Build a 2-stock panel; compute momentum
         via the new keyed helper; verify each stock's momentum matches the
