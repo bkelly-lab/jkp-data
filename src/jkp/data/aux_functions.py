@@ -10557,13 +10557,14 @@ def merge_world_data_prelim(paths: DataPaths):
     Output:
         'world_data_-1.parquet' with enriched world dataset.
     """
-    a = pl.scan_parquet("world_data_prelim.parquet")
-    b = pl.scan_parquet("beta_60m.parquet")
-    c = pl.scan_parquet("resmom_ff3_12_1.parquet")
-    d = pl.scan_parquet("resmom_ff3_6_1.parquet")
-    e = pl.scan_parquet("ap_factors_characteristics.parquet")
-    f = pl.scan_parquet("market_chars_d.parquet")
-    g = pl.scan_parquet("firm_age.parquet").select(["id", "eom", "age"])
+    interim = paths.interim_dir
+    a = pl.scan_parquet(interim / "world_data_prelim.parquet")
+    b = pl.scan_parquet(interim / "beta_60m.parquet")
+    c = pl.scan_parquet(interim / "resmom_ff3_12_1.parquet")
+    d = pl.scan_parquet(interim / "resmom_ff3_6_1.parquet")
+    e = pl.scan_parquet(interim / "ap_factors_characteristics.parquet")
+    f = pl.scan_parquet(interim / "market_chars_d.parquet")
+    g = pl.scan_parquet(interim / "firm_age.parquet").select(["id", "eom", "age"])
     world_data = (
         a.join(b, how="left", on=["id", "eom"])
         .join(c, how="left", on=["id", "eom"])
