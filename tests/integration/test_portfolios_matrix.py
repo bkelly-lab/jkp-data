@@ -16,6 +16,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
+from jkp.data.paths import DataPaths
 from jkp.data.portfolio import portfolios
 from tests.unit.portfolio.conftest import (
     SYNTHETIC_CHARS,
@@ -289,12 +290,13 @@ def _write_country_inputs(
     char_df = make_country_characteristics(
         excntry=excntry, chars=chars, n_ids=80, n_months=6, seed=seed
     )
-    char_dir = tmp_path / "characteristics"
+    processed = tmp_path / "processed"
+    char_dir = processed / "characteristics"
     char_dir.mkdir(parents=True, exist_ok=True)
     char_df.write_parquet(char_dir / f"{excntry}.parquet")
 
     if daily:
-        daily_dir = tmp_path / "return_data" / "daily_rets_by_country"
+        daily_dir = processed / "return_data" / "daily_rets_by_country"
         daily_dir.mkdir(parents=True, exist_ok=True)
         daily_df = make_daily_returns(char_df, seed=seed + 1)
         daily_df.write_parquet(daily_dir / f"{excntry}.parquet")
@@ -325,7 +327,7 @@ class TestPortfoliosMatrix:
         )
 
         out = portfolios(
-            data_path=str(tmp_path),
+            paths=DataPaths(base_dir=tmp_path),
             excntry=config["excntry"],
             chars=chars,
             pfs=3,
