@@ -13,6 +13,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
+from jkp.data.paths import DataPaths
 from jkp.data.portfolio import (
     _build_industry_daily_returns,
     _build_industry_monthly_returns,
@@ -308,7 +309,7 @@ class TestPortfoliosIndustry:
         eoms = char_df["eom"].unique().sort().to_list()
         nyse_cut, ret_cut, ret_cut_daily = make_cutoffs(eoms)
         return portfolios(
-            data_path=str(data_root),
+            paths=DataPaths(base_dir=tmp_path),
             excntry="USA",
             chars=SYNTHETIC_CHARS,
             pfs=3,
@@ -351,7 +352,7 @@ class TestPortfoliosIndustry:
         eoms = char_df["eom"].unique().sort().to_list()
         nyse_cut, ret_cut, ret_cut_daily = make_cutoffs(eoms)
         result = portfolios(
-            data_path=str(data_root),
+            paths=DataPaths(base_dir=tmp_path),
             excntry="GBR",
             chars=SYNTHETIC_CHARS,
             pfs=3,
@@ -380,7 +381,7 @@ class TestPortfoliosIndustry:
         eoms = char_df["eom"].unique().sort().to_list()
         nyse_cut, ret_cut, ret_cut_daily = make_cutoffs(eoms)
         result = portfolios(
-            data_path=str(data_root),
+            paths=DataPaths(base_dir=tmp_path),
             excntry="SYN",
             chars=SYNTHETIC_CHARS,
             pfs=3,
@@ -445,8 +446,8 @@ class TestExcntryGating:
             "ret_cutoffs_daily": ret_cut_daily,
         }
 
-        upper = portfolios(data_path=str(upper_root), excntry="USA", **shared)
-        lower = portfolios(data_path=str(lower_root), excntry="usa", **shared)
+        upper = portfolios(paths=DataPaths(base_dir=tmp_path / "upper"), excntry="USA", **shared)
+        lower = portfolios(paths=DataPaths(base_dir=tmp_path / "lower"), excntry="usa", **shared)
 
         for key in ("ff49_returns", "ff49_daily"):
             assert key in upper, f"{key!r} missing from excntry='USA' output"

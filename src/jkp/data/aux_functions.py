@@ -9178,7 +9178,7 @@ def _build_hml_lms(
 
 # main portfolios function to create the portfolios
 def portfolios(
-    data_path,
+    paths: DataPaths,
     excntry,
     chars,
     pfs,  # Number of portfolios
@@ -9199,7 +9199,7 @@ def portfolios(
     if source is None:
         source = ["CRSP", "COMPUSTAT"]
     # characerteristics data
-    file_path = f"{data_path}/characteristics/{excntry}.parquet"
+    file_path = paths.processed_dir / "characteristics" / f"{excntry}.parquet"
 
     # Select the required columns
     columns = (
@@ -9258,7 +9258,9 @@ def portfolios(
             data_lazy = data_lazy.filter(pl.col("source_crsp") == 0)
 
     # Daily returns as a lazy chain (scan_parquet + winsorization).
-    daily_file_path = f"{data_path}/return_data/daily_rets_by_country/{excntry}.parquet"
+    daily_file_path = (
+        paths.processed_dir / "return_data" / "daily_rets_by_country" / f"{excntry}.parquet"
+    )
     if daily_pf:
         daily_lazy = (
             pl.scan_parquet(daily_file_path)
@@ -9790,7 +9792,7 @@ def _stack_outputs(
 
 def _write_filtered(
     df: pl.DataFrame,
-    path: str,
+    path: Path,
     date_col: str,
     end_date: date,
 ) -> None:
@@ -9800,7 +9802,7 @@ def _write_filtered(
 
 def _write_split_by_key(
     df: pl.DataFrame,
-    folder_path: str,
+    folder_path: Path,
     key_col: str,
     date_col: str,
     end_date: date,
@@ -9813,9 +9815,9 @@ def _write_split_by_key(
         ``{folder_path}/{key}.parquet``. Numeric/boolean keys (including 0 and
         False) are kept; only None and "" are skipped.
     """
-    os.makedirs(folder_path, exist_ok=True)
+    folder_path.mkdir(parents=True, exist_ok=True)
     for key in df[key_col].unique():
         if key is None or key == "":
             continue
         filtered = df.filter((pl.col(date_col) <= end_date) & (pl.col(key_col) == key))
-        write_dataframe(filtered, os.path.join(folder_path, f"{key}.parquet"))
+        write_dataframe(filtered, folder_path / f"{key}.parquet")

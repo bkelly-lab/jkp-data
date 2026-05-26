@@ -7,6 +7,7 @@ from pathlib import Path
 
 import polars as pl
 
+from jkp.data.paths import DataPaths
 from jkp.data.portfolio import portfolios
 from tests.unit.portfolio.conftest import (
     make_cmp_dataset,
@@ -26,8 +27,8 @@ COMMON_KWARGS = {
 }
 
 
-def _write_chars(data_path: Path, excntry: str, df: pl.DataFrame) -> None:
-    char_dir = data_path / "characteristics"
+def _write_chars(base_dir: Path, excntry: str, df: pl.DataFrame) -> None:
+    char_dir = base_dir / "processed" / "characteristics"
     char_dir.mkdir(parents=True, exist_ok=True)
     df.write_parquet(char_dir / f"{excntry}.parquet")
 
@@ -46,7 +47,7 @@ class TestCmpBranch:
         nyse_size_cutoffs, ret_cutoffs, ret_cutoffs_daily = make_cutoffs(eoms)
 
         out = portfolios(
-            data_path=str(tmp_path),
+            paths=DataPaths(base_dir=tmp_path),
             excntry=excntry,
             chars=chars,
             bps="non_mc",
@@ -72,7 +73,7 @@ class TestCmpBranch:
         nyse_size_cutoffs, ret_cutoffs, ret_cutoffs_daily = make_cutoffs(eoms)
 
         out = portfolios(
-            data_path=str(tmp_path),
+            paths=DataPaths(base_dir=tmp_path),
             excntry=excntry,
             chars=chars,
             bps="non_mc",
@@ -108,7 +109,7 @@ class TestCmpBranch:
         nyse_size_cutoffs, ret_cutoffs, ret_cutoffs_daily = make_cutoffs(eoms)
 
         out = portfolios(
-            data_path=str(tmp_path),
+            paths=DataPaths(base_dir=tmp_path),
             excntry=excntry,
             chars=chars,
             bps="non_mc",
@@ -132,7 +133,7 @@ class TestCmpBranch:
         nyse_size_cutoffs, ret_cutoffs, ret_cutoffs_daily = make_cutoffs(eoms)
 
         out = portfolios(
-            data_path=str(tmp_path),
+            paths=DataPaths(base_dir=tmp_path),
             excntry=excntry,
             chars=["char_a"],
             bps="non_mc",
@@ -179,7 +180,7 @@ class TestCmpBranch:
         nyse_size_cutoffs, ret_cutoffs, ret_cutoffs_daily = make_cutoffs(eoms)
 
         out = portfolios(
-            data_path=str(tmp_path),
+            paths=DataPaths(base_dir=tmp_path),
             excntry=excntry,
             chars=chars,
             bps="non_mc",

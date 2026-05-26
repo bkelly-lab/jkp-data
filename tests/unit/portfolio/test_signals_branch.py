@@ -18,6 +18,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
+from jkp.data.paths import DataPaths
 from jkp.data.portfolio import portfolios
 from tests.unit.portfolio.conftest import (
     SYNTHETIC_CHARS,
@@ -38,8 +39,9 @@ def _write_inputs(
     char_df: pl.DataFrame,
 ) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     """Write characteristics + daily returns parquets and return cutoff frames."""
-    char_dir = tmp_path / "characteristics"
-    daily_dir = tmp_path / "return_data" / "daily_rets_by_country"
+    processed = tmp_path / "processed"
+    char_dir = processed / "characteristics"
+    daily_dir = processed / "return_data" / "daily_rets_by_country"
     char_dir.mkdir(parents=True, exist_ok=True)
     daily_dir.mkdir(parents=True, exist_ok=True)
     char_df.write_parquet(char_dir / f"{excntry}.parquet")
@@ -63,7 +65,7 @@ def _run_portfolios(
     char_df = make_country_characteristics(excntry, chars=chars, n_ids=60, n_months=6, seed=42)
     nyse_cutoffs, ret_cutoffs, ret_cutoffs_daily = _write_inputs(tmp_path, excntry, char_df)
     return portfolios(
-        data_path=str(tmp_path),
+        paths=DataPaths(base_dir=tmp_path),
         excntry=excntry,
         chars=chars,
         pfs=3,

@@ -1,4 +1,3 @@
-import os
 import time
 from pathlib import Path
 from typing import Any as _Any
@@ -13,6 +12,7 @@ from .output_writer import (
     configure_output_format,
     convert_outputs_to_csv,
 )
+from .paths import DataPaths
 
 # add_ecdf / portfolios / regional_data and the private build/write helpers
 # are resolved lazily from `aux_functions` via `__getattr__` below so that
@@ -89,18 +89,15 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
         portfolios,
     )
 
+    paths = DataPaths(base_dir=output_dir)
+    portfolios_dir = paths.processed_dir / "portfolios"
+    other_output_dir = paths.processed_dir / "other_output"
+    chars_dir = paths.processed_dir / "characteristics"
+
     configure_output_format(output_format)
 
-    # Setting data path and output path
-    data_path = str(output_dir / "processed")
-    output_path = str(output_dir / "processed" / "portfolios")
-
     # Get list of countries from characteristics files
-    countries = []
-    for file in os.listdir(os.path.join(data_path, "characteristics")):
-        if file.endswith(".parquet") and "world" not in file:
-            countries.append(file.replace(".parquet", ""))
-    countries = sorted(countries)
+    countries = sorted(p.stem for p in chars_dir.glob("*.parquet") if "world" not in p.stem)
 
     chars = PORTFOLIO_CHARS
     settings = PORTFOLIO_SETTINGS
@@ -169,33 +166,31 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
     )
 
     # nyse_cutoffs
-    nyse_size_cutoffs = pl.read_parquet(f"{data_path}/other_output/nyse_cutoffs.parquet")
+    nyse_size_cutoffs = pl.read_parquet(other_output_dir / "nyse_cutoffs.parquet")
 
     # return_cutoffs
-    ret_cutoffs = pl.read_parquet(f"{data_path}/other_output/return_cutoffs.parquet")
+    ret_cutoffs = pl.read_parquet(other_output_dir / "return_cutoffs.parquet")
     ret_cutoffs = ret_cutoffs.with_columns(
         (pl.col("eom").dt.month_start().dt.offset_by("-1d")).alias("eom_lag1")
     )
     ret_cutoffs_daily = None
     if settings["daily_pf"]:
-        ret_cutoffs_daily = pl.read_parquet(
-            f"{data_path}/other_output/return_cutoffs_daily.parquet"
-        )
+        ret_cutoffs_daily = pl.read_parquet(other_output_dir / "return_cutoffs_daily.parquet")
 
     # market_returns
-    market = pl.read_parquet(f"{data_path}/other_output/market_returns.parquet")
+    market = pl.read_parquet(other_output_dir / "market_returns.parquet")
 
     # daily_market_returns
     market_daily = None
     if settings["daily_pf"]:
-        market_daily = pl.read_parquet(f"{data_path}/other_output/market_returns_daily.parquet")
+        market_daily = pl.read_parquet(other_output_dir / "market_returns_daily.parquet")
 
     # Creating portfolios by using the portfolios function
     portfolio_data = {}
     for ex in countries:
         print(f"{ex}: {countries.index(ex) + 1} out of {len(countries)}")
         result = portfolios(
-            data_path=data_path,
+            paths=paths,
             excntry=ex,
             chars=chars,
             pfs=settings["pfs"],
@@ -416,9 +411,9 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
     ]
     for df, name in monthly_outputs:
         if df is not None:
-            _write_filtered(df, f"{output_path}/{name}", "eom", end_date)
+            _write_filtered(df, portfolios_dir / name, "eom", end_date)
     if cmp_returns is not None:
-        _write_filtered(cmp_returns, f"{output_path}/cmp.parquet", "eom", end_date)
+        _write_filtered(cmp_returns, portfolios_dir / "cmp.parquet", "eom", end_date)
 
     # Single-file outputs (daily)
     if settings["daily_pf"]:
@@ -430,7 +425,7 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
         ]
         for df, name in daily_outputs:
             if df is not None:
-                _write_filtered(df, f"{output_path}/{name}", "date", end_date)
+                _write_filtered(df, portfolios_dir / name, "date", end_date)
 
     # Industry returns
     if settings["ind_pf"]:
@@ -440,7 +435,7 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
         ]
         for df, name in ind_monthly:
             if df is not None:
-                _write_filtered(df, f"{output_path}/{name}", "eom", end_date)
+                _write_filtered(df, portfolios_dir / name, "eom", end_date)
 
     if settings["ind_pf"] and settings["daily_pf"]:
         ind_daily = [
@@ -449,17 +444,17 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
         ]
         for df, name in ind_daily:
             if df is not None:
-                _write_filtered(df, f"{output_path}/{name}", "date", end_date)
+                _write_filtered(df, portfolios_dir / name, "date", end_date)
 
     # Partitioned outputs
     if regional_pfs is not None:
         _write_split_by_key(
-            regional_pfs, os.path.join(output_path, "regional_factors"), "region", "eom", end_date
+            regional_pfs, portfolios_dir / "regional_factors", "region", "eom", end_date
         )
     if settings["daily_pf"] and regional_pfs_daily is not None:
         _write_split_by_key(
             regional_pfs_daily,
-            os.path.join(output_path, "regional_factors_daily"),
+            portfolios_dir / "regional_factors_daily",
             "region",
             "date",
             end_date,
@@ -467,7 +462,7 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
     if regional_clusters is not None:
         _write_split_by_key(
             regional_clusters,
-            os.path.join(output_path, "regional_clusters"),
+            portfolios_dir / "regional_clusters",
             "region",
             "eom",
             end_date,
@@ -475,7 +470,7 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
     if settings["daily_pf"] and regional_clusters_daily is not None:
         _write_split_by_key(
             regional_clusters_daily,
-            os.path.join(output_path, "regional_clusters_daily"),
+            portfolios_dir / "regional_clusters_daily",
             "region",
             "date",
             end_date,
@@ -483,7 +478,7 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
     if lms_returns is not None:
         _write_split_by_key(
             lms_returns,
-            os.path.join(output_path, "country_factors"),
+            portfolios_dir / "country_factors",
             "excntry",
             "eom",
             end_date,
@@ -491,14 +486,14 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
     if settings["daily_pf"] and lms_daily is not None:
         _write_split_by_key(
             lms_daily,
-            os.path.join(output_path, "country_factors_daily"),
+            portfolios_dir / "country_factors_daily",
             "excntry",
             "date",
             end_date,
         )
 
     # Convert to CSV if configured
-    convert_outputs_to_csv(processed_dir=data_path)
+    convert_outputs_to_csv(processed_dir=paths.processed_dir)
 
     print(
         f"End            : {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))}",
