@@ -8468,7 +8468,7 @@ def _mp_build_portfolios_daily(legs, smb_panel, min_obs, mp_con):
 # Mispricing factors — WORLD extension (ROW countries)
 # ============================================================================
 
-# Map MisprProject anomaly names to jkp pre-computed chars in world_data.parquet.
+# Map MisprProject anomaly names to jkp pre-computed chars in world_data_prelim.parquet.
 # Direction follows MisprProject's MP_POSITIVE_ANOMALIES convention
 # (those anomalies bucketed descending so "bigger pct = more overpriced").
 _MP_WORLD_JKP_CHAR = {
@@ -8483,10 +8483,14 @@ _MP_WORLD_JKP_CHAR = {
 
 
 def _mp_world_load_world_data(start_dt: date = date(1963, 1, 1)) -> pl.DataFrame:
-    """Load jkp's world_data.parquet (per-(id, eom) panel with jkp-derived chars).
+    """Load jkp's world_data_prelim.parquet (per-(id, eom) panel with jkp-derived chars).
     Filter to MAIN_FILTERS, exclude USA (US flows through US branch). Returns the
-    columns needed by the world pipeline. Cast numerics to Float64."""
-    p = f"{_MP_RAW}/../../interim/world_data.parquet"
+    columns needed by the world pipeline. Cast numerics to Float64.
+
+    Reads the prelim file (not final world_data.parquet) because gen_mispricing_data
+    runs before merge_qmj_to_world_data in run_pipeline; the 17 columns selected here
+    all live in the prelim and are not modified by the downstream merges."""
+    p = f"{_MP_INTERIM}/world_data_prelim.parquet"
     cols_keep = [
         "id",
         "permno",
@@ -8527,7 +8531,7 @@ def _mp_world_load_market(daily: bool = False) -> pl.DataFrame:
     """Per-country VW market return + total market cap. Cols: excntry, eom (or date),
     mkt_vw, me_lag1. USD."""
     name = "market_returns_daily" if daily else "market_returns"
-    p = f"{_MP_RAW}/../../interim/{name}.parquet"
+    p = f"{_MP_INTERIM}/{name}.parquet"
     date_col = "date" if daily else "eom"
     return (
         pl.read_parquet(p)
@@ -8538,7 +8542,7 @@ def _mp_world_load_market(daily: bool = False) -> pl.DataFrame:
 
 def _mp_world_load_world_dsf(start_dt: date = date(1963, 1, 1)) -> pl.DataFrame:
     """Daily world stock panel filtered to common/exch_main. For DISTRESS SIGMA."""
-    p = f"{_MP_RAW}/../../interim/world_dsf.parquet"
+    p = f"{_MP_INTERIM}/world_dsf.parquet"
     return (
         pl.scan_parquet(p)
         .filter(
