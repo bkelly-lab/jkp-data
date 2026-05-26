@@ -6,39 +6,55 @@ Two-layer protection for the factor-model builders shipped in PR #171
 - **Unit tests** (`tests/unit/test_gen_*.py`) pin stage-helper contracts on
   synthetic Polars frames so the internals can be refactored freely.
 - **Golden tests** (here) pin the end-to-end output parquets against
-  reference parquets generated from a real WRDS slice. Any drift in the
-  builder's externally observed output surfaces immediately.
+  reference parquets produced by running the real builders on a fixed,
+  fully synthetic input. Any drift in the externally observed output
+  surfaces immediately.
+
+## License compliance (synthetic inputs)
+
+All builder inputs are **synthetic** and committed under
+`fixtures/synthetic_wrds/`. No real WRDS cell is ever written:
+
+- Every numeric value is independently sampled from a plausible
+  distribution.
+- Identifiers live in synthetic bands disjoint from real WRDS allocation:
+  `permno >= 9_000_000`, `gvkey >= "900000"`, `world_id >= 9_000_000_000`.
+- Schemas mirror the real WRDS tables, but the cell values are not derived
+  from any obfuscation of WRDS data.
+
+This satisfies the WRDS distribution agreement clause that permits "only
+synthetic data or WRDS data obfuscated enough that it cannot be
+reverse-engineered to the underlying source."
 
 ## What's committed
 
-- `fixtures/ff/`, `fixtures/hxz/`, `fixtures/mispricing/` — committed
-  golden parquets produced by the three builders. ~3 MB total.
-- `fixtures/wrds_slices/MANIFEST.json` — generated alongside the slices;
-  records the source + row counts + sha256 prefix so reviewers can audit
-  reproducibility.
+- `fixtures/synthetic_wrds/` — 16 deterministically generated parquets
+  (~200 MB compressed with zstd-22) used as the builder inputs.
+- `fixtures/ff/`, `fixtures/hxz/`, `fixtures/mispricing/` — golden output
+  parquets produced by the three builders against the synthetic inputs.
 
-## What's NOT committed
+## Test framing
 
-- `fixtures/wrds_slices/*.parquet` — the WRDS input slices are ~2 GB
-  (gitignored). They live on the cluster; regenerate locally before
-  running the golden tests.
+Golden tests are a **regression guard with numerical tolerance**. They
+confirm the builders reproduce a fixed output from the fixed synthetic
+input within `rtol=1e-6, atol=1e-10` (see
+`_golden_helpers.compare_factor_parquet`). Key columns (`excntry`/`eom`,
+`excntry`/`date`, `id`/`eom`) match exactly. They do NOT validate the
+factors against real-world returns.
 
 ## Workflow
 
-### Regenerate the slices (one-time per source-data refresh)
+### Regenerate the synthetic inputs
 
 ```bash
 uv sync --group test
-uv run python -m tests.golden.generate_wrds_slices \
-    --source /path/to/jkp-data \         # an existing pipeline data dir
-    --start 2018-01-01 --end 2020-12-31 \ # default
-    --countries USA                       # default; expand as needed
+uv run python -m tests.golden.generate_synthetic_wrds
 ```
 
-`--source` must contain `raw/raw_tables/` (WRDS pulls) and `interim/`
-(world_msf / world_dsf / world_data / market_returns* / raw_data_dfs).
+The generator is deterministic (seed = 42). Re-running overwrites
+`fixtures/synthetic_wrds/` byte-identically.
 
-### Regenerate the golden parquets (after intentional output changes)
+### Regenerate the golden outputs (after intentional builder changes)
 
 ```bash
 uv run python -m tests.golden.generate_ff_golden
@@ -58,7 +74,6 @@ uv run pytest tests/golden/test_gen_ff_data_golden.py \
               tests/golden/test_gen_mispricing_data_golden.py -v
 ```
 
-Each test skips cleanly when its required WRDS slices are missing — CI
-without slices simply skips. The `--regen-golden` flag swaps the golden
-parquets with the freshly-built output and skips the assertion (matches
-the existing `tests/golden/test_run_portfolio_golden.py` pattern).
+The `--regen-golden` flag swaps the golden parquets with the freshly-built
+output and skips the assertion (matches the existing
+`tests/golden/test_run_portfolio_golden.py` pattern).

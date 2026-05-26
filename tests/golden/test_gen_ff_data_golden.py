@@ -1,15 +1,16 @@
 """Golden-fixture regression test for ``gen_ff_data``.
 
-Runs the real builder against the committed WRDS slices and compares
-``ff_factors_monthly.parquet``, ``ff_factors_daily.parquet``, and
-``ff_characteristics.parquet`` against the committed golden parquets.
+Runs the real builder against the committed synthetic slices and
+compares ``ff_factors_monthly.parquet``, ``ff_factors_daily.parquet``,
+and ``ff_characteristics.parquet`` against the committed golden parquets
+within ``rtol=1e-6, atol=1e-10`` (key columns matched exactly).
 
-Regenerate with:
+The synthetic inputs are committed under
+``tests/golden/fixtures/synthetic_wrds/`` and contain no real WRDS data
+(see ``generate_synthetic_wrds.py``).
+
+Regenerate goldens with:
     pytest tests/golden/test_gen_ff_data_golden.py --regen-golden -v
-
-Skips when the WRDS slices or golden parquets are missing (the slices
-are too large for plain dev environments; run the slice + golden
-generator on the cluster first).
 """
 
 from __future__ import annotations
@@ -21,10 +22,9 @@ import pytest
 from jkp.data.aux_functions import gen_ff_data
 from jkp.data.paths import DataPaths
 from tests.golden._golden_helpers import (
-    WRDS_SLICES_DIR,
     cwd,
     regen_or_compare,
-    stage_wrds_slices,
+    stage_synthetic_slices,
 )
 
 GOLDEN_DIR = Path(__file__).parent / "fixtures" / "ff"
@@ -35,27 +35,9 @@ OUTPUTS = {
     "ff_characteristics.parquet": ["id", "eom"],
 }
 
-REQUIRED_SLICES = (
-    "crsp_msf_v2.parquet",
-    "crsp_dsf_v2.parquet",
-    "comp_funda.parquet",
-    "comp_g_funda.parquet",
-    "crsp_ccmxpf_lnkhist.parquet",
-    "world_msf.parquet",
-    "world_dsf.parquet",
-)
-
-
-def _missing_slices() -> list[str]:
-    return [s for s in REQUIRED_SLICES if not (WRDS_SLICES_DIR / s).exists()]
-
 
 def test_gen_ff_data_golden(test_paths: DataPaths, request: pytest.FixtureRequest) -> None:
-    missing = _missing_slices()
-    if missing:
-        pytest.skip(f"missing WRDS slices: {missing}. Run tests/golden/generate_wrds_slices.py.")
-
-    stage_wrds_slices(test_paths)
+    stage_synthetic_slices(test_paths)
     with cwd(test_paths.interim_dir):
         gen_ff_data(
             test_paths,

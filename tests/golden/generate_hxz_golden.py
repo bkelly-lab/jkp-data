@@ -16,7 +16,7 @@ from pathlib import Path
 
 from jkp.data.aux_functions import gen_hxz_data
 from jkp.data.paths import DataPaths
-from tests.golden._golden_helpers import WRDS_SLICES_DIR, cwd, stage_wrds_slices
+from tests.golden._golden_helpers import SYNTHETIC_SLICES_DIR, cwd, stage_synthetic_slices
 
 GOLDEN_DIR = Path(__file__).parent / "fixtures" / "hxz"
 OUTPUTS = (
@@ -26,13 +26,13 @@ OUTPUTS = (
 )
 
 
-def regenerate(out_dir: Path, slices_dir: Path = WRDS_SLICES_DIR) -> None:
+def regenerate(out_dir: Path, slices_dir: Path = SYNTHETIC_SLICES_DIR) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
         paths = DataPaths(base_dir=Path(tmp))
         paths.raw_tables_dir.mkdir(parents=True, exist_ok=True)
         paths.interim_dir.mkdir(parents=True, exist_ok=True)
-        stage_wrds_slices(paths, slices_dir)
+        stage_synthetic_slices(paths, slices_dir)
         with cwd(paths.interim_dir):
             gen_hxz_data(
                 paths,
@@ -48,7 +48,7 @@ def regenerate(out_dir: Path, slices_dir: Path = WRDS_SLICES_DIR) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--out", default=GOLDEN_DIR, type=Path)
-    ap.add_argument("--slices", default=WRDS_SLICES_DIR, type=Path)
+    ap.add_argument("--slices", default=SYNTHETIC_SLICES_DIR, type=Path)
     args = ap.parse_args()
     regenerate(args.out, args.slices)
 

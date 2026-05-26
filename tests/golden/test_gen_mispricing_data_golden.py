@@ -16,10 +16,9 @@ import pytest
 from jkp.data.aux_functions import gen_mispricing_data
 from jkp.data.paths import DataPaths
 from tests.golden._golden_helpers import (
-    WRDS_SLICES_DIR,
     cwd,
     regen_or_compare,
-    stage_wrds_slices,
+    stage_synthetic_slices,
 )
 
 GOLDEN_DIR = Path(__file__).parent / "fixtures" / "mispricing"
@@ -30,32 +29,9 @@ OUTPUTS = {
     "mp_characteristics.parquet": ["id", "eom"],
 }
 
-REQUIRED_SLICES = (
-    "crsp_msf_v2.parquet",
-    "crsp_dsf_v2.parquet",
-    "comp_funda.parquet",
-    "comp_fundq.parquet",
-    "comp_g_fundq.parquet",
-    "crsp_ccmxpf_lnkhist.parquet",
-    "crsp_a_indexes_msp500.parquet",
-    "crsp_a_indexes_acti.parquet",
-    "world_data.parquet",
-    "world_dsf.parquet",
-    "market_returns.parquet",
-    "market_returns_daily.parquet",
-)
-
-
-def _missing_slices() -> list[str]:
-    return [s for s in REQUIRED_SLICES if not (WRDS_SLICES_DIR / s).exists()]
-
 
 def test_gen_mispricing_data_golden(test_paths: DataPaths, request: pytest.FixtureRequest) -> None:
-    missing = _missing_slices()
-    if missing:
-        pytest.skip(f"missing WRDS slices: {missing}. Run tests/golden/generate_wrds_slices.py.")
-
-    stage_wrds_slices(test_paths)
+    stage_synthetic_slices(test_paths)
     with cwd(test_paths.interim_dir):
         gen_mispricing_data(test_paths)
 
