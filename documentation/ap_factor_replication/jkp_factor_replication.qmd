@@ -1,0 +1,360 @@
+---
+title: "Cloning the factor zoo: replicating Fama-French, Hou-Xue-Zhang, and Stambaugh-Yuan"
+author: "JKP data team"
+date: today
+format:
+  html:
+    toc: false
+    toc-depth: 3
+    code-fold: false
+    embed-resources: true
+    page-layout: full
+    theme: [cosmo, styles.scss]
+    fig-width: 8
+    fig-height: 4
+    tbl-cap-location: bottom
+execute:
+  echo: false
+  warning: false
+jupyter: python3
+---
+
+
+
+## Overview
+
+We now replicate the standard factor zoo inside the JKP database. The
+`ap_factors_monthly.parquet` output produced by `jkp build` contains
+country-level monthly returns for:
+
+- **FF3** (Fama–French 3): `smb_ff3`, `hml`
+- **FF5** (Fama–French 5): `smb_ff5`, `hml`, `rmw`, `cma`
+- **UMD** (FF momentum): `umd_ff`
+- **HXZ q-factors**: `me_hxz`, `ia_hxz`, `roe_hxz`
+- **MP (Stambaugh–Yuan mispricing)**: `smb_mispricing`,
+  `mispricing_mgmt`, `mispricing_perf`
+
+This document benchmarks the USA replications against the
+original / WRDS-distributed series stored in
+`factor_comparison/Reference_data/`.
+
+## Contents
+
+- [Data & method](#data-method)
+- [FF3 — Fama–French 3 factors](#ff3-famafrench-3-factors)
+- [FF5 — Fama–French 5 factors](#ff5-famafrench-5-factors)
+- [UMD — Fama–French momentum](#umd-famafrench-momentum)
+- [HXZ — q-factors](#hxz-q-factors)
+- [MP — Stambaugh–Yuan mispricing factors](#mp-stambaughyuan-mispricing-factors)
+- [Reasons for divergence](#reasons-for-divergence)
+- [Conclusion](#conclusion)
+- [Appendix: Replication of daily data](#appendix-replication-of-daily-data)
+
+## Data & method
+
+This document benchmarks the **US** replications against the original /
+WRDS-distributed series. For the international panels, we have made
+discretionary choices in the construction of each factor that try to
+emulate the spirit of the original US procedure (e.g., NYSE-style size
+breakpoints replaced with country-specific breakpoints, accounting
+conventions adapted to each excntry's Compustat coverage, etc.).
+
+Factor construction is implemented in `ap_factor_model_data` in
+[`src/jkp/data/aux_functions.py`](../src/jkp/data/aux_functions.py),
+which unifies the per-model builders (FF3, FF5,
+UMD, HXZ q-factors, Stambaugh–Yuan mispricing) into the
+`ap_factors_monthly.parquet` and `ap_factors_daily.parquet` outputs
+under `data/interim/`.
+
+Some drift from the published references is expected: Compustat is
+updated continuously, so accounting variables for older fiscal years
+get revised over time, which feeds into any sort that conditions on
+book equity, profitability, or investment. To reduce this vintage
+drift for the Stambaugh–Yuan factors, the official mispricing-factor
+replication package was run during the development of the Python code,
+so the JKP MP series and the reference series are constructed from
+roughly the same Compustat snapshot.
+
+### What the factors are
+
+- **FF3 (Fama–French 1992, 1993)** — `smb_ff3` is the size factor
+  (small-minus-big) from a 2×3 size × book-to-market sort; `hml` is
+  the value factor (high-minus-low book-to-market) from the same sort.
+- **FF5 (Fama–French 2015)** — built from a 2×3 size × {B/M,
+  profitability, investment} sort. `smb_ff5` is the redefined size
+  factor (averaged across the three sorts); `hml` is value; `rmw` is
+  robust-minus-weak operating profitability; `cma` is
+  conservative-minus-aggressive investment.
+- **UMD (Carhart 1997 / Fama–French momentum)** — `umd_ff` is the
+  momentum factor: winners-minus-losers based on prior 12-month return
+  skipping the most recent month, within size buckets.
+- **HXZ q-factors (Hou, Xue, and Zhang 2015)** — `me_hxz` (size),
+  `ia_hxz` (investment), `roe_hxz` (profitability), constructed from a
+  2×3×3 triple sort on size, investment-to-assets, and return on
+  equity.
+- **MP (Stambaugh and Yuan 2017)** — `mispricing_mgmt` and
+  `mispricing_perf` are long–short composite mispricing factors built
+  from 11 anomalies grouped into a "management" cluster and a
+  "performance" cluster; `smb_mispricing` is the size factor from the
+  same triple sort.
+
+```{python}
+#| label: setup
+import sys, os
+sys.path.insert(0, os.path.abspath("."))
+
+import matplotlib.pyplot as plt
+import polars as pl
+from IPython.display import HTML, Markdown, display
+from plot_cumsum_ff_usa import (
+    MODELS,
+    daily_factor_period_stats,
+    date_window_note,
+    factor_period_stats,
+    full_sample_summary,
+    load_jkp_usa,
+    load_jkp_usa_daily,
+    single_panel_figure,
+)
+
+jkp = load_jkp_usa()
+jkp_daily = load_jkp_usa_daily()
+specs = {m.name: m for m in MODELS}
+
+
+def appendix_daily(name):
+    spec = specs[name]
+    for display_name, _, _ in spec.panels:
+        df = daily_factor_period_stats(spec, display_name, jkp_daily)
+        display(Markdown(f"**{display_name}**"))
+        display(HTML(df.to_pandas().to_html(index=False)))
+
+
+def factor_tab(name, factor):
+    spec = specs[name]
+    fig = single_panel_figure(spec, factor, jkp)
+    display(fig)
+    plt.close(fig)
+
+
+def section_tables(name):
+    spec = specs[name]
+    display(Markdown(f"*{date_window_note(spec, jkp)}*"))
+    display(Markdown("*All Mean and StD figures are annualized.*"))
+    display(Markdown("**Full sample**"))
+    display(HTML(full_sample_summary(spec, jkp).to_pandas().to_html(index=False)))
+
+    parts = ["<details><summary><strong>Breakdown by decade</strong></summary>"]
+    for display_name, _, _ in spec.panels:
+        decade_df = factor_period_stats(spec, display_name, jkp).filter(
+            pl.col("Time Period") != "Full Sample"
+        )
+        parts.append(f"<h4>{display_name}</h4>")
+        parts.append(decade_df.to_pandas().to_html(index=False))
+    parts.append("</details>")
+    display(HTML("\n".join(parts)))
+```
+
+**Sample window — 1970 onwards.** We restrict the comparison sample to
+1970 onwards because parts of the FF construction in the 1960s rely
+on accounting data that did not yet come from Compustat. Including
+the 1960s would benchmark our Compustat-based replication against
+a reference series built on a different accounting source.
+
+## FF3 — Fama–French 3 factors
+
+::: {.panel-tabset}
+
+### SMB
+
+```{python}
+factor_tab("FF3", "SMB")
+```
+
+### HML
+
+```{python}
+factor_tab("FF3", "HML")
+```
+
+:::
+
+```{python}
+section_tables("FF3")
+```
+
+## FF5 — Fama–French 5 factors
+
+::: {.panel-tabset}
+
+### SMB
+
+```{python}
+factor_tab("FF5", "SMB")
+```
+
+### HML
+
+```{python}
+factor_tab("FF5", "HML")
+```
+
+### RMW
+
+```{python}
+factor_tab("FF5", "RMW")
+```
+
+### CMA
+
+```{python}
+factor_tab("FF5", "CMA")
+```
+
+:::
+
+```{python}
+section_tables("FF5")
+```
+
+## UMD — Fama–French momentum
+
+```{python}
+factor_tab("UMD", "UMD")
+```
+
+```{python}
+section_tables("UMD")
+```
+
+## HXZ — q-factors
+
+::: {.panel-tabset}
+
+### ME
+
+```{python}
+factor_tab("HXZ", "ME")
+```
+
+### IA
+
+```{python}
+factor_tab("HXZ", "IA")
+```
+
+### ROE
+
+```{python}
+factor_tab("HXZ", "ROE")
+```
+
+:::
+
+```{python}
+section_tables("HXZ")
+```
+
+## MP — Stambaugh–Yuan mispricing factors
+
+::: {.panel-tabset}
+
+### SMB
+
+```{python}
+factor_tab("MP", "SMB")
+```
+
+### MGMT
+
+```{python}
+factor_tab("MP", "MGMT")
+```
+
+### PERF
+
+```{python}
+factor_tab("MP", "PERF")
+```
+
+:::
+
+```{python}
+section_tables("MP")
+```
+
+## Reasons for divergence
+
+- **Differences in CRSP Legacy vs CRSP V2.** Historical fields
+  — delisting returns, share codes, exchange codes — differ between
+  the two CRSP products, producing vintage drift in pre-2000 data.
+
+- **Undisclosed filters in the papers.** Source papers omit secondary
+  screens (e.g., stale prices, thin trading, dual-class consolidation,
+  fiscal-year changers, share-class screens, price floors) that the
+  reference WRDS implementations carry as undocumented adjustments.
+  Exact parity is not achievable without the original construction
+  code.
+
+## Conclusion
+
+Residual gaps trace to data-vintage drift and undisclosed
+construction choices — both outside the scope of an external
+replication. The JKP factor series are suitable for research use as
+drop-in replacements for the published US factors. The added value of
+this replication is that we publish FF, HXZ, and Stambaugh–Yuan style
+factors for the rest of the country panel using the same methodology,
+and these international factors can likewise be used for research
+where no public benchmark exists. The full
+construction pipeline is open-source and fully replicable end-to-end
+from raw WRDS data.
+
+## Appendix: Replication of daily data
+
+```{=html}
+<details class="appendix-dropdown">
+<summary><strong>Show daily replication tables</strong></summary>
+```
+
+Daily factor returns are mechanically noisier than monthly returns:
+small differences in universe filters, delisting handling, or trading
+calendars compound day-by-day, so day-level correlations are typically
+lower and day-level Mean / StD figures more dispersed than at the
+monthly frequency. The tables below mirror the monthly **breakdown by
+decade**, with a Full Sample row at the top, computed on daily data
+(Mean × 252, StD × √252).
+
+### FF3
+
+```{python}
+appendix_daily("FF3")
+```
+
+### FF5
+
+```{python}
+appendix_daily("FF5")
+```
+
+### UMD
+
+```{python}
+appendix_daily("UMD")
+```
+
+### HXZ
+
+```{python}
+appendix_daily("HXZ")
+```
+
+### MP
+
+```{python}
+appendix_daily("MP")
+```
+
+```{=html}
+</details>
+```
+

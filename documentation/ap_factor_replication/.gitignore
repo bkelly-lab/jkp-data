@@ -1,0 +1,6 @@
+*
+!.gitignore
+!*.qmd
+!*.html
+!*_files/
+!*_files/**
