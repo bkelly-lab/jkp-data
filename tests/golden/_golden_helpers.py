@@ -22,7 +22,7 @@ Fixture slice layout (committed under ``tests/golden/fixtures/synthetic_wrds/``)
   crsp_a_indexes_acti.parquet      -> raw_tables_dir
   world_msf.parquet                -> interim_dir
   world_dsf.parquet                -> interim_dir
-  world_data.parquet               -> interim_dir
+  world_data.parquet               -> interim_dir (also staged as world_data_prelim.parquet)
   market_returns.parquet           -> interim_dir
   market_returns_daily.parquet     -> interim_dir
 """
@@ -80,6 +80,11 @@ def stage_synthetic_slices(paths: DataPaths, src_dir: Path = SYNTHETIC_SLICES_DI
         _link(src_dir / name, paths.raw_tables_dir / name)
     for name in INTERIM_FILES:
         _link(src_dir / name, paths.interim_dir / name)
+    # gen_mispricing_data reads world_data_prelim.parquet (written by
+    # create_world_data_prelim, before merge_qmj_to_world_data). The synthetic
+    # world_data.parquet has the same 17 base cols and no qmj/beta/resmom/age
+    # overlay, so it stands in for prelim under either name.
+    _link(src_dir / "world_data.parquet", paths.interim_dir / "world_data_prelim.parquet")
     for subdir, name in INTERIM_SUBDIR_FILES:
         _link(src_dir / name, paths.interim_dir / subdir / name)
 
