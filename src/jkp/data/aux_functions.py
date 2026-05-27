@@ -845,6 +845,8 @@ def download_raw_data_tables(
         "crsp.msf_v2",
         "comp.g_co_hgic",
         "crsp.dsf_v2",
+        # CRSP daily market index — required by DHS PEAD CAR (vwretd benchmark).
+        "crsp.dsi",
         "comp.g_funda",
         "comp.co_hgic",
         "comp.g_fundq",
@@ -862,6 +864,7 @@ def download_raw_data_tables(
     date_columns: dict[str, str] = {
         "crsp.msf_v2": "mthcaldt",
         "crsp.dsf_v2": "dlycaldt",
+        "crsp.dsi": "date",
         "comp.secd": "datadate",
         "comp.g_secd": "datadate",
         "comp.secm": "datadate",
@@ -10363,14 +10366,18 @@ def save_output_files(paths: DataPaths):
     Output:
         Files copied into 'other_output/' directory.
     """
-    os.system("cp ../interim/market_returns.parquet other_output/")
-    os.system("cp ../interim/market_returns_daily.parquet other_output/")
-    os.system("cp ../interim/nyse_cutoffs.parquet other_output/")
-    os.system("cp ../interim/return_cutoffs.parquet other_output/")
-    os.system("cp ../interim/return_cutoffs_daily.parquet other_output/")
-    os.system("cp ../interim/ap_factors_monthly.parquet other_output/")
-    os.system("cp ../interim/ap_factors_daily.parquet other_output/")
-    os.system("cp ../interim/ap_factors_characteristics.parquet other_output/")
+    other_output = paths.processed_dir / "other_output"
+    for name in (
+        "market_returns.parquet",
+        "market_returns_daily.parquet",
+        "nyse_cutoffs.parquet",
+        "return_cutoffs.parquet",
+        "return_cutoffs_daily.parquet",
+        "ap_factors_monthly.parquet",
+        "ap_factors_daily.parquet",
+        "ap_factors_characteristics.parquet",
+    ):
+        shutil.copy2(paths.interim_dir / name, other_output / name)
 
 
 @measure_time

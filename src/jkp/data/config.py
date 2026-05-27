@@ -209,10 +209,10 @@ PORTFOLIO_CHARS = [
 # min_obs is the per-group minimum observation count for each window.
 # Variables can repeat across windows (e.g. zero_trades runs at 21d/126d/252d).
 ROLLING_DAILY_SPECS: list[tuple[str, int, list[str]]] = [
-    ("_21d", 15, ["ff3", "hxz4"]),
-    # ("_126d", 60, ["zero_trades", "turnover", "dolvol", "ami"]),
-    # ("_252d", 120, ["rvol", "capm", "downbeta", "zero_trades", "prc_to_high", "mktvol"]),
-    # ("_1260d", 750, ["mktcorr"]),
+    ("_21d", 15, ["rvol", "rmax", "skew", "capm_ext", "ff3", "hxz4", "dimsonbeta", "zero_trades"]),
+    ("_126d", 60, ["zero_trades", "turnover", "dolvol", "ami"]),
+    ("_252d", 120, ["rvol", "capm", "downbeta", "zero_trades", "prc_to_high", "mktvol"]),
+    ("_1260d", 750, ["mktcorr"]),
 ]
 
 # ============================================================================
