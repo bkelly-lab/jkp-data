@@ -1,8 +1,9 @@
 """Regenerate the FF (FF3/FF5/UMD) golden parquets.
 
-Reads slices from ``tests/golden/fixtures/wrds_slices/``, stages them
-into a temporary DataPaths layout, runs ``gen_ff_data``, and writes the
-results under ``tests/golden/fixtures/ff/``.
+Reads slices from ``tests/golden/fixtures/synthetic_wrds/``
+(``SYNTHETIC_SLICES_DIR``), stages them into a temporary DataPaths
+layout, runs ``gen_ff_data``, and writes the results under
+``tests/golden/fixtures/ff/``.
 
 Usage:
     uv run python -m tests.golden.generate_ff_golden \\

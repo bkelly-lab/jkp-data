@@ -13673,7 +13673,8 @@ def ap_factor_model_data(
         Unify factor-model outputs into 3 parquets:
           - monthly factors keyed by (excntry, eom)
           - daily   factors keyed by (excntry, date)
-          - per-stock chars keyed by (excntry, id, eom)
+          - per-stock chars keyed by (id, eom); `id` is globally unique so
+            `excntry` is dropped by the per-model chars writers.
         mktrf is sourced from market_returns_*.parquet (mkt_vw_exc).
         Extensible: append additional factor-model parquets to the input lists.
 
@@ -13681,13 +13682,13 @@ def ap_factor_model_data(
         1) Monthly: scan mkt_monthly_path → (excntry, eom, mktrf); outer-join
            each monthly factor parquet on (excntry, eom); sink.
         2) Daily:   same with date key, mkt_daily_path.
-        3) Chars:   outer-join each chars parquet on (excntry, id, eom); sink.
+        3) Chars:   outer-join each chars parquet on (id, eom); sink.
 
     Output:
         - <out_monthly>: [excntry, eom, mktrf] + union of columns from each
                           factor parquet in monthly_factor_inputs.
         - <out_daily>:   [excntry, date, mktrf] + union of daily_factor_inputs.
-        - <out_chars>:   [excntry, id, eom]    + union of chars_inputs.
+        - <out_chars>:   [id, eom]              + union of chars_inputs.
     """
 
     def _outer_join_all(frames: list[pl.LazyFrame], key: list[str]) -> pl.LazyFrame:

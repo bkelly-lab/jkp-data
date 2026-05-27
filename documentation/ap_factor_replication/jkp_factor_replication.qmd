@@ -60,7 +60,7 @@ breakpoints replaced with country-specific breakpoints, accounting
 conventions adapted to each excntry's Compustat coverage, etc.).
 
 Factor construction is implemented in `ap_factor_model_data` in
-[`src/jkp/data/aux_functions.py`](../src/jkp/data/aux_functions.py),
+[`src/jkp/data/aux_functions.py`](../../src/jkp/data/aux_functions.py),
 which unifies the per-model builders (FF3, FF5,
 UMD, HXZ q-factors, Stambaugh–Yuan mispricing) into the
 `ap_factors_monthly.parquet` and `ap_factors_daily.parquet` outputs
