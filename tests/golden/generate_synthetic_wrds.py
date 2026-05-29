@@ -30,7 +30,13 @@ import polars as pl
 SEED = 42
 OUT_DIR = Path(__file__).parent / "fixtures" / "synthetic_wrds"
 
-DATE_START = date(1995, 1, 1)
+# 2000-2015 window (was 1995-2015): firms are born 1995-2004 (see
+# build_firm_registry), so at the start nearly all have full in-window history
+# for the momentum/distress warmup, while trimming the daily-fixture footprint
+# vs the original 21-year span. A later start (e.g. 2005) thins the per-country
+# ROW universe (50 firms each) below the world breakpoint gate and empties the
+# ROW mispricing factors, so 2000 is the floor that keeps ROW coverage.
+DATE_START = date(2000, 1, 1)
 DATE_END = date(2015, 12, 31)
 
 WRITE_OPTS: dict[str, object] = {
@@ -230,9 +236,17 @@ def gen_crsp_msf_v2(reg: pl.DataFrame, rng: np.random.Generator) -> pl.DataFrame
     reg_us = reg.filter(pl.col("excntry") == "USA")
     month_ends = _month_ends(DATE_START, DATE_END)
     panel = _firm_monthly_panel(reg_us, month_ends, rng)
-    shrout_per_firm = reg_us.select("permno", siccd=pl.col("sic")).with_columns(
-        shrout=pl.lit(rng.uniform(5e6, 5e8, size=reg_us.height)).cast(pl.Float64)
-    )
+    # shrout per firm = (first ME) / target price, so the implied price
+    # (mthprc = me / shrout) starts in a realistic $10-$100 band. Drawing
+    # shrout independently of ME (the old approach) yielded sub-$1 prices that
+    # failed the mispricing penny-stock floor (lag_prc > 5), collapsing the
+    # synthetic universe and emptying the mispricing factor goldens.
+    first_me = panel.group_by("permno").agg(pl.col("me").first().alias("_me0")).sort("permno")
+    target_price = rng.uniform(10.0, 100.0, size=first_me.height)
+    shrout_per_firm = first_me.select(
+        "permno",
+        shrout=(pl.col("_me0") / pl.lit(target_price)).cast(pl.Float64),
+    ).join(reg_us.select("permno", siccd=pl.col("sic")), on="permno")
     panel = panel.join(shrout_per_firm, on="permno")
     panel = panel.with_columns(
         mthprc=pl.col("me") / pl.col("shrout"),
@@ -721,7 +735,11 @@ def gen_world_msf(
     rows: list[dict] = []
     for r in reg_row.iter_rows(named=True):
         log_me = float(rng.normal(17.5, 1.5))
-        shrout = float(rng.uniform(5e6, 5e8))
+        # shrout = initial ME / target price so the implied price (me / shrout)
+        # starts in a realistic $10-$100 band and clears the mispricing
+        # penny-stock floor (lag_prc > 5). An independent shrout draw produced
+        # sub-$1 ROW prices that emptied the world mispricing factor goldens.
+        shrout = float(np.exp(log_me)) / float(rng.uniform(10.0, 100.0))
         for eom in month_ends:
             if eom < r["inception_eom"]:
                 continue
@@ -800,7 +818,9 @@ def gen_world_dsf(
         if idx.size == 0:
             continue
         log_me0 = float(rng.normal(17.5, 1.5))
-        shrout = float(rng.uniform(5e6, 5e8))
+        # shrout = initial ME / target price → realistic $10-$100 start price
+        # (matches gen_world_msf; avoids sub-$1 prices failing lag_prc > 5).
+        shrout = float(np.exp(log_me0)) / float(rng.uniform(10.0, 100.0))
         cum = np.cumsum(np.log1p(daily_rets_row[i, idx]))
         me_series = np.exp(log_me0 + cum)
         prc_series = me_series / shrout

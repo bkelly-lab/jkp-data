@@ -1,7 +1,6 @@
 """Golden-fixture regression test for ``gen_mispricing_data``.
 
-``gen_mispricing_data`` takes no kwargs — it writes ``mp_*.parquet``
-into cwd. Test chdirs to ``test_paths.interim_dir`` first.
+``gen_mispricing_data`` writes ``mp_*.parquet`` into ``test_paths.interim_dir``.
 
 Regenerate with:
     pytest tests/golden/test_gen_mispricing_data_golden.py --regen-golden -v
@@ -16,7 +15,6 @@ import pytest
 from jkp.data.aux_functions import gen_mispricing_data
 from jkp.data.paths import DataPaths
 from tests.golden._golden_helpers import (
-    cwd,
     regen_or_compare,
     stage_synthetic_slices,
 )
@@ -32,8 +30,13 @@ OUTPUTS = {
 
 def test_gen_mispricing_data_golden(test_paths: DataPaths, request: pytest.FixtureRequest) -> None:
     stage_synthetic_slices(test_paths)
-    with cwd(test_paths.interim_dir):
-        gen_mispricing_data(test_paths)
+    interim = test_paths.interim_dir
+    gen_mispricing_data(
+        test_paths,
+        interim / "mp_factors_monthly.parquet",
+        interim / "mp_factors_daily.parquet",
+        interim / "mp_characteristics.parquet",
+    )
 
     regen = request.config.getoption("--regen-golden")
     failures: list[str] = []

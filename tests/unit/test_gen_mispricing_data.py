@@ -27,7 +27,6 @@ from datetime import date
 import numpy as np
 import polars as pl
 import pytest
-from polars import col
 
 # ---------------------------------------------------------------------------
 # Import the helpers under test.  All are private (_mp_*) so we access
@@ -346,14 +345,14 @@ class TestAccrualFormula:
             accrual_adj=(
                 2
                 * (
-                    (col("act") - col("lag_act"))
-                    - (col("che") - col("lag_che"))
-                    - (col("lct") - col("lag_lct"))
-                    + (col("dlc") - col("lag_dlc"))
-                    + (col("txp") - col("lag_txp"))
-                    - col("dp")
+                    (pl.col("act") - pl.col("lag_act"))
+                    - (pl.col("che") - pl.col("lag_che"))
+                    - (pl.col("lct") - pl.col("lag_lct"))
+                    + (pl.col("dlc") - pl.col("lag_dlc"))
+                    + (pl.col("txp") - pl.col("lag_txp"))
+                    - pl.col("dp")
                 )
-                / (col("at") + col("lag_at"))
+                / (pl.col("at") + pl.col("lag_at"))
             )
         )["accrual_adj"][0]
         np.testing.assert_allclose(computed, expected, **tolerance.TIGHT)
@@ -381,14 +380,14 @@ class TestAccrualFormula:
             accrual_adj=(
                 2
                 * (
-                    (col("act") - col("lag_act"))
-                    - (col("che") - col("lag_che"))
-                    - (col("lct") - col("lag_lct"))
-                    + (col("dlc") - col("lag_dlc"))
-                    + (col("txp") - col("lag_txp"))
-                    - col("dp")
+                    (pl.col("act") - pl.col("lag_act"))
+                    - (pl.col("che") - pl.col("lag_che"))
+                    - (pl.col("lct") - pl.col("lag_lct"))
+                    + (pl.col("dlc") - pl.col("lag_dlc"))
+                    + (pl.col("txp") - pl.col("lag_txp"))
+                    - pl.col("dp")
                 )
-                / (col("at") + col("lag_at"))
+                / (pl.col("at") + pl.col("lag_at"))
             )
         )
         assert result["accrual_adj"][0] is None
@@ -416,14 +415,14 @@ class TestAccrualFormula:
             accrual_adj=(
                 2
                 * (
-                    (col("act") - col("lag_act"))
-                    - (col("che") - col("lag_che"))
-                    - (col("lct") - col("lag_lct"))
-                    + (col("dlc") - col("lag_dlc"))
-                    + (col("txp") - col("lag_txp"))
-                    - col("dp")
+                    (pl.col("act") - pl.col("lag_act"))
+                    - (pl.col("che") - pl.col("lag_che"))
+                    - (pl.col("lct") - pl.col("lag_lct"))
+                    + (pl.col("dlc") - pl.col("lag_dlc"))
+                    + (pl.col("txp") - pl.col("lag_txp"))
+                    - pl.col("dp")
                 )
-                / (col("at") + col("lag_at"))
+                / (pl.col("at") + pl.col("lag_at"))
             )
         )
         # Result is inf or NaN — not finite
@@ -442,26 +441,26 @@ class TestGrossProfitFormula:
     def test_gp_adj_known_values(self, tolerance):
         """(revt=120, cogs=80, at=200) → gp_adj=0.2."""
         df = pl.DataFrame({"revt": [120.0], "cogs": [80.0], "at": [200.0]})
-        result = df.with_columns(gp_adj=(col("revt") - col("cogs")) / col("at"))
+        result = df.with_columns(gp_adj=(pl.col("revt") - pl.col("cogs")) / pl.col("at"))
         np.testing.assert_allclose(result["gp_adj"][0], 0.2, **tolerance.TIGHT)
 
     def test_gp_adj_null_revt(self):
         """Null revt propagates to null gp_adj."""
         df = pl.DataFrame({"revt": [None], "cogs": [50.0], "at": [100.0]})
-        result = df.with_columns(gp_adj=(col("revt") - col("cogs")) / col("at"))
+        result = df.with_columns(gp_adj=(pl.col("revt") - pl.col("cogs")) / pl.col("at"))
         assert result["gp_adj"][0] is None
 
     def test_gp_adj_zero_at(self):
         """Zero at → inf or NaN gp_adj."""
         df = pl.DataFrame({"revt": [100.0], "cogs": [50.0], "at": [0.0]})
-        result = df.with_columns(gp_adj=(col("revt") - col("cogs")) / col("at"))
+        result = df.with_columns(gp_adj=(pl.col("revt") - pl.col("cogs")) / pl.col("at"))
         val = result["gp_adj"][0]
         assert val is None or (isinstance(val, float) and not math.isfinite(val))
 
     def test_gp_adj_negative_cogs(self, tolerance):
         """Negative cogs (returns in SIC codes) handled correctly."""
         df = pl.DataFrame({"revt": [100.0], "cogs": [-20.0], "at": [200.0]})
-        result = df.with_columns(gp_adj=(col("revt") - col("cogs")) / col("at"))
+        result = df.with_columns(gp_adj=(pl.col("revt") - pl.col("cogs")) / pl.col("at"))
         np.testing.assert_allclose(result["gp_adj"][0], 0.6, **tolerance.TIGHT)
 
 
@@ -528,15 +527,15 @@ class TestOscoreFormula:
         )
         result = df.with_columns(
             oscore=-1.32
-            - 0.407 * col("size")
-            + 6.03 * col("tlta")
-            - 1.43 * col("wcta")
-            + 0.076 * col("clca")
-            - 1.72 * col("oeneg")
-            - 2.37 * col("nita")
-            - 1.83 * col("futl")
-            + 0.285 * col("intwo")
-            - 0.521 * col("chin")
+            - 0.407 * pl.col("size")
+            + 6.03 * pl.col("tlta")
+            - 1.43 * pl.col("wcta")
+            + 0.076 * pl.col("clca")
+            - 1.72 * pl.col("oeneg")
+            - 2.37 * pl.col("nita")
+            - 1.83 * pl.col("futl")
+            + 0.285 * pl.col("intwo")
+            - 0.521 * pl.col("chin")
         )["oscore"][0]
         np.testing.assert_allclose(result, expected, **tolerance.TIGHT)
 
@@ -569,15 +568,15 @@ class TestOscoreFormula:
         )
         result = df.with_columns(
             oscore=-1.32
-            - 0.407 * col("size")
-            + 6.03 * col("tlta")
-            - 1.43 * col("wcta")
-            + 0.076 * col("clca")
-            - 1.72 * col("oeneg")
-            - 2.37 * col("nita")
-            - 1.83 * col("futl")
-            + 0.285 * col("intwo")
-            - 0.521 * col("chin")
+            - 0.407 * pl.col("size")
+            + 6.03 * pl.col("tlta")
+            - 1.43 * pl.col("wcta")
+            + 0.076 * pl.col("clca")
+            - 1.72 * pl.col("oeneg")
+            - 2.37 * pl.col("nita")
+            - 1.83 * pl.col("futl")
+            + 0.285 * pl.col("intwo")
+            - 0.521 * pl.col("chin")
         )
         assert result["oscore"][0] is None
 
@@ -601,7 +600,9 @@ class TestNsiAgInvNoaFormulas:
             }
         )
         result = df.with_columns(
-            nsi=(col("csho") * col("adjex_c") / (col("lag_csho") * col("lag_adjexc"))).log()
+            nsi=(
+                pl.col("csho") * pl.col("adjex_c") / (pl.col("lag_csho") * pl.col("lag_adjexc"))
+            ).log()
         )["nsi"][0]
         expected = math.log(1.1)
         np.testing.assert_allclose(result, expected, **tolerance.TIGHT)
@@ -618,17 +619,21 @@ class TestNsiAgInvNoaFormulas:
         )
         result = df.with_columns(
             nsi=pl.when(
-                col("csho").is_null()
-                | (col("csho") == 0)
-                | col("adjex_c").is_null()
-                | (col("adjex_c") == 0)
-                | (col("lag_csho") == 0)
-                | (col("lag_adjexc") == 0)
+                pl.col("csho").is_null()
+                | (pl.col("csho") == 0)
+                | pl.col("adjex_c").is_null()
+                | (pl.col("adjex_c") == 0)
+                | (pl.col("lag_csho") == 0)
+                | (pl.col("lag_adjexc") == 0)
             )
             .then(0.0)
-            .when(col("lag_csho").is_null() | col("lag_adjexc").is_null())
+            .when(pl.col("lag_csho").is_null() | pl.col("lag_adjexc").is_null())
             .then(None)
-            .otherwise((col("csho") * col("adjex_c") / (col("lag_csho") * col("lag_adjexc"))).log())
+            .otherwise(
+                (
+                    pl.col("csho") * pl.col("adjex_c") / (pl.col("lag_csho") * pl.col("lag_adjexc"))
+                ).log()
+            )
         )["nsi"][0]
         assert result == 0.0
 
@@ -644,17 +649,21 @@ class TestNsiAgInvNoaFormulas:
         )
         result = df.with_columns(
             nsi=pl.when(
-                col("csho").is_null()
-                | (col("csho") == 0)
-                | col("adjex_c").is_null()
-                | (col("adjex_c") == 0)
-                | (col("lag_csho") == 0)
-                | (col("lag_adjexc") == 0)
+                pl.col("csho").is_null()
+                | (pl.col("csho") == 0)
+                | pl.col("adjex_c").is_null()
+                | (pl.col("adjex_c") == 0)
+                | (pl.col("lag_csho") == 0)
+                | (pl.col("lag_adjexc") == 0)
             )
             .then(0.0)
-            .when(col("lag_csho").is_null() | col("lag_adjexc").is_null())
+            .when(pl.col("lag_csho").is_null() | pl.col("lag_adjexc").is_null())
             .then(None)
-            .otherwise((col("csho") * col("adjex_c") / (col("lag_csho") * col("lag_adjexc"))).log())
+            .otherwise(
+                (
+                    pl.col("csho") * pl.col("adjex_c") / (pl.col("lag_csho") * pl.col("lag_adjexc"))
+                ).log()
+            )
         )["nsi"][0]
         assert result is None
 
@@ -662,8 +671,8 @@ class TestNsiAgInvNoaFormulas:
         """ASSET_GROWTH = (at - lag_at) / lag_at."""
         df = pl.DataFrame({"at": [110.0], "lag_at": [100.0]})
         result = df.with_columns(
-            ag=pl.when(col("lag_at") > 0)
-            .then((col("at") - col("lag_at")) / col("lag_at"))
+            ag=pl.when(pl.col("lag_at") > 0)
+            .then((pl.col("at") - pl.col("lag_at")) / pl.col("lag_at"))
             .otherwise(None)
         )["ag"][0]
         np.testing.assert_allclose(result, 0.1, **tolerance.TIGHT)
@@ -672,8 +681,8 @@ class TestNsiAgInvNoaFormulas:
         """lag_at <= 0 → ag=None."""
         df = pl.DataFrame({"at": [100.0], "lag_at": [0.0]})
         result = df.with_columns(
-            ag=pl.when(col("lag_at") > 0)
-            .then((col("at") - col("lag_at")) / col("lag_at"))
+            ag=pl.when(pl.col("lag_at") > 0)
+            .then((pl.col("at") - pl.col("lag_at")) / pl.col("lag_at"))
             .otherwise(None)
         )["ag"][0]
         assert result is None
@@ -691,14 +700,15 @@ class TestNsiAgInvNoaFormulas:
         )
         result = df.with_columns(
             inv=pl.when(
-                col("lag_ppegt").is_null()
-                | col("lag_invt").is_null()
-                | col("lag_at").is_null()
-                | (col("lag_at") == 0)
+                pl.col("lag_ppegt").is_null()
+                | pl.col("lag_invt").is_null()
+                | pl.col("lag_at").is_null()
+                | (pl.col("lag_at") == 0)
             )
             .then(None)
             .otherwise(
-                (col("ppegt") - col("lag_ppegt") + col("invt") - col("lag_invt")) / col("lag_at")
+                (pl.col("ppegt") - pl.col("lag_ppegt") + pl.col("invt") - pl.col("lag_invt"))
+                / pl.col("lag_at")
             )
         )["inv"][0]
         np.testing.assert_allclose(result, 0.15, **tolerance.TIGHT)
@@ -725,13 +735,20 @@ class TestNsiAgInvNoaFormulas:
             }
         )
         result = df.with_columns(
-            noa=pl.when(col("lag_at") > 0)
+            noa=pl.when(pl.col("lag_at") > 0)
             .then(
                 (
-                    (col("at") - col("che"))
-                    - (col("at") - col("dlc") - col("dltt") - col("mib") - col("pstk") - col("ceq"))
+                    (pl.col("at") - pl.col("che"))
+                    - (
+                        pl.col("at")
+                        - pl.col("dlc")
+                        - pl.col("dltt")
+                        - pl.col("mib")
+                        - pl.col("pstk")
+                        - pl.col("ceq")
+                    )
                 )
-                / col("lag_at")
+                / pl.col("lag_at")
             )
             .otherwise(None)
         )["noa"][0]
@@ -824,7 +841,7 @@ class TestRollingCalendarSum:
         out = _mp_rolling_calendar_sum(df, "v", lag_min=2, lag_max=12, n_required=11).sort("eom")
         # Target row at month 13: window covers months 1..11. Month 6 is missing
         # → only 10 of 11 expected months present → null.
-        target_row = out.filter(col("eom") == _eom(2020, 13))
+        target_row = out.filter(pl.col("eom") == _eom(2020, 13))
         assert target_row["r"][0] is None
 
     def test_per_id_independence(self, tolerance):
@@ -837,8 +854,8 @@ class TestRollingCalendarSum:
             ]
         )
         out = _mp_rolling_calendar_sum(df, "v", lag_min=2, lag_max=12, n_required=11)
-        r1 = out.filter((col("permno") == 1) & (col("eom") == _eom(2020, 13)))["r"][0]
-        r2 = out.filter((col("permno") == 2) & (col("eom") == _eom(2020, 13)))["r"][0]
+        r1 = out.filter((pl.col("permno") == 1) & (pl.col("eom") == _eom(2020, 13)))["r"][0]
+        r2 = out.filter((pl.col("permno") == 2) & (pl.col("eom") == _eom(2020, 13)))["r"][0]
         np.testing.assert_allclose(r1, 11.0, **tolerance.TIGHT)
         np.testing.assert_allclose(r2, 22.0, **tolerance.TIGHT)
 
@@ -866,7 +883,7 @@ class TestRollingCalendarSum:
         out = _mp_rolling_calendar_sum(df, "v", lag_min=2, lag_max=12, n_required=11).sort("eom")
         # Target row 13 = 2019-02-28. Window [2018-02-28, 2018-12-31]
         # inclusive → 11 source rows → sum = 11.0.
-        target = out.filter(col("eom") == _eom(2019, 2))
+        target = out.filter(pl.col("eom") == _eom(2019, 2))
         assert target.height == 1
         np.testing.assert_allclose(target["r"][0], 11.0, **tolerance.TIGHT)
 
@@ -891,10 +908,10 @@ class TestRollingCalendarSum:
         out = (
             df.select("permno", "eom")
             .join(roll, on=["permno", "eom"], how="left")
-            .with_columns(momentum=col("r").exp() - 1)
+            .with_columns(momentum=pl.col("r").exp() - 1)
         )
-        m1 = out.filter((col("permno") == 1) & (col("eom") == _eom(2020, 13)))["momentum"][0]
-        m2 = out.filter((col("permno") == 2) & (col("eom") == _eom(2020, 13)))["momentum"][0]
+        m1 = out.filter((pl.col("permno") == 1) & (pl.col("eom") == _eom(2020, 13)))["momentum"][0]
+        m2 = out.filter((pl.col("permno") == 2) & (pl.col("eom") == _eom(2020, 13)))["momentum"][0]
         np.testing.assert_allclose(m1, (1.01) ** 11 - 1, **tolerance.TIGHT)
         np.testing.assert_allclose(m2, (0.98) ** 11 - 1, **tolerance.TIGHT)
 
@@ -948,14 +965,14 @@ class TestCompositeIssueFormula:
         math.log(100.0 / 0.0) if False else float("nan")  # conceptual check
         # In practice Polars propagates None or inf — here we test the column behavior
         df = pl.DataFrame({"me": [100.0], "me_lag12": [0.0]})
-        result = df.with_columns(ratio=(col("me") / col("me_lag12")).log())["ratio"][0]
+        result = df.with_columns(ratio=(pl.col("me") / pl.col("me_lag12")).log())["ratio"][0]
         # Should be inf or NaN (not finite)
         assert result is None or (isinstance(result, float) and not math.isfinite(result))
 
     def test_composite_issue_null_me_lag(self):
         """me_lag12=None → composite_issue=None (null propagation)."""
         df = pl.DataFrame({"me": [100.0], "me_lag12": [None]})
-        result = df.with_columns(ratio=(col("me") / col("me_lag12")).log())["ratio"][0]
+        result = df.with_columns(ratio=(pl.col("me") / pl.col("me_lag12")).log())["ratio"][0]
         assert result is None
 
 
@@ -971,9 +988,9 @@ class TestRoaFormula:
         """ibq=5, lag_atq=100 → roa=0.05."""
         df = pl.DataFrame({"ibq": [5.0], "lag_atq": [100.0]})
         result = df.with_columns(
-            roa=pl.when(col("lag_atq").is_null() | (col("lag_atq") == 0))
+            roa=pl.when(pl.col("lag_atq").is_null() | (pl.col("lag_atq") == 0))
             .then(None)
-            .otherwise(col("ibq") / col("lag_atq"))
+            .otherwise(pl.col("ibq") / pl.col("lag_atq"))
         )["roa"][0]
         np.testing.assert_allclose(result, 0.05, **tolerance.TIGHT)
 
@@ -981,9 +998,9 @@ class TestRoaFormula:
         """lag_atq=None → roa=None."""
         df = pl.DataFrame({"ibq": [5.0], "lag_atq": [None]})
         result = df.with_columns(
-            roa=pl.when(col("lag_atq").is_null() | (col("lag_atq") == 0))
+            roa=pl.when(pl.col("lag_atq").is_null() | (pl.col("lag_atq") == 0))
             .then(None)
-            .otherwise(col("ibq") / col("lag_atq"))
+            .otherwise(pl.col("ibq") / pl.col("lag_atq"))
         )["roa"][0]
         assert result is None
 
@@ -991,9 +1008,9 @@ class TestRoaFormula:
         """lag_atq=0 → roa=None (guarded)."""
         df = pl.DataFrame({"ibq": [5.0], "lag_atq": [0.0]})
         result = df.with_columns(
-            roa=pl.when(col("lag_atq").is_null() | (col("lag_atq") == 0))
+            roa=pl.when(pl.col("lag_atq").is_null() | (pl.col("lag_atq") == 0))
             .then(None)
-            .otherwise(col("ibq") / col("lag_atq"))
+            .otherwise(pl.col("ibq") / pl.col("lag_atq"))
         )["roa"][0]
         assert result is None
 
@@ -1001,9 +1018,9 @@ class TestRoaFormula:
         """Negative ibq → negative roa."""
         df = pl.DataFrame({"ibq": [-3.0], "lag_atq": [100.0]})
         result = df.with_columns(
-            roa=pl.when(col("lag_atq").is_null() | (col("lag_atq") == 0))
+            roa=pl.when(pl.col("lag_atq").is_null() | (pl.col("lag_atq") == 0))
             .then(None)
-            .otherwise(col("ibq") / col("lag_atq"))
+            .otherwise(pl.col("ibq") / pl.col("lag_atq"))
         )["roa"][0]
         np.testing.assert_allclose(result, -0.03, **tolerance.TIGHT)
 
@@ -1070,7 +1087,7 @@ class TestMpDistressMarketInputs:
         )
         result = _mp_distress_market_inputs(m3_full, msp_full)
         # lag_PRICE is from row 1 (eom=2000-01), where prc=min(|100|, 15)=15 → log(15)
-        price_row2 = result.filter(col("eom") == _eom(2000, 2))["PRICE"]
+        price_row2 = result.filter(pl.col("eom") == _eom(2000, 2))["PRICE"]
         if len(price_row2) > 0:
             np.testing.assert_allclose(price_row2[0], math.log(15.0), rtol=1e-6)
 
@@ -1102,7 +1119,7 @@ class TestMpDistressMarketInputs:
         )
         result = _mp_distress_market_inputs(m3, msp)
         # Row for eom=2000-03: gap=2 > 1 → ME/PRICE/EXRET/RSIZE all None
-        row = result.filter(col("eom") == _eom(2000, 3))
+        row = result.filter(pl.col("eom") == _eom(2000, 3))
         assert row["ME"][0] is None
         assert row["PRICE"][0] is None
 
@@ -1373,7 +1390,7 @@ class TestMpDistressSigma:
         daily = self._make_daily(n_days_per_month=20, n_months=4)
         result = _mp_distress_sigma(daily)
         # Check the last eom (2000-04) which looks back at months 1-3
-        row4 = result.filter(col("eom") == _eom(2000, 4))
+        row4 = result.filter(pl.col("eom") == _eom(2000, 4))
         if row4.height > 0:
             expected_sigma = math.sqrt(252.0 / 60 * (60 * 0.0001))
             np.testing.assert_allclose(row4["SIGMA"][0], expected_sigma, **tolerance.STANDARD)
@@ -1689,7 +1706,7 @@ class TestMpSizeScoreBuckets:
         )
         result = _mp_size_score_buckets(df, "score_mgmt")
         # Non-NYSE stocks have mktcap >> NYSE median → should be port_size=2
-        non_nyse = result.filter(col("exchcd") == 2)
+        non_nyse = result.filter(pl.col("exchcd") == 2)
         assert (non_nyse["port_size"] == 2).all()
 
     def test_score_20_80_split(self):
@@ -1768,7 +1785,7 @@ class TestMpWorldSizeScoreBuckets:
         result = _mp_world_size_score_buckets(df, "score_mgmt")
         # Both countries should have port_size 1 and 2 (per their own median)
         for excntry in ["GBR", "DEU"]:
-            sizes = result.filter(col("excntry") == excntry)["port_size"].drop_nulls().unique()
+            sizes = result.filter(pl.col("excntry") == excntry)["port_size"].drop_nulls().unique()
             assert set(sizes.to_list()) <= {1, 2}
 
     def test_breakpoint_cols_dropped(self):
@@ -1805,7 +1822,7 @@ class TestMpWorldPercentileRankAnomalies:
                         "ME": float(110 + i * 10),
                     }
                 )
-        return pl.DataFrame(rows).with_columns(col("id").cast(pl.Utf8))
+        return pl.DataFrame(rows).with_columns(pl.col("id").cast(pl.Utf8))
 
     def test_pct_column_added_for_available_anomaly(self):
         """If anomaly data is present for a country-eom, pct column is added."""
@@ -1823,7 +1840,7 @@ class TestMpWorldPercentileRankAnomalies:
                 "excntry": ["GBR"] * n,
                 "gp_adj": [float(i * 0.1) for i in range(n)],
             }
-        ).with_columns(col("id").cast(pl.Utf8))
+        ).with_columns(pl.col("id").cast(pl.Utf8))
         anomalies = {anom_name: anom_df}
         con = duckdb.connect()
         result = _mp_world_percentile_rank_anomalies(me_panel, anomalies, min_stks=10, mp_con=con)
@@ -1859,7 +1876,7 @@ class TestMpWorldPercentileRankAnomalies:
             }
             for i in range(5)
         ]
-        me_panel = pl.DataFrame(rows_gbr + rows_deu).with_columns(col("id").cast(pl.Utf8))
+        me_panel = pl.DataFrame(rows_gbr + rows_deu).with_columns(pl.col("id").cast(pl.Utf8))
 
         anom_df = pl.DataFrame(
             {
@@ -1868,13 +1885,13 @@ class TestMpWorldPercentileRankAnomalies:
                 "excntry": ["GBR"] * 20 + ["DEU"] * 5,
                 "accrual_adj": [float(i) for i in range(25)],
             }
-        ).with_columns(col("id").cast(pl.Utf8))
+        ).with_columns(pl.col("id").cast(pl.Utf8))
         anomalies = {"ACCRUAL_ADJ": anom_df}
         con = duckdb.connect()
         result = _mp_world_percentile_rank_anomalies(me_panel, anomalies, min_stks=10, mp_con=con)
         # DEU stocks (if any join to panel) should have pct_ACCRUAL_ADJ=None
         if "pct_ACCRUAL_ADJ" in result.columns:
-            deu_pcts = result.filter(col("excntry") == "DEU")["pct_ACCRUAL_ADJ"].drop_nulls()
+            deu_pcts = result.filter(pl.col("excntry") == "DEU")["pct_ACCRUAL_ADJ"].drop_nulls()
             assert len(deu_pcts) == 0
 
     def test_positive_anomaly_ranked_descending(self):
@@ -1886,7 +1903,7 @@ class TestMpWorldPercentileRankAnomalies:
         eom = _eom(2000, 6)
         n = 30
         me_panel = self._make_me_panel(n_per_country=n)
-        me_panel = me_panel.filter(col("excntry") == "GBR")
+        me_panel = me_panel.filter(pl.col("excntry") == "GBR")
 
         # GBR_0 has highest gp_adj (n=30); GBR_29 has lowest gp_adj (1)
         anom_df = pl.DataFrame(
@@ -1896,13 +1913,13 @@ class TestMpWorldPercentileRankAnomalies:
                 "excntry": ["GBR"] * n,
                 "gp_adj": [float(n - i) for i in range(n)],  # GBR_0=30, GBR_29=1
             }
-        ).with_columns(col("id").cast(pl.Utf8))
+        ).with_columns(pl.col("id").cast(pl.Utf8))
         anomalies = {"GP_ADJ": anom_df}
         con = duckdb.connect()
         result = _mp_world_percentile_rank_anomalies(me_panel, anomalies, min_stks=10, mp_con=con)
         if "pct_GP_ADJ" in result.columns:
-            row0 = result.filter(col("id") == "GBR_0")
-            row_last = result.filter(col("id") == "GBR_29")
+            row0 = result.filter(pl.col("id") == "GBR_0")
+            row_last = result.filter(pl.col("id") == "GBR_29")
             if (
                 row0.height > 0
                 and row_last.height > 0
@@ -1936,7 +1953,7 @@ class TestCizDlretGuard:
         )
         # The CIZ branch: ret = mthret if not null else null
         result = df.with_columns(
-            ret=pl.when(col("mthret").is_not_null()).then(col("mthret")).otherwise(None)
+            ret=pl.when(pl.col("mthret").is_not_null()).then(pl.col("mthret")).otherwise(None)
         )
         assert result["ret"][0] == pytest.approx(0.05)
 
@@ -1944,7 +1961,7 @@ class TestCizDlretGuard:
         """delret is NOT added to mthret under CIZ v2 logic."""
         df = pl.DataFrame({"mthret": [0.05], "delret": [-0.5]})
         result = df.with_columns(
-            ret=pl.when(col("mthret").is_not_null()).then(col("mthret")).otherwise(None)
+            ret=pl.when(pl.col("mthret").is_not_null()).then(pl.col("mthret")).otherwise(None)
         )
         # ret should be 0.05, NOT 0.05 + (-0.5) = -0.45
         assert result["ret"][0] == pytest.approx(0.05)
@@ -1954,7 +1971,7 @@ class TestCizDlretGuard:
         """When mthret is null, ret is null — no Shumway imputation."""
         df = pl.DataFrame({"mthret": [None], "delret": [-0.7]})
         result = df.with_columns(
-            ret=pl.when(col("mthret").is_not_null()).then(col("mthret")).otherwise(None)
+            ret=pl.when(pl.col("mthret").is_not_null()).then(pl.col("mthret")).otherwise(None)
         )
         assert result["ret"][0] is None
 
@@ -1969,8 +1986,8 @@ class TestCizDlretGuard:
             }
         )
         result = df.with_columns(
-            ret=pl.when(col("mthret").is_not_null()).then(col("mthret")).otherwise(None)
-        ).filter(col("ret").is_not_null())
+            ret=pl.when(pl.col("mthret").is_not_null()).then(pl.col("mthret")).otherwise(None)
+        ).filter(pl.col("ret").is_not_null())
         assert result.height == 1
         assert result["permno"][0] == 1
 

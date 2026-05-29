@@ -1,7 +1,6 @@
 """Regenerate the Stambaugh-Yuan mispricing golden parquets.
 
-``gen_mispricing_data`` takes no path kwargs — it writes ``mp_*.parquet``
-into cwd. The script chdirs into ``paths.interim_dir`` before calling.
+``gen_mispricing_data`` writes ``mp_*.parquet`` into ``paths.interim_dir``.
 
 Usage:
     uv run python -m tests.golden.generate_mispricing_golden \\
@@ -17,7 +16,7 @@ from pathlib import Path
 
 from jkp.data.aux_functions import gen_mispricing_data
 from jkp.data.paths import DataPaths
-from tests.golden._golden_helpers import SYNTHETIC_SLICES_DIR, cwd, stage_synthetic_slices
+from tests.golden._golden_helpers import SYNTHETIC_SLICES_DIR, stage_synthetic_slices
 
 GOLDEN_DIR = Path(__file__).parent / "fixtures" / "mispricing"
 OUTPUTS = (
@@ -34,8 +33,12 @@ def regenerate(out_dir: Path, slices_dir: Path = SYNTHETIC_SLICES_DIR) -> None:
         paths.raw_tables_dir.mkdir(parents=True, exist_ok=True)
         paths.interim_dir.mkdir(parents=True, exist_ok=True)
         stage_synthetic_slices(paths, slices_dir)
-        with cwd(paths.interim_dir):
-            gen_mispricing_data(paths)
+        gen_mispricing_data(
+            paths,
+            paths.interim_dir / "mp_factors_monthly.parquet",
+            paths.interim_dir / "mp_factors_daily.parquet",
+            paths.interim_dir / "mp_characteristics.parquet",
+        )
         for name in OUTPUTS:
             shutil.copy2(paths.interim_dir / name, out_dir / name)
             print(f"wrote {out_dir / name}")
