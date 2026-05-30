@@ -393,17 +393,27 @@ def gen_crsp_stksecurityinfohist(reg: pl.DataFrame) -> pl.DataFrame:
 
 
 def gen_crsp_a_indexes_msp500(rng: np.random.Generator) -> pl.DataFrame:
-    """Daily S&P 500 series. Columns: caldt, sprtrn, totval, vwretd, vwretx."""
-    weekdays = _weekdays(DATE_START, DATE_END)
-    n = len(weekdays)
-    sprtrn = rng.normal(0.0004, 0.012, size=n)
-    sprtrn = np.clip(sprtrn, -0.1, 0.1)
+    """Monthly S&P 500 index series. Columns: caldt, sprtrn, totval, vwretd, vwretx.
+
+    Real WRDS crsp_a_indexes.msp500 is monthly (one row per month-end), and the
+    distress calculation (``_mp_compute_distress``) joins it on
+    ``caldt.dt.month_end()`` assuming one row per eom. Emitting a daily calendar
+    here put ~22 rows per eom, fanning out that join so the downstream
+    ``unique(keep="first")`` picked a nondeterministic survivor under DuckDB's
+    parallel join order (only visible at high core counts) — making the distress
+    char and the perf-leg / SMB mispricing factors nonreproducible. One row per
+    month-end matches real WRDS and removes the fan-out.
+    """
+    months = _month_ends(DATE_START, DATE_END)
+    n = len(months)
+    sprtrn = rng.normal(0.008, 0.045, size=n)  # monthly S&P return magnitudes
+    sprtrn = np.clip(sprtrn, -0.3, 0.3)
     totval = np.exp(np.cumsum(sprtrn) + 25.0)
     vwretd = sprtrn + rng.normal(0.0, 0.0005, size=n)
     vwretx = vwretd - 0.0001
     return pl.DataFrame(
         {
-            "caldt": weekdays,
+            "caldt": months,
             "sprtrn": sprtrn.astype(np.float64),
             "totval": totval.astype(np.float64),
             "vwretd": vwretd.astype(np.float64),
