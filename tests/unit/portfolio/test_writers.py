@@ -17,7 +17,7 @@ class TestWriteFiltered:
             }
         )
         path = tmp_path / "out.parquet"
-        _write_filtered(df, str(path), "eom", date(2020, 2, 29))
+        _write_filtered(df, path, "eom", date(2020, 2, 29))
 
         result = pl.read_parquet(path)
         assert result["eom"].to_list() == [date(2020, 1, 31), date(2020, 2, 29)]
@@ -33,7 +33,7 @@ class TestWriteFiltered:
             }
         )
         path = tmp_path / "out.parquet"
-        _write_filtered(df, str(path), "eom", date(2020, 12, 31))
+        _write_filtered(df, path, "eom", date(2020, 12, 31))
 
         result = pl.read_parquet(path)
         assert result.columns == df.columns
@@ -44,7 +44,7 @@ class TestWriteFiltered:
             schema={"eom": pl.Date, "value": pl.Float64},
         )
         path = tmp_path / "out.parquet"
-        _write_filtered(df, str(path), "eom", date(2020, 12, 31))
+        _write_filtered(df, path, "eom", date(2020, 12, 31))
 
         assert path.exists()
         result = pl.read_parquet(path)
@@ -62,7 +62,7 @@ class TestWriteSplitByKey:
             }
         )
         folder = tmp_path / "split"
-        _write_split_by_key(df, str(folder), "key", "eom", date(2020, 12, 31))
+        _write_split_by_key(df, folder, "key", "eom", date(2020, 12, 31))
 
         files = sorted(p.name for p in folder.glob("*.parquet"))
         assert files == ["a.parquet", "b.parquet", "c.parquet"]
@@ -80,7 +80,7 @@ class TestWriteSplitByKey:
             }
         )
         folder = tmp_path / "split"
-        _write_split_by_key(df, str(folder), "key", "eom", date(2020, 12, 31))
+        _write_split_by_key(df, folder, "key", "eom", date(2020, 12, 31))
 
         files = sorted(p.name for p in folder.glob("*.parquet"))
         assert files == ["a.parquet", "b.parquet"]
@@ -95,7 +95,7 @@ class TestWriteSplitByKey:
             }
         )
         folder = tmp_path / "split"
-        _write_split_by_key(df, str(folder), "key", "eom", date(2020, 12, 31))
+        _write_split_by_key(df, folder, "key", "eom", date(2020, 12, 31))
 
         files = sorted(p.name for p in folder.glob("*.parquet"))
         assert files == ["a.parquet", "b.parquet"]
@@ -110,7 +110,7 @@ class TestWriteSplitByKey:
             }
         )
         folder = tmp_path / "split"
-        _write_split_by_key(df, str(folder), "key", "eom", date(2020, 12, 31))
+        _write_split_by_key(df, folder, "key", "eom", date(2020, 12, 31))
 
         a_rows = pl.read_parquet(folder / "a.parquet")
         assert a_rows["eom"].to_list() == [date(2020, 1, 31)]
@@ -124,7 +124,7 @@ class TestWriteSplitByKey:
             schema={"key": pl.String, "eom": pl.Date, "value": pl.Float64},
         )
         folder = tmp_path / "split"
-        _write_split_by_key(df, str(folder), "key", "eom", date(2020, 12, 31))
+        _write_split_by_key(df, folder, "key", "eom", date(2020, 12, 31))
 
         assert folder.exists()
         assert folder.is_dir()
@@ -141,7 +141,7 @@ class TestWriteSplitByKey:
             }
         )
         folder = tmp_path / "split"
-        _write_split_by_key(df, str(folder), "key", "eom", date(2020, 12, 31))
+        _write_split_by_key(df, folder, "key", "eom", date(2020, 12, 31))
 
         files = sorted(p.name for p in folder.glob("*.parquet"))
         assert files == ["0.parquet", "1.parquet", "2.parquet"]
@@ -155,7 +155,7 @@ class TestWriteSplitByKey:
             }
         )
         folder = tmp_path / "split"
-        _write_split_by_key(df, str(folder), "key", "eom", date(2020, 12, 31))
+        _write_split_by_key(df, folder, "key", "eom", date(2020, 12, 31))
 
         assert (folder / "a.parquet").is_file()
         assert (folder / "b.parquet").is_file()

@@ -1561,8 +1561,12 @@ class TestDimsonbeta:
         result = dimsonbeta(df, "_21d", __min=15)
         assert len(result) == 0
 
-    def test_dimsonbeta_drops_singular_design(self):
-        """Singular X'X (perfectly collinear regressors) yields a null beta and is dropped."""
+    def test_dimsonbeta_handles_singular_design(self):
+        # Regression check: on a collinear design, dimsonbeta returns a finite
+        # beta (no NaN / null / crash). polars-ds's Cholesky path tolerates the
+        # near-singular X'X produced by these inputs via tiny numerical noise on
+        # the diagonal — locking this behavior here so future solver swaps don't
+        # silently regress callers that assume a finite return.
         n = 20
         mkt = np.linspace(-1.0, 1.0, n)
         df = pl.DataFrame(
@@ -1570,13 +1574,14 @@ class TestDimsonbeta:
                 "id_int": [1] * n,
                 "group_number": [10] * n,
                 "mktrf": mkt,
-                "mktrf_ld1": 2.0 * mkt + 1.0,  # perfectly collinear with mktrf + intercept
-                "mktrf_lg1": -mkt + 0.5,  # also collinear
+                "mktrf_ld1": 2.0 * mkt + 1.0,
+                "mktrf_lg1": -mkt + 0.5,
                 "ret_exc": 0.5 * mkt + 0.1,
             }
         )
         result = dimsonbeta(df, "_21d", __min=15)
-        assert len(result) == 0
+        assert len(result) == 1
+        assert np.isfinite(result["beta_dimson_21d"].item())
 
     def test_dimsonbeta_long_window_produces_output(self, tolerance):
         """_126d window with min_obs=60 over a single eom yields one β per group."""

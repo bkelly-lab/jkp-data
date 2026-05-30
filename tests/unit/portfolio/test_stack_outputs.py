@@ -7,6 +7,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
+from jkp.data.paths import DataPaths
 from jkp.data.portfolio import portfolios
 from tests.unit.portfolio.conftest import (
     SYNTHETIC_CHARS,
@@ -32,7 +33,7 @@ COMMON_KWARGS = {
 
 
 def _run(
-    data_path: Path,
+    base_dir: Path,
     excntry: str,
     chars: list[str],
     eoms,
@@ -41,7 +42,7 @@ def _run(
     nyse_size_cutoffs, ret_cutoffs, ret_cutoffs_daily = make_cutoffs(eoms)
     kwargs = {**COMMON_KWARGS, **overrides}
     return portfolios(
-        data_path=str(data_path),
+        paths=DataPaths(base_dir=base_dir),
         excntry=excntry,
         chars=chars,
         nyse_size_cutoffs=nyse_size_cutoffs,
@@ -61,7 +62,12 @@ class TestStackOutputs:
         for ex in countries:
             country_dir = tmp_path / ex
             char_df, _ = write_synthetic_country(
-                country_dir, ex, chars, seed=42 + countries.index(ex), n_ids=60, n_months=6
+                country_dir / "processed",
+                ex,
+                chars,
+                seed=42 + countries.index(ex),
+                n_ids=60,
+                n_months=6,
             )
             eoms = char_df["eom"].unique().sort().to_list()
             out = _run(country_dir, ex, chars, eoms)
@@ -81,7 +87,9 @@ class TestStackOutputs:
         chars = SYNTHETIC_CHARS[:1]
         ex = "USA"
         country_dir = tmp_path / ex
-        char_df, _ = write_synthetic_country(country_dir, ex, chars, n_ids=60, n_months=4)
+        char_df, _ = write_synthetic_country(
+            country_dir / "processed", ex, chars, n_ids=60, n_months=4
+        )
         eoms = char_df["eom"].unique().sort().to_list()
         out = _run(country_dir, ex, chars, eoms)
         df = out["pf_returns"]
@@ -97,7 +105,12 @@ class TestStackOutputs:
         for ex in countries:
             country_dir = tmp_path / ex
             char_df, _ = write_synthetic_country(
-                country_dir, ex, chars, seed=42 + countries.index(ex), n_ids=60, n_months=4
+                country_dir / "processed",
+                ex,
+                chars,
+                seed=42 + countries.index(ex),
+                n_ids=60,
+                n_months=4,
             )
             eoms = char_df["eom"].unique().sort().to_list()
             out = _run(country_dir, ex, chars, eoms)
@@ -116,7 +129,12 @@ class TestStackOutputs:
         for ex in countries:
             country_dir = tmp_path / ex
             char_df, _ = write_synthetic_country(
-                country_dir, ex, chars, seed=42 + countries.index(ex), n_ids=60, n_months=4
+                country_dir / "processed",
+                ex,
+                chars,
+                seed=42 + countries.index(ex),
+                n_ids=60,
+                n_months=4,
             )
             eoms = char_df["eom"].unique().sort().to_list()
             cmp_key = ex.lower() == "usa"
@@ -132,7 +150,9 @@ class TestStackOutputs:
         chars = SYNTHETIC_CHARS[:1]
         ex = "USA"
         country_dir = tmp_path / ex
-        char_df, _ = write_synthetic_country(country_dir, ex, chars, n_ids=20, n_months=3)
+        char_df, _ = write_synthetic_country(
+            country_dir / "processed", ex, chars, n_ids=20, n_months=3
+        )
         eoms = char_df["eom"].unique().sort().to_list()
         # Force every-eom bp_n below threshold so no char survives.
         out = _run(country_dir, ex, chars, eoms, bp_min_n=10**6)
@@ -147,7 +167,9 @@ class TestStackOutputs:
         # An empty frame must still concat cleanly with another country's frame.
         ex2 = "FRA"
         ex2_dir = tmp_path / ex2
-        char_df2, _ = write_synthetic_country(ex2_dir, ex2, chars, seed=99, n_ids=60, n_months=3)
+        char_df2, _ = write_synthetic_country(
+            ex2_dir / "processed", ex2, chars, seed=99, n_ids=60, n_months=3
+        )
         eoms2 = char_df2["eom"].unique().sort().to_list()
         out2 = _run(ex2_dir, ex2, chars, eoms2)
         # Align columns then concat.

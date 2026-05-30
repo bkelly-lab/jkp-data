@@ -8,6 +8,7 @@ import numpy as np
 import polars as pl
 import pytest
 
+from jkp.data.paths import DataPaths
 from jkp.data.portfolio import portfolios
 from tests.unit.portfolio.conftest import (
     SYNTHETIC_CHARS,
@@ -55,7 +56,7 @@ class TestWinsorization:
         nyse_cut, ret_cut, _ = make_cutoffs(eoms)
 
         result = portfolios(
-            data_path=str(data_root),
+            paths=DataPaths(base_dir=tmp_path),
             excntry=excntry,
             chars=[SYNTHETIC_CHARS[0]],
             pfs=3,
@@ -94,7 +95,7 @@ class TestWinsorization:
         # ret_cut already supplies p001=-0.5, p999=0.5 from make_cutoffs.
 
         kwargs = {
-            "data_path": str(data_root),
+            "paths": DataPaths(base_dir=tmp_path),
             "excntry": excntry,
             "chars": [SYNTHETIC_CHARS[0]],
             "pfs": 3,
@@ -144,7 +145,7 @@ class TestWinsorization:
         nyse_cut, ret_cut, _ = make_cutoffs(eoms)
 
         kwargs = {
-            "data_path": str(data_root),
+            "paths": DataPaths(base_dir=tmp_path),
             "excntry": excntry,
             "chars": [SYNTHETIC_CHARS[0]],
             "pfs": 3,
@@ -199,7 +200,7 @@ class TestWinsorization:
         nyse_cut, ret_cut, ret_cut_daily = make_cutoffs(eoms)
 
         kwargs = {
-            "data_path": str(data_root),
+            "paths": DataPaths(base_dir=tmp_path),
             "excntry": excntry,
             "chars": [SYNTHETIC_CHARS[0]],
             "pfs": 3,

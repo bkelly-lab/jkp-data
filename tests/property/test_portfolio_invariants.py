@@ -14,6 +14,7 @@ import polars as pl
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
+from jkp.data.paths import DataPaths
 from jkp.data.portfolio import portfolios
 from tests.unit.portfolio.conftest import (
     SYNTHETIC_CHARS,
@@ -40,11 +41,10 @@ EXCNTRY = "SYN"
 
 def _build_inputs(
     tmp_path: Path, config: dict
-) -> tuple[str, list[str], pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+) -> tuple[DataPaths, list[str], pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     """Materialize a synthetic one-country input tree under ``tmp_path``."""
     chars = SYNTHETIC_CHARS[: config["n_chars"]]
-    data_root = tmp_path / "processed"
-    char_dir = data_root / "characteristics"
+    char_dir = tmp_path / "processed" / "characteristics"
     char_dir.mkdir(parents=True, exist_ok=True)
 
     char_df = make_country_characteristics(
@@ -57,18 +57,18 @@ def _build_inputs(
     char_df.write_parquet(char_dir / f"{EXCNTRY}.parquet")
     eoms = char_df["eom"].unique().sort().to_list()
     nyse_cut, ret_cut, ret_cut_daily = make_cutoffs(eoms)
-    return str(data_root), chars, nyse_cut, ret_cut, char_df
+    return DataPaths(base_dir=tmp_path), chars, nyse_cut, ret_cut, char_df
 
 
 def _run_portfolios(
-    data_path: str,
+    paths: DataPaths,
     chars: list[str],
     nyse_cut: pl.DataFrame,
     ret_cut: pl.DataFrame,
 ) -> dict:
     """Invoke ``portfolios()`` with the fixed flag profile used across tests."""
     return portfolios(
-        data_path=data_path,
+        paths=paths,
         excntry=EXCNTRY,
         chars=chars,
         pfs=PFS,
@@ -95,8 +95,8 @@ class TestPortfolioInvariants:
     )
     def test_pf_values_in_one_to_pfs(self, config: dict, tmp_path: Path) -> None:
         """Every ``pf`` label must lie in ``[1, PFS]``."""
-        data_path, chars, nyse_cut, ret_cut, _ = _build_inputs(tmp_path, config)
-        out = _run_portfolios(data_path, chars, nyse_cut, ret_cut)
+        paths, chars, nyse_cut, ret_cut, _ = _build_inputs(tmp_path, config)
+        out = _run_portfolios(paths, chars, nyse_cut, ret_cut)
         pfs_col = out["pf_returns"]["pf"]
         assert pfs_col.min() >= 1
         assert pfs_col.max() <= PFS
@@ -107,8 +107,8 @@ class TestPortfolioInvariants:
     )
     def test_pf_returns_schema_has_required_columns(self, config: dict, tmp_path: Path) -> None:
         """``pf_returns`` must expose the expected schema columns."""
-        data_path, chars, nyse_cut, ret_cut, _ = _build_inputs(tmp_path, config)
-        out = _run_portfolios(data_path, chars, nyse_cut, ret_cut)
+        paths, chars, nyse_cut, ret_cut, _ = _build_inputs(tmp_path, config)
+        out = _run_portfolios(paths, chars, nyse_cut, ret_cut)
         required = {
             "excntry",
             "characteristic",
@@ -132,8 +132,8 @@ class TestPortfolioInvariants:
         The eom in pf_returns is shifted forward one month relative to the
         characteristic data, so we lag it back before aggregation.
         """
-        data_path, chars, nyse_cut, ret_cut, char_df = _build_inputs(tmp_path, config)
-        out = _run_portfolios(data_path, chars, nyse_cut, ret_cut)
+        paths, chars, nyse_cut, ret_cut, char_df = _build_inputs(tmp_path, config)
+        out = _run_portfolios(paths, chars, nyse_cut, ret_cut)
         pf = out["pf_returns"].with_columns(
             pl.col("eom").dt.offset_by("-1mo").dt.month_end().alias("eom_orig")
         )
@@ -157,8 +157,8 @@ class TestPortfolioInvariants:
     )
     def test_pf_monotone_signal_medians(self, config: dict, tmp_path: Path) -> None:
         """Within (characteristic, eom), median signal is non-decreasing in pf."""
-        data_path, chars, nyse_cut, ret_cut, _ = _build_inputs(tmp_path, config)
-        out = _run_portfolios(data_path, chars, nyse_cut, ret_cut)
+        paths, chars, nyse_cut, ret_cut, _ = _build_inputs(tmp_path, config)
+        out = _run_portfolios(paths, chars, nyse_cut, ret_cut)
         pf = out["pf_returns"].sort(["characteristic", "eom", "pf"])
         for (_ch, _eom), sub in pf.group_by(["characteristic", "eom"], maintain_order=True):
             # Drop NaN-signal rows: pf buckets where every observation had a
@@ -179,8 +179,8 @@ class TestPortfolioInvariants:
         the global min/max of ``ret_exc_lead1m`` (post-winsorization, the
         cutoffs are -0.5 and +0.5).
         """
-        data_path, chars, nyse_cut, ret_cut, char_df = _build_inputs(tmp_path, config)
-        out = _run_portfolios(data_path, chars, nyse_cut, ret_cut)
+        paths, chars, nyse_cut, ret_cut, char_df = _build_inputs(tmp_path, config)
+        out = _run_portfolios(paths, chars, nyse_cut, ret_cut)
         # Post-winsorization, Compustat returns are clipped to [-0.5, 0.5];
         # CRSP rows use raw values. Take a generous bound from raw range.
         rets = char_df["ret_exc_lead1m"].drop_nans().drop_nulls()
@@ -196,8 +196,8 @@ class TestPortfolioInvariants:
     )
     def test_no_nan_in_returns(self, config: dict, tmp_path: Path) -> None:
         """``ret_ew``, ``ret_vw``, ``ret_vw_cap`` columns must have no NaN/null."""
-        data_path, chars, nyse_cut, ret_cut, _ = _build_inputs(tmp_path, config)
-        out = _run_portfolios(data_path, chars, nyse_cut, ret_cut)
+        paths, chars, nyse_cut, ret_cut, _ = _build_inputs(tmp_path, config)
+        out = _run_portfolios(paths, chars, nyse_cut, ret_cut)
         pf = out["pf_returns"]
         for col in ("ret_ew", "ret_vw", "ret_vw_cap"):
             s = pf[col]
@@ -210,8 +210,8 @@ class TestPortfolioInvariants:
     )
     def test_pf_returns_height_positive(self, config: dict, tmp_path: Path) -> None:
         """Output ``pf_returns`` frame must be non-empty."""
-        data_path, chars, nyse_cut, ret_cut, _ = _build_inputs(tmp_path, config)
-        out = _run_portfolios(data_path, chars, nyse_cut, ret_cut)
+        paths, chars, nyse_cut, ret_cut, _ = _build_inputs(tmp_path, config)
+        out = _run_portfolios(paths, chars, nyse_cut, ret_cut)
         assert out["pf_returns"].height > 0
 
     @given(config=INPUT_CONFIG)
@@ -220,9 +220,9 @@ class TestPortfolioInvariants:
     )
     def test_idempotent_under_seed_reuse(self, config: dict, tmp_path: Path) -> None:
         """Calling ``portfolios()`` twice with the same inputs is idempotent."""
-        data_path, chars, nyse_cut, ret_cut, _ = _build_inputs(tmp_path, config)
-        out1 = _run_portfolios(data_path, chars, nyse_cut, ret_cut)
-        out2 = _run_portfolios(data_path, chars, nyse_cut, ret_cut)
+        paths, chars, nyse_cut, ret_cut, _ = _build_inputs(tmp_path, config)
+        out1 = _run_portfolios(paths, chars, nyse_cut, ret_cut)
+        out2 = _run_portfolios(paths, chars, nyse_cut, ret_cut)
         sort_keys = ["characteristic", "eom", "pf"]
         a = out1["pf_returns"].sort(sort_keys)
         b = out2["pf_returns"].sort(sort_keys)

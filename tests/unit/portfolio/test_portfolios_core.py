@@ -8,6 +8,7 @@ import numpy as np
 import polars as pl
 import pytest
 
+from jkp.data.paths import DataPaths
 from jkp.data.portfolio import portfolios
 from tests.unit.portfolio.conftest import (
     SYNTHETIC_CHARS,
@@ -29,7 +30,7 @@ class TestPortfoliosCore:
         eoms = char_df["eom"].unique().sort().to_list()
         nyse_cut, ret_cut, ret_cut_daily = make_cutoffs(eoms)
         return portfolios(
-            data_path=str(data_root),
+            paths=DataPaths(base_dir=tmp_path),
             excntry="SYN",
             chars=SYNTHETIC_CHARS,
             pfs=3,
@@ -121,7 +122,7 @@ class TestPortfoliosCore:
         test_char = SYNTHETIC_CHARS[0]
 
         result_win = portfolios(
-            data_path=str(data_root),
+            paths=DataPaths(base_dir=tmp_path),
             excntry="SYN",
             chars=[test_char],
             pfs=1,
@@ -138,7 +139,7 @@ class TestPortfoliosCore:
             ret_cutoffs_daily=None,
         )
         result_no_win = portfolios(
-            data_path=str(data_root),
+            paths=DataPaths(base_dir=tmp_path),
             excntry="SYN",
             chars=[test_char],
             pfs=1,
@@ -188,7 +189,7 @@ class TestPortfoliosDaily:
         eoms = char_df["eom"].unique().sort().to_list()
         nyse_cut, ret_cut, ret_cut_daily = make_cutoffs(eoms)
         return portfolios(
-            data_path=str(data_root),
+            paths=DataPaths(base_dir=tmp_path),
             excntry="SYN",
             chars=SYNTHETIC_CHARS,
             pfs=3,
