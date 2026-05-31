@@ -138,39 +138,47 @@ def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> No
     )
     gen_ff_data(
         paths,
-        "ff_factors_monthly.parquet",
-        "ff_factors_daily.parquet",
-        "ff_characteristics.parquet",
+        interim / "ff_factors_monthly.parquet",
+        interim / "ff_factors_daily.parquet",
+        interim / "ff_characteristics.parquet",
     )
     gen_hxz_data(
         paths,
-        "hxz_factors_monthly.parquet",
-        "hxz_factors_daily.parquet",
-        "hxz_characteristics.parquet",
+        interim / "hxz_factors_monthly.parquet",
+        interim / "hxz_factors_daily.parquet",
+        interim / "hxz_characteristics.parquet",
     )
-    gen_mispricing_data(paths, min_stks=30, min_fcts=3, min_obs=10)
+    gen_mispricing_data(
+        paths,
+        interim / "mp_factors_monthly.parquet",
+        interim / "mp_factors_daily.parquet",
+        interim / "mp_characteristics.parquet",
+        min_stks=30,
+        min_fcts=3,
+        min_obs=10,
+    )
     ap_factor_model_data(
         paths,
         monthly_factor_inputs=[
-            "ff_factors_monthly.parquet",
-            "hxz_factors_monthly.parquet",
-            "mp_factors_monthly.parquet",
+            interim / "ff_factors_monthly.parquet",
+            interim / "hxz_factors_monthly.parquet",
+            interim / "mp_factors_monthly.parquet",
         ],
         daily_factor_inputs=[
-            "ff_factors_daily.parquet",
-            "hxz_factors_daily.parquet",
-            "mp_factors_daily.parquet",
+            interim / "ff_factors_daily.parquet",
+            interim / "hxz_factors_daily.parquet",
+            interim / "mp_factors_daily.parquet",
         ],
         chars_inputs=[
-            "ff_characteristics.parquet",
-            "hxz_characteristics.parquet",
-            "mp_characteristics.parquet",
+            interim / "ff_characteristics.parquet",
+            interim / "hxz_characteristics.parquet",
+            interim / "mp_characteristics.parquet",
         ],
-        mkt_monthly_path="market_returns.parquet",
-        mkt_daily_path="market_returns_daily.parquet",
-        out_monthly="ap_factors_monthly.parquet",
-        out_daily="ap_factors_daily.parquet",
-        out_chars="ap_factors_characteristics.parquet",
+        mkt_monthly_path=interim / "market_returns.parquet",
+        mkt_daily_path=interim / "market_returns_daily.parquet",
+        out_monthly=interim / "ap_factors_monthly.parquet",
+        out_daily=interim / "ap_factors_daily.parquet",
+        out_chars=interim / "ap_factors_characteristics.parquet",
     )
     firm_age(paths, interim / "world_msf.parquet")
     market_beta(
