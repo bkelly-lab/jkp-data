@@ -11990,8 +11990,7 @@ def ff_load_world_compustat(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
     )
     return (
         combined.sort(["curcd", "datadate"])
-        .set_sorted("datadate")
-        .join_asof(fx, by="curcd", on="datadate", strategy="backward")
+        .join_asof(fx, by="curcd", on="datadate", strategy="backward", check_sortedness=False)
         .with_columns(
             be=pl.when(pl.col("curcd") == "USD")
             .then(pl.col("be_local"))
