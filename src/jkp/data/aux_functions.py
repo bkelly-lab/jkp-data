@@ -12652,6 +12652,12 @@ def hxz_load_funda(raw_dir: Path) -> pl.DataFrame:
             sh_a=pl.coalesce("seq", pl.col("ceq") + pl.col("pstk"), pl.col("at") - pl.col("lt")),
         )
         .with_columns(be_a=pl.col("sh_a") + pl.col("txditc").fill_null(0.0) - pl.col("ps_a"))
+        # One accounting obs per (gvkey, fiscal year), latest datadate, BEFORE the
+        # inv lag — fiscal-year-end changes otherwise null inv on the surviving row.
+        # Mirrors ff_load_compustat_us. (year is transient; dropped by the select.)
+        .with_columns(year=pl.col("datadate").dt.year())
+        .sort(["gvkey", "datadate"])
+        .unique(subset=["gvkey", "year"], keep="last")
         .sort(["gvkey", "datadate"])
         .with_columns(
             inv=pl.when(at_lag.is_not_null() & (at_lag > 0) & (fy_gap == 1))
@@ -12946,6 +12952,12 @@ def _hxz_compustat_be_inv(lf: pl.LazyFrame, is_global: bool) -> pl.LazyFrame:
     fy_gap = pl.col("datadate").dt.year() - pl.col("datadate").shift(1).over("gvkey").dt.year()
     return (
         lf.with_columns(be_a=be_a, year=pl.col("datadate").dt.year())
+        # One accounting obs per (gvkey, fiscal year), latest datadate, BEFORE the
+        # inv lag. A fiscal-year-end change yields two datadate in one calendar year;
+        # otherwise at.shift(1) spans the sub-annual stub (fy_gap=0) and nulls inv.
+        # Mirrors the FF loaders (_ff_load_world_funda / ff_load_compustat_us).
+        .sort(["gvkey", "datadate"])
+        .unique(subset=["gvkey", "year"], keep="last")
         .sort(["gvkey", "datadate"])
         .with_columns(
             inv=pl.when(at_lag.is_not_null() & (at_lag > 0) & (fy_gap == 1))
@@ -13021,6 +13033,12 @@ def hxz_load_compustat_row(raw_dir: Path) -> pl.DataFrame:
             nulls_last=True,
         )
         .unique(subset=["gvkey", "datadate"], keep="first")
+        # Each source is already one row per (gvkey, year) (see _hxz_compustat_be_inv),
+        # but a gvkey present in BOTH NA and Global can still yield two rows per
+        # (gvkey, year) with different datadate. Collapse before the roe_a lag below,
+        # preferring NA (_src=0) then the latest datadate. Mirrors ff_load_world_compustat.
+        .sort(["gvkey", "year", "_src", "datadate"], descending=[False, False, False, True])
+        .unique(subset=["gvkey", "year"], keep="first")
         .drop("_src", "_be_null")
         .sort(["gvkey", "datadate"])
     )
@@ -13600,19 +13618,23 @@ def hxz_classify_portfolios(
         .drop("port_year")
     )
 
-    # ---- ROW broadcast: join June classification on gvkey + port_year ----
+    # ---- ROW broadcast: join June classification on id + port_year ----
+    # Key on id (security-level), NOT gvkey: a firm with >1 share class has >1 id
+    # in the June frame, and a gvkey-keyed join fans each panel row out into N
+    # identical copies (the 192 dup (id,eom) chars). Matches the ROE broadcast,
+    # the US permno branch, and the FF analog.
     row_panel = panel_m.filter(pl.col("excntry") != US_EXCNTRY)
     row_size_ia_keyed = (
         size_ia_classified.filter(pl.col("excntry") != US_EXCNTRY)
         .with_columns(june_year=pl.col("date").dt.year())
-        .select("excntry", "gvkey", "june_year", "sizeport", "invport", "inv")
+        .select("excntry", "id", "june_year", "sizeport", "invport", "inv")
     )
     row_attached = (
         row_panel.with_columns(FF_PORT_YEAR)
         .join(
             row_size_ia_keyed,
-            left_on=["excntry", "gvkey", "port_year"],
-            right_on=["excntry", "gvkey", "june_year"],
+            left_on=["excntry", "id", "port_year"],
+            right_on=["excntry", "id", "june_year"],
             how="left",
         )
         .drop("port_year")
