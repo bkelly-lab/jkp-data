@@ -11523,6 +11523,12 @@ def ff_load_compustat_us(raw_dir: Path, ff5: bool) -> pl.DataFrame:
             year=pl.col("datadate").dt.year(),
         )
         .with_columns(be=pl.when(be_raw < 0).then(None).otherwise(be_raw))
+        # One accounting obs per (gvkey, fiscal year), latest datadate, BEFORE the
+        # inv lag below. A fiscal-year-end change yields two datadate in one calendar
+        # year; otherwise the at.shift(1) lag spans the sub-annual stub (fy_gap=0) and
+        # nulls inv on the surviving row. Mirrors the ROW loader (_ff_load_world_funda).
+        .sort(["gvkey", "datadate"])
+        .unique(subset=["gvkey", "year"], keep="last")
         .sort(["gvkey", "datadate"])
     )
 
@@ -11936,7 +11942,17 @@ def _ff_load_world_funda(raw_dir: Path, parquet: str, is_global: bool) -> pl.Laz
             .filter((pl.col("_n") == 1) | ((pl.col("_n") == 2) & (pl.col("indfmt") == "INDL")))
             .drop("_n")
         )
-    return lf
+    # Collapse to one accounting obs per (gvkey, fiscal year), keeping the latest
+    # datadate, BEFORE be/op/inv are computed. A fiscal-year-end change yields two
+    # datadate in one calendar year; without this the downstream at.shift(1) lag
+    # spans the sub-annual stub (fy_gap=0) and nulls inv on the surviving row.
+    # keep="last" is deterministic given (gvkey, datadate) uniqueness (Compustat
+    # filters + INDL-over-FS guard; see issue #69).
+    return (
+        lf.with_columns(year=pl.col("datadate").dt.year())
+        .sort(["gvkey", "datadate"])
+        .unique(subset=["gvkey", "year"], keep="last")
+    )
 
 
 def ff_load_world_compustat(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
@@ -11978,6 +11994,12 @@ def ff_load_world_compustat(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
         pl.concat([na, gl], how="vertical_relaxed")
         .sort(["gvkey", "datadate", "_src"])
         .unique(subset=["gvkey", "datadate"], keep="first")
+        # Each source is already one row per (gvkey, year) (see _ff_load_world_funda),
+        # but a gvkey present in BOTH NA and Global can still yield two rows per
+        # (gvkey, year) with different datadate. Collapse to one, preferring NA
+        # (_src=0) then the latest datadate, so the June join can't fan out.
+        .sort(["gvkey", "year", "_src", "datadate"], descending=[False, False, False, True])
+        .unique(subset=["gvkey", "year"], keep="first")
         .drop("_src")
         .collect()
     )
