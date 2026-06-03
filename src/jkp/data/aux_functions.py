@@ -13288,9 +13288,10 @@ def _hxz_us_roe_monthly(
 ) -> pl.DataFrame:
     """Compute Roe = IBQ / calendar-q-lagged BEQ and assign to each US
     formation date per HXZ rules:
-      - pre-1972 (4mo-lag): formation_date ≥ datadate + 4mo (month-start)
-      - ≥1972 (RDQ-based): formation_date ≥ rdq.month_end + 1mo
-      - 6mo staleness cap: formation_date ≤ datadate + 6mo (month-end)
+      - pre-1972 (4mo-lag): formation_date ≥ datadate + 4mo (month-start);
+        no staleness cap — HXZ use the most recent qualifying quarter
+      - ≥1972 (RDQ-based): formation_date ≥ rdq.month_end + 1mo,
+        with 6mo staleness cap: formation_date ≤ datadate + 6mo (month-end)
     """
     fq = fundq.with_columns(safe_div("ibq", "beq_lag1", "roe", mode=3)).select(
         "gvkey", "datadate", "rdq", "roe"
@@ -13310,14 +13311,14 @@ def _hxz_us_roe_monthly(
     return (
         fq_lnk.join(formation_dates.select("date"), how="cross")
         .filter(
-            (pl.col("date") <= pl.col("formation_max"))
-            & pl.col("roe").is_not_null()
+            pl.col("roe").is_not_null()
             & (
                 ((pl.col("date") < cutoff) & (pl.col("date") >= pl.col("formation_min_pre")))
                 | (
                     (pl.col("date") >= cutoff)
                     & pl.col("formation_min_post").is_not_null()
                     & (pl.col("date") >= pl.col("formation_min_post"))
+                    & (pl.col("date") <= pl.col("formation_max"))
                 )
             )
         )
