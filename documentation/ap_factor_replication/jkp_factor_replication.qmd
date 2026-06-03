@@ -91,7 +91,12 @@ roughly the same Compustat snapshot.
 - **HXZ q-factors (Hou, Xue, and Zhang 2015)** — `me_hxz` (size),
   `ia_hxz` (investment), `roe_hxz` (profitability), constructed from a
   2×3×3 triple sort on size, investment-to-assets, and return on
-  equity.
+  equity. We follow the Hou, Xue, and Zhang (2015) methodology and do
+  not use the Hou et al. (2019) 1967–1972 backward extension, which
+  replaces earnings announcement dates with a four-month reporting
+  lag: quarterly Compustat coverage in those years is thin and the
+  resulting sorts noisy. The US sample therefore starts in January
+  1972, as in the original paper.
 - **MP (Stambaugh and Yuan 2017)** — `mispricing_mgmt` and
   `mispricing_perf` are long–short composite mispricing factors built
   from 11 anomalies grouped into a "management" cluster and a
@@ -298,16 +303,24 @@ section_tables("MP")
 
 ## Conclusion
 
-Residual gaps trace to data-vintage drift and undisclosed
-construction choices — both outside the scope of an external
-replication. The JKP factor series are suitable for research use as
-drop-in replacements for the published US factors. The added value of
-this replication is that we publish FF, HXZ, and Stambaugh–Yuan style
-factors for the rest of the country panel using the same methodology,
-and these international factors can likewise be used for research
-where no public benchmark exists. The full
-construction pipeline is open-source and fully replicable end-to-end
-from raw WRDS data.
+Residual differences are primarily attributable to data-vintage
+effects and construction details that are not publicly documented,
+both of which are beyond the scope of an external replication.
+Overall, the replicated JKP factor series closely track the published
+U.S. factors and are suitable for use as research substitutes. Beyond
+reproducing the U.S. factors, this project extends the methodology to
+the international sample, providing Fama–French, Hou–Xue–Zhang, and
+Stambaugh–Yuan style factors for countries where no comparable public
+benchmark is available. The entire construction process is open
+source and can be reproduced end-to-end from raw WRDS data.
+
+**Note on downstream characteristics.** To improve consistency with
+the published factor series, we implemented several revisions to the
+factor construction methodology. As a result, these changes propagate
+to all factor-dependent characteristics and materially affect the
+values of `mispricing_mgmt`, `mispricing_perf`, `iskew_ff3_21d`,
+`resff3_12_1`, `resff3_6_1`, `ivol_ff3_21d`, `iskew_hxz4_21d`, and
+`ivol_hxz4_21d` throughout the sample.
 
 ## Appendix: Replication of daily data
 

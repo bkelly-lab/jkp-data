@@ -13290,7 +13290,11 @@ def _hxz_us_roe_monthly(
     formation date per HXZ (2015) rules:
       - formation_date ≥ rdq.month_end + 1mo (earnings publicly announced)
       - 6mo staleness cap: formation_date ≤ datadate + 6mo (month-end)
-    Applied over the full sample (no pre-1972 4mo-lag proxy regime).
+    We follow the HXZ (2015) methodology over the full sample and do not
+    use the Hou et al. (2019) 1967-1972 extension (4mo-lag proxy in place
+    of RDQ): quarterly Compustat coverage in those years is thin and the
+    resulting sorts noisy. The US sample therefore starts January 1972,
+    as in the original paper.
     """
     fq = fundq.with_columns(safe_div("ibq", "beq_lag1", "roe", mode=3)).select(
         "gvkey", "datadate", "rdq", "roe"
