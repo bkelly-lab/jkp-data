@@ -160,11 +160,12 @@ def section_tables(name):
     display(HTML("\n".join(parts)))
 ```
 
-**Sample window — 1970 onwards.** We restrict the comparison sample to
-1970 onwards because parts of the FF construction in the 1960s rely
-on accounting data that did not yet come from Compustat. Including
-the 1960s would benchmark our Compustat-based replication against
-a reference series built on a different accounting source.
+**Sample window — 1970 onwards.** We restrict the FF comparison sample
+to 1970 onwards: in the 1960s the effect of Fama and French
+complementing Compustat with hand-collected Moody's book equity data
+is more marked, so including those years would benchmark our
+Compustat-based replication against a reference series built in part
+on a different accounting source.
 
 ## FF3 — Fama–French 3 factors
 
