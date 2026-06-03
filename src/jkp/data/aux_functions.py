@@ -13667,9 +13667,13 @@ def gen_hxz_data(
     """
     raw_dir = paths.raw_tables_dir
     interim_dir = paths.interim_dir
-    # HXZ (2015) sample start — limited by RDQ availability; the RDQ gate in
-    # _hxz_us_roe_monthly leaves only stub months before this anyway.
-    output_start = date(1972, 1, 1)
+    output_start = date(1967, 1, 1)
+    # US starts at the HXZ (2015) sample start — limited by RDQ availability;
+    # the RDQ gate in _hxz_us_roe_monthly leaves only stub months before this.
+    us_output_start = date(1972, 1, 1)
+    start_filter = pl.col("date") >= pl.when(pl.col("excntry") == US_EXCNTRY).then(
+        pl.lit(us_output_start)
+    ).otherwise(pl.lit(output_start))
     monthly_out = monthly_factors_path
     daily_out = daily_factors_path
     chars_out = chars_path
@@ -13684,9 +13688,7 @@ def gen_hxz_data(
     chars_formation = hxz_compute_chars(panel_m_raw, fundamentals, raw_dir)
 
     # ---- 4. Classify into portfolios + broadcast to monthly grid ----
-    panel_m = hxz_classify_portfolios(panel_m_raw, chars_formation).filter(
-        pl.col("date") >= output_start
-    )
+    panel_m = hxz_classify_portfolios(panel_m_raw, chars_formation).filter(start_filter)
 
     # ---- 5+6. Monthly sorts + output ----
     if "monthly" in freqs:
@@ -13714,7 +13716,7 @@ def gen_hxz_data(
         daily_start = date(output_start.year - 1, 7, 1)
         panel_d_raw = hxz_load_returns(raw_dir, interim_dir, freq="daily", date_start=daily_start)
         panel_d = (
-            panel_d_raw.filter(pl.col("date") >= output_start)
+            panel_d_raw.filter(start_filter)
             .with_columns(eom=pl.col("date").dt.month_end())
             .join(port_assigns, on=["excntry", "id", "eom"], how="left")
             .drop("eom")
