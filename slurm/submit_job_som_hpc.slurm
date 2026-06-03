@@ -9,6 +9,10 @@
 #SBATCH --time=15:00:00
 #SBATCH --mail-type=ALL
 
+# Abort the job if any command fails (e.g. `jkp build`) instead of
+# proceeding to `jkp portfolio` against incomplete data.
+set -e
+
 echo '-------------------------------'
 cd "${SLURM_SUBMIT_DIR}"
 echo "${SLURM_SUBMIT_DIR}"
