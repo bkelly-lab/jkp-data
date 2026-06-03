@@ -13287,11 +13287,10 @@ def _hxz_us_roe_monthly(
     fundq: pl.DataFrame, raw_dir: Path, formation_dates: pl.DataFrame
 ) -> pl.DataFrame:
     """Compute Roe = IBQ / calendar-q-lagged BEQ and assign to each US
-    formation date per HXZ rules:
-      - pre-1972 (4mo-lag): formation_date ≥ datadate + 4mo (month-start);
-        no staleness cap — HXZ use the most recent qualifying quarter
-      - ≥1972 (RDQ-based): formation_date ≥ rdq.month_end + 1mo,
-        with 6mo staleness cap: formation_date ≤ datadate + 6mo (month-end)
+    formation date per HXZ (2015) rules:
+      - formation_date ≥ rdq.month_end + 1mo (earnings publicly announced)
+      - 6mo staleness cap: formation_date ≤ datadate + 6mo (month-end)
+    Applied over the full sample (no pre-1972 4mo-lag proxy regime).
     """
     fq = fundq.with_columns(safe_div("ibq", "beq_lag1", "roe", mode=3)).select(
         "gvkey", "datadate", "rdq", "roe"
@@ -13300,27 +13299,19 @@ def _hxz_us_roe_monthly(
         hxz_link_compustat(fq, raw_dir)
         .filter(pl.col("rdq").is_null() | (pl.col("rdq") > pl.col("datadate")))
         .with_columns(
-            formation_min_pre=pl.col("datadate").dt.offset_by("4mo").dt.month_start(),
-            formation_min_post=pl.when(pl.col("rdq").is_not_null())
+            formation_min=pl.when(pl.col("rdq").is_not_null())
             .then(pl.col("rdq").dt.month_end().dt.offset_by("1mo"))
             .otherwise(None),
             formation_max=pl.col("datadate").dt.offset_by("6mo").dt.month_end(),
         )
     )
-    cutoff = date(1972, 1, 1)
     return (
         fq_lnk.join(formation_dates.select("date"), how="cross")
         .filter(
             pl.col("roe").is_not_null()
-            & (
-                ((pl.col("date") < cutoff) & (pl.col("date") >= pl.col("formation_min_pre")))
-                | (
-                    (pl.col("date") >= cutoff)
-                    & pl.col("formation_min_post").is_not_null()
-                    & (pl.col("date") >= pl.col("formation_min_post"))
-                    & (pl.col("date") <= pl.col("formation_max"))
-                )
-            )
+            & pl.col("formation_min").is_not_null()
+            & (pl.col("date") >= pl.col("formation_min"))
+            & (pl.col("date") <= pl.col("formation_max"))
         )
         # Sort tie-break: roe DESC then rdq nulls-last so identical
         # (permno, date, datadate) tuples — rare but possible if linker keeps

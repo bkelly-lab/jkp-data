@@ -1874,8 +1874,8 @@ class TestHxzUsRoeMonthly:
         )
         lnk.write_parquet(tmp_path / "crsp_ccmxpf_lnkhist.parquet")
 
-    def test_pre_1972_uses_4mo_lag(self, tmp_path):
-        """Pre-1972: formation_date ≥ datadate + 4mo (month-start)."""
+    def test_null_rdq_excluded(self, tmp_path):
+        """No RDQ → earnings never assigned (RDQ gate applies full sample)."""
         self._write_lnkhist(tmp_path, 10001, "G01")
         fundq = pl.DataFrame(
             {
@@ -1888,44 +1888,40 @@ class TestHxzUsRoeMonthly:
         ).with_columns(
             pl.col("datadate", "rdq").cast(pl.Date), pl.col("beq_lag1", "ibq").cast(pl.Float64)
         )
-        # roe = ibq / beq_lag1 = 0.1
-        # formation_min_pre = 1965-12-31 + 4mo month_start = 1966-04-01
-        # formation_max = 1965-12-31 + 6mo month_end = 1966-06-30
         formation_dates = pl.DataFrame(
             {"date": [date(1966, 4, 30), date(1966, 6, 30)]}
         ).with_columns(pl.col("date").cast(pl.Date))
         from jkp.data.aux_functions import _hxz_us_roe_monthly, safe_div
 
-        # Build fundq with roe pre-computed
         fq_with_roe = fundq.with_columns(safe_div("ibq", "beq_lag1", "roe", mode=3))
         result = _hxz_us_roe_monthly(fq_with_roe, tmp_path, formation_dates)
-        assert len(result) == 2
-        assert result["roe"][0] == pytest.approx(0.1)
+        assert len(result) == 0
 
-    def test_pre_1972_date_too_early_excluded(self, tmp_path):
-        """Pre-1972: formation_date < datadate + 4mo month_start → excluded."""
+    def test_pre_1972_rdq_gated(self, tmp_path):
+        """Pre-1972 row with RDQ follows the same gate as post-1972."""
         self._write_lnkhist(tmp_path, 10001, "G01")
         fundq = pl.DataFrame(
             {
                 "gvkey": ["G01"],
                 "datadate": [date(1965, 12, 31)],
-                "rdq": [None],
+                "rdq": [date(1966, 2, 15)],
                 "beq_lag1": [100.0],
                 "ibq": [10.0],
             }
         ).with_columns(
             pl.col("datadate", "rdq").cast(pl.Date), pl.col("beq_lag1", "ibq").cast(pl.Float64)
         )
-        # formation_min_pre = 1965-12-31 + 4mo month_start = 1966-04-01
-        # formation date 1966-03-31 < 1966-04-01 → excluded
-        formation_dates = pl.DataFrame({"date": [date(1966, 3, 31)]}).with_columns(
-            pl.col("date").cast(pl.Date)
-        )
+        # formation_min = 1966-02-28 + 1mo = 1966-03-28 → first eom 1966-03-31
+        # formation_max = 1965-12-31 + 6mo month_end = 1966-06-30
+        formation_dates = pl.DataFrame(
+            {"date": [date(1966, 2, 28), date(1966, 3, 31), date(1966, 6, 30)]}
+        ).with_columns(pl.col("date").cast(pl.Date))
         from jkp.data.aux_functions import _hxz_us_roe_monthly, safe_div
 
         fq_with_roe = fundq.with_columns(safe_div("ibq", "beq_lag1", "roe", mode=3))
-        result = _hxz_us_roe_monthly(fq_with_roe, tmp_path, formation_dates)
-        assert len(result) == 0
+        result = _hxz_us_roe_monthly(fq_with_roe, tmp_path, formation_dates).sort("date")
+        assert result["date"].to_list() == [date(1966, 3, 31), date(1966, 6, 30)]
+        assert result["roe"][0] == pytest.approx(0.1)
 
     def test_post_1972_rdq_gated(self, tmp_path):
         """Post-1972: formation_date ≥ rdq.month_end + 1mo."""
