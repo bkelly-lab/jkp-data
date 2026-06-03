@@ -40,44 +40,117 @@ _FLOAT_VARS = [
 ]
 
 _EOMS = [date(2020, 1, 31), date(2020, 2, 29), date(2020, 3, 31)]
-_COUNTRIES = ["USA", "FRA"]
-# USA ids: 1..200, FRA ids: 201..400 — disjoint to ensure unique (id, eom)
-_USA_ID_START = 1
-_FRA_ID_START = 201
-_N_PER_COUNTRY_MONTH = 40  # well above min_stks=10
+
+# --- Calibration -------------------------------------------------------------
+# Derived from SUMMARY STATISTICS of the real interim world_data_-1.parquet
+# (Yale HPC, June 2026): per-column medians, IQR-based scales, null rates,
+# gate pass rates, and (excntry, eom) group sizes. Only aggregates were used —
+# no WRDS rows are embedded in this file or the fixture. quality_minus_junk is
+# rank-based, so the output depends on orderings, null patterns, and group
+# sizes rather than exact distribution families; normal/lognormal samplers
+# matched at the median/IQR are sufficient. The real data contains NO NaN
+# values in the z-var columns (only nulls); the NaN injections below are a
+# synthetic-only corner to lock NaN-handling behaviour.
+#
+# var: (median, scale ~= IQR/1.35, null_rate) — sampled as median + scale*N(0,1)
+_NORMAL_CALIBRATION: dict[str, tuple[float, float, float]] = {
+    "gp_at": (0.22, 0.21, 0.27),
+    "ni_be": (0.065, 0.11, 0.18),
+    "ni_at": (0.024, 0.054, 0.16),
+    "ocf_at": (0.040, 0.082, 0.17),
+    "gp_sale": (0.31, 0.23, 0.29),
+    "oaccruals_at": (-0.026, 0.078, 0.29),
+    "gpoa_ch5": (-0.008, 0.096, 0.47),
+    "roe_ch5": (-0.012, 0.117, 0.41),
+    "roa_ch5": (-0.003, 0.056, 0.38),
+    "cfoa_ch5": (0.0, 0.086, 0.39),
+    "gmar_ch5": (0.0, 0.077, 0.48),
+    "o_score": (-2.73, 2.24, 0.33),
+    "z_score": (2.80, 2.34, 0.31),
+    # debt_at is sampled the same way, then clipped to [0, 1]
+    "debt_at": (0.19, 0.23, 0.17),
+}
+# var: (mu, sigma, null_rate) — sampled as exp(mu + sigma*N(0,1)); positive vars
+_LOGNORMAL_CALIBRATION: dict[str, tuple[float, float, float]] = {
+    "betabab_1260d": (-0.036, 0.42, 0.41),
+    "roeq_be_std": (-3.54, 1.28, 0.54),
+    "roe_be_std": (-2.83, 1.24, 0.38),
+}
+_ME_LOGNORMAL = (4.49, 2.37)  # median ~89.5, q75 ~443
+_RET_EXC_SCALE = 0.115  # IQR/1.35; null rate below
+_RET_EXC_NULL = 0.12
+_GATE_PASS = {"common": 0.84, "primary_sec": 0.88, "obs_main": 0.84, "exch_main": 0.82}
+
+# Countries: USA/FRA are full-size groups; ITA is deliberately below
+# min_stks=10 (real q5 group size is ~5) so the golden locks the
+# thin-group → all-null-qmj behaviour. Id ranges disjoint so every
+# (id, eom) pair is unique, required for integration-test determinism.
+_COUNTRY_SPECS = [("USA", 1, 80), ("FRA", 201, 80), ("ITA", 401, 6)]
+
+
+def _sample_values(rng: np.random.Generator, var: str, n: int) -> np.ndarray:
+    """Draw n calibrated, non-null values for var."""
+    if var in _LOGNORMAL_CALIBRATION:
+        mu, sigma, _ = _LOGNORMAL_CALIBRATION[var]
+        return np.exp(mu + sigma * rng.standard_normal(n))
+    median, scale, _ = _NORMAL_CALIBRATION[var]
+    vals = median + scale * rng.standard_normal(n)
+    if var == "debt_at":
+        vals = np.clip(vals, 0.0, 1.0)
+    return vals
+
+
+def _null_rate(var: str) -> float:
+    cal = _LOGNORMAL_CALIBRATION.get(var) or _NORMAL_CALIBRATION[var]
+    return cal[2]
+
+
+def _corner_row_floats(rng: np.random.Generator) -> dict:
+    """Calibrated, fully non-null float values for a hand-built corner row."""
+    row = {var: float(_sample_values(rng, var, 1)[0]) for var in _FLOAT_VARS}
+    row["ret_exc"] = float(_RET_EXC_SCALE * rng.standard_normal())
+    row["me"] = float(np.exp(_ME_LOGNORMAL[0] + _ME_LOGNORMAL[1] * rng.standard_normal()))
+    return row
 
 
 def build_qmj_world_data_input(seed: int = 42) -> pl.DataFrame:
     """Build deterministic synthetic input for quality_minus_junk.
 
-    Shape: 2 countries x 3 month-ends x ~40 stocks = 240 valid rows plus
-    a handful of gate-failing and corner-case rows.
+    Shape: (80 USA + 80 FRA + 6 ITA) stocks x 3 month-ends = 498 base rows
+    plus a handful of hand-built corner-case rows. Values, null rates, and
+    gate pass rates are calibrated to summary statistics of the real
+    world_data_-1.parquet (see module comments); no WRDS data is embedded.
 
-    USA ids are in [1, 200]; FRA ids in [201, 400] — disjoint so every
-    (id, eom) pair in the output is unique, which is required for
+    USA ids are in [1, 200]; FRA in [201, 400]; ITA in [401, 500] — disjoint
+    so every (id, eom) pair in the output is unique, which is required for
     integration-test determinism.
     """
     rng = np.random.default_rng(seed)
 
     rows: list[dict] = []
 
-    for country in _COUNTRIES:
-        id_start = _USA_ID_START if country == "USA" else _FRA_ID_START
+    for country, id_start, n in _COUNTRY_SPECS:
         for eom in _EOMS:
-            for i in range(_N_PER_COUNTRY_MONTH):
+            flags = {g: rng.random(n) < p for g, p in _GATE_PASS.items()}
+            ret_exc = _RET_EXC_SCALE * rng.standard_normal(n)
+            ret_null = rng.random(n) < _RET_EXC_NULL
+            me = np.exp(_ME_LOGNORMAL[0] + _ME_LOGNORMAL[1] * rng.standard_normal(n))
+            values = {var: _sample_values(rng, var, n) for var in _FLOAT_VARS}
+            nulls = {var: rng.random(n) < _null_rate(var) for var in _FLOAT_VARS}
+            for i in range(n):
                 row: dict = {
                     "id": id_start + i,
                     "eom": eom,
                     "excntry": country,
-                    "common": 1,
-                    "primary_sec": 1,
-                    "obs_main": 1,
-                    "exch_main": 1,
-                    "ret_exc": float(rng.standard_normal()),
-                    "me": float(rng.uniform(10.0, 1e6)),
+                    "common": int(flags["common"][i]),
+                    "primary_sec": int(flags["primary_sec"][i]),
+                    "obs_main": int(flags["obs_main"][i]),
+                    "exch_main": int(flags["exch_main"][i]),
+                    "ret_exc": None if ret_null[i] else float(ret_exc[i]),
+                    "me": float(me[i]),
                 }
                 for var in _FLOAT_VARS:
-                    row[var] = float(rng.standard_normal())
+                    row[var] = None if nulls[var][i] else float(values[var][i])
                 rows.append(row)
 
     # --- Corner case: a few NaN values in single z-vars ---
@@ -96,12 +169,10 @@ def build_qmj_world_data_input(seed: int = 42) -> pl.DataFrame:
                 "primary_sec": 1,
                 "obs_main": 1,
                 "exch_main": 1,
-                "ret_exc": float(rng.standard_normal()),
-                "me": float(rng.uniform(10.0, 1e6)),
+                **_corner_row_floats(rng),
             }
-            for var in _FLOAT_VARS:
-                row[var] = float(rng.standard_normal())
             # Inject NaN into two vars to test partial-null z-rank behaviour
+            # (the real data has no NaNs; synthetic-only corner)
             row["gp_at"] = float("nan")
             row["roe_ch5"] = float("nan")
             rows.append(row)
@@ -119,11 +190,8 @@ def build_qmj_world_data_input(seed: int = 42) -> pl.DataFrame:
                 "primary_sec": 1,
                 "obs_main": 1,
                 "exch_main": 1,
-                "ret_exc": float(rng.standard_normal()),
-                "me": float(rng.uniform(10.0, 1e6)),
+                **_corner_row_floats(rng),
             }
-            for var in _FLOAT_VARS:
-                row[var] = float(rng.standard_normal())
             row["roeq_be_std"] = None  # force evol = roe_be_std
             rows.append(row)
 
@@ -136,7 +204,7 @@ def build_qmj_world_data_input(seed: int = 42) -> pl.DataFrame:
     ]
     gate_fail_id_start = 160
     for offset, overrides in enumerate(gate_fail_configs):
-        for country, id_base in [("USA", gate_fail_id_start), ("FRA", gate_fail_id_start + 100)]:
+        for country, id_base in [("USA", gate_fail_id_start), ("FRA", gate_fail_id_start + 200)]:
             row = {
                 "id": id_base + offset,
                 "eom": _EOMS[0],
@@ -145,11 +213,8 @@ def build_qmj_world_data_input(seed: int = 42) -> pl.DataFrame:
                 "primary_sec": 1,
                 "obs_main": 1,
                 "exch_main": 1,
-                "ret_exc": float(rng.standard_normal()),
-                "me": float(rng.uniform(10.0, 1e6)),
+                **_corner_row_floats(rng),
             }
-            for var in _FLOAT_VARS:
-                row[var] = float(rng.standard_normal())
             row.update(overrides)
             rows.append(row)
 
@@ -166,11 +231,8 @@ def build_qmj_world_data_input(seed: int = 42) -> pl.DataFrame:
                 "primary_sec": 1,
                 "obs_main": 1,
                 "exch_main": 1,
-                "ret_exc": float(rng.standard_normal()),
-                "me": float(rng.uniform(10.0, 1e6)),
+                **_corner_row_floats(rng),
             }
-            for var in _FLOAT_VARS:
-                row[var] = float(rng.standard_normal())
             # All safety inputs null → mean_horizontal → null safety → null qmj
             for null_var in [
                 "betabab_1260d",
@@ -189,10 +251,11 @@ def build_qmj_world_data_input(seed: int = 42) -> pl.DataFrame:
             "id": pl.Int64,
             "eom": pl.Date,
             "excntry": pl.Utf8,
-            "common": pl.Int64,
-            "primary_sec": pl.Int64,
-            "obs_main": pl.Int64,
-            "exch_main": pl.Int64,
+            # flags are Int32 in the real world_data_-1 schema
+            "common": pl.Int32,
+            "primary_sec": pl.Int32,
+            "obs_main": pl.Int32,
+            "exch_main": pl.Int32,
             "ret_exc": pl.Float64,
             "me": pl.Float64,
             **dict.fromkeys(_FLOAT_VARS, pl.Float64),
