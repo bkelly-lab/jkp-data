@@ -13667,7 +13667,9 @@ def gen_hxz_data(
     """
     raw_dir = paths.raw_tables_dir
     interim_dir = paths.interim_dir
-    output_start = date(1967, 1, 1)
+    # HXZ (2015) sample start — limited by RDQ availability; the RDQ gate in
+    # _hxz_us_roe_monthly leaves only stub months before this anyway.
+    output_start = date(1972, 1, 1)
     monthly_out = monthly_factors_path
     daily_out = daily_factors_path
     chars_out = chars_path
