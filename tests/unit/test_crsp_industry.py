@@ -1,4 +1,4 @@
-"""Tests for ``crsp_industry`` (Issue #155).
+"""Tests for crsp_industry() (Issue #155).
 
 Covers the daily SIC/NAICS expansion of CRSP name-history rows:
 
