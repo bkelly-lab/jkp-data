@@ -6,7 +6,6 @@ import os
 import re
 import shutil
 import time
-import warnings
 from datetime import date
 from math import exp, sqrt
 from pathlib import Path
@@ -8977,16 +8976,14 @@ def add_ecdf(
 
     # asof-join the ECDF onto every row; rows below any bp value get null,
     # filled with 0.0 to match the convention expected downstream.
-    # Polars emits a Sortedness UserWarning on join_asof with `by` even when
-    # both sides are pre-sorted; suppress locally rather than globally.
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", category=UserWarning, message=r"Sortedness.*by.*provided")
-        res = (
-            df.sort(sort_cols)
-            .join_asof(bp_ecdf, on="var", by=group_cols, strategy="backward")
-            .with_columns(pl.col("cdf").fill_null(0.0))
-        )
-    return res
+    # Both sides are sorted within each `by` group; skip the sortedness check
+    # (Polars can't verify it with `by` and would warn at collect time,
+    # outside any catch_warnings context).
+    return (
+        df.sort(sort_cols)
+        .join_asof(bp_ecdf, on="var", by=group_cols, strategy="backward", check_sortedness=False)
+        .with_columns(pl.col("cdf").fill_null(0.0))
+    )
 
 
 def _build_industry_daily_returns(
