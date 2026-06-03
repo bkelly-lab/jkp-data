@@ -2256,10 +2256,18 @@ var requirejs,require,define;(function(global,setTimeout){var req,s,head,baseEle
 <li><strong>FF3 (Fama–French 1992, 1993)</strong> — <code>smb_ff3</code> is the size factor (small-minus-big) from a 2×3 size × book-to-market sort; <code>hml</code> is the value factor (high-minus-low book-to-market) from the same sort.</li>
 <li><strong>FF5 (Fama–French 2015)</strong> — built from a 2×3 size × {B/M, profitability, investment} sort. <code>smb_ff5</code> is the redefined size factor (averaged across the three sorts); <code>hml</code> is value; <code>rmw</code> is robust-minus-weak operating profitability; <code>cma</code> is conservative-minus-aggressive investment.</li>
 <li><strong>UMD (Carhart 1997 / Fama–French momentum)</strong> — <code>umd_ff</code> is the momentum factor: winners-minus-losers based on prior 12-month return skipping the most recent month, within size buckets.</li>
-<li><strong>HXZ q-factors (Hou, Xue, and Zhang 2015)</strong> — <code>me_hxz</code> (size), <code>ia_hxz</code> (investment), <code>roe_hxz</code> (profitability), constructed from a 2×3×3 triple sort on size, investment-to-assets, and return on equity. We follow the Hou, Xue, and Zhang (2015) methodology and do not use the Hou et al. (2019) 1967–1972 backward extension, which replaces earnings announcement dates with a four-month reporting lag: quarterly Compustat coverage in those years is thin and the resulting sorts noisy. The US sample therefore starts in January 1972, as in the original paper.</li>
+<li><strong>HXZ q-factors (Hou, Xue, and Zhang 2015)</strong> — <code>me_hxz</code> (size), <code>ia_hxz</code> (investment), <code>roe_hxz</code> (profitability), constructed from a 2×3×3 triple sort on size, investment-to-assets, and return on equity.</li>
 <li><strong>MP (Stambaugh and Yuan 2017)</strong> — <code>mispricing_mgmt</code> and <code>mispricing_perf</code> are long–short composite mispricing factors built from 11 anomalies grouped into a “management” cluster and a “performance” cluster; <code>smb_mispricing</code> is the size factor from the same triple sort.</li>
 </ul>
-<p><strong>Sample window — 1970 onwards.</strong> We restrict the FF comparison sample to 1970 onwards: in the 1960s the effect of Fama and French complementing Compustat with hand-collected Moody’s book equity data is more marked, so including those years would benchmark our Compustat-based replication against a reference series built in part on a different accounting source.</p>
+<p><strong>Sample windows.</strong></p>
+<ul>
+<li><strong>FF (FF3, FF5, UMD) — 1970 onwards.</strong> We restrict the FF comparison sample to 1970 onwards: in the 1960s the effect of Fama and French complementing Compustat with hand-collected Moody’s book equity data is more marked, so including those years would benchmark our Compustat-based replication against a reference series built in part on a different accounting source.</li>
+<li><strong>HXZ — January 1972 onwards.</strong> We follow the Hou, Xue, and Zhang
+<ol start="2015" type="1">
+<li>methodology and do not use the Hou et al. (2019) 1967–1972 backward extension, which replaces earnings announcement dates with a four-month reporting lag: quarterly Compustat coverage in those years is thin and the resulting sorts noisy. The US sample therefore starts in January 1972, as in the original paper.</li>
+</ol></li>
+<li><strong>MP — 1963 to 2016.</strong> The comparison spans the published Stambaugh–Yuan series, which starts in January 1963 and ends in December 2016.</li>
+</ul>
 </section>
 </section>
 <section id="ff3-famafrench-3-factors" class="level2">
@@ -2268,7 +2276,7 @@ var requirejs,require,define;(function(global,setTimeout){var req,s,head,baseEle
 <ul class="nav nav-tabs" role="tablist"><li class="nav-item" role="presentation"><a class="nav-link active" id="tabset-1-1-tab" data-bs-toggle="tab" data-bs-target="#tabset-1-1" role="tab" aria-controls="tabset-1-1" aria-selected="true" href>SMB</a></li><li class="nav-item" role="presentation"><a class="nav-link" id="tabset-1-2-tab" data-bs-toggle="tab" data-bs-target="#tabset-1-2" role="tab" aria-controls="tabset-1-2" aria-selected="false" href>HML</a></li></ul>
 <div class="tab-content">
 <div id="tabset-1-1" class="tab-pane active" role="tabpanel" aria-labelledby="tabset-1-1-tab">
-<div id="d2b73f9f" class="cell" data-execution_count="2">
+<div id="2f7d96b0" class="cell" data-execution_count="2">
 <div class="cell-output cell-output-display">
 <div>
 <figure class="figure">
@@ -2279,7 +2287,7 @@ var requirejs,require,define;(function(global,setTimeout){var req,s,head,baseEle
 </div>
 </div>
 <div id="tabset-1-2" class="tab-pane" role="tabpanel" aria-labelledby="tabset-1-2-tab">
-<div id="b8b9c3e9" class="cell" data-execution_count="3">
+<div id="a355db6d" class="cell" data-execution_count="3">
 <div class="cell-output cell-output-display">
 <div>
 <figure class="figure">
@@ -2291,7 +2299,7 @@ var requirejs,require,define;(function(global,setTimeout){var req,s,head,baseEle
 </div>
 </div>
 </div>
-<div id="ab41efe4" class="cell" data-execution_count="4">
+<div id="ce4ae3e8" class="cell" data-execution_count="4">
 <div class="cell-output cell-output-display cell-output-markdown">
 <p><em>Comparison window: USA, 1970-01-31 to 2025-12-31 (monthly, 672 obs).</em></p>
 </div>
@@ -2475,7 +2483,7 @@ var requirejs,require,define;(function(global,setTimeout){var req,s,head,baseEle
 <ul class="nav nav-tabs" role="tablist"><li class="nav-item" role="presentation"><a class="nav-link active" id="tabset-2-1-tab" data-bs-toggle="tab" data-bs-target="#tabset-2-1" role="tab" aria-controls="tabset-2-1" aria-selected="true" href>SMB</a></li><li class="nav-item" role="presentation"><a class="nav-link" id="tabset-2-2-tab" data-bs-toggle="tab" data-bs-target="#tabset-2-2" role="tab" aria-controls="tabset-2-2" aria-selected="false" href>HML</a></li><li class="nav-item" role="presentation"><a class="nav-link" id="tabset-2-3-tab" data-bs-toggle="tab" data-bs-target="#tabset-2-3" role="tab" aria-controls="tabset-2-3" aria-selected="false" href>RMW</a></li><li class="nav-item" role="presentation"><a class="nav-link" id="tabset-2-4-tab" data-bs-toggle="tab" data-bs-target="#tabset-2-4" role="tab" aria-controls="tabset-2-4" aria-selected="false" href>CMA</a></li></ul>
 <div class="tab-content">
 <div id="tabset-2-1" class="tab-pane active" role="tabpanel" aria-labelledby="tabset-2-1-tab">
-<div id="619ef566" class="cell" data-execution_count="5">
+<div id="534c2dc5" class="cell" data-execution_count="5">
 <div class="cell-output cell-output-display">
 <div>
 <figure class="figure">
@@ -2486,7 +2494,7 @@ var requirejs,require,define;(function(global,setTimeout){var req,s,head,baseEle
 </div>
 </div>
 <div id="tabset-2-2" class="tab-pane" role="tabpanel" aria-labelledby="tabset-2-2-tab">
-<div id="f592ff43" class="cell" data-execution_count="6">
+<div id="424a7bae" class="cell" data-execution_count="6">
 <div class="cell-output cell-output-display">
 <div>
 <figure class="figure">
@@ -2497,7 +2505,7 @@ var requirejs,require,define;(function(global,setTimeout){var req,s,head,baseEle
 </div>
 </div>
 <div id="tabset-2-3" class="tab-pane" role="tabpanel" aria-labelledby="tabset-2-3-tab">
-<div id="22bb09f6" class="cell" data-execution_count="7">
+<div id="dfff43e6" class="cell" data-execution_count="7">
 <div class="cell-output cell-output-display">
 <div>
 <figure class="figure">
@@ -2508,7 +2516,7 @@ var requirejs,require,define;(function(global,setTimeout){var req,s,head,baseEle
 </div>
 </div>
 <div id="tabset-2-4" class="tab-pane" role="tabpanel" aria-labelledby="tabset-2-4-tab">
-<div id="59b093bf" class="cell" data-execution_count="8">
+<div id="9204db74" class="cell" data-execution_count="8">
 <div class="cell-output cell-output-display">
 <div>
 <figure class="figure">
@@ -2520,7 +2528,7 @@ var requirejs,require,define;(function(global,setTimeout){var req,s,head,baseEle
 </div>
 </div>
 </div>
-<div id="4c2ef817" class="cell" data-execution_count="9">
+<div id="acb554d2" class="cell" data-execution_count="9">
 <div class="cell-output cell-output-display cell-output-markdown">
 <p><em>Comparison window: USA, 1970-01-31 to 2025-12-31 (monthly, 672 obs).</em></p>
 </div>
@@ -2846,7 +2854,7 @@ var requirejs,require,define;(function(global,setTimeout){var req,s,head,baseEle
 </section>
 <section id="umd-famafrench-momentum" class="level2">
 <h2 class="anchored" data-anchor-id="umd-famafrench-momentum">UMD — Fama–French momentum</h2>
-<div id="76f168d5" class="cell" data-execution_count="10">
+<div id="be7e9597" class="cell" data-execution_count="10">
 <div class="cell-output cell-output-display">
 <div>
 <figure class="figure">
@@ -2855,7 +2863,7 @@ var requirejs,require,define;(function(global,setTimeout){var req,s,head,baseEle
 </div>
 </div>
 </div>
-<div id="401f3b50" class="cell" data-execution_count="11">
+<div id="11314410" class="cell" data-execution_count="11">
 <div class="cell-output cell-output-display cell-output-markdown">
 <p><em>Comparison window: USA, 1970-01-31 to 2025-12-31 (monthly, 672 obs).</em></p>
 </div>
@@ -2966,7 +2974,7 @@ var requirejs,require,define;(function(global,setTimeout){var req,s,head,baseEle
 <ul class="nav nav-tabs" role="tablist"><li class="nav-item" role="presentation"><a class="nav-link active" id="tabset-3-1-tab" data-bs-toggle="tab" data-bs-target="#tabset-3-1" role="tab" aria-controls="tabset-3-1" aria-selected="true" href>ME</a></li><li class="nav-item" role="presentation"><a class="nav-link" id="tabset-3-2-tab" data-bs-toggle="tab" data-bs-target="#tabset-3-2" role="tab" aria-controls="tabset-3-2" aria-selected="false" href>IA</a></li><li class="nav-item" role="presentation"><a class="nav-link" id="tabset-3-3-tab" data-bs-toggle="tab" data-bs-target="#tabset-3-3" role="tab" aria-controls="tabset-3-3" aria-selected="false" href>ROE</a></li></ul>
 <div class="tab-content">
 <div id="tabset-3-1" class="tab-pane active" role="tabpanel" aria-labelledby="tabset-3-1-tab">
-<div id="8567af6d" class="cell" data-execution_count="12">
+<div id="293850f7" class="cell" data-execution_count="12">
 <div class="cell-output cell-output-display">
 <div>
 <figure class="figure">
@@ -2977,7 +2985,7 @@ var requirejs,require,define;(function(global,setTimeout){var req,s,head,baseEle
 </div>
 </div>
 <div id="tabset-3-2" class="tab-pane" role="tabpanel" aria-labelledby="tabset-3-2-tab">
-<div id="7ae4b837" class="cell" data-execution_count="13">
+<div id="0c96124f" class="cell" data-execution_count="13">
 <div class="cell-output cell-output-display">
 <div>
 <figure class="figure">
@@ -2988,7 +2996,7 @@ var requirejs,require,define;(function(global,setTimeout){var req,s,head,baseEle
 </div>
 </div>
 <div id="tabset-3-3" class="tab-pane" role="tabpanel" aria-labelledby="tabset-3-3-tab">
-<div id="42640721" class="cell" data-execution_count="14">
+<div id="6241693e" class="cell" data-execution_count="14">
 <div class="cell-output cell-output-display">
 <div>
 <figure class="figure">
@@ -3000,7 +3008,7 @@ var requirejs,require,define;(function(global,setTimeout){var req,s,head,baseEle
 </div>
 </div>
 </div>
-<div id="6e068ccc" class="cell" data-execution_count="15">
+<div id="0e5682af" class="cell" data-execution_count="15">
 <div class="cell-output cell-output-display cell-output-markdown">
 <p><em>Comparison window: USA, 1972-01-31 to 2024-12-31 (monthly, 636 obs).</em></p>
 </div>
@@ -3257,7 +3265,7 @@ var requirejs,require,define;(function(global,setTimeout){var req,s,head,baseEle
 <ul class="nav nav-tabs" role="tablist"><li class="nav-item" role="presentation"><a class="nav-link active" id="tabset-4-1-tab" data-bs-toggle="tab" data-bs-target="#tabset-4-1" role="tab" aria-controls="tabset-4-1" aria-selected="true" href>SMB</a></li><li class="nav-item" role="presentation"><a class="nav-link" id="tabset-4-2-tab" data-bs-toggle="tab" data-bs-target="#tabset-4-2" role="tab" aria-controls="tabset-4-2" aria-selected="false" href>MGMT</a></li><li class="nav-item" role="presentation"><a class="nav-link" id="tabset-4-3-tab" data-bs-toggle="tab" data-bs-target="#tabset-4-3" role="tab" aria-controls="tabset-4-3" aria-selected="false" href>PERF</a></li></ul>
 <div class="tab-content">
 <div id="tabset-4-1" class="tab-pane active" role="tabpanel" aria-labelledby="tabset-4-1-tab">
-<div id="5fc0b6b8" class="cell" data-execution_count="16">
+<div id="01306b64" class="cell" data-execution_count="16">
 <div class="cell-output cell-output-display">
 <div>
 <figure class="figure">
@@ -3268,7 +3276,7 @@ var requirejs,require,define;(function(global,setTimeout){var req,s,head,baseEle
 </div>
 </div>
 <div id="tabset-4-2" class="tab-pane" role="tabpanel" aria-labelledby="tabset-4-2-tab">
-<div id="be1692b3" class="cell" data-execution_count="17">
+<div id="5e12d7e2" class="cell" data-execution_count="17">
 <div class="cell-output cell-output-display">
 <div>
 <figure class="figure">
@@ -3279,7 +3287,7 @@ var requirejs,require,define;(function(global,setTimeout){var req,s,head,baseEle
 </div>
 </div>
 <div id="tabset-4-3" class="tab-pane" role="tabpanel" aria-labelledby="tabset-4-3-tab">
-<div id="510ea0e5" class="cell" data-execution_count="18">
+<div id="e92e3bda" class="cell" data-execution_count="18">
 <div class="cell-output cell-output-display">
 <div>
 <figure class="figure">
@@ -3291,7 +3299,7 @@ var requirejs,require,define;(function(global,setTimeout){var req,s,head,baseEle
 </div>
 </div>
 </div>
-<div id="140a7046" class="cell" data-execution_count="19">
+<div id="a03bb759" class="cell" data-execution_count="19">
 <div class="cell-output cell-output-display cell-output-markdown">
 <p><em>Comparison window: USA, 1963-01-31 to 2016-12-31 (monthly, 648 obs).</em></p>
 </div>
@@ -3561,7 +3569,7 @@ var requirejs,require,define;(function(global,setTimeout){var req,s,head,baseEle
 <p>Daily factor returns are mechanically noisier than monthly returns: small differences in universe filters, delisting handling, or trading calendars compound day-by-day, so day-level correlations are typically lower and day-level Mean / StD figures more dispersed than at the monthly frequency. The tables below mirror the monthly <strong>breakdown by decade</strong>, with a Full Sample row at the top, computed on daily data (Mean × 252, StD × √252).</p>
 <section id="ff3" class="level3">
 <h3 class="anchored" data-anchor-id="ff3">FF3</h3>
-<div id="4b8a415b" class="cell" data-execution_count="20">
+<div id="b844e4d6" class="cell" data-execution_count="20">
 <div class="cell-output cell-output-display cell-output-markdown">
 <p><strong>SMB</strong></p>
 </div>
@@ -3716,7 +3724,7 @@ var requirejs,require,define;(function(global,setTimeout){var req,s,head,baseEle
 </section>
 <section id="ff5" class="level3">
 <h3 class="anchored" data-anchor-id="ff5">FF5</h3>
-<div id="56567eef" class="cell" data-execution_count="21">
+<div id="febaad0f" class="cell" data-execution_count="21">
 <div class="cell-output cell-output-display cell-output-markdown">
 <p><strong>SMB</strong></p>
 </div>
@@ -4021,7 +4029,7 @@ var requirejs,require,define;(function(global,setTimeout){var req,s,head,baseEle
 </section>
 <section id="umd" class="level3">
 <h3 class="anchored" data-anchor-id="umd">UMD</h3>
-<div id="8c5f578c" class="cell" data-execution_count="22">
+<div id="fa4a517c" class="cell" data-execution_count="22">
 <div class="cell-output cell-output-display cell-output-markdown">
 <p><strong>UMD</strong></p>
 </div>
@@ -4101,7 +4109,7 @@ var requirejs,require,define;(function(global,setTimeout){var req,s,head,baseEle
 </section>
 <section id="hxz" class="level3">
 <h3 class="anchored" data-anchor-id="hxz">HXZ</h3>
-<div id="fad54b33" class="cell" data-execution_count="23">
+<div id="cd12f439" class="cell" data-execution_count="23">
 <div class="cell-output cell-output-display cell-output-markdown">
 <p><strong>ME</strong></p>
 </div>
@@ -4331,7 +4339,7 @@ var requirejs,require,define;(function(global,setTimeout){var req,s,head,baseEle
 </section>
 <section id="mp" class="level3">
 <h3 class="anchored" data-anchor-id="mp">MP</h3>
-<div id="75aa9b12" class="cell" data-execution_count="24">
+<div id="9cd38cee" class="cell" data-execution_count="24">
 <div class="cell-output cell-output-display cell-output-markdown">
 <p><strong>SMB</strong></p>
 </div>

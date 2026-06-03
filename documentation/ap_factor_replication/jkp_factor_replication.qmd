@@ -91,12 +91,7 @@ roughly the same Compustat snapshot.
 - **HXZ q-factors (Hou, Xue, and Zhang 2015)** — `me_hxz` (size),
   `ia_hxz` (investment), `roe_hxz` (profitability), constructed from a
   2×3×3 triple sort on size, investment-to-assets, and return on
-  equity. We follow the Hou, Xue, and Zhang (2015) methodology and do
-  not use the Hou et al. (2019) 1967–1972 backward extension, which
-  replaces earnings announcement dates with a four-month reporting
-  lag: quarterly Compustat coverage in those years is thin and the
-  resulting sorts noisy. The US sample therefore starts in January
-  1972, as in the original paper.
+  equity.
 - **MP (Stambaugh and Yuan 2017)** — `mispricing_mgmt` and
   `mispricing_perf` are long–short composite mispricing factors built
   from 11 anomalies grouped into a "management" cluster and a
@@ -160,12 +155,23 @@ def section_tables(name):
     display(HTML("\n".join(parts)))
 ```
 
-**Sample window — 1970 onwards.** We restrict the FF comparison sample
-to 1970 onwards: in the 1960s the effect of Fama and French
-complementing Compustat with hand-collected Moody's book equity data
-is more marked, so including those years would benchmark our
-Compustat-based replication against a reference series built in part
-on a different accounting source.
+**Sample windows.**
+
+- **FF (FF3, FF5, UMD) — 1970 onwards.** We restrict the FF comparison
+  sample to 1970 onwards: in the 1960s the effect of Fama and French
+  complementing Compustat with hand-collected Moody's book equity data
+  is more marked, so including those years would benchmark our
+  Compustat-based replication against a reference series built in part
+  on a different accounting source.
+- **HXZ — January 1972 onwards.** We follow the Hou, Xue, and Zhang
+  (2015) methodology and do not use the Hou et al. (2019) 1967–1972
+  backward extension, which replaces earnings announcement dates with
+  a four-month reporting lag: quarterly Compustat coverage in those
+  years is thin and the resulting sorts noisy. The US sample therefore
+  starts in January 1972, as in the original paper.
+- **MP — 1963 to 2016.** The comparison spans the published
+  Stambaugh–Yuan series, which starts in January 1963 and ends in
+  December 2016.
 
 ## FF3 — Fama–French 3 factors
 
