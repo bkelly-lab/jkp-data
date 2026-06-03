@@ -1,4 +1,4 @@
-"""Tests for ``comp_sic_naics`` (Issue #155).
+"""Tests for comp_sic_naics() (Issue #155).
 
 Covers the daily SIC/NAICS expansion from Compustat NA + Global histories:
 
