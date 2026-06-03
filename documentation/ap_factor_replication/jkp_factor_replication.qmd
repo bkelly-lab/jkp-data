@@ -1,5 +1,5 @@
 ---
-title: "Cloning the factor zoo: replicating Fama-French, Hou-Xue-Zhang, and Stambaugh-Yuan"
+title: "Beyond the US: Replicating and Extending Benchmark Asset Pricing Factors Worldwide"
 author: "JKP data team"
 date: today
 format:
