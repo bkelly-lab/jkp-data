@@ -164,9 +164,9 @@ def section_tables(name):
   Compustat-based replication against a reference series built in part
   on a different accounting source.
 - **HXZ — January 1972 onwards.** We follow the Hou, Xue, and Zhang
-  (2015) methodology and do not use the Hou et al. (2019) 1967–1972
-  backward extension, which replaces earnings announcement dates with
-  a four-month reporting lag: quarterly Compustat coverage in those
+  methodology and do not use the Hou et al. (2019) 1967–1972 backward
+  extension, which replaces earnings announcement dates with a
+  four-month reporting lag: quarterly Compustat coverage in those
   years is thin and the resulting sorts noisy. The US sample therefore
   starts in January 1972, as in the original paper.
 - **MP — 1963 to 2016.** The comparison spans the published
