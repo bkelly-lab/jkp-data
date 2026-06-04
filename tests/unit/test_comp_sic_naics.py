@@ -188,7 +188,7 @@ class TestCompSicNaics:
         assert row["sic"] == 6020, (
             "COALESCE(sica, sicb) must prefer the NA value when both are non-null"
         )
-    
+
     def test_hardcoded_175650_row_dropped(self) -> None:
         """The hard-coded NA filter removes ``(175650, 2005-12-31, naics=NULL)``."""
         na = pl.DataFrame(
