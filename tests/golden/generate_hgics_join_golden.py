@@ -21,7 +21,7 @@ from jkp.data.paths import DataPaths
 GOLDEN_DIR = Path(__file__).parent / "fixtures" / "hgics_join"
 
 
-def build_hgics_inputs(seed: int = 42) -> tuple[pl.DataFrame, pl.DataFrame]:
+def build_hgics_inputs() -> tuple[pl.DataFrame, pl.DataFrame]:
     """Build deterministic NA and GL GICS history fixtures.
 
     Scenarios covered by the returned (comp_hgics_na, comp_hgics_gl) pair:
@@ -34,7 +34,6 @@ def build_hgics_inputs(seed: int = 42) -> tuple[pl.DataFrame, pl.DataFrame]:
                  comp_hgics() rewrites null to -999, which must propagate
                  through hgics_join unchanged.
     """
-    del seed
     comp_hgics_na = pl.DataFrame(
         {
             "gvkey": ["100000", "300000", "400000"],
