@@ -21,7 +21,7 @@ from jkp.data.paths import DataPaths
 GOLDEN_DIR = Path(__file__).parent / "fixtures" / "comp_sic_naics"
 
 
-def build_sic_naics_inputs(seed: int = 42) -> tuple[pl.DataFrame, pl.DataFrame]:
+def build_sic_naics_inputs() -> tuple[pl.DataFrame, pl.DataFrame]:
     """Build deterministic NA and GL SIC/NAICS fixtures.
 
     Scenarios covered by the returned (sic_naics_na, sic_naics_gl) pair:
@@ -36,7 +36,6 @@ def build_sic_naics_inputs(seed: int = 42) -> tuple[pl.DataFrame, pl.DataFrame]:
                  separate datadate (2006-06-30) for the same gvkey is retained.
         500    — gvkey not zero-padded in input; output must be LPAD to '000500'.
     """
-    del seed
     sic_naics_na = pl.DataFrame(
         {
             "gvkey": [
