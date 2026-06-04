@@ -6,7 +6,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=128
 #SBATCH --mem=480G
-#SBATCH --time=15:00:00
+#SBATCH --time=48:00:00
 #SBATCH --mail-type=ALL
 
 set -e
