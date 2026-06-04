@@ -385,6 +385,7 @@ def correct_decimal_errors(
 
     # First pass: detect single-period errors (window=1)
     # This adds factor_col, error_type_col, and window_type_col
+    print(f"  [correct] {col_name}: single-period detection", flush=True)
     df = _detect_decimal_error_single_period(df, col_name, group_cols, sort_col)
 
     # Add window size for single-period detections
@@ -400,6 +401,9 @@ def correct_decimal_errors(
     # Only check windows > 1 since single-period is already done
     multi_windows = [w for w in window_sizes if w > 1]
     if multi_windows:
+        print(
+            f"  [correct] {col_name}: multi-period detection, windows={multi_windows}", flush=True
+        )
         df = _detect_decimal_error_multi_period(df, col_name, group_cols, sort_col, multi_windows)
 
     # Third pass: Validate corrections to prevent cascading errors. A flagged
@@ -408,6 +412,7 @@ def correct_decimal_errors(
     # kernel iterates rejection until stable (max 10 rounds) and resets only
     # factor and error_type on rejected rows (matching the original).
     if validate_cascading:
+        print(f"  [correct] {col_name}: cascading validation", flush=True)
         eager = df.collect()
         arrays = _read_detection_arrays(eager, col_name)
         starts = _group_starts(eager, group_cols)
@@ -565,6 +570,7 @@ def apply_bessembinder_section6(
 
     # Step 1: Correct TRFD independently
     if "trfd" in df.collect_schema().names():
+        print("[section6] step 1/5: correcting trfd", flush=True)
         df, log = correct_decimal_errors(
             df, "trfd", group_cols, sort_col, window_sizes, correction_method=correction_method
         )
@@ -573,6 +579,7 @@ def apply_bessembinder_section6(
 
     # Step 1: Correct QUNIT independently
     if "qunit" in df.collect_schema().names():
+        print("[section6] step 1/5: correcting qunit", flush=True)
         df, log = correct_decimal_errors(
             df, "qunit", group_cols, sort_col, window_sizes, correction_method=correction_method
         )
@@ -584,6 +591,7 @@ def apply_bessembinder_section6(
     if has_adrrc:
         if adrrc_in_schema:
             logger.info("ADRRC column found in data - applying decimal corrections")
+            print("[section6] step 2/5: correcting adrrc", flush=True)
             df, log = correct_decimal_errors(
                 df, "adrrc", group_cols, sort_col, window_sizes, correction_method=correction_method
             )
@@ -610,6 +618,7 @@ def apply_bessembinder_section6(
     )
 
     # Step 4: Correct adjPRC and adjCSHO
+    print("[section6] step 4/5: correcting adjprc", flush=True)
     df, log = correct_decimal_errors(
         df, "_adjprc", group_cols, sort_col, window_sizes, correction_method=correction_method
     )
@@ -623,6 +632,7 @@ def apply_bessembinder_section6(
         )
         all_logs.append(log)
 
+    print("[section6] step 4/5: correcting adjcsho", flush=True)
     df, log = correct_decimal_errors(
         df, "_adjcsho", group_cols, sort_col, window_sizes, correction_method=correction_method
     )
@@ -635,6 +645,7 @@ def apply_bessembinder_section6(
         )
         all_logs.append(log)
 
+    print("[section6] step 5/5: reconstructing prccd/cshoc", flush=True)
     # Step 5: Reconstruct PRCCD and CSHOC from corrected adjusted values
     df = df.with_columns(
         [
