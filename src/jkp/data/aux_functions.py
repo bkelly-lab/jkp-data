@@ -1677,38 +1677,35 @@ def gen_comp_dsf(paths: DataPaths, apply_bessembinder: bool = True):
     if apply_bessembinder:
         print("Applying Bessembinder Section 6 decimal corrections...", flush=True)
 
-        # Load and correct Global data (no ADRRC)
-        print("[section6] correcting Global data (comp_g_secd)...", flush=True)
-        df_global = pl.scan_parquet(paths.raw_tables_dir / "comp_g_secd.parquet")
-        df_global, log_global = apply_bessembinder_section6(
-            df_global,
-            group_cols=["gvkey", "iid"],
-            sort_col="datadate",
-            has_adrrc=False,
-            spill_dir=paths.interim_dir,
-        )
-        print("[section6] sinking __comp_g_secd_corrected.parquet...", flush=True)
-        df_global.sink_parquet(paths.interim_dir / "__comp_g_secd_corrected.parquet")
-        for spill in paths.interim_dir.glob("__bess_spill_*.parquet"):
-            spill.unlink()
-
-        # Load and correct NA data (has ADRRC for ADRs)
-        print("[section6] correcting NA data (comp_secd)...", flush=True)
-        df_na = pl.scan_parquet(paths.raw_tables_dir / "comp_secd.parquet")
-        df_na, log_na = apply_bessembinder_section6(
-            df_na,
-            group_cols=["gvkey", "iid"],
-            sort_col="datadate",
-            has_adrrc=True,
-            spill_dir=paths.interim_dir,
-        )
-        print("[section6] sinking __comp_secd_corrected.parquet...", flush=True)
-        df_na.sink_parquet(paths.interim_dir / "__comp_secd_corrected.parquet")
-        for spill in paths.interim_dir.glob("__bess_spill_*.parquet"):
-            spill.unlink()
+        # Detection is per-security (gvkey, iid), so the raw files are processed
+        # in hash-partitioned gvkey buckets: the full daily frame plus detection
+        # debug columns does not fit in memory, and each bucket bounds peak
+        # memory to ~1/n_buckets of the frame.
+        n_buckets = 32
+        logs = []
+        for name, raw_file, has_adrrc in [
+            ("comp_g_secd", "comp_g_secd.parquet", False),
+            ("comp_secd", "comp_secd.parquet", True),
+        ]:
+            for i in range(n_buckets):
+                print(f"[section6] {name}: bucket {i + 1}/{n_buckets}", flush=True)
+                bucket = pl.scan_parquet(paths.raw_tables_dir / raw_file).filter(
+                    pl.col("gvkey").hash(seed=42) % n_buckets == i
+                )
+                bucket, log = apply_bessembinder_section6(
+                    bucket,
+                    group_cols=["gvkey", "iid"],
+                    sort_col="datadate",
+                    has_adrrc=has_adrrc,
+                    spill_dir=paths.interim_dir,
+                )
+                bucket.sink_parquet(paths.interim_dir / f"__{name}_corrected_{i:02d}.parquet")
+                for spill in paths.interim_dir.glob("__bess_spill_*.parquet"):
+                    spill.unlink()
+                if log is not None:
+                    logs.append(log)
 
         # Combine correction logs
-        logs = [log for log in [log_global, log_na] if log is not None]
         if logs:
             section6_log = pl.concat(logs, how="vertical_relaxed")
 
@@ -1719,14 +1716,14 @@ def gen_comp_dsf(paths: DataPaths, apply_bessembinder: bool = True):
         # Log data quality after corrections
         logger.info("Checking for potential boundary errors in corrected data...")
         detect_potential_boundary_errors(
-            pl.scan_parquet(paths.interim_dir / "__comp_g_secd_corrected.parquet"),
+            pl.scan_parquet(paths.interim_dir / "__comp_g_secd_corrected_*.parquet"),
             price_col="prccd",
             group_cols=["gvkey", "iid"],
         )
 
-        # Use corrected files
-        g_secd_path = paths.interim_dir / "__comp_g_secd_corrected.parquet"
-        secd_path = paths.interim_dir / "__comp_secd_corrected.parquet"
+        # Use corrected files (glob over per-bucket outputs)
+        g_secd_path = paths.interim_dir / "__comp_g_secd_corrected_*.parquet"
+        secd_path = paths.interim_dir / "__comp_secd_corrected_*.parquet"
     else:
         # Use original files
         g_secd_path = paths.raw_tables_dir / "comp_g_secd.parquet"
@@ -1737,11 +1734,11 @@ def gen_comp_dsf(paths: DataPaths, apply_bessembinder: bool = True):
     # =========================================================================
     con = ibis.duckdb.connect(str(paths.interim_dir / "aux_comp_dsf.ddb"), threads=os.cpu_count())
 
-    con.create_table("comp_g_secd", con.read_parquet(g_secd_path))
+    con.create_table("comp_g_secd", con.read_parquet(g_secd_path.as_posix()))
     con.create_table(
         "__firm_shares2", con.read_parquet(paths.interim_dir / "__firm_shares2.parquet")
     )
-    con.create_table("comp_secd", con.read_parquet(secd_path))
+    con.create_table("comp_secd", con.read_parquet(secd_path.as_posix()))
     con.create_table("fx", con.read_parquet(paths.interim_dir / "fx_data.parquet"))
 
     con.raw_sql("""
@@ -1894,8 +1891,8 @@ def gen_comp_dsf(paths: DataPaths, apply_bessembinder: bool = True):
 
     # Clean up corrected temp files if they exist
     if apply_bessembinder:
-        for f in ["__comp_g_secd_corrected.parquet", "__comp_secd_corrected.parquet"]:
-            (paths.interim_dir / f).unlink(missing_ok=True)
+        for f in paths.interim_dir.glob("__comp_*_corrected_*.parquet"):
+            f.unlink()
 
 
 def compute_crsp_comparison_stats(
