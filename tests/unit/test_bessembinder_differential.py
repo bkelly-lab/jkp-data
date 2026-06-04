@@ -192,27 +192,32 @@ class TestMultiPeriodMagnitudeFix:
 
 @st.composite
 def _series_strategy(draw):
-    """Short random per-group series mixing clean values and 10^k spikes."""
+    """
+    Short random per-group series mixing clean values, 10x spikes (one
+    direction per example), zeros and nulls.
+
+    The value space is constrained to stay outside the deliberate multi-period
+    magnitude divergence (see module docstring): base in [10, 30] with a
+    single spike direction bounds every pairwise ratio to (50, 1/50) — no
+    pattern can reach the 100x/1000x classing thresholds, so reference and
+    kernel must agree exactly.
+    """
     n = draw(st.integers(min_value=3, max_value=40))
     base = draw(
         st.lists(
-            st.floats(min_value=1.0, max_value=100.0, allow_nan=False),
+            st.floats(min_value=10.0, max_value=30.0, allow_nan=False),
             min_size=n,
             max_size=n,
         )
     )
+    spike = 10.0 if draw(st.booleans()) else 0.1
     values = []
     for v in base:
         kind = draw(st.integers(min_value=0, max_value=9))
-        if kind == 0:
-            values.append(v * 10.0)
-        elif kind == 1:
-            values.append(v * 0.1)
+        if kind in (0, 1):
+            values.append(v * spike)
         elif kind == 2:
-            # Non-power-of-10 spike (still classes as 10x in both
-            # implementations; 100x spikes would hit the deliberate
-            # multi-period magnitude divergence)
-            values.append(v * 5.5)
+            values.append(v * (5.5 if spike == 10.0 else 1 / 5.5))
         elif kind == 3:
             values.append(0.0)
         elif kind == 4:
@@ -238,3 +243,67 @@ class TestDifferentialFuzz:
             }
         )
         _assert_equivalent(df, correction_method=method, window_sizes=[1, 2, 3, 5])
+
+
+def _section6_frame(seed: int = 7, n_groups: int = 40) -> pl.LazyFrame:
+    """Small panel with the full Section 6 input schema and injected errors."""
+    rng = np.random.default_rng(seed)
+    frames = []
+    for g in range(n_groups):
+        n = int(rng.integers(20, 120))
+        prc = 10.0 * np.exp(np.cumsum(rng.normal(0, 0.01, n)))
+        trfd = np.cumprod(1 + rng.normal(0.0002, 0.001, n))
+        qunit = np.ones(n)
+        adrrc = np.full(n, 2.0)
+        cshoc = np.full(n, 1e6) * (1 + rng.normal(0, 0.001, n))
+        if g % 4 == 0 and n > 12:
+            prc[5] *= 10.0  # single-day price error
+            w = [2, 3, 5][g % 3]
+            prc[8 : 8 + w] *= 0.1  # multi-day price error
+        if g % 4 == 1 and n > 8:
+            trfd[4] *= 100.0
+            cshoc[6] *= 10.0
+        if g % 4 == 2 and n > 10:
+            qunit[3] *= 10.0
+            adrrc[7] *= 0.1
+            prc[9] = 0.0
+        frames.append(
+            pl.DataFrame(
+                {
+                    "gvkey": [f"{g:06d}"] * n,
+                    "iid": ["01"] * n,
+                    "datadate": np.arange(n, dtype=np.int64),
+                    "prccd": prc,
+                    "ajexdi": np.where(rng.random(n) < 0.02, 2.0, 1.0),
+                    "cshoc": cshoc,
+                    "trfd": trfd,
+                    "qunit": qunit,
+                    "adrrc": adrrc,
+                }
+            )
+        )
+    return pl.concat(frames).lazy()
+
+
+class TestSlimPathEquivalence:
+    """The spill_dir array path must match the frame-based default path."""
+
+    @pytest.mark.parametrize("has_adrrc", [True, False])
+    def test_slim_matches_default(self, tmp_path, has_adrrc):
+        from jkp.data.bessembinder import apply_bessembinder_section6
+
+        df = _section6_frame()
+        sort_cols = GROUP_COLS + [SORT_COL]
+        default_df, default_log = apply_bessembinder_section6(df, has_adrrc=has_adrrc)
+        slim_df, slim_log = apply_bessembinder_section6(df, has_adrrc=has_adrrc, spill_dir=tmp_path)
+        assert_frame_equal(
+            slim_df.sort(sort_cols).collect(),
+            default_df.sort(sort_cols).collect(),
+            check_column_order=False,
+        )
+        assert (slim_log is None) == (default_log is None)
+        assert_frame_equal(
+            slim_log.sort(LOG_SORT).collect(),
+            default_log.sort(LOG_SORT).collect(),
+            check_column_order=True,
+        )

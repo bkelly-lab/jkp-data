@@ -10,6 +10,7 @@ including deviations from the original paper.
 """
 
 import logging
+from pathlib import Path
 
 import numpy as np
 import polars as pl
@@ -529,6 +530,234 @@ def correct_decimal_errors(
     return df, corrections_log
 
 
+def _correct_variable_arrays(
+    x_raw: np.ndarray,
+    starts: np.ndarray,
+    window_sizes: list[int],
+    correction_method: str,
+) -> tuple[np.ndarray, dict[str, np.ndarray], np.ndarray]:
+    """
+    Description:
+        Run the full Section 6 correction pipeline for one variable on raw
+        numpy arrays: single-period detection, multi-period detection,
+        cascading validation, and correction application.
+    Steps:
+        1) zeros -> NaN copy for detection (raw kept for logging).
+        2) detect_single_period_all; window_size = 1 where flagged.
+        3) detect_multi_period_all over windows > 1 (ascending).
+        4) validate_cascading_all (always on for the array path).
+        5) Apply correction: 'bessembinder' multiplies by the factor;
+           'interpolation' uses geometric mean of endpoints with fallbacks.
+    Output:
+        (corrected float64 array with NaN for nulls, kernel output arrays,
+        flagged row indices).
+    """
+    x_det = x_raw.copy()
+    x_det[x_det == 0.0] = np.nan
+    arrays = _detection_output_arrays(len(x_raw))
+    bk.detect_single_period_all(
+        x_det,
+        starts,
+        arrays["factor"],
+        arrays["etype"],
+        arrays["wtype"],
+        arrays["ep_l"],
+        arrays["ep_r"],
+        arrays["rat_l"],
+        arrays["rat_r"],
+    )
+    arrays["wsize"][arrays["factor"] != 1.0] = 1
+    nlags = np.array(sorted(w for w in window_sizes if w > 1), dtype=np.int64)
+    if len(nlags) > 0:
+        bk.detect_multi_period_all(
+            x_det,
+            starts,
+            arrays["factor"],
+            arrays["etype"],
+            arrays["wsize"],
+            arrays["wtype"],
+            arrays["ep_l"],
+            arrays["ep_r"],
+            arrays["rat_l"],
+            arrays["rat_r"],
+            arrays["var"],
+            nlags,
+            1.3,
+        )
+    rejected = np.zeros(len(x_raw), dtype=np.bool_)
+    bk.validate_cascading_all(starts, arrays["factor"], arrays["etype"], arrays["wsize"], rejected)
+
+    flagged = arrays["factor"] != 1.0
+    if correction_method == "bessembinder":
+        corrected = x_det * arrays["factor"]
+    elif correction_method == "interpolation":
+        corrected = x_det.copy()
+        ep_l, ep_r = arrays["ep_l"], arrays["ep_r"]
+        both = flagged & ~np.isnan(ep_l) & ~np.isnan(ep_r)
+        corrected[both] = np.sqrt(ep_l[both] * ep_r[both])
+        left_only = flagged & ~np.isnan(ep_l) & np.isnan(ep_r)
+        corrected[left_only] = ep_l[left_only]
+        right_only = flagged & np.isnan(ep_l) & ~np.isnan(ep_r)
+        corrected[right_only] = ep_r[right_only]
+    else:
+        raise ValueError(
+            f"Unknown correction_method: {correction_method}. "
+            "Expected 'bessembinder' or 'interpolation'."
+        )
+    return corrected, arrays, np.flatnonzero(flagged)
+
+
+def _log_from_arrays(
+    keys: pl.DataFrame,
+    group_cols: list[str],
+    sort_col: str,
+    variable: str,
+    x_raw: np.ndarray,
+    corrected: np.ndarray,
+    arrays: dict[str, np.ndarray],
+    flag_idx: np.ndarray,
+    correction_method: str,
+) -> pl.DataFrame:
+    """Build the pinned-order corrections log for one variable from kernel arrays."""
+    log = keys[flag_idx].with_columns(
+        pl.lit(variable).alias("variable"),
+        pl.Series("original_value", x_raw[flag_idx]),
+        pl.Series("corrected_value", corrected[flag_idx]),
+        pl.Series("correction_factor", arrays["factor"][flag_idx]),
+        pl.lit(correction_method).alias("correction_method"),
+        _codes_to_strings(arrays["etype"][flag_idx], _ERROR_TYPE_BY_CODE).alias("error_type"),
+        pl.Series("window_size", arrays["wsize"][flag_idx], dtype=pl.Int32),
+        _codes_to_strings(arrays["wtype"][flag_idx], _WINDOW_TYPE_BY_CODE).alias("window_type"),
+        pl.Series("endpoint_left", arrays["ep_l"][flag_idx]),
+        pl.Series("endpoint_right", arrays["ep_r"][flag_idx]),
+        pl.Series("ratio_to_left", arrays["rat_l"][flag_idx]),
+        pl.Series("ratio_to_right", arrays["rat_r"][flag_idx]),
+        pl.Series("variation_ratio", arrays["var"][flag_idx]),
+    )
+    debug_cols = [
+        "endpoint_left",
+        "endpoint_right",
+        "ratio_to_left",
+        "ratio_to_right",
+        "variation_ratio",
+    ]
+    return log.with_columns([col(c).fill_nan(None).alias(c) for c in debug_cols]).select(
+        group_cols
+        + [
+            sort_col,
+            "variable",
+            "original_value",
+            "corrected_value",
+            "correction_factor",
+            "correction_method",
+            "error_type",
+            "window_size",
+            "window_type",
+        ]
+        + debug_cols
+    )
+
+
+def _apply_section6_slim(
+    df: pl.LazyFrame,
+    group_cols: list[str],
+    sort_col: str,
+    window_sizes: list[int],
+    has_adrrc: bool,
+    correction_method: str,
+    spill_dir: Path,
+) -> tuple[pl.LazyFrame, pl.LazyFrame | None]:
+    """
+    Description:
+        Memory-bounded Section 6 path for full-size cluster data. Avoids ever
+        materializing the wide input frame: the input is sorted once with a
+        streaming sink to a spill file, each variable's values are collected
+        as a single float64 column, all corrections run in numpy/numba
+        arrays, and the corrected columns are reattached lazily via a
+        horizontal concat of two parquet scans.
+    Steps:
+        1) Streaming-sort input to spill_dir/__bess_sorted.parquet.
+        2) Collect group keys once; build group-start offsets.
+        3) Correct trfd, qunit, adrrc (if present) from per-column arrays.
+        4) adjprc = prccd/ajexdi and adjcsho = cshoc*ajexdi in numpy; correct
+           both; reconstruct prccd and cshoc.
+        5) Write corrected columns parquet; return lazy horizontal concat of
+           (sorted scan minus replaced columns) and the corrected columns,
+           plus the combined corrections log.
+    Output:
+        (corrected LazyFrame, corrections log LazyFrame or None). Note: NaN
+        values in corrected columns become null on writeback, and replaced
+        columns move to the end of the column order.
+    """
+    sorted_path = spill_dir / "__bess_sorted.parquet"
+    print("[section6] streaming-sorting input to spill file...", flush=True)
+    df.sort(group_cols + [sort_col]).sink_parquet(sorted_path)
+    lf = pl.scan_parquet(sorted_path)
+    schema_names = lf.collect_schema().names()
+
+    print("[section6] building group index...", flush=True)
+    keys = lf.select(group_cols + [sort_col]).collect()
+    starts = _group_starts(keys, group_cols)
+
+    def load(name: str) -> np.ndarray:
+        return lf.select(pl.col(name).cast(pl.Float64)).collect()[name].to_numpy().copy()
+
+    def correct(variable: str, x_raw: np.ndarray) -> np.ndarray:
+        print(f"[section6] correcting {variable}...", flush=True)
+        corrected, arrays, flag_idx = _correct_variable_arrays(
+            x_raw, starts, window_sizes, correction_method
+        )
+        logger.info(f"{variable}: {len(flag_idx)} corrections applied")
+        logs.append(
+            _log_from_arrays(
+                keys,
+                group_cols,
+                sort_col,
+                variable,
+                x_raw,
+                corrected,
+                arrays,
+                flag_idx,
+                correction_method,
+            )
+        )
+        return corrected
+
+    logs: list[pl.DataFrame] = []
+    corrected_cols: dict[str, np.ndarray] = {}
+
+    # Steps 1-2: correct trfd, qunit and (NA data only) adrrc independently
+    for variable in ["trfd", "qunit"]:
+        if variable in schema_names:
+            corrected_cols[variable] = correct(variable, load(variable))
+    if has_adrrc:
+        if "adrrc" in schema_names:
+            corrected_cols["adrrc"] = correct("adrrc", load("adrrc"))
+        else:
+            logger.warning("ADRRC column expected (has_adrrc=True) but not found in data schema")
+
+    # Steps 3-5: correct split-adjusted price/shares, reconstruct prccd/cshoc
+    ajexdi = load("ajexdi")
+    with np.errstate(divide="ignore", invalid="ignore"):
+        adjprc_corr = correct("adjprc", load("prccd") / ajexdi)
+        adjcsho_corr = correct("adjcsho", load("cshoc") * ajexdi)
+        corrected_cols["prccd"] = adjprc_corr * ajexdi
+        corrected_cols["cshoc"] = adjcsho_corr / ajexdi
+
+    print("[section6] writing corrected columns...", flush=True)
+    corr_path = spill_dir / "__bess_corrected_cols.parquet"
+    pl.DataFrame(corrected_cols).with_columns(
+        [col(name).fill_nan(None) for name in corrected_cols]
+    ).write_parquet(corr_path)
+
+    result = pl.concat(
+        [pl.scan_parquet(sorted_path).drop(list(corrected_cols)), pl.scan_parquet(corr_path)],
+        how="horizontal",
+    )
+    all_corrections = pl.concat(logs, how="vertical_relaxed").lazy() if logs else None
+    return result, all_corrections
+
+
 def apply_bessembinder_section6(
     df: pl.LazyFrame,
     group_cols: list[str] | None = None,
@@ -536,6 +765,7 @@ def apply_bessembinder_section6(
     window_sizes: list[int] | None = None,
     has_adrrc: bool = False,
     correction_method: str = "bessembinder",
+    spill_dir: Path | None = None,
 ) -> tuple[pl.LazyFrame, pl.LazyFrame]:
     """
     Apply Bessembinder Section 6 decimal corrections in the correct order.
@@ -556,6 +786,11 @@ def apply_bessembinder_section6(
         correction_method: Method for computing corrected values. Options:
             - 'bessembinder': Fixed 10x/100x/1000x multipliers (default)
             - 'interpolation': Geometric mean of surrounding clean values
+        spill_dir: When set, use the memory-bounded array path
+            (_apply_section6_slim) with spill files in this directory —
+            required for full-size cluster data, where collecting the wide
+            input frame does not fit in memory. When None (default), the
+            frame-based path is used (fine for small/test data).
 
     Returns:
         Tuple of (corrected_df, all_corrections_log)
@@ -565,6 +800,11 @@ def apply_bessembinder_section6(
     if window_sizes is None:
         # Priority windows covering common error durations (matches correct_decimal_errors)
         window_sizes = [1, 2, 3, 5, 10, 21]
+
+    if spill_dir is not None:
+        return _apply_section6_slim(
+            df, group_cols, sort_col, window_sizes, has_adrrc, correction_method, spill_dir
+        )
 
     all_logs = []
 
@@ -866,10 +1106,12 @@ def detect_potential_boundary_errors(
         group_cols = ["gvkey", "iid"]
 
     try:
-        data = df.collect()
+        # Stay lazy on a slim projection — only the (small) filtered result
+        # is collected, never the full daily frame.
+        data = df.select(group_cols + [sort_col, price_col]).sort(group_cols + [sort_col])
 
         # Add row numbers within each security
-        data = data.sort(group_cols + [sort_col]).with_columns(
+        data = data.with_columns(
             pl.col(price_col).count().over(group_cols).alias("_n_obs"),
             pl.col(price_col).cum_count().over(group_cols).alias("_row_num"),
         )
@@ -884,24 +1126,28 @@ def detect_potential_boundary_errors(
         )
 
         # Find boundary observations with extreme ratios
-        boundary_errors = data.filter(
-            col("_is_boundary")
-            & (
-                (col("_ratio_to_next") > ratio_threshold)
-                | (col("_ratio_to_next") < 1 / ratio_threshold)
-                | (col("_ratio_to_prior") > ratio_threshold)
-                | (col("_ratio_to_prior") < 1 / ratio_threshold)
+        boundary_errors = (
+            data.filter(
+                col("_is_boundary")
+                & (
+                    (col("_ratio_to_next") > ratio_threshold)
+                    | (col("_ratio_to_next") < 1 / ratio_threshold)
+                    | (col("_ratio_to_prior") > ratio_threshold)
+                    | (col("_ratio_to_prior") < 1 / ratio_threshold)
+                )
             )
-        ).select(
-            group_cols
-            + [
-                sort_col,
-                price_col,
-                "_row_num",
-                "_n_obs",
-                "_ratio_to_next",
-                "_ratio_to_prior",
-            ]
+            .select(
+                group_cols
+                + [
+                    sort_col,
+                    price_col,
+                    "_row_num",
+                    "_n_obs",
+                    "_ratio_to_next",
+                    "_ratio_to_prior",
+                ]
+            )
+            .collect()
         )
 
         n_boundary_errors = len(boundary_errors)

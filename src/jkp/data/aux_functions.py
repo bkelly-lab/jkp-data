@@ -1677,28 +1677,41 @@ def gen_comp_dsf(paths: DataPaths, apply_bessembinder: bool = True):
     if apply_bessembinder:
         print("Applying Bessembinder Section 6 decimal corrections...", flush=True)
 
-        # Load and correct Global data (no ADRRC)
+        # Load and correct Global data (no ADRRC). spill_dir selects the
+        # memory-bounded array path; spill files are removed after each sink.
+        print("[section6] correcting Global data (comp_g_secd)...", flush=True)
         df_global = pl.scan_parquet(paths.raw_tables_dir / "comp_g_secd.parquet")
         df_global, log_global = apply_bessembinder_section6(
             df_global,
             group_cols=["gvkey", "iid"],
             sort_col="datadate",
             has_adrrc=False,
+            spill_dir=paths.interim_dir,
         )
-        df_global.collect().write_parquet(paths.interim_dir / "__comp_g_secd_corrected.parquet")
+        log_global = log_global.collect() if log_global is not None else None
+        print("[section6] sinking __comp_g_secd_corrected.parquet...", flush=True)
+        df_global.sink_parquet(paths.interim_dir / "__comp_g_secd_corrected.parquet")
+        for spill in paths.interim_dir.glob("__bess_*.parquet"):
+            spill.unlink()
 
         # Load and correct NA data (has ADRRC for ADRs)
+        print("[section6] correcting NA data (comp_secd)...", flush=True)
         df_na = pl.scan_parquet(paths.raw_tables_dir / "comp_secd.parquet")
         df_na, log_na = apply_bessembinder_section6(
             df_na,
             group_cols=["gvkey", "iid"],
             sort_col="datadate",
             has_adrrc=True,
+            spill_dir=paths.interim_dir,
         )
-        df_na.collect().write_parquet(paths.interim_dir / "__comp_secd_corrected.parquet")
+        log_na = log_na.collect() if log_na is not None else None
+        print("[section6] sinking __comp_secd_corrected.parquet...", flush=True)
+        df_na.sink_parquet(paths.interim_dir / "__comp_secd_corrected.parquet")
+        for spill in paths.interim_dir.glob("__bess_*.parquet"):
+            spill.unlink()
 
         # Combine correction logs
-        logs = [log for log in [log_global, log_na] if log is not None]
+        logs = [log.lazy() for log in [log_global, log_na] if log is not None]
         if logs:
             section6_log = pl.concat(logs, how="vertical_relaxed")
 
@@ -1842,7 +1855,8 @@ def gen_comp_dsf(paths: DataPaths, apply_bessembinder: bool = True):
         )
 
         # Write corrected data
-        df.collect().write_parquet(paths.interim_dir / "__comp_dsf.parquet")
+        print("[section8] sinking __comp_dsf.parquet...", flush=True)
+        df.sink_parquet(paths.interim_dir / "__comp_dsf.parquet")
 
         # Clean up temp file
         (paths.interim_dir / "__comp_dsf_pre_filter.parquet").unlink()
