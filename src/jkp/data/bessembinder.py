@@ -1633,9 +1633,9 @@ def filter_8a_trading_volume(
     # Find the percentile cutoff
     cutoff = avg_vol.select(pl.col("_avg_vol").quantile(percentile).alias("_cutoff"))
 
-    # Join back and filter
+    # Join back and filter (cross join broadcasts the single-row cutoff)
     df = df.join(avg_vol, on=group_cols, how="left")
-    df = df.with_columns(cutoff.select("_cutoff"))
+    df = df.join(cutoff, how="cross")
 
     # Log removed records
     removed = df.filter(col("_avg_vol") <= col("_cutoff")).select(
@@ -1679,32 +1679,49 @@ def filter_8b_ajex_qunit(
         .with_columns(pl.lit(True).alias("_has_zero_ajex"))
     )
 
-    # Detect QUNIT changes without currency change and large price change
-    df = df.with_columns(
-        [
-            col("qunit").shift(1).over(group_cols).alias("_qunit_lag"),
-            col("curcdd").shift(1).over(group_cols).alias("_curcdd_lag"),
-            col("prccd").shift(1).over(group_cols).alias("_prccd_lag"),
-        ]
-    )
+    # Detect QUNIT changes without currency change and large price change.
+    # Post-merge data (gen_comp_dsf) has neither qunit nor prccd — qunit is
+    # consumed into prc_local = prccd / qunit by the SQL stage — so the
+    # QUNIT-change check is only possible when those columns are present.
+    schema_names = df.collect_schema().names()
+    has_qunit = "qunit" in schema_names
+    qunit_helper_cols: list[str] = []
+    if has_qunit:
+        price_col = "prccd" if "prccd" in schema_names else "prc_local"
+        df = df.with_columns(
+            [
+                col("qunit").shift(1).over(group_cols).alias("_qunit_lag"),
+                col("curcdd").shift(1).over(group_cols).alias("_curcdd_lag"),
+                col(price_col).shift(1).over(group_cols).alias("_prccd_lag"),
+            ]
+        )
 
-    df = df.with_columns(
-        [
-            (
-                (col("qunit") != col("_qunit_lag"))
-                & (col("curcdd") == col("_curcdd_lag"))
-                & (((col("prccd") / col("_prccd_lag")) - 1).abs() > 0.5)
-            ).alias("_bad_qunit_change")
-        ]
-    )
+        df = df.with_columns(
+            [
+                (
+                    (col("qunit") != col("_qunit_lag"))
+                    & (col("curcdd") == col("_curcdd_lag"))
+                    & (((col(price_col) / col("_prccd_lag")) - 1).abs() > 0.5)
+                ).alias("_bad_qunit_change")
+            ]
+        )
+        qunit_helper_cols = ["_qunit_lag", "_curcdd_lag", "_prccd_lag", "_bad_qunit_change"]
 
-    # Identify securities with bad QUNIT changes
-    has_bad_qunit = (
-        df.filter(col("_bad_qunit_change"))
-        .select(group_cols)
-        .unique()
-        .with_columns(pl.lit(True).alias("_has_bad_qunit"))
-    )
+        # Identify securities with bad QUNIT changes
+        has_bad_qunit = (
+            df.filter(col("_bad_qunit_change"))
+            .select(group_cols)
+            .unique()
+            .with_columns(pl.lit(True).alias("_has_bad_qunit"))
+        )
+    else:
+        logger.warning("filter 8b: qunit column not available; skipping QUNIT-change check")
+        # Explicit empty frame (a head(0) of df here trips the lazy
+        # optimizer's projection pushdown into the later join)
+        full_schema = df.collect_schema()
+        has_bad_qunit = pl.DataFrame(
+            schema={c: full_schema[c] for c in group_cols} | {"_has_bad_qunit": pl.Boolean}
+        ).lazy()
 
     # Join flags
     df = df.join(has_zero_ajex, on=group_cols, how="left")
@@ -1731,16 +1748,7 @@ def filter_8b_ajex_qunit(
     )
 
     # Clean up
-    df = df.drop(
-        [
-            "_qunit_lag",
-            "_curcdd_lag",
-            "_prccd_lag",
-            "_bad_qunit_change",
-            "_has_zero_ajex",
-            "_has_bad_qunit",
-        ]
-    )
+    df = df.drop(qunit_helper_cols + ["_has_zero_ajex", "_has_bad_qunit"])
 
     return df, removed
 
