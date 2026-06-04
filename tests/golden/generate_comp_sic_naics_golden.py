@@ -28,8 +28,8 @@ def build_sic_naics_inputs(seed: int = 42) -> tuple[pl.DataFrame, pl.DataFrame]:
         001000 — NA-only, two datadates (2020-01-01 → 2020-01-04) producing 3 daily
                  fill rows plus a trailing single-date row.
         002000 — GL-only, one datadate (2020-06-15).
-        003000 — Both NA and GL on same datadate with different SICs; non-null
-                 higher SIC wins via DISTINCT ON (gvkey, date) ORDER BY sic.
+        003000 — Both sources on same datadate → single joined row; COALESCE
+                 prefers the NA value (6020).
         004000 — NA row with sic=NULL on one datadate; GL row with sic non-null
                  on the same datadate → coalesce keeps non-null SIC.
         175650 — Hard-coded dropped row (datadate=2005-12-31, naics IS NULL); a
