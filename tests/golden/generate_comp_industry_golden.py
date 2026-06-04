@@ -15,14 +15,14 @@ from pathlib import Path
 
 import polars as pl
 
-import jkp.data.aux_functions as aux_functions
 from jkp.data.aux_functions import comp_industry
 from jkp.data.paths import DataPaths
+from tests.golden.comp_industry_stubs import comp_industry_upstream_stubs
 
 GOLDEN_DIR = Path(__file__).parent / "fixtures" / "comp_industry"
 
 
-def build_comp_industry_inputs(seed: int = 42) -> tuple[pl.DataFrame, pl.DataFrame]:
+def build_comp_industry_inputs() -> tuple[pl.DataFrame, pl.DataFrame]:
     """Build deterministic (comp_other, comp_hgics) inputs for comp_industry.
 
     Scenarios:
@@ -44,7 +44,6 @@ def build_comp_industry_inputs(seed: int = 42) -> tuple[pl.DataFrame, pl.DataFra
                  COALESCE(..., date) makes aux_date = date → continuous branch.
                  Expected: 1 daily row.
     """
-    del seed
     comp_other = pl.DataFrame(
         {
             "gvkey": ["100000", "100000", "200000", "300000"],
@@ -94,17 +93,9 @@ def main() -> None:
         comp_other.write_parquet(paths.interim_dir / "comp_other.parquet")
         comp_hgics.write_parquet(paths.interim_dir / "comp_hgics.parquet")
 
-        # Replace the two sub-calls with no-ops so comp_industry's SQL runs
-        # against the parquets we just wrote rather than recomputing them.
-        orig_csn = aux_functions.comp_sic_naics
-        orig_hgj = aux_functions.hgics_join
-        aux_functions.comp_sic_naics = lambda _paths: None
-        aux_functions.hgics_join = lambda _paths: None
-        try:
+        with comp_industry_upstream_stubs() as stubs:
             comp_industry(paths)
-        finally:
-            aux_functions.comp_sic_naics = orig_csn
-            aux_functions.hgics_join = orig_hgj
+            stubs.assert_called()
 
         out_path = GOLDEN_DIR / "comp_ind.parquet"
         pl.read_parquet(paths.interim_dir / "comp_ind.parquet").write_parquet(out_path)

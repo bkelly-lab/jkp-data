@@ -291,7 +291,7 @@ class TestCrspIndustry:
         """Bit-identical match against the locked golden fixture."""
         from tests.golden.generate_crsp_industry_golden import build_permno0_input
 
-        _write_permno0(self.paths, build_permno0_input(seed=42))
+        _write_permno0(self.paths, build_permno0_input())
         crsp_industry(self.paths)
 
         result = pl.read_parquet(self.output_path)

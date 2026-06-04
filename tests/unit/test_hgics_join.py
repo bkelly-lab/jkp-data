@@ -300,7 +300,7 @@ class TestHgicsJoin:
         """Bit-identical match against the locked golden fixture."""
         from tests.golden.generate_hgics_join_golden import build_hgics_inputs
 
-        na, gl = build_hgics_inputs(seed=42)
+        na, gl = build_hgics_inputs()
         _write_inputs(self.paths, na, gl)
         hgics_join(self.paths)
 

@@ -21,7 +21,7 @@ from jkp.data.paths import DataPaths
 GOLDEN_DIR = Path(__file__).parent / "fixtures" / "crsp_industry"
 
 
-def build_permno0_input(seed: int = 42) -> pl.DataFrame:
+def build_permno0_input() -> pl.DataFrame:
     """Build a deterministic permno0 fixture exercising every code path in crsp_industry.
 
     Permnos:
@@ -32,9 +32,6 @@ def build_permno0_input(seed: int = 42) -> pl.DataFrame:
         10003 — two overlapping spans (Mar 1-4 and Mar 3-6, both same sic/naics)
                 to exercise .unique(["permno", "date"]) dedup.
     """
-    # `seed` is unused for this hand-built fixture; kept in the signature to
-    # match the build_*_input(seed) convention used by other generators.
-    del seed
     return pl.DataFrame(
         {
             "permno": [10001, 10001, 10002, 10003, 10003],

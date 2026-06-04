@@ -1,6 +1,24 @@
-"""Tests for comp_industry() idempotency and output correctness. (Issue #155).
+"""Tests for ``comp_industry`` (Issue #155).
 
-Coverage (Issue #155):
+``comp_industry`` merges the daily SIC/NAICS panel (``comp_other``) and the
+daily GICS panel (``comp_hgics``) into a single daily Compustat industry file.
+Its DuckDB SQL does the following, per ``gvkey``:
+
+1. ``FULL OUTER JOIN`` ``comp_gics`` and ``comp_other`` on ``(gvkey, date)``.
+2. ``aux_date = LEAD(date) OVER (PARTITION BY gvkey ORDER BY date) - 1 day``,
+   with ``COALESCE(..., date)`` so the *last* row of each gvkey gets
+   ``aux_date = date``.
+3. Rows with ``date <> aux_date`` are "gap" anchors; ``generate_series(date,
+   aux_date)`` expands them into a contiguous daily axis. The expanded rows are
+   ``LEFT JOIN``-ed back to the anchors on ``(gvkey, date)``, so **only the
+   anchor date keeps its codes — the in-between days carry NULL codes** (the
+   axis is made continuous, but codes are intentionally not forward-filled).
+4. Rows with ``date = aux_date`` (the terminal row of every gvkey, plus any
+   single-date gvkey) pass through unchanged via the ``continuous`` branch.
+5. ``continuous`` UNION ``gaps`` → ``SELECT DISTINCT ON (gvkey, date)`` ordered
+   by ``(gvkey, date)``.
+
+Coverage here, keyed to the behaviors Issue #155 calls out:
 
 - Gap-fill continuity, including multi-span chaining within one gvkey.
 - Per-gvkey isolation of the ``PARTITION BY`` window (one gvkey's gap range
@@ -11,15 +29,16 @@ Coverage (Issue #155):
 - ``COALESCE(LEAD..., date)`` terminal-row handling for single-date gvkeys
   (present in both sources, and present in only one source).
 - Terminal-row preservation for multi-date gvkeys.
-- Dedup to unique ``(gvkey, date)`` — including collapsing duplicate input rows.
+- Dedup to unique ``(gvkey, date)``.
 - Sort by ``(gvkey, date)``.
 - Output schema (column names + dtypes), to catch silent dtype drift.
 - Robust cleanup of the transient ``aux_comp_ind.ddb`` file.
 - A regression golden fixture locking the output bit-for-bit.
 
-To exercise only ``comp_industry``'s SQL we monkeypatch its two upstream
-sub-calls (``comp_sic_naics``, ``hgics_join``) to no-ops and write
-``comp_other.parquet`` / ``comp_hgics.parquet`` directly.
+To exercise only ``comp_industry``'s SQL we stub its two upstream sub-calls
+(``comp_sic_naics``, ``hgics_join``) to no-ops — see
+``tests.golden.comp_industry_stubs`` — and write ``comp_other.parquet`` /
+``comp_hgics.parquet`` directly.
 """
 
 from __future__ import annotations
@@ -31,9 +50,12 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-import jkp.data.aux_functions as aux_functions
 from jkp.data.aux_functions import comp_industry
 from jkp.data.paths import DataPaths
+from tests.golden.comp_industry_stubs import (
+    CompIndustryUpstreamStubs,
+    patch_comp_industry_upstream_stubs,
+)
 
 GOLDEN_DIR = Path(__file__).parent.parent / "golden" / "fixtures" / "comp_industry"
 
@@ -91,17 +113,19 @@ class TestCompIndustry:
 
     @pytest.fixture(autouse=True)
     def _setup(self, test_paths: DataPaths, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Bind paths and monkeypatch sub-calls so only ``comp_industry``'s SQL runs."""
+        """Bind paths and stub upstream calls so only ``comp_industry``'s SQL runs."""
         self.paths = test_paths
         self.output_path = self.paths.interim_dir / "comp_ind.parquet"
         self.ddb_path = self.paths.interim_dir / "aux_comp_ind.ddb"
-        monkeypatch.setattr(aux_functions, "comp_sic_naics", lambda _paths: None)
-        monkeypatch.setattr(aux_functions, "hgics_join", lambda _paths: None)
+        self.upstream_stubs: CompIndustryUpstreamStubs = patch_comp_industry_upstream_stubs(
+            monkeypatch
+        )
 
     def _run(self, comp_other: pl.DataFrame, comp_hgics: pl.DataFrame) -> pl.DataFrame:
         """Write intermediates, run ``comp_industry``, and return the parquet output."""
         _write_intermediates(self.paths, comp_other, comp_hgics)
         comp_industry(self.paths)
+        self.upstream_stubs.assert_called()
         return pl.read_parquet(self.output_path)
 
     # ------------------------------------------------------------------
@@ -109,12 +133,15 @@ class TestCompIndustry:
     # ------------------------------------------------------------------
 
     def test_gap_fill_continuity(self) -> None:
-        """Sparse dates (Jan 1, Jan 5) expand to a contiguous daily axis.
+        """Sparse dates expand to a contiguous daily axis with stable output schema.
 
         ``aux_date`` on the Jan-1 row is Jan-4 (``LEAD(Jan-5) - 1 day``), so
         ``generate_series(Jan-1, Jan-4)`` yields Jan 1-4; the LEFT JOIN back to
         the anchors keeps codes only on Jan-1. Jan-5 is the terminal row and
         flows through the ``continuous`` branch with its codes intact.
+
+        Also asserts the output column names and dtypes — e.g. nullable gap rows
+        must not coerce integer code columns to ``Float64`` through the union.
         """
         comp_other = _other_frame(
             ["100000", "100000"],
@@ -164,6 +191,9 @@ class TestCompIndustry:
         assert intermediates["gics"].null_count() == intermediates.height, (
             f"Intermediate rows should have null gics, got "
             f"{intermediates.height - intermediates['gics'].null_count()} non-null"
+        )
+        assert dict(result.schema) == EXPECTED_SCHEMA, (
+            f"Schema mismatch: expected {EXPECTED_SCHEMA}, got {dict(result.schema)}"
         )
 
     def test_gap_fill_multi_span_chaining(self) -> None:
@@ -404,29 +434,6 @@ class TestCompIndustry:
             f"{result.unique(['gvkey', 'date']).height} unique"
         )
 
-    def test_duplicate_input_rows_collapse(self) -> None:
-        """Duplicate ``(gvkey, date)`` input rows collapse to one output row.
-
-        Feeds an exact duplicate in comp_other.  The ``DISTINCT ON
-        (gvkey, date)`` is structurally unreachable in DuckDB 1.x (the
-        ``UNION`` and a LATERAL-join materialization quirk prevent duplicate
-        ``(gvkey, date)`` from ever appearing in ``merged_data``), but this
-        test validates the uniqueness *contract* of the output.
-        """
-        comp_other = _other_frame(
-            ["600000", "600000"],
-            [date(2020, 1, 1), date(2020, 1, 1)],
-            [1111, 1111],
-            [222, 222],
-        )
-        comp_hgics = _gics_frame(["600000"], [date(2020, 1, 1)], [50])
-        result = self._run(comp_other, comp_hgics)
-
-        assert result.unique(["gvkey", "date"]).height == result.height, (
-            f"Found duplicate (gvkey, date) rows: {result.height} total vs "
-            f"{result.unique(['gvkey', 'date']).height} unique"
-        )
-
     def test_sort_invariant(self) -> None:
         """Output is sorted by ``(gvkey, date)`` ascending."""
         comp_other = _other_frame(
@@ -452,32 +459,6 @@ class TestCompIndustry:
                 f"{dates[i - 1]} > {dates[i]} at rows {i - 1},{i}"
             )
 
-    def test_output_schema(self) -> None:
-        """Output has exactly ``{gvkey, date, gics, sic, naics}`` with stable dtypes.
-
-        Guards against silent dtype drift — e.g. nullable gap rows coercing an
-        integer code column to ``Float64`` through the union.
-        """
-        comp_other = _other_frame(
-            ["100000", "100000"],
-            [date(2020, 1, 1), date(2020, 1, 5)],
-            [7372, 7372],
-            [511210, 511210],
-        )
-        comp_hgics = _gics_frame(
-            ["100000", "100000"],
-            [date(2020, 1, 1), date(2020, 1, 5)],
-            [10101010, 10101010],
-        )
-        result = self._run(comp_other, comp_hgics)
-
-        assert result.columns == list(EXPECTED_SCHEMA), (
-            f"Expected columns {list(EXPECTED_SCHEMA)}, got {result.columns}"
-        )
-        assert dict(result.schema) == EXPECTED_SCHEMA, (
-            f"Schema mismatch: expected {EXPECTED_SCHEMA}, got {dict(result.schema)}"
-        )
-
     # ------------------------------------------------------------------
     # Operational: transient DuckDB file
     # ------------------------------------------------------------------
@@ -498,6 +479,7 @@ class TestCompIndustry:
         self.ddb_path.write_bytes(b"not a valid duckdb file")
 
         comp_industry(self.paths)  # must not raise
+        self.upstream_stubs.assert_called()
 
         result = pl.read_parquet(self.output_path)
         assert result.height == 1, (
@@ -509,10 +491,10 @@ class TestCompIndustry:
             f"got {(row['sic'], row['naics'], row['gics'])}"
         )
         # The stale bytes were replaced by a real DuckDB database.
-        if self.ddb_path.exists():
-            assert self.ddb_path.read_bytes()[:23] != b"not a valid duckdb file", (
-                "Stale DuckDB file was not replaced by a valid database"
-            )
+        assert self.ddb_path.exists(), "Expected aux_comp_ind.ddb to exist after a successful run"
+        assert self.ddb_path.read_bytes()[:23] != b"not a valid duckdb file", (
+            "Stale DuckDB file was not replaced by a valid database"
+        )
 
     # ------------------------------------------------------------------
     # Golden regression
@@ -528,7 +510,7 @@ class TestCompIndustry:
         """
         from tests.golden.generate_comp_industry_golden import build_comp_industry_inputs
 
-        comp_other, comp_hgics = build_comp_industry_inputs(seed=42)
+        comp_other, comp_hgics = build_comp_industry_inputs()
         result = self._run(comp_other, comp_hgics)
 
         golden = pl.read_parquet(GOLDEN_DIR / "comp_ind.parquet")

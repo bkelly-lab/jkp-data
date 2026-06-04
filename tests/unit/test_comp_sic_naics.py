@@ -340,7 +340,7 @@ class TestCompSicNaics:
         """Bit-identical match against the locked golden fixture."""
         from tests.golden.generate_comp_sic_naics_golden import build_sic_naics_inputs
 
-        na, gl = build_sic_naics_inputs(seed=42)
+        na, gl = build_sic_naics_inputs()
         _write_inputs(self.paths, na, gl)
         comp_sic_naics(self.paths)
 
