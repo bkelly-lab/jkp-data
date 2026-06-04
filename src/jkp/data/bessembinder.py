@@ -10,6 +10,7 @@ including deviations from the original paper.
 """
 
 import logging
+from pathlib import Path
 
 import polars as pl
 from polars import col
@@ -374,6 +375,7 @@ def _detect_decimal_error_multi_period(
     sort_col: str,
     window_sizes: list[int],
     variation_threshold: float = 1.3,
+    spill_dir: Path | None = None,
 ) -> pl.LazyFrame:
     """
     Detect multi-period decimal shift errors (Bessembinder Section 6b).
@@ -856,11 +858,23 @@ def _detect_decimal_error_multi_period(
         # This prevents segmentation faults from overly complex query plans
         iteration_count += 1
         if iteration_count % materialize_interval == 0:
-            print(
-                f"    [detect] {col_name}: materializing plan after {iteration_count} windows",
-                flush=True,
-            )
-            df = df.collect().lazy()
+            if spill_dir is not None:
+                # Spill to disk (streaming) instead of collecting in RAM: the full
+                # frame with debug columns does not fit in memory on cluster runs.
+                spill_path = spill_dir / f"__bess_spill_{col_name}_{iteration_count}.parquet"
+                print(
+                    f"    [detect] {col_name}: spilling plan to {spill_path.name} "
+                    f"after {iteration_count} windows",
+                    flush=True,
+                )
+                df.sink_parquet(spill_path)
+                df = pl.scan_parquet(spill_path)
+            else:
+                print(
+                    f"    [detect] {col_name}: materializing plan after {iteration_count} windows",
+                    flush=True,
+                )
+                df = df.collect().lazy()
 
     return df
 
@@ -874,6 +888,7 @@ def correct_decimal_errors(
     log_corrections: bool = True,
     validate_cascading: bool = True,
     correction_method: str = "bessembinder",
+    spill_dir: Path | None = None,
 ) -> tuple[pl.LazyFrame, pl.LazyFrame | None]:
     """
     Apply Bessembinder Section 6 decimal error corrections to a column.
@@ -993,7 +1008,9 @@ def correct_decimal_errors(
         print(
             f"  [correct] {col_name}: multi-period detection, windows={multi_windows}", flush=True
         )
-        df = _detect_decimal_error_multi_period(df, col_name, group_cols, sort_col, multi_windows)
+        df = _detect_decimal_error_multi_period(
+            df, col_name, group_cols, sort_col, multi_windows, spill_dir=spill_dir
+        )
 
     # Third pass: Validate corrections to prevent cascading errors
     if validate_cascading:
@@ -1130,6 +1147,7 @@ def apply_bessembinder_section6(
     window_sizes: list[int] | None = None,
     has_adrrc: bool = False,
     correction_method: str = "bessembinder",
+    spill_dir: Path | None = None,
 ) -> tuple[pl.LazyFrame, pl.LazyFrame]:
     """
     Apply Bessembinder Section 6 decimal corrections in the correct order.
@@ -1166,7 +1184,13 @@ def apply_bessembinder_section6(
     if "trfd" in df.collect_schema().names():
         print("[section6] step 1/5: correcting trfd", flush=True)
         df, log = correct_decimal_errors(
-            df, "trfd", group_cols, sort_col, window_sizes, correction_method=correction_method
+            df,
+            "trfd",
+            group_cols,
+            sort_col,
+            window_sizes,
+            correction_method=correction_method,
+            spill_dir=spill_dir,
         )
         if log is not None:
             all_logs.append(log)
@@ -1175,7 +1199,13 @@ def apply_bessembinder_section6(
     if "qunit" in df.collect_schema().names():
         print("[section6] step 1/5: correcting qunit", flush=True)
         df, log = correct_decimal_errors(
-            df, "qunit", group_cols, sort_col, window_sizes, correction_method=correction_method
+            df,
+            "qunit",
+            group_cols,
+            sort_col,
+            window_sizes,
+            correction_method=correction_method,
+            spill_dir=spill_dir,
         )
         if log is not None:
             all_logs.append(log)
@@ -1187,7 +1217,13 @@ def apply_bessembinder_section6(
             logger.info("ADRRC column found in data - applying decimal corrections")
             print("[section6] step 2/5: correcting adrrc", flush=True)
             df, log = correct_decimal_errors(
-                df, "adrrc", group_cols, sort_col, window_sizes, correction_method=correction_method
+                df,
+                "adrrc",
+                group_cols,
+                sort_col,
+                window_sizes,
+                correction_method=correction_method,
+                spill_dir=spill_dir,
             )
             if log is not None:
                 n_corrections = log.select(pl.len()).collect().item()
@@ -1214,7 +1250,13 @@ def apply_bessembinder_section6(
     # Step 4: Correct adjPRC and adjCSHO
     print("[section6] step 4/5: correcting adjprc", flush=True)
     df, log = correct_decimal_errors(
-        df, "_adjprc", group_cols, sort_col, window_sizes, correction_method=correction_method
+        df,
+        "_adjprc",
+        group_cols,
+        sort_col,
+        window_sizes,
+        correction_method=correction_method,
+        spill_dir=spill_dir,
     )
     if log is not None:
         # Rename variable in log from _adjprc to adjprc
@@ -1228,7 +1270,13 @@ def apply_bessembinder_section6(
 
     print("[section6] step 4/5: correcting adjcsho", flush=True)
     df, log = correct_decimal_errors(
-        df, "_adjcsho", group_cols, sort_col, window_sizes, correction_method=correction_method
+        df,
+        "_adjcsho",
+        group_cols,
+        sort_col,
+        window_sizes,
+        correction_method=correction_method,
+        spill_dir=spill_dir,
     )
     if log is not None:
         log = log.with_columns(
@@ -1460,10 +1508,12 @@ def detect_potential_boundary_errors(
         group_cols = ["gvkey", "iid"]
 
     try:
-        data = df.collect()
+        # Stay lazy on a slim projection — only the (small) filtered result is
+        # collected, never the full daily frame.
+        data = df.select(group_cols + [sort_col, price_col]).sort(group_cols + [sort_col])
 
         # Add row numbers within each security
-        data = data.sort(group_cols + [sort_col]).with_columns(
+        data = data.with_columns(
             pl.col(price_col).count().over(group_cols).alias("_n_obs"),
             pl.col(price_col).cum_count().over(group_cols).alias("_row_num"),
         )
@@ -1478,24 +1528,28 @@ def detect_potential_boundary_errors(
         )
 
         # Find boundary observations with extreme ratios
-        boundary_errors = data.filter(
-            col("_is_boundary")
-            & (
-                (col("_ratio_to_next") > ratio_threshold)
-                | (col("_ratio_to_next") < 1 / ratio_threshold)
-                | (col("_ratio_to_prior") > ratio_threshold)
-                | (col("_ratio_to_prior") < 1 / ratio_threshold)
+        boundary_errors = (
+            data.filter(
+                col("_is_boundary")
+                & (
+                    (col("_ratio_to_next") > ratio_threshold)
+                    | (col("_ratio_to_next") < 1 / ratio_threshold)
+                    | (col("_ratio_to_prior") > ratio_threshold)
+                    | (col("_ratio_to_prior") < 1 / ratio_threshold)
+                )
             )
-        ).select(
-            group_cols
-            + [
-                sort_col,
-                price_col,
-                "_row_num",
-                "_n_obs",
-                "_ratio_to_next",
-                "_ratio_to_prior",
-            ]
+            .select(
+                group_cols
+                + [
+                    sort_col,
+                    price_col,
+                    "_row_num",
+                    "_n_obs",
+                    "_ratio_to_next",
+                    "_ratio_to_prior",
+                ]
+            )
+            .collect()
         )
 
         n_boundary_errors = len(boundary_errors)
