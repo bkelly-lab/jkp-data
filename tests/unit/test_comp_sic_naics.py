@@ -148,6 +148,47 @@ class TestCompSicNaics:
         # COALESCE(sica, sicb) brings the GL value in when NA is null.
         assert row["sic"] == 4813
 
+    def test_coalesce_na_takes_precedence_over_gl(self) -> None:
+        """When both NA and GL have non-null SIC, the NA value wins."""
+        na = pl.DataFrame(
+            {
+                "gvkey": ["003000"],
+                "datadate": [date(2018, 5, 1)],
+                "sic": [6020],
+                "naics": [522110],
+            },
+            schema={
+                "gvkey": pl.Utf8,
+                "datadate": pl.Date,
+                "sic": pl.Int64,
+                "naics": pl.Int64,
+            },
+        )
+        gl = pl.DataFrame(
+            {
+                "gvkey": ["003000"],
+                "datadate": [date(2018, 5, 1)],
+                "sic": [6021],
+                "naics": [522120],
+            },
+            schema={
+                "gvkey": pl.Utf8,
+                "datadate": pl.Date,
+                "sic": pl.Int64,
+                "naics": pl.Int64,
+            },
+        )
+        _write_inputs(self.paths, na, gl)
+
+        comp_sic_naics(self.paths)
+
+        result = pl.read_parquet(self.output_path)
+        assert result.height == 1
+        row = result.row(0, named=True)
+        assert row["sic"] == 6020, (
+            "COALESCE(sica, sicb) must prefer the NA value when both are non-null"
+        )
+    
     def test_hardcoded_175650_row_dropped(self) -> None:
         """The hard-coded NA filter removes ``(175650, 2005-12-31, naics=NULL)``."""
         na = pl.DataFrame(
