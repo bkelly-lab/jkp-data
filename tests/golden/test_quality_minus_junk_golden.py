@@ -20,14 +20,11 @@ from tests.golden.generate_qmj_golden import build_qmj_world_data_input
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "qmj" / "qmj.parquet"
 
-# rtol=1e-9 for floats: z-ranks involve rank/mean/std, all exact floating-point
-# ops on the same seed; cross-platform IEEE-754 guarantees this tight tolerance.
-_FLOAT_RTOL = 1e-9
-
 
 @pytest.mark.regression
 def test_quality_minus_junk_golden(
     test_paths,
+    tolerance,
     request: pytest.FixtureRequest,
 ) -> None:
     """quality_minus_junk output matches the committed golden fixture."""
@@ -61,7 +58,6 @@ def test_quality_minus_junk_golden(
         polars.testing.assert_series_equal(
             actual[col],
             expected[col],
-            rtol=_FLOAT_RTOL,
-            atol=0.0,
+            **tolerance.GOLDEN,
             check_names=True,
         )

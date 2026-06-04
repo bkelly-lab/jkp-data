@@ -154,9 +154,9 @@ def build_qmj_world_data_input(seed: int = 42) -> pl.DataFrame:
                 rows.append(row)
 
     # --- Corner case: a few NaN values in single z-vars ---
-    # Use id=100 (USA) / id=300 (FRA); they already appear above — we
-    # overwrite individual float cols to NaN via separate "NaN injection"
-    # rows using ids outside the base range.
+    # Use id=150 (USA) / id=350 (FRA) — ids outside the base ranges
+    # ([1, 80] and [201, 280]) so these "NaN injection" rows don't
+    # collide with the base rows above.
     nan_id_usa = 150
     nan_id_fra = 350
     for eom in _EOMS[:1]:
@@ -265,14 +265,10 @@ def build_qmj_world_data_input(seed: int = 42) -> pl.DataFrame:
 
 
 def _make_paths(base_dir: str) -> DataPaths:
-    """Create a DataPaths rooted at base_dir with required subdirs."""
-    base = Path(base_dir)
-    (base / "interim" / "raw_data_dfs").mkdir(parents=True, exist_ok=True)
-    (base / "raw" / "raw_tables").mkdir(parents=True, exist_ok=True)
-    (base / "processed" / "characteristics").mkdir(parents=True, exist_ok=True)
-    (base / "processed" / "return_data").mkdir(parents=True, exist_ok=True)
-    (base / "processed" / "other_output").mkdir(parents=True, exist_ok=True)
-    return DataPaths(base_dir=base)
+    """Create a DataPaths rooted at base_dir with the interim dir (all we write to)."""
+    paths = DataPaths(base_dir=Path(base_dir))
+    paths.interim_dir.mkdir(parents=True, exist_ok=True)
+    return paths
 
 
 def main() -> None:

@@ -8,8 +8,6 @@ standalone qmj.parquet.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import polars as pl
 import polars.testing
 import pytest
@@ -18,56 +16,39 @@ from jkp.data.aux_functions import merge_qmj_to_world_data, quality_minus_junk
 from jkp.data.paths import DataPaths
 from tests.golden.generate_qmj_golden import build_qmj_world_data_input
 
-# ---------------------------------------------------------------------------
-# Tolerance (mirrors ToleranceSpec.STANDARD)
-# ---------------------------------------------------------------------------
-_RTOL = 1e-6
-_ATOL = 1e-10
-
 # Columns that qmj adds to world_data
 _QMJ_COLS = ["qmj_prof", "qmj_growth", "qmj_safety", "qmj"]
 
 
 # ---------------------------------------------------------------------------
-# Class-scoped fixture: run the full chain once for tests 1-5
+# Fixture: run the full chain for tests 1-5 (the chain runs in ~0.06s, so
+# function scope is negligible and lets us reuse the test_paths fixture)
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="class")
-def pipeline_outputs(tmp_path_factory: pytest.TempPathFactory) -> dict:
-    """Run quality_minus_junk → merge_qmj_to_world_data once; return artefacts."""
-    base = tmp_path_factory.mktemp("qmj_pipeline")
-    _setup_dirs(base)
-    paths = DataPaths(base_dir=base)
-
+@pytest.fixture
+def pipeline_outputs(test_paths: DataPaths) -> dict:
+    """Run quality_minus_junk → merge_qmj_to_world_data; return artefacts."""
     df_input = build_qmj_world_data_input(seed=42)
-    input_path = paths.interim_dir / "world_data_-1.parquet"
+    input_path = test_paths.interim_dir / "world_data_-1.parquet"
     df_input.write_parquet(input_path)
 
-    quality_minus_junk(paths, input_path, 10)
-    merge_qmj_to_world_data(paths)
+    quality_minus_junk(test_paths, input_path, 10)
+    merge_qmj_to_world_data(test_paths)
 
-    world_data = pl.read_parquet(paths.interim_dir / "world_data.parquet")
-    qmj = pl.read_parquet(paths.interim_dir / "qmj.parquet")
+    world_data = pl.read_parquet(test_paths.interim_dir / "world_data.parquet")
+    qmj = pl.read_parquet(test_paths.interim_dir / "qmj.parquet")
 
     return {
         "df_input": df_input,
         "world_data": world_data,
         "qmj": qmj,
-        "paths": paths,
+        "paths": test_paths,
     }
 
 
-def _setup_dirs(base: Path) -> None:
-    (base / "interim" / "raw_data_dfs").mkdir(parents=True, exist_ok=True)
-    (base / "raw" / "raw_tables").mkdir(parents=True, exist_ok=True)
-    (base / "processed" / "characteristics").mkdir(parents=True, exist_ok=True)
-    (base / "processed" / "return_data").mkdir(parents=True, exist_ok=True)
-    (base / "processed" / "other_output").mkdir(parents=True, exist_ok=True)
-
-
 # ---------------------------------------------------------------------------
-# Tests 1-5: use the class-scoped fixture
+# Tests 1-5: use the pipeline_outputs fixture
 # ---------------------------------------------------------------------------
 
 
@@ -127,7 +108,7 @@ class TestQmjPipeline:
         sorted_wd = world_data.sort(["id", "eom"])
         polars.testing.assert_frame_equal(world_data, sorted_wd, check_row_order=True)
 
-    def test_qmj_values_match_standalone(self, pipeline_outputs: dict) -> None:
+    def test_qmj_values_match_standalone(self, pipeline_outputs: dict, tolerance) -> None:
         """Matched (excntry, id, eom) rows have qmj cols equal to standalone qmj.parquet."""
         world_data = pipeline_outputs["world_data"]
         qmj = pipeline_outputs["qmj"]
@@ -145,8 +126,7 @@ class TestQmjPipeline:
             polars.testing.assert_series_equal(
                 merged[col].rename(col),
                 merged[ref_col].rename(col),
-                rtol=_RTOL,
-                atol=_ATOL,
+                **tolerance.STANDARD,
                 check_names=True,
             )
 
@@ -156,7 +136,7 @@ class TestQmjPipeline:
 # ---------------------------------------------------------------------------
 
 
-def test_duplicate_id_eom_collapses(tmp_path: Path) -> None:
+def test_duplicate_id_eom_collapses(test_paths: DataPaths) -> None:
     """When world_data_-1 has a duplicated (id, eom) row, world_data height == unique count.
 
     The contract is:
@@ -167,15 +147,12 @@ def test_duplicate_id_eom_collapses(tmp_path: Path) -> None:
     with a duplicated version before calling merge_qmj_to_world_data.  Keep is
     non-deterministic; we assert only on height.
     """
-    _setup_dirs(tmp_path)
-    paths = DataPaths(base_dir=tmp_path)
-
     df_base = build_qmj_world_data_input(seed=42)
-    input_path = paths.interim_dir / "world_data_-1.parquet"
+    input_path = test_paths.interim_dir / "world_data_-1.parquet"
 
     # Step 1: run quality_minus_junk on clean (duplicate-free) input
     df_base.write_parquet(input_path)
-    quality_minus_junk(paths, input_path, 10)
+    quality_minus_junk(test_paths, input_path, 10)
 
     # Step 2: overwrite world_data_-1 with a version containing one duplicate row
     dup_row = df_base.filter(
@@ -185,9 +162,9 @@ def test_duplicate_id_eom_collapses(tmp_path: Path) -> None:
     df_with_dup.write_parquet(input_path)
 
     # Step 3: merge — this is what deduplicates on (id, eom)
-    merge_qmj_to_world_data(paths)
+    merge_qmj_to_world_data(test_paths)
 
-    world_data = pl.read_parquet(paths.interim_dir / "world_data.parquet")
+    world_data = pl.read_parquet(test_paths.interim_dir / "world_data.parquet")
     n_unique = df_with_dup.select(["id", "eom"]).unique().height
 
     assert world_data.height == n_unique, (

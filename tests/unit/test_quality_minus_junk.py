@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import math
 from datetime import date
+from pathlib import Path
 from typing import Any
 
+import numpy as np
 import polars as pl
 import pytest
+from polars.testing import assert_frame_equal
 
 from jkp.data.aux_functions import quality_minus_junk, z_ranks
 from jkp.data.paths import DataPaths
@@ -125,7 +128,7 @@ def _make_world_data(
     return pl.concat(frames)
 
 
-def _write_world(paths: DataPaths, df: pl.DataFrame) -> pl.Path:  # type: ignore[name-defined]
+def _write_world(paths: DataPaths, df: pl.DataFrame) -> Path:
     p = paths.interim_dir / "test_msf.parquet"
     df.write_parquet(p)
     return p
@@ -185,8 +188,6 @@ class TestZRanks:
         result = result.sort("id")
 
         expected = _hand_z(vals)
-        import numpy as np
-
         np.testing.assert_allclose(result["z_x"].to_list(), expected, **tolerance.STANDARD)
 
     def test_descending_reverses_sign(self, tolerance: Any) -> None:
@@ -195,8 +196,6 @@ class TestZRanks:
         df = _z_frame(vals)
         asc = z_ranks(df, "x", 2, "ascending").sort("id")
         desc = z_ranks(df, "x", 2, "descending").sort("id")
-
-        import numpy as np
 
         np.testing.assert_allclose(
             desc["z_x"].to_list(),
@@ -212,8 +211,6 @@ class TestZRanks:
 
         z_list = result["z_x"].to_list()
         # ids 2 and 3 are tied at 2.0 → equal z
-        import numpy as np
-
         np.testing.assert_allclose(z_list[1], z_list[2], **tolerance.STANDARD)
 
         # check against hand-computed (average rank: 1=1, 2=2.5, 3=2.5, 4=4)
@@ -274,8 +271,6 @@ class TestZRanks:
 
     def test_two_countries_independent(self, tolerance: Any) -> None:
         """Two countries with identical values produce identical z-scores per country."""
-        import numpy as np
-
         vals = [1.0, 3.0, 5.0, 7.0, 9.0]
         df_us = _z_frame(vals, excntry="US")
         df_gb = _z_frame(vals, excntry="GB")
@@ -392,49 +387,67 @@ class TestZVarsAndComposites:
         quality_minus_junk(self.paths, p, min_stks)
         return pl.read_parquet(self.paths.interim_dir / "qmj.parquet")
 
-    def test_evol_uses_2x_roeq_multiplier(self) -> None:
-        """qmj_safety ordering reflects 2x roeq_be_std (descending var).
+    def _evol_mixed_group(self) -> pl.DataFrame:
+        """Group mixing roeq-non-null and roeq-null stocks to isolate __evol.
 
-        Stock A has high roeq_be_std, stock B has low. After 2x multiplier
-        and descending direction, A should have lower qmj_safety than B.
+        __evol = coalesce(2 * roeq_be_std, roe_be_std), z-ranked descending:
+
+            id  roeq  roe   __evol
+            1   0.6   0.1   1.2  (2 * roeq; roe ignored by coalesce priority)
+            2   null  1.0   1.0  (fallback to roe)
+            3   null  0.5   0.5  (fallback to roe)
+            4   0.2   5.0   0.4  (2 * roeq; roe ignored by coalesce priority)
+            5   null  0.8   0.8  (fallback to roe)
+
+        All other safety vars are constant across stocks (std=0 → z dropped),
+        so qmj_safety ordering is driven by __evol alone:
+        safety(4) > safety(3) > safety(5) > safety(2) > safety(1).
         """
         n = 5
         base = _group_frame(n=n)
-        # Set roeq_be_std so stock n (highest id) has the largest value.
-        # __evol = 2 * roeq_be_std (roe_be_std non-null, but coalesce prefers roeq).
-        # Direction: descending → higher __evol → lower z → lower safety composite.
-        roeq_vals = [float(i) for i in range(1, n + 1)]  # 1,2,3,4,5
-        base = base.with_columns(pl.Series("roeq_be_std", roeq_vals, dtype=pl.Float64))
-        # Make all other safety vars (betabab_1260d, debt_at, o_score, z_score)
-        # identical across stocks so they don't drive safety ordering.
-        for col in ["betabab_1260d", "debt_at", "o_score"]:
-            # Give them perfectly correlated with id so z contributions are id-ordered
-            # but uniform-slope: use distinct to avoid std=0
-            base = base.with_columns(
-                pl.Series(col, [float(i) for i in range(1, n + 1)], dtype=pl.Float64)
-            )
-        result = self._run(base)
-        result = result.sort("id")
-        # stock 5 (highest roeq → highest 2*roeq → descending → lowest safety z)
-        # stock 1 (lowest roeq → lowest 2*roeq → descending → highest safety z)
+        base = base.with_columns(
+            pl.Series("roeq_be_std", [0.6, None, None, 0.2, None], dtype=pl.Float64),
+            pl.Series("roe_be_std", [0.1, 1.0, 0.5, 5.0, 0.8], dtype=pl.Float64),
+        )
+        # Constant safety vars → std=0 → z NaN → filtered → no safety contribution
+        for col in ["betabab_1260d", "debt_at", "o_score", "z_score"]:
+            base = base.with_columns(pl.Series(col, [1.0] * n, dtype=pl.Float64))
+        return base
+
+    def test_evol_uses_2x_roeq_multiplier(self) -> None:
+        """The 2x multiplier flips cross-ordering between roeq and roe stocks.
+
+        Stock 1 (2 * 0.6 = 1.2) vs stock 2 (fallback 1.0): with the 2x,
+        stock 1 has the higher __evol → lower safety (descending). Without
+        it (1 * 0.6 = 0.6 < 1.0) the ordering would invert, so this assert
+        fails if the multiplier is dropped.
+        """
+        result = self._run(self._evol_mixed_group()).sort("id")
         safety = result["qmj_safety"].to_list()
-        assert safety[0] > safety[-1], (
-            f"Expected stock 1 safety {safety[0]:.4f} > stock 5 safety {safety[-1]:.4f}"
+        assert safety[0] < safety[1], (
+            f"Expected stock 1 safety {safety[0]:.4f} < stock 2 safety {safety[1]:.4f} "
+            "(2 * roeq_be_std should exceed stock 2's roe_be_std fallback)"
         )
 
     def test_evol_fallback_to_roe_be_std(self) -> None:
-        """When roeq_be_std is null, __evol falls back to roe_be_std (no 2x)."""
-        n = 5
-        base = _group_frame(n=n)
-        # Null out roeq_be_std; set roe_be_std with distinct values
-        roe_vals = [float(i) for i in range(1, n + 1)]
-        base = base.with_columns(
-            pl.Series("roeq_be_std", [None] * n, dtype=pl.Float64),
-            pl.Series("roe_be_std", roe_vals, dtype=pl.Float64),
+        """roeq-null stocks fall back to roe_be_std; coalesce priority holds.
+
+        Among roeq-null stocks (2, 3, 5) safety ordering follows roe_be_std
+        descending: safety(3) > safety(5) > safety(2). And stock 4's large
+        roe (5.0) is ignored because its roeq is non-null (2 * 0.2 = 0.4),
+        so safety(4) > safety(3) — this fails if the coalesce priority is
+        swapped to prefer roe_be_std.
+        """
+        result = self._run(self._evol_mixed_group()).sort("id")
+        safety = result["qmj_safety"].to_list()
+        s1, s2, s3, s4, s5 = safety
+        # fallback ordering among roeq-null stocks (roe: 0.5 < 0.8 < 1.0)
+        assert s3 > s5 > s2, f"Expected safety(3) > safety(5) > safety(2), got {s3=} {s5=} {s2=}"
+        # coalesce priority: stock 4 uses 2 * roeq = 0.4, not roe = 5.0
+        assert s4 > s3, (
+            f"Expected stock 4 safety {s4:.4f} > stock 3 safety {s3:.4f} "
+            "(stock 4's __evol should be 2 * roeq_be_std, ignoring its large roe_be_std)"
         )
-        result = self._run(base)
-        # Should complete without error and have qmj_safety non-null
-        assert result["qmj_safety"].null_count() < n
 
     @pytest.mark.parametrize("var", ["debt_at", "betabab_1260d", "o_score"])
     def test_descending_safety_var_direction(self, var: str) -> None:
@@ -546,8 +559,6 @@ class TestQmjAggregation:
         Uses 4 stocks with distinct values, computes z-ranks per var,
         composites, z-rank composites, mean, final z-rank in plain Python.
         """
-        import math as _math
-
         n = 4
         base = _group_frame(n=n)
         # Give perfectly spaced distinct values for all vars so hand-calc is tractable
@@ -574,7 +585,7 @@ class TestQmjAggregation:
             n2 = len(vals)
             mean = sum(vals) / n2
             var = sum((v - mean) ** 2 for v in vals) / (n2 - 1)
-            std = _math.sqrt(var)
+            std = math.sqrt(var)
             if std == 0:
                 return [float("nan")] * n2
             return [(v - mean) / std for v in vals]
@@ -636,7 +647,7 @@ class TestQmjAggregation:
 
         # Composites (mean_horizontal skips nulls — here all non-null)
         def mean_cols(names: list[str], idx: int) -> float:
-            vals2 = [z_per_var[nm][idx] for nm in names if not _math.isnan(z_per_var[nm][idx])]
+            vals2 = [z_per_var[nm][idx] for nm in names if not math.isnan(z_per_var[nm][idx])]
             return sum(vals2) / len(vals2) if vals2 else float("nan")
 
         prof_names = ["gp_at", "ni_be", "ni_at", "ocf_at", "gp_sale", "oaccruals_at"]
@@ -657,15 +668,13 @@ class TestQmjAggregation:
         qmj_expected = z_ranks_py(qmj_raw)
 
         result_sorted = result.sort("id")
-        import numpy as np
-
         np.testing.assert_allclose(
             result_sorted["qmj"].to_list(),
             qmj_expected,
             **tolerance.LOOSE,
         )
 
-    def test_country_b_does_not_affect_country_a(self) -> None:
+    def test_country_b_does_not_affect_country_a(self, tolerance: Any) -> None:
         """Within-country z-scoring: adding country B doesn't change country A's qmj."""
         df_a_only = _group_frame(excntry="US", n=5)
         df_b = _group_frame(excntry="GB", n=5)
@@ -680,13 +689,10 @@ class TestQmjAggregation:
         result_ab = pl.read_parquet(self.paths.interim_dir / "qmj.parquet")
         result_ab_a = result_ab.filter(pl.col("excntry") == "US").sort("id")
 
-        import numpy as np
-
         np.testing.assert_allclose(
             result_a["qmj"].to_list(),
             result_ab_a["qmj"].to_list(),
-            rtol=1e-6,
-            atol=1e-10,
+            **tolerance.STANDARD,
         )
 
 
@@ -721,15 +727,13 @@ class TestOutputAndIdempotency:
 
     def test_idempotency(self) -> None:
         """Running quality_minus_junk twice produces identical output."""
-        from polars.testing import assert_frame_equal as pl_assert_frame_equal
-
         df = _group_frame(n=5)
         p = _write_world(self.paths, df)
         quality_minus_junk(self.paths, p, 3)
         r1 = pl.read_parquet(self.paths.interim_dir / "qmj.parquet")
         quality_minus_junk(self.paths, p, 3)
         r2 = pl.read_parquet(self.paths.interim_dir / "qmj.parquet")
-        pl_assert_frame_equal(r1.sort(["excntry", "id", "eom"]), r2.sort(["excntry", "id", "eom"]))
+        assert_frame_equal(r1.sort(["excntry", "id", "eom"]), r2.sort(["excntry", "id", "eom"]))
 
     def test_group_below_min_stks_has_null_qmj(self) -> None:
         """Group with count < min_stks appears in output but with null qmj values.
