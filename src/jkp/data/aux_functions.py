@@ -7769,6 +7769,9 @@ def quality_minus_junk(paths: DataPaths, data_path, min_stks):
         & (col("ret_exc").is_not_null())
         & (col("me").is_not_null())
     )
+    # NOTE: input must be unique on (excntry, eom, id) — guaranteed upstream by
+    # construction of world_data_-1. Duplicate keys would fan out multiplicatively
+    # across the 16+3 full joins below and panic at the Polars frame-length limit.
     qmj = pl.scan_parquet(data_path).filter(c1).select(cols).sort(["excntry", "eom"]).collect()
     for var_z, dir in zip(z_vars, direction, strict=True):
         __z = z_ranks(qmj, var_z, min_stks, dir)
