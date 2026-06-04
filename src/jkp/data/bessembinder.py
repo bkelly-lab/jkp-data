@@ -10,7 +10,6 @@ including deviations from the original paper.
 """
 
 import logging
-from pathlib import Path
 
 import polars as pl
 from polars import col
@@ -64,67 +63,114 @@ def _validate_corrections_no_cascading(
     factor_col = f"{col_name}_correction_factor"
     error_type_col = f"{col_name}_error_type"
 
-    # Map each flagged correction to its row position within the security.
-    # df is sorted by group_cols + sort_col upstream (detection functions sort),
-    # so within-group row order equals date order. Only the corrections log is
-    # ever materialized — the full data frame stays lazy throughout.
-    pos_index = df.select(group_cols + [sort_col]).with_columns(
-        pl.int_range(pl.len()).over(group_cols).alias("_pos")
-    )
-    log_df = corrections_log.join(pos_index, on=group_cols + [sort_col], how="left").collect()
+    # Materialize to work with actual values
+    log_df = corrections_log.collect()
 
     if len(log_df) == 0:
         # No corrections to validate
         return df, corrections_log, pl.LazyFrame()
 
-    print(f"    [validate] {col_name}: {len(log_df)} corrections to validate", flush=True)
+    # We need the full data to look up dates for endpoint positions
+    data_df = df.collect()
 
-    orig_schema = corrections_log.collect_schema()
-
-    # Endpoint positions: pos ± window_size (single-period window_size is 1)
-    log_df = log_df.with_columns(
-        (col("_pos") - col("window_size").fill_null(1)).alias("_lpos"),
-        (col("_pos") + col("window_size").fill_null(1)).alias("_rpos"),
-    )
+    # Build a date index for each security to map positions to dates
+    # Group data by security and create position -> date mapping
+    date_index_by_security = {}
+    for key, group in data_df.group_by(group_cols):
+        group_sorted = group.sort(sort_col)
+        dates = group_sorted[sort_col].to_list()
+        # Create mapping from date to position index
+        date_to_pos = {d: i for i, d in enumerate(dates)}
+        pos_to_date = dict(enumerate(dates))
+        date_index_by_security[key] = {
+            "dates": dates,
+            "date_to_pos": date_to_pos,
+            "pos_to_date": pos_to_date,
+        }
 
     # Iteratively reject false positives until stable
-    current_log = log_df
-    rejected_logs = []
+    current_log = log_df.clone()
+    all_rejected = []
     max_iterations = 10  # Safety limit
 
     for iteration in range(max_iterations):
-        if len(current_log) == 0:
+        # Build set of currently flagged positions
+        flagged_positions = set()
+        for row in current_log.iter_rows(named=True):
+            key = tuple(row[gc] for gc in group_cols) + (row[sort_col],)
+            flagged_positions.add(key)
+
+        if len(flagged_positions) == 0:
             break
 
-        # A correction is rejected when BOTH endpoint positions are themselves
-        # flagged (likely false positive sandwiched between two errors).
-        flagged = current_log.select(group_cols + ["_pos"])
-        rejected = current_log.join(
-            flagged.rename({"_pos": "_lpos"}), on=group_cols + ["_lpos"], how="semi"
-        ).join(flagged.rename({"_pos": "_rpos"}), on=group_cols + ["_rpos"], how="semi")
+        # Check each correction: are BOTH endpoint positions also flagged?
+        to_reject = []
+        to_keep = []
 
-        if len(rejected) == 0:
+        for row in current_log.iter_rows(named=True):
+            security_key = tuple(row[gc] for gc in group_cols)
+            current_date = row[sort_col]
+            window_size = row.get("window_size", 1) or 1
+
+            # Get date index for this security
+            if security_key not in date_index_by_security:
+                to_keep.append(row)
+                continue
+
+            index_info = date_index_by_security[security_key]
+            date_to_pos = index_info["date_to_pos"]
+            pos_to_date = index_info["pos_to_date"]
+
+            if current_date not in date_to_pos:
+                to_keep.append(row)
+                continue
+
+            current_pos = date_to_pos[current_date]
+
+            # Determine endpoint positions (for single-period: pos-1 and pos+1)
+            # For multi-period: pos-window_size and pos+window_size
+            left_pos = current_pos - window_size
+            right_pos = current_pos + window_size
+
+            # Get endpoint dates
+            left_date = pos_to_date.get(left_pos)
+            right_date = pos_to_date.get(right_pos)
+
+            # Check if endpoint positions are flagged
+            left_flagged = False
+            right_flagged = False
+
+            if left_date is not None:
+                left_key = security_key + (left_date,)
+                left_flagged = left_key in flagged_positions
+
+            if right_date is not None:
+                right_key = security_key + (right_date,)
+                right_flagged = right_key in flagged_positions
+
+            # Reject if BOTH endpoints are flagged (likely false positive)
+            if left_flagged and right_flagged:
+                to_reject.append(dict(row) | {"rejection_reason": "both_endpoints_flagged"})
+            else:
+                to_keep.append(row)
+
+        if len(to_reject) == 0:
             # No more rejections, we're done
             break
 
-        rejected_logs.append(
-            rejected.with_columns(pl.lit("both_endpoints_flagged").alias("rejection_reason"))
-        )
-        current_log = current_log.join(rejected, on=group_cols + [sort_col, "variable"], how="anti")
+        all_rejected.extend(to_reject)
+        current_log = pl.DataFrame(to_keep) if to_keep else pl.DataFrame(schema=log_df.schema)
 
-        print(
-            f"    [validate] {col_name}: iteration {iteration + 1}, "
-            f"rejected {len(rejected)} corrections",
-            flush=True,
+        logger.debug(
+            f"{col_name}: iteration {iteration + 1}, rejected {len(to_reject)} corrections"
         )
 
     # Build final results
-    helper_cols = ["_pos", "_lpos", "_rpos"]
-    valid_corrections = current_log.drop(helper_cols)
+    valid_corrections = current_log
     rejected_corrections = (
-        pl.concat(rejected_logs, how="vertical").drop(helper_cols)
-        if rejected_logs
-        else pl.DataFrame(schema=dict(orig_schema) | {"rejection_reason": pl.Utf8})
+        pl.DataFrame(all_rejected)
+        if all_rejected
+        else pl.DataFrame(schema=log_df.schema | {"rejection_reason": pl.Utf8})
     )
 
     # Log rejection statistics
@@ -132,33 +178,42 @@ def _validate_corrections_no_cascading(
     n_total = len(log_df)
     if n_rejected > 0:
         logger.info(f"{col_name}: rejected {n_rejected}/{n_total} cascading false positives")
-        print(
-            f"    [validate] {col_name}: rejected {n_rejected}/{n_total} cascading false positives",
-            flush=True,
+
+    # Now update the main dataframe to reset invalid corrections
+    if n_rejected > 0:
+        # Build a lookup for rejection
+        rejection_lookup = set()
+        for row in rejected_corrections.iter_rows(named=True):
+            key = tuple(row[gc] for gc in group_cols) + (row[sort_col],)
+            rejection_lookup.add(key)
+
+        # Reset correction factors and error_types for rejected corrections
+        new_factors = []
+        new_types = []
+        for row in data_df.iter_rows(named=True):
+            key = tuple(row[gc] for gc in group_cols) + (row[sort_col],)
+            if key in rejection_lookup:
+                new_factors.append(1.0)  # Reset to no correction
+                new_types.append(None)
+            else:
+                new_factors.append(row[factor_col])
+                new_types.append(row[error_type_col])
+
+        data_df = data_df.with_columns(
+            [
+                pl.Series(factor_col, new_factors),
+                pl.Series(error_type_col, new_types).cast(pl.Utf8),
+            ]
         )
 
-    # Reset invalid corrections on the main dataframe — lazy join + when/otherwise
-    # instead of materializing the full frame.
-    if n_rejected > 0:
-        rejected_keys = (
-            rejected_corrections.lazy()
-            .select(group_cols + [sort_col])
-            .with_columns(pl.lit(True).alias("_rejected"))
-        )
-        df = (
-            df.join(rejected_keys, on=group_cols + [sort_col], how="left")
-            .with_columns(
-                pl.when(col("_rejected"))
-                .then(pl.lit(1.0))  # Reset to no correction
-                .otherwise(col(factor_col))
-                .alias(factor_col),
-                pl.when(col("_rejected"))
-                .then(pl.lit(None).cast(pl.Utf8))
-                .otherwise(col(error_type_col))
-                .alias(error_type_col),
-            )
-            .drop("_rejected")
-        )
+        df = data_df.lazy()
+    else:
+        df = data_df.lazy()
+
+    # Clean up validation columns before returning
+    valid_cols = [c for c in valid_corrections.columns if c != "rejection_reason"]
+    if len(valid_cols) > 0 and len(valid_corrections) > 0:
+        valid_corrections = valid_corrections.select(valid_cols)
 
     return df, valid_corrections.lazy(), rejected_corrections.lazy()
 
@@ -306,68 +361,6 @@ def _detect_decimal_error_single_period(
     return df
 
 
-def _propagate_interior(
-    df: pl.LazyFrame,
-    col_name: str,
-    marker_prefix: str,
-    offsets: list[int],
-    group_cols: list[str],
-    nlag: int,
-) -> pl.LazyFrame:
-    """
-    Propagate detection markers to all interior positions in a single pass.
-
-    Replaces the previous per-offset sequential update loop. That loop was
-    first-write-wins in offset order: each iteration only wrote where the
-    target column was still unset (factor == 1.0 / others null), and marker
-    columns are immutable during propagation, so the first non-null shifted
-    marker in offset order won. pl.coalesce over the shifted markers in the
-    same offset order reproduces that exactly, in one with_columns instead of
-    len(offsets) sequential passes.
-
-    Guards per column (matching the original loop):
-    - factor: == 1.0 (1.0 is non-null, so a bare coalesce would never write)
-    - window: source is the literal nlag, gated on the detection marker
-    - all others: null-gated, so coalesce([existing, first_hit]) is exact
-    """
-    factor_col = f"{col_name}_correction_factor"
-    window_col = f"{col_name}_window_size"
-
-    def first_hit(marker: str) -> pl.Expr:
-        return pl.coalesce(
-            [col(f"{marker_prefix}{marker}").shift(o).over(group_cols) for o in offsets]
-        )
-
-    # (target column suffix, marker suffix) pairs sharing the null-gated form
-    null_gated = [
-        ("error_type", "type"),
-        ("window_type", "wtype"),
-        ("endpoint_left", "ep_left"),
-        ("endpoint_right", "ep_right"),
-        ("ratio_to_left", "ratio_left"),
-        ("ratio_to_right", "ratio_right"),
-        ("variation_ratio", "variation"),
-    ]
-    return df.with_columns(
-        [
-            pl.when((col(factor_col) == 1.0) & first_hit("det").is_not_null())
-            .then(first_hit("det"))
-            .otherwise(col(factor_col))
-            .alias(factor_col),
-            pl.when(col(window_col).is_null() & first_hit("det").is_not_null())
-            .then(pl.lit(nlag))
-            .otherwise(col(window_col))
-            .alias(window_col),
-        ]
-        + [
-            pl.coalesce([col(f"{col_name}_{target}"), first_hit(marker)]).alias(
-                f"{col_name}_{target}"
-            )
-            for target, marker in null_gated
-        ]
-    )
-
-
 def _detect_decimal_error_multi_period(
     df: pl.LazyFrame,
     col_name: str,
@@ -375,7 +368,6 @@ def _detect_decimal_error_multi_period(
     sort_col: str,
     window_sizes: list[int],
     variation_threshold: float = 1.3,
-    spill_dir: Path | None = None,
 ) -> pl.LazyFrame:
     """
     Detect multi-period decimal shift errors (Bessembinder Section 6b).
@@ -472,409 +464,597 @@ def _detect_decimal_error_multi_period(
         if nlag <= 1:
             continue  # Single period handled by _detect_decimal_error_single_period
 
-        print(f"    [detect] {col_name}: multi-period window nlag={nlag}", flush=True)
-
         # For each threshold magnitude (10x, 100x, 1000x)
-        # Single magnitude pass (10x). The previous loop over magnitudes
-        # [1, 2, 3] was dead code for magnitudes 2 and 3: every detection flag
-        # requires col(factor_col) == 1.0, and any position whose endpoint
-        # ratios exceed 50 (100x threshold) also exceeds 5 (10x threshold), so
-        # the 10x pass always fired first and its offset-0 propagation marked
-        # the detection point itself, blocking the 100x/1000x passes. NOTE:
-        # this means multi-period errors are always corrected by 10x regardless
-        # of true magnitude -- pre-existing behavior, deliberately preserved.
-        # (Single-period detection retains its 1000x -> 100x -> 10x chain.)
-        threshold_high = 5.0
-        threshold_low = 0.2  # 1 / threshold_high
-        correction_factor_high = 0.1  # divide by 10
-        correction_factor_low = 10.0  # multiply by 10
-        error_type_high = "high_10x"
-        error_type_low = "low_10x"
+        for magnitude in [1, 2, 3]:
+            threshold_high = 5 * (10 ** (magnitude - 1))  # 5, 50, 500
+            threshold_low = 1.0 / threshold_high  # 0.2, 0.02, 0.002
+            correction_factor_high = 10.0 ** (-magnitude)  # 0.1, 0.01, 0.001
+            correction_factor_low = 10.0**magnitude  # 10, 100, 1000
+            # Error type labels with magnitude
+            magnitude_suffix = f"{10**magnitude}x"  # "10x", "100x", "1000x"
+            error_type_high = f"high_{magnitude_suffix}"
+            error_type_low = f"low_{magnitude_suffix}"
 
-        # ===================================================================
-        # FULL WINDOW: endpoints at t-nlag and t+nlag
-        # Interior: positions t-nlag+1 to t+nlag-1 (size 2*nlag-1)
-        #
-        # Detection: At position t, check reversal using endpoints.
-        # If reversal + variation OK, mark ALL interior positions.
-        # ===================================================================
+            # ===================================================================
+            # FULL WINDOW: endpoints at t-nlag and t+nlag
+            # Interior: positions t-nlag+1 to t+nlag-1 (size 2*nlag-1)
+            #
+            # Detection: At position t, check reversal using endpoints.
+            # If reversal + variation OK, mark ALL interior positions.
+            # ===================================================================
 
-        # Build list of shifted values for interior variation calculation
-        # Interior spans from t-nlag+1 to t+nlag-1 relative to detection point t
-        interior_shifts = list(range(-(nlag - 1), nlag))  # e.g., for nlag=2: [-1, 0, 1]
+            # Build list of shifted values for interior variation calculation
+            # Interior spans from t-nlag+1 to t+nlag-1 relative to detection point t
+            interior_shifts = list(range(-(nlag - 1), nlag))  # e.g., for nlag=2: [-1, 0, 1]
 
-        # Compute max/min across interior positions explicitly
-        interior_cols = [
-            col(col_name).shift(-s).over(group_cols).alias(f"_int_{s}") for s in interior_shifts
-        ]
-        df = df.with_columns(interior_cols)
-
-        int_col_names = [f"_int_{s}" for s in interior_shifts]
-        df = df.with_columns(
-            [
-                pl.max_horizontal(*[col(c) for c in int_col_names]).alias("_full_int_max"),
-                pl.min_horizontal(*[col(c) for c in int_col_names]).alias("_full_int_min"),
-                # Endpoints
-                col(col_name).shift(nlag).over(group_cols).alias("_full_ep_lag"),
-                col(col_name).shift(-nlag).over(group_cols).alias("_full_ep_lead"),
+            # Compute max/min across interior positions explicitly
+            interior_cols = [
+                col(col_name).shift(-s).over(group_cols).alias(f"_int_{s}") for s in interior_shifts
             ]
-        )
+            df = df.with_columns(interior_cols)
 
-        # Drop interior shift columns
-        df = df.drop(int_col_names)
-
-        # FIX: Check that endpoints are clean (not already flagged for correction)
-        # This prevents cascading false positives where an error value becomes
-        # a comparison point for detecting "errors" in subsequent normal data.
-        # fill_null(1.0) ensures boundary positions are treated as clean.
-        endpoint_left_clean_full = (
-            col(factor_col).shift(nlag).over(group_cols).fill_null(1.0) == 1.0
-        )
-        endpoint_right_clean_full = (
-            col(factor_col).shift(-nlag).over(group_cols).fill_null(1.0) == 1.0
-        )
-
-        # Reversal check for FULL window (only if endpoints are clean)
-        full_high_reversal = (
-            endpoint_left_clean_full
-            & endpoint_right_clean_full
-            & (col(col_name) / col("_full_ep_lag") > threshold_high)
-            & (col(col_name) / col("_full_ep_lead") > threshold_high)
-        )
-        full_low_reversal = (
-            endpoint_left_clean_full
-            & endpoint_right_clean_full
-            & (col(col_name) / col("_full_ep_lag") < threshold_low)
-            & (col(col_name) / col("_full_ep_lead") < threshold_low)
-        )
-
-        # Variation check on interior
-        full_variation_ok = (col("_full_int_max") / col("_full_int_min")) < variation_threshold
-
-        # Determine which positions to flag
-        full_high_flag = full_high_reversal & full_variation_ok & (col(factor_col) == 1.0)
-        full_low_flag = full_low_reversal & full_variation_ok & (col(factor_col) == 1.0)
-
-        # Create detection marker with debug info
-        df = df.with_columns(
-            [
-                pl.when(full_high_flag)
-                .then(pl.lit(correction_factor_high))
-                .when(full_low_flag)
-                .then(pl.lit(correction_factor_low))
-                .otherwise(pl.lit(None).cast(pl.Float64))
-                .alias("_full_det"),
-                pl.when(full_high_flag)
-                .then(pl.lit(error_type_high))
-                .when(full_low_flag)
-                .then(pl.lit(error_type_low))
-                .otherwise(pl.lit(None).cast(pl.Utf8))
-                .alias("_full_type"),
-                pl.when(full_high_flag | full_low_flag)
-                .then(pl.lit("full"))
-                .otherwise(pl.lit(None).cast(pl.Utf8))
-                .alias("_full_wtype"),
-                # Debug: endpoint values
-                pl.when(full_high_flag | full_low_flag)
-                .then(col("_full_ep_lag"))
-                .otherwise(pl.lit(None).cast(pl.Float64))
-                .alias("_full_ep_left"),
-                pl.when(full_high_flag | full_low_flag)
-                .then(col("_full_ep_lead"))
-                .otherwise(pl.lit(None).cast(pl.Float64))
-                .alias("_full_ep_right"),
-                # Debug: ratios to endpoints
-                pl.when(full_high_flag | full_low_flag)
-                .then(col(col_name) / col("_full_ep_lag"))
-                .otherwise(pl.lit(None).cast(pl.Float64))
-                .alias("_full_ratio_left"),
-                pl.when(full_high_flag | full_low_flag)
-                .then(col(col_name) / col("_full_ep_lead"))
-                .otherwise(pl.lit(None).cast(pl.Float64))
-                .alias("_full_ratio_right"),
-                # Debug: variation ratio
-                pl.when(full_high_flag | full_low_flag)
-                .then(col("_full_int_max") / col("_full_int_min"))
-                .otherwise(pl.lit(None).cast(pl.Float64))
-                .alias("_full_variation"),
-            ]
-        )
-
-        # Propagate to all interior positions (single coalesce pass)
-        # Interior is at offsets -(nlag-1) to +(nlag-1) from detection point
-        df = _propagate_interior(df, col_name, "_full_", interior_shifts, group_cols, nlag)
-
-        df = df.drop(
-            [
-                "_full_int_max",
-                "_full_int_min",
-                "_full_ep_lag",
-                "_full_ep_lead",
-                "_full_det",
-                "_full_type",
-                "_full_wtype",
-                "_full_ep_left",
-                "_full_ep_right",
-                "_full_ratio_left",
-                "_full_ratio_right",
-                "_full_variation",
-            ]
-        )
-
-        # ===================================================================
-        # SUB-WINDOW A: endpoints at t-nlag and t+nlag-1
-        # Interior: positions t-nlag+1 to t+nlag-2 (size 2*nlag-2)
-        # ===================================================================
-
-        sub_interior_size = 2 * nlag - 2
-        if sub_interior_size >= 1:
-            # Interior spans from t-nlag+1 to t+nlag-2
-            sub_a_shifts = list(range(-(nlag - 1), nlag - 1))  # e.g., for nlag=2: [-1, 0]
-
-            sub_a_cols = [
-                col(col_name).shift(-s).over(group_cols).alias(f"_sa_{s}") for s in sub_a_shifts
-            ]
-            df = df.with_columns(sub_a_cols)
-
-            sa_col_names = [f"_sa_{s}" for s in sub_a_shifts]
+            int_col_names = [f"_int_{s}" for s in interior_shifts]
             df = df.with_columns(
                 [
-                    pl.max_horizontal(*[col(c) for c in sa_col_names]).alias("_sa_int_max"),
-                    pl.min_horizontal(*[col(c) for c in sa_col_names]).alias("_sa_int_min"),
-                    col(col_name).shift(nlag).over(group_cols).alias("_sa_ep_lag"),
-                    col(col_name).shift(-(nlag - 1)).over(group_cols).alias("_sa_ep_lead"),
+                    pl.max_horizontal(*[col(c) for c in int_col_names]).alias("_full_int_max"),
+                    pl.min_horizontal(*[col(c) for c in int_col_names]).alias("_full_int_min"),
+                    # Endpoints
+                    col(col_name).shift(nlag).over(group_cols).alias("_full_ep_lag"),
+                    col(col_name).shift(-nlag).over(group_cols).alias("_full_ep_lead"),
                 ]
             )
-            df = df.drop(sa_col_names)
 
-            # FIX: Check that endpoints are clean for sub-window A
-            # Endpoints at t-nlag and t+nlag-1
-            endpoint_left_clean_sa = (
+            # Drop interior shift columns
+            df = df.drop(int_col_names)
+
+            # FIX: Check that endpoints are clean (not already flagged for correction)
+            # This prevents cascading false positives where an error value becomes
+            # a comparison point for detecting "errors" in subsequent normal data.
+            # fill_null(1.0) ensures boundary positions are treated as clean.
+            endpoint_left_clean_full = (
                 col(factor_col).shift(nlag).over(group_cols).fill_null(1.0) == 1.0
             )
-            endpoint_right_clean_sa = (
-                col(factor_col).shift(-(nlag - 1)).over(group_cols).fill_null(1.0) == 1.0
-            )
-
-            sub_a_high_reversal = (
-                endpoint_left_clean_sa
-                & endpoint_right_clean_sa
-                & (col(col_name) / col("_sa_ep_lag") > threshold_high)
-                & (col(col_name) / col("_sa_ep_lead") > threshold_high)
-            )
-            sub_a_low_reversal = (
-                endpoint_left_clean_sa
-                & endpoint_right_clean_sa
-                & (col(col_name) / col("_sa_ep_lag") < threshold_low)
-                & (col(col_name) / col("_sa_ep_lead") < threshold_low)
-            )
-
-            sub_a_variation_ok = (col("_sa_int_max") / col("_sa_int_min")) < variation_threshold
-
-            sub_a_high_flag = sub_a_high_reversal & sub_a_variation_ok & (col(factor_col) == 1.0)
-            sub_a_low_flag = sub_a_low_reversal & sub_a_variation_ok & (col(factor_col) == 1.0)
-
-            df = df.with_columns(
-                [
-                    pl.when(sub_a_high_flag)
-                    .then(pl.lit(correction_factor_high))
-                    .when(sub_a_low_flag)
-                    .then(pl.lit(correction_factor_low))
-                    .otherwise(pl.lit(None).cast(pl.Float64))
-                    .alias("_sa_det"),
-                    pl.when(sub_a_high_flag)
-                    .then(pl.lit(error_type_high))
-                    .when(sub_a_low_flag)
-                    .then(pl.lit(error_type_low))
-                    .otherwise(pl.lit(None).cast(pl.Utf8))
-                    .alias("_sa_type"),
-                    pl.when(sub_a_high_flag | sub_a_low_flag)
-                    .then(pl.lit("sub_a"))
-                    .otherwise(pl.lit(None).cast(pl.Utf8))
-                    .alias("_sa_wtype"),
-                    # Debug: endpoint values
-                    pl.when(sub_a_high_flag | sub_a_low_flag)
-                    .then(col("_sa_ep_lag"))
-                    .otherwise(pl.lit(None).cast(pl.Float64))
-                    .alias("_sa_ep_left"),
-                    pl.when(sub_a_high_flag | sub_a_low_flag)
-                    .then(col("_sa_ep_lead"))
-                    .otherwise(pl.lit(None).cast(pl.Float64))
-                    .alias("_sa_ep_right"),
-                    # Debug: ratios to endpoints
-                    pl.when(sub_a_high_flag | sub_a_low_flag)
-                    .then(col(col_name) / col("_sa_ep_lag"))
-                    .otherwise(pl.lit(None).cast(pl.Float64))
-                    .alias("_sa_ratio_left"),
-                    pl.when(sub_a_high_flag | sub_a_low_flag)
-                    .then(col(col_name) / col("_sa_ep_lead"))
-                    .otherwise(pl.lit(None).cast(pl.Float64))
-                    .alias("_sa_ratio_right"),
-                    # Debug: variation ratio
-                    pl.when(sub_a_high_flag | sub_a_low_flag)
-                    .then(col("_sa_int_max") / col("_sa_int_min"))
-                    .otherwise(pl.lit(None).cast(pl.Float64))
-                    .alias("_sa_variation"),
-                ]
-            )
-
-            # Propagate to all interior positions (single coalesce pass)
-            df = _propagate_interior(df, col_name, "_sa_", sub_a_shifts, group_cols, nlag)
-
-            df = df.drop(
-                [
-                    "_sa_int_max",
-                    "_sa_int_min",
-                    "_sa_ep_lag",
-                    "_sa_ep_lead",
-                    "_sa_det",
-                    "_sa_type",
-                    "_sa_wtype",
-                    "_sa_ep_left",
-                    "_sa_ep_right",
-                    "_sa_ratio_left",
-                    "_sa_ratio_right",
-                    "_sa_variation",
-                ]
-            )
-
-        # ===================================================================
-        # SUB-WINDOW B: endpoints at t-nlag+1 and t+nlag
-        # Interior: positions t-nlag+2 to t+nlag-1 (size 2*nlag-2)
-        # ===================================================================
-
-        if sub_interior_size >= 1:
-            # Interior spans from t-nlag+2 to t+nlag-1
-            sub_b_shifts = list(range(-(nlag - 2), nlag))  # e.g., for nlag=2: [0, 1]
-
-            sub_b_cols = [
-                col(col_name).shift(-s).over(group_cols).alias(f"_sb_{s}") for s in sub_b_shifts
-            ]
-            df = df.with_columns(sub_b_cols)
-
-            sb_col_names = [f"_sb_{s}" for s in sub_b_shifts]
-            df = df.with_columns(
-                [
-                    pl.max_horizontal(*[col(c) for c in sb_col_names]).alias("_sb_int_max"),
-                    pl.min_horizontal(*[col(c) for c in sb_col_names]).alias("_sb_int_min"),
-                    col(col_name).shift(nlag - 1).over(group_cols).alias("_sb_ep_lag"),
-                    col(col_name).shift(-nlag).over(group_cols).alias("_sb_ep_lead"),
-                ]
-            )
-            df = df.drop(sb_col_names)
-
-            # FIX: Check that endpoints are clean for sub-window B
-            # Endpoints at t-nlag+1 and t+nlag
-            endpoint_left_clean_sb = (
-                col(factor_col).shift(nlag - 1).over(group_cols).fill_null(1.0) == 1.0
-            )
-            endpoint_right_clean_sb = (
+            endpoint_right_clean_full = (
                 col(factor_col).shift(-nlag).over(group_cols).fill_null(1.0) == 1.0
             )
 
-            sub_b_high_reversal = (
-                endpoint_left_clean_sb
-                & endpoint_right_clean_sb
-                & (col(col_name) / col("_sb_ep_lag") > threshold_high)
-                & (col(col_name) / col("_sb_ep_lead") > threshold_high)
+            # Reversal check for FULL window (only if endpoints are clean)
+            full_high_reversal = (
+                endpoint_left_clean_full
+                & endpoint_right_clean_full
+                & (col(col_name) / col("_full_ep_lag") > threshold_high)
+                & (col(col_name) / col("_full_ep_lead") > threshold_high)
             )
-            sub_b_low_reversal = (
-                endpoint_left_clean_sb
-                & endpoint_right_clean_sb
-                & (col(col_name) / col("_sb_ep_lag") < threshold_low)
-                & (col(col_name) / col("_sb_ep_lead") < threshold_low)
+            full_low_reversal = (
+                endpoint_left_clean_full
+                & endpoint_right_clean_full
+                & (col(col_name) / col("_full_ep_lag") < threshold_low)
+                & (col(col_name) / col("_full_ep_lead") < threshold_low)
             )
 
-            sub_b_variation_ok = (col("_sb_int_max") / col("_sb_int_min")) < variation_threshold
+            # Variation check on interior
+            full_variation_ok = (col("_full_int_max") / col("_full_int_min")) < variation_threshold
 
-            sub_b_high_flag = sub_b_high_reversal & sub_b_variation_ok & (col(factor_col) == 1.0)
-            sub_b_low_flag = sub_b_low_reversal & sub_b_variation_ok & (col(factor_col) == 1.0)
+            # Determine which positions to flag
+            full_high_flag = full_high_reversal & full_variation_ok & (col(factor_col) == 1.0)
+            full_low_flag = full_low_reversal & full_variation_ok & (col(factor_col) == 1.0)
 
+            # Create detection marker with debug info
             df = df.with_columns(
                 [
-                    pl.when(sub_b_high_flag)
+                    pl.when(full_high_flag)
                     .then(pl.lit(correction_factor_high))
-                    .when(sub_b_low_flag)
+                    .when(full_low_flag)
                     .then(pl.lit(correction_factor_low))
                     .otherwise(pl.lit(None).cast(pl.Float64))
-                    .alias("_sb_det"),
-                    pl.when(sub_b_high_flag)
+                    .alias("_full_det"),
+                    pl.when(full_high_flag)
                     .then(pl.lit(error_type_high))
-                    .when(sub_b_low_flag)
+                    .when(full_low_flag)
                     .then(pl.lit(error_type_low))
                     .otherwise(pl.lit(None).cast(pl.Utf8))
-                    .alias("_sb_type"),
-                    pl.when(sub_b_high_flag | sub_b_low_flag)
-                    .then(pl.lit("sub_b"))
+                    .alias("_full_type"),
+                    pl.when(full_high_flag | full_low_flag)
+                    .then(pl.lit("full"))
                     .otherwise(pl.lit(None).cast(pl.Utf8))
-                    .alias("_sb_wtype"),
+                    .alias("_full_wtype"),
                     # Debug: endpoint values
-                    pl.when(sub_b_high_flag | sub_b_low_flag)
-                    .then(col("_sb_ep_lag"))
+                    pl.when(full_high_flag | full_low_flag)
+                    .then(col("_full_ep_lag"))
                     .otherwise(pl.lit(None).cast(pl.Float64))
-                    .alias("_sb_ep_left"),
-                    pl.when(sub_b_high_flag | sub_b_low_flag)
-                    .then(col("_sb_ep_lead"))
+                    .alias("_full_ep_left"),
+                    pl.when(full_high_flag | full_low_flag)
+                    .then(col("_full_ep_lead"))
                     .otherwise(pl.lit(None).cast(pl.Float64))
-                    .alias("_sb_ep_right"),
+                    .alias("_full_ep_right"),
                     # Debug: ratios to endpoints
-                    pl.when(sub_b_high_flag | sub_b_low_flag)
-                    .then(col(col_name) / col("_sb_ep_lag"))
+                    pl.when(full_high_flag | full_low_flag)
+                    .then(col(col_name) / col("_full_ep_lag"))
                     .otherwise(pl.lit(None).cast(pl.Float64))
-                    .alias("_sb_ratio_left"),
-                    pl.when(sub_b_high_flag | sub_b_low_flag)
-                    .then(col(col_name) / col("_sb_ep_lead"))
+                    .alias("_full_ratio_left"),
+                    pl.when(full_high_flag | full_low_flag)
+                    .then(col(col_name) / col("_full_ep_lead"))
                     .otherwise(pl.lit(None).cast(pl.Float64))
-                    .alias("_sb_ratio_right"),
+                    .alias("_full_ratio_right"),
                     # Debug: variation ratio
-                    pl.when(sub_b_high_flag | sub_b_low_flag)
-                    .then(col("_sb_int_max") / col("_sb_int_min"))
+                    pl.when(full_high_flag | full_low_flag)
+                    .then(col("_full_int_max") / col("_full_int_min"))
                     .otherwise(pl.lit(None).cast(pl.Float64))
-                    .alias("_sb_variation"),
+                    .alias("_full_variation"),
                 ]
             )
 
-            # Propagate to all interior positions (single coalesce pass)
-            df = _propagate_interior(df, col_name, "_sb_", sub_b_shifts, group_cols, nlag)
+            # Propagate to all interior positions
+            # Interior is at offsets -(nlag-1) to +(nlag-1) from detection point
+            for offset in interior_shifts:
+                df = df.with_columns(
+                    [
+                        pl.when(
+                            (col(factor_col) == 1.0)
+                            & col("_full_det").shift(offset).over(group_cols).is_not_null()
+                        )
+                        .then(col("_full_det").shift(offset).over(group_cols))
+                        .otherwise(col(factor_col))
+                        .alias(factor_col),
+                        pl.when(
+                            col(error_type_col).is_null()
+                            & col("_full_type").shift(offset).over(group_cols).is_not_null()
+                        )
+                        .then(col("_full_type").shift(offset).over(group_cols))
+                        .otherwise(col(error_type_col))
+                        .alias(error_type_col),
+                        pl.when(
+                            col(window_col).is_null()
+                            & col("_full_det").shift(offset).over(group_cols).is_not_null()
+                        )
+                        .then(pl.lit(nlag))
+                        .otherwise(col(window_col))
+                        .alias(window_col),
+                        pl.when(
+                            col(window_type_col).is_null()
+                            & col("_full_wtype").shift(offset).over(group_cols).is_not_null()
+                        )
+                        .then(col("_full_wtype").shift(offset).over(group_cols))
+                        .otherwise(col(window_type_col))
+                        .alias(window_type_col),
+                        # Propagate debug columns
+                        pl.when(
+                            col(endpoint_left_col).is_null()
+                            & col("_full_ep_left").shift(offset).over(group_cols).is_not_null()
+                        )
+                        .then(col("_full_ep_left").shift(offset).over(group_cols))
+                        .otherwise(col(endpoint_left_col))
+                        .alias(endpoint_left_col),
+                        pl.when(
+                            col(endpoint_right_col).is_null()
+                            & col("_full_ep_right").shift(offset).over(group_cols).is_not_null()
+                        )
+                        .then(col("_full_ep_right").shift(offset).over(group_cols))
+                        .otherwise(col(endpoint_right_col))
+                        .alias(endpoint_right_col),
+                        pl.when(
+                            col(ratio_left_col).is_null()
+                            & col("_full_ratio_left").shift(offset).over(group_cols).is_not_null()
+                        )
+                        .then(col("_full_ratio_left").shift(offset).over(group_cols))
+                        .otherwise(col(ratio_left_col))
+                        .alias(ratio_left_col),
+                        pl.when(
+                            col(ratio_right_col).is_null()
+                            & col("_full_ratio_right").shift(offset).over(group_cols).is_not_null()
+                        )
+                        .then(col("_full_ratio_right").shift(offset).over(group_cols))
+                        .otherwise(col(ratio_right_col))
+                        .alias(ratio_right_col),
+                        pl.when(
+                            col(variation_col).is_null()
+                            & col("_full_variation").shift(offset).over(group_cols).is_not_null()
+                        )
+                        .then(col("_full_variation").shift(offset).over(group_cols))
+                        .otherwise(col(variation_col))
+                        .alias(variation_col),
+                    ]
+                )
 
             df = df.drop(
                 [
-                    "_sb_int_max",
-                    "_sb_int_min",
-                    "_sb_ep_lag",
-                    "_sb_ep_lead",
-                    "_sb_det",
-                    "_sb_type",
-                    "_sb_wtype",
-                    "_sb_ep_left",
-                    "_sb_ep_right",
-                    "_sb_ratio_left",
-                    "_sb_ratio_right",
-                    "_sb_variation",
+                    "_full_int_max",
+                    "_full_int_min",
+                    "_full_ep_lag",
+                    "_full_ep_lead",
+                    "_full_det",
+                    "_full_type",
+                    "_full_wtype",
+                    "_full_ep_left",
+                    "_full_ep_right",
+                    "_full_ratio_left",
+                    "_full_ratio_right",
+                    "_full_variation",
                 ]
             )
+
+            # ===================================================================
+            # SUB-WINDOW A: endpoints at t-nlag and t+nlag-1
+            # Interior: positions t-nlag+1 to t+nlag-2 (size 2*nlag-2)
+            # ===================================================================
+
+            sub_interior_size = 2 * nlag - 2
+            if sub_interior_size >= 1:
+                # Interior spans from t-nlag+1 to t+nlag-2
+                sub_a_shifts = list(range(-(nlag - 1), nlag - 1))  # e.g., for nlag=2: [-1, 0]
+
+                sub_a_cols = [
+                    col(col_name).shift(-s).over(group_cols).alias(f"_sa_{s}") for s in sub_a_shifts
+                ]
+                df = df.with_columns(sub_a_cols)
+
+                sa_col_names = [f"_sa_{s}" for s in sub_a_shifts]
+                df = df.with_columns(
+                    [
+                        pl.max_horizontal(*[col(c) for c in sa_col_names]).alias("_sa_int_max"),
+                        pl.min_horizontal(*[col(c) for c in sa_col_names]).alias("_sa_int_min"),
+                        col(col_name).shift(nlag).over(group_cols).alias("_sa_ep_lag"),
+                        col(col_name).shift(-(nlag - 1)).over(group_cols).alias("_sa_ep_lead"),
+                    ]
+                )
+                df = df.drop(sa_col_names)
+
+                # FIX: Check that endpoints are clean for sub-window A
+                # Endpoints at t-nlag and t+nlag-1
+                endpoint_left_clean_sa = (
+                    col(factor_col).shift(nlag).over(group_cols).fill_null(1.0) == 1.0
+                )
+                endpoint_right_clean_sa = (
+                    col(factor_col).shift(-(nlag - 1)).over(group_cols).fill_null(1.0) == 1.0
+                )
+
+                sub_a_high_reversal = (
+                    endpoint_left_clean_sa
+                    & endpoint_right_clean_sa
+                    & (col(col_name) / col("_sa_ep_lag") > threshold_high)
+                    & (col(col_name) / col("_sa_ep_lead") > threshold_high)
+                )
+                sub_a_low_reversal = (
+                    endpoint_left_clean_sa
+                    & endpoint_right_clean_sa
+                    & (col(col_name) / col("_sa_ep_lag") < threshold_low)
+                    & (col(col_name) / col("_sa_ep_lead") < threshold_low)
+                )
+
+                sub_a_variation_ok = (col("_sa_int_max") / col("_sa_int_min")) < variation_threshold
+
+                sub_a_high_flag = (
+                    sub_a_high_reversal & sub_a_variation_ok & (col(factor_col) == 1.0)
+                )
+                sub_a_low_flag = sub_a_low_reversal & sub_a_variation_ok & (col(factor_col) == 1.0)
+
+                df = df.with_columns(
+                    [
+                        pl.when(sub_a_high_flag)
+                        .then(pl.lit(correction_factor_high))
+                        .when(sub_a_low_flag)
+                        .then(pl.lit(correction_factor_low))
+                        .otherwise(pl.lit(None).cast(pl.Float64))
+                        .alias("_sa_det"),
+                        pl.when(sub_a_high_flag)
+                        .then(pl.lit(error_type_high))
+                        .when(sub_a_low_flag)
+                        .then(pl.lit(error_type_low))
+                        .otherwise(pl.lit(None).cast(pl.Utf8))
+                        .alias("_sa_type"),
+                        pl.when(sub_a_high_flag | sub_a_low_flag)
+                        .then(pl.lit("sub_a"))
+                        .otherwise(pl.lit(None).cast(pl.Utf8))
+                        .alias("_sa_wtype"),
+                        # Debug: endpoint values
+                        pl.when(sub_a_high_flag | sub_a_low_flag)
+                        .then(col("_sa_ep_lag"))
+                        .otherwise(pl.lit(None).cast(pl.Float64))
+                        .alias("_sa_ep_left"),
+                        pl.when(sub_a_high_flag | sub_a_low_flag)
+                        .then(col("_sa_ep_lead"))
+                        .otherwise(pl.lit(None).cast(pl.Float64))
+                        .alias("_sa_ep_right"),
+                        # Debug: ratios to endpoints
+                        pl.when(sub_a_high_flag | sub_a_low_flag)
+                        .then(col(col_name) / col("_sa_ep_lag"))
+                        .otherwise(pl.lit(None).cast(pl.Float64))
+                        .alias("_sa_ratio_left"),
+                        pl.when(sub_a_high_flag | sub_a_low_flag)
+                        .then(col(col_name) / col("_sa_ep_lead"))
+                        .otherwise(pl.lit(None).cast(pl.Float64))
+                        .alias("_sa_ratio_right"),
+                        # Debug: variation ratio
+                        pl.when(sub_a_high_flag | sub_a_low_flag)
+                        .then(col("_sa_int_max") / col("_sa_int_min"))
+                        .otherwise(pl.lit(None).cast(pl.Float64))
+                        .alias("_sa_variation"),
+                    ]
+                )
+
+                for offset in sub_a_shifts:
+                    df = df.with_columns(
+                        [
+                            pl.when(
+                                (col(factor_col) == 1.0)
+                                & col("_sa_det").shift(offset).over(group_cols).is_not_null()
+                            )
+                            .then(col("_sa_det").shift(offset).over(group_cols))
+                            .otherwise(col(factor_col))
+                            .alias(factor_col),
+                            pl.when(
+                                col(error_type_col).is_null()
+                                & col("_sa_type").shift(offset).over(group_cols).is_not_null()
+                            )
+                            .then(col("_sa_type").shift(offset).over(group_cols))
+                            .otherwise(col(error_type_col))
+                            .alias(error_type_col),
+                            pl.when(
+                                col(window_col).is_null()
+                                & col("_sa_det").shift(offset).over(group_cols).is_not_null()
+                            )
+                            .then(pl.lit(nlag))
+                            .otherwise(col(window_col))
+                            .alias(window_col),
+                            pl.when(
+                                col(window_type_col).is_null()
+                                & col("_sa_wtype").shift(offset).over(group_cols).is_not_null()
+                            )
+                            .then(col("_sa_wtype").shift(offset).over(group_cols))
+                            .otherwise(col(window_type_col))
+                            .alias(window_type_col),
+                            # Propagate debug columns
+                            pl.when(
+                                col(endpoint_left_col).is_null()
+                                & col("_sa_ep_left").shift(offset).over(group_cols).is_not_null()
+                            )
+                            .then(col("_sa_ep_left").shift(offset).over(group_cols))
+                            .otherwise(col(endpoint_left_col))
+                            .alias(endpoint_left_col),
+                            pl.when(
+                                col(endpoint_right_col).is_null()
+                                & col("_sa_ep_right").shift(offset).over(group_cols).is_not_null()
+                            )
+                            .then(col("_sa_ep_right").shift(offset).over(group_cols))
+                            .otherwise(col(endpoint_right_col))
+                            .alias(endpoint_right_col),
+                            pl.when(
+                                col(ratio_left_col).is_null()
+                                & col("_sa_ratio_left").shift(offset).over(group_cols).is_not_null()
+                            )
+                            .then(col("_sa_ratio_left").shift(offset).over(group_cols))
+                            .otherwise(col(ratio_left_col))
+                            .alias(ratio_left_col),
+                            pl.when(
+                                col(ratio_right_col).is_null()
+                                & col("_sa_ratio_right")
+                                .shift(offset)
+                                .over(group_cols)
+                                .is_not_null()
+                            )
+                            .then(col("_sa_ratio_right").shift(offset).over(group_cols))
+                            .otherwise(col(ratio_right_col))
+                            .alias(ratio_right_col),
+                            pl.when(
+                                col(variation_col).is_null()
+                                & col("_sa_variation").shift(offset).over(group_cols).is_not_null()
+                            )
+                            .then(col("_sa_variation").shift(offset).over(group_cols))
+                            .otherwise(col(variation_col))
+                            .alias(variation_col),
+                        ]
+                    )
+
+                df = df.drop(
+                    [
+                        "_sa_int_max",
+                        "_sa_int_min",
+                        "_sa_ep_lag",
+                        "_sa_ep_lead",
+                        "_sa_det",
+                        "_sa_type",
+                        "_sa_wtype",
+                        "_sa_ep_left",
+                        "_sa_ep_right",
+                        "_sa_ratio_left",
+                        "_sa_ratio_right",
+                        "_sa_variation",
+                    ]
+                )
+
+            # ===================================================================
+            # SUB-WINDOW B: endpoints at t-nlag+1 and t+nlag
+            # Interior: positions t-nlag+2 to t+nlag-1 (size 2*nlag-2)
+            # ===================================================================
+
+            if sub_interior_size >= 1:
+                # Interior spans from t-nlag+2 to t+nlag-1
+                sub_b_shifts = list(range(-(nlag - 2), nlag))  # e.g., for nlag=2: [0, 1]
+
+                sub_b_cols = [
+                    col(col_name).shift(-s).over(group_cols).alias(f"_sb_{s}") for s in sub_b_shifts
+                ]
+                df = df.with_columns(sub_b_cols)
+
+                sb_col_names = [f"_sb_{s}" for s in sub_b_shifts]
+                df = df.with_columns(
+                    [
+                        pl.max_horizontal(*[col(c) for c in sb_col_names]).alias("_sb_int_max"),
+                        pl.min_horizontal(*[col(c) for c in sb_col_names]).alias("_sb_int_min"),
+                        col(col_name).shift(nlag - 1).over(group_cols).alias("_sb_ep_lag"),
+                        col(col_name).shift(-nlag).over(group_cols).alias("_sb_ep_lead"),
+                    ]
+                )
+                df = df.drop(sb_col_names)
+
+                # FIX: Check that endpoints are clean for sub-window B
+                # Endpoints at t-nlag+1 and t+nlag
+                endpoint_left_clean_sb = (
+                    col(factor_col).shift(nlag - 1).over(group_cols).fill_null(1.0) == 1.0
+                )
+                endpoint_right_clean_sb = (
+                    col(factor_col).shift(-nlag).over(group_cols).fill_null(1.0) == 1.0
+                )
+
+                sub_b_high_reversal = (
+                    endpoint_left_clean_sb
+                    & endpoint_right_clean_sb
+                    & (col(col_name) / col("_sb_ep_lag") > threshold_high)
+                    & (col(col_name) / col("_sb_ep_lead") > threshold_high)
+                )
+                sub_b_low_reversal = (
+                    endpoint_left_clean_sb
+                    & endpoint_right_clean_sb
+                    & (col(col_name) / col("_sb_ep_lag") < threshold_low)
+                    & (col(col_name) / col("_sb_ep_lead") < threshold_low)
+                )
+
+                sub_b_variation_ok = (col("_sb_int_max") / col("_sb_int_min")) < variation_threshold
+
+                sub_b_high_flag = (
+                    sub_b_high_reversal & sub_b_variation_ok & (col(factor_col) == 1.0)
+                )
+                sub_b_low_flag = sub_b_low_reversal & sub_b_variation_ok & (col(factor_col) == 1.0)
+
+                df = df.with_columns(
+                    [
+                        pl.when(sub_b_high_flag)
+                        .then(pl.lit(correction_factor_high))
+                        .when(sub_b_low_flag)
+                        .then(pl.lit(correction_factor_low))
+                        .otherwise(pl.lit(None).cast(pl.Float64))
+                        .alias("_sb_det"),
+                        pl.when(sub_b_high_flag)
+                        .then(pl.lit(error_type_high))
+                        .when(sub_b_low_flag)
+                        .then(pl.lit(error_type_low))
+                        .otherwise(pl.lit(None).cast(pl.Utf8))
+                        .alias("_sb_type"),
+                        pl.when(sub_b_high_flag | sub_b_low_flag)
+                        .then(pl.lit("sub_b"))
+                        .otherwise(pl.lit(None).cast(pl.Utf8))
+                        .alias("_sb_wtype"),
+                        # Debug: endpoint values
+                        pl.when(sub_b_high_flag | sub_b_low_flag)
+                        .then(col("_sb_ep_lag"))
+                        .otherwise(pl.lit(None).cast(pl.Float64))
+                        .alias("_sb_ep_left"),
+                        pl.when(sub_b_high_flag | sub_b_low_flag)
+                        .then(col("_sb_ep_lead"))
+                        .otherwise(pl.lit(None).cast(pl.Float64))
+                        .alias("_sb_ep_right"),
+                        # Debug: ratios to endpoints
+                        pl.when(sub_b_high_flag | sub_b_low_flag)
+                        .then(col(col_name) / col("_sb_ep_lag"))
+                        .otherwise(pl.lit(None).cast(pl.Float64))
+                        .alias("_sb_ratio_left"),
+                        pl.when(sub_b_high_flag | sub_b_low_flag)
+                        .then(col(col_name) / col("_sb_ep_lead"))
+                        .otherwise(pl.lit(None).cast(pl.Float64))
+                        .alias("_sb_ratio_right"),
+                        # Debug: variation ratio
+                        pl.when(sub_b_high_flag | sub_b_low_flag)
+                        .then(col("_sb_int_max") / col("_sb_int_min"))
+                        .otherwise(pl.lit(None).cast(pl.Float64))
+                        .alias("_sb_variation"),
+                    ]
+                )
+
+                for offset in sub_b_shifts:
+                    df = df.with_columns(
+                        [
+                            pl.when(
+                                (col(factor_col) == 1.0)
+                                & col("_sb_det").shift(offset).over(group_cols).is_not_null()
+                            )
+                            .then(col("_sb_det").shift(offset).over(group_cols))
+                            .otherwise(col(factor_col))
+                            .alias(factor_col),
+                            pl.when(
+                                col(error_type_col).is_null()
+                                & col("_sb_type").shift(offset).over(group_cols).is_not_null()
+                            )
+                            .then(col("_sb_type").shift(offset).over(group_cols))
+                            .otherwise(col(error_type_col))
+                            .alias(error_type_col),
+                            pl.when(
+                                col(window_col).is_null()
+                                & col("_sb_det").shift(offset).over(group_cols).is_not_null()
+                            )
+                            .then(pl.lit(nlag))
+                            .otherwise(col(window_col))
+                            .alias(window_col),
+                            pl.when(
+                                col(window_type_col).is_null()
+                                & col("_sb_wtype").shift(offset).over(group_cols).is_not_null()
+                            )
+                            .then(col("_sb_wtype").shift(offset).over(group_cols))
+                            .otherwise(col(window_type_col))
+                            .alias(window_type_col),
+                            # Propagate debug columns
+                            pl.when(
+                                col(endpoint_left_col).is_null()
+                                & col("_sb_ep_left").shift(offset).over(group_cols).is_not_null()
+                            )
+                            .then(col("_sb_ep_left").shift(offset).over(group_cols))
+                            .otherwise(col(endpoint_left_col))
+                            .alias(endpoint_left_col),
+                            pl.when(
+                                col(endpoint_right_col).is_null()
+                                & col("_sb_ep_right").shift(offset).over(group_cols).is_not_null()
+                            )
+                            .then(col("_sb_ep_right").shift(offset).over(group_cols))
+                            .otherwise(col(endpoint_right_col))
+                            .alias(endpoint_right_col),
+                            pl.when(
+                                col(ratio_left_col).is_null()
+                                & col("_sb_ratio_left").shift(offset).over(group_cols).is_not_null()
+                            )
+                            .then(col("_sb_ratio_left").shift(offset).over(group_cols))
+                            .otherwise(col(ratio_left_col))
+                            .alias(ratio_left_col),
+                            pl.when(
+                                col(ratio_right_col).is_null()
+                                & col("_sb_ratio_right")
+                                .shift(offset)
+                                .over(group_cols)
+                                .is_not_null()
+                            )
+                            .then(col("_sb_ratio_right").shift(offset).over(group_cols))
+                            .otherwise(col(ratio_right_col))
+                            .alias(ratio_right_col),
+                            pl.when(
+                                col(variation_col).is_null()
+                                & col("_sb_variation").shift(offset).over(group_cols).is_not_null()
+                            )
+                            .then(col("_sb_variation").shift(offset).over(group_cols))
+                            .otherwise(col(variation_col))
+                            .alias(variation_col),
+                        ]
+                    )
+
+                df = df.drop(
+                    [
+                        "_sb_int_max",
+                        "_sb_int_min",
+                        "_sb_ep_lag",
+                        "_sb_ep_lead",
+                        "_sb_det",
+                        "_sb_type",
+                        "_sb_wtype",
+                        "_sb_ep_left",
+                        "_sb_ep_right",
+                        "_sb_ratio_left",
+                        "_sb_ratio_right",
+                        "_sb_variation",
+                    ]
+                )
 
         # Materialize periodically to prevent LazyFrame plan from becoming too large
         # This prevents segmentation faults from overly complex query plans
         iteration_count += 1
         if iteration_count % materialize_interval == 0:
-            if spill_dir is not None:
-                # Spill to disk (streaming) instead of collecting in RAM: the full
-                # frame with debug columns does not fit in memory on cluster runs.
-                spill_path = spill_dir / f"__bess_spill_{col_name}_{iteration_count}.parquet"
-                print(
-                    f"    [detect] {col_name}: spilling plan to {spill_path.name} "
-                    f"after {iteration_count} windows",
-                    flush=True,
-                )
-                df.sink_parquet(spill_path)
-                df = pl.scan_parquet(spill_path)
-            else:
-                print(
-                    f"    [detect] {col_name}: materializing plan after {iteration_count} windows",
-                    flush=True,
-                )
-                df = df.collect().lazy()
+            df = df.collect().lazy()
 
     return df
 
@@ -888,7 +1068,6 @@ def correct_decimal_errors(
     log_corrections: bool = True,
     validate_cascading: bool = True,
     correction_method: str = "bessembinder",
-    spill_dir: Path | None = None,
 ) -> tuple[pl.LazyFrame, pl.LazyFrame | None]:
     """
     Apply Bessembinder Section 6 decimal error corrections to a column.
@@ -989,7 +1168,6 @@ def correct_decimal_errors(
 
     # First pass: detect single-period errors (window=1)
     # This adds factor_col, error_type_col, and window_type_col
-    print(f"  [correct] {col_name}: single-period detection", flush=True)
     df = _detect_decimal_error_single_period(df, col_name, group_cols, sort_col)
 
     # Add window size for single-period detections
@@ -1005,16 +1183,10 @@ def correct_decimal_errors(
     # Only check windows > 1 since single-period is already done
     multi_windows = [w for w in window_sizes if w > 1]
     if multi_windows:
-        print(
-            f"  [correct] {col_name}: multi-period detection, windows={multi_windows}", flush=True
-        )
-        df = _detect_decimal_error_multi_period(
-            df, col_name, group_cols, sort_col, multi_windows, spill_dir=spill_dir
-        )
+        df = _detect_decimal_error_multi_period(df, col_name, group_cols, sort_col, multi_windows)
 
     # Third pass: Validate corrections to prevent cascading errors
     if validate_cascading:
-        print(f"  [correct] {col_name}: validating corrections (cascading check)", flush=True)
         # Build preliminary corrections log for validation
         preliminary_log = df.filter(col(factor_col) != 1.0).select(
             group_cols
@@ -1147,7 +1319,6 @@ def apply_bessembinder_section6(
     window_sizes: list[int] | None = None,
     has_adrrc: bool = False,
     correction_method: str = "bessembinder",
-    spill_dir: Path | None = None,
 ) -> tuple[pl.LazyFrame, pl.LazyFrame]:
     """
     Apply Bessembinder Section 6 decimal corrections in the correct order.
@@ -1182,30 +1353,16 @@ def apply_bessembinder_section6(
 
     # Step 1: Correct TRFD independently
     if "trfd" in df.collect_schema().names():
-        print("[section6] step 1/5: correcting trfd", flush=True)
         df, log = correct_decimal_errors(
-            df,
-            "trfd",
-            group_cols,
-            sort_col,
-            window_sizes,
-            correction_method=correction_method,
-            spill_dir=spill_dir,
+            df, "trfd", group_cols, sort_col, window_sizes, correction_method=correction_method
         )
         if log is not None:
             all_logs.append(log)
 
     # Step 1: Correct QUNIT independently
     if "qunit" in df.collect_schema().names():
-        print("[section6] step 1/5: correcting qunit", flush=True)
         df, log = correct_decimal_errors(
-            df,
-            "qunit",
-            group_cols,
-            sort_col,
-            window_sizes,
-            correction_method=correction_method,
-            spill_dir=spill_dir,
+            df, "qunit", group_cols, sort_col, window_sizes, correction_method=correction_method
         )
         if log is not None:
             all_logs.append(log)
@@ -1215,15 +1372,8 @@ def apply_bessembinder_section6(
     if has_adrrc:
         if adrrc_in_schema:
             logger.info("ADRRC column found in data - applying decimal corrections")
-            print("[section6] step 2/5: correcting adrrc", flush=True)
             df, log = correct_decimal_errors(
-                df,
-                "adrrc",
-                group_cols,
-                sort_col,
-                window_sizes,
-                correction_method=correction_method,
-                spill_dir=spill_dir,
+                df, "adrrc", group_cols, sort_col, window_sizes, correction_method=correction_method
             )
             if log is not None:
                 n_corrections = log.select(pl.len()).collect().item()
@@ -1248,15 +1398,8 @@ def apply_bessembinder_section6(
     )
 
     # Step 4: Correct adjPRC and adjCSHO
-    print("[section6] step 4/5: correcting adjprc", flush=True)
     df, log = correct_decimal_errors(
-        df,
-        "_adjprc",
-        group_cols,
-        sort_col,
-        window_sizes,
-        correction_method=correction_method,
-        spill_dir=spill_dir,
+        df, "_adjprc", group_cols, sort_col, window_sizes, correction_method=correction_method
     )
     if log is not None:
         # Rename variable in log from _adjprc to adjprc
@@ -1268,15 +1411,8 @@ def apply_bessembinder_section6(
         )
         all_logs.append(log)
 
-    print("[section6] step 4/5: correcting adjcsho", flush=True)
     df, log = correct_decimal_errors(
-        df,
-        "_adjcsho",
-        group_cols,
-        sort_col,
-        window_sizes,
-        correction_method=correction_method,
-        spill_dir=spill_dir,
+        df, "_adjcsho", group_cols, sort_col, window_sizes, correction_method=correction_method
     )
     if log is not None:
         log = log.with_columns(
@@ -1288,7 +1424,6 @@ def apply_bessembinder_section6(
         all_logs.append(log)
 
     # Step 5: Reconstruct PRCCD and CSHOC from corrected adjusted values
-    print("[section6] step 5/5: reconstructing prccd/cshoc", flush=True)
     df = df.with_columns(
         [
             (col("_adjprc") * col("ajexdi")).alias("prccd"),
@@ -1508,12 +1643,10 @@ def detect_potential_boundary_errors(
         group_cols = ["gvkey", "iid"]
 
     try:
-        # Stay lazy on a slim projection — only the (small) filtered result is
-        # collected, never the full daily frame.
-        data = df.select(group_cols + [sort_col, price_col]).sort(group_cols + [sort_col])
+        data = df.collect()
 
         # Add row numbers within each security
-        data = data.with_columns(
+        data = data.sort(group_cols + [sort_col]).with_columns(
             pl.col(price_col).count().over(group_cols).alias("_n_obs"),
             pl.col(price_col).cum_count().over(group_cols).alias("_row_num"),
         )
@@ -1528,28 +1661,24 @@ def detect_potential_boundary_errors(
         )
 
         # Find boundary observations with extreme ratios
-        boundary_errors = (
-            data.filter(
-                col("_is_boundary")
-                & (
-                    (col("_ratio_to_next") > ratio_threshold)
-                    | (col("_ratio_to_next") < 1 / ratio_threshold)
-                    | (col("_ratio_to_prior") > ratio_threshold)
-                    | (col("_ratio_to_prior") < 1 / ratio_threshold)
-                )
+        boundary_errors = data.filter(
+            col("_is_boundary")
+            & (
+                (col("_ratio_to_next") > ratio_threshold)
+                | (col("_ratio_to_next") < 1 / ratio_threshold)
+                | (col("_ratio_to_prior") > ratio_threshold)
+                | (col("_ratio_to_prior") < 1 / ratio_threshold)
             )
-            .select(
-                group_cols
-                + [
-                    sort_col,
-                    price_col,
-                    "_row_num",
-                    "_n_obs",
-                    "_ratio_to_next",
-                    "_ratio_to_prior",
-                ]
-            )
-            .collect()
+        ).select(
+            group_cols
+            + [
+                sort_col,
+                price_col,
+                "_row_num",
+                "_n_obs",
+                "_ratio_to_next",
+                "_ratio_to_prior",
+            ]
         )
 
         n_boundary_errors = len(boundary_errors)
