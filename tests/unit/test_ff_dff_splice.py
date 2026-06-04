@@ -78,28 +78,36 @@ class TestDffSplice:
         # Synthetic datadate stamps the formation June (of DFF year t), not t-1.
         assert dff_rows["datadate"].to_list() == [date(1930, 6, 30)]
 
-    def test_dff_wins_on_overlap(self, tmp_path):
+    def test_collision_coalesces_dff_be_keeps_compustat_fields(self, tmp_path):
         # Compustat fiscal 2019 row (year=2019) vs DFF be(2020) (-> year=2019),
-        # same permno: default tie-break keeps the hand-collected DFF value.
+        # same permno: ONE merged row — DFF be, Compustat identity/accounting.
         _compustat_inputs(tmp_path, permno=10001, years=(2018, 2019))
         dff = _write_dff(tmp_path / "dff.txt", [(10001, 2020, 2020, {2020: 999.0})])
         out = ff_load_compustat_us(tmp_path, ff5=True, use_dff=True, dff_path=dff)
 
         rows = out.filter((pl.col("permno") == 10001) & (pl.col("year") == 2019))
         assert rows.height == 1
-        assert rows["be"][0] == 999.0
-        assert rows["gvkey"][0] is None
+        assert rows["be"][0] == 999.0  # coalesce(dff, comp) -> DFF value
+        assert rows["gvkey"][0] == "001"  # Compustat row identity kept
+        assert rows["inv"][0] is not None  # Compustat accounting fields survive
+        assert rows["count"][0] == 2  # Compustat history count, not synthetic
 
-    def test_compustat_wins_on_overlap_when_configured(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("jkp.data.aux_functions.FF_DFF_TIEBREAK", "compustat")
-        _compustat_inputs(tmp_path, permno=10001, years=(2018, 2019))
-        dff = _write_dff(tmp_path / "dff.txt", [(10001, 2020, 2020, {2020: 999.0})])
+    def test_collision_fills_null_compustat_be(self, tmp_path):
+        # Compustat row exists (CCM link) but its BE is null (seq missing, the
+        # dominant 1950s collision case): coalesce fills BE from DFF.
+        rows = [
+            _funda_row("001", date(2018, 12, 31), 100.0, indl=True),
+            _funda_row("001", date(2019, 12, 31), 120.0, indl=True, seq=None),
+        ]
+        _write_funda(tmp_path / "comp_funda.parquet", rows)
+        _write_lnkhist(tmp_path / "crsp_ccmxpf_lnkhist.parquet", "001", 10001)
+        dff = _write_dff(tmp_path / "dff.txt", [(10001, 2020, 2020, {2020: 55.0})])
         out = ff_load_compustat_us(tmp_path, ff5=True, use_dff=True, dff_path=dff)
 
-        rows = out.filter((pl.col("permno") == 10001) & (pl.col("year") == 2019))
-        assert rows.height == 1
-        assert rows["be"][0] != 999.0
-        assert rows["gvkey"][0] == "001"
+        row = out.filter((pl.col("permno") == 10001) & (pl.col("year") == 2019))
+        assert row.height == 1
+        assert row["be"][0] == 55.0
+        assert row["gvkey"][0] == "001"
 
     def test_disjoint_union_row_count(self, tmp_path):
         _compustat_inputs(tmp_path, permno=10001, years=(2018, 2019))
@@ -153,6 +161,9 @@ class TestDffSplice:
 
         keyed = out.select("permno", "year")
         assert keyed.height == keyed.unique().height
-        # Both colliding cells keep the DFF value (default tie-break), plus
-        # the disjoint DFF row: three null-gvkey rows total.
-        assert out.filter(pl.col("gvkey").is_null()).height == 3
+        # Colliding cells merge into the Compustat rows (DFF be via coalesce);
+        # only the disjoint DFF row carries a null gvkey.
+        assert out.filter(pl.col("gvkey").is_null()).height == 1
+        # And the colliding rows carry the DFF be values.
+        assert out.filter((pl.col("permno") == 10001) & (pl.col("year") == 2018))["be"][0] == 1.0
+        assert out.filter((pl.col("permno") == 10001) & (pl.col("year") == 2019))["be"][0] == 2.0

@@ -330,13 +330,11 @@ FF_USE_DFF_BE = True
 FF_DFF_GATE_COMPUSTAT_PRE1954 = False
 FF_DFF_MERGE_YEAR = 1954
 
-# Source preference on a (permno, year) collision. "dff": prefer the
-# hand-collected value — DFF (2000) collected BE for firms missing from the
-# Compustat vintage of the time, so on today's data a collision means modern
-# Compustat BACKFILL French never used; the DFF value is what his factors are
-# built from (empirically: Compustat-first leaves a 1950s-60s correlation dip
-# vs the reference factors). "compustat": prefer Compustat.
-FF_DFF_TIEBREAK = "dff"
+# On a (permno, year) collision the BE value is coalesced DFF-first
+# (be = coalesce(dff.be, comp.be)) while the Compustat row keeps its
+# accounting fields: most collisions are Compustat rows with NULL BE (early
+# balance-sheet fields absent from the current vintage), and where both are
+# non-null the sources agree (median |log ratio| ~ 0).
 
 # Synthetic per-firm Compustat-history count for DFF-only rows so they clear
 # the count >= 2 BM eligibility gate (_ff_bm_eligible). DFF rows carry no
