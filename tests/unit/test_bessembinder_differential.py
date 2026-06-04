@@ -7,10 +7,12 @@ handoff implementation, preserved verbatim in
 jkp.data._bessembinder_polars_reference. These tests run both on the same
 synthetic inputs and assert identical corrected frames and correction logs.
 
-The reference multi-period detector still contains the original magnitude
-[1, 2, 3] loop, so passing these tests also re-proves that the kernel's
-single-magnitude multi-period pass is equivalent (the dead-code claim of
-commit 507df7c).
+One DELIBERATE divergence exists: the kernel classes multi-period magnitudes
+with the nested 500/50/5 chain (like single-period), fixing the original's
+under-correction of multi-day 100x/1000x errors (its magnitude [1, 2, 3]
+loop was dead code beyond 10x — commit 507df7c). The equivalence tests below
+exercise only patterns outside that divergence; TestMultiPeriodMagnitudeFix
+pins the divergence itself in both directions.
 """
 
 import hypothesis.strategies as st
@@ -70,8 +72,11 @@ def _make_synthetic(seed: int = 42, n_groups: int = 250) -> pl.LazyFrame:
         elif kind == 4 and n > 12:  # span touching group start (interior off-range)
             x[0:4] *= 10.0
         elif kind == 5 and n > 10:  # zeros and nulls adjacent to an error
+            # 10x (not 100x): a zero neighbor pushes this onto the multi-period
+            # path, where magnitude classing deliberately diverges from the
+            # reference (see TestMultiPeriodMagnitudeFix)
             x[4] = 0.0
-            x[5] *= 100.0
+            x[5] *= 10.0
             x[7] = np.nan  # becomes null via Polars round-trip
         elif kind == 6 and n > 25:  # sandwich pattern: clean value between errors
             x[10] *= 10.0
@@ -135,6 +140,56 @@ class TestDifferentialSynthetic:
         _assert_equivalent(synthetic, window_sizes=list(range(1, 8)))
 
 
+def _span_frame(mult: float, width: int = 2, n: int = 12) -> pl.LazyFrame:
+    """Flat series with a stable multi-day error span of the given multiplier."""
+    x = np.full(n, 10.0)
+    x[4 : 4 + width] *= mult
+    return pl.LazyFrame(
+        {
+            "gvkey": ["000001"] * n,
+            "iid": ["01"] * n,
+            "datadate": list(range(n)),
+            "prc": x,
+        }
+    )
+
+
+class TestMultiPeriodMagnitudeFix:
+    """
+    Pin the deliberate divergence: multi-day 100x/1000x errors get true
+    magnitude corrections from the kernel, while the original reference
+    always applied 10x (dead-code magnitude loop).
+    """
+
+    @pytest.mark.parametrize(
+        ("mult", "factor", "error_type"),
+        [
+            (100.0, 0.01, "high_100x"),
+            (1000.0, 0.001, "high_1000x"),
+            (0.01, 100.0, "low_100x"),
+            (0.001, 1000.0, "low_1000x"),
+        ],
+    )
+    def test_kernel_corrects_true_magnitude(self, mult, factor, error_type):
+        _, log = correct_decimal_errors(_span_frame(mult), "prc", GROUP_COLS, SORT_COL)
+        rows = log.collect()
+        assert rows.height == 2
+        assert set(rows["correction_factor"].to_list()) == {factor}
+        assert set(rows["error_type"].to_list()) == {error_type}
+        assert set(rows["window_type"].to_list()) <= {"full", "sub_a", "sub_b"}
+
+    def test_reference_undercorrected_to_10x(self):
+        _, ref_log = _polars_correct_decimal_errors(_span_frame(100.0), "prc", GROUP_COLS, SORT_COL)
+        rows = ref_log.collect()
+        assert rows.height == 2
+        assert set(rows["correction_factor"].to_list()) == {0.1}
+        assert set(rows["error_type"].to_list()) == {"high_10x"}
+
+    def test_10x_spans_unchanged_vs_reference(self):
+        for mult in (10.0, 0.1):
+            _assert_equivalent(_span_frame(mult))
+
+
 @st.composite
 def _series_strategy(draw):
     """Short random per-group series mixing clean values and 10^k spikes."""
@@ -154,7 +209,10 @@ def _series_strategy(draw):
         elif kind == 1:
             values.append(v * 0.1)
         elif kind == 2:
-            values.append(v * 100.0)
+            # Non-power-of-10 spike (still classes as 10x in both
+            # implementations; 100x spikes would hit the deliberate
+            # multi-period magnitude divergence)
+            values.append(v * 5.5)
         elif kind == 3:
             values.append(0.0)
         elif kind == 4:

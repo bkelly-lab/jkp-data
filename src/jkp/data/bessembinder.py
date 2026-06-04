@@ -239,9 +239,12 @@ def _detect_decimal_error_multi_period(
     Description:
         Detect multi-period decimal shift errors (Bessembinder Section 6b)
         via the numba kernel: per nlag (ascending) the FULL, SUB_A and SUB_B
-        window passes with first-write-wins interior propagation;
-        byte-identical to the original Polars version (whose magnitude
-        [1, 2, 3] loop is dead code beyond 10x — see commit 507df7c).
+        window passes with first-write-wins interior propagation. Magnitudes
+        are classed with the nested 500/50/5 chain like single-period — a
+        deliberate fix over the original, whose magnitude [1, 2, 3] loop was
+        dead code beyond 10x (see commit 507df7c), under-correcting
+        multi-day 100x/1000x errors. All other semantics are byte-identical
+        to the original Polars version.
     Steps:
         1) Sort by group + date, zeros -> null, collect.
         2) Read pre-existing detection state (callers may pre-initialize).

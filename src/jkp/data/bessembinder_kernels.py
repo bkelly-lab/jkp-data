@@ -25,9 +25,11 @@ Equivalence notes (load-bearing — do not "simplify"):
     - Propagated rows carry the DETECTION POINT's endpoint/ratio/variation
       values, window_size = nlag, and the pass's window-type code. A target
       row is claimable only while its factor is still 1.0.
-    - Multi-period uses single-magnitude thresholds (5 / 0.2, factors
-      0.1 / 10): the original's magnitude-[1,2,3] loop is dead code for
-      magnitudes 2 and 3 (proven byte-identical in commit 507df7c).
+    - Multi-period classes magnitudes with the nested 500/50/5 chain (like
+      single-period). DELIBERATE DIVERGENCE from the original: its magnitude
+      [1, 2, 3] loop was dead code beyond 10x (proven in commit 507df7c), so
+      multi-day 100x/1000x errors were under-corrected by 10x. Everything
+      else remains byte-identical to the original.
 """
 
 import numpy as np
@@ -191,12 +193,31 @@ def _multi_pass_one(
         variation = imax / imin
         if not (variation < vthr):
             continue
+        # Nested magnitude classing, mirroring the single-period chain. The
+        # original implementation's magnitude [1, 2, 3] loop was dead code
+        # beyond 10x (the 10x pass always claimed the detection point first),
+        # so multi-day 100x/1000x errors were under-corrected by a factor of
+        # 10/100. This is the deliberate fix: class by both endpoint ratios.
         if high:
-            det[t] = 0.1
-            det_type[t] = ET_HIGH_10X
+            if rl > 500.0 and rr > 500.0:
+                det[t] = 0.001
+                det_type[t] = ET_HIGH_1000X
+            elif rl > 50.0 and rr > 50.0:
+                det[t] = 0.01
+                det_type[t] = ET_HIGH_100X
+            else:
+                det[t] = 0.1
+                det_type[t] = ET_HIGH_10X
         else:
-            det[t] = 10.0
-            det_type[t] = ET_LOW_10X
+            if rl < 0.002 and rr < 0.002:
+                det[t] = 1000.0
+                det_type[t] = ET_LOW_1000X
+            elif rl < 0.02 and rr < 0.02:
+                det[t] = 100.0
+                det_type[t] = ET_LOW_100X
+            else:
+                det[t] = 10.0
+                det_type[t] = ET_LOW_10X
         det_epl[t] = xl
         det_epr[t] = xr
         det_ratl[t] = rl
