@@ -30,7 +30,8 @@ def _write_dff(path, rows):
     (the real file's invariant), so columns here start at min(fy) across rows.
     """
     start = min(fy for _, fy, _, _ in rows)
-    years = range(start, 2002)
+    end = max(max(be_by_year, default=start) for _, _, _, be_by_year in rows)
+    years = range(start, max(end, start) + 1)
     lines = []
     for permno, fy, ly, be_by_year in rows:
         vals = [f"{be_by_year.get(y, -99.990):.3f}" for y in years]
@@ -77,9 +78,20 @@ class TestDffSplice:
         # Synthetic datadate stamps the formation June (of DFF year t), not t-1.
         assert dff_rows["datadate"].to_list() == [date(1930, 6, 30)]
 
-    def test_compustat_wins_on_overlap(self, tmp_path):
+    def test_dff_wins_on_overlap(self, tmp_path):
         # Compustat fiscal 2019 row (year=2019) vs DFF be(2020) (-> year=2019),
-        # same permno: Compustat must win, exactly one row.
+        # same permno: default tie-break keeps the hand-collected DFF value.
+        _compustat_inputs(tmp_path, permno=10001, years=(2018, 2019))
+        dff = _write_dff(tmp_path / "dff.txt", [(10001, 2020, 2020, {2020: 999.0})])
+        out = ff_load_compustat_us(tmp_path, ff5=True, use_dff=True, dff_path=dff)
+
+        rows = out.filter((pl.col("permno") == 10001) & (pl.col("year") == 2019))
+        assert rows.height == 1
+        assert rows["be"][0] == 999.0
+        assert rows["gvkey"][0] is None
+
+    def test_compustat_wins_on_overlap_when_configured(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("jkp.data.aux_functions.FF_DFF_TIEBREAK", "compustat")
         _compustat_inputs(tmp_path, permno=10001, years=(2018, 2019))
         dff = _write_dff(tmp_path / "dff.txt", [(10001, 2020, 2020, {2020: 999.0})])
         out = ff_load_compustat_us(tmp_path, ff5=True, use_dff=True, dff_path=dff)
@@ -141,5 +153,6 @@ class TestDffSplice:
 
         keyed = out.select("permno", "year")
         assert keyed.height == keyed.unique().height
-        # Both colliding DFF rows lost to Compustat; the disjoint one survives.
-        assert out.filter(pl.col("gvkey").is_null()).height == 1
+        # Both colliding cells keep the DFF value (default tie-break), plus
+        # the disjoint DFF row: three null-gvkey rows total.
+        assert out.filter(pl.col("gvkey").is_null()).height == 3

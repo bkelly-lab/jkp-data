@@ -326,10 +326,17 @@ FF_USE_DFF_BE = True
 # hand-collected data ... with the Compustat data". True drops Compustat BE
 # from formations before June FF_DFF_MERGE_YEAR prior to the union (pre-1954
 # Compustat rows are backfill French never used). Default False: union
-# whatever Compustat exists — the Compustat-first tie-break makes backfill
-# harmless and the sets are disjoint anyway.
+# whatever Compustat exists.
 FF_DFF_GATE_COMPUSTAT_PRE1954 = False
 FF_DFF_MERGE_YEAR = 1954
+
+# Source preference on a (permno, year) collision. "dff": prefer the
+# hand-collected value — DFF (2000) collected BE for firms missing from the
+# Compustat vintage of the time, so on today's data a collision means modern
+# Compustat BACKFILL French never used; the DFF value is what his factors are
+# built from (empirically: Compustat-first leaves a 1950s-60s correlation dip
+# vs the reference factors). "compustat": prefer Compustat.
+FF_DFF_TIEBREAK = "dff"
 
 # Synthetic per-firm Compustat-history count for DFF-only rows so they clear
 # the count >= 2 BM eligibility gate (_ff_bm_eligible). DFF rows carry no

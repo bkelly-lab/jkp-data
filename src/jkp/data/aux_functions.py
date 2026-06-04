@@ -29,6 +29,7 @@ from .config import (
     FF_DFF_GATE_COMPUSTAT_PRE1954,
     FF_DFF_MERGE_YEAR,
     FF_DFF_SYNTH_COUNT,
+    FF_DFF_TIEBREAK,
     FF_MIN_STOCKS_BP,
     FF_MIN_STOCKS_PF,
     FF_MISSING_RET_CODE,
@@ -11496,9 +11497,11 @@ def ff_load_compustat_us(
         (`crsp_ccmxpf_lnkhist`). FF3 emits BE only; FF5 adds OP/INV.
         Optionally union the DFF (Davis-Fama-French) hand-collected Moody's
         BE (permno-keyed, no CCM needed) to extend coverage back to the
-        June 1926 formation. Per DFF (2000) the two BE sets are disjoint by
+        June 1926 formation. Per DFF (2000) the two BE sets were disjoint by
         construction ("...all NYSE industrial firms that do not have BE data
-        on Compustat"); on any (permno, year) collision Compustat wins.
+        on Compustat"); modern Compustat backfill creates collisions, resolved
+        per FF_DFF_TIEBREAK (default "dff": keep the hand-collected value
+        French's factors were built from).
 
     Steps:
         1) Scan comp_funda.parquet; cast numerics; apply CCM type filters
@@ -11648,23 +11651,23 @@ def ff_load_compustat_us(
     )
     if n_collisions:
         print(
-            f"DFF/Compustat BE overlap: {n_collisions} (permno, year) collisions; Compustat kept",
+            f"DFF/Compustat BE overlap: {n_collisions} (permno, year) collisions; "
+            f"{FF_DFF_TIEBREAK} kept",
             flush=True,
         )
-    return (
-        pl.concat(
-            [
-                comp_pool.select(select_cols).with_columns(_src=pl.lit(0)),
-                dff.with_columns(_src=pl.lit(1)),
-            ],
-            how="vertical_relaxed",
-        )
-        # Compustat-first tie-break on (permno, year): sets are disjoint per
-        # DFF (2000); any modern-backfill collision keeps the Compustat row.
-        .sort(["permno", "year", "_src"])
-        .unique(subset=["permno", "year"], keep="first")
-        .drop("_src")
-    )
+    # Tie-break on (permno, year) per FF_DFF_TIEBREAK: drop the losing source's
+    # colliding rows via anti-join (deterministic — unique(keep="first") does
+    # not reliably honor sort order under parallel execution). A collision
+    # means modern Compustat backfill for a firm-year DFF hand-collected
+    # precisely because the Compustat vintage of the time lacked it — "dff"
+    # keeps the value French's factors were built from.
+    keys = ["permno", "year"]
+    comp_pool = comp_pool.select(select_cols)
+    if FF_DFF_TIEBREAK == "dff":
+        comp_pool = comp_pool.join(dff.select(keys), on=keys, how="anti")
+    else:
+        dff = dff.join(comp_pool.select(keys), on=keys, how="anti")
+    return pl.concat([comp_pool, dff], how="vertical_relaxed")
 
 
 def ff_load_crsp_panel(raw_dir: Path, freq: str) -> pl.DataFrame:
