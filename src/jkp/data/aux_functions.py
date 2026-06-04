@@ -52,7 +52,7 @@ from .config import (
     US_EXCNTRY,
 )
 from .output_writer import write_dataframe
-from .paths import DataPaths
+from .paths import DataPaths, get_dff_be_path
 
 
 def fl_none():
@@ -14650,3 +14650,58 @@ def _write_split_by_key(
             continue
         filtered = df.filter((pl.col(date_col) <= end_date) & (pl.col(key_col) == key))
         write_dataframe(filtered, folder_path / f"{key}.parquet")
+
+
+def load_dff_be(path: Path | None = None) -> pl.DataFrame:
+    """
+    Description:
+        Parse the Davis-Fama-French hand-collected Moody's book equity file
+        into a long Polars DataFrame. Missing values (-99.990) become null.
+        Data as used in Davis, Fama and French (2000), extended with
+        non-industrial firms; distributed via Ken French's data library:
+        https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/data_library.html
+        The BE year range is derived from the file itself: the first BE
+        column corresponds to min(First_Moody_Year), and the number of BE
+        columns is the record field count minus the three id fields.
+    Steps:
+        1) Read each line as one string; collapse whitespace; split to a list.
+        2) Derive year range from field count and min(First_Moody_Year).
+        3) Name fields; unpivot BE columns to long; null -99.990; cast dtypes.
+    Output:
+        DataFrame: permno (i64), year (i32), be (f64 nullable, $ millions).
+        BE for year t is publicly available by June 30 of year t.
+    """
+    if path is None:
+        path = get_dff_be_path()
+    raw = pl.read_csv(path, has_header=False, separator="\x01", new_columns=["raw"]).with_columns(
+        pl.col("raw").str.strip_chars().str.replace_all(r"\s+", " ").str.split(" ")
+    )
+
+    n_fields = raw.select(pl.col("raw").list.len().unique()).to_series()
+    if len(n_fields) != 1:
+        msg = f"ragged records: field counts {sorted(n_fields)}"
+        raise ValueError(msg)
+    start_year = raw.select(pl.col("raw").list.get(1).cast(pl.Int32).min()).item()
+    years = [start_year + i for i in range(n_fields[0] - 3)]
+
+    fields = ["permno", "first_moody_year", "last_moody_year", *[f"be_{y}" for y in years]]
+    return (
+        raw.with_columns(pl.col("raw").list.to_struct(fields=fields))
+        .unnest("raw")
+        .unpivot(
+            index="permno",
+            on=[f"be_{y}" for y in years],
+            variable_name="year",
+            value_name="be",
+        )
+        .with_columns(
+            pl.col("permno").cast(pl.Int64),
+            pl.col("year").str.strip_prefix("be_").cast(pl.Int32),
+            pl.when(pl.col("be").cast(pl.Float64) == -99.99)
+            .then(None)
+            .otherwise(pl.col("be"))
+            .cast(pl.Float64)
+            .alias("be"),
+        )
+        .sort(["permno", "year"])
+    )
