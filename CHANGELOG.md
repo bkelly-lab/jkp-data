@@ -1,13 +1,16 @@
 # CHANGELOG.md
 This change log keeps track of changes to the underlying data set. In brackets, we highlight versions of importance. The version with _factor data set_ is the basis of the factor portfolios we upload at [https://jkpfactors.com/](https://jkpfactors.com/). The version with _paper data set_ is the basis of [Jensen, Kelly and Pedersen (2023)](https://onlinelibrary.wiley.com/doi/full/10.1111/jofi.13249).
 
-## 03-06-2026
+This repository ports the original SAS pipeline ([ReplicationCrisis](https://github.com/bkelly-lab/ReplicationCrisis)) to Python using Polars. Entries up to and including 05-03-2025 are from the original change log.
+
+## 22-04-2026
 __Changes__:
-- Ported the entire pipeline from SAS ([ReplicationCrisis](https://github.com/bkelly-lab/ReplicationCrisis)) to Python using Polars with lazy evaluation. The pipeline is now run with the `jkp` CLI (`jkp build` for stock returns and firm characteristics, `jkp portfolio` for factor portfolios).
-- Implemented the decimal-error corrections of [Bessembinder, Cooper and Zhang (2023)](https://doi.org/10.1017/S0022109022000850) for CRSP returns.
-- Fixed a case-sensitivity bug in the Fama-French 49 industry classification that left some stocks unclassified.
-- Default screening filters are now applied before saving output, consistent with the documentation.
-- Fixed non-deterministic deduplication in the Compustat preparation step, which could cause output to differ slightly between runs.
+- Fixed a case-sensitivity bug in the Fama-French 49 industry classification that left some stocks unclassified ([#78](https://github.com/bkelly-lab/jkp-data/pull/78))
+- Fixed non-deterministic deduplication in the Compustat preparation step, which could cause output to differ slightly between runs ([#83](https://github.com/bkelly-lab/jkp-data/pull/83))
+
+## 14-04-2026
+__Changes__:
+- Default screening filters are now applied before saving output, consistent with the documentation ([#68](https://github.com/bkelly-lab/jkp-data/pull/68))
 
 ## 05-03-2025 [Factor data set]
 __Changes__:
