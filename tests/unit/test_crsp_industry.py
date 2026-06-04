@@ -1,4 +1,4 @@
-"""Tests for crsp_industry() (Issue #155).
+"""Tests for ``crsp_industry`` (Issue #155).
 
 Covers the daily SIC/NAICS expansion of CRSP name-history rows:
 
@@ -21,6 +21,7 @@ from polars.testing import assert_frame_equal
 
 from jkp.data.aux_functions import crsp_industry
 from jkp.data.paths import DataPaths
+from tests.conftest import assert_sorted_by_keys, assert_unique_keys
 
 GOLDEN_DIR = Path(__file__).parent.parent / "golden" / "fixtures" / "crsp_industry"
 
@@ -216,11 +217,7 @@ class TestCrspIndustry:
         assert result.height == 6, (
             f"Expected 6 distinct dates from overlapping spans, got {result.height}"
         )
-        # No duplicate (permno, date) keys.
-        assert result.unique(["permno", "date"]).height == result.height, (
-            f"Found duplicate (permno, date) rows: {result.height} total vs "
-            f"{result.unique(['permno', 'date']).height} unique"
-        )
+        assert_unique_keys(result, ["permno", "date"])
 
     def test_sorted_by_permno_date(self) -> None:
         """Output rows are sorted by ``(permno, date)`` ascending."""
@@ -247,15 +244,7 @@ class TestCrspIndustry:
         crsp_industry(self.paths)
 
         result = pl.read_parquet(self.output_path)
-        permnos = result["permno"].to_list()
-        dates = result["date"].to_list()
-        assert permnos == sorted(permnos), f"permnos not sorted ascending: {permnos}"
-        for i in range(1, len(result)):
-            same_permno = permnos[i] == permnos[i - 1]
-            assert (not same_permno) or dates[i] >= dates[i - 1], (
-                f"Dates not sorted within permno {permnos[i]}: "
-                f"{dates[i - 1]} > {dates[i]} at rows {i - 1},{i}"
-            )
+        assert_sorted_by_keys(result, "permno", "date")
 
     def test_preserves_permco(self) -> None:
         """``permco`` is carried through to the daily output."""

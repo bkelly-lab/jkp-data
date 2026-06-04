@@ -1,4 +1,4 @@
-"""Tests for comp_sic_naics() (Issue #155).
+"""Tests for ``comp_sic_naics`` (Issue #155).
 
 Covers the daily SIC/NAICS expansion from Compustat NA + Global histories:
 
@@ -22,6 +22,7 @@ from polars.testing import assert_frame_equal
 
 from jkp.data.aux_functions import comp_sic_naics
 from jkp.data.paths import DataPaths
+from tests.conftest import assert_sorted_by_keys, assert_unique_keys
 
 GOLDEN_DIR = Path(__file__).parent.parent / "golden" / "fixtures" / "comp_sic_naics"
 
@@ -331,9 +332,8 @@ class TestCompSicNaics:
         comp_sic_naics(self.paths)
 
         result = pl.read_parquet(self.output_path)
-        assert result.unique(["gvkey", "date"]).height == result.height
-        gvkeys = result["gvkey"].to_list()
-        assert gvkeys == sorted(gvkeys)
+        assert_unique_keys(result, ["gvkey", "date"])
+        assert_sorted_by_keys(result, "gvkey", "date")
 
     @pytest.mark.regression
     def test_comp_sic_naics_golden_fixture(self) -> None:

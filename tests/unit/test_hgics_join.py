@@ -27,6 +27,7 @@ from polars.testing import assert_frame_equal
 import jkp.data.aux_functions as aux_functions
 from jkp.data.aux_functions import hgics_join
 from jkp.data.paths import DataPaths
+from tests.conftest import assert_sorted_by_keys, assert_unique_keys
 
 GOLDEN_DIR = Path(__file__).parent.parent / "golden" / "fixtures" / "hgics_join"
 
@@ -206,19 +207,8 @@ class TestHgicsJoin:
         hgics_join(self.paths)
 
         result = pl.read_parquet(self.output_path)
-        assert result.unique(["gvkey", "date"]).height == result.height, (
-            f"Found duplicate (gvkey, date) rows: {result.height} total vs "
-            f"{result.unique(['gvkey', 'date']).height} unique"
-        )
-        gvkeys = result["gvkey"].to_list()
-        dates = result["date"].to_list()
-        assert gvkeys == sorted(gvkeys), f"gvkeys not sorted ascending: {gvkeys}"
-        for i in range(1, len(result)):
-            same_gvkey = gvkeys[i] == gvkeys[i - 1]
-            assert (not same_gvkey) or dates[i] >= dates[i - 1], (
-                f"Dates not sorted within gvkey {gvkeys[i]}: "
-                f"{dates[i - 1]} > {dates[i]} at rows {i - 1},{i}"
-            )
+        assert_unique_keys(result, ["gvkey", "date"])
+        assert_sorted_by_keys(result, "gvkey", "date")
 
     def test_dedup_with_duplicate_expanded_inputs(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Duplicate (gvkey, date) rows from upstream are collapsed by .unique().
@@ -254,10 +244,7 @@ class TestHgicsJoin:
         hgics_join(self.paths)
 
         result = pl.read_parquet(self.output_path)
-        assert result.unique(["gvkey", "date"]).height == result.height, (
-            f"Found duplicate (gvkey, date) rows: {result.height} total vs "
-            f"{result.unique(['gvkey', 'date']).height} unique"
-        )
+        assert_unique_keys(result, ["gvkey", "date"])
 
     @pytest.mark.regression
     def test_independent_of_wall_clock(self, monkeypatch: pytest.MonkeyPatch) -> None:

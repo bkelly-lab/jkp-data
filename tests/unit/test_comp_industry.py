@@ -52,6 +52,7 @@ from polars.testing import assert_frame_equal
 
 from jkp.data.aux_functions import comp_industry
 from jkp.data.paths import DataPaths
+from tests.conftest import assert_sorted_by_keys, assert_unique_keys
 from tests.golden.comp_industry_stubs import (
     CompIndustryUpstreamStubs,
     patch_comp_industry_upstream_stubs,
@@ -429,10 +430,7 @@ class TestCompIndustry:
             [10101010, 10101010, 20202020],
         )
         result = self._run(comp_other, comp_hgics)
-        assert result.unique(["gvkey", "date"]).height == result.height, (
-            f"Found duplicate (gvkey, date) rows: {result.height} total vs "
-            f"{result.unique(['gvkey', 'date']).height} unique"
-        )
+        assert_unique_keys(result, ["gvkey", "date"])
 
     def test_sort_invariant(self) -> None:
         """Output is sorted by ``(gvkey, date)`` ascending."""
@@ -448,16 +446,7 @@ class TestCompIndustry:
             [20202020, 10101010],
         )
         result = self._run(comp_other, comp_hgics)
-
-        gvkeys = result["gvkey"].to_list()
-        dates = result["date"].to_list()
-        assert gvkeys == sorted(gvkeys), f"gvkeys not sorted ascending: {gvkeys}"
-        for i in range(1, len(result)):
-            same_gvkey = gvkeys[i] == gvkeys[i - 1]
-            assert (not same_gvkey) or dates[i] >= dates[i - 1], (
-                f"Dates not sorted within gvkey {gvkeys[i]}: "
-                f"{dates[i - 1]} > {dates[i]} at rows {i - 1},{i}"
-            )
+        assert_sorted_by_keys(result, "gvkey", "date")
 
     # ------------------------------------------------------------------
     # Operational: transient DuckDB file
