@@ -559,30 +559,34 @@ class TestFFCountryBreaksForSpec:
 class TestFFPrepareCharsLeftJoin:
     """No-BE June stocks survive the comp join in ff_prepare_chars_weights_rets
     (they widen the US size-median pool) with null accounting fields, while
-    comp-matched rows are unchanged and recoverable via count.is_not_null()."""
+    comp-matched rows are unchanged and recoverable via count.is_not_null().
+    US-only, stocks without Dec(t-1) ME also stay (null dec_me/beme, sortable
+    on OP/INV); ROW keeps the inner dec_me join."""
 
     @staticmethod
     def _run_us():
+        # permno 1: Dec ME + comp row; permno 2: Dec ME, no comp row;
+        # permno 3: comp row, no Dec 2019 row (listed Jan-Jun 2020).
         panel = pl.DataFrame(
             {
-                "permno": [1, 1, 2, 2],
-                "date": [date(2019, 12, 31), date(2020, 6, 30)] * 2,
-                "retadj": [0.01] * 4,
-                "retx": [0.01] * 4,
-                "me": [100.0, 110.0, 200.0, 210.0],
-                "exchcd": [1] * 4,
-                "shrcd": [10] * 4,
+                "permno": [1, 1, 2, 2, 3],
+                "date": [date(2019, 12, 31), date(2020, 6, 30)] * 2 + [date(2020, 6, 30)],
+                "retadj": [0.01] * 5,
+                "retx": [0.01] * 5,
+                "me": [100.0, 110.0, 200.0, 210.0, 300.0],
+                "exchcd": [1] * 5,
+                "shrcd": [10] * 5,
             }
         ).sort("permno", "date")
         comp = pl.DataFrame(
             {
-                "permno": [1],
-                "year": [2019],
-                "datadate": [date(2019, 12, 31)],
-                "be": [0.05],
-                "op": [0.2],
-                "inv": [0.1],
-                "count": [3],
+                "permno": [1, 3],
+                "year": [2019, 2019],
+                "datadate": [date(2019, 12, 31)] * 2,
+                "be": [0.05, 0.07],
+                "op": [0.2, 0.3],
+                "inv": [0.1, 0.15],
+                "count": [3, 4],
             },
             schema_overrides={"year": pl.Int32},
         )
@@ -591,7 +595,7 @@ class TestFFPrepareCharsLeftJoin:
 
     def test_no_comp_stock_kept_with_null_accounting(self):
         chars = self._run_us()
-        assert chars.height == 2
+        assert chars.height == 3
         row = chars.filter(pl.col("id") == 2)
         assert row.height == 1
         for c in ("be", "op", "inv", "count", "beme"):
@@ -605,12 +609,54 @@ class TestFFPrepareCharsLeftJoin:
         # beme = 1000 x be($M) / dec_me($K) = 1000 x 0.05 / 100
         assert abs(row["beme"][0] - 0.5) < 1e-12
 
-    def test_count_filter_recovers_inner_join_rows(self):
-        """The chars call site filters count.is_not_null() to reproduce the
-        pre-left-join row set."""
+    def test_us_no_dec_me_stock_kept_op_inv_sortable(self):
+        """US stock without Dec(t-1) ME keeps comp op/inv (French's OP/INV
+        sorts need June ME only) but gets null beme (no B/M sort)."""
         chars = self._run_us()
-        kept = chars.filter(pl.col("count").is_not_null())
+        row = chars.filter(pl.col("id") == 3)
+        assert row.height == 1
+        assert row["dec_me"][0] is None
+        assert row["beme"][0] is None
+        assert row["op"][0] == 0.3
+        assert row["inv"][0] == 0.15
+        assert row["me"][0] == 300.0  # in the lenient size-median pool
+
+    def test_chars_filter_recovers_inner_join_rows(self):
+        """The chars call site filters count & dec_me non-null to reproduce
+        the pre-left-join row set."""
+        chars = self._run_us()
+        kept = chars.filter(pl.col("count").is_not_null() & pl.col("dec_me").is_not_null())
         assert kept["id"].to_list() == [1]
+
+    def test_row_keeps_inner_dec_me_join(self):
+        """ROW stock without Dec(t-1) ME stays excluded (JKP convention)."""
+        panel = pl.DataFrame(
+            {
+                "excntry": ["GBR"] * 5,
+                "id": [1, 1, 2, 2, 3],
+                "gvkey": ["g1", "g1", "g2", "g2", "g3"],
+                "date": [date(2019, 12, 31), date(2020, 6, 30)] * 2 + [date(2020, 6, 30)],
+                "ret": [0.01] * 5,
+                "me": [100.0, 110.0, 200.0, 210.0, 300.0],
+                "size_grp": ["large"] * 5,
+            }
+        ).sort("id", "date")
+        comp = pl.DataFrame(
+            {
+                "gvkey": ["g1", "g3"],
+                "year": [2019, 2019],
+                "datadate": [date(2019, 12, 31)] * 2,
+                "be": [50.0, 70.0],
+                "op": [0.2, 0.3],
+                "inv": [0.1, 0.15],
+                "count": [3, 4],
+            },
+            schema_overrides={"year": pl.Int32},
+        )
+        _, data_chars = ff_prepare_chars_weights_rets(panel, comp, "monthly", is_us=False)
+        # id 3 (no Dec ME) dropped by the inner dec_me join; id 2 (no comp)
+        # kept by the left comp join.
+        assert sorted(data_chars["id"].to_list()) == [1, 2]
 
 
 # =============================================================================

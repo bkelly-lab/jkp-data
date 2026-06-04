@@ -11839,12 +11839,15 @@ def ff_prepare_chars_weights_rets(
         .filter(pl.col("me") > 0)
         .select(*id_keys, june_year=pl.col("_y") + 1, dec_me=pl.col("me"))
     )
-    # Left join: June stocks without accounting data stay in the frame (null
-    # be/op/inv/count → null beme) so the US size-median pool can cover all
-    # NYSE stocks per DFF 2000; the sort eligibility gates (_FF_ELIGIBLE)
-    # still exclude them from every value sort and portfolio leg.
+    # Left joins: June stocks without accounting data (and, US-only, without
+    # Dec(t-1) ME) stay in the frame (null be/op/inv/count → null beme) so the
+    # US size-median pool covers all NYSE stocks per DFF 2000; the sort
+    # eligibility gates (_FF_ELIGIBLE) still exclude them from the B/M sort,
+    # while US stocks lacking only Dec ME stay sortable on OP/INV (French's
+    # OP/INV sorts require June ME but not Dec ME). ROW keeps the inner
+    # dec_me join (JKP convention).
     data_chars = (
-        june_only.join(dec_me, on=[*id_keys, "june_year"], how="inner")
+        june_only.join(dec_me, on=[*id_keys, "june_year"], how="left" if is_us else "inner")
         .join(
             comp.select(link_key, "be", "op", "inv", "count", "datadate", cyp1=pl.col("year") + 1),
             left_on=[link_key, "june_year"],
@@ -12656,11 +12659,12 @@ def gen_ff_data(
 
         if freq == "monthly":
             # count is non-null iff the June stock had a Compustat/DFF row, so
-            # this reproduces the pre-left-join chars row set (the no-BE rows
-            # exist only to widen the US size-median pool).
+            # with the dec_me condition this reproduces the pre-left-join
+            # chars row set (the extra rows exist only to widen the US
+            # size-median pool / OP-INV sorts).
             ff_build_characteristics(
                 panel,
-                data_chars.filter(pl.col("count").is_not_null()),
+                data_chars.filter(pl.col("count").is_not_null() & pl.col("dec_me").is_not_null()),
                 freq,
                 mom_signal=mom_signal,
             ).rename({"date": "eom"}).drop("excntry").write_parquet(chars_out)
