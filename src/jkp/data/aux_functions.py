@@ -26,6 +26,9 @@ from .config import (
     COLLECT_CHUNK_SIZE,
     END_DATE,
     FF_CRSP_SPECS,
+    FF_DFF_GATE_COMPUSTAT_PRE1954,
+    FF_DFF_MERGE_YEAR,
+    FF_DFF_SYNTH_COUNT,
     FF_MIN_STOCKS_BP,
     FF_MIN_STOCKS_PF,
     FF_MISSING_RET_CODE,
@@ -37,6 +40,7 @@ from .config import (
     FF_UMD_DAILY_SKIP,
     FF_UMD_MONTHLY_LOOKBACK,
     FF_UMD_MONTHLY_SKIP,
+    FF_USE_DFF_BE,
     HXZ_MIN_STOCKS_BP,
     HXZ_MIN_STOCKS_PF,
     MAIN_FILTERS,
@@ -11479,11 +11483,22 @@ _CIZ_UNIVERSE = (
 )
 
 
-def ff_load_compustat_us(raw_dir: Path, ff5: bool) -> pl.DataFrame:
+def ff_load_compustat_us(
+    raw_dir: Path,
+    ff5: bool,
+    *,
+    use_dff: bool = False,
+    dff_path: Path | None = None,
+) -> pl.DataFrame:
     """
     Description:
         Load FF-strict Compustat NA funda and link gvkey→permno via CCM
         (`crsp_ccmxpf_lnkhist`). FF3 emits BE only; FF5 adds OP/INV.
+        Optionally union the DFF (Davis-Fama-French) hand-collected Moody's
+        BE (permno-keyed, no CCM needed) to extend coverage back to the
+        June 1926 formation. Per DFF (2000) the two BE sets are disjoint by
+        construction ("...all NYSE industrial firms that do not have BE data
+        on Compustat"); on any (permno, year) collision Compustat wins.
 
     Steps:
         1) Scan comp_funda.parquet; cast numerics; apply CCM type filters
@@ -11496,6 +11511,11 @@ def ff_load_compustat_us(raw_dir: Path, ff5: bool) -> pl.DataFrame:
         5) Link via ccmxpf_lnkhist (linktype starts with L, linkprim ∈ {P,C}).
            Filter by June(y+1) validity window. Dedup: prefer P over C on
            (datadate, permno); then last entry per (permno, year).
+        6) use_dff: union DFF BE rows. DFF be(t) is publicly available by
+           June 30 of year t and pairs with Dec(t−1) ME, so the unioned row
+           carries year = t − 1 (the downstream join uses cyp1 = year + 1 =
+           june_year, whose dec_me is Dec(t−1)). DFF BE is in $ millions,
+           identical to Compustat — the US 1000× beme scale applies unchanged.
 
     Output:
         Eager [gvkey, permno, year, datadate, be, (op, inv,) count, ...].
@@ -11578,7 +11598,7 @@ def ff_load_compustat_us(raw_dir: Path, ff5: bool) -> pl.DataFrame:
             pl.col("linkdt", "linkenddt").cast(pl.Date),
         )
     )
-    return (
+    comp_ccm = (
         comp.with_columns(jun_end=pl.date(pl.col("datadate").dt.year() + 1, 6, 30))
         .join(lnk, on="gvkey", how="inner")
         .filter(
@@ -11591,6 +11611,59 @@ def ff_load_compustat_us(raw_dir: Path, ff5: bool) -> pl.DataFrame:
         .sort(["permno", "year", "datadate"])
         .unique(subset=["permno", "year"], keep="last")
         .collect()
+    )
+    if not use_dff:
+        return comp_ccm
+
+    # ---- DFF hand-collected BE union (see docstring step 6) ----
+    select_cols = ["gvkey", "permno", "year", "datadate", "be", *keep, "count"]
+    dff = (
+        load_dff_be(dff_path)
+        # Match the US Compustat path: BE < 0 → null → dropped. BE == 0 flows
+        # through and is later excluded by the beme > 0 eligibility gate.
+        .filter(pl.col("be").is_not_null() & (pl.col("be") >= 0))
+        .with_columns(
+            # datadate from DFF year t BEFORE the year offset below: a synthetic
+            # formation-aligned stamp (June 30 of t), used only as a dedup
+            # tie-break downstream — never for BE timing itself.
+            datadate=pl.date(pl.col("year"), 6, 30),
+            # ALIGNMENT OFFSET: DFF be(t) → unioned year t−1, so the June-frame
+            # join (cyp1 = year + 1 = t = june_year) pairs it with Dec(t−1) ME.
+            year=pl.col("year") - 1,
+            gvkey=pl.lit(None, dtype=pl.Utf8),
+            count=pl.lit(FF_DFF_SYNTH_COUNT, dtype=pl.Int64),
+            **{c: pl.lit(None, dtype=pl.Float64) for c in keep},
+        )
+        .select(select_cols)
+    )
+    comp_pool = (
+        comp_ccm.filter(pl.col("year") >= FF_DFF_MERGE_YEAR - 1)
+        if FF_DFF_GATE_COMPUSTAT_PRE1954
+        else comp_ccm
+    )
+    n_collisions = (
+        comp_pool.select("permno", "year")
+        .join(dff.select("permno", "year"), on=["permno", "year"], how="inner")
+        .height
+    )
+    if n_collisions:
+        print(
+            f"DFF/Compustat BE overlap: {n_collisions} (permno, year) collisions; Compustat kept",
+            flush=True,
+        )
+    return (
+        pl.concat(
+            [
+                comp_pool.select(select_cols).with_columns(_src=pl.lit(0)),
+                dff.with_columns(_src=pl.lit(1)),
+            ],
+            how="vertical_relaxed",
+        )
+        # Compustat-first tie-break on (permno, year): sets are disjoint per
+        # DFF (2000); any modern-backfill collision keeps the Compustat row.
+        .sort(["permno", "year", "_src"])
+        .unique(subset=["permno", "year"], keep="first")
+        .drop("_src")
     )
 
 
@@ -12492,7 +12565,7 @@ def gen_ff_data(
     chars_out = chars_path
 
     # ---- US Compustat (FF-strict) ----
-    ccm2a = ff_load_compustat_us(raw_dir, ff5=True)
+    ccm2a = ff_load_compustat_us(raw_dir, ff5=True, use_dff=FF_USE_DFF_BE)
 
     # ---- ROW Compustat (JKP) ----
     comp_world = ff_load_world_compustat(raw_dir, interim_dir)

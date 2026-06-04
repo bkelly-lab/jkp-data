@@ -313,6 +313,30 @@ FF_UMD_DAILY_LOOKBACK = 251
 FF_UMD_MONTHLY_LOOKBACK = 12
 FF_UMD_MONTHLY_SKIP = 1
 
+# DFF (Davis-Fama-French) hand-collected Moody's BE splice into the US FF path.
+# When True, union DFF BE (permno-keyed, bundled resource) with Compustat BE;
+# DFF fills (permno, formation year) cells Compustat lacks, extending SMB/HML
+# back to 1926-07 (and UMD to ~1927-01 via the longer CRSP panel). Per DFF
+# (2000) the two BE sets are disjoint by construction: "we collect book common
+# equity (BE) from 1925 to 1996 for all NYSE industrial firms that do not have
+# BE data on Compustat."
+FF_USE_DFF_BE = True
+
+# Strict DFF (2000) replication gate: "beginning in 1954 we merge the
+# hand-collected data ... with the Compustat data". True drops Compustat BE
+# from formations before June FF_DFF_MERGE_YEAR prior to the union (pre-1954
+# Compustat rows are backfill French never used). Default False: union
+# whatever Compustat exists — the Compustat-first tie-break makes backfill
+# harmless and the sets are disjoint anyway.
+FF_DFF_GATE_COMPUSTAT_PRE1954 = False
+FF_DFF_MERGE_YEAR = 1954
+
+# Synthetic per-firm Compustat-history count for DFF-only rows so they clear
+# the count >= 2 BM eligibility gate (_ff_bm_eligible). DFF rows carry no
+# Compustat fiscal-year history; this count feeds ONLY the eligibility gate —
+# op/inv stay null so DFF rows drop out of OP/INV (RMW/CMA) sorts.
+FF_DFF_SYNTH_COUNT = 2
+
 
 # ============================================================================
 # Mispricing Factors (Stambaugh-Yuan) — ported from MisprProject
