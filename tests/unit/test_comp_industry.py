@@ -1,4 +1,4 @@
-"""Tests for ``comp_industry`` (Issue #155).
+"""Tests for comp_industry() (Issue #155).
 
 ``comp_industry`` merges the daily SIC/NAICS panel (``comp_other``) and the
 daily GICS panel (``comp_hgics``) into a single daily Compustat industry file.

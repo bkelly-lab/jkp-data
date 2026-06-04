@@ -22,6 +22,7 @@ from polars.testing import assert_frame_equal
 from jkp.data.aux_functions import crsp_industry
 from jkp.data.paths import DataPaths
 from tests.conftest import assert_sorted_by_keys, assert_unique_keys
+from tests.golden.crsp_industry_inputs import permno0_frame
 
 GOLDEN_DIR = Path(__file__).parent.parent / "golden" / "fixtures" / "crsp_industry"
 
@@ -43,23 +44,13 @@ class TestCrspIndustry:
 
     def test_date_range_expansion(self) -> None:
         """A single span produces one row per calendar date in [start, end]."""
-        df = pl.DataFrame(
-            {
-                "permno": [10001],
-                "permco": [1],
-                "secinfostartdt": [date(2020, 1, 1)],
-                "secinfoenddt": [date(2020, 1, 5)],
-                "sic": [7372],
-                "naics": [511210],
-            },
-            schema={
-                "permno": pl.Int64,
-                "permco": pl.Int64,
-                "secinfostartdt": pl.Date,
-                "secinfoenddt": pl.Date,
-                "sic": pl.Int64,
-                "naics": pl.Int64,
-            },
+        df = permno0_frame(
+            [10001],
+            [1],
+            [date(2020, 1, 1)],
+            [date(2020, 1, 5)],
+            [7372],
+            [511210],
         )
         _write_permno0(self.paths, df)
 
@@ -86,23 +77,13 @@ class TestCrspIndustry:
 
     def test_multiple_non_overlapping_spans_per_permno(self) -> None:
         """Two non-overlapping spans expand independently; rows are contiguous within each."""
-        df = pl.DataFrame(
-            {
-                "permno": [10001, 10001],
-                "permco": [1, 1],
-                "secinfostartdt": [date(2020, 1, 1), date(2020, 1, 6)],
-                "secinfoenddt": [date(2020, 1, 3), date(2020, 1, 8)],
-                "sic": [7372, 7370],
-                "naics": [511210, 511200],
-            },
-            schema={
-                "permno": pl.Int64,
-                "permco": pl.Int64,
-                "secinfostartdt": pl.Date,
-                "secinfoenddt": pl.Date,
-                "sic": pl.Int64,
-                "naics": pl.Int64,
-            },
+        df = permno0_frame(
+            [10001, 10001],
+            [1, 1],
+            [date(2020, 1, 1), date(2020, 1, 6)],
+            [date(2020, 1, 3), date(2020, 1, 8)],
+            [7372, 7370],
+            [511210, 511200],
         )
         _write_permno0(self.paths, df)
 
@@ -129,24 +110,7 @@ class TestCrspIndustry:
 
     def test_sic_zero_becomes_null(self) -> None:
         """``sic == 0`` is rewritten to a typed null."""
-        df = pl.DataFrame(
-            {
-                "permno": [10002],
-                "permco": [2],
-                "secinfostartdt": [date(2020, 2, 1)],
-                "secinfoenddt": [date(2020, 2, 2)],
-                "sic": [0],
-                "naics": [None],
-            },
-            schema={
-                "permno": pl.Int64,
-                "permco": pl.Int64,
-                "secinfostartdt": pl.Date,
-                "secinfoenddt": pl.Date,
-                "sic": pl.Int64,
-                "naics": pl.Int64,
-            },
-        )
+        df = permno0_frame([10002], [2], [date(2020, 2, 1)], [date(2020, 2, 2)], [0], [None])
         _write_permno0(self.paths, df)
 
         crsp_industry(self.paths)
@@ -161,24 +125,7 @@ class TestCrspIndustry:
 
     def test_null_naics_preserved(self) -> None:
         """Null ``naics`` values pass through unchanged."""
-        df = pl.DataFrame(
-            {
-                "permno": [10002],
-                "permco": [2],
-                "secinfostartdt": [date(2020, 2, 1)],
-                "secinfoenddt": [date(2020, 2, 3)],
-                "sic": [7372],
-                "naics": [None],
-            },
-            schema={
-                "permno": pl.Int64,
-                "permco": pl.Int64,
-                "secinfostartdt": pl.Date,
-                "secinfoenddt": pl.Date,
-                "sic": pl.Int64,
-                "naics": pl.Int64,
-            },
-        )
+        df = permno0_frame([10002], [2], [date(2020, 2, 1)], [date(2020, 2, 3)], [7372], [None])
         _write_permno0(self.paths, df)
 
         crsp_industry(self.paths)
@@ -190,23 +137,13 @@ class TestCrspIndustry:
 
     def test_overlapping_spans_deduplicated(self) -> None:
         """Two spans sharing dates collapse to one row per ``(permno, date)``."""
-        df = pl.DataFrame(
-            {
-                "permno": [10003, 10003],
-                "permco": [3, 3],
-                "secinfostartdt": [date(2020, 3, 1), date(2020, 3, 3)],
-                "secinfoenddt": [date(2020, 3, 4), date(2020, 3, 6)],
-                "sic": [6020, 6020],
-                "naics": [522110, 522110],
-            },
-            schema={
-                "permno": pl.Int64,
-                "permco": pl.Int64,
-                "secinfostartdt": pl.Date,
-                "secinfoenddt": pl.Date,
-                "sic": pl.Int64,
-                "naics": pl.Int64,
-            },
+        df = permno0_frame(
+            [10003, 10003],
+            [3, 3],
+            [date(2020, 3, 1), date(2020, 3, 3)],
+            [date(2020, 3, 4), date(2020, 3, 6)],
+            [6020, 6020],
+            [522110, 522110],
         )
         _write_permno0(self.paths, df)
 
@@ -221,23 +158,13 @@ class TestCrspIndustry:
 
     def test_sorted_by_permno_date(self) -> None:
         """Output rows are sorted by ``(permno, date)`` ascending."""
-        df = pl.DataFrame(
-            {
-                "permno": [20001, 10001],
-                "permco": [2, 1],
-                "secinfostartdt": [date(2020, 1, 1), date(2020, 1, 2)],
-                "secinfoenddt": [date(2020, 1, 3), date(2020, 1, 4)],
-                "sic": [7370, 7372],
-                "naics": [511200, 511210],
-            },
-            schema={
-                "permno": pl.Int64,
-                "permco": pl.Int64,
-                "secinfostartdt": pl.Date,
-                "secinfoenddt": pl.Date,
-                "sic": pl.Int64,
-                "naics": pl.Int64,
-            },
+        df = permno0_frame(
+            [20001, 10001],
+            [2, 1],
+            [date(2020, 1, 1), date(2020, 1, 2)],
+            [date(2020, 1, 3), date(2020, 1, 4)],
+            [7370, 7372],
+            [511200, 511210],
         )
         _write_permno0(self.paths, df)
 
@@ -248,24 +175,7 @@ class TestCrspIndustry:
 
     def test_preserves_permco(self) -> None:
         """``permco`` is carried through to the daily output."""
-        df = pl.DataFrame(
-            {
-                "permno": [10001],
-                "permco": [42],
-                "secinfostartdt": [date(2020, 1, 1)],
-                "secinfoenddt": [date(2020, 1, 2)],
-                "sic": [7372],
-                "naics": [511210],
-            },
-            schema={
-                "permno": pl.Int64,
-                "permco": pl.Int64,
-                "secinfostartdt": pl.Date,
-                "secinfoenddt": pl.Date,
-                "sic": pl.Int64,
-                "naics": pl.Int64,
-            },
-        )
+        df = permno0_frame([10001], [42], [date(2020, 1, 1)], [date(2020, 1, 2)], [7372], [511210])
         _write_permno0(self.paths, df)
 
         crsp_industry(self.paths)
@@ -278,7 +188,7 @@ class TestCrspIndustry:
     @pytest.mark.regression
     def test_crsp_industry_golden_fixture(self) -> None:
         """Bit-identical match against the locked golden fixture."""
-        from tests.golden.generate_crsp_industry_golden import build_permno0_input
+        from tests.golden.crsp_industry_inputs import build_permno0_input
 
         _write_permno0(self.paths, build_permno0_input())
         crsp_industry(self.paths)

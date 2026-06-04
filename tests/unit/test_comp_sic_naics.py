@@ -1,4 +1,4 @@
-"""Tests for ``comp_sic_naics`` (Issue #155).
+"""Tests for comp_sic_naics() (Issue #155).
 
 Covers the daily SIC/NAICS expansion from Compustat NA + Global histories:
 
@@ -23,6 +23,7 @@ from polars.testing import assert_frame_equal
 from jkp.data.aux_functions import comp_sic_naics
 from jkp.data.paths import DataPaths
 from tests.conftest import assert_sorted_by_keys, assert_unique_keys
+from tests.golden.comp_sic_naics_inputs import empty_sic_naics_frame, sic_naics_frame
 
 GOLDEN_DIR = Path(__file__).parent.parent / "golden" / "fixtures" / "comp_sic_naics"
 
@@ -35,18 +36,6 @@ def _write_inputs(paths: DataPaths, na: pl.DataFrame, gl: pl.DataFrame) -> None:
     gl.write_parquet(raw_data_dfs / "sic_naics_gl.parquet")
 
 
-def _empty_input() -> pl.DataFrame:
-    """Return an empty NA/GL frame with the expected schema."""
-    return pl.DataFrame(
-        schema={
-            "gvkey": pl.Utf8,
-            "datadate": pl.Date,
-            "sic": pl.Int64,
-            "naics": pl.Int64,
-        }
-    )
-
-
 class TestCompSicNaics:
     """Tests for ``comp_sic_naics``."""
 
@@ -57,21 +46,8 @@ class TestCompSicNaics:
 
     def test_na_only_gvkey(self) -> None:
         """A gvkey present only in NA appears in the output with its NA codes."""
-        na = pl.DataFrame(
-            {
-                "gvkey": ["001000"],
-                "datadate": [date(2020, 1, 1)],
-                "sic": [7372],
-                "naics": [511210],
-            },
-            schema={
-                "gvkey": pl.Utf8,
-                "datadate": pl.Date,
-                "sic": pl.Int64,
-                "naics": pl.Int64,
-            },
-        )
-        _write_inputs(self.paths, na, _empty_input())
+        na = sic_naics_frame(["001000"], [date(2020, 1, 1)], [7372], [511210])
+        _write_inputs(self.paths, na, empty_sic_naics_frame())
 
         comp_sic_naics(self.paths)
 
@@ -84,21 +60,8 @@ class TestCompSicNaics:
 
     def test_gl_only_gvkey(self) -> None:
         """A gvkey present only in GL appears in the output with its GL codes."""
-        gl = pl.DataFrame(
-            {
-                "gvkey": ["002000"],
-                "datadate": [date(2020, 6, 15)],
-                "sic": [2834],
-                "naics": [325412],
-            },
-            schema={
-                "gvkey": pl.Utf8,
-                "datadate": pl.Date,
-                "sic": pl.Int64,
-                "naics": pl.Int64,
-            },
-        )
-        _write_inputs(self.paths, _empty_input(), gl)
+        gl = sic_naics_frame(["002000"], [date(2020, 6, 15)], [2834], [325412])
+        _write_inputs(self.paths, empty_sic_naics_frame(), gl)
 
         comp_sic_naics(self.paths)
 
@@ -110,34 +73,8 @@ class TestCompSicNaics:
 
     def test_coalesce_prefers_non_null_sic(self) -> None:
         """When NA has null SIC and GL has a real one, the non-null value wins."""
-        na = pl.DataFrame(
-            {
-                "gvkey": ["004000"],
-                "datadate": [date(2019, 3, 1)],
-                "sic": [None],
-                "naics": [541110],
-            },
-            schema={
-                "gvkey": pl.Utf8,
-                "datadate": pl.Date,
-                "sic": pl.Int64,
-                "naics": pl.Int64,
-            },
-        )
-        gl = pl.DataFrame(
-            {
-                "gvkey": ["004000"],
-                "datadate": [date(2019, 3, 1)],
-                "sic": [4813],
-                "naics": [517110],
-            },
-            schema={
-                "gvkey": pl.Utf8,
-                "datadate": pl.Date,
-                "sic": pl.Int64,
-                "naics": pl.Int64,
-            },
-        )
+        na = sic_naics_frame(["004000"], [date(2019, 3, 1)], [None], [541110])
+        gl = sic_naics_frame(["004000"], [date(2019, 3, 1)], [4813], [517110])
         _write_inputs(self.paths, na, gl)
 
         comp_sic_naics(self.paths)
@@ -151,34 +88,8 @@ class TestCompSicNaics:
 
     def test_coalesce_na_takes_precedence_over_gl(self) -> None:
         """When both NA and GL have non-null SIC, the NA value wins."""
-        na = pl.DataFrame(
-            {
-                "gvkey": ["003000"],
-                "datadate": [date(2018, 5, 1)],
-                "sic": [6020],
-                "naics": [522110],
-            },
-            schema={
-                "gvkey": pl.Utf8,
-                "datadate": pl.Date,
-                "sic": pl.Int64,
-                "naics": pl.Int64,
-            },
-        )
-        gl = pl.DataFrame(
-            {
-                "gvkey": ["003000"],
-                "datadate": [date(2018, 5, 1)],
-                "sic": [6021],
-                "naics": [522120],
-            },
-            schema={
-                "gvkey": pl.Utf8,
-                "datadate": pl.Date,
-                "sic": pl.Int64,
-                "naics": pl.Int64,
-            },
-        )
+        na = sic_naics_frame(["003000"], [date(2018, 5, 1)], [6020], [522110])
+        gl = sic_naics_frame(["003000"], [date(2018, 5, 1)], [6021], [522120])
         _write_inputs(self.paths, na, gl)
 
         comp_sic_naics(self.paths)
@@ -192,21 +103,13 @@ class TestCompSicNaics:
 
     def test_hardcoded_175650_row_dropped(self) -> None:
         """The hard-coded NA filter removes ``(175650, 2005-12-31, naics=NULL)``."""
-        na = pl.DataFrame(
-            {
-                "gvkey": ["175650", "175650"],
-                "datadate": [date(2005, 12, 31), date(2006, 6, 30)],
-                "sic": [1311, 1311],
-                "naics": [None, 211120],
-            },
-            schema={
-                "gvkey": pl.Utf8,
-                "datadate": pl.Date,
-                "sic": pl.Int64,
-                "naics": pl.Int64,
-            },
+        na = sic_naics_frame(
+            ["175650", "175650"],
+            [date(2005, 12, 31), date(2006, 6, 30)],
+            [1311, 1311],
+            [None, 211120],
         )
-        _write_inputs(self.paths, na, _empty_input())
+        _write_inputs(self.paths, na, empty_sic_naics_frame())
 
         comp_sic_naics(self.paths)
 
@@ -220,21 +123,8 @@ class TestCompSicNaics:
 
     def test_gvkey_zero_padded_to_six_chars(self) -> None:
         """Unpadded gvkey inputs are ``LPAD``-ed to width 6 in the output."""
-        na = pl.DataFrame(
-            {
-                "gvkey": ["500"],
-                "datadate": [date(2021, 7, 15)],
-                "sic": [7372],
-                "naics": [511210],
-            },
-            schema={
-                "gvkey": pl.Utf8,
-                "datadate": pl.Date,
-                "sic": pl.Int64,
-                "naics": pl.Int64,
-            },
-        )
-        _write_inputs(self.paths, na, _empty_input())
+        na = sic_naics_frame(["500"], [date(2021, 7, 15)], [7372], [511210])
+        _write_inputs(self.paths, na, empty_sic_naics_frame())
 
         comp_sic_naics(self.paths)
 
@@ -244,21 +134,13 @@ class TestCompSicNaics:
 
     def test_daily_expansion_closed_left(self) -> None:
         """Two consecutive datadates fill the half-open interval [d1, d2)."""
-        na = pl.DataFrame(
-            {
-                "gvkey": ["001000", "001000"],
-                "datadate": [date(2020, 1, 1), date(2020, 1, 4)],
-                "sic": [3711, 3713],
-                "naics": [336111, 336112],
-            },
-            schema={
-                "gvkey": pl.Utf8,
-                "datadate": pl.Date,
-                "sic": pl.Int64,
-                "naics": pl.Int64,
-            },
+        na = sic_naics_frame(
+            ["001000", "001000"],
+            [date(2020, 1, 1), date(2020, 1, 4)],
+            [3711, 3713],
+            [336111, 336112],
         )
-        _write_inputs(self.paths, na, _empty_input())
+        _write_inputs(self.paths, na, empty_sic_naics_frame())
 
         comp_sic_naics(self.paths)
 
@@ -285,21 +167,13 @@ class TestCompSicNaics:
         (ascending), so among rows sharing the same (gvkey, date) after
         COALESCE, the row with the smallest SIC is retained.
         """
-        na = pl.DataFrame(
-            {
-                "gvkey": ["005000", "005000"],
-                "datadate": [date(2020, 1, 1), date(2020, 1, 1)],
-                "sic": [9000, 1000],
-                "naics": [999999, 111111],
-            },
-            schema={
-                "gvkey": pl.Utf8,
-                "datadate": pl.Date,
-                "sic": pl.Int64,
-                "naics": pl.Int64,
-            },
+        na = sic_naics_frame(
+            ["005000", "005000"],
+            [date(2020, 1, 1), date(2020, 1, 1)],
+            [9000, 1000],
+            [999999, 111111],
         )
-        _write_inputs(self.paths, na, _empty_input())
+        _write_inputs(self.paths, na, empty_sic_naics_frame())
 
         comp_sic_naics(self.paths)
 
@@ -313,21 +187,13 @@ class TestCompSicNaics:
 
     def test_dedup_and_sort_invariants(self) -> None:
         """Output has unique ``(gvkey, date)`` keys and is sorted ascending."""
-        na = pl.DataFrame(
-            {
-                "gvkey": ["002000", "001000"],
-                "datadate": [date(2020, 6, 15), date(2020, 1, 1)],
-                "sic": [2834, 7372],
-                "naics": [325412, 511210],
-            },
-            schema={
-                "gvkey": pl.Utf8,
-                "datadate": pl.Date,
-                "sic": pl.Int64,
-                "naics": pl.Int64,
-            },
+        na = sic_naics_frame(
+            ["002000", "001000"],
+            [date(2020, 6, 15), date(2020, 1, 1)],
+            [2834, 7372],
+            [325412, 511210],
         )
-        _write_inputs(self.paths, na, _empty_input())
+        _write_inputs(self.paths, na, empty_sic_naics_frame())
 
         comp_sic_naics(self.paths)
 
@@ -338,7 +204,7 @@ class TestCompSicNaics:
     @pytest.mark.regression
     def test_comp_sic_naics_golden_fixture(self) -> None:
         """Bit-identical match against the locked golden fixture."""
-        from tests.golden.generate_comp_sic_naics_golden import build_sic_naics_inputs
+        from tests.golden.comp_sic_naics_inputs import build_sic_naics_inputs
 
         na, gl = build_sic_naics_inputs()
         _write_inputs(self.paths, na, gl)
