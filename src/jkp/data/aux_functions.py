@@ -1678,6 +1678,7 @@ def gen_comp_dsf(paths: DataPaths, apply_bessembinder: bool = True):
         print("Applying Bessembinder Section 6 decimal corrections...", flush=True)
 
         # Load and correct Global data (no ADRRC)
+        print("[section6] correcting Global data (comp_g_secd)...", flush=True)
         df_global = pl.scan_parquet(paths.raw_tables_dir / "comp_g_secd.parquet")
         df_global, log_global = apply_bessembinder_section6(
             df_global,
@@ -1685,9 +1686,11 @@ def gen_comp_dsf(paths: DataPaths, apply_bessembinder: bool = True):
             sort_col="datadate",
             has_adrrc=False,
         )
-        df_global.collect().write_parquet(paths.interim_dir / "__comp_g_secd_corrected.parquet")
+        print("[section6] sinking __comp_g_secd_corrected.parquet...", flush=True)
+        df_global.sink_parquet(paths.interim_dir / "__comp_g_secd_corrected.parquet")
 
         # Load and correct NA data (has ADRRC for ADRs)
+        print("[section6] correcting NA data (comp_secd)...", flush=True)
         df_na = pl.scan_parquet(paths.raw_tables_dir / "comp_secd.parquet")
         df_na, log_na = apply_bessembinder_section6(
             df_na,
@@ -1695,7 +1698,8 @@ def gen_comp_dsf(paths: DataPaths, apply_bessembinder: bool = True):
             sort_col="datadate",
             has_adrrc=True,
         )
-        df_na.collect().write_parquet(paths.interim_dir / "__comp_secd_corrected.parquet")
+        print("[section6] sinking __comp_secd_corrected.parquet...", flush=True)
+        df_na.sink_parquet(paths.interim_dir / "__comp_secd_corrected.parquet")
 
         # Combine correction logs
         logs = [log for log in [log_global, log_na] if log is not None]

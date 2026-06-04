@@ -63,114 +63,67 @@ def _validate_corrections_no_cascading(
     factor_col = f"{col_name}_correction_factor"
     error_type_col = f"{col_name}_error_type"
 
-    # Materialize to work with actual values
-    log_df = corrections_log.collect()
+    # Map each flagged correction to its row position within the security.
+    # df is sorted by group_cols + sort_col upstream (detection functions sort),
+    # so within-group row order equals date order. Only the corrections log is
+    # ever materialized — the full data frame stays lazy throughout.
+    pos_index = df.select(group_cols + [sort_col]).with_columns(
+        pl.int_range(pl.len()).over(group_cols).alias("_pos")
+    )
+    log_df = corrections_log.join(pos_index, on=group_cols + [sort_col], how="left").collect()
 
     if len(log_df) == 0:
         # No corrections to validate
         return df, corrections_log, pl.LazyFrame()
 
-    # We need the full data to look up dates for endpoint positions
-    data_df = df.collect()
+    print(f"    [validate] {col_name}: {len(log_df)} corrections to validate", flush=True)
 
-    # Build a date index for each security to map positions to dates
-    # Group data by security and create position -> date mapping
-    date_index_by_security = {}
-    for key, group in data_df.group_by(group_cols):
-        group_sorted = group.sort(sort_col)
-        dates = group_sorted[sort_col].to_list()
-        # Create mapping from date to position index
-        date_to_pos = {d: i for i, d in enumerate(dates)}
-        pos_to_date = dict(enumerate(dates))
-        date_index_by_security[key] = {
-            "dates": dates,
-            "date_to_pos": date_to_pos,
-            "pos_to_date": pos_to_date,
-        }
+    orig_schema = corrections_log.collect_schema()
+
+    # Endpoint positions: pos ± window_size (single-period window_size is 1)
+    log_df = log_df.with_columns(
+        (col("_pos") - col("window_size").fill_null(1)).alias("_lpos"),
+        (col("_pos") + col("window_size").fill_null(1)).alias("_rpos"),
+    )
 
     # Iteratively reject false positives until stable
-    current_log = log_df.clone()
-    all_rejected = []
+    current_log = log_df
+    rejected_logs = []
     max_iterations = 10  # Safety limit
 
     for iteration in range(max_iterations):
-        # Build set of currently flagged positions
-        flagged_positions = set()
-        for row in current_log.iter_rows(named=True):
-            key = tuple(row[gc] for gc in group_cols) + (row[sort_col],)
-            flagged_positions.add(key)
-
-        if len(flagged_positions) == 0:
+        if len(current_log) == 0:
             break
 
-        # Check each correction: are BOTH endpoint positions also flagged?
-        to_reject = []
-        to_keep = []
+        # A correction is rejected when BOTH endpoint positions are themselves
+        # flagged (likely false positive sandwiched between two errors).
+        flagged = current_log.select(group_cols + ["_pos"])
+        rejected = current_log.join(
+            flagged.rename({"_pos": "_lpos"}), on=group_cols + ["_lpos"], how="semi"
+        ).join(flagged.rename({"_pos": "_rpos"}), on=group_cols + ["_rpos"], how="semi")
 
-        for row in current_log.iter_rows(named=True):
-            security_key = tuple(row[gc] for gc in group_cols)
-            current_date = row[sort_col]
-            window_size = row.get("window_size", 1) or 1
-
-            # Get date index for this security
-            if security_key not in date_index_by_security:
-                to_keep.append(row)
-                continue
-
-            index_info = date_index_by_security[security_key]
-            date_to_pos = index_info["date_to_pos"]
-            pos_to_date = index_info["pos_to_date"]
-
-            if current_date not in date_to_pos:
-                to_keep.append(row)
-                continue
-
-            current_pos = date_to_pos[current_date]
-
-            # Determine endpoint positions (for single-period: pos-1 and pos+1)
-            # For multi-period: pos-window_size and pos+window_size
-            left_pos = current_pos - window_size
-            right_pos = current_pos + window_size
-
-            # Get endpoint dates
-            left_date = pos_to_date.get(left_pos)
-            right_date = pos_to_date.get(right_pos)
-
-            # Check if endpoint positions are flagged
-            left_flagged = False
-            right_flagged = False
-
-            if left_date is not None:
-                left_key = security_key + (left_date,)
-                left_flagged = left_key in flagged_positions
-
-            if right_date is not None:
-                right_key = security_key + (right_date,)
-                right_flagged = right_key in flagged_positions
-
-            # Reject if BOTH endpoints are flagged (likely false positive)
-            if left_flagged and right_flagged:
-                to_reject.append(dict(row) | {"rejection_reason": "both_endpoints_flagged"})
-            else:
-                to_keep.append(row)
-
-        if len(to_reject) == 0:
+        if len(rejected) == 0:
             # No more rejections, we're done
             break
 
-        all_rejected.extend(to_reject)
-        current_log = pl.DataFrame(to_keep) if to_keep else pl.DataFrame(schema=log_df.schema)
+        rejected_logs.append(
+            rejected.with_columns(pl.lit("both_endpoints_flagged").alias("rejection_reason"))
+        )
+        current_log = current_log.join(rejected, on=group_cols + [sort_col, "variable"], how="anti")
 
-        logger.debug(
-            f"{col_name}: iteration {iteration + 1}, rejected {len(to_reject)} corrections"
+        print(
+            f"    [validate] {col_name}: iteration {iteration + 1}, "
+            f"rejected {len(rejected)} corrections",
+            flush=True,
         )
 
     # Build final results
-    valid_corrections = current_log
+    helper_cols = ["_pos", "_lpos", "_rpos"]
+    valid_corrections = current_log.drop(helper_cols)
     rejected_corrections = (
-        pl.DataFrame(all_rejected)
-        if all_rejected
-        else pl.DataFrame(schema=log_df.schema | {"rejection_reason": pl.Utf8})
+        pl.concat(rejected_logs, how="vertical").drop(helper_cols)
+        if rejected_logs
+        else pl.DataFrame(schema=dict(orig_schema) | {"rejection_reason": pl.Utf8})
     )
 
     # Log rejection statistics
@@ -178,42 +131,33 @@ def _validate_corrections_no_cascading(
     n_total = len(log_df)
     if n_rejected > 0:
         logger.info(f"{col_name}: rejected {n_rejected}/{n_total} cascading false positives")
-
-    # Now update the main dataframe to reset invalid corrections
-    if n_rejected > 0:
-        # Build a lookup for rejection
-        rejection_lookup = set()
-        for row in rejected_corrections.iter_rows(named=True):
-            key = tuple(row[gc] for gc in group_cols) + (row[sort_col],)
-            rejection_lookup.add(key)
-
-        # Reset correction factors and error_types for rejected corrections
-        new_factors = []
-        new_types = []
-        for row in data_df.iter_rows(named=True):
-            key = tuple(row[gc] for gc in group_cols) + (row[sort_col],)
-            if key in rejection_lookup:
-                new_factors.append(1.0)  # Reset to no correction
-                new_types.append(None)
-            else:
-                new_factors.append(row[factor_col])
-                new_types.append(row[error_type_col])
-
-        data_df = data_df.with_columns(
-            [
-                pl.Series(factor_col, new_factors),
-                pl.Series(error_type_col, new_types).cast(pl.Utf8),
-            ]
+        print(
+            f"    [validate] {col_name}: rejected {n_rejected}/{n_total} cascading false positives",
+            flush=True,
         )
 
-        df = data_df.lazy()
-    else:
-        df = data_df.lazy()
-
-    # Clean up validation columns before returning
-    valid_cols = [c for c in valid_corrections.columns if c != "rejection_reason"]
-    if len(valid_cols) > 0 and len(valid_corrections) > 0:
-        valid_corrections = valid_corrections.select(valid_cols)
+    # Reset invalid corrections on the main dataframe — lazy join + when/otherwise
+    # instead of materializing the full frame.
+    if n_rejected > 0:
+        rejected_keys = (
+            rejected_corrections.lazy()
+            .select(group_cols + [sort_col])
+            .with_columns(pl.lit(True).alias("_rejected"))
+        )
+        df = (
+            df.join(rejected_keys, on=group_cols + [sort_col], how="left")
+            .with_columns(
+                pl.when(col("_rejected"))
+                .then(pl.lit(1.0))  # Reset to no correction
+                .otherwise(col(factor_col))
+                .alias(factor_col),
+                pl.when(col("_rejected"))
+                .then(pl.lit(None).cast(pl.Utf8))
+                .otherwise(col(error_type_col))
+                .alias(error_type_col),
+            )
+            .drop("_rejected")
+        )
 
     return df, valid_corrections.lazy(), rejected_corrections.lazy()
 
@@ -525,6 +469,8 @@ def _detect_decimal_error_multi_period(
     for nlag in sorted(window_sizes):
         if nlag <= 1:
             continue  # Single period handled by _detect_decimal_error_single_period
+
+        print(f"    [detect] {col_name}: multi-period window nlag={nlag}", flush=True)
 
         # For each threshold magnitude (10x, 100x, 1000x)
         # Single magnitude pass (10x). The previous loop over magnitudes
@@ -910,6 +856,10 @@ def _detect_decimal_error_multi_period(
         # This prevents segmentation faults from overly complex query plans
         iteration_count += 1
         if iteration_count % materialize_interval == 0:
+            print(
+                f"    [detect] {col_name}: materializing plan after {iteration_count} windows",
+                flush=True,
+            )
             df = df.collect().lazy()
 
     return df
@@ -1024,6 +974,7 @@ def correct_decimal_errors(
 
     # First pass: detect single-period errors (window=1)
     # This adds factor_col, error_type_col, and window_type_col
+    print(f"  [correct] {col_name}: single-period detection", flush=True)
     df = _detect_decimal_error_single_period(df, col_name, group_cols, sort_col)
 
     # Add window size for single-period detections
@@ -1039,10 +990,14 @@ def correct_decimal_errors(
     # Only check windows > 1 since single-period is already done
     multi_windows = [w for w in window_sizes if w > 1]
     if multi_windows:
+        print(
+            f"  [correct] {col_name}: multi-period detection, windows={multi_windows}", flush=True
+        )
         df = _detect_decimal_error_multi_period(df, col_name, group_cols, sort_col, multi_windows)
 
     # Third pass: Validate corrections to prevent cascading errors
     if validate_cascading:
+        print(f"  [correct] {col_name}: validating corrections (cascading check)", flush=True)
         # Build preliminary corrections log for validation
         preliminary_log = df.filter(col(factor_col) != 1.0).select(
             group_cols
@@ -1209,6 +1164,7 @@ def apply_bessembinder_section6(
 
     # Step 1: Correct TRFD independently
     if "trfd" in df.collect_schema().names():
+        print("[section6] step 1/5: correcting trfd", flush=True)
         df, log = correct_decimal_errors(
             df, "trfd", group_cols, sort_col, window_sizes, correction_method=correction_method
         )
@@ -1217,6 +1173,7 @@ def apply_bessembinder_section6(
 
     # Step 1: Correct QUNIT independently
     if "qunit" in df.collect_schema().names():
+        print("[section6] step 1/5: correcting qunit", flush=True)
         df, log = correct_decimal_errors(
             df, "qunit", group_cols, sort_col, window_sizes, correction_method=correction_method
         )
@@ -1228,6 +1185,7 @@ def apply_bessembinder_section6(
     if has_adrrc:
         if adrrc_in_schema:
             logger.info("ADRRC column found in data - applying decimal corrections")
+            print("[section6] step 2/5: correcting adrrc", flush=True)
             df, log = correct_decimal_errors(
                 df, "adrrc", group_cols, sort_col, window_sizes, correction_method=correction_method
             )
@@ -1254,6 +1212,7 @@ def apply_bessembinder_section6(
     )
 
     # Step 4: Correct adjPRC and adjCSHO
+    print("[section6] step 4/5: correcting adjprc", flush=True)
     df, log = correct_decimal_errors(
         df, "_adjprc", group_cols, sort_col, window_sizes, correction_method=correction_method
     )
@@ -1267,6 +1226,7 @@ def apply_bessembinder_section6(
         )
         all_logs.append(log)
 
+    print("[section6] step 4/5: correcting adjcsho", flush=True)
     df, log = correct_decimal_errors(
         df, "_adjcsho", group_cols, sort_col, window_sizes, correction_method=correction_method
     )
@@ -1280,6 +1240,7 @@ def apply_bessembinder_section6(
         all_logs.append(log)
 
     # Step 5: Reconstruct PRCCD and CSHOC from corrected adjusted values
+    print("[section6] step 5/5: reconstructing prccd/cshoc", flush=True)
     df = df.with_columns(
         [
             (col("_adjprc") * col("ajexdi")).alias("prccd"),
