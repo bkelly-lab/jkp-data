@@ -11664,7 +11664,7 @@ def ff_load_compustat_us(
     comp_pool = (
         comp_pool.select(select_cols)
         .join(dff.select([*keys, "be"]).rename({"be": "_be_dff"}), on=keys, how="left")
-        .with_columns(be=pl.coalesce("_be_dff", "be"))
+        .with_columns(be=pl.coalesce("be", "_be_dff"))
         .drop("_be_dff")
     )
     dff_only = dff.join(comp_pool.select(keys), on=keys, how="anti")
