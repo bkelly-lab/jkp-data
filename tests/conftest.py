@@ -68,6 +68,7 @@ class ToleranceSpec:
         STANDARD    - Accumulated operations (ratios, chained calculations)
         LOOSE       - Complex formulas (multi-step scores, indices)
         VERY_LOOSE  - Statistical estimates (regression coefficients, volatility)
+        GOLDEN      - Golden-fixture regression tests (same seed, same ops)
 
     Domain Aliases (for discoverability):
         SIMPLE_ARITHMETIC    -> TIGHT       (returns, weight sums)
@@ -85,6 +86,12 @@ class ToleranceSpec:
     STANDARD = {"rtol": 1e-6, "atol": 1e-10}
     LOOSE = {"rtol": 1e-4, "atol": 1e-6}
     VERY_LOOSE = {"rtol": 0.01, "atol": 0.001}
+
+    # Golden-fixture regression tests: same seed and same floating-point ops,
+    # so cross-platform IEEE-754 supports a tolerance tighter than STANDARD.
+    # If rank/mean/std reductions ever reorder across Polars versions, loosen
+    # this (e.g. toward STANDARD) here rather than in individual tests.
+    GOLDEN = {"rtol": 1e-9, "atol": 0.0}
 
     # Domain aliases (map to core levels)
     SIMPLE_ARITHMETIC = TIGHT

@@ -6,7 +6,6 @@ import os
 import re
 import shutil
 import time
-import warnings
 from datetime import date
 from math import exp, sqrt
 from pathlib import Path
@@ -10255,6 +10254,9 @@ def quality_minus_junk(paths: DataPaths, data_path, min_stks):
         & (col("ret_exc").is_not_null())
         & (col("me").is_not_null())
     )
+    # NOTE: input must be unique on (excntry, eom, id) — guaranteed upstream by
+    # construction of world_data_-1. Duplicate keys would fan out multiplicatively
+    # across the 16+3 full joins below and panic at the Polars frame-length limit.
     qmj = pl.scan_parquet(data_path).filter(c1).select(cols).sort(["excntry", "eom"]).collect()
     for var_z, dir in zip(z_vars, direction, strict=True):
         __z = z_ranks(qmj, var_z, min_stks, dir)
@@ -13836,16 +13838,14 @@ def add_ecdf(
 
     # asof-join the ECDF onto every row; rows below any bp value get null,
     # filled with 0.0 to match the convention expected downstream.
-    # Polars emits a Sortedness UserWarning on join_asof with `by` even when
-    # both sides are pre-sorted; suppress locally rather than globally.
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", category=UserWarning, message=r"Sortedness.*by.*provided")
-        res = (
-            df.sort(sort_cols)
-            .join_asof(bp_ecdf, on="var", by=group_cols, strategy="backward")
-            .with_columns(pl.col("cdf").fill_null(0.0))
-        )
-    return res
+    # Both sides are sorted within each `by` group; skip the sortedness check
+    # (Polars can't verify it with `by` and would warn at collect time,
+    # outside any catch_warnings context).
+    return (
+        df.sort(sort_cols)
+        .join_asof(bp_ecdf, on="var", by=group_cols, strategy="backward", check_sortedness=False)
+        .with_columns(pl.col("cdf").fill_null(0.0))
+    )
 
 
 def _build_industry_daily_returns(
