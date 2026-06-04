@@ -11664,7 +11664,16 @@ def ff_load_compustat_us(
     comp_pool = (
         comp_pool.select(select_cols)
         .join(dff.select([*keys, "be"]).rename({"be": "_be_dff"}), on=keys, how="left")
-        .with_columns(be=pl.coalesce("be", "_be_dff"))
+        .with_columns(
+            be=pl.coalesce("_be_dff", "be"),
+            # A DFF-covered cell is eligible regardless of Compustat history
+            # length: hand-collected BE needs no backfill-bias seasoning, so
+            # clear the count >= 2 BM gate exactly as a standalone DFF row
+            # (synthetic count) would.
+            count=pl.when(pl.col("_be_dff").is_not_null())
+            .then(pl.max_horizontal("count", pl.lit(FF_DFF_SYNTH_COUNT, dtype=pl.Int64)))
+            .otherwise(pl.col("count")),
+        )
         .drop("_be_dff")
     )
     dff_only = dff.join(comp_pool.select(keys), on=keys, how="anti")
