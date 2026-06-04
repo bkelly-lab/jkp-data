@@ -11505,7 +11505,8 @@ def ff_load_compustat_us(
     Steps:
         1) Scan comp_funda.parquet; cast numerics; apply CCM type filters
            (INDL/STD/D/C).
-        2) BE = seq + txditc_FASB109 − coalesce(pstkrv, pstkl, pstk, 0);
+        2) BE = SHE + txditc_FASB109 − coalesce(pstkrv, pstkl, pstk, 0),
+           SHE = coalesce(seq, ceq + pstk, at − lt) per French's ladder;
            null when BE < 0.
         3) ff5: OP = (revt − cogs − xsga − xint) / BE, INV = Δat / at_lag
            with strict 1-year FY gap.
@@ -11522,10 +11523,21 @@ def ff_load_compustat_us(
     Output:
         Eager [gvkey, permno, year, datadate, be, (op, inv,) count, ...].
     """
-    base = ["pstkrv", "pstkl", "pstk", "seq", "txditc"]
-    extra = ["revt", "cogs", "xsga", "xint", "at"]
+    base = ["pstkrv", "pstkl", "pstk", "seq", "ceq", "lt", "at", "txditc"]
+    extra = ["revt", "cogs", "xsga", "xint"]
     floats = base + (extra if ff5 else [])
-    be_raw = pl.col("seq") + pl.col("txditc") - pl.col("ps")
+    # Stockholders' equity ladder per French (data library / DFF 2000):
+    # "the value reported by Moody's or Compustat, if it is available. If
+    # not, we measure stockholders' equity as the book value of common
+    # equity plus the par value of preferred stock, or the book value of
+    # assets minus total liabilities (in that order)". ceq + pstk nulls
+    # when pstk is missing, falling to at - lt (SAS sum semantics).
+    she = pl.coalesce(
+        pl.col("seq"),
+        pl.col("ceq") + pl.col("pstk"),
+        pl.col("at") - pl.col("lt"),
+    )
+    be_raw = she + pl.col("txditc") - pl.col("ps")
 
     lf = (
         pl.scan_parquet(raw_dir / "comp_funda.parquet")

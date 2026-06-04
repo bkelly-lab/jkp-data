@@ -12,7 +12,7 @@ removes the downstream `(id, eom)` fan-out and recovers the annual `inv`.
 Covers:
   - _ff_load_world_funda      (ROW per-source collapse)
   - _ff_compute_be_op_inv     (ROW inv recovery)
-  - ff_load_compustat_us      (US collapse + inv recovery)
+  - ff_load_compustat_us      (US collapse + inv recovery + BE ladder)
 """
 
 from __future__ import annotations
@@ -153,3 +153,60 @@ def test_ff_load_compustat_us_collapses_and_recovers_inv(tmp_path):
     inv_2019 = out.filter(pl.col("year") == 2019)["inv"].item()
     assert inv_2019 is not None
     assert abs(inv_2019 - 0.20) < 1e-9
+
+
+# =============================================================================
+# US BE ladder: SHE = coalesce(seq, ceq + pstk, at - lt)
+# (French data library / DFF 2000: "the value reported by Moody's or
+# Compustat, if it is available. If not, ... the book value of common equity
+# plus the par value of preferred stock, or the book value of assets minus
+# total liabilities (in that order)")
+# =============================================================================
+
+
+class TestUsBeLadder:
+    @staticmethod
+    def _be(tmp_path, **over):
+        """BE from a single 2019 funda row with the given overrides.
+
+        _funda_row defaults: seq = at/2, pstk = 0, txditc = 0 (and the
+        FASB-109 gate zeroes txditc for years >= 1993 anyway), so
+        ps = coalesce(pstkrv, pstkl, pstk, 0) = pstk.
+        """
+        row = _funda_row("001", date(2019, 12, 31), 100.0, indl=True, **over)
+        _write_funda(tmp_path / "comp_funda.parquet", [row])
+        _write_lnkhist(tmp_path / "crsp_ccmxpf_lnkhist.parquet", "001", 10001)
+        out = ff_load_compustat_us(tmp_path, ff5=True)
+        assert out.height == 1
+        return out
+
+    def test_ceq_pstk_rung(self, tmp_path):
+        # she = ceq + pstk = 45; be = she - ps = she - pstk = ceq = 40.
+        out = self._be(tmp_path, seq=None, ceq=40.0, pstk=5.0, lt=30.0)
+        assert abs(out["be"][0] - 40.0) < 1e-12
+
+    def test_at_lt_rung(self, tmp_path):
+        out = self._be(tmp_path, seq=None, ceq=None, pstk=None, lt=30.0)
+        assert abs(out["be"][0] - 70.0) < 1e-12  # at(100) - lt(30)
+
+    def test_null_pstk_falls_to_at_lt(self, tmp_path):
+        # SAS sum semantics: ceq + null pstk -> null rung -> at - lt, not ceq.
+        out = self._be(tmp_path, seq=None, ceq=40.0, pstk=None, lt=30.0)
+        assert abs(out["be"][0] - 70.0) < 1e-12
+
+    def test_all_rungs_null_be_null(self, tmp_path):
+        out = self._be(tmp_path, seq=None, ceq=None, pstk=None, at=None, lt=None)
+        assert out["be"][0] is None
+
+    def test_negative_ladder_be_nulled(self, tmp_path):
+        out = self._be(tmp_path, seq=None, ceq=None, pstk=None, lt=170.0)
+        assert out["be"][0] is None  # at(100) - lt(170) < 0
+
+    def test_seq_dominates(self, tmp_path):
+        out = self._be(tmp_path, seq=50.0, ceq=40.0, lt=30.0)
+        assert abs(out["be"][0] - 50.0) < 1e-12
+
+    def test_op_computed_on_ladder_be(self, tmp_path):
+        # be = at - lt = 70; op = (revt - cogs) / be = 15 / 70.
+        out = self._be(tmp_path, seq=None, ceq=None, pstk=None, lt=30.0, revt=20.0, cogs=5.0)
+        assert abs(out["op"][0] - 15.0 / 70.0) < 1e-12
