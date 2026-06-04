@@ -24,7 +24,7 @@ export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 export MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 export NUMEXPR_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 
-# Reuse the clean repo's venv (same deps); run this branch's code via PYTHONPATH
-source "${HOME}/jkp-data/.venv/bin/activate"
+# Use this branch's own venv (has numba); run branch code via PYTHONPATH
+source "${HOME}/jkp-data-bess/.venv/bin/activate"
 
 PYTHONPATH=src python scripts/bessembinder_us_validation.py
