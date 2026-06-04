@@ -11839,13 +11839,17 @@ def ff_prepare_chars_weights_rets(
         .filter(pl.col("me") > 0)
         .select(*id_keys, june_year=pl.col("_y") + 1, dec_me=pl.col("me"))
     )
+    # Left join: June stocks without accounting data stay in the frame (null
+    # be/op/inv/count → null beme) so the US size-median pool can cover all
+    # NYSE stocks per DFF 2000; the sort eligibility gates (_FF_ELIGIBLE)
+    # still exclude them from every value sort and portfolio leg.
     data_chars = (
         june_only.join(dec_me, on=[*id_keys, "june_year"], how="inner")
         .join(
             comp.select(link_key, "be", "op", "inv", "count", "datadate", cyp1=pl.col("year") + 1),
             left_on=[link_key, "june_year"],
             right_on=[link_key, "cyp1"],
-            how="inner",
+            how="left",
         )
         .drop("june_year")
         .with_columns(beme=beme_scale * safe_div(pl.col("be"), pl.col("dec_me"), "beme"))
@@ -12191,13 +12195,34 @@ def ff_country_breakpoints(
 
 
 def ff_country_breaks_for_spec(
-    june: pl.DataFrame, key: str, with_size_median: bool = False
+    june: pl.DataFrame,
+    key: str,
+    with_size_median: bool = False,
+    us_size_all_nyse: bool = False,
 ) -> pl.DataFrame:
-    """Per-sort country 30/70 (plus optional size median) from FF_SORT_SPECS[key]."""
+    """Per-sort country 30/70 (plus optional size median) from FF_SORT_SPECS[key].
+
+    us_size_all_nyse=True computes the US size median over all NYSE stocks
+    with me > 0 instead of the sort-eligible pool, per DFF 2000: the size
+    breakpoint is "the median for all NYSE stocks on CRSP", "not just those
+    in our annual samples" (no BE requirement) — while the value breakpoints
+    stay on "the NYSE stocks in our sample". ROW keeps the JKP convention
+    (sort-eligible pool) either way.
+    """
     s = FF_SORT_SPECS[key]
-    specs: list[tuple[str, float, str]] = [("me", 0.50, "sizemedn")] if with_size_median else []
-    specs += [(s["value"], 0.30, s["breaks"][0]), (s["value"], 0.70, s["breaks"][1])]
-    return ff_country_breakpoints(june, specs, _FF_ELIGIBLE[key]())
+    specs = [(s["value"], 0.30, s["breaks"][0]), (s["value"], 0.70, s["breaks"][1])]
+    bps = ff_country_breakpoints(june, specs, _FF_ELIGIBLE[key]())
+    if with_size_median:
+        size_elig = (
+            pl.when(pl.col("excntry") == US_EXCNTRY)
+            .then(pl.col("me") > 0)
+            .otherwise(_FF_ELIGIBLE[key]())
+            if us_size_all_nyse
+            else _FF_ELIGIBLE[key]()
+        )
+        size_bp = ff_country_breakpoints(june, [("me", 0.50, "sizemedn")], size_elig)
+        bps = size_bp.join(bps, on=["excntry", "date"], how="inner")
+    return bps
 
 
 def ff_assign_portfolios(
@@ -12596,7 +12621,9 @@ def gen_ff_data(
         ports = ff_assign_portfolios(
             data_chars,
             [
-                ff_country_breaks_for_spec(data_chars, k, with_size_median=(k == "bm"))
+                ff_country_breaks_for_spec(
+                    data_chars, k, with_size_median=(k == "bm"), us_size_all_nyse=(k == "bm")
+                )
                 for k in ("bm", "op", "inv")
             ],
             ["bm", "op", "inv"],
@@ -12628,9 +12655,15 @@ def gen_ff_data(
         factors.rename({"date": dt}).write_parquet(out_paths[freq])
 
         if freq == "monthly":
-            ff_build_characteristics(panel, data_chars, freq, mom_signal=mom_signal).rename(
-                {"date": "eom"}
-            ).drop("excntry").write_parquet(chars_out)
+            # count is non-null iff the June stock had a Compustat/DFF row, so
+            # this reproduces the pre-left-join chars row set (the no-BE rows
+            # exist only to widen the US size-median pool).
+            ff_build_characteristics(
+                panel,
+                data_chars.filter(pl.col("count").is_not_null()),
+                freq,
+                mom_signal=mom_signal,
+            ).rename({"date": "eom"}).drop("excntry").write_parquet(chars_out)
 
 
 # =============================================================================

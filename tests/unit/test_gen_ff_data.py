@@ -4,6 +4,7 @@ Unit tests for FF3/FF5/UMD factor-builder helpers in aux_functions.py.
 Covers:
   - _ff_bm_eligible, _ff_op_eligible, _ff_inv_eligible, _ff_mom_eligible
   - ff_country_breakpoints, ff_country_breaks_for_spec
+  - ff_prepare_chars_weights_rets (no-BE June stocks kept for the size pool)
   - ff_assign_portfolios
   - ff_assign_to_panel
   - _ff_vw_leg
@@ -35,6 +36,7 @@ from jkp.data.aux_functions import (
     ff_compute_umd_factor,
     ff_country_breakpoints,
     ff_country_breaks_for_spec,
+    ff_prepare_chars_weights_rets,
 )
 from jkp.data.config import (
     FF_MIN_STOCKS_BP,
@@ -481,6 +483,134 @@ class TestFFCountryBreaksForSpec:
         bp = ff_country_breaks_for_spec(june, "inv")
         assert "inv30" in bp.columns
         assert "inv70" in bp.columns
+
+    @staticmethod
+    def _make_june_size_pool() -> pl.DataFrame:
+        """US June frame where the bm-eligible pool and the all-NYSE pool
+        have different ME medians.
+
+        NYSE me 10/20/30 bm-eligible (strict median 20); NYSE me 40/50 with
+        null beme/count (bm-ineligible); two NYSE me=0 and one AMEX me=1000
+        that must stay out of the lenient pool.
+        """
+        return pl.DataFrame(
+            {
+                "excntry": [US_EXCNTRY] * 8,
+                "date": [date(2020, 6, 30)] * 8,
+                "id": list(range(8)),
+                "beme": [1.0, 2.0, 3.0, None, None, None, None, 4.0],
+                "me": [10.0, 20.0, 30.0, 40.0, 50.0, 0.0, 0.0, 1000.0],
+                "count": [5, 5, 5, None, None, None, None, 5],
+                "exchcd_us": [1, 1, 1, 1, 1, 1, 1, 2],
+                "size_grp": ["large"] * 8,
+            }
+        )
+
+    def test_us_size_all_nyse_widens_median_pool(self):
+        """us_size_all_nyse=True: US sizemedn over all NYSE me>0 stocks
+        (incl. bm-ineligible); me<=0 and non-NYSE stay excluded."""
+        june = self._make_june_size_pool()
+        strict = ff_country_breaks_for_spec(june, "bm", with_size_median=True)
+        lenient = ff_country_breaks_for_spec(
+            june, "bm", with_size_median=True, us_size_all_nyse=True
+        )
+        assert strict["sizemedn"][0] == 20.0  # bm-eligible pool: 10/20/30
+        assert lenient["sizemedn"][0] == 30.0  # all NYSE me>0: 10/20/30/40/50
+
+    def test_us_size_all_nyse_leaves_value_breaks_unchanged(self):
+        """30/70 value breakpoints keep the strict (bm-eligible) pool."""
+        june = self._make_june_size_pool()
+        strict = ff_country_breaks_for_spec(june, "bm", with_size_median=True)
+        lenient = ff_country_breaks_for_spec(
+            june, "bm", with_size_median=True, us_size_all_nyse=True
+        )
+        assert strict.select("excntry", "date", "beme30", "beme70").equals(
+            lenient.select("excntry", "date", "beme30", "beme70")
+        )
+
+    def test_row_unaffected_by_us_size_all_nyse(self):
+        """ROW keeps the sort-eligible sizemedn pool under the flag."""
+        n = FF_MIN_STOCKS_BP + 5
+        june = pl.DataFrame(
+            {
+                "excntry": ["GBR"] * n,
+                "date": [date(2020, 6, 30)] * n,
+                "id": list(range(n)),
+                "beme": [float(i) for i in range(1, n - 1)] + [None, None],
+                "me": [float(i) for i in range(1, n + 1)],
+                "count": [5] * (n - 2) + [None, None],
+                "exchcd_us": [None] * n,
+                "size_grp": ["large"] * n,
+            },
+            schema_overrides={"exchcd_us": pl.Int64},
+        )
+        strict = ff_country_breaks_for_spec(june, "bm", with_size_median=True)
+        lenient = ff_country_breaks_for_spec(
+            june, "bm", with_size_median=True, us_size_all_nyse=True
+        )
+        assert strict.equals(lenient)
+
+
+# =============================================================================
+# TestFFPrepareCharsLeftJoin
+# =============================================================================
+
+
+class TestFFPrepareCharsLeftJoin:
+    """No-BE June stocks survive the comp join in ff_prepare_chars_weights_rets
+    (they widen the US size-median pool) with null accounting fields, while
+    comp-matched rows are unchanged and recoverable via count.is_not_null()."""
+
+    @staticmethod
+    def _run_us():
+        panel = pl.DataFrame(
+            {
+                "permno": [1, 1, 2, 2],
+                "date": [date(2019, 12, 31), date(2020, 6, 30)] * 2,
+                "retadj": [0.01] * 4,
+                "retx": [0.01] * 4,
+                "me": [100.0, 110.0, 200.0, 210.0],
+                "exchcd": [1] * 4,
+                "shrcd": [10] * 4,
+            }
+        ).sort("permno", "date")
+        comp = pl.DataFrame(
+            {
+                "permno": [1],
+                "year": [2019],
+                "datadate": [date(2019, 12, 31)],
+                "be": [0.05],
+                "op": [0.2],
+                "inv": [0.1],
+                "count": [3],
+            },
+            schema_overrides={"year": pl.Int32},
+        )
+        _, data_chars = ff_prepare_chars_weights_rets(panel, comp, "monthly", is_us=True)
+        return data_chars
+
+    def test_no_comp_stock_kept_with_null_accounting(self):
+        chars = self._run_us()
+        assert chars.height == 2
+        row = chars.filter(pl.col("id") == 2)
+        assert row.height == 1
+        for c in ("be", "op", "inv", "count", "beme"):
+            assert row[c][0] is None
+        assert row["dec_me"][0] == 200.0
+
+    def test_comp_matched_row_unchanged(self):
+        chars = self._run_us()
+        row = chars.filter(pl.col("id") == 1)
+        assert row["count"][0] == 3
+        # beme = 1000 x be($M) / dec_me($K) = 1000 x 0.05 / 100
+        assert abs(row["beme"][0] - 0.5) < 1e-12
+
+    def test_count_filter_recovers_inner_join_rows(self):
+        """The chars call site filters count.is_not_null() to reproduce the
+        pre-left-join row set."""
+        chars = self._run_us()
+        kept = chars.filter(pl.col("count").is_not_null())
+        assert kept["id"].to_list() == [1]
 
 
 # =============================================================================
