@@ -67,20 +67,24 @@ def test_env_partial_falls_through_to_keyring(monkeypatch, tmp_path):
 
 
 @pytest.mark.unit
-def test_plaintext_opt_in_emits_warning(monkeypatch):
-    """Setting JKP_ALLOW_PLAINTEXT_KEYRING=1 should emit a warning the first
-    time credential resolution runs."""
-    monkeypatch.setenv("WRDS_USERNAME", "u")
-    monkeypatch.setenv("WRDS_PASSWORD", "p")  # short-circuits keyring code path
+def test_plaintext_opt_in_swaps_backend_and_warns(monkeypatch):
+    """Setting JKP_ALLOW_PLAINTEXT_KEYRING=1 should swap the keyring backend to
+    PlaintextKeyring and emit a warning when credential resolution runs."""
     monkeypatch.setenv("JKP_ALLOW_PLAINTEXT_KEYRING", "1")
+
+    from keyrings.alt.file import PlaintextKeyring
 
     import jkp.data.wrds_credentials as mod
 
-    # Reset_credentials triggers _maybe_use_file_keyring even with env vars set.
-    monkeypatch.setattr(mod, "LAST_USER_FILE", __import__("pathlib").Path("/tmp/__no__"))
+    # Capture the backend swap instead of mutating the process-global keyring.
+    captured = []
+    monkeypatch.setattr(mod.keyring, "set_keyring", captured.append)
 
     with pytest.warns(UserWarning, match="keyrings.alt.file.PlaintextKeyring"):
         mod._maybe_use_file_keyring()
+
+    assert len(captured) == 1, "the backend should be swapped exactly once"
+    assert isinstance(captured[0], PlaintextKeyring)
 
 
 @pytest.mark.unit
