@@ -2245,6 +2245,7 @@ def compare_compustat_crsp_before_after(
     compustat_after: pl.LazyFrame,
     crsp_df: pl.LazyFrame,
     output_dir: str = ".",
+    before_cache_path: str | None = None,
 ) -> dict:
     """
     Compare Compustat data to CRSP before and after Bessembinder corrections.
@@ -2257,19 +2258,30 @@ def compare_compustat_crsp_before_after(
         compustat_after: LazyFrame with corrected Compustat daily data
         crsp_df: LazyFrame with CRSP daily data
         output_dir: Directory to save comparison files
+        before_cache_path: Optional path for the BEFORE comparison parquet.
+            The before side is method-invariant, so when this file exists its
+            stats are recomputed from the cached frame instead of redoing the
+            full CRSP join; when missing, the comparison is computed and
+            cached there.
 
     Returns:
         Dictionary with before/after statistics and improvement metrics
     """
     logger.info("Running before/after CRSP comparison...")
 
-    # Compare before corrections
-    before_df, before_stats = compare_compustat_crsp_daily(
-        compustat_before,
-        crsp_df,
-        label="BEFORE corrections",
-        output_path=os.path.join(output_dir, "crsp_comparison_before.parquet"),
-    )
+    # Compare before corrections (from cache when available - see Args)
+    if before_cache_path is not None and os.path.exists(before_cache_path):
+        logger.info(f"Reusing cached BEFORE comparison: {before_cache_path}")
+        before_df = pl.read_parquet(before_cache_path)
+        before_stats = compute_crsp_comparison_stats(before_df, "BEFORE corrections")
+    else:
+        before_df, before_stats = compare_compustat_crsp_daily(
+            compustat_before,
+            crsp_df,
+            label="BEFORE corrections",
+            output_path=before_cache_path
+            or os.path.join(output_dir, "crsp_comparison_before.parquet"),
+        )
 
     # Compare after corrections
     after_df, after_stats = compare_compustat_crsp_daily(

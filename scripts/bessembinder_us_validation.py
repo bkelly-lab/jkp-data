@@ -34,18 +34,19 @@ REAL = Path.home() / "jkp-data" / "data"
 paths = DataPaths(base_dir=BASE)
 
 
-def comp_dsf_with_permno(parquet_path: Path) -> pl.LazyFrame:
+def comp_dsf_with_permno(parquet_path: Path, assume_sorted: bool = False) -> pl.LazyFrame:
     """Load a __comp_dsf parquet, compute daily returns from ri, and map permno.
 
     compare_compustat_crsp_daily expects columns: permno, datadate, prccd, ret.
+    assume_sorted skips the (gvkey, iid, datadate) sort — correct for corrected
+    outputs, which the pipeline writes in exactly that order.
     """
-    df = (
-        pl.scan_parquet(parquet_path)
-        .sort(["gvkey", "iid", "datadate"])
-        .with_columns(
-            (col("ri") / col("ri").shift(1).over(["gvkey", "iid"]) - 1).alias("ret"),
-            col("prc").alias("prccd"),
-        )
+    lf = pl.scan_parquet(parquet_path)
+    if not assume_sorted:
+        lf = lf.sort(["gvkey", "iid", "datadate"])
+    df = lf.with_columns(
+        (col("ri") / col("ri").shift(1).over(["gvkey", "iid"]) - 1).alias("ret"),
+        col("prc").alias("prccd"),
     )
     link = (
         pl.scan_parquet(REAL / "raw" / "raw_tables" / "crsp_ccmxpf_lnkhist.parquet")
@@ -92,17 +93,25 @@ def main() -> None:
     else:
         print(f"Reusing existing {corrected_path}", flush=True)
 
-    # 3) Map permno onto both Compustat versions
+    # 3) Map permno onto both Compustat versions (corrected outputs are
+    # written already sorted; the uncorrected baseline is not)
     before = comp_dsf_with_permno(uncorrected_path)
-    after = comp_dsf_with_permno(corrected_path)
+    after = comp_dsf_with_permno(corrected_path, assume_sorted=True)
 
-    # 4) CRSP daily (ground truth) and before/after comparison
+    # 4) CRSP daily (ground truth) and before/after comparison. The BEFORE
+    # side is method-invariant: cached once next to the uncorrected file.
     crsp = pl.scan_parquet(REAL / "interim" / "crsp_dsf.parquet").select(
         "permno", "date", "prc", "ret"
     )
     out_dir = BASE / "interim" / method
     out_dir.mkdir(parents=True, exist_ok=True)
-    results = compare_compustat_crsp_before_after(before, after, crsp, output_dir=str(out_dir))
+    results = compare_compustat_crsp_before_after(
+        before,
+        after,
+        crsp,
+        output_dir=str(out_dir),
+        before_cache_path=str(paths.interim_dir / "crsp_comparison_before_cache.parquet"),
+    )
     print(f"method={method}", flush=True)
     print(results["improvement"], flush=True)
 

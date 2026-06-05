@@ -708,12 +708,20 @@ def _apply_section6_slim(
     lf = pl.scan_parquet(sorted_path)
     schema_names = lf.collect_schema().names()
 
-    print("[section6] building group index...", flush=True)
-    keys = lf.select(group_cols + [sort_col]).collect()
+    # One pass over the spill file: keys and every value column the
+    # corrections need (vs one scan per column)
+    print("[section6] loading correction inputs...", flush=True)
+    value_cols = [
+        v for v in ("trfd", "qunit", "adrrc", "ajexdi", "prccd", "cshoc") if v in schema_names
+    ]
+    data = lf.select(
+        group_cols + [sort_col] + [pl.col(c).cast(pl.Float64) for c in value_cols]
+    ).collect()
+    keys = data.select(group_cols + [sort_col])
     starts = _group_starts(keys, group_cols)
 
     def load(name: str) -> np.ndarray:
-        return lf.select(pl.col(name).cast(pl.Float64)).collect()[name].to_numpy().copy()
+        return data[name].to_numpy().copy()
 
     def correct(variable: str, x_raw: np.ndarray, price_floor: bool = False) -> np.ndarray:
         print(f"[section6] correcting {variable}...", flush=True)
