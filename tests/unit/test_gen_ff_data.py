@@ -1477,6 +1477,44 @@ class TestFFMomSignalMonthly:
         non_null = result.filter(pl.col("mom_2_12").is_not_null())
         assert len(non_null) > 0
 
+    @staticmethod
+    def _interior_null_panel(excntry: str) -> pl.LazyFrame:
+        """20 consecutive months, ret null at month 10 (an interior 2-12 lag
+        for the final row; the row itself exists, mimicking a CIZ
+        missing-price month that legacy CRSP coded -99)."""
+        months = 20
+        dates = [date(2018 + (m // 12), (m % 12) + 1, 28) for m in range(months)]
+        rets: list[float | None] = [0.01] * months
+        rets[10] = None
+        return pl.DataFrame(
+            {
+                "excntry": [excntry] * months,
+                "id": [1] * months,
+                "date": dates,
+                "ret": rets,
+                "me": [1.0] * months,
+                "w": [1.0] * months,
+                "exchcd_us": [1] * months,
+                "size_grp": ["large"] * months,
+            },
+            schema_overrides={"ret": pl.Float64},
+        ).lazy()
+
+    def test_us_interior_null_month_tolerated(self, tolerance):
+        """US: a null interior window month (row present) stays eligible and
+        compounds as 0, per French's -99 tolerance for t-12..t-3."""
+        result = _ff_mom_signal_monthly(self._interior_null_panel(US_EXCNTRY)).collect()
+        last_row = result.sort("date").tail(1)
+        assert last_row["eligible_mom"][0] is True
+        # 11 window months, one zeroed: (1.01)^10 - 1
+        np.testing.assert_allclose(last_row["mom_2_12"][0], 1.01**10 - 1, **tolerance.STANDARD)
+
+    def test_row_interior_null_month_ineligible(self):
+        """ROW: interior null month keeps the strict JKP gate."""
+        result = _ff_mom_signal_monthly(self._interior_null_panel("GBR")).collect()
+        last_row = result.sort("date").tail(1)
+        assert last_row["eligible_mom"][0] is not True
+
     def test_me_lag1_null_when_gap(self):
         """me_lag1 is null when there's a calendar month gap."""
         # Two rows with a 2-month gap → me_lag1 for the second row is null
@@ -1621,8 +1659,8 @@ class TestFFMomSignalDaily:
         # eligible_mom should be False when sentinel is at skip lag
         assert last_row["eligible_mom"][0] is False
 
-    def test_null_ret_in_window_makes_ineligible(self):
-        """A null return in the lookback window → nulls_in_window > 0 → ineligible."""
+    @staticmethod
+    def _null_in_window_panel(excntry: str) -> pl.LazyFrame:
         from datetime import timedelta
 
         n = 300
@@ -1631,9 +1669,9 @@ class TestFFMomSignalDaily:
         rets: list[float | None] = [0.001] * n
         # Inject null in the lookback window for the last row
         rets[n - 100] = None
-        panel = pl.DataFrame(
+        return pl.DataFrame(
             {
-                "excntry": [US_EXCNTRY] * n,
+                "excntry": [excntry] * n,
                 "id": [1] * n,
                 "date": dates,
                 "ret": rets,
@@ -1652,11 +1690,51 @@ class TestFFMomSignalDaily:
                 "exchcd_us": pl.Int64,
                 "size_grp": pl.Utf8,
             },
-        )
-        lf = panel.lazy()
-        result = _ff_mom_signal_daily(lf).collect()
+        ).lazy()
+
+    def test_row_null_ret_in_window_makes_ineligible(self):
+        """ROW: a null return in the lookback window → ineligible (JKP)."""
+        result = _ff_mom_signal_daily(self._null_in_window_panel("GBR")).collect()
         last_row = result.sort("date").tail(1)
         assert last_row["eligible_mom"][0] is False
+
+    def test_us_null_ret_in_window_tolerated(self, tolerance):
+        """US: interior missing-price day is allowed and compounds as 0
+        (French: 'any missing returns from day t-250 to t-22 must be -99.0')."""
+        result = _ff_mom_signal_daily(self._null_in_window_panel(US_EXCNTRY)).collect()
+        last_row = result.sort("date").tail(1)
+        assert last_row["eligible_mom"][0] is True
+        # 230-day window with one zeroed day: (1.001)^229 - 1
+        np.testing.assert_allclose(last_row["mom_2_12"][0], 1.001**229 - 1, **tolerance.STANDARD)
+
+    def test_us_window_includes_skip_day_row_excludes_it(self):
+        """Window pin: a spike at t-21 is inside the US window (t-250..t-21,
+        per French's daily detail) but outside the ROW legacy window
+        (t-251..t-22)."""
+        from datetime import timedelta
+
+        n = 300
+        base = date(2018, 1, 2)
+        dates = [base + timedelta(days=i) for i in range(n)]
+        rets = [0.0] * n
+        rets[n - 1 - 21] = 0.5  # day t-21 for the last row
+        for excntry, expected in ((US_EXCNTRY, 0.5), ("GBR", 0.0)):
+            panel = pl.DataFrame(
+                {
+                    "excntry": [excntry] * n,
+                    "id": [1] * n,
+                    "date": dates,
+                    "ret": rets,
+                    "me": [1.0] * n,
+                    "w": [1.0] * n,
+                    "exchcd_us": [1] * n,
+                    "size_grp": ["large"] * n,
+                }
+            )
+            result = _ff_mom_signal_daily(panel.lazy()).collect()
+            last_row = result.sort("date").tail(1)
+            assert last_row["eligible_mom"][0] is True
+            assert abs(last_row["mom_2_12"][0] - expected) < 1e-9, excntry
 
     def test_multi_country_independent(self):
         """Two countries compute trading-day index independently."""

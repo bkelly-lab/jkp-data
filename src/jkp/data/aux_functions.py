@@ -12464,10 +12464,22 @@ def _ff_mom_signal_monthly(panel: pl.LazyFrame) -> pl.LazyFrame:
         & pl.col(f"ret_lag{skip + 1}").is_not_null()
         & ~_ff_is_neg99(f"ret_lag{skip + 1}")
     )
+    # Interior window months (t-12..t-3): French requires the stock be on
+    # file but tolerates a missing price ("any missing returns from t-12 to
+    # t-3 must be -99.0, CRSP's code for a missing price"). CIZ codes those
+    # as null, so the US gate requires only the row (gap == k) and the
+    # compounding below zero-fills. ROW keeps the strict non-null gate
+    # (JKP convention) — its mom values are untouched by the zero-fill.
+    is_us = pl.col("excntry") == US_EXCNTRY
     for k in range(skip + 2, L + 1):
-        elig = elig & pl.col(f"ret_lag{k}").is_not_null()
+        elig = elig & pl.when(is_us).then(pl.col(f"gap{k}") == k).otherwise(
+            pl.col(f"ret_lag{k}").is_not_null()
+        )
 
-    terms = [1.0 + _ff_neg99_to_zero(pl.col(f"ret_lag{k}")) for k in range(skip + 1, L + 1)]
+    terms = [
+        1.0 + _ff_neg99_to_zero(pl.col(f"ret_lag{k}")).fill_null(0.0)
+        for k in range(skip + 1, L + 1)
+    ]
     prod_expr = terms[0]
     for t in terms[1:]:
         prod_expr = prod_expr * t
@@ -12502,12 +12514,25 @@ def _ff_mom_signal_daily(panel: pl.LazyFrame) -> pl.LazyFrame:
         cum_log=pl.col("log_eff").cum_sum().over(by),
         cum_null=pl.col("is_null_ret").cast(pl.Int64).cum_sum().over(by),
     )
+    # US window per French's daily detail page: returns t-250..t-21 (the
+    # good-return day t-21 is the last window day, mirroring the monthly
+    # t-2), price anchor at t-251, interior missing-price days tolerated
+    # ("any missing returns from day t-250 to t-22 must be -99.0") — CIZ
+    # codes those as null; log_eff zero-fills them. ROW keeps the legacy
+    # t-251..t-22 window and the zero-missing gate (JKP convention).
+    is_us = pl.col("excntry") == US_EXCNTRY
     df = df.with_columns(
         gap_one=pl.col("tidx") - pl.col("tidx").shift(1).over(by),
-        gap_skip=pl.col("tidx") - pl.col("tidx").shift(skip + 1).over(by),
+        gap_skip=pl.when(is_us)
+        .then(pl.col("tidx") - pl.col("tidx").shift(skip).over(by))
+        .otherwise(pl.col("tidx") - pl.col("tidx").shift(skip + 1).over(by)),
         gap_look=pl.col("tidx") - pl.col("tidx").shift(look).over(by),
-        cum_log_lag_skip=pl.col("cum_log").shift(skip + 1).over(by),
-        cum_log_lag_look=pl.col("cum_log").shift(look + 1).over(by),
+        cum_log_lag_skip=pl.when(is_us)
+        .then(pl.col("cum_log").shift(skip).over(by))
+        .otherwise(pl.col("cum_log").shift(skip + 1).over(by)),
+        cum_log_lag_look=pl.when(is_us)
+        .then(pl.col("cum_log").shift(look).over(by))
+        .otherwise(pl.col("cum_log").shift(look + 1).over(by)),
         nulls_in_window=(
             pl.col("cum_null").shift(skip + 1).over(by)
             - pl.col("cum_null").shift(look + 1).over(by)
@@ -12518,14 +12543,14 @@ def _ff_mom_signal_daily(panel: pl.LazyFrame) -> pl.LazyFrame:
     )
     elig = (
         (pl.col("gap_one") == 1)
-        & (pl.col("gap_skip") == skip + 1)
+        & (pl.col("gap_skip") == pl.when(is_us).then(skip).otherwise(skip + 1))
         & (pl.col("gap_look") == look)
         & pl.col("me_lag1").is_not_null()
         & (pl.col("me_lag1") > 0)
         & pl.col("ret_lag_skip").is_not_null()
         & ~_ff_is_neg99("ret_lag_skip")
         & pl.col("me_lag_look").is_not_null()
-        & (pl.col("nulls_in_window") == 0)
+        & (is_us | (pl.col("nulls_in_window") == 0))
     )
     mom_raw = (pl.col("cum_log_lag_skip") - pl.col("cum_log_lag_look")).exp() - 1.0
     return df.with_columns(
@@ -12539,9 +12564,10 @@ def ff_build_mom_signal(panel: pl.DataFrame, freq: str) -> pl.DataFrame:
 
     Dispatches to monthly (calendar-month-indexed lags, sentinel-aware
     compound product) or daily (per-excntry trading-day rank, cum_log
-    diff over t-250..t-22) per Ken French construction. Builds lazily
-    and collects once at the boundary — Polars fuses the chained
-    with_columns into one streaming pass.
+    diff; US window t-250..t-21 with interior missing-price tolerance
+    per French's detail pages, ROW t-251..t-22 zero-missing per the
+    JKP convention). Builds lazily and collects once at the boundary —
+    Polars fuses the chained with_columns into one streaming pass.
 
     Output: panel + [me_lag1, mom_2_12, eligible_mom].
     """
