@@ -193,8 +193,12 @@ class TestCompIndustry:
             f"Intermediate rows should have null gics, got "
             f"{intermediates.height - intermediates['gics'].null_count()} non-null"
         )
+        assert result.columns == list(EXPECTED_SCHEMA), (
+            f"Column order mismatch: expected {list(EXPECTED_SCHEMA)}, got {result.columns}"
+        )
         assert dict(result.schema) == EXPECTED_SCHEMA, (
             f"Schema mismatch: expected {EXPECTED_SCHEMA}, got {dict(result.schema)}"
+        )
         )
 
     def test_gap_fill_multi_span_chaining(self) -> None:
