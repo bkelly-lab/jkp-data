@@ -6,7 +6,6 @@ import os
 import re
 import shutil
 import time
-from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from math import exp, sqrt
 from pathlib import Path
@@ -12865,32 +12864,19 @@ def gen_ff_data(
     }
     chars_out = chars_path
 
-    # US and ROW legs are independent until the concat below; overlap their
-    # load+prepare on threads (each polars query is unchanged, so results are
-    # identical — this only hides the smaller leg's wall-clock).
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        fut_us_comp = pool.submit(ff_load_compustat_us, raw_dir, True, use_dff=FF_USE_DFF_BE)
-        fut_row_comp = pool.submit(ff_load_world_compustat, raw_dir, interim_dir)
-        ccm2a = fut_us_comp.result()  # US Compustat (FF-strict)
-        comp_world = fut_row_comp.result()  # ROW Compustat (JKP)
+    # ---- US Compustat (FF-strict) ----
+    ccm2a = ff_load_compustat_us(raw_dir, ff5=True, use_dff=FF_USE_DFF_BE)
+
+    # ---- ROW Compustat (JKP) ----
+    comp_world = ff_load_world_compustat(raw_dir, interim_dir)
 
     for freq in freqs:
-
-        def _us_leg(f: str) -> tuple[pl.DataFrame, pl.DataFrame]:
-            return ff_prepare_chars_weights_rets(
-                ff_load_crsp_panel(raw_dir, f), ccm2a, f, is_us=True
-            )
-
-        def _row_leg(f: str) -> tuple[pl.DataFrame, pl.DataFrame]:
-            return ff_prepare_chars_weights_rets(
-                ff_load_world_panel(interim_dir, f), comp_world, f, is_us=False
-            )
-
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            fut_us = pool.submit(_us_leg, freq)
-            fut_row = pool.submit(_row_leg, freq)
-            us_panel, us_chars = fut_us.result()
-            row_panel, row_chars = fut_row.result()
+        us_panel, us_chars = ff_prepare_chars_weights_rets(
+            ff_load_crsp_panel(raw_dir, freq), ccm2a, freq, is_us=True
+        )
+        row_panel, row_chars = ff_prepare_chars_weights_rets(
+            ff_load_world_panel(interim_dir, freq), comp_world, freq, is_us=False
+        )
         panel = pl.concat([us_panel, row_panel], how="vertical_relaxed")
         data_chars = pl.concat([us_chars, row_chars], how="vertical_relaxed")
 
