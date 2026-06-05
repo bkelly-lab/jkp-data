@@ -27,4 +27,4 @@ export NUMEXPR_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 # Use this branch's own venv (has numba); run branch code via PYTHONPATH
 source "${HOME}/jkp-data-bess/.venv/bin/activate"
 
-PYTHONPATH=src python scripts/bessembinder_us_validation.py
+PYTHONPATH=src python scripts/bessembinder_us_validation.py ${1:-bessembinder}

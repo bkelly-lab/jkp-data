@@ -1638,7 +1638,9 @@ def adj_trd_vol_NASDAQ(datevar, col_to_adjust, is_nasdaq_expr):
     return adj_trd_vol
 
 
-def gen_comp_dsf(paths: DataPaths, apply_bessembinder: bool = True):
+def gen_comp_dsf(
+    paths: DataPaths, apply_bessembinder: bool = True, correction_method: str = "bessembinder"
+):
     """
     Description:
         Build daily Compustat security data (SECD + G_SECD), convert to USD, and compute
@@ -1661,6 +1663,8 @@ def gen_comp_dsf(paths: DataPaths, apply_bessembinder: bool = True):
     Args:
         apply_bessembinder: Whether to apply Bessembinder et al. (2023) data corrections.
             Default True. Set False to reproduce original behavior.
+        correction_method: Section 6 correction method ('bessembinder' fixed multipliers
+            or 'interpolation' geometric mean of clean endpoints).
 
     Output:
         Parquet: __comp_dsf.parquet (daily Compustat security observations in USD).
@@ -1687,6 +1691,7 @@ def gen_comp_dsf(paths: DataPaths, apply_bessembinder: bool = True):
             group_cols=["gvkey", "iid"],
             sort_col="datadate",
             has_adrrc=False,
+            correction_method=correction_method,
             spill_dir=paths.interim_dir,
         )
         log_global = log_global.collect() if log_global is not None else None
@@ -1703,6 +1708,7 @@ def gen_comp_dsf(paths: DataPaths, apply_bessembinder: bool = True):
             group_cols=["gvkey", "iid"],
             sort_col="datadate",
             has_adrrc=True,
+            correction_method=correction_method,
             spill_dir=paths.interim_dir,
         )
         log_na = log_na.collect() if log_na is not None else None

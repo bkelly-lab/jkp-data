@@ -9,10 +9,15 @@ All outputs are contained in the sandbox (BASE) — the clean pipeline run under
 REAL is only read, never written.
 
 Usage (from a checkout of the bessembinder_correction branch):
-    PYTHONPATH=src python scripts/bessembinder_us_validation.py
+    PYTHONPATH=src python scripts/bessembinder_us_validation.py [method]
+
+method: Section 6 correction method, 'bessembinder' (default) or
+'interpolation'. Corrected outputs and comparison files are suffixed with
+the method so runs can coexist.
 """
 
 import shutil
+import sys
 from pathlib import Path
 
 import polars as pl
@@ -61,20 +66,31 @@ def comp_dsf_with_permno(parquet_path: Path) -> pl.LazyFrame:
 
 
 def main() -> None:
+    method = sys.argv[1] if len(sys.argv) > 1 else "bessembinder"
     uncorrected_path = paths.interim_dir / "__comp_dsf_uncorrected.parquet"
-    corrected_path = paths.interim_dir / "__comp_dsf.parquet"
+    pipeline_path = paths.interim_dir / "__comp_dsf.parquet"
+    corrected_path = paths.interim_dir / f"__comp_dsf_{method}.parquet"
 
     # 1) Baseline: no corrections
     if not uncorrected_path.exists():
         print("=== Running gen_comp_dsf WITHOUT Bessembinder corrections ===", flush=True)
         gen_comp_dsf(paths, apply_bessembinder=False)
-        shutil.move(corrected_path, uncorrected_path)
+        shutil.move(pipeline_path, uncorrected_path)
     else:
         print(f"Reusing existing {uncorrected_path}", flush=True)
 
     # 2) Corrected: Section 6 + Section 8 (writes corrections log alongside)
-    print("=== Running gen_comp_dsf WITH Bessembinder corrections ===", flush=True)
-    gen_comp_dsf(paths, apply_bessembinder=True)
+    if not corrected_path.exists():
+        print(f"=== Running gen_comp_dsf WITH Bessembinder corrections ({method}) ===", flush=True)
+        gen_comp_dsf(paths, apply_bessembinder=True, correction_method=method)
+        shutil.move(pipeline_path, corrected_path)
+        log_path = paths.interim_dir / "bessembinder_corrections_log.parquet"
+        if log_path.exists():
+            shutil.move(
+                log_path, paths.interim_dir / f"bessembinder_corrections_log_{method}.parquet"
+            )
+    else:
+        print(f"Reusing existing {corrected_path}", flush=True)
 
     # 3) Map permno onto both Compustat versions
     before = comp_dsf_with_permno(uncorrected_path)
@@ -84,9 +100,10 @@ def main() -> None:
     crsp = pl.scan_parquet(REAL / "interim" / "crsp_dsf.parquet").select(
         "permno", "date", "prc", "ret"
     )
-    results = compare_compustat_crsp_before_after(
-        before, after, crsp, output_dir=str(BASE / "interim")
-    )
+    out_dir = BASE / "interim" / method
+    out_dir.mkdir(parents=True, exist_ok=True)
+    results = compare_compustat_crsp_before_after(before, after, crsp, output_dir=str(out_dir))
+    print(f"method={method}", flush=True)
     print(results["improvement"], flush=True)
 
 
