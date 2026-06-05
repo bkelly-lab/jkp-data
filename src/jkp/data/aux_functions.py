@@ -13073,6 +13073,18 @@ def hxz_load_fundq(raw_dir: Path) -> pl.DataFrame:
             ),
         )
         .with_columns(beq=pl.col("sh_q") + pl.col("txditcq").fill_null(0.0) - pl.col("ps_q"))
+        # One row per (gvkey, fiscal quarter): fiscal-year-end changes can file
+        # the same (fyearq, fqtr) under two datadate. Duplicates would fan the
+        # dense qidx axis in hxz_impute_be_clean_surplus, making its shift/
+        # rolling lags depend on nondeterministic inter-duplicate order (the
+        # source of run-to-run roe_hxz flips). Prefer the latest datadate, then
+        # latest rdq, then the more valued filing.
+        .sort(
+            ["gvkey", "fyearq", "fqtr", "datadate", "rdq", "ibq", "beq"],
+            descending=[False, False, False, True, True, True, True],
+            nulls_last=True,
+        )
+        .unique(subset=["gvkey", "fyearq", "fqtr"], keep="first", maintain_order=True)
         .sort(["gvkey", "fyearq", "fqtr"])
         .select(
             "gvkey",
