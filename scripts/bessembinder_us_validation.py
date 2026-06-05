@@ -22,6 +22,7 @@ fields (unset fields keep paper defaults).
 """
 
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -34,7 +35,11 @@ from jkp.data.bessembinder import Section8Params
 from jkp.data.paths import DataPaths
 
 # Sandbox: all outputs land here. Inputs are symlinked in from REAL (read-only).
-BASE = Path.home() / "bessembinder_validation" / "data"
+# Overridable so parallel sweep jobs get isolated scratch (shared-sandbox spill
+# collisions killed job 1008063).
+BASE = Path(
+    os.environ.get("BESS_VALIDATION_BASE", str(Path.home() / "bessembinder_validation/data"))
+)
 # Clean pipeline run — read-only.
 REAL = Path.home() / "jkp-data" / "data"
 
