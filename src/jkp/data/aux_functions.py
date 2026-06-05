@@ -11511,8 +11511,8 @@ def ff_load_compustat_us(
         2) BE = SHE + txditc_FASB109 − coalesce(pstkrv, pstkl, pstk, 0),
            SHE = coalesce(seq, ceq + pstk, at − lt) per French's ladder;
            null when BE < 0.
-        3) ff5: OP = (revt − cogs − xsga − xint) / BE, INV = Δat / at_lag
-           with strict 1-year FY gap.
+        3) ff5: OP = (revt − cogs − xsga − xint) / (BE + mib), INV = Δat /
+           at_lag with strict 1-year FY gap.
         4) Sort by (gvkey, datadate); compute count.
         5) Link via ccmxpf_lnkhist (linktype starts with L, linkprim ∈ {P,C}).
            Filter by June(y+1) validity window, with the 1963-66 backfill
@@ -11531,7 +11531,7 @@ def ff_load_compustat_us(
         Eager [gvkey, permno, year, datadate, be, (op, inv,) count, ...].
     """
     base = ["pstkrv", "pstkl", "pstk", "seq", "ceq", "lt", "at", "txditc"]
-    extra = ["revt", "cogs", "xsga", "xint"]
+    extra = ["revt", "cogs", "xsga", "xint", "mib"]
     floats = base + (extra if ff5 else [])
     # Stockholders' equity ladder per French (data library / DFF 2000):
     # "the value reported by Moody's or Compustat, if it is available. If
@@ -11588,9 +11588,12 @@ def ff_load_compustat_us(
             - pl.coalesce("xint", pl.lit(0.0))
         )
         fy_gap = pl.col("datadate").dt.year() - pl.col("datadate_lag").dt.year()
+        # OP denominator per French's variable definitions: "divided by the
+        # sum of book equity and minority interest"; the positive-BE screen
+        # stays on BE alone (his ME x OP description: "(positive) BE").
         lf = lf.with_columns(
             op=pl.when(op_elig & (pl.col("be") > 0))
-            .then(safe_div(op_num, pl.col("be"), "op"))
+            .then(safe_div(op_num, pl.col("be") + pl.coalesce("mib", pl.lit(0.0)), "op"))
             .otherwise(None),
             at_lag=pl.col("at").shift(1).over("gvkey"),
             datadate_lag=pl.col("datadate").shift(1).over("gvkey"),

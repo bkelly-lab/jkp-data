@@ -48,6 +48,7 @@ _FLOAT_COLS = [
     "pstkrv",
     "pstkl",
     "itcb",
+    "mib",
 ]
 
 
