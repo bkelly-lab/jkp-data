@@ -82,7 +82,6 @@ class TestCompSicNaics:
         result = pl.read_parquet(self.output_path)
         assert result.height == 1
         row = result.row(0, named=True)
-        # Non-null SIC from GL wins because DISTINCT ON sorts sic DESC and
         # COALESCE(sica, sicb) brings the GL value in when NA is null.
         assert row["sic"] == 4813
 
