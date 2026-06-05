@@ -12711,7 +12711,11 @@ def gen_ff_data(
         mom_signal = ff_build_mom_signal(panel, freq).with_columns(me=pl.col("me_lag1"))
         ports_mom = ff_assign_portfolios(
             mom_signal,
-            [ff_country_breaks_for_spec(mom_signal, "mom", with_size_median=True)],
+            [
+                ff_country_breaks_for_spec(
+                    mom_signal, "mom", with_size_median=True, us_size_all_nyse=True
+                )
+            ],
             ["mom"],
             size_gate=(pl.col("eligible_mom") & (pl.col("me_lag1") > 0)),
         )
