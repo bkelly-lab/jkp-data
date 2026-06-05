@@ -11640,9 +11640,11 @@ def ff_load_compustat_us(
         .with_columns(in_window=in_window)
         .filter(pl.col("in_window") | backdated)
         .rename({"lpermno": "permno"})
+        # gvkey last: duplicate same-prim links on (datadate, permno) exist;
+        # without a total order the kept row is engine-order-dependent.
         .sort(
-            ["datadate", "permno", "in_window", "linkprim"],
-            descending=[False, False, True, True],
+            ["datadate", "permno", "in_window", "linkprim", "gvkey"],
+            descending=[False, False, True, True, False],
         )
         .unique(subset=["datadate", "permno"], keep="first")
         .sort(["permno", "year", "datadate"])
