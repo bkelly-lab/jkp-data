@@ -535,6 +535,7 @@ def _correct_variable_arrays(
     starts: np.ndarray,
     window_sizes: list[int],
     correction_method: str,
+    price_floor: bool = False,
 ) -> tuple[np.ndarray, dict[str, np.ndarray], np.ndarray]:
     """
     Description:
@@ -546,8 +547,13 @@ def _correct_variable_arrays(
         2) detect_single_period_all; window_size = 1 where flagged.
         3) detect_multi_period_all over windows > 1 (ascending).
         4) validate_cascading_all (always on for the array path).
-        5) Apply correction: 'bessembinder' multiplies by the factor;
-           'interpolation' uses geometric mean of endpoints with fallbacks.
+        5) If price_floor: drop flags where the original value is < 1.0 or
+           the correction direction is multiply (factor > 1) — the handoff
+           research found divide corrections on >=$1 prices are the only
+           reliably accurate class.
+        6) Apply correction: 'bessembinder'/'floor' multiplies by the
+           factor; 'interpolation' uses geometric mean of endpoints with
+           fallbacks.
     Output:
         (corrected float64 array with NaN for nulls, kernel output arrays,
         flagged row indices).
@@ -587,8 +593,12 @@ def _correct_variable_arrays(
     rejected = np.zeros(len(x_raw), dtype=np.bool_)
     bk.validate_cascading_all(starts, arrays["factor"], arrays["etype"], arrays["wsize"], rejected)
 
+    if price_floor:
+        gated = (arrays["factor"] != 1.0) & ((arrays["factor"] > 1.0) | (x_det < 1.0))
+        arrays["factor"][gated] = 1.0
+
     flagged = arrays["factor"] != 1.0
-    if correction_method == "bessembinder":
+    if correction_method in ("bessembinder", "floor"):
         corrected = x_det * arrays["factor"]
     elif correction_method == "interpolation":
         corrected = x_det.copy()
@@ -704,8 +714,14 @@ def _apply_section6_slim(
 
     def correct(variable: str, x_raw: np.ndarray) -> np.ndarray:
         print(f"[section6] correcting {variable}...", flush=True)
+        # 'floor' gates the price variable only (divide-direction, >=$1);
+        # non-price variables keep standard bessembinder corrections.
         corrected, arrays, flag_idx = _correct_variable_arrays(
-            x_raw, starts, window_sizes, correction_method
+            x_raw,
+            starts,
+            window_sizes,
+            correction_method,
+            price_floor=(correction_method == "floor" and variable == "adjprc"),
         )
         logger.info(f"{variable}: {len(flag_idx)} corrections applied")
         logs.append(
@@ -786,6 +802,10 @@ def apply_bessembinder_section6(
         correction_method: Method for computing corrected values. Options:
             - 'bessembinder': Fixed 10x/100x/1000x multipliers (default)
             - 'interpolation': Geometric mean of surrounding clean values
+            - 'floor': As 'bessembinder', but price (adjprc) corrections are
+              applied only in the divide direction and only where the
+              original adjusted price is >= $1 (handoff research
+              recommendation). Slim path (spill_dir) only.
         spill_dir: When set, use the memory-bounded array path
             (_apply_section6_slim) with spill files in this directory —
             required for full-size cluster data, where collecting the wide
