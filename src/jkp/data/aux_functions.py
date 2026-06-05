@@ -8926,19 +8926,14 @@ def _mp_world_compute_stock_issue(wm: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def _mp_world_compute_distress(
-    wm: pl.DataFrame, wd_daily: pl.DataFrame, market_m: pl.DataFrame, mp_con, raw_dir: Path
-) -> pl.DataFrame:
-    """World CHS DISTRESS. Same coefficients as US (MP_DISTRESS_BETAS).
-    Replacements vs US: msp500 → market_returns per excntry; crsp_daily → world_dsf.
-    Source for quarterly Compustat: comp_g_fundq + comp_fundq unioned, linked by gvkey→id
-    via world_msf's gvkey column."""
-    # Step 1: market inputs per (id, eom) — EXRET, RSIZE, PRICE
+def _mp_world_distress_market_inputs(wm: pl.DataFrame, market_m: pl.DataFrame) -> pl.DataFrame:
+    """Market inputs per (id, eom): formation-lagged ME, PRICE, EXRET, RSIZE.
+    World analog of _mp_distress_market_inputs (market_returns vs msp500)."""
     msp = market_m.rename({"mkt_vw": "sprtrn", "me_lag1": "totval"})
     m3_full = wm.select(
         "id", "excntry", "eom", col("prc").alias("PRC"), col("ret").alias("RET"), col("me")
     )
-    dist1 = (
+    return (
         m3_full.with_columns(prc=col("PRC").abs().clip(upper_bound=15.0))
         .join(msp, on=["excntry", "eom"], how="left")
         .with_columns(
@@ -8972,7 +8967,10 @@ def _mp_world_compute_distress(
         )
     )
 
-    # Step 2: gvkey-keyed quarterly inputs (NIMTA/TLMTA/CASHMTA/MB) — build per gvkey
+
+def _mp_world_distress_fundq(raw_dir: Path) -> pl.DataFrame:
+    """Quarterly Compustat (NA + Global union) with rdq_crsp / lead_rdq_crsp
+    availability windows per (gvkey, datadate)."""
     fundq = (
         _mp_world_load_fundq_global(raw_dir)
         .filter(
@@ -8996,18 +8994,7 @@ def _mp_world_compute_distress(
             "cheq",
         )
     )
-    # Linkage: get (id, gvkey, eom) map from world_msf (already in wm — but wm doesn't
-    # carry gvkey here; we'd need to add it). For simplicity, attach gvkey from wm.
-    if "gvkey" not in wm.columns:
-        raise RuntimeError("world wm must carry gvkey for distress linkage")
-    id_gvkey = (
-        wm.select("id", "gvkey", "eom")
-        .sort(["id", "eom", "gvkey"])
-        .unique(subset=["id", "eom"], keep="first", maintain_order=True)
-    )
-
-    # Compute rdq_crsp + lead_rdq_crsp per (gvkey, datadate)
-    fundq = (
+    return (
         fundq.sort("gvkey", "datadate")
         .with_columns(adj_rdq=pl.coalesce(col("rdq"), _mp_offset_months("datadate", 3)))
         .filter(col("adj_rdq").is_not_null())
@@ -9023,8 +9010,11 @@ def _mp_world_compute_distress(
         .sort("gvkey", "datadate")
     )
 
-    # BE via Davis-FF waterfall (handle missing pstkrq for global)
-    be = (
+
+def _mp_world_distress_book_equity_mb(fundq: pl.DataFrame, wm: pl.DataFrame) -> pl.DataFrame:
+    """BE via Davis-FF waterfall (missing pstkrq handled for global), then
+    adj_BE = BE + 0.1*(ME - BE) floored at 1 and MB = ME / adj_BE."""
+    return (
         fundq.with_columns(pre_stock=pl.coalesce(col("pstkrq"), col("pstkq"), pl.lit(0.0)))
         .with_columns(extra=-col("pre_stock"))
         .with_columns(
@@ -9054,6 +9044,16 @@ def _mp_world_compute_distress(
         .with_columns(MB=col("ME") / col("adj_BE"))
     )
 
+
+def _mp_world_distress_quarterly_join(
+    dist1: pl.DataFrame,
+    id_gvkey: pl.DataFrame,
+    be: pl.DataFrame,
+    fundq: pl.DataFrame,
+    mp_con,
+) -> pl.DataFrame:
+    """Window-join MB/ME then NIQ/LTQ/CHEQ onto (id, eom) via the gvkey rdq
+    windows; derive NIMTA/TLMTA/CASHMTA."""
     # Join dist1 to quarterly via id+eom window. Window uses gvkey-defined rdq_crsp.
     # Need (id, eom) → applicable (gvkey, rdq window). Use id_gvkey to translate.
     mp_con.register("d1", dist1.join(id_gvkey, on=["id", "eom"], how="left"))
@@ -9083,7 +9083,7 @@ def _mp_world_compute_distress(
         FROM d2 a LEFT JOIN cq b
           ON a.gvkey = b.gvkey AND a.eom >= b.rdq_crsp AND a.eom < b.lead_rdq_crsp
     """).pl()
-    dist3 = (
+    return (
         dist3.sort(["id", "eom", "datadate_q2", "rdq_q2"], descending=[False, False, True, True])
         .unique(subset=["id", "eom"], keep="first", maintain_order=True)
         .with_columns(
@@ -9093,7 +9093,10 @@ def _mp_world_compute_distress(
         )
     )
 
-    # NIMTAAVG (per excntry-eom mean fill, then 4-quarter geom weight)
+
+def _mp_world_distress_nimtaavg(dist3: pl.DataFrame) -> pl.DataFrame:
+    """NIMTAAVG: per-(excntry, eom) mean fill (>= 10 obs), then 4-quarter
+    geometrically weighted average over consecutive months."""
     nimta_mean = (
         dist3.filter(col("NIMTA").is_not_null())
         .group_by("excntry", "eom")
@@ -9110,7 +9113,7 @@ def _mp_world_compute_distress(
     )
 
     scale_n = (1 - _MP_R**3) / (1 - _MP_R**12)
-    dist3 = (
+    return (
         dist3.with_columns(
             nimta_lag0=col("adj_NIMTA"),
             nimta_lag3=col("adj_NIMTA").shift(3).over("id"),
@@ -9146,7 +9149,10 @@ def _mp_world_compute_distress(
         )
     )
 
-    # EXRETAVG per excntry-eom mean fill + 12-month geom weight
+
+def _mp_world_distress_exretavg(dist3: pl.DataFrame) -> pl.DataFrame:
+    """EXRETAVG: per-(excntry, eom) mean fill, then 12-month geometrically
+    weighted average over consecutive months."""
     exret_mean = (
         dist3.filter(col("EXRET").is_not_null())
         .group_by("excntry", "eom")
@@ -9168,9 +9174,12 @@ def _mp_world_compute_distress(
         consec = consec & (col(f"eoml{i}") == _mp_offset_months("eom", -i))
         consec = consec & col(f"el{i}").is_not_null()
     weighted = sum(col(f"el{i}") * (_MP_R**i) for i in range(12))
-    dist3 = dist3.with_columns(EXRETAVG=pl.when(consec).then(scale_e * weighted).otherwise(None))
+    return dist3.with_columns(EXRETAVG=pl.when(consec).then(scale_e * weighted).otherwise(None))
 
-    # SIGMA from world_dsf daily returns
+
+def _mp_world_distress_sigma(wd_daily: pl.DataFrame, wm: pl.DataFrame) -> pl.DataFrame:
+    """SIGMA: annualized 3-month rolling daily volatility from world_dsf,
+    cross-sectionally mean-filled per (excntry, eom)."""
     daily = wd_daily.with_columns(eom=col("date").dt.month_end())
     monthly = (
         daily.with_columns(ret2=col("ret") ** 2)
@@ -9218,13 +9227,16 @@ def _mp_world_compute_distress(
         .group_by("excntry", "eom")
         .agg(avg_SIGMA=col("SIGMA").mean())
     )
-    sigma = (
+    return (
         sigma_with_x.join(sigma_mean, on=["excntry", "eom"], how="left")
         .with_columns(SIGMA=pl.coalesce(col("SIGMA"), col("avg_SIGMA")))
         .select("id", "eom", "SIGMA")
     )
 
-    # Final score with winsorization per excntry-eom on lag MB/TLMTA/CASHMTA
+
+def _mp_world_distress_final_score(dist3: pl.DataFrame, sigma: pl.DataFrame) -> pl.DataFrame:
+    """Lag MB/TLMTA/CASHMTA (gap-gated), winsorize per (excntry, eom) at
+    5/95, require all inputs, apply CHS coefficients."""
     dist4 = dist3.select(
         "id", "excntry", "eom", "NIMTAAVG", "TLMTA", "EXRETAVG", "RSIZE", "CASHMTA", "MB", "PRICE"
     )
@@ -9291,6 +9303,44 @@ def _mp_world_compute_distress(
         + MP_DISTRESS_BETAS["MB"] * col("lag_MB")
         + MP_DISTRESS_BETAS["PRICE"] * col("PRICE")
     ).select("eom", "id", "excntry", "distress")
+
+
+def _mp_world_compute_distress(
+    wm: pl.DataFrame, wd_daily: pl.DataFrame, market_m: pl.DataFrame, mp_con, raw_dir: Path
+) -> pl.DataFrame:
+    """
+    Description:
+        World CHS DISTRESS. Same coefficients as US (MP_DISTRESS_BETAS).
+        Replacements vs US: msp500 → market_returns per excntry; crsp_daily
+        → world_dsf; quarterly Compustat is comp_g_fundq + comp_fundq
+        unioned, linked gvkey→id via world_msf's gvkey column.
+    Steps:
+        1) Market inputs (formation-lagged ME/PRICE/EXRET/RSIZE).
+        2) Quarterly fundamentals + rdq windows; BE/MB waterfall.
+        3) Window-join quarterly inputs → NIMTA/TLMTA/CASHMTA.
+        4) NIMTAAVG and EXRETAVG geometric averages with mean fill.
+        5) SIGMA from daily returns with cross-sectional fill.
+        6) Winsorize, require all inputs, apply CHS coefficients.
+    Output:
+        (eom, id, excntry, distress) frame.
+    """
+    dist1 = _mp_world_distress_market_inputs(wm, market_m)
+
+    if "gvkey" not in wm.columns:
+        raise RuntimeError("world wm must carry gvkey for distress linkage")
+    id_gvkey = (
+        wm.select("id", "gvkey", "eom")
+        .sort(["id", "eom", "gvkey"])
+        .unique(subset=["id", "eom"], keep="first", maintain_order=True)
+    )
+
+    fundq = _mp_world_distress_fundq(raw_dir)
+    be = _mp_world_distress_book_equity_mb(fundq, wm)
+    dist3 = _mp_world_distress_quarterly_join(dist1, id_gvkey, be, fundq, mp_con)
+    dist3 = _mp_world_distress_nimtaavg(dist3)
+    dist3 = _mp_world_distress_exretavg(dist3)
+    sigma = _mp_world_distress_sigma(wd_daily, wm)
+    return _mp_world_distress_final_score(dist3, sigma)
 
 
 def _mp_world_build_anomalies_panel(wm, wd, market_m, world_daily, mp_con, raw_dir: Path):
