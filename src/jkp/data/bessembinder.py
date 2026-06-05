@@ -701,7 +701,7 @@ def _apply_section6_slim(
     """
     sorted_path = spill_dir / "__bess_sorted.parquet"
     print("[section6] streaming-sorting input to spill file...", flush=True)
-    df.sort(group_cols + [sort_col]).sink_parquet(sorted_path)
+    df.sort(group_cols + [sort_col]).sink_parquet(sorted_path, compression="lz4")
     lf = pl.scan_parquet(sorted_path)
     schema_names = lf.collect_schema().names()
 
@@ -764,7 +764,7 @@ def _apply_section6_slim(
     corr_path = spill_dir / "__bess_corrected_cols.parquet"
     pl.DataFrame(corrected_cols).with_columns(
         [col(name).fill_nan(None) for name in corrected_cols]
-    ).write_parquet(corr_path)
+    ).write_parquet(corr_path, compression="lz4")
 
     result = pl.concat(
         [pl.scan_parquet(sorted_path).drop(list(corrected_cols)), pl.scan_parquet(corr_path)],
@@ -2241,6 +2241,7 @@ def _apply_section8_slim(
     sort_col: str,
     country_col: str,
     spill_dir: Path,
+    presorted: bool = False,
 ) -> tuple[pl.LazyFrame, pl.LazyFrame | None]:
     """
     Description:
@@ -2252,7 +2253,9 @@ def _apply_section8_slim(
         preserved inside the kernel), and reattaches the keep decision via a
         lazy horizontal concat.
     Steps:
-        1) Streaming-sort input to spill_dir/__bess_s8_sorted.parquet.
+        1) Streaming-sort input to spill_dir/__bess_s8_sorted.parquet
+           (skipped when presorted=True: the caller wrote that file already
+           sorted by group_cols + sort_col, e.g. via DuckDB ORDER BY).
         2) Collect group keys once; build group-start offsets.
         3) Filter 8a's global cross-security decision: per-security mean of
            positive volume + 2% quantile via the same polars expressions as
@@ -2264,8 +2267,9 @@ def _apply_section8_slim(
         (filtered LazyFrame, removal log LazyFrame or None).
     """
     sorted_path = spill_dir / "__bess_s8_sorted.parquet"
-    print("[section8] streaming-sorting input to spill file...", flush=True)
-    df.sort(group_cols + [sort_col]).sink_parquet(sorted_path)
+    if not presorted:
+        print("[section8] streaming-sorting input to spill file...", flush=True)
+        df.sort(group_cols + [sort_col]).sink_parquet(sorted_path, compression="lz4")
     lf = pl.scan_parquet(sorted_path)
 
     print("[section8] building group index...", flush=True)
@@ -2331,7 +2335,7 @@ def _apply_section8_slim(
     )
 
     reason_path = spill_dir / "__bess_s8_reason.parquet"
-    pl.DataFrame({"_reason": reason}).write_parquet(reason_path)
+    pl.DataFrame({"_reason": reason}).write_parquet(reason_path, compression="lz4")
     kept = (
         pl.concat([pl.scan_parquet(sorted_path), pl.scan_parquet(reason_path)], how="horizontal")
         .filter(col("_reason") == bk.R_NULL)
@@ -2346,6 +2350,7 @@ def apply_bessembinder_section8(
     sort_col: str = "datadate",
     country_col: str = "excntry",
     spill_dir: Path | None = None,
+    presorted: bool = False,
 ) -> tuple[pl.LazyFrame, pl.LazyFrame]:
     """
     Apply all Bessembinder Section 8 filters in sequence.
@@ -2371,6 +2376,10 @@ def apply_bessembinder_section8(
             directory — required for full-size cluster data. When None
             (default), the polars filter chain runs (fine for small/test
             data; it is the reference implementation).
+        presorted: Slim path only — the caller already wrote
+            spill_dir/__bess_s8_sorted.parquet sorted by group_cols +
+            sort_col, so the sort step is skipped (df is ignored beyond its
+            role as documentation of the source).
 
     Returns:
         Tuple of (filtered_df, all_removed_log)
@@ -2379,7 +2388,7 @@ def apply_bessembinder_section8(
         group_cols = ["gvkey", "iid"]
 
     if spill_dir is not None:
-        return _apply_section8_slim(df, group_cols, sort_col, country_col, spill_dir)
+        return _apply_section8_slim(df, group_cols, sort_col, country_col, spill_dir, presorted)
 
     all_removed = []
 

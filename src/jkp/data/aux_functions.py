@@ -1720,7 +1720,7 @@ def gen_comp_dsf(
         )
         log_na = log_na.collect() if log_na is not None else None
         print("[section6] sinking __comp_secd_corrected.parquet...", flush=True)
-        df_na.sink_parquet(paths.interim_dir / "__comp_secd_corrected.parquet")
+        df_na.sink_parquet(paths.interim_dir / "__comp_secd_corrected.parquet", compression="lz4")
         for spill in paths.interim_dir.glob("__bess_*.parquet"):
             spill.unlink()
 
@@ -1752,17 +1752,22 @@ def gen_comp_dsf(
     # =========================================================================
     # Original SQL processing
     # =========================================================================
+    # Views, not tables: the whole merge/FX/USD pipeline streams in a single
+    # pass at the final COPY instead of materializing five intermediate
+    # tables to the .ddb file. The NASDAQ cshtrd UPDATE is folded into the
+    # __comp_dsf_na view as an equivalent CASE expression.
     con = ibis.duckdb.connect(str(paths.interim_dir / "aux_comp_dsf.ddb"), threads=os.cpu_count())
 
-    con.create_table("comp_g_secd", con.read_parquet(g_secd_path))
-    con.create_table(
-        "__firm_shares2", con.read_parquet(paths.interim_dir / "__firm_shares2.parquet")
-    )
-    con.create_table("comp_secd", con.read_parquet(secd_path))
-    con.create_table("fx", con.read_parquet(paths.interim_dir / "fx_data.parquet"))
+    con.raw_sql(f"""
+    CREATE VIEW comp_g_secd AS SELECT * FROM read_parquet('{g_secd_path.as_posix()}');
+    CREATE VIEW comp_secd AS SELECT * FROM read_parquet('{secd_path.as_posix()}');
+    CREATE VIEW __firm_shares2 AS
+        SELECT * FROM read_parquet('{(paths.interim_dir / "__firm_shares2.parquet").as_posix()}');
+    CREATE VIEW fx AS SELECT * FROM read_parquet('{(paths.interim_dir / "fx_data.parquet").as_posix()}');
+    """)
 
     con.raw_sql("""
-    CREATE TABLE __comp_dsf_global AS
+    CREATE VIEW __comp_dsf_global AS
     SELECT
         gvkey, iid, datadate, tpci, exchg, prcstd, curcdd, prccd / qunit AS prc_local, ajexdi, cshoc / 1e6 AS cshoc,
         CASE
@@ -1777,7 +1782,7 @@ def gen_comp_dsf(
         curcddv, div, divd, divsp
     FROM comp_g_secd;
 
-    CREATE TABLE __comp_dsf_na AS
+    CREATE VIEW __comp_dsf_na AS
     SELECT
         a.gvkey, a.iid, a.datadate, a.tpci, a.exchg, a.prcstd, a.curcdd, a.prccd AS prc_local, a.ajexdi,
         CASE
@@ -1788,29 +1793,25 @@ def gen_comp_dsf(
             WHEN a.prcstd != 5 THEN a.prcld
             ELSE NULL
         END AS prc_low_lcl,
-        a.cshtrd, COALESCE(a.cshoc / 1e6, b.csho_fund * b.ajex_fund / a.ajexdi) AS cshoc,
+        CASE
+            WHEN a.exchg = 14 AND a.datadate <  DATE '2001-02-01' THEN a.cshtrd / 2
+            WHEN a.exchg = 14 AND a.datadate <= DATE '2001-12-31' THEN a.cshtrd / 1.8
+            WHEN a.exchg = 14 AND a.datadate <  DATE '2003-12-31' THEN a.cshtrd / 1.6
+            ELSE a.cshtrd
+        END AS cshtrd,
+        COALESCE(a.cshoc / 1e6, b.csho_fund * b.ajex_fund / a.ajexdi) AS cshoc,
         (a.prccd / a.ajexdi * a.trfd) AS ri_local, a.curcddv, a.div, a.divd, a.divsp
     FROM comp_secd AS a
     LEFT JOIN __firm_shares2 AS b
     ON a.gvkey = b.gvkey AND a.datadate = b.ddate;
 
-    UPDATE __comp_dsf_na
-    SET cshtrd =
-        CASE
-            WHEN datadate <  DATE '2001-02-01' THEN cshtrd / 2
-            WHEN datadate <= DATE '2001-12-31' THEN cshtrd / 1.8
-            WHEN datadate <  DATE '2003-12-31' THEN cshtrd / 1.6
-            ELSE cshtrd
-        END
-    WHERE exchg = 14;
-
-    CREATE TABLE __comp_dsf1 AS
+    CREATE VIEW __comp_dsf1 AS
     SELECT *
     FROM __comp_dsf_na
     FULL OUTER JOIN __comp_dsf_global
     USING (gvkey, iid, datadate, tpci, exchg, prcstd, curcdd, prc_local, ajexdi, prc_high_lcl, prc_low_lcl, cshtrd, cshoc, ri_local, curcddv, div, divd, divsp);
 
-    CREATE TABLE __comp_dsf2 AS
+    CREATE VIEW __comp_dsf2 AS
     SELECT a.*, b.fx AS fx, c.fx AS fx_div
     FROM __comp_dsf1 AS a
     LEFT JOIN fx AS b
@@ -1818,9 +1819,9 @@ def gen_comp_dsf(
     LEFT JOIN fx AS c
         ON a.curcddv = c.curcdd AND a.datadate = c.datadate;
 
-    CREATE TABLE __comp_dsf3 AS
+    CREATE VIEW __comp_dsf3 AS
     SELECT
-        *,
+        * EXCLUDE (div, divd, divsp, fx_div, curcddv, prc_high_lcl, prc_low_lcl),
         prc_local    * fx AS prc,
         prc_high_lcl * fx AS prc_high,
         prc_low_lcl  * fx AS prc_low,
@@ -1836,11 +1837,6 @@ def gen_comp_dsf(
 
     """)
 
-    # Get the result from DuckDB
-    t = con.table("__comp_dsf3").drop(
-        ["div", "divd", "divsp", "fx_div", "curcddv", "prc_high_lcl", "prc_low_lcl"]
-    )
-
     # =========================================================================
     # Section 8: Apply filters to USD-converted data
     # =========================================================================
@@ -1848,25 +1844,34 @@ def gen_comp_dsf(
     if apply_bessembinder:
         print("Applying Bessembinder Section 8 filters...", flush=True)
 
-        # Convert ibis table to Polars LazyFrame for filtering
-        # First write to temp parquet, then read with Polars
-        t.to_parquet(paths.interim_dir / "__comp_dsf_pre_filter.parquet")
+        # One streaming pass: DuckDB executes the whole view pipeline, joins
+        # the exchange-country mapping (needed for country-specific filters),
+        # external-sorts by the Section 8 group/sort keys, and writes the
+        # spill file directly — no pre-filter round-trip, and the slim path
+        # skips its own sort (presorted=True).
+        comp_exchanges(paths).select(["exchg", "excntry"]).write_parquet(
+            paths.interim_dir / "__bess_exchanges.parquet"
+        )
+        sorted_path = paths.interim_dir / "__bess_s8_sorted.parquet"
+        print("[section8] merging, sorting and spilling via DuckDB...", flush=True)
+        con.raw_sql(f"""
+        COPY (
+            SELECT t.*, e.excntry
+            FROM __comp_dsf3 AS t
+            LEFT JOIN read_parquet('{(paths.interim_dir / "__bess_exchanges.parquet").as_posix()}') AS e
+                USING (exchg)
+            ORDER BY gvkey NULLS FIRST, iid NULLS FIRST, datadate NULLS FIRST
+        ) TO '{sorted_path.as_posix()}' (FORMAT PARQUET);
+        """)
         con.disconnect()
 
-        pre_filter = pl.scan_parquet(paths.interim_dir / "__comp_dsf_pre_filter.parquet")
-
-        # Need to add excntry (country) for country-specific filters
-        # Join with exchange-country mapping
-        exchanges = comp_exchanges(paths).lazy().select(["exchg", "excntry"])
-
-        # spill_dir selects the single-pass numba filter path (the polars
-        # filter chain cannot execute on the full frame in memory)
         df, section8_log = apply_bessembinder_section8(
-            pre_filter.join(exchanges, on="exchg", how="left"),
+            pl.scan_parquet(sorted_path),
             group_cols=["gvkey", "iid"],
             sort_col="datadate",
             country_col="excntry",
             spill_dir=paths.interim_dir,
+            presorted=True,
         )
         section8_log = section8_log.collect().lazy() if section8_log is not None else None
 
@@ -1874,7 +1879,6 @@ def gen_comp_dsf(
         df.sink_parquet(paths.interim_dir / "__comp_dsf.parquet")
 
         # Clean up temp files
-        (paths.interim_dir / "__comp_dsf_pre_filter.parquet").unlink()
         for f in paths.interim_dir.glob("__bess_*.parquet"):
             f.unlink()
 
@@ -1909,7 +1913,10 @@ def gen_comp_dsf(
                 flush=True,
             )
     else:
-        t.to_parquet(paths.interim_dir / "__comp_dsf.parquet")
+        con.raw_sql(f"""
+        COPY (SELECT * FROM __comp_dsf3)
+        TO '{(paths.interim_dir / "__comp_dsf.parquet").as_posix()}' (FORMAT PARQUET);
+        """)
         con.disconnect()
 
     # Clean up corrected temp files if they exist

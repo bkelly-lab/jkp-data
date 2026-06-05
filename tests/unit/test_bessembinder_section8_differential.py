@@ -141,6 +141,44 @@ class TestSection8Differential:
         _assert_equivalent(clean, tmp_path)
 
 
+class TestSection8Presorted:
+    def test_duckdb_sort_matches_polars_sort(self, tmp_path):
+        # gen_comp_dsf presorts the spill file via DuckDB ORDER BY; the slim
+        # path's group index assumes polars sort order. Prove they agree on
+        # the key types involved (VARCHAR gvkey/iid, DATE datadate).
+        import duckdb
+
+        df = _panel(seed=7, n_groups=40).collect()
+        shuffled = df.sample(fraction=1.0, shuffle=True, seed=0)
+        src = tmp_path / "src.parquet"
+        out = tmp_path / "duck_sorted.parquet"
+        shuffled.write_parquet(src)
+        duckdb.connect().execute(f"""
+            COPY (
+                SELECT * FROM read_parquet('{src.as_posix()}')
+                ORDER BY gvkey NULLS FIRST, iid NULLS FIRST, datadate NULLS FIRST
+            ) TO '{out.as_posix()}' (FORMAT PARQUET);
+        """)
+        assert_frame_equal(pl.read_parquet(out), df.sort(SORT_KEYS))
+
+    def test_presorted_path_equivalent(self, tmp_path):
+        # presorted=True must produce the same output as the sorting path
+        df = _panel(seed=13, n_groups=48)
+        ref_df, ref_log = apply_bessembinder_section8(df, GROUP_COLS, SORT_COL, "excntry")
+        df.sort(SORT_KEYS).collect().write_parquet(tmp_path / "__bess_s8_sorted.parquet")
+        new_df, new_log = apply_bessembinder_section8(
+            df, GROUP_COLS, SORT_COL, "excntry", spill_dir=tmp_path, presorted=True
+        )
+        assert_frame_equal(
+            new_df.sort(SORT_KEYS).collect(),
+            ref_df.sort(SORT_KEYS).collect(),
+            check_column_order=False,
+        )
+        assert (new_log.collect().height if new_log is not None else 0) == (
+            ref_log.collect().height if ref_log is not None else 0
+        )
+
+
 @st.composite
 def _security_strategy(draw):
     """One short random security exercising row-level filters and nulls."""
