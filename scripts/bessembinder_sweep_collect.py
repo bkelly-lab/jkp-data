@@ -52,8 +52,11 @@ def daily_stats(cmp: pl.LazyFrame) -> dict:
 
 
 def monthly_stats(cmp: pl.LazyFrame) -> dict:
+    # Compound only days where BOTH returns exist — a null on one side would
+    # otherwise drop the day's factor from one product but not the other
     m = (
-        cmp.group_by("permno", col("date").dt.truncate("1mo").alias("month"))
+        cmp.filter(col("ret_comp").is_not_null() & col("ret_crsp").is_not_null())
+        .group_by("permno", col("date").dt.truncate("1mo").alias("month"))
         .agg(
             ((col("ret_comp") + 1.0).product() - 1.0).alias("mret_comp"),
             ((col("ret_crsp") + 1.0).product() - 1.0).alias("mret_crsp"),
@@ -65,6 +68,30 @@ def monthly_stats(cmp: pl.LazyFrame) -> dict:
         .collect(engine="streaming")
     )
     return m.to_dicts()[0]
+
+
+def gap_split_stats(cmp: pl.LazyFrame) -> dict:
+    """
+    Deleting a row makes the next survivor return span the gap while CRSP's
+    same-day return stays one-day — an artifact that craters quadratic corr
+    (see h_obs_10, corr 0.21 from 118 removals). Split corr by whether the
+    row's return spans more than a week since the previous matched obs.
+    """
+    g = cmp.sort(["gvkey", "iid", "date"]).with_columns(
+        (col("date") - col("date").shift(1).over(["gvkey", "iid"])).dt.total_days().alias("_dgap")
+    )
+    keep = col("_dgap").fill_null(1) <= 7
+    row = (
+        g.select(
+            pl.corr(col("ret_comp").filter(keep), col("ret_crsp").filter(keep)).alias(
+                "corr_d_nogap"
+            ),
+            (keep.not_() & (col("ret_diff_abs") > 0.5)).sum().alias("gap_tail50"),
+        )
+        .collect(engine="streaming")
+        .to_dicts()[0]
+    )
+    return row
 
 
 def cost_stats(tag: str) -> dict:
@@ -106,6 +133,7 @@ def main() -> None:
         row = {"variant": tag, "params": json.dumps(GRID[tag])}
         row.update(daily_stats(cmp))
         row.update(monthly_stats(cmp))
+        row.update(gap_split_stats(cmp))
         row.update(cost_stats(tag))
         rows.append(row)
         print(f"collected {tag}", flush=True)

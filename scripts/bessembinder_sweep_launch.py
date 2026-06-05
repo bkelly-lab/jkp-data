@@ -36,8 +36,11 @@ SHARED_INTERIM_FILES = [
     "crsp_comparison_before_cache.parquet",
 ]
 
-# One-at-a-time grid around the paper defaults (see Section8Params)
+# One-at-a-time grid around the paper defaults (see Section8Params).
+# Round 1: near-default (~2x steps). Round 2: log-spaced extremes (~5-10x)
+# to bracket where the response surface stops being flat.
 GRID: dict[str, dict[str, float]] = {
+    # ---- round 1 ----
     "g_ret_05": {"g_ret": 0.5},
     "g_ret_065": {"g_ret": 0.65},
     "g_ret_10": {"g_ret": 1.0},
@@ -55,6 +58,29 @@ GRID: dict[str, dict[str, float]] = {
     "h_obs_5": {"h_max_obs": 5.0},
     "h_obs_10": {"h_max_obs": 10.0},
     "h_band_5_02": {"h_ratio_hi": 5.0, "h_ratio_lo": 0.2},
+    # ---- round 2: extremes ----
+    "g_ret_02": {"g_ret": 0.2},
+    "g_ret_04": {"g_ret": 0.4},
+    "g_ret_16": {"g_ret": 1.6},
+    "g_ret_30": {"g_ret": 3.0},
+    "g_me_01": {"g_me_change": 0.1},
+    "g_me_09": {"g_me_change": 0.9},
+    "e_up_2_1": {"e_up_jump": 2.0, "e_up_confirm": 1.0},
+    "e_up_20_10": {"e_up_jump": 20.0, "e_up_confirm": 10.0},
+    "e_up_100_50": {"e_up_jump": 100.0, "e_up_confirm": 50.0},
+    "e_down_005_01": {"e_down_jump": 0.05, "e_down_confirm": 0.1},
+    "e_down_05_07": {"e_down_jump": 0.5, "e_down_confirm": 0.7},
+    "f_up_3_05": {"f_up_ratio": 3.0, "f_up_ret": 0.5},
+    "f_up_50_10": {"f_up_ratio": 50.0, "f_up_ret": 10.0},
+    "f_down_002_m08": {"f_down_ratio": 0.02, "f_down_ret": -0.8},
+    "f_down_03_m02": {"f_down_ratio": 0.3, "f_down_ret": -0.2},
+    "early_63_002": {"early_obs": 63.0, "early_frac": 0.02},
+    "early_126_005": {"early_obs": 126.0, "early_frac": 0.05},
+    "early_2520_06": {"early_obs": 2520.0, "early_frac": 0.6},
+    "h_band_3_033": {"h_ratio_hi": 3.0, "h_ratio_lo": 0.33},
+    "h_band_50_002": {"h_ratio_hi": 50.0, "h_ratio_lo": 0.02},
+    "h_obs_0": {"h_max_obs": 0.0},
+    "h_obs_20": {"h_max_obs": 20.0},
     # baseline through the identical sweep machinery, for apples-to-apples
     "default": {},
 }
@@ -85,6 +111,11 @@ def main() -> None:
     SWEEP_ROOT.mkdir(exist_ok=True)
     for tag, s8 in GRID.items():
         base = build_sandbox(tag)
+        # already-completed variants (earlier rounds) are skipped
+        done = base / "interim" / f"bessembinder_{tag}" / "crsp_comparison_after.parquet"
+        if done.exists():
+            print(f"{tag}: done, skipping", flush=True)
+            continue
         spec = base.parent / "overrides.json"
         spec.write_text(json.dumps({"tag": tag, "s8": s8}))
         cmd = [
