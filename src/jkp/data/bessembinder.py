@@ -1602,52 +1602,11 @@ def find_partial_corrections(
 LOW_PRICE_THRESHOLD_COUNTRIES = ["BRA", "IDN", "NGA", "TUR"]
 
 
-def compute_8a_removed_securities(
-    df: pl.LazyFrame,
-    group_cols: list[str] | None = None,
-    volume_col: str = "dolvol",
-    percentile: float = 0.02,
-) -> pl.DataFrame:
-    """
-    Description:
-        Compute the exact set of securities removed by filter 8a (bottom
-        percentile of per-security average positive volume) over the FULL
-        panel. Used to precompute the removal set when Section 8 is applied
-        in gvkey buckets — the cutoff is the only cross-security statistic
-        in the filter chain, and passing the decision set (rather than the
-        scalar cutoff) keeps bucketed runs bit-identical: per-security means
-        recomputed inside a bucket can differ by 1 ULP at the quantile
-        boundary.
-    Steps:
-        1) Per-security mean of positive volume (small aggregate).
-        2) Quantile across securities; keep securities with mean <= cutoff.
-    Output:
-        DataFrame with group_cols of the removed securities.
-    """
-    if group_cols is None:
-        group_cols = ["gvkey", "iid"]
-    avg_vol = (
-        df.filter(col(volume_col) > 0)
-        .group_by(group_cols)
-        .agg(pl.mean(volume_col).alias("_avg_vol"))
-    )
-    return (
-        avg_vol.join(
-            avg_vol.select(pl.col("_avg_vol").quantile(percentile).alias("_cutoff")),
-            how="cross",
-        )
-        .filter(col("_avg_vol") <= col("_cutoff"))
-        .select(group_cols)
-        .collect()
-    )
-
-
 def filter_8a_trading_volume(
     df: pl.LazyFrame,
     group_cols: list[str] | None = None,
     volume_col: str = "dolvol",
     percentile: float = 0.02,
-    precomputed_removals: pl.DataFrame | None = None,
 ) -> tuple[pl.LazyFrame, pl.LazyFrame]:
     """
     Filter 8a: Eliminate bottom 2% of stocks by average daily positive volume.
@@ -1657,23 +1616,12 @@ def filter_8a_trading_volume(
         group_cols: Security identifier columns
         volume_col: Column with dollar volume
         percentile: Bottom percentile to eliminate (default 0.02 = 2%)
-        precomputed_removals: Removal set computed over the full panel via
-            compute_8a_removed_securities. Required when df is a subset
-            (e.g. a gvkey bucket) so the percentile reflects all securities.
 
     Returns:
         Tuple of (filtered_df, removed_records_log)
     """
     if group_cols is None:
         group_cols = ["gvkey", "iid"]
-
-    if precomputed_removals is not None:
-        removals = precomputed_removals.lazy()
-        removed = df.join(removals, on=group_cols, how="semi").select(
-            group_cols + ["datadate", pl.lit("8a_trading_volume").alias("filter_reason")]
-        )
-        df = df.join(removals, on=group_cols, how="anti")
-        return df, removed
 
     # Compute average positive volume per security
     avg_vol = (
@@ -2251,12 +2199,131 @@ def filter_8h_initial_errors(
     return df, removed
 
 
+_REASON_BY_CODE = [
+    "8a_trading_volume",
+    "8b_ajex_zero",
+    "8b_qunit_change",
+    "8c_initial_low_price_me",
+    "8c_low_price_me",
+    "8d_data_gap",
+    "8e_adjcsho_jump_early",
+    "8f_me_jump_early",
+    "8g_return_filter",
+    "8h_initial_error",
+]
+
+
+def _apply_section8_slim(
+    df: pl.LazyFrame,
+    group_cols: list[str],
+    sort_col: str,
+    country_col: str,
+    spill_dir: Path,
+) -> tuple[pl.LazyFrame, pl.LazyFrame | None]:
+    """
+    Description:
+        Memory-bounded Section 8 path for full-size cluster data. The polars
+        filter chain's shift/cum_count-over-group plans fall back to
+        in-memory execution on the whole frame; this path instead sorts the
+        input once with a streaming sink, runs the entire filter chain as a
+        single numba pass per security (sequential-survivor semantics
+        preserved inside the kernel), and reattaches the keep decision via a
+        lazy horizontal concat.
+    Steps:
+        1) Streaming-sort input to spill_dir/__bess_s8_sorted.parquet.
+        2) Collect group keys once; build group-start offsets.
+        3) Filter 8a's global cross-security decision: per-security mean of
+           positive volume + 2% quantile via the same polars expressions as
+           the reference, mapped to a per-security bool.
+        4) section8_all kernel -> per-row removal-reason codes.
+        5) Removal log from gathered keys + reason strings; kept frame =
+           sorted scan + reason column, filtered lazily.
+    Output:
+        (filtered LazyFrame, removal log LazyFrame or None).
+    """
+    sorted_path = spill_dir / "__bess_s8_sorted.parquet"
+    print("[section8] streaming-sorting input to spill file...", flush=True)
+    df.sort(group_cols + [sort_col]).sink_parquet(sorted_path)
+    lf = pl.scan_parquet(sorted_path)
+
+    print("[section8] building group index...", flush=True)
+    keys = lf.select(group_cols + [sort_col]).collect()
+    starts = _group_starts(keys, group_cols)
+
+    # Filter 8a's global decision (the only cross-security statistic): same
+    # expressions as filter_8a_trading_volume, evaluated once on the full
+    # panel; securities with no positive volume (null mean) are KEPT.
+    print("[section8] computing 8a volume decisions...", flush=True)
+    avg_vol = (
+        lf.filter(col("dolvol") > 0).group_by(group_cols).agg(pl.mean("dolvol").alias("_avg_vol"))
+    )
+    decisions = (
+        keys.lazy()
+        .group_by(group_cols)
+        .len()
+        .join(avg_vol, on=group_cols, how="left")
+        .join(avg_vol.select(pl.col("_avg_vol").quantile(0.02).alias("_cutoff")), how="cross")
+        # joins do not preserve row order: re-sort into group_starts order
+        .sort(group_cols)
+        .select((pl.col("_avg_vol") <= pl.col("_cutoff")).fill_null(False).alias("_remove"))
+        .collect()
+    )
+    remove_8a = decisions["_remove"].to_numpy().copy()
+
+    def load(name: str) -> np.ndarray:
+        return lf.select(pl.col(name).cast(pl.Float64)).collect()[name].to_numpy().copy()
+
+    print("[section8] running filter kernel...", flush=True)
+    reason = np.full(keys.height, bk.R_NULL, dtype=np.int8)
+    bk.section8_all(
+        starts,
+        reason,
+        remove_8a,
+        load("ajexdi"),
+        load("prc"),
+        load("me"),
+        load("ri"),
+        load("cshoc"),
+        keys[sort_col].cast(pl.Date).to_physical().cast(pl.Int32).to_numpy().copy(),
+        lf.select(col(country_col).is_in(LOW_PRICE_THRESHOLD_COUNTRIES).fill_null(False))
+        .collect()
+        .to_series()
+        .to_numpy()
+        .copy(),
+        lf.select((col(country_col) == "CHN").fill_null(False))
+        .collect()
+        .to_series()
+        .to_numpy()
+        .copy(),
+    )
+
+    removed_idx = np.flatnonzero(reason != bk.R_NULL)
+    removed = (
+        keys[removed_idx]
+        .with_columns(
+            _codes_to_strings(reason[removed_idx], _REASON_BY_CODE).alias("filter_reason")
+        )
+        .lazy()
+        if len(removed_idx)
+        else None
+    )
+
+    reason_path = spill_dir / "__bess_s8_reason.parquet"
+    pl.DataFrame({"_reason": reason}).write_parquet(reason_path)
+    kept = (
+        pl.concat([pl.scan_parquet(sorted_path), pl.scan_parquet(reason_path)], how="horizontal")
+        .filter(col("_reason") == bk.R_NULL)
+        .drop("_reason")
+    )
+    return kept, removed
+
+
 def apply_bessembinder_section8(
     df: pl.LazyFrame,
     group_cols: list[str] | None = None,
     sort_col: str = "datadate",
     country_col: str = "excntry",
-    precomputed_8a_removals: pl.DataFrame | None = None,
+    spill_dir: Path | None = None,
 ) -> tuple[pl.LazyFrame, pl.LazyFrame]:
     """
     Apply all Bessembinder Section 8 filters in sequence.
@@ -2277,21 +2344,25 @@ def apply_bessembinder_section8(
         group_cols: Security identifier columns
         sort_col: Date column
         country_col: Country identifier column
-        precomputed_8a_removals: Full-panel removal set for filter 8a
-            (compute_8a_removed_securities). Required when df is a gvkey
-            bucket; all other filters are strictly per-security.
+        spill_dir: When set, run the whole chain as a single numba pass per
+            security (_apply_section8_slim) with spill files in this
+            directory — required for full-size cluster data. When None
+            (default), the polars filter chain runs (fine for small/test
+            data; it is the reference implementation).
 
     Returns:
         Tuple of (filtered_df, all_removed_log)
     """
     if group_cols is None:
         group_cols = ["gvkey", "iid"]
+
+    if spill_dir is not None:
+        return _apply_section8_slim(df, group_cols, sort_col, country_col, spill_dir)
+
     all_removed = []
 
     # 8a: Trading volume filter
-    df, removed = filter_8a_trading_volume(
-        df, group_cols, precomputed_removals=precomputed_8a_removals
-    )
+    df, removed = filter_8a_trading_volume(df, group_cols)
     if removed is not None:
         all_removed.append(removed)
 

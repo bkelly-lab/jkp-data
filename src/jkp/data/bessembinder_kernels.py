@@ -417,3 +417,216 @@ def validate_cascading_all(starts, factor, etype, wsize, rejected_mask):
         _validate_one(f, etype[s:e], wsize[s:e], scratch)
         for k in range(e - s):
             rejected_mask[s + k] = before[k] and f[k] == 1.0
+
+
+# =============================================================================
+# Section 8 filter kernels
+# =============================================================================
+
+# Removal-reason codes (string mapping lives in bessembinder.py). -1 = kept.
+R_NULL = -1
+R_8A_VOLUME = 0
+R_8B_AJEX = 1
+R_8B_QUNIT = 2  # reserved: qunit column never present on the post-merge frame
+R_8C_INITIAL = 3
+R_8C_LOW_PRICE_ME = 4
+R_8D_GAP = 5
+R_8E_ADJCSHO = 6
+R_8F_ME_JUMP = 7
+R_8G_RETURN = 8
+R_8H_INITIAL = 9
+
+_GAP_THRESHOLD_DAYS = int(231 * 365 / 252)  # 334: ~11 months of trading days
+_EARLY_OBS = 504  # ~24 months of trading days
+_EARLY_FRAC = 0.2
+
+
+@njit(cache=True)
+def _s8_kill_all(reason, code):
+    """Remove every still-alive row of the security with the given reason."""
+    for i in range(reason.size):
+        if reason[i] == R_NULL:
+            reason[i] = code
+
+
+@njit(cache=True)
+def _s8_early_jump_stage(reason, num, aux, code, is_ret, chn):
+    """
+    Shared early-jump stage for filters 8e (adjCSHO) and 8f (ME).
+
+    Scans alive rows with prev-alive shift semantics; a jump inside the early
+    period (obs_num < 504 or < 20% of the alive count) marks the security for
+    deletion of alive rows 0..max-jump-obs. `num` is the jump series (adjCSHO
+    or ME); `aux` is the confirming series (ME ratio for 8e; ri-based return
+    for 8f, is_ret=True). NaN operands fail all comparisons, matching polars
+    null semantics.
+    """
+    n = reason.size
+    total = 0
+    for i in range(n):
+        if reason[i] == R_NULL:
+            total += 1
+    if total == 0:
+        return
+    delete_through = -1
+    obs = -1
+    prev = -1
+    for i in range(n):
+        if reason[i] != R_NULL:
+            continue
+        obs += 1
+        if prev >= 0:
+            r_num = num[i] / num[prev]
+            if is_ret:
+                a = aux[i] / aux[prev] - 1.0
+                up = r_num > 10.0 and a < 2.0
+                down = r_num < 0.1 and a > -0.5
+            else:
+                a = aux[i] / aux[prev]
+                if chn[i]:
+                    up = r_num >= 50.0 and a >= 25.0
+                else:
+                    up = r_num >= 5.0 and a >= 2.5
+                down = r_num <= 0.2 and a <= 0.4
+            if (up or down) and (obs < _EARLY_OBS or obs < _EARLY_FRAC * total):
+                delete_through = obs
+        prev = i
+    if delete_through < 0:
+        return
+    obs = -1
+    for i in range(n):
+        if reason[i] != R_NULL:
+            continue
+        obs += 1
+        if obs <= delete_through:
+            reason[i] = code
+
+
+@njit(cache=True)
+def _s8_one_security(reason, remove_8a, ajexdi, prc, me, ri, cshoc, dates, low_thr, chn):
+    """
+    Apply the Section 8 filter chain to one security (arrays are views over
+    the date-sorted slice). Filters run sequentially: each stage's shift /
+    obs_num / totals are defined over the rows still alive at stage start,
+    exactly like the polars chain re-deriving them on each filtered frame.
+    reason is mutated in place (-1 = kept).
+    """
+    n = reason.size
+
+    # ---- 8a: bottom-percentile average positive volume (global decision) ----
+    if remove_8a:
+        _s8_kill_all(reason, R_8A_VOLUME)
+        return
+
+    # ---- 8b: any AJEXDI == 0 removes the security ----
+    for i in range(n):
+        if ajexdi[i] == 0.0:
+            _s8_kill_all(reason, R_8B_AJEX)
+            return
+
+    # ---- 8c: low price / market equity ----
+    first = -1
+    for i in range(n):
+        if reason[i] == R_NULL:
+            first = i
+            break
+    if first < 0:
+        return
+    breach_idx = -1
+    for i in range(first, n):
+        if reason[i] != R_NULL:
+            continue
+        thr = 0.001 if low_thr[i] else 0.01
+        if me[i] < 1.0 or prc[i] < thr:
+            breach_idx = i
+            break
+    if breach_idx >= 0:
+        # Initial breach (any alive row sharing the first alive date) removes
+        # the whole security; otherwise remove history from the breach date on
+        initial = False
+        for i in range(first, n):
+            if reason[i] != R_NULL or dates[i] != dates[first]:
+                break
+            thr = 0.001 if low_thr[i] else 0.01
+            if me[i] < 1.0 or prc[i] < thr:
+                initial = True
+                break
+        if initial:
+            _s8_kill_all(reason, R_8C_INITIAL)
+            return
+        for i in range(n):
+            if reason[i] == R_NULL and dates[i] >= dates[breach_idx]:
+                reason[i] = R_8C_LOW_PRICE_ME
+
+    # ---- 8d: drop observations after calendar gaps > ~11 months ----
+    prev = -1
+    for i in range(n):
+        if reason[i] != R_NULL:
+            continue
+        if prev >= 0 and dates[i] - dates[prev] > _GAP_THRESHOLD_DAYS:
+            reason[i] = R_8D_GAP
+            # polars computes all gaps against the pre-stage frame, so the
+            # removed row still serves as the next row's gap reference
+        prev = i
+
+    # ---- 8e: adjCSHO jumps in early history ----
+    adjcsho = cshoc * ajexdi
+    _s8_early_jump_stage(reason, adjcsho, me, R_8E_ADJCSHO, False, chn)
+
+    # ---- 8f: ME jumps without commensurate returns in early history ----
+    _s8_early_jump_stage(reason, me, ri, R_8F_ME_JUMP, True, chn)
+
+    # ---- 8g: returns inconsistent with ME changes ----
+    prev = -1
+    for i in range(n):
+        if reason[i] != R_NULL:
+            continue
+        if prev >= 0:
+            ret = ri[i] / ri[prev] - 1.0
+            me_chg = me[i] / me[prev] - 1.0
+            if abs(ret) > 0.8 and abs(me_chg) < 0.5:
+                reason[i] = -2  # provisional: do not disturb later shifts
+        prev = i
+    for i in range(n):
+        if reason[i] == -2:
+            reason[i] = R_8G_RETURN
+
+    # ---- 8h: large price/ME ratios within the first three observations ----
+    prev = -1
+    obs = -1
+    for i in range(n):
+        if reason[i] != R_NULL:
+            continue
+        obs += 1
+        if obs > 2:
+            break
+        if prev >= 0:
+            pr = prc[i] / prc[prev]
+            mr = me[i] / me[prev]
+            if pr > 10.0 or pr < 0.1 or mr > 10.0 or mr < 0.1:
+                reason[i] = -2
+        prev = i
+    for i in range(n):
+        if reason[i] == -2:
+            reason[i] = R_8H_INITIAL
+
+
+@njit(parallel=True, cache=True)
+def section8_all(starts, reason, remove_8a, ajexdi, prc, me, ri, cshoc, dates, low_thr, chn):
+    """Run the Section 8 filter chain over all securities in parallel."""
+    n_groups = len(starts) - 1
+    for g in prange(n_groups):
+        s = starts[g]
+        e = starts[g + 1]
+        _s8_one_security(
+            reason[s:e],
+            remove_8a[g],
+            ajexdi[s:e],
+            prc[s:e],
+            me[s:e],
+            ri[s:e],
+            cshoc[s:e],
+            dates[s:e],
+            low_thr[s:e],
+            chn[s:e],
+        )

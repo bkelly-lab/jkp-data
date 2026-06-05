@@ -31,7 +31,6 @@ from polars import col
 from .bessembinder import (
     apply_bessembinder_section6,
     apply_bessembinder_section8,
-    compute_8a_removed_securities,
     detect_potential_boundary_errors,
     log_correction_summary_by_year,
 )
@@ -1852,44 +1851,23 @@ def gen_comp_dsf(
         # Join with exchange-country mapping
         exchanges = comp_exchanges(paths).lazy().select(["exchg", "excntry"])
 
-        # The Section 8 filter plan (shift/cum_count over groups per filter)
-        # falls back to in-memory execution on the full frame (job 950885
-        # OOMed at 555G), so process hash-partitioned gvkey buckets. Every
-        # filter is per-security except 8a's global volume cutoff, which is
-        # precomputed over the full panel and injected per bucket.
-        print("[section8] computing global 8a removal set...", flush=True)
-        removals_8a = compute_8a_removed_securities(pre_filter, group_cols=["gvkey", "iid"])
-
-        n_buckets = 16
-        s8_logs = []
-        for i in range(n_buckets):
-            print(f"[section8] bucket {i + 1}/{n_buckets}", flush=True)
-            bucket = pre_filter.filter(pl.col("gvkey").hash(seed=42) % n_buckets == i).join(
-                exchanges, on="exchg", how="left"
-            )
-            bucket, bucket_log = apply_bessembinder_section8(
-                bucket,
-                group_cols=["gvkey", "iid"],
-                sort_col="datadate",
-                country_col="excntry",
-                precomputed_8a_removals=removals_8a,
-            )
-            bucket.collect().write_parquet(
-                paths.interim_dir / f"__comp_dsf_filtered_{i:02d}.parquet"
-            )
-            if bucket_log is not None:
-                s8_logs.append(bucket_log.collect())
-        section8_log = pl.concat(s8_logs, how="vertical_relaxed").lazy() if s8_logs else None
-
-        # Merge bucket outputs into the single corrected file
-        print("[section8] sinking __comp_dsf.parquet...", flush=True)
-        pl.scan_parquet(paths.interim_dir / "__comp_dsf_filtered_*.parquet").sink_parquet(
-            paths.interim_dir / "__comp_dsf.parquet"
+        # spill_dir selects the single-pass numba filter path (the polars
+        # filter chain cannot execute on the full frame in memory)
+        df, section8_log = apply_bessembinder_section8(
+            pre_filter.join(exchanges, on="exchg", how="left"),
+            group_cols=["gvkey", "iid"],
+            sort_col="datadate",
+            country_col="excntry",
+            spill_dir=paths.interim_dir,
         )
+        section8_log = section8_log.collect().lazy() if section8_log is not None else None
+
+        print("[section8] sinking __comp_dsf.parquet...", flush=True)
+        df.sink_parquet(paths.interim_dir / "__comp_dsf.parquet")
 
         # Clean up temp files
         (paths.interim_dir / "__comp_dsf_pre_filter.parquet").unlink()
-        for f in paths.interim_dir.glob("__comp_dsf_filtered_*.parquet"):
+        for f in paths.interim_dir.glob("__bess_*.parquet"):
             f.unlink()
 
         # Combine and write correction logs
