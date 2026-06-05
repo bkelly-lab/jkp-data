@@ -24,7 +24,6 @@ if TYPE_CHECKING:
 
     from jkp.data.paths import DataPaths
 
-_PATCH_TARGET = "jkp.data.aux_functions"
 
 
 @dataclass
