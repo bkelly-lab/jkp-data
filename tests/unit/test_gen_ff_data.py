@@ -52,7 +52,13 @@ from jkp.data.config import (
 
 
 def _apply_eligible(df: pl.DataFrame, expr: pl.Expr) -> pl.Series:
-    """Evaluate an eligibility Expr on df, returning the boolean Series."""
+    """Evaluate an eligibility Expr on df, returning the boolean Series.
+
+    Frames without an excntry column get a ROW default ("GBR") so the
+    bm/op count gate (US-exempt) keeps its count >= 2 semantics.
+    """
+    if "excntry" not in df.columns:
+        df = df.with_columns(excntry=pl.lit("GBR"))
     return df.select(expr.alias("elig"))["elig"]
 
 
@@ -104,14 +110,20 @@ class TestFFBmEligible:
         assert result[0] is False
 
     def test_count_one_fails(self):
-        """Returns False when count < 2 (count == 1)."""
+        """ROW: returns False when count < 2 (count == 1)."""
         df = pl.DataFrame({"beme": [1.0], "me": [1.0], "count": [1]})
         result = _apply_eligible(df, _ff_bm_eligible())
         assert result[0] is False
 
     def test_count_two_passes(self):
-        """Returns True when count == 2 (boundary)."""
+        """ROW: returns True when count == 2 (boundary)."""
         df = pl.DataFrame({"beme": [1.0], "me": [1.0], "count": [2]})
+        result = _apply_eligible(df, _ff_bm_eligible())
+        assert result[0] is True
+
+    def test_us_count_one_passes(self):
+        """US is exempt from the FF (1993) two-year count gate."""
+        df = pl.DataFrame({"beme": [1.0], "me": [1.0], "count": [1], "excntry": [US_EXCNTRY]})
         result = _apply_eligible(df, _ff_bm_eligible())
         assert result[0] is True
 
@@ -168,9 +180,16 @@ class TestFFOpEligible:
         assert _apply_eligible(df, _ff_op_eligible())[0] is False
 
     def test_count_one_fails(self):
-        """Returns False when count == 1."""
+        """ROW: returns False when count == 1."""
         df = pl.DataFrame({"me": [1.0], "be": [1.0], "count": [1], "op": [0.5]})
         assert _apply_eligible(df, _ff_op_eligible())[0] is False
+
+    def test_us_count_one_passes(self):
+        """US is exempt from the FF (1993) two-year count gate."""
+        df = pl.DataFrame(
+            {"me": [1.0], "be": [1.0], "count": [1], "op": [0.5], "excntry": [US_EXCNTRY]}
+        )
+        assert _apply_eligible(df, _ff_op_eligible())[0] is True
 
     def test_vectorised_mixed(self):
         """Batch with two valid and two invalid rows."""

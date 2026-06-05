@@ -11444,17 +11444,20 @@ def dimsonbeta(
 # =============================================================================
 
 
+# The FF (1993) two-years-on-Compustat requirement is NOT applied to the US:
+# French's modern portfolio descriptions never state it, and dropping it
+# improves every IPO-heavy decade vs his published factors (A/B 2026-06:
+# monthly HML 1980s 0.9978->0.9990, RMW 1990s 0.9954->0.9976; 2000s+ flat).
+# ROW keeps the JKP convention (count >= 2).
+_FF_COUNT_GATE = (pl.col("excntry") == US_EXCNTRY) | (pl.col("count") >= 2)
+
+
 def _ff_bm_eligible() -> pl.Expr:
-    return (pl.col("beme") > 0) & (pl.col("me") > 0) & (pl.col("count") >= 2)
+    return (pl.col("beme") > 0) & (pl.col("me") > 0) & _FF_COUNT_GATE
 
 
 def _ff_op_eligible() -> pl.Expr:
-    return (
-        (pl.col("me") > 0)
-        & (pl.col("be") > 0)
-        & (pl.col("count") >= 2)
-        & pl.col("op").is_not_null()
-    )
+    return (pl.col("me") > 0) & (pl.col("be") > 0) & _FF_COUNT_GATE & pl.col("op").is_not_null()
 
 
 def _ff_inv_eligible() -> pl.Expr:
