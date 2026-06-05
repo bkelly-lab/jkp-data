@@ -9103,18 +9103,15 @@ def _mp_world_distress_nimtaavg(dist3: pl.DataFrame) -> pl.DataFrame:
         .agg(mean_NIMTA=col("NIMTA").mean(), _f=pl.len())
         .filter(col("_f") >= 10)
     )
-    dist3 = (
+    scale_n = (1 - _MP_R**3) / (1 - _MP_R**12)
+    return (
         dist3.join(
             nimta_mean.select("excntry", "eom", "mean_NIMTA"), on=["excntry", "eom"], how="left"
         )
         .with_columns(adj_NIMTA=pl.coalesce(col("NIMTA"), col("mean_NIMTA")))
         .drop("mean_NIMTA")
         .sort("id", "eom")
-    )
-
-    scale_n = (1 - _MP_R**3) / (1 - _MP_R**12)
-    return (
-        dist3.with_columns(
+        .with_columns(
             nimta_lag0=col("adj_NIMTA"),
             nimta_lag3=col("adj_NIMTA").shift(3).over("id"),
             nimta_lag6=col("adj_NIMTA").shift(6).over("id"),
@@ -9158,23 +9155,23 @@ def _mp_world_distress_exretavg(dist3: pl.DataFrame) -> pl.DataFrame:
         .group_by("excntry", "eom")
         .agg(mean_EXRET=col("EXRET").mean())
     )
-    dist3 = (
-        dist3.join(exret_mean, on=["excntry", "eom"], how="left")
-        .with_columns(adj_EXRET=pl.coalesce(col("EXRET"), col("mean_EXRET")))
-        .drop("mean_EXRET")
-        .sort("id", "eom")
-    )
     scale_e = (1 - _MP_R) / (1 - _MP_R**12)
-    dist3 = dist3.with_columns(
-        [col("adj_EXRET").shift(i).over("id").alias(f"el{i}") for i in range(12)]
-        + [col("eom").shift(i).over("id").alias(f"eoml{i}") for i in range(12)]
-    )
     consec = pl.lit(True)
     for i in range(12):
         consec = consec & (col(f"eoml{i}") == _mp_offset_months("eom", -i))
         consec = consec & col(f"el{i}").is_not_null()
     weighted = sum(col(f"el{i}") * (_MP_R**i) for i in range(12))
-    return dist3.with_columns(EXRETAVG=pl.when(consec).then(scale_e * weighted).otherwise(None))
+    return (
+        dist3.join(exret_mean, on=["excntry", "eom"], how="left")
+        .with_columns(adj_EXRET=pl.coalesce(col("EXRET"), col("mean_EXRET")))
+        .drop("mean_EXRET")
+        .sort("id", "eom")
+        .with_columns(
+            [col("adj_EXRET").shift(i).over("id").alias(f"el{i}") for i in range(12)]
+            + [col("eom").shift(i).over("id").alias(f"eoml{i}") for i in range(12)]
+        )
+        .with_columns(EXRETAVG=pl.when(consec).then(scale_e * weighted).otherwise(None))
+    )
 
 
 def _mp_world_distress_sigma(wd_daily: pl.DataFrame, wm: pl.DataFrame) -> pl.DataFrame:
@@ -9266,7 +9263,7 @@ def _mp_world_distress_final_score(dist3: pl.DataFrame, sigma: pl.DataFrame) -> 
                   {", ".join(f"quantile_disc({c}, 0.05) AS _{c}_lo, quantile_disc({c}, 0.95) AS _{c}_hi" for c in wins_cols)}
             FROM src GROUP BY excntry, eom""",
     )
-    dist5 = (
+    return (
         dist5.join(bounds, on=["excntry", "eom"], how="left")
         .with_columns(
             [
@@ -9280,29 +9277,29 @@ def _mp_world_distress_final_score(dist3: pl.DataFrame, sigma: pl.DataFrame) -> 
             ]
         )
         .drop([f"_{c}_lo" for c in wins_cols] + [f"_{c}_hi" for c in wins_cols])
+        .filter(
+            col("NIMTAAVG").is_not_null()
+            & col("lag_TLMTA").is_not_null()
+            & col("EXRETAVG").is_not_null()
+            & col("RSIZE").is_not_null()
+            & col("lag_CASHMTA").is_not_null()
+            & col("lag_MB").is_not_null()
+            & col("PRICE").is_not_null()
+            & col("SIGMA").is_not_null()
+        )
+        .with_columns(
+            distress=MP_DISTRESS_BETAS["intercept"]
+            + MP_DISTRESS_BETAS["NIMTAAVG"] * col("NIMTAAVG")
+            + MP_DISTRESS_BETAS["TLMTA"] * col("lag_TLMTA")
+            + MP_DISTRESS_BETAS["EXRETAVG"] * col("EXRETAVG")
+            + MP_DISTRESS_BETAS["SIGMA"] * col("SIGMA")
+            + MP_DISTRESS_BETAS["RSIZE"] * col("RSIZE")
+            + MP_DISTRESS_BETAS["CASHMTA"] * col("lag_CASHMTA")
+            + MP_DISTRESS_BETAS["MB"] * col("lag_MB")
+            + MP_DISTRESS_BETAS["PRICE"] * col("PRICE")
+        )
+        .select("eom", "id", "excntry", "distress")
     )
-
-    dist5 = dist5.filter(
-        col("NIMTAAVG").is_not_null()
-        & col("lag_TLMTA").is_not_null()
-        & col("EXRETAVG").is_not_null()
-        & col("RSIZE").is_not_null()
-        & col("lag_CASHMTA").is_not_null()
-        & col("lag_MB").is_not_null()
-        & col("PRICE").is_not_null()
-        & col("SIGMA").is_not_null()
-    )
-    return dist5.with_columns(
-        distress=MP_DISTRESS_BETAS["intercept"]
-        + MP_DISTRESS_BETAS["NIMTAAVG"] * col("NIMTAAVG")
-        + MP_DISTRESS_BETAS["TLMTA"] * col("lag_TLMTA")
-        + MP_DISTRESS_BETAS["EXRETAVG"] * col("EXRETAVG")
-        + MP_DISTRESS_BETAS["SIGMA"] * col("SIGMA")
-        + MP_DISTRESS_BETAS["RSIZE"] * col("RSIZE")
-        + MP_DISTRESS_BETAS["CASHMTA"] * col("lag_CASHMTA")
-        + MP_DISTRESS_BETAS["MB"] * col("lag_MB")
-        + MP_DISTRESS_BETAS["PRICE"] * col("PRICE")
-    ).select("eom", "id", "excntry", "distress")
 
 
 def _mp_world_compute_distress(
