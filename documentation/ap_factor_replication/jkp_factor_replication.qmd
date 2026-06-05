@@ -297,7 +297,7 @@ section_tables("MP")
 
 - **Differences in CRSP Legacy vs CRSP V2.** Historical fields
   — delisting returns, share codes, exchange codes — differ between
-  the two CRSP products, producing vintage drift in pre-2000 data.
+  the two CRSP products.
 
 - **Undisclosed filters in the papers.** Source papers omit secondary
   screens (e.g., stale prices, thin trading, dual-class consolidation,
