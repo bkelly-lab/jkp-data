@@ -525,29 +525,29 @@ class TestFFCountryBreaksForSpec:
             }
         )
 
-    def test_us_size_all_nyse_widens_median_pool(self):
-        """us_size_all_nyse=True: US sizemedn over all NYSE me>0 stocks
+    def test_us_size_all_nyse_widens_median_pool(self, monkeypatch):
+        """us_size_all_nyse spec: US sizemedn over all NYSE me>0 stocks
         (incl. bm-ineligible); me<=0 and non-NYSE stay excluded."""
         june = self._make_june_size_pool()
+        monkeypatch.setitem(FF_SORT_SPECS["bm"], "us_size_all_nyse", False)
         strict = ff_country_breaks_for_spec(june, "bm", with_size_median=True)
-        lenient = ff_country_breaks_for_spec(
-            june, "bm", with_size_median=True, us_size_all_nyse=True
-        )
+        monkeypatch.setitem(FF_SORT_SPECS["bm"], "us_size_all_nyse", True)
+        lenient = ff_country_breaks_for_spec(june, "bm", with_size_median=True)
         assert strict["sizemedn"][0] == 20.0  # bm-eligible pool: 10/20/30
         assert lenient["sizemedn"][0] == 30.0  # all NYSE me>0: 10/20/30/40/50
 
-    def test_us_size_all_nyse_leaves_value_breaks_unchanged(self):
+    def test_us_size_all_nyse_leaves_value_breaks_unchanged(self, monkeypatch):
         """30/70 value breakpoints keep the strict (bm-eligible) pool."""
         june = self._make_june_size_pool()
+        monkeypatch.setitem(FF_SORT_SPECS["bm"], "us_size_all_nyse", False)
         strict = ff_country_breaks_for_spec(june, "bm", with_size_median=True)
-        lenient = ff_country_breaks_for_spec(
-            june, "bm", with_size_median=True, us_size_all_nyse=True
-        )
+        monkeypatch.setitem(FF_SORT_SPECS["bm"], "us_size_all_nyse", True)
+        lenient = ff_country_breaks_for_spec(june, "bm", with_size_median=True)
         assert strict.select("excntry", "date", "beme30", "beme70").equals(
             lenient.select("excntry", "date", "beme30", "beme70")
         )
 
-    def test_row_unaffected_by_us_size_all_nyse(self):
+    def test_row_unaffected_by_us_size_all_nyse(self, monkeypatch):
         """ROW keeps the sort-eligible sizemedn pool under the flag."""
         n = FF_MIN_STOCKS_BP + 5
         june = pl.DataFrame(
@@ -563,10 +563,10 @@ class TestFFCountryBreaksForSpec:
             },
             schema_overrides={"exchcd_us": pl.Int64},
         )
+        monkeypatch.setitem(FF_SORT_SPECS["bm"], "us_size_all_nyse", False)
         strict = ff_country_breaks_for_spec(june, "bm", with_size_median=True)
-        lenient = ff_country_breaks_for_spec(
-            june, "bm", with_size_median=True, us_size_all_nyse=True
-        )
+        monkeypatch.setitem(FF_SORT_SPECS["bm"], "us_size_all_nyse", True)
+        lenient = ff_country_breaks_for_spec(june, "bm", with_size_median=True)
         assert strict.equals(lenient)
 
 
@@ -1408,12 +1408,15 @@ def _make_monthly_panel(
     excntry: str = US_EXCNTRY,
     stock_id: int = 1,
     include_missing_sentinel: bool = False,
+    ret_overrides: dict[int, float | None] | None = None,
 ) -> pl.DataFrame:
     """Consecutive monthly panel for a single stock."""
     dates = [date(2018 + (m // 12), (m % 12) + 1, 28) for m in range(months)]
-    rets = [base_ret] * months
+    rets: list[float | None] = [base_ret] * months
     if include_missing_sentinel:
         rets[5] = FF_MISSING_RET_CODE  # inject -99 sentinel
+    for i, v in (ret_overrides or {}).items():
+        rets[i] = v
     return pl.DataFrame(
         {
             "excntry": [excntry] * months,
@@ -1424,7 +1427,8 @@ def _make_monthly_panel(
             "w": [1.0] * months,
             "exchcd_us": [1] * months,
             "size_grp": ["large"] * months,
-        }
+        },
+        schema_overrides={"ret": pl.Float64},
     )
 
 
@@ -1482,23 +1486,7 @@ class TestFFMomSignalMonthly:
         """20 consecutive months, ret null at month 10 (an interior 2-12 lag
         for the final row; the row itself exists, mimicking a CIZ
         missing-price month that legacy CRSP coded -99)."""
-        months = 20
-        dates = [date(2018 + (m // 12), (m % 12) + 1, 28) for m in range(months)]
-        rets: list[float | None] = [0.01] * months
-        rets[10] = None
-        return pl.DataFrame(
-            {
-                "excntry": [excntry] * months,
-                "id": [1] * months,
-                "date": dates,
-                "ret": rets,
-                "me": [1.0] * months,
-                "w": [1.0] * months,
-                "exchcd_us": [1] * months,
-                "size_grp": ["large"] * months,
-            },
-            schema_overrides={"ret": pl.Float64},
-        ).lazy()
+        return _make_monthly_panel(months=20, excntry=excntry, ret_overrides={10: None}).lazy()
 
     def test_us_interior_null_month_tolerated(self, tolerance):
         """US: a null interior window month (row present) stays eligible and
@@ -1572,22 +1560,27 @@ def _make_daily_panel(
     excntry: str = US_EXCNTRY,
     stock_id: int = 1,
     start_date: date = date(2018, 1, 2),
+    ret_overrides: dict[int, float | None] | None = None,
 ) -> pl.DataFrame:
     """Consecutive trading-day panel (Mon-Fri, simplified as calendar days)."""
     from datetime import timedelta
 
     dates = [start_date + timedelta(days=i) for i in range(n_days)]
+    rets: list[float | None] = [base_ret] * n_days
+    for i, v in (ret_overrides or {}).items():
+        rets[i] = v
     return pl.DataFrame(
         {
             "excntry": [excntry] * n_days,
             "id": [stock_id] * n_days,
             "date": dates,
-            "ret": [base_ret] * n_days,
+            "ret": rets,
             "me": [1.0] * n_days,
             "w": [1.0] * n_days,
             "exchcd_us": [1] * n_days,
             "size_grp": ["large"] * n_days,
-        }
+        },
+        schema_overrides={"ret": pl.Float64},
     )
 
 
@@ -1661,36 +1654,9 @@ class TestFFMomSignalDaily:
 
     @staticmethod
     def _null_in_window_panel(excntry: str) -> pl.LazyFrame:
-        from datetime import timedelta
-
-        n = 300
-        base = date(2018, 1, 2)
-        dates = [base + timedelta(days=i) for i in range(n)]
-        rets: list[float | None] = [0.001] * n
-        # Inject null in the lookback window for the last row
-        rets[n - 100] = None
-        return pl.DataFrame(
-            {
-                "excntry": [excntry] * n,
-                "id": [1] * n,
-                "date": dates,
-                "ret": rets,
-                "me": [1.0] * n,
-                "w": [1.0] * n,
-                "exchcd_us": [1] * n,
-                "size_grp": ["large"] * n,
-            },
-            schema={
-                "excntry": pl.Utf8,
-                "id": pl.Int64,
-                "date": pl.Date,
-                "ret": pl.Float64,
-                "me": pl.Float64,
-                "w": pl.Float64,
-                "exchcd_us": pl.Int64,
-                "size_grp": pl.Utf8,
-            },
-        ).lazy()
+        """300 consecutive days, ret null at an interior lookback-window day
+        for the last row."""
+        return _make_daily_panel(n_days=300, excntry=excntry, ret_overrides={200: None}).lazy()
 
     def test_row_null_ret_in_window_makes_ineligible(self):
         """ROW: a null return in the lookback window → ineligible (JKP)."""
@@ -1711,25 +1677,13 @@ class TestFFMomSignalDaily:
         """Window pin: a spike at t-21 is inside the US window (t-250..t-21,
         per French's daily detail) but outside the ROW legacy window
         (t-251..t-22)."""
-        from datetime import timedelta
-
         n = 300
-        base = date(2018, 1, 2)
-        dates = [base + timedelta(days=i) for i in range(n)]
-        rets = [0.0] * n
-        rets[n - 1 - 21] = 0.5  # day t-21 for the last row
         for excntry, expected in ((US_EXCNTRY, 0.5), ("GBR", 0.0)):
-            panel = pl.DataFrame(
-                {
-                    "excntry": [excntry] * n,
-                    "id": [1] * n,
-                    "date": dates,
-                    "ret": rets,
-                    "me": [1.0] * n,
-                    "w": [1.0] * n,
-                    "exchcd_us": [1] * n,
-                    "size_grp": ["large"] * n,
-                }
+            panel = _make_daily_panel(
+                n_days=n,
+                base_ret=0.0,
+                excntry=excntry,
+                ret_overrides={n - 1 - 21: 0.5},  # day t-21 for the last row
             )
             result = _ff_mom_signal_daily(panel.lazy()).collect()
             last_row = result.sort("date").tail(1)

@@ -12245,16 +12245,15 @@ def ff_country_breaks_for_spec(
     june: pl.DataFrame,
     key: str,
     with_size_median: bool = False,
-    us_size_all_nyse: bool = False,
 ) -> pl.DataFrame:
     """Per-sort country 30/70 (plus optional size median) from FF_SORT_SPECS[key].
 
-    us_size_all_nyse=True computes the US size median over all NYSE stocks
-    with me > 0 instead of the sort-eligible pool, per DFF 2000: the size
-    breakpoint is "the median for all NYSE stocks on CRSP", "not just those
-    in our annual samples" (no BE requirement) — while the value breakpoints
-    stay on "the NYSE stocks in our sample". ROW keeps the JKP convention
-    (sort-eligible pool) either way.
+    Specs with us_size_all_nyse=True compute the US size median over all
+    NYSE stocks with me > 0 instead of the sort-eligible pool, per DFF 2000:
+    the size breakpoint is "the median for all NYSE stocks on CRSP", "not
+    just those in our annual samples" (no BE requirement) — while the value
+    breakpoints stay on "the NYSE stocks in our sample". ROW keeps the JKP
+    convention (sort-eligible pool) either way.
     """
     s = FF_SORT_SPECS[key]
     specs = [(s["value"], 0.30, s["breaks"][0]), (s["value"], 0.70, s["breaks"][1])]
@@ -12264,7 +12263,7 @@ def ff_country_breaks_for_spec(
             pl.when(pl.col("excntry") == US_EXCNTRY)
             .then(pl.col("me") > 0)
             .otherwise(_FF_ELIGIBLE[key]())
-            if us_size_all_nyse
+            if s.get("us_size_all_nyse", False)
             else _FF_ELIGIBLE[key]()
         )
         size_bp = ff_country_breakpoints(june, [("me", 0.50, "sizemedn")], size_elig)
@@ -12480,10 +12479,7 @@ def _ff_mom_signal_monthly(panel: pl.LazyFrame) -> pl.LazyFrame:
         1.0 + _ff_neg99_to_zero(pl.col(f"ret_lag{k}")).fill_null(0.0)
         for k in range(skip + 1, L + 1)
     ]
-    prod_expr = terms[0]
-    for t in terms[1:]:
-        prod_expr = prod_expr * t
-    mom_expr = prod_expr - 1.0
+    mom_expr = functools.reduce(operator.mul, terms) - 1.0
 
     return df.with_columns(
         eligible_mom=elig,
@@ -12521,18 +12517,22 @@ def _ff_mom_signal_daily(panel: pl.LazyFrame) -> pl.LazyFrame:
     # codes those as null; log_eff zero-fills them. ROW keeps the legacy
     # t-251..t-22 window and the zero-missing gate (JKP convention).
     is_us = pl.col("excntry") == US_EXCNTRY
+    skip_eff = pl.when(is_us).then(skip).otherwise(skip + 1)
+
+    def _us_row_lag(col: str, us_n: int) -> pl.Expr:
+        """Lag by us_n (US) / us_n + 1 (ROW) — the window anchors above."""
+        return (
+            pl.when(is_us)
+            .then(pl.col(col).shift(us_n).over(by))
+            .otherwise(pl.col(col).shift(us_n + 1).over(by))
+        )
+
     df = df.with_columns(
         gap_one=pl.col("tidx") - pl.col("tidx").shift(1).over(by),
-        gap_skip=pl.when(is_us)
-        .then(pl.col("tidx") - pl.col("tidx").shift(skip).over(by))
-        .otherwise(pl.col("tidx") - pl.col("tidx").shift(skip + 1).over(by)),
+        gap_skip=pl.col("tidx") - _us_row_lag("tidx", skip),
         gap_look=pl.col("tidx") - pl.col("tidx").shift(look).over(by),
-        cum_log_lag_skip=pl.when(is_us)
-        .then(pl.col("cum_log").shift(skip).over(by))
-        .otherwise(pl.col("cum_log").shift(skip + 1).over(by)),
-        cum_log_lag_look=pl.when(is_us)
-        .then(pl.col("cum_log").shift(look).over(by))
-        .otherwise(pl.col("cum_log").shift(look + 1).over(by)),
+        cum_log_lag_skip=_us_row_lag("cum_log", skip),
+        cum_log_lag_look=_us_row_lag("cum_log", look),
         nulls_in_window=(
             pl.col("cum_null").shift(skip + 1).over(by)
             - pl.col("cum_null").shift(look + 1).over(by)
@@ -12543,7 +12543,7 @@ def _ff_mom_signal_daily(panel: pl.LazyFrame) -> pl.LazyFrame:
     )
     elig = (
         (pl.col("gap_one") == 1)
-        & (pl.col("gap_skip") == pl.when(is_us).then(skip).otherwise(skip + 1))
+        & (pl.col("gap_skip") == skip_eff)
         & (pl.col("gap_look") == look)
         & pl.col("me_lag1").is_not_null()
         & (pl.col("me_lag1") > 0)
@@ -12694,9 +12694,7 @@ def gen_ff_data(
         ports = ff_assign_portfolios(
             data_chars,
             [
-                ff_country_breaks_for_spec(
-                    data_chars, k, with_size_median=(k == "bm"), us_size_all_nyse=(k == "bm")
-                )
+                ff_country_breaks_for_spec(data_chars, k, with_size_median=(k == "bm"))
                 for k in ("bm", "op", "inv")
             ],
             ["bm", "op", "inv"],
@@ -12711,11 +12709,7 @@ def gen_ff_data(
         mom_signal = ff_build_mom_signal(panel, freq).with_columns(me=pl.col("me_lag1"))
         ports_mom = ff_assign_portfolios(
             mom_signal,
-            [
-                ff_country_breaks_for_spec(
-                    mom_signal, "mom", with_size_median=True, us_size_all_nyse=True
-                )
-            ],
+            [ff_country_breaks_for_spec(mom_signal, "mom", with_size_median=True)],
             ["mom"],
             size_gate=(pl.col("eligible_mom") & (pl.col("me_lag1") > 0)),
         )

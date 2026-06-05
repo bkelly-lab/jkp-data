@@ -239,8 +239,11 @@ FF_PORT_YEAR = (
 )
 
 # Per-sort definitions: value col, NYSE 30/70 break column names, bucket
-# labels (ladder), port column, eligibility flag, bucket label space, and
-# the SN/BN rename to disambiguate across OP/INV legs.
+# labels (ladder), port column, eligibility flag, bucket label space, the
+# SN/BN rename to disambiguate across OP/INV legs, and us_size_all_nyse:
+# whether the US size median pools all NYSE me>0 stocks instead of the
+# sort-eligible pool (DFF 2000 "all NYSE stocks on CRSP" -- true for the
+# B/M and momentum sorts, per the source papers / French's counts).
 FF_SORT_SPECS: dict[str, dict] = {
     "bm": {
         "value": "beme",
@@ -250,6 +253,7 @@ FF_SORT_SPECS: dict[str, dict] = {
         "flag": "positivebeme",
         "buckets": ["SL", "SM", "SH", "BL", "BM", "BH"],
         "rename": {},
+        "us_size_all_nyse": True,
     },
     "op": {
         "value": "op",
@@ -277,6 +281,7 @@ FF_SORT_SPECS: dict[str, dict] = {
         "flag": "nonmiss_mom",
         "buckets": ["SL", "SN", "SH", "BL", "BN", "BH"],
         "rename": {},
+        "us_size_all_nyse": True,
     },
 }
 
