@@ -1796,12 +1796,14 @@ def gen_comp_dsf(
             WHEN a.prcstd != 5 THEN a.prcld
             ELSE NULL
         END AS prc_low_lcl,
-        CASE
+        -- cast back to the column type: the original UPDATE assigned the
+        -- divided value in place, implicitly rounding to DECIMAL(28,8)
+        CAST(CASE
             WHEN a.exchg = 14 AND a.datadate <  DATE '2001-02-01' THEN a.cshtrd / 2
             WHEN a.exchg = 14 AND a.datadate <= DATE '2001-12-31' THEN a.cshtrd / 1.8
             WHEN a.exchg = 14 AND a.datadate <  DATE '2003-12-31' THEN a.cshtrd / 1.6
             ELSE a.cshtrd
-        END AS cshtrd,
+        END AS DECIMAL(28, 8)) AS cshtrd,
         COALESCE(a.cshoc / 1e6, b.csho_fund * b.ajex_fund / a.ajexdi) AS cshoc,
         (a.prccd / a.ajexdi * a.trfd) AS ri_local, a.curcddv, a.div, a.divd, a.divsp
     FROM comp_secd AS a
