@@ -342,6 +342,22 @@ FF_DFF_MERGE_YEAR = 1954
 # op/inv stay null so DFF rows drop out of OP/INV (RMW/CMA) sorts.
 FF_DFF_SYNTH_COUNT = 2
 
+# CCM link-window backdating rescue for the early-1960s Compustat expansion.
+# Compustat added ~200 (mostly small) NYSE/AMEX firms per year around 1964-66
+# and backfilled their fy1962-64 statements; CCM stamps linkdt at coverage
+# start, so those fiscal years sit BEFORE the link window and the standard
+# linkdt <= June(t) filter rejects them. French uses them (his ME x OP
+# portfolio counts exceed ours by ~200/yr in 1963-65 and match from 1966;
+# diagnosed 2026-06: 208/206/192 of the misses are window-only failures with
+# a valid L*/P-C link and a fy(t-1) funda row, median linkdt 2.6y after the
+# formation). Rescue: for June formations in [FROM, THROUGH], accept a link
+# whose linkdt is after the formation when it is the permno's first link and
+# starts within FF_CCM_BACKDATE_MAX_YEARS of the formation (kills recycled-
+# permno misattribution, e.g. a 2001 link claiming a 1963 row).
+FF_CCM_BACKDATE_FROM = 1963
+FF_CCM_BACKDATE_THROUGH = 1966
+FF_CCM_BACKDATE_MAX_YEARS = 5
+
 
 # ============================================================================
 # Mispricing Factors (Stambaugh-Yuan) — ported from MisprProject

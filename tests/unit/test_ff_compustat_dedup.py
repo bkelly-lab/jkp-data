@@ -210,3 +210,101 @@ class TestUsBeLadder:
         # be = at - lt = 70; op = (revt - cogs) / be = 15 / 70.
         out = self._be(tmp_path, seq=None, ceq=None, pstk=None, lt=30.0, revt=20.0, cogs=5.0)
         assert abs(out["op"][0] - 15.0 / 70.0) < 1e-12
+
+
+# =============================================================================
+# CCM backfill rescue (FF_CCM_BACKDATE_*): June 1963-66 formations may use
+# fiscal rows that predate the permno's first link window (Compustat added
+# ~200 small firms/yr around 1964-66 and backfilled fy1962-64; CCM stamps
+# linkdt at coverage start, so the standard window filter rejects exactly
+# the rows French's portfolios include).
+# =============================================================================
+
+
+def _write_lnkhist_rows(path, rows):
+    """rows: list of (gvkey, permno, linkdt) — P/LC links, open-ended."""
+    pl.DataFrame(
+        {
+            "gvkey": [r[0] for r in rows],
+            "lpermno": [r[1] for r in rows],
+            "linkprim": ["P"] * len(rows),
+            "linktype": ["LC"] * len(rows),
+            "linkdt": [r[2] for r in rows],
+            "linkenddt": [None] * len(rows),
+        }
+    ).with_columns(
+        pl.col("linkdt").cast(pl.Date),
+        pl.col("linkenddt").cast(pl.Date),
+    ).write_parquet(path)
+
+
+class TestCcmBackdateRescue:
+    @staticmethod
+    def _run(tmp_path, funda_rows, lnk_rows):
+        _write_funda(tmp_path / "comp_funda.parquet", funda_rows)
+        _write_lnkhist_rows(tmp_path / "crsp_ccmxpf_lnkhist.parquet", lnk_rows)
+        return ff_load_compustat_us(tmp_path, ff5=True)
+
+    def test_backfilled_year_rescued(self, tmp_path):
+        # fy1962 -> jun_end 1963-06-30, inside [1963, 1966]; link starts
+        # 1965-01-01 (permno's first, within 5y of the formation).
+        out = self._run(
+            tmp_path,
+            [_funda_row("001", date(1962, 12, 31), 100.0, indl=True)],
+            [("001", 10001, date(1965, 1, 1))],
+        )
+        assert out.filter((pl.col("permno") == 10001) & (pl.col("year") == 1962)).height == 1
+
+    def test_no_rescue_after_gate(self, tmp_path):
+        # fy1970 -> jun_end 1971-06-30 > THROUGH: standard window only.
+        out = self._run(
+            tmp_path,
+            [_funda_row("001", date(1970, 12, 31), 100.0, indl=True)],
+            [("001", 10001, date(1973, 1, 1))],
+        )
+        assert out.height == 0
+
+    def test_no_rescue_before_gate(self, tmp_path):
+        # fy1960 -> jun_end 1961-06-30 < FROM.
+        out = self._run(
+            tmp_path,
+            [_funda_row("001", date(1960, 12, 31), 100.0, indl=True)],
+            [("001", 10001, date(1963, 1, 1))],
+        )
+        assert out.height == 0
+
+    def test_distance_cap(self, tmp_path):
+        # Link 1990 claiming fy1962: > MAX_YEARS after the formation.
+        out = self._run(
+            tmp_path,
+            [_funda_row("001", date(1962, 12, 31), 100.0, indl=True)],
+            [("001", 10001, date(1990, 1, 1))],
+        )
+        assert out.height == 0
+
+    def test_first_link_guard(self, tmp_path):
+        # permno's first link belongs to another gvkey (1955): the 1965 link
+        # is not first -> no rescue (recycled-permno protection).
+        out = self._run(
+            tmp_path,
+            [_funda_row("002", date(1962, 12, 31), 100.0, indl=True)],
+            [("001", 10001, date(1955, 1, 1)), ("002", 10001, date(1965, 1, 1))],
+        )
+        assert out.height == 0
+
+    def test_in_window_beats_backdated(self, tmp_path):
+        # Two gvkeys with fy1962 rows for one permno: gvkey 001 in-window
+        # (first link, 1955), gvkey 002 backdated. Dedup keeps the in-window
+        # match. (002 also fails the first-link guard; the sort-priority is
+        # belt-and-braces.)
+        out = self._run(
+            tmp_path,
+            [
+                _funda_row("001", date(1962, 12, 31), 100.0, indl=True),
+                _funda_row("002", date(1962, 12, 31), 200.0, indl=True),
+            ],
+            [("001", 10001, date(1955, 1, 1)), ("002", 10001, date(1965, 1, 1))],
+        )
+        rows = out.filter((pl.col("permno") == 10001) & (pl.col("year") == 1962))
+        assert rows.height == 1
+        assert rows["gvkey"][0] == "001"

@@ -25,6 +25,9 @@ from polars import col
 from .config import (
     COLLECT_CHUNK_SIZE,
     END_DATE,
+    FF_CCM_BACKDATE_FROM,
+    FF_CCM_BACKDATE_MAX_YEARS,
+    FF_CCM_BACKDATE_THROUGH,
     FF_CRSP_SPECS,
     FF_DFF_GATE_COMPUSTAT_PRE1954,
     FF_DFF_MERGE_YEAR,
@@ -11512,8 +11515,12 @@ def ff_load_compustat_us(
            with strict 1-year FY gap.
         4) Sort by (gvkey, datadate); compute count.
         5) Link via ccmxpf_lnkhist (linktype starts with L, linkprim ∈ {P,C}).
-           Filter by June(y+1) validity window. Dedup: prefer P over C on
-           (datadate, permno); then last entry per (permno, year).
+           Filter by June(y+1) validity window, with the 1963-66 backfill
+           rescue (FF_CCM_BACKDATE_*): the permno's first link also matches
+           fiscal rows that predate its window when it starts within
+           MAX_YEARS of the formation. Dedup: in-window before backdated,
+           then prefer P over C on (datadate, permno); then last entry per
+           (permno, year).
         6) use_dff: union DFF BE rows. DFF be(t) is publicly available by
            June 30 of year t and pairs with Dec(t−1) ME, so the unioned row
            carries year = t − 1 (the downstream join uses cyp1 = year + 1 =
@@ -11611,19 +11618,36 @@ def ff_load_compustat_us(
             pl.col("lpermno").cast(pl.Int64),
             pl.col("linkdt", "linkenddt").cast(pl.Date),
         )
+        .with_columns(first_linkdt=pl.col("linkdt").min().over("lpermno"))
+    )
+    # Backfill rescue (see FF_CCM_BACKDATE_* in config): June formations of
+    # [FROM, THROUGH] may use fiscal rows that predate the link window, when
+    # the link is the permno's first and starts within MAX_YEARS of the
+    # formation. In-window links beat backdated ones on any collision.
+    in_window = (pl.col("linkdt") <= pl.col("jun_end")) & (
+        pl.col("linkenddt").is_null() | (pl.col("linkenddt") >= pl.col("jun_end"))
+    )
+    backdated = (
+        pl.col("jun_end").is_between(
+            pl.date(FF_CCM_BACKDATE_FROM, 6, 30), pl.date(FF_CCM_BACKDATE_THROUGH, 6, 30)
+        )
+        & (pl.col("linkdt") == pl.col("first_linkdt"))
+        & (pl.col("linkdt") <= pl.col("jun_end").dt.offset_by(f"{FF_CCM_BACKDATE_MAX_YEARS}y"))
     )
     comp_ccm = (
         comp.with_columns(jun_end=pl.date(pl.col("datadate").dt.year() + 1, 6, 30))
         .join(lnk, on="gvkey", how="inner")
-        .filter(
-            (pl.col("linkdt") <= pl.col("jun_end"))
-            & (pl.col("linkenddt").is_null() | (pl.col("linkenddt") >= pl.col("jun_end")))
-        )
+        .with_columns(in_window=in_window)
+        .filter(pl.col("in_window") | backdated)
         .rename({"lpermno": "permno"})
-        .sort(["datadate", "permno", "linkprim"], descending=[False, False, True])
+        .sort(
+            ["datadate", "permno", "in_window", "linkprim"],
+            descending=[False, False, True, True],
+        )
         .unique(subset=["datadate", "permno"], keep="first")
         .sort(["permno", "year", "datadate"])
         .unique(subset=["permno", "year"], keep="last")
+        .drop("in_window", "first_linkdt")
         .collect()
     )
     if not use_dff:
