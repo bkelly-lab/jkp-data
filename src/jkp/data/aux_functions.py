@@ -13120,14 +13120,42 @@ def hxz_link_compustat(comp: pl.DataFrame, raw_dir: Path) -> pl.DataFrame:
     )
 
 
+def _hxz_quantile_breaks(
+    df: pl.DataFrame,
+    specs: list[tuple[str, float, str]],
+    *,
+    group_keys: list[str],
+    pool_filter: pl.Expr,
+    min_count: int | None = None,
+) -> pl.DataFrame:
+    """
+    Description:
+        Per-group QUANTILE_DISC breakpoints over a filtered breakpoint pool.
+    Steps:
+        1) Filter to the pool, project group keys + spec columns.
+        2) SQL GROUP BY with one QUANTILE_DISC per (col, q, alias) spec;
+           optional HAVING COUNT(*) gate.
+    Output:
+        One row per group with the aliased breakpoint columns.
+    """
+    breaks_sql = ", ".join(f"QUANTILE_DISC({c}, {q}) AS {a}" for c, q, a in specs)
+    cols = list({c for c, _, _ in specs})
+    gk = ", ".join(group_keys)
+    having = f" HAVING COUNT(*) >= {min_count}" if min_count is not None else ""
+    return (
+        df.filter(pool_filter)
+        .select(*group_keys, *cols)
+        .sql(f"SELECT {gk}, {breaks_sql} FROM self GROUP BY {gk}{having}")
+    )
+
+
 def _hxz_nyse_breaks(df: pl.DataFrame, specs: list[tuple[str, float, str]]) -> pl.DataFrame:
     """Per-date NYSE-only QUANTILE_DISC breakpoints via DuckDB SQL."""
-    sql = ", ".join(f"QUANTILE_DISC({c}, {q}) AS {a}" for c, q, a in specs)
-    cols = list({c for c, _, _ in specs})
-    return (
-        df.filter((pl.col("exchcd") == 1) & pl.col("elig"))
-        .select("date", *cols)
-        .sql(f"SELECT date, {sql} FROM self GROUP BY date")
+    return _hxz_quantile_breaks(
+        df,
+        specs,
+        group_keys=["date"],
+        pool_filter=(pl.col("exchcd") == 1) & pl.col("elig"),
     )
 
 
@@ -13292,16 +13320,12 @@ def _hxz_country_breaks(df: pl.DataFrame, specs: list[tuple[str, float, str]]) -
     """Per-(excntry, date) breakpoints over ROW HXZ pool (size_grp ∈
     {small, large, mega} + elig). Drops (excntry, date) where COUNT(*) <
     HXZ_MIN_STOCKS_BP."""
-    cols = list({c for c, _, _ in specs})
-    breaks_sql = ", ".join(f"QUANTILE_DISC({c}, {q}) AS {a}" for c, q, a in specs)
-    return (
-        df.filter(pl.col("elig") & pl.col("size_grp").is_in(["small", "large", "mega"]))
-        .select("excntry", "date", *cols)
-        .sql(
-            f"SELECT excntry, date, {breaks_sql} FROM self "
-            f"GROUP BY excntry, date "
-            f"HAVING COUNT(*) >= {HXZ_MIN_STOCKS_BP}"
-        )
+    return _hxz_quantile_breaks(
+        df,
+        specs,
+        group_keys=["excntry", "date"],
+        pool_filter=pl.col("elig") & pl.col("size_grp").is_in(["small", "large", "mega"]),
+        min_count=HXZ_MIN_STOCKS_BP,
     )
 
 
@@ -13656,66 +13680,80 @@ def hxz_compute_chars(
     return size_ia_form, roe_m
 
 
+def _hxz_tercile_port(value_col: str, b30: str, b70: str, gate: pl.Expr) -> pl.Expr:
+    """1/2/3 tercile bucket of `value_col` vs break columns, null when gated off."""
+    return (
+        pl.when(gate)
+        .then(
+            pl.when(pl.col(value_col) <= pl.col(b30))
+            .then(1)
+            .when(pl.col(value_col) <= pl.col(b70))
+            .then(2)
+            .otherwise(3)
+        )
+        .otherwise(None)
+        .cast(pl.Int64)
+    )
+
+
+def _hxz_invport_expr() -> pl.Expr:
+    """Tercile inv bucket; gated on elig + non-null inv and inv30 break."""
+    return _hxz_tercile_port(
+        "inv",
+        "inv30",
+        "inv70",
+        pl.col("elig") & pl.col("inv").is_not_null() & pl.col("inv30").is_not_null(),
+    )
+
+
 def _hxz_classify_size_ia(size_ia_form: pl.DataFrame) -> pl.DataFrame:
     """Apply country-aware breakpoints + bucket cuts to June size+inv frame.
     US: NYSE-only pool, per-date breaks. ROW: size_grp pool + HXZ_MIN_STOCKS_BP
     gate, per-(excntry, date) breaks. Returns June-level classified frame
     with `sizeport`, `invport` (and `inv` preserved for downstream)."""
+    specs = [("me", 0.50, "sizemedn"), ("inv", 0.30, "inv30"), ("inv", 0.70, "inv70")]
+
+    def assign(
+        df: pl.DataFrame,
+        breaks: pl.DataFrame,
+        *,
+        join_keys: list[str],
+        id_col: str,
+        require_size_break: bool,
+    ) -> pl.DataFrame:
+        # ROW joins breaks per (excntry, date) with a HAVING gate, so sizemedn
+        # can be null after the left join; US per-date breaks are always present.
+        size_gate = pl.col("elig")
+        if require_size_break:
+            size_gate = size_gate & pl.col("sizemedn").is_not_null()
+        return (
+            df.join(breaks, on=join_keys, how="left")
+            .with_columns(
+                sizeport=pl.when(size_gate)
+                .then(pl.when(pl.col("me") <= pl.col("sizemedn")).then(1).otherwise(2))
+                .otherwise(None)
+                .cast(pl.Int64),
+                invport=_hxz_invport_expr(),
+            )
+            .select("excntry", "id", id_col, "date", "sizeport", "invport", "inv")
+        )
+
     us = size_ia_form.filter(pl.col("excntry") == US_EXCNTRY)
     row = size_ia_form.filter(pl.col("excntry") != US_EXCNTRY)
-
-    us_breaks = _hxz_nyse_breaks(
-        us, [("me", 0.50, "sizemedn"), ("inv", 0.30, "inv30"), ("inv", 0.70, "inv70")]
+    us_cls = assign(
+        us,
+        _hxz_nyse_breaks(us, specs),
+        join_keys=["date"],
+        id_col="permno",
+        require_size_break=False,
     )
-    us_cls = (
-        us.join(us_breaks, on="date", how="left")
-        .with_columns(
-            sizeport=pl.when(pl.col("elig"))
-            .then(pl.when(pl.col("me") <= pl.col("sizemedn")).then(1).otherwise(2))
-            .otherwise(None)
-            .cast(pl.Int64),
-            invport=pl.when(
-                pl.col("elig") & pl.col("inv").is_not_null() & pl.col("inv30").is_not_null()
-            )
-            .then(
-                pl.when(pl.col("inv") <= pl.col("inv30"))
-                .then(1)
-                .when(pl.col("inv") <= pl.col("inv70"))
-                .then(2)
-                .otherwise(3)
-            )
-            .otherwise(None)
-            .cast(pl.Int64),
-        )
-        .select("excntry", "id", "permno", "date", "sizeport", "invport", "inv")
+    row_cls = assign(
+        row,
+        _hxz_country_breaks(row, specs),
+        join_keys=["excntry", "date"],
+        id_col="gvkey",
+        require_size_break=True,
     )
-
-    row_breaks = _hxz_country_breaks(
-        row, [("me", 0.50, "sizemedn"), ("inv", 0.30, "inv30"), ("inv", 0.70, "inv70")]
-    )
-    row_cls = (
-        row.join(row_breaks, on=["excntry", "date"], how="left")
-        .with_columns(
-            sizeport=pl.when(pl.col("elig") & pl.col("sizemedn").is_not_null())
-            .then(pl.when(pl.col("me") <= pl.col("sizemedn")).then(1).otherwise(2))
-            .otherwise(None)
-            .cast(pl.Int64),
-            invport=pl.when(
-                pl.col("elig") & pl.col("inv").is_not_null() & pl.col("inv30").is_not_null()
-            )
-            .then(
-                pl.when(pl.col("inv") <= pl.col("inv30"))
-                .then(1)
-                .when(pl.col("inv") <= pl.col("inv70"))
-                .then(2)
-                .otherwise(3)
-            )
-            .otherwise(None)
-            .cast(pl.Int64),
-        )
-        .select("excntry", "id", "gvkey", "date", "sizeport", "invport", "inv")
-    )
-
     return pl.concat([us_cls, row_cls], how="diagonal_relaxed")
 
 
@@ -13723,49 +13761,24 @@ def _hxz_classify_roe(roe_m: pl.DataFrame) -> pl.DataFrame:
     """Apply country-aware breakpoints + bucket cuts to monthly ROE frame.
     US: NYSE-only pool, per-date breaks. ROW: size_grp pool, per-(excntry,
     date) breaks with HXZ_MIN_STOCKS_BP gate."""
-    us = roe_m.filter(pl.col("excntry") == US_EXCNTRY).with_columns(
-        elig=(~pl.col("is_fin")) & pl.col("roe").is_not_null()
-    )
-    row = roe_m.filter(pl.col("excntry") != US_EXCNTRY).with_columns(
-        elig=(~pl.col("is_fin")) & pl.col("roe").is_not_null()
-    )
+    specs = [("roe", 0.30, "roe30"), ("roe", 0.70, "roe70")]
+    elig = (~pl.col("is_fin")) & pl.col("roe").is_not_null()
 
-    us_breaks = _hxz_nyse_breaks(us, [("roe", 0.30, "roe30"), ("roe", 0.70, "roe70")])
-    us_cls = (
-        us.join(us_breaks, on="date", how="left")
-        .with_columns(
-            roeport=pl.when(pl.col("elig") & pl.col("roe30").is_not_null())
-            .then(
-                pl.when(pl.col("roe") <= pl.col("roe30"))
-                .then(1)
-                .when(pl.col("roe") <= pl.col("roe70"))
-                .then(2)
-                .otherwise(3)
+    def assign(df: pl.DataFrame, breaks: pl.DataFrame, *, join_keys: list[str]) -> pl.DataFrame:
+        return (
+            df.join(breaks, on=join_keys, how="left")
+            .with_columns(
+                roeport=_hxz_tercile_port(
+                    "roe", "roe30", "roe70", pl.col("elig") & pl.col("roe30").is_not_null()
+                )
             )
-            .otherwise(None)
-            .cast(pl.Int64)
+            .select("excntry", "id", "date", "roeport", "roe")
         )
-        .select("excntry", "id", "date", "roeport", "roe")
-    )
 
-    row_breaks = _hxz_country_breaks(row, [("roe", 0.30, "roe30"), ("roe", 0.70, "roe70")])
-    row_cls = (
-        row.join(row_breaks, on=["excntry", "date"], how="left")
-        .with_columns(
-            roeport=pl.when(pl.col("elig") & pl.col("roe30").is_not_null())
-            .then(
-                pl.when(pl.col("roe") <= pl.col("roe30"))
-                .then(1)
-                .when(pl.col("roe") <= pl.col("roe70"))
-                .then(2)
-                .otherwise(3)
-            )
-            .otherwise(None)
-            .cast(pl.Int64)
-        )
-        .select("excntry", "id", "date", "roeport", "roe")
-    )
-
+    us = roe_m.filter(pl.col("excntry") == US_EXCNTRY).with_columns(elig=elig)
+    row = roe_m.filter(pl.col("excntry") != US_EXCNTRY).with_columns(elig=elig)
+    us_cls = assign(us, _hxz_nyse_breaks(us, specs), join_keys=["date"])
+    row_cls = assign(row, _hxz_country_breaks(row, specs), join_keys=["excntry", "date"])
     return pl.concat([us_cls, row_cls], how="vertical_relaxed")
 
 
