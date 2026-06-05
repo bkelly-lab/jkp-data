@@ -301,8 +301,7 @@ section_tables("MP")
 
 - **Undisclosed filters in the papers.** Source papers omit secondary
   screens (e.g., stale prices, thin trading, dual-class consolidation,
-  fiscal-year changers, share-class screens, price floors) that the
-  reference WRDS implementations carry as undocumented adjustments.
+  fiscal-year changers, share-class screens, price floors).
   Exact parity is not achievable without the original construction
   code.
 
