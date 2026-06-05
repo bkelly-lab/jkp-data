@@ -14,8 +14,14 @@ Output:
     Comparison parquets + printed improvement summary.
 
 Usage (from a checkout of the bessembinder_correction branch):
-    PYTHONPATH=src python scripts/bessembinder_winsor_benchmark.py
+    PYTHONPATH=src python scripts/bessembinder_winsor_benchmark.py [source]
+
+source: which __comp_dsf_<source>.parquet to winsorize ('uncorrected'
+default; pass a correction method, e.g. 'bessembinder', to measure
+winsorization applied ON TOP of corrected data).
 """
+
+import sys
 
 import polars as pl
 from bessembinder_us_validation import BASE, REAL, comp_dsf_with_permno, paths
@@ -27,7 +33,8 @@ LOWER, UPPER = 0.001, 0.999
 
 
 def main() -> None:
-    uncorrected = comp_dsf_with_permno(paths.interim_dir / "__comp_dsf_uncorrected.parquet")
+    source = sys.argv[1] if len(sys.argv) > 1 else "uncorrected"
+    uncorrected = comp_dsf_with_permno(paths.interim_dir / f"__comp_dsf_{source}.parquet")
 
     # Cross-sectional (per-day) winsorization of returns at 0.1% / 99.9%
     winsorized = uncorrected.with_columns(
@@ -42,12 +49,12 @@ def main() -> None:
     crsp = pl.scan_parquet(REAL / "interim" / "crsp_dsf.parquet").select(
         "permno", "date", "prc", "ret"
     )
-    out_dir = BASE / "interim" / "winsor_0.1"
+    out_dir = BASE / "interim" / ("winsor_0.1" if source == "uncorrected" else f"winsor_{source}")
     out_dir.mkdir(parents=True, exist_ok=True)
     results = compare_compustat_crsp_before_after(
         uncorrected, winsorized, crsp, output_dir=str(out_dir)
     )
-    print("method=winsor_0.1_99.9_cross_sectional", flush=True)
+    print(f"method=winsor_0.1_99.9_cross_sectional source={source}", flush=True)
     print(results["improvement"], flush=True)
 
 
