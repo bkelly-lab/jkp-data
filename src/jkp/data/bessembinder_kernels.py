@@ -55,7 +55,7 @@ WT_SUB_B = 3
 WS_NULL = -1
 
 
-@njit(cache=True)
+@njit(cache=True, error_model="numpy")
 def _detect_single_one(x, factor, etype, wtype, ep_l, ep_r, rat_l, rat_r):
     """Single-period detection for one security slice (arrays are views)."""
     n = len(x)
@@ -91,7 +91,7 @@ def _detect_single_one(x, factor, etype, wtype, ep_l, ep_r, rat_l, rat_r):
         rat_r[t] = rn
 
 
-@njit(parallel=True, cache=True)
+@njit(parallel=True, cache=True, error_model="numpy")
 def detect_single_period_all(x, starts, factor, etype, wtype, ep_l, ep_r, rat_l, rat_r):
     """Run single-period detection over all securities in parallel."""
     n_groups = len(starts) - 1
@@ -110,7 +110,7 @@ def detect_single_period_all(x, starts, factor, etype, wtype, ep_l, ep_r, rat_l,
         )
 
 
-@njit(cache=True)
+@njit(cache=True, error_model="numpy")
 def _multi_pass_one(
     x,
     factor,
@@ -245,7 +245,7 @@ def _multi_pass_one(
             var[r] = det_var[t]
 
 
-@njit(cache=True)
+@njit(cache=True, error_model="numpy")
 def _multi_one(x, factor, etype, wsize, wtype, ep_l, ep_r, rat_l, rat_r, var, nlags, vthr):
     """All multi-period passes for one security: nlags ascending, FULL -> SUB_A -> SUB_B."""
     n = len(x)
@@ -344,7 +344,7 @@ def _multi_one(x, factor, etype, wsize, wtype, ep_l, ep_r, rat_l, rat_r, var, nl
             )
 
 
-@njit(parallel=True, cache=True)
+@njit(parallel=True, cache=True, error_model="numpy")
 def detect_multi_period_all(
     x, starts, factor, etype, wsize, wtype, ep_l, ep_r, rat_l, rat_r, var, nlags, vthr
 ):
@@ -369,7 +369,7 @@ def detect_multi_period_all(
         )
 
 
-@njit(cache=True)
+@njit(cache=True, error_model="numpy")
 def _validate_one(factor, etype, wsize, reject):
     """
     Cascading validation for one security: reject corrections whose BOTH
@@ -402,7 +402,7 @@ def _validate_one(factor, etype, wsize, reject):
                 etype[p] = ET_NULL
 
 
-@njit(parallel=True, cache=True)
+@njit(parallel=True, cache=True, error_model="numpy")
 def validate_cascading_all(starts, factor, etype, wsize, rejected_mask):
     """Run cascading validation over all securities; record rejected rows."""
     n_groups = len(starts) - 1
@@ -441,7 +441,7 @@ _EARLY_OBS = 504  # ~24 months of trading days
 _EARLY_FRAC = 0.2
 
 
-@njit(cache=True)
+@njit(cache=True, error_model="numpy")
 def _s8_kill_all(reason, code):
     """Remove every still-alive row of the security with the given reason."""
     for i in range(reason.size):
@@ -449,7 +449,7 @@ def _s8_kill_all(reason, code):
             reason[i] = code
 
 
-@njit(cache=True)
+@njit(cache=True, error_model="numpy")
 def _s8_early_jump_stage(reason, num, aux, code, is_ret, chn):
     """
     Shared early-jump stage for filters 8e (adjCSHO) and 8f (ME).
@@ -502,7 +502,7 @@ def _s8_early_jump_stage(reason, num, aux, code, is_ret, chn):
             reason[i] = code
 
 
-@njit(cache=True)
+@njit(cache=True, error_model="numpy")
 def _s8_one_security(reason, remove_8a, ajexdi, prc, me, ri, cshoc, dates, low_thr, chn):
     """
     Apply the Section 8 filter chain to one security (arrays are views over
@@ -585,11 +585,10 @@ def _s8_one_security(reason, remove_8a, ajexdi, prc, me, ri, cshoc, dates, low_t
             ret = ri[i] / ri[prev] - 1.0
             me_chg = me[i] / me[prev] - 1.0
             if abs(ret) > 0.8 and abs(me_chg) < 0.5:
-                reason[i] = -2  # provisional: do not disturb later shifts
+                # prev still advances below: the flagged row stays the shift
+                # source for the next row, matching polars stage-input shifts
+                reason[i] = R_8G_RETURN
         prev = i
-    for i in range(n):
-        if reason[i] == -2:
-            reason[i] = R_8G_RETURN
 
     # ---- 8h: large price/ME ratios within the first three observations ----
     prev = -1
@@ -604,14 +603,11 @@ def _s8_one_security(reason, remove_8a, ajexdi, prc, me, ri, cshoc, dates, low_t
             pr = prc[i] / prc[prev]
             mr = me[i] / me[prev]
             if pr > 10.0 or pr < 0.1 or mr > 10.0 or mr < 0.1:
-                reason[i] = -2
+                reason[i] = R_8H_INITIAL  # prev still advances: see 8g note
         prev = i
-    for i in range(n):
-        if reason[i] == -2:
-            reason[i] = R_8H_INITIAL
 
 
-@njit(parallel=True, cache=True)
+@njit(parallel=True, cache=True, error_model="numpy")
 def section8_all(starts, reason, remove_8a, ajexdi, prc, me, ri, cshoc, dates, low_thr, chn):
     """Run the Section 8 filter chain over all securities in parallel."""
     n_groups = len(starts) - 1

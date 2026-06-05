@@ -20,6 +20,13 @@ from . import bessembinder_kernels as bk
 
 logger = logging.getLogger(__name__)
 
+# Scratch spill files are read once then deleted; favor encode speed over size
+SPILL_COMPRESSION = "lz4"
+
+# Section 6 correction methods; the floor variants run on the slim path only
+SECTION6_METHODS = ("bessembinder", "interpolation", "floor", "floor_interp")
+_SLIM_ONLY_METHODS = ("floor", "floor_interp")
+
 # =============================================================================
 # Bessembinder et al. (2023) Data Corrections - Section 6: Decimal Errors
 # =============================================================================
@@ -598,9 +605,10 @@ def _correct_variable_arrays(
         arrays["factor"][gated] = 1.0
 
     flagged = arrays["factor"] != 1.0
-    if correction_method in ("bessembinder", "floor"):
+    use_interp = correction_method in ("interpolation", "floor_interp")
+    if not use_interp:
         corrected = x_det * arrays["factor"]
-    elif correction_method in ("interpolation", "floor_interp"):
+    else:
         corrected = x_det.copy()
         ep_l, ep_r = arrays["ep_l"], arrays["ep_r"]
         both = flagged & ~np.isnan(ep_l) & ~np.isnan(ep_r)
@@ -609,11 +617,6 @@ def _correct_variable_arrays(
         corrected[left_only] = ep_l[left_only]
         right_only = flagged & np.isnan(ep_l) & ~np.isnan(ep_r)
         corrected[right_only] = ep_r[right_only]
-    else:
-        raise ValueError(
-            f"Unknown correction_method: {correction_method}. "
-            "Expected 'bessembinder' or 'interpolation'."
-        )
     return corrected, arrays, np.flatnonzero(flagged)
 
 
@@ -701,7 +704,7 @@ def _apply_section6_slim(
     """
     sorted_path = spill_dir / "__bess_sorted.parquet"
     print("[section6] streaming-sorting input to spill file...", flush=True)
-    df.sort(group_cols + [sort_col]).sink_parquet(sorted_path, compression="lz4")
+    df.sort(group_cols + [sort_col]).sink_parquet(sorted_path, compression=SPILL_COMPRESSION)
     lf = pl.scan_parquet(sorted_path)
     schema_names = lf.collect_schema().names()
 
@@ -712,16 +715,10 @@ def _apply_section6_slim(
     def load(name: str) -> np.ndarray:
         return lf.select(pl.col(name).cast(pl.Float64)).collect()[name].to_numpy().copy()
 
-    def correct(variable: str, x_raw: np.ndarray) -> np.ndarray:
+    def correct(variable: str, x_raw: np.ndarray, price_floor: bool = False) -> np.ndarray:
         print(f"[section6] correcting {variable}...", flush=True)
-        # 'floor' gates the price variable only (divide-direction, >=$1);
-        # non-price variables keep standard bessembinder corrections.
         corrected, arrays, flag_idx = _correct_variable_arrays(
-            x_raw,
-            starts,
-            window_sizes,
-            correction_method,
-            price_floor=(correction_method in ("floor", "floor_interp") and variable == "adjprc"),
+            x_raw, starts, window_sizes, correction_method, price_floor=price_floor
         )
         logger.info(f"{variable}: {len(flag_idx)} corrections applied")
         logs.append(
@@ -755,7 +752,13 @@ def _apply_section6_slim(
     # Steps 3-5: correct split-adjusted price/shares, reconstruct prccd/cshoc
     ajexdi = load("ajexdi")
     with np.errstate(divide="ignore", invalid="ignore"):
-        adjprc_corr = correct("adjprc", load("prccd") / ajexdi)
+        # The floor variants gate the price variable only (divide-direction,
+        # >=$1); other variables keep standard corrections.
+        adjprc_corr = correct(
+            "adjprc",
+            load("prccd") / ajexdi,
+            price_floor=correction_method in _SLIM_ONLY_METHODS,
+        )
         adjcsho_corr = correct("adjcsho", load("cshoc") * ajexdi)
         corrected_cols["prccd"] = adjprc_corr * ajexdi
         corrected_cols["cshoc"] = adjcsho_corr / ajexdi
@@ -764,7 +767,7 @@ def _apply_section6_slim(
     corr_path = spill_dir / "__bess_corrected_cols.parquet"
     pl.DataFrame(corrected_cols).with_columns(
         [col(name).fill_nan(None) for name in corrected_cols]
-    ).write_parquet(corr_path, compression="lz4")
+    ).write_parquet(corr_path, compression=SPILL_COMPRESSION)
 
     result = pl.concat(
         [pl.scan_parquet(sorted_path).drop(list(corrected_cols)), pl.scan_parquet(corr_path)],
@@ -817,6 +820,14 @@ def apply_bessembinder_section6(
     Returns:
         Tuple of (corrected_df, all_corrections_log)
     """
+    if correction_method not in SECTION6_METHODS:
+        raise ValueError(
+            f"Unknown correction_method: {correction_method!r}; expected one of {SECTION6_METHODS}"
+        )
+    if correction_method in _SLIM_ONLY_METHODS and spill_dir is None:
+        raise ValueError(
+            f"correction_method {correction_method!r} requires spill_dir (slim path only)"
+        )
     if group_cols is None:
         group_cols = ["gvkey", "iid"]
     if window_sizes is None:
@@ -1624,6 +1635,17 @@ def find_partial_corrections(
 LOW_PRICE_THRESHOLD_COUNTRIES = ["BRA", "IDN", "NGA", "TUR"]
 
 
+def _avg_positive_volume(
+    df: pl.LazyFrame, group_cols: list[str], volume_col: str = "dolvol"
+) -> pl.LazyFrame:
+    """Per-security mean of positive volume — filter 8a's input statistic."""
+    return (
+        df.filter(col(volume_col) > 0)
+        .group_by(group_cols)
+        .agg(pl.mean(volume_col).alias("_avg_vol"))
+    )
+
+
 def filter_8a_trading_volume(
     df: pl.LazyFrame,
     group_cols: list[str] | None = None,
@@ -1646,11 +1668,7 @@ def filter_8a_trading_volume(
         group_cols = ["gvkey", "iid"]
 
     # Compute average positive volume per security
-    avg_vol = (
-        df.filter(col(volume_col) > 0)
-        .group_by(group_cols)
-        .agg(pl.mean(volume_col).alias("_avg_vol"))
-    )
+    avg_vol = _avg_positive_volume(df, group_cols, volume_col)
 
     # Find the percentile cutoff; cross join broadcasts the single-row cutoff
     cutoff = avg_vol.select(pl.col("_avg_vol").quantile(percentile).alias("_cutoff"))
@@ -2241,7 +2259,7 @@ def _apply_section8_slim(
     sort_col: str,
     country_col: str,
     spill_dir: Path,
-    presorted: bool = False,
+    presorted_path: Path | None = None,
 ) -> tuple[pl.LazyFrame, pl.LazyFrame | None]:
     """
     Description:
@@ -2253,10 +2271,12 @@ def _apply_section8_slim(
         preserved inside the kernel), and reattaches the keep decision via a
         lazy horizontal concat.
     Steps:
-        1) Streaming-sort input to spill_dir/__bess_s8_sorted.parquet
-           (skipped when presorted=True: the caller wrote that file already
-           sorted by group_cols + sort_col, e.g. via DuckDB ORDER BY).
-        2) Collect group keys once; build group-start offsets.
+        1) Streaming-sort input to spill_dir/__bess_s8_sorted.parquet — or,
+           when presorted_path is given, trust that file (written by the
+           caller already sorted by group_cols + sort_col, e.g. via DuckDB
+           ORDER BY) and verify its sort order before using it.
+        2) Collect keys, kernel inputs and country flags in ONE pass; build
+           group-start offsets.
         3) Filter 8a's global cross-security decision: per-security mean of
            positive volume + 2% quantile via the same polars expressions as
            the reference, mapped to a per-security bool.
@@ -2266,23 +2286,46 @@ def _apply_section8_slim(
     Output:
         (filtered LazyFrame, removal log LazyFrame or None).
     """
-    sorted_path = spill_dir / "__bess_s8_sorted.parquet"
-    if not presorted:
+    sorted_path = presorted_path or (spill_dir / "__bess_s8_sorted.parquet")
+    if presorted_path is None:
         print("[section8] streaming-sorting input to spill file...", flush=True)
-        df.sort(group_cols + [sort_col]).sink_parquet(sorted_path, compression="lz4")
+        df.sort(group_cols + [sort_col]).sink_parquet(sorted_path, compression=SPILL_COMPRESSION)
     lf = pl.scan_parquet(sorted_path)
 
-    print("[section8] building group index...", flush=True)
-    keys = lf.select(group_cols + [sort_col]).collect()
+    # One pass over the spill file: keys, kernel value columns and country
+    # flags together (vs one scan per column).
+    print("[section8] loading kernel inputs...", flush=True)
+    value_cols = ["ajexdi", "prc", "me", "ri", "cshoc", "dolvol"]
+    data = lf.select(
+        group_cols
+        + [sort_col]
+        + [pl.col(c).cast(pl.Float64) for c in value_cols]
+        + [
+            col(country_col).is_in(LOW_PRICE_THRESHOLD_COUNTRIES).fill_null(False).alias("_low"),
+            (col(country_col) == "CHN").fill_null(False).alias("_chn"),
+        ]
+    ).collect()
+    keys = data.select(group_cols + [sort_col])
     starts = _group_starts(keys, group_cols)
+
+    if presorted_path is not None:
+        # Trusting an externally sorted file: a stale or differently-ordered
+        # spill would silently corrupt the whole panel, so verify the order.
+        n_groups = keys.select(pl.struct(group_cols).n_unique()).item()
+        if len(starts) - 1 != n_groups:
+            raise ValueError(f"presorted file {sorted_path}: groups are not contiguous")
+        d = keys[sort_col].cast(pl.Date).to_physical().to_numpy()
+        interior = np.ones(len(d), dtype=np.bool_)
+        interior[starts[:-1]] = False  # group starts are exempt from the diff check
+        idx = np.flatnonzero(interior)
+        if not np.all(d[idx] >= d[idx - 1]):
+            raise ValueError(f"presorted file {sorted_path}: dates not sorted within a group")
 
     # Filter 8a's global decision (the only cross-security statistic): same
     # expressions as filter_8a_trading_volume, evaluated once on the full
     # panel; securities with no positive volume (null mean) are KEPT.
     print("[section8] computing 8a volume decisions...", flush=True)
-    avg_vol = (
-        lf.filter(col("dolvol") > 0).group_by(group_cols).agg(pl.mean("dolvol").alias("_avg_vol"))
-    )
+    avg_vol = _avg_positive_volume(data.lazy(), group_cols)
     decisions = (
         keys.lazy()
         .group_by(group_cols)
@@ -2296,31 +2339,20 @@ def _apply_section8_slim(
     )
     remove_8a = decisions["_remove"].to_numpy().copy()
 
-    def load(name: str) -> np.ndarray:
-        return lf.select(pl.col(name).cast(pl.Float64)).collect()[name].to_numpy().copy()
-
     print("[section8] running filter kernel...", flush=True)
     reason = np.full(keys.height, bk.R_NULL, dtype=np.int8)
     bk.section8_all(
         starts,
         reason,
         remove_8a,
-        load("ajexdi"),
-        load("prc"),
-        load("me"),
-        load("ri"),
-        load("cshoc"),
+        data["ajexdi"].to_numpy().copy(),
+        data["prc"].to_numpy().copy(),
+        data["me"].to_numpy().copy(),
+        data["ri"].to_numpy().copy(),
+        data["cshoc"].to_numpy().copy(),
         keys[sort_col].cast(pl.Date).to_physical().cast(pl.Int32).to_numpy().copy(),
-        lf.select(col(country_col).is_in(LOW_PRICE_THRESHOLD_COUNTRIES).fill_null(False))
-        .collect()
-        .to_series()
-        .to_numpy()
-        .copy(),
-        lf.select((col(country_col) == "CHN").fill_null(False))
-        .collect()
-        .to_series()
-        .to_numpy()
-        .copy(),
+        data["_low"].to_numpy().copy(),
+        data["_chn"].to_numpy().copy(),
     )
 
     removed_idx = np.flatnonzero(reason != bk.R_NULL)
@@ -2335,7 +2367,7 @@ def _apply_section8_slim(
     )
 
     reason_path = spill_dir / "__bess_s8_reason.parquet"
-    pl.DataFrame({"_reason": reason}).write_parquet(reason_path, compression="lz4")
+    pl.DataFrame({"_reason": reason}).write_parquet(reason_path, compression=SPILL_COMPRESSION)
     kept = (
         pl.concat([pl.scan_parquet(sorted_path), pl.scan_parquet(reason_path)], how="horizontal")
         .filter(col("_reason") == bk.R_NULL)
@@ -2350,7 +2382,7 @@ def apply_bessembinder_section8(
     sort_col: str = "datadate",
     country_col: str = "excntry",
     spill_dir: Path | None = None,
-    presorted: bool = False,
+    presorted_path: Path | None = None,
 ) -> tuple[pl.LazyFrame, pl.LazyFrame]:
     """
     Apply all Bessembinder Section 8 filters in sequence.
@@ -2376,10 +2408,10 @@ def apply_bessembinder_section8(
             directory — required for full-size cluster data. When None
             (default), the polars filter chain runs (fine for small/test
             data; it is the reference implementation).
-        presorted: Slim path only — the caller already wrote
-            spill_dir/__bess_s8_sorted.parquet sorted by group_cols +
-            sort_col, so the sort step is skipped (df is ignored beyond its
-            role as documentation of the source).
+        presorted_path: Slim path only — path to a parquet the caller already
+            wrote sorted by group_cols + sort_col (e.g. via DuckDB ORDER BY).
+            The sort step is skipped and the file's sort order is verified;
+            df is ignored beyond its role as documentation of the source.
 
     Returns:
         Tuple of (filtered_df, all_removed_log)
@@ -2388,7 +2420,9 @@ def apply_bessembinder_section8(
         group_cols = ["gvkey", "iid"]
 
     if spill_dir is not None:
-        return _apply_section8_slim(df, group_cols, sort_col, country_col, spill_dir, presorted)
+        return _apply_section8_slim(
+            df, group_cols, sort_col, country_col, spill_dir, presorted_path
+        )
 
     all_removed = []
 

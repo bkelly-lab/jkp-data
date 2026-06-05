@@ -12,6 +12,7 @@ filter's removal changes a later filter's neighbor.
 import hypothesis.strategies as st
 import numpy as np
 import polars as pl
+import pytest
 from hypothesis import HealthCheck, given, settings
 from polars.testing import assert_frame_equal
 
@@ -29,12 +30,14 @@ def _panel(seed: int = 11, n_groups: int = 120) -> pl.LazyFrame:
         filter triggered, including country specials and sequential
         interactions.
     Steps:
-        Per group (cycling 12 scenarios): clean walk; 8a low volume; 8b zero
+        Per group (cycling 14 scenarios): clean walk; 8a low volume; 8b zero
         ajexdi; 8c initial breach; 8c mid-history breach; 8d calendar gap;
         8e early adjCSHO jump (plus a CHN variant where standard thresholds
         fire but China's do not); 8f early ME jump; 8g return/ME mismatch;
         8h initial-obs ratio error; 8d-gap row that is also an 8e neighbor
-        (sequential interaction); BRA low-price-threshold security.
+        (sequential interaction); BRA low-price-threshold security; zero
+        cshoc before an 8e jump (inf ratio); zero ri mid-series (8g inf
+        return).
     Output:
         LazyFrame with the __comp_dsf_pre_filter schema + excntry.
     """
@@ -49,7 +52,8 @@ def _panel(seed: int = 11, n_groups: int = 120) -> pl.LazyFrame:
         dolvol = prc * float(rng.uniform(50, 5000))
         dates = np.arange(n, dtype=np.int64) * 2  # every other day
         excntry = "USA"
-        kind = g % 12
+        me_override: tuple[int, float] | None = None
+        kind = g % 14
         if kind == 1:
             dolvol = prc * 0.001  # 8a: tiny average volume
         elif kind == 2 and n > 6:
@@ -81,7 +85,17 @@ def _panel(seed: int = 11, n_groups: int = 120) -> pl.LazyFrame:
             excntry = "BRA"  # low price threshold 0.001
             prc[:] = 0.005  # breaches USA threshold but not BRA's
             prc[0] = 0.0005  # ...except the first obs: initial breach
+        elif kind == 12 and n > 10:
+            # zero adjCSHO before an early jump: 8e ratio = x/0 = inf, must
+            # match polars float semantics (me decoupled so 8c doesn't bite)
+            cshoc[3] = 0.0
+            cshoc[4:] = 40.0
+            me_override = (3, prc[3] * 5.0)
+        elif kind == 13 and n > 8:
+            ri[5] = 0.0  # 8g: inf return at i=6 and -100% at i=5
         me = prc * cshoc
+        if me_override is not None:
+            me[me_override[0]] = me_override[1]
         frames.append(
             pl.DataFrame(
                 {
@@ -105,11 +119,15 @@ def _panel(seed: int = 11, n_groups: int = 120) -> pl.LazyFrame:
     return pl.concat(frames).lazy()
 
 
-def _assert_equivalent(df: pl.LazyFrame, tmp_path) -> None:
+def _assert_equivalent(df: pl.LazyFrame, tmp_path, presorted: bool = False) -> None:
     """Polars chain vs kernel path: kept frame and removal log identical."""
     ref_df, ref_log = apply_bessembinder_section8(df, GROUP_COLS, SORT_COL, "excntry")
+    presorted_path = None
+    if presorted:
+        presorted_path = tmp_path / "__bess_s8_sorted.parquet"
+        df.sort(SORT_KEYS).collect().write_parquet(presorted_path)
     new_df, new_log = apply_bessembinder_section8(
-        df, GROUP_COLS, SORT_COL, "excntry", spill_dir=tmp_path
+        df, GROUP_COLS, SORT_COL, "excntry", spill_dir=tmp_path, presorted_path=presorted_path
     )
     assert_frame_equal(
         new_df.sort(SORT_KEYS).collect(),
@@ -136,8 +154,8 @@ class TestSection8Differential:
 
     def test_clean_panel_no_removals(self, tmp_path):
         # All-clean panel except 8a's bottom-percentile, which always bites
-        df = _panel(seed=5, n_groups=24)
-        clean = df.filter(pl.col("gvkey").cast(pl.Int32) % 12 == 0)
+        df = _panel(seed=5, n_groups=28)
+        clean = df.filter(pl.col("gvkey").cast(pl.Int32) % 14 == 0)
         _assert_equivalent(clean, tmp_path)
 
 
@@ -162,21 +180,24 @@ class TestSection8Presorted:
         assert_frame_equal(pl.read_parquet(out), df.sort(SORT_KEYS))
 
     def test_presorted_path_equivalent(self, tmp_path):
-        # presorted=True must produce the same output as the sorting path
-        df = _panel(seed=13, n_groups=48)
-        ref_df, ref_log = apply_bessembinder_section8(df, GROUP_COLS, SORT_COL, "excntry")
-        df.sort(SORT_KEYS).collect().write_parquet(tmp_path / "__bess_s8_sorted.parquet")
-        new_df, new_log = apply_bessembinder_section8(
-            df, GROUP_COLS, SORT_COL, "excntry", spill_dir=tmp_path, presorted=True
-        )
-        assert_frame_equal(
-            new_df.sort(SORT_KEYS).collect(),
-            ref_df.sort(SORT_KEYS).collect(),
-            check_column_order=False,
-        )
-        assert (new_log.collect().height if new_log is not None else 0) == (
-            ref_log.collect().height if ref_log is not None else 0
-        )
+        # A presorted file must produce the same output as the sorting path
+        _assert_equivalent(_panel(seed=13, n_groups=48), tmp_path, presorted=True)
+
+    def test_presorted_assertion_fires(self, tmp_path):
+        # An UNSORTED file passed as presorted must raise, not silently
+        # corrupt the panel
+        shuffled = _panel(seed=13, n_groups=24).collect().sample(fraction=1.0, shuffle=True, seed=1)
+        bad = tmp_path / "__bess_s8_sorted.parquet"
+        shuffled.write_parquet(bad)
+        with pytest.raises(ValueError, match="not contiguous|not sorted"):
+            apply_bessembinder_section8(
+                shuffled.lazy(),
+                GROUP_COLS,
+                SORT_COL,
+                "excntry",
+                spill_dir=tmp_path,
+                presorted_path=bad,
+            )
 
 
 @st.composite
@@ -184,7 +205,7 @@ def _security_strategy(draw):
     """One short random security exercising row-level filters and nulls."""
     n = draw(st.integers(min_value=3, max_value=30))
     prc = [draw(st.floats(min_value=0.005, max_value=50.0, allow_nan=False)) for _ in range(n)]
-    cshoc = [draw(st.sampled_from([1.0, 5.0, 40.0, None])) for _ in range(n)]
+    cshoc = [draw(st.sampled_from([0.0, 1.0, 5.0, 40.0, None])) for _ in range(n)]
     ri = [draw(st.floats(min_value=1.0, max_value=30.0, allow_nan=False)) for _ in range(n)]
     gap = draw(st.booleans())
     return n, prc, cshoc, ri, gap

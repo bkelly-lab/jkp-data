@@ -29,6 +29,7 @@ from ibis import _
 from polars import col
 
 from .bessembinder import (
+    SPILL_COMPRESSION,
     apply_bessembinder_section6,
     apply_bessembinder_section8,
     detect_potential_boundary_errors,
@@ -1720,7 +1721,9 @@ def gen_comp_dsf(
         )
         log_na = log_na.collect() if log_na is not None else None
         print("[section6] sinking __comp_secd_corrected.parquet...", flush=True)
-        df_na.sink_parquet(paths.interim_dir / "__comp_secd_corrected.parquet", compression="lz4")
+        df_na.sink_parquet(
+            paths.interim_dir / "__comp_secd_corrected.parquet", compression=SPILL_COMPRESSION
+        )
         for spill in paths.interim_dir.glob("__bess_*.parquet"):
             spill.unlink()
 
@@ -1854,6 +1857,14 @@ def gen_comp_dsf(
         )
         sorted_path = paths.interim_dir / "__bess_s8_sorted.parquet"
         print("[section8] merging, sorting and spilling via DuckDB...", flush=True)
+        # insertion-order preservation is irrelevant under an explicit ORDER BY
+        # and only inflates the external sort's memory; temp_directory
+        # guarantees the sort can spill (the slim path verifies the resulting
+        # order before trusting it)
+        con.raw_sql(f"""
+        SET preserve_insertion_order = false;
+        SET temp_directory = '{(paths.interim_dir / "__duckdb_tmp").as_posix()}';
+        """)
         con.raw_sql(f"""
         COPY (
             SELECT t.*, e.excntry
@@ -1871,7 +1882,7 @@ def gen_comp_dsf(
             sort_col="datadate",
             country_col="excntry",
             spill_dir=paths.interim_dir,
-            presorted=True,
+            presorted_path=sorted_path,
         )
         section8_log = section8_log.collect().lazy() if section8_log is not None else None
 
