@@ -8992,13 +8992,24 @@ def _mp_world_distress_fundq(raw_dir: Path) -> pl.DataFrame:
             "pstkrq",
             "niq",
             "cheq",
+            "excntry_src",
         )
     )
+    # The NA + Global union can carry the same (gvkey, datadate) in both
+    # sources with different values. Prefer NA (matches the HXZ/FF NA-over-
+    # Global convention), then a fully-valued ladder so the parallel sort
+    # can't surface different tied rows across runs.
     return (
-        fundq.sort("gvkey", "datadate")
+        fundq.with_columns(_src=(col("excntry_src") != "USA").cast(pl.Int8))
+        .sort(
+            ["gvkey", "datadate", "_src", "rdq", "ibq", "atq", "ltq", "niq", "cheq"],
+            descending=[False, False, False, False, True, True, True, True, True],
+            nulls_last=True,
+        )
         .with_columns(adj_rdq=pl.coalesce(col("rdq"), _mp_offset_months("datadate", 3)))
         .filter(col("adj_rdq").is_not_null())
         .unique(subset=["gvkey", "datadate"], keep="first", maintain_order=True)
+        .drop("_src", "excntry_src")
         .with_columns(rdq_crsp=_mp_offset_months("adj_rdq", 1))
         .sort(["gvkey", "rdq_crsp", "datadate"], descending=[False, True, True])
         .with_columns(
@@ -9068,8 +9079,14 @@ def _mp_world_distress_quarterly_join(
         FROM d1 a LEFT JOIN be b
           ON a.gvkey = b.gvkey AND a.eom >= b.rdq_crsp AND a.eom < b.lead_rdq_crsp
     """).pl()
+    # `be` carries one row per (gvkey, datadate, share-class id), so a panel row
+    # can match several b rows tied on (datadate_q, rdq_be) but with different
+    # MB/ME_lag. MB/ME_lag DESC make the pick deterministic under the parallel
+    # sort (ties beyond that have identical payloads).
     dist2 = dist2.sort(
-        ["id", "eom", "datadate_q", "rdq_be"], descending=[False, False, True, True]
+        ["id", "eom", "datadate_q", "rdq_be", "MB", "ME_lag"],
+        descending=[False, False, True, True, True, True],
+        nulls_last=True,
     ).unique(subset=["id", "eom"], keep="first", maintain_order=True)
 
     cq_extra = fundq.select(
@@ -11665,7 +11682,9 @@ def _collapse_to_latest_fy(lf: pl.LazyFrame, *, resort: bool = True) -> pl.LazyF
     Output:
         LazyFrame with one row per (gvkey, year). Requires a `year` column.
     """
-    out = lf.sort(["gvkey", "datadate"]).unique(subset=["gvkey", "year"], keep="last")
+    out = lf.sort(["gvkey", "datadate"]).unique(
+        subset=["gvkey", "year"], keep="last", maintain_order=True
+    )
     return out.sort(["gvkey", "datadate"]) if resort else out
 
 
@@ -12941,7 +12960,7 @@ def hxz_attach_siccd(lf: pl.LazyFrame, raw_dir: Path, date_col: str) -> pl.LazyF
             descending=[False, False, True, False],
             nulls_last=True,
         )
-        .unique(subset=["permno", date_col], keep="first")
+        .unique(subset=["permno", date_col], keep="first", maintain_order=True)
         .with_columns(is_fin=pl.col("siccd").is_between(6000, 6999))
         .drop("secinfostartdt", "secinfoenddt")
     )
@@ -13130,7 +13149,7 @@ def hxz_supplement_q4_shares(
             ["gvkey", "datadate", "linkprim", "linktype", "_link_days", "linkdt", "lpermno"],
             descending=[False, False, True, False, True, False, False],
         )
-        .unique(subset=["gvkey", "datadate"], keep="first")
+        .unique(subset=["gvkey", "datadate"], keep="first", maintain_order=True)
         .drop("_link_days")
     )
     cfac = (
@@ -13145,7 +13164,7 @@ def hxz_supplement_q4_shares(
         # bucketing the (permno, eom) pair is unique. Sort enforces stable
         # order pre-unique so any future schema quirk stays deterministic.
         .sort(["permno", "eom", "cfacshr", "shrout"], nulls_last=True)
-        .unique(subset=["permno", "eom"], keep="last")
+        .unique(subset=["permno", "eom"], keep="last", maintain_order=True)
     )
     nl = (
         nl.with_columns(eom=pl.col("datadate").dt.month_end())
@@ -13276,7 +13295,7 @@ def hxz_link_compustat(comp: pl.DataFrame, raw_dir: Path) -> pl.DataFrame:
             ["datadate", "permno", "linkprim", "linktype", "_link_days", "linkdt", "gvkey"],
             descending=[False, False, True, False, True, False, False],
         )
-        .unique(subset=["datadate", "permno"], keep="first")
+        .unique(subset=["datadate", "permno"], keep="first", maintain_order=True)
         .drop("linktype", "_link_days")
         .collect()
     )
@@ -13414,13 +13433,13 @@ def hxz_load_compustat_row(raw_dir: Path) -> pl.DataFrame:
             descending=[False, False, False, False, True, True, True, False],
             nulls_last=True,
         )
-        .unique(subset=["gvkey", "datadate"], keep="first")
+        .unique(subset=["gvkey", "datadate"], keep="first", maintain_order=True)
         # Each source is already one row per (gvkey, year) (see _hxz_compustat_be_inv),
         # but a gvkey present in BOTH NA and Global can still yield two rows per
         # (gvkey, year) with different datadate. Collapse before the roe_a lag below,
         # preferring NA (_src=0) then the latest datadate. Mirrors ff_load_world_compustat.
         .sort(["gvkey", "year", "_src", "datadate"], descending=[False, False, False, True])
-        .unique(subset=["gvkey", "year"], keep="first")
+        .unique(subset=["gvkey", "year"], keep="first", maintain_order=True)
         .drop("_src", "_be_null")
         .sort(["gvkey", "datadate"])
     )
@@ -13461,7 +13480,7 @@ def hxz_load_panel_row(interim_dir: Path, freq: str) -> pl.DataFrame:
             descending=[False, False, False, True, True],
             nulls_last=True,
         )
-        .unique(subset=["id", "eom"], keep="first")
+        .unique(subset=["id", "eom"], keep="first", maintain_order=True)
         .drop("_naics_null")
         .collect()
     )
@@ -13703,7 +13722,7 @@ def _hxz_us_roe_monthly(
             descending=[False, False, False, True, False],
             nulls_last=True,
         )
-        .unique(subset=["permno", "date"], keep="last")
+        .unique(subset=["permno", "date"], keep="last", maintain_order=True)
         .select("permno", "date", "roe")
     )
 
@@ -13741,7 +13760,7 @@ def hxz_compute_chars(
         # `unique(keep="last")` after sort: deterministic latest-datadate-per-
         # (permno, year). `group_by().agg(last())` was non-deterministic because
         # polars group_by doesn't preserve outer sort order within groups.
-        .unique(subset=["permno", "year"], keep="last")
+        .unique(subset=["permno", "year"], keep="last", maintain_order=True)
         .with_columns(comp_year_plus_1=pl.col("year") + 1)
         .select("permno", "comp_year_plus_1", "inv", "be_a")
     )
@@ -13780,7 +13799,7 @@ def hxz_compute_chars(
     row_june = row_panel.filter(pl.col("date").dt.month() == 6)
     ia_row_lnk = (
         fundamentals.funda_row.sort(["gvkey", "year", "datadate"])
-        .unique(subset=["gvkey", "year"], keep="last")
+        .unique(subset=["gvkey", "year"], keep="last", maintain_order=True)
         .with_columns(comp_year_plus_1=pl.col("year") + 1)
         .select("gvkey", "comp_year_plus_1", "inv", "be_a")
     )
@@ -13830,7 +13849,7 @@ def hxz_compute_chars(
             descending=[False, False, False, True],
             nulls_last=True,
         )
-        .unique(subset=["gvkey", "date"], keep="last")
+        .unique(subset=["gvkey", "date"], keep="last", maintain_order=True)
         .select("gvkey", "date", roe=pl.col("roe_a"))
     )
     row_roe = row_panel.select("excntry", "id", "gvkey", "date", "is_fin", "size_grp").join(
