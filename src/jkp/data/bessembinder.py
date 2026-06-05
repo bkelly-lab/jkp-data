@@ -600,7 +600,7 @@ def _correct_variable_arrays(
     flagged = arrays["factor"] != 1.0
     if correction_method in ("bessembinder", "floor"):
         corrected = x_det * arrays["factor"]
-    elif correction_method == "interpolation":
+    elif correction_method in ("interpolation", "floor_interp"):
         corrected = x_det.copy()
         ep_l, ep_r = arrays["ep_l"], arrays["ep_r"]
         both = flagged & ~np.isnan(ep_l) & ~np.isnan(ep_r)
@@ -721,7 +721,7 @@ def _apply_section6_slim(
             starts,
             window_sizes,
             correction_method,
-            price_floor=(correction_method == "floor" and variable == "adjprc"),
+            price_floor=(correction_method in ("floor", "floor_interp") and variable == "adjprc"),
         )
         logger.info(f"{variable}: {len(flag_idx)} corrections applied")
         logs.append(
@@ -806,6 +806,8 @@ def apply_bessembinder_section6(
               applied only in the divide direction and only where the
               original adjusted price is >= $1 (handoff research
               recommendation). Slim path (spill_dir) only.
+            - 'floor_interp': 'floor' gating with 'interpolation' values.
+              Slim path (spill_dir) only.
         spill_dir: When set, use the memory-bounded array path
             (_apply_section6_slim) with spill files in this directory —
             required for full-size cluster data, where collecting the wide
