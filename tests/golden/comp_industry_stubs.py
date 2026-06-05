@@ -25,7 +25,6 @@ if TYPE_CHECKING:
     from jkp.data.paths import DataPaths
 
 
-
 @dataclass
 class CompIndustryUpstreamStubs:
     """Sentinel tracker: records whether the stubbed functions were invoked."""

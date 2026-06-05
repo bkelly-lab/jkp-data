@@ -199,7 +199,6 @@ class TestCompIndustry:
         assert dict(result.schema) == EXPECTED_SCHEMA, (
             f"Schema mismatch: expected {EXPECTED_SCHEMA}, got {dict(result.schema)}"
         )
-        )
 
     def test_gap_fill_multi_span_chaining(self) -> None:
         """Three anchors (Jan 1, 3, 6) chain into contiguous, non-overlapping spans.
