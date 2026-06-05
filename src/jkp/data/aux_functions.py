@@ -8251,20 +8251,44 @@ _MP_BUCKET_CASE_SQL = " + ".join(
 )
 
 
-def _mp_pct_via_quantile_disc(m, descending, mp_con):
+def _mp_pct_core(
+    m: pl.DataFrame,
+    descending: bool,
+    mp_con,
+    *,
+    id_select: list[str],
+    group_keys: list[str],
+) -> pl.DataFrame:
+    """
+    Description:
+        Percentile rank (1..100) via 99 quantile_disc breakpoints per group.
+    Steps:
+        1) Sign-flip rank_var into _v for descending anomalies.
+        2) DuckDB: per-group quantile_disc breaks, then per-row bucket count.
+    Output:
+        DataFrame with id/group cols, rank_var, cnt, eff, pct_raw.
+    """
     m = m.with_columns(_v=(-col("rank_var")) if descending else col("rank_var"))
     mp_con.register("m", m)
+    ids = ", ".join(f"a.{c}" for c in id_select)
+    gk = ", ".join(group_keys)
+    gk_a = ", ".join(f"a.{c}" for c in group_keys)
+    join_on = " AND ".join(f"a.{c} = b.{c}" for c in group_keys)
     return mp_con.execute(f"""
         WITH breaks AS (
-            SELECT eom, {_MP_QUANTILE_BREAKS_SQL}
-            FROM m WHERE _v IS NOT NULL GROUP BY eom
+            SELECT {gk}, {_MP_QUANTILE_BREAKS_SQL}
+            FROM m WHERE _v IS NOT NULL GROUP BY {gk}
         )
-        SELECT a.permno, a.eom, a.rank_var,
-               COUNT(*) OVER (PARTITION BY a.eom) AS cnt,
-               COUNT(a.rank_var) OVER (PARTITION BY a.eom) AS eff,
+        SELECT {ids}, {gk_a}, a.rank_var,
+               COUNT(*) OVER (PARTITION BY {gk_a}) AS cnt,
+               COUNT(a.rank_var) OVER (PARTITION BY {gk_a}) AS eff,
                ({_MP_BUCKET_CASE_SQL}) + 1 AS pct_raw
-        FROM m a LEFT JOIN breaks b ON a.eom = b.eom
+        FROM m a LEFT JOIN breaks b ON {join_on}
     """).pl()
+
+
+def _mp_pct_via_quantile_disc(m, descending, mp_con):
+    return _mp_pct_core(m, descending, mp_con, id_select=["permno"], group_keys=["eom"])
 
 
 def _mp_percentile_rank_anomalies(me_panel, min_stks, mp_con, interim_dir: Path):
@@ -8327,19 +8351,37 @@ def _mp_filter_active(mispricing_panel, cols_list, score_col, num_col, min_fcts)
     ).filter(col(num_col) >= min_fcts)
 
 
-def _mp_size_score_buckets(df, score_col):
+def _mp_size_buckets_core(
+    df: pl.DataFrame,
+    score_col: str,
+    *,
+    group_keys: list[str],
+    size_break_sql: str,
+) -> pl.DataFrame:
+    """
+    Description:
+        2x3 double-sort buckets: size median (port_size 1/2) and score
+        20/80 terciles (port_var 1/2/3), with per-group breakpoints.
+    Steps:
+        1) Polars SQL: per-group quantile_disc(size_break_sql, 0.50) and
+           score 20/80 breaks.
+        2) Left-join breaks, cut port_size / port_var, drop break cols.
+    Output:
+        Input frame plus port_size, port_var.
+    """
+    gk = ", ".join(group_keys)
     breaks = _mp_polars_sql(
         df,
         f"""
-        SELECT eom,
-               quantile_disc(CASE WHEN exchcd = 1 THEN mktcap END, 0.50) AS size50,
+        SELECT {gk},
+               quantile_disc({size_break_sql}, 0.50) AS size50,
                quantile_disc({score_col}, 0.20) AS v20,
                quantile_disc({score_col}, 0.80) AS v80
-        FROM src GROUP BY eom
+        FROM src GROUP BY {gk}
     """,
     )
     return (
-        df.join(breaks, on="eom", how="left")
+        df.join(breaks, on=group_keys, how="left")
         .with_columns(
             port_size=pl.when((col("mktcap") > 0) & (col("mktcap") < col("size50")))
             .then(1)
@@ -8355,6 +8397,16 @@ def _mp_size_score_buckets(df, score_col):
             .otherwise(None),
         )
         .drop("size50", "v20", "v80")
+    )
+
+
+def _mp_size_score_buckets(df, score_col):
+    # US: NYSE-only (exchcd == 1) size median, per-eom breaks.
+    return _mp_size_buckets_core(
+        df,
+        score_col,
+        group_keys=["eom"],
+        size_break_sql="CASE WHEN exchcd = 1 THEN mktcap END",
     )
 
 
@@ -9097,19 +9149,7 @@ def _mp_world_monthly_lagged_me_panel(wm):
 
 def _mp_world_pct_via_quantile_disc(m, descending, mp_con):
     """Per (excntry, eom) percentile rank via 99 quantile_disc breakpoints."""
-    m = m.with_columns(_v=(-col("rank_var")) if descending else col("rank_var"))
-    mp_con.register("m", m)
-    return mp_con.execute(f"""
-        WITH breaks AS (
-            SELECT excntry, eom, {_MP_QUANTILE_BREAKS_SQL}
-            FROM m WHERE _v IS NOT NULL GROUP BY excntry, eom
-        )
-        SELECT a.id, a.excntry, a.eom, a.rank_var,
-               COUNT(*) OVER (PARTITION BY a.excntry, a.eom) AS cnt,
-               COUNT(a.rank_var) OVER (PARTITION BY a.excntry, a.eom) AS eff,
-               ({_MP_BUCKET_CASE_SQL}) + 1 AS pct_raw
-        FROM m a LEFT JOIN breaks b ON a.excntry = b.excntry AND a.eom = b.eom
-    """).pl()
+    return _mp_pct_core(m, descending, mp_con, id_select=["id"], group_keys=["excntry", "eom"])
 
 
 def _mp_world_percentile_rank_anomalies(me_panel, anomalies, min_stks, mp_con):
@@ -9167,33 +9207,8 @@ def _mp_world_build_mispricing_panel(
 
 def _mp_world_size_score_buckets(df, score_col):
     """Per-(excntry, eom) breakpoints: size50 median, score 20/80."""
-    breaks = _mp_polars_sql(
-        df,
-        f"""
-        SELECT excntry, eom,
-               quantile_disc(mktcap, 0.50) AS size50,
-               quantile_disc({score_col}, 0.20) AS v20,
-               quantile_disc({score_col}, 0.80) AS v80
-        FROM src GROUP BY excntry, eom
-    """,
-    )
-    return (
-        df.join(breaks, on=["excntry", "eom"], how="left")
-        .with_columns(
-            port_size=pl.when((col("mktcap") > 0) & (col("mktcap") < col("size50")))
-            .then(1)
-            .when(col("size50") <= col("mktcap"))
-            .then(2)
-            .otherwise(None),
-            port_var=pl.when(col(score_col) < col("v20"))
-            .then(1)
-            .when((col("v20") <= col(score_col)) & (col(score_col) < col("v80")))
-            .then(2)
-            .when(col("v80") <= col(score_col))
-            .then(3)
-            .otherwise(None),
-        )
-        .drop("size50", "v20", "v80")
+    return _mp_size_buckets_core(
+        df, score_col, group_keys=["excntry", "eom"], size_break_sql="mktcap"
     )
 
 
