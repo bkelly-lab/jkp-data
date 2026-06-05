@@ -16,7 +16,7 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from polars.testing import assert_frame_equal
 
-from jkp.data.bessembinder import apply_bessembinder_section8
+from jkp.data.bessembinder import Section8Params, apply_bessembinder_section8
 
 GROUP_COLS = ["gvkey", "iid"]
 SORT_COL = "datadate"
@@ -119,15 +119,25 @@ def _panel(seed: int = 11, n_groups: int = 120) -> pl.LazyFrame:
     return pl.concat(frames).lazy()
 
 
-def _assert_equivalent(df: pl.LazyFrame, tmp_path, presorted: bool = False) -> None:
+def _assert_equivalent(
+    df: pl.LazyFrame, tmp_path, presorted: bool = False, params: Section8Params | None = None
+) -> None:
     """Polars chain vs kernel path: kept frame and removal log identical."""
-    ref_df, ref_log = apply_bessembinder_section8(df, GROUP_COLS, SORT_COL, "excntry")
+    ref_df, ref_log = apply_bessembinder_section8(
+        df, GROUP_COLS, SORT_COL, "excntry", params=params
+    )
     presorted_path = None
     if presorted:
         presorted_path = tmp_path / "__bess_s8_sorted.parquet"
         df.sort(SORT_KEYS).collect().write_parquet(presorted_path)
     new_df, new_log = apply_bessembinder_section8(
-        df, GROUP_COLS, SORT_COL, "excntry", spill_dir=tmp_path, presorted_path=presorted_path
+        df,
+        GROUP_COLS,
+        SORT_COL,
+        "excntry",
+        spill_dir=tmp_path,
+        presorted_path=presorted_path,
+        params=params,
     )
     assert_frame_equal(
         new_df.sort(SORT_KEYS).collect(),
@@ -157,6 +167,24 @@ class TestSection8Differential:
         df = _panel(seed=5, n_groups=28)
         clean = df.filter(pl.col("gvkey").cast(pl.Int32) % 14 == 0)
         _assert_equivalent(clean, tmp_path)
+
+
+class TestSection8Tunables:
+    """Kernel ≡ polars chain must hold at NON-default 8e-8h thresholds too."""
+
+    def test_loose_8g_tight_8e(self, tmp_path):
+        params = Section8Params(g_ret=0.5, g_me_change=0.8, e_up_jump=3.0, e_up_confirm=1.5)
+        _assert_equivalent(_panel(seed=21), tmp_path, params=params)
+
+    def test_short_early_period_and_wide_8h(self, tmp_path):
+        params = Section8Params(early_obs=6.0, early_frac=0.05, h_max_obs=5.0, h_ratio_hi=4.0)
+        _assert_equivalent(_panel(seed=22), tmp_path, params=params)
+
+    def test_8f_and_chn_thresholds(self, tmp_path):
+        params = Section8Params(
+            f_up_ratio=5.0, f_up_ret=1.0, e_chn_up_jump=7.0, e_chn_up_confirm=3.0
+        )
+        _assert_equivalent(_panel(seed=23), tmp_path, params=params)
 
 
 class TestSection8Presorted:

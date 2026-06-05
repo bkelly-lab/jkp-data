@@ -30,6 +30,7 @@ from polars import col
 
 from .bessembinder import (
     SPILL_COMPRESSION,
+    Section8Params,
     apply_bessembinder_section6,
     apply_bessembinder_section8,
     detect_potential_boundary_errors,
@@ -1639,7 +1640,11 @@ def adj_trd_vol_NASDAQ(datevar, col_to_adjust, is_nasdaq_expr):
 
 
 def gen_comp_dsf(
-    paths: DataPaths, apply_bessembinder: bool = True, correction_method: str = "bessembinder"
+    paths: DataPaths,
+    apply_bessembinder: bool = True,
+    correction_method: str = "bessembinder",
+    variation_threshold: float = 1.3,
+    s8_params: Section8Params | None = None,
 ):
     """
     Description:
@@ -1718,6 +1723,7 @@ def gen_comp_dsf(
             has_adrrc=True,
             correction_method=correction_method,
             spill_dir=paths.interim_dir,
+            variation_threshold=variation_threshold,
         )
         log_na = log_na.collect() if log_na is not None else None
         print("[section6] sinking __comp_secd_corrected.parquet...", flush=True)
@@ -1885,6 +1891,7 @@ def gen_comp_dsf(
             country_col="excntry",
             spill_dir=paths.interim_dir,
             presorted_path=sorted_path,
+            params=s8_params,
         )
         section8_log = section8_log.collect().lazy() if section8_log is not None else None
 

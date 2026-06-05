@@ -437,8 +437,27 @@ R_8G_RETURN = 8
 R_8H_INITIAL = 9
 
 _GAP_THRESHOLD_DAYS = int(231 * 365 / 252)  # 334: ~11 months of trading days
-_EARLY_OBS = 504  # ~24 months of trading days
-_EARLY_FRAC = 0.2
+
+# Indices into the tunable-threshold array for filters 8e-8h (values built by
+# Section8Params.to_array() in bessembinder.py; paper defaults documented there)
+P8_E_UP_JUMP = 0
+P8_E_UP_CONFIRM = 1
+P8_E_CHN_UP_JUMP = 2
+P8_E_CHN_UP_CONFIRM = 3
+P8_E_DOWN_JUMP = 4
+P8_E_DOWN_CONFIRM = 5
+P8_EARLY_OBS = 6
+P8_EARLY_FRAC = 7
+P8_F_UP_RATIO = 8
+P8_F_UP_RET = 9
+P8_F_DOWN_RATIO = 10
+P8_F_DOWN_RET = 11
+P8_G_RET = 12
+P8_G_ME_CHANGE = 13
+P8_H_MAX_OBS = 14
+P8_H_RATIO_HI = 15
+P8_H_RATIO_LO = 16
+P8_SIZE = 17
 
 
 @njit(cache=True, error_model="numpy")
@@ -450,16 +469,16 @@ def _s8_kill_all(reason, code):
 
 
 @njit(cache=True, error_model="numpy")
-def _s8_early_jump_stage(reason, num, aux, code, is_ret, chn):
+def _s8_early_jump_stage(reason, num, aux, code, is_ret, chn, p):
     """
     Shared early-jump stage for filters 8e (adjCSHO) and 8f (ME).
 
     Scans alive rows with prev-alive shift semantics; a jump inside the early
-    period (obs_num < 504 or < 20% of the alive count) marks the security for
-    deletion of alive rows 0..max-jump-obs. `num` is the jump series (adjCSHO
-    or ME); `aux` is the confirming series (ME ratio for 8e; ri-based return
-    for 8f, is_ret=True). NaN operands fail all comparisons, matching polars
-    null semantics.
+    period (obs_num < p[P8_EARLY_OBS] or < p[P8_EARLY_FRAC] of the alive
+    count) marks the security for deletion of alive rows 0..max-jump-obs.
+    `num` is the jump series (adjCSHO or ME); `aux` is the confirming series
+    (ME ratio for 8e; ri-based return for 8f, is_ret=True). NaN operands fail
+    all comparisons, matching polars null semantics.
     """
     n = reason.size
     total = 0
@@ -479,16 +498,16 @@ def _s8_early_jump_stage(reason, num, aux, code, is_ret, chn):
             r_num = num[i] / num[prev]
             if is_ret:
                 a = aux[i] / aux[prev] - 1.0
-                up = r_num > 10.0 and a < 2.0
-                down = r_num < 0.1 and a > -0.5
+                up = r_num > p[P8_F_UP_RATIO] and a < p[P8_F_UP_RET]
+                down = r_num < p[P8_F_DOWN_RATIO] and a > p[P8_F_DOWN_RET]
             else:
                 a = aux[i] / aux[prev]
                 if chn[i]:
-                    up = r_num >= 50.0 and a >= 25.0
+                    up = r_num >= p[P8_E_CHN_UP_JUMP] and a >= p[P8_E_CHN_UP_CONFIRM]
                 else:
-                    up = r_num >= 5.0 and a >= 2.5
-                down = r_num <= 0.2 and a <= 0.4
-            if (up or down) and (obs < _EARLY_OBS or obs < _EARLY_FRAC * total):
+                    up = r_num >= p[P8_E_UP_JUMP] and a >= p[P8_E_UP_CONFIRM]
+                down = r_num <= p[P8_E_DOWN_JUMP] and a <= p[P8_E_DOWN_CONFIRM]
+            if (up or down) and (obs < p[P8_EARLY_OBS] or obs < p[P8_EARLY_FRAC] * total):
                 delete_through = obs
         prev = i
     if delete_through < 0:
@@ -503,13 +522,14 @@ def _s8_early_jump_stage(reason, num, aux, code, is_ret, chn):
 
 
 @njit(cache=True, error_model="numpy")
-def _s8_one_security(reason, remove_8a, ajexdi, prc, me, ri, cshoc, dates, low_thr, chn):
+def _s8_one_security(reason, remove_8a, ajexdi, prc, me, ri, cshoc, dates, low_thr, chn, p):
     """
     Apply the Section 8 filter chain to one security (arrays are views over
     the date-sorted slice). Filters run sequentially: each stage's shift /
     obs_num / totals are defined over the rows still alive at stage start,
     exactly like the polars chain re-deriving them on each filtered frame.
-    reason is mutated in place (-1 = kept).
+    reason is mutated in place (-1 = kept). p carries the tunable 8e-8h
+    thresholds (see P8_* indices).
     """
     n = reason.size
 
@@ -571,10 +591,10 @@ def _s8_one_security(reason, remove_8a, ajexdi, prc, me, ri, cshoc, dates, low_t
 
     # ---- 8e: adjCSHO jumps in early history ----
     adjcsho = cshoc * ajexdi
-    _s8_early_jump_stage(reason, adjcsho, me, R_8E_ADJCSHO, False, chn)
+    _s8_early_jump_stage(reason, adjcsho, me, R_8E_ADJCSHO, False, chn, p)
 
     # ---- 8f: ME jumps without commensurate returns in early history ----
-    _s8_early_jump_stage(reason, me, ri, R_8F_ME_JUMP, True, chn)
+    _s8_early_jump_stage(reason, me, ri, R_8F_ME_JUMP, True, chn, p)
 
     # ---- 8g: returns inconsistent with ME changes ----
     prev = -1
@@ -584,31 +604,36 @@ def _s8_one_security(reason, remove_8a, ajexdi, prc, me, ri, cshoc, dates, low_t
         if prev >= 0:
             ret = ri[i] / ri[prev] - 1.0
             me_chg = me[i] / me[prev] - 1.0
-            if abs(ret) > 0.8 and abs(me_chg) < 0.5:
+            if abs(ret) > p[P8_G_RET] and abs(me_chg) < p[P8_G_ME_CHANGE]:
                 # prev still advances below: the flagged row stays the shift
                 # source for the next row, matching polars stage-input shifts
                 reason[i] = R_8G_RETURN
         prev = i
 
-    # ---- 8h: large price/ME ratios within the first three observations ----
+    # ---- 8h: large price/ME ratios within the first few observations ----
     prev = -1
     obs = -1
     for i in range(n):
         if reason[i] != R_NULL:
             continue
         obs += 1
-        if obs > 2:
+        if obs > p[P8_H_MAX_OBS]:
             break
         if prev >= 0:
             pr = prc[i] / prc[prev]
             mr = me[i] / me[prev]
-            if pr > 10.0 or pr < 0.1 or mr > 10.0 or mr < 0.1:
+            if (
+                pr > p[P8_H_RATIO_HI]
+                or pr < p[P8_H_RATIO_LO]
+                or mr > p[P8_H_RATIO_HI]
+                or mr < p[P8_H_RATIO_LO]
+            ):
                 reason[i] = R_8H_INITIAL  # prev still advances: see 8g note
         prev = i
 
 
 @njit(parallel=True, cache=True, error_model="numpy")
-def section8_all(starts, reason, remove_8a, ajexdi, prc, me, ri, cshoc, dates, low_thr, chn):
+def section8_all(starts, reason, remove_8a, ajexdi, prc, me, ri, cshoc, dates, low_thr, chn, p):
     """Run the Section 8 filter chain over all securities in parallel."""
     n_groups = len(starts) - 1
     for g in prange(n_groups):
@@ -625,4 +650,5 @@ def section8_all(starts, reason, remove_8a, ajexdi, prc, me, ri, cshoc, dates, l
             dates[s:e],
             low_thr[s:e],
             chn[s:e],
+            p,
         )

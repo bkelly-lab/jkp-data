@@ -10,6 +10,7 @@ including deviations from the original paper.
 """
 
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -19,6 +20,56 @@ from polars import col
 from . import bessembinder_kernels as bk
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class Section8Params:
+    """
+    Tunable thresholds for filters 8e-8h (defaults = Bessembinder et al.
+    2023 Data Appendix values). Filters 8a-8d are not parameterized: 8a/8c/8d
+    encode dollar/calendar units and 8b is exact-zero detection.
+    """
+
+    e_up_jump: float = 5.0  # 8e: adjCSHO up-jump ratio
+    e_up_confirm: float = 2.5  # 8e: confirming ME ratio
+    e_chn_up_jump: float = 50.0  # 8e: CHN up-jump ratio
+    e_chn_up_confirm: float = 25.0  # 8e: CHN confirming ME ratio
+    e_down_jump: float = 0.2  # 8e: down-jump ratio
+    e_down_confirm: float = 0.4  # 8e: confirming ME ratio (down)
+    early_obs: float = 504.0  # 8e/8f: early period, obs count (~24 months)
+    early_frac: float = 0.2  # 8e/8f: early period, fraction of history
+    f_up_ratio: float = 10.0  # 8f: ME up-jump ratio
+    f_up_ret: float = 2.0  # 8f: max return excusing the up-jump
+    f_down_ratio: float = 0.1  # 8f: ME down-jump ratio
+    f_down_ret: float = -0.5  # 8f: min return excusing the down-jump
+    g_ret: float = 0.8  # 8g: |return| bound
+    g_me_change: float = 0.5  # 8g: |ME change| bound
+    h_max_obs: float = 2.0  # 8h: last 0-indexed obs checked (first 3)
+    h_ratio_hi: float = 10.0  # 8h: price/ME ratio upper bound
+    h_ratio_lo: float = 0.1  # 8h: price/ME ratio lower bound
+
+    def to_array(self) -> np.ndarray:
+        """Threshold array for the numba kernels, ordered by the P8_* indices."""
+        out = np.empty(bk.P8_SIZE, dtype=np.float64)
+        out[bk.P8_E_UP_JUMP] = self.e_up_jump
+        out[bk.P8_E_UP_CONFIRM] = self.e_up_confirm
+        out[bk.P8_E_CHN_UP_JUMP] = self.e_chn_up_jump
+        out[bk.P8_E_CHN_UP_CONFIRM] = self.e_chn_up_confirm
+        out[bk.P8_E_DOWN_JUMP] = self.e_down_jump
+        out[bk.P8_E_DOWN_CONFIRM] = self.e_down_confirm
+        out[bk.P8_EARLY_OBS] = self.early_obs
+        out[bk.P8_EARLY_FRAC] = self.early_frac
+        out[bk.P8_F_UP_RATIO] = self.f_up_ratio
+        out[bk.P8_F_UP_RET] = self.f_up_ret
+        out[bk.P8_F_DOWN_RATIO] = self.f_down_ratio
+        out[bk.P8_F_DOWN_RET] = self.f_down_ret
+        out[bk.P8_G_RET] = self.g_ret
+        out[bk.P8_G_ME_CHANGE] = self.g_me_change
+        out[bk.P8_H_MAX_OBS] = self.h_max_obs
+        out[bk.P8_H_RATIO_HI] = self.h_ratio_hi
+        out[bk.P8_H_RATIO_LO] = self.h_ratio_lo
+        return out
+
 
 # Scratch spill files are read once then deleted; favor encode speed over size
 SPILL_COMPRESSION = "lz4"
@@ -293,6 +344,7 @@ def correct_decimal_errors(
     log_corrections: bool = True,
     validate_cascading: bool = True,
     correction_method: str = "bessembinder",
+    variation_threshold: float = 1.3,
 ) -> tuple[pl.LazyFrame, pl.LazyFrame | None]:
     """
     Apply Bessembinder Section 6 decimal error corrections to a column.
@@ -412,7 +464,9 @@ def correct_decimal_errors(
         print(
             f"  [correct] {col_name}: multi-period detection, windows={multi_windows}", flush=True
         )
-        df = _detect_decimal_error_multi_period(df, col_name, group_cols, sort_col, multi_windows)
+        df = _detect_decimal_error_multi_period(
+            df, col_name, group_cols, sort_col, multi_windows, variation_threshold
+        )
 
     # Third pass: Validate corrections to prevent cascading errors. A flagged
     # row whose BOTH endpoint positions (pos +/- window_size) are themselves
@@ -543,6 +597,7 @@ def _correct_variable_arrays(
     window_sizes: list[int],
     correction_method: str,
     price_floor: bool = False,
+    variation_threshold: float = 1.3,
 ) -> tuple[np.ndarray, dict[str, np.ndarray], np.ndarray]:
     """
     Description:
@@ -595,7 +650,7 @@ def _correct_variable_arrays(
             arrays["rat_r"],
             arrays["var"],
             nlags,
-            1.3,
+            variation_threshold,
         )
     rejected = np.zeros(len(x_raw), dtype=np.bool_)
     bk.validate_cascading_all(starts, arrays["factor"], arrays["etype"], arrays["wsize"], rejected)
@@ -679,6 +734,7 @@ def _apply_section6_slim(
     has_adrrc: bool,
     correction_method: str,
     spill_dir: Path,
+    variation_threshold: float = 1.3,
 ) -> tuple[pl.LazyFrame, pl.LazyFrame | None]:
     """
     Description:
@@ -726,7 +782,12 @@ def _apply_section6_slim(
     def correct(variable: str, x_raw: np.ndarray, price_floor: bool = False) -> np.ndarray:
         print(f"[section6] correcting {variable}...", flush=True)
         corrected, arrays, flag_idx = _correct_variable_arrays(
-            x_raw, starts, window_sizes, correction_method, price_floor=price_floor
+            x_raw,
+            starts,
+            window_sizes,
+            correction_method,
+            price_floor=price_floor,
+            variation_threshold=variation_threshold,
         )
         logger.info(f"{variable}: {len(flag_idx)} corrections applied")
         logs.append(
@@ -793,6 +854,7 @@ def apply_bessembinder_section6(
     has_adrrc: bool = False,
     correction_method: str = "bessembinder",
     spill_dir: Path | None = None,
+    variation_threshold: float = 1.3,
 ) -> tuple[pl.LazyFrame, pl.LazyFrame]:
     """
     Apply Bessembinder Section 6 decimal corrections in the correct order.
@@ -824,6 +886,8 @@ def apply_bessembinder_section6(
             required for full-size cluster data, where collecting the wide
             input frame does not fit in memory. When None (default), the
             frame-based path is used (fine for small/test data).
+        variation_threshold: Multi-period interior-variation bound (max/min
+            of the window interior must stay below this; paper default 1.3).
 
     Returns:
         Tuple of (corrected_df, all_corrections_log)
@@ -844,7 +908,14 @@ def apply_bessembinder_section6(
 
     if spill_dir is not None:
         return _apply_section6_slim(
-            df, group_cols, sort_col, window_sizes, has_adrrc, correction_method, spill_dir
+            df,
+            group_cols,
+            sort_col,
+            window_sizes,
+            has_adrrc,
+            correction_method,
+            spill_dir,
+            variation_threshold,
         )
 
     all_logs = []
@@ -853,7 +924,13 @@ def apply_bessembinder_section6(
     if "trfd" in df.collect_schema().names():
         print("[section6] step 1/5: correcting trfd", flush=True)
         df, log = correct_decimal_errors(
-            df, "trfd", group_cols, sort_col, window_sizes, correction_method=correction_method
+            df,
+            "trfd",
+            group_cols,
+            sort_col,
+            window_sizes,
+            correction_method=correction_method,
+            variation_threshold=variation_threshold,
         )
         if log is not None:
             all_logs.append(log)
@@ -862,7 +939,13 @@ def apply_bessembinder_section6(
     if "qunit" in df.collect_schema().names():
         print("[section6] step 1/5: correcting qunit", flush=True)
         df, log = correct_decimal_errors(
-            df, "qunit", group_cols, sort_col, window_sizes, correction_method=correction_method
+            df,
+            "qunit",
+            group_cols,
+            sort_col,
+            window_sizes,
+            correction_method=correction_method,
+            variation_threshold=variation_threshold,
         )
         if log is not None:
             all_logs.append(log)
@@ -874,7 +957,13 @@ def apply_bessembinder_section6(
             logger.info("ADRRC column found in data - applying decimal corrections")
             print("[section6] step 2/5: correcting adrrc", flush=True)
             df, log = correct_decimal_errors(
-                df, "adrrc", group_cols, sort_col, window_sizes, correction_method=correction_method
+                df,
+                "adrrc",
+                group_cols,
+                sort_col,
+                window_sizes,
+                correction_method=correction_method,
+                variation_threshold=variation_threshold,
             )
             if log is not None:
                 n_corrections = log.select(pl.len()).collect().item()
@@ -901,7 +990,13 @@ def apply_bessembinder_section6(
     # Step 4: Correct adjPRC and adjCSHO
     print("[section6] step 4/5: correcting adjprc", flush=True)
     df, log = correct_decimal_errors(
-        df, "_adjprc", group_cols, sort_col, window_sizes, correction_method=correction_method
+        df,
+        "_adjprc",
+        group_cols,
+        sort_col,
+        window_sizes,
+        correction_method=correction_method,
+        variation_threshold=variation_threshold,
     )
     if log is not None:
         # Rename variable in log from _adjprc to adjprc
@@ -915,7 +1010,13 @@ def apply_bessembinder_section6(
 
     print("[section6] step 4/5: correcting adjcsho", flush=True)
     df, log = correct_decimal_errors(
-        df, "_adjcsho", group_cols, sort_col, window_sizes, correction_method=correction_method
+        df,
+        "_adjcsho",
+        group_cols,
+        sort_col,
+        window_sizes,
+        correction_method=correction_method,
+        variation_threshold=variation_threshold,
     )
     if log is not None:
         log = log.with_columns(
@@ -1965,11 +2066,12 @@ def filter_8e_adjcsho_jumps(
     group_cols: list[str] | None = None,
     sort_col: str = "datadate",
     country_col: str = "excntry",
+    params: Section8Params | None = None,
 ) -> tuple[pl.LazyFrame, pl.LazyFrame]:
     """
     Filter 8e: Detect large adjCSHO changes without commensurate ME changes.
 
-    Thresholds:
+    Thresholds (defaults, tunable via params):
     - Standard: ≥5x adjCSHO with ≥2.5x ME, or ≤0.2x adjCSHO with ≤0.4x ME
     - China: ≥50x adjCSHO with ≥25x ME (reverse mergers common)
 
@@ -1981,12 +2083,14 @@ def filter_8e_adjcsho_jumps(
         group_cols: Security identifier columns
         sort_col: Date column
         country_col: Country identifier
+        params: Tunable thresholds (None = paper defaults)
 
     Returns:
         Tuple of (filtered_df, removed_records_log)
     """
     if group_cols is None:
         group_cols = ["gvkey", "iid"]
+    p = params or Section8Params()
     df = df.sort(group_cols + [sort_col])
 
     # Compute adjCSHO = CSHOC * AJEXDI
@@ -2008,18 +2112,20 @@ def filter_8e_adjcsho_jumps(
     # Detect up-jumps
     up_jump = (
         pl.when(is_china)
-        .then((col("_adjcsho_ratio") >= 50) & (col("_me_ratio") >= 25))
-        .otherwise((col("_adjcsho_ratio") >= 5) & (col("_me_ratio") >= 2.5))
+        .then((col("_adjcsho_ratio") >= p.e_chn_up_jump) & (col("_me_ratio") >= p.e_chn_up_confirm))
+        .otherwise((col("_adjcsho_ratio") >= p.e_up_jump) & (col("_me_ratio") >= p.e_up_confirm))
     )
 
     # Detect down-jumps
-    down_jump = (col("_adjcsho_ratio") <= 0.2) & (col("_me_ratio") <= 0.4)
+    down_jump = (col("_adjcsho_ratio") <= p.e_down_jump) & (col("_me_ratio") <= p.e_down_confirm)
 
     df = df.with_columns((up_jump | down_jump).alias("_is_jump"))
 
     # Determine if jump is in early period (first 24 months or 20% of obs)
     # For daily data, 24 months ≈ 504 trading days
-    early_period = (col("_obs_num") < 504) | (col("_obs_num") < (col("_total_obs") * 0.2))
+    early_period = (col("_obs_num") < p.early_obs) | (
+        col("_obs_num") < (col("_total_obs") * p.early_frac)
+    )
 
     df = df.with_columns((col("_is_jump") & early_period).alias("_early_jump"))
 
@@ -2066,11 +2172,12 @@ def filter_8f_me_jumps(
     df: pl.LazyFrame,
     group_cols: list[str] | None = None,
     sort_col: str = "datadate",
+    params: Section8Params | None = None,
 ) -> tuple[pl.LazyFrame, pl.LazyFrame]:
     """
     Filter 8f: Detect ME jumps not supported by returns.
 
-    Thresholds:
+    Thresholds (defaults, tunable via params):
     - Up-jump: ME ratio > 10 but RET < 2 (200%)
     - Down-jump: ME ratio < 0.1 but RET > -0.5 (-50%)
 
@@ -2078,12 +2185,14 @@ def filter_8f_me_jumps(
         df: LazyFrame with data
         group_cols: Security identifier columns
         sort_col: Date column
+        params: Tunable thresholds (None = paper defaults)
 
     Returns:
         Tuple of (filtered_df, removed_records_log)
     """
     if group_cols is None:
         group_cols = ["gvkey", "iid"]
+    p = params or Section8Params()
     df = df.sort(group_cols + [sort_col])
 
     # Compute ME ratio and get return
@@ -2098,13 +2207,15 @@ def filter_8f_me_jumps(
     )
 
     # Detect jumps
-    up_jump = (col("_me_ratio") > 10) & (col("_ret") < 2)
-    down_jump = (col("_me_ratio") < 0.1) & (col("_ret") > -0.5)
+    up_jump = (col("_me_ratio") > p.f_up_ratio) & (col("_ret") < p.f_up_ret)
+    down_jump = (col("_me_ratio") < p.f_down_ratio) & (col("_ret") > p.f_down_ret)
 
     df = df.with_columns((up_jump | down_jump).alias("_is_jump"))
 
     # Early period check (first 24 months or 20%)
-    early_period = (col("_obs_num") < 504) | (col("_obs_num") < (col("_total_obs") * 0.2))
+    early_period = (col("_obs_num") < p.early_obs) | (
+        col("_obs_num") < (col("_total_obs") * p.early_frac)
+    )
 
     df = df.with_columns((col("_is_jump") & early_period).alias("_early_jump"))
 
@@ -2147,20 +2258,24 @@ def filter_8g_return_filter(
     df: pl.LazyFrame,
     group_cols: list[str] | None = None,
     sort_col: str = "datadate",
+    params: Section8Params | None = None,
 ) -> tuple[pl.LazyFrame, pl.LazyFrame]:
     """
-    Filter 8g: Delete observations where |RET| > 80% but |ME change| < 50%.
+    Filter 8g: Delete observations where |RET| > 80% but |ME change| < 50%
+    (defaults, tunable via params).
 
     Args:
         df: LazyFrame with data
         group_cols: Security identifier columns
         sort_col: Date column
+        params: Tunable thresholds (None = paper defaults)
 
     Returns:
         Tuple of (filtered_df, removed_records_log)
     """
     if group_cols is None:
         group_cols = ["gvkey", "iid"]
+    p = params or Section8Params()
     df = df.sort(group_cols + [sort_col])
 
     # Compute return and ME change
@@ -2173,7 +2288,9 @@ def filter_8g_return_filter(
 
     # Flag problematic observations
     df = df.with_columns(
-        ((col("_ret").abs() > 0.8) & (col("_me_change").abs() < 0.5)).alias("_bad_return")
+        ((col("_ret").abs() > p.g_ret) & (col("_me_change").abs() < p.g_me_change)).alias(
+            "_bad_return"
+        )
     )
 
     # Log removed records
@@ -2194,20 +2311,24 @@ def filter_8h_initial_errors(
     df: pl.LazyFrame,
     group_cols: list[str] | None = None,
     sort_col: str = "datadate",
+    params: Section8Params | None = None,
 ) -> tuple[pl.LazyFrame, pl.LazyFrame]:
     """
-    Filter 8h: Delete first 3 observations if adjPRC or ME ratio > 10x.
+    Filter 8h: Delete first 3 observations if adjPRC or ME ratio > 10x
+    (defaults, tunable via params).
 
     Args:
         df: LazyFrame with data
         group_cols: Security identifier columns
         sort_col: Date column
+        params: Tunable thresholds (None = paper defaults)
 
     Returns:
         Tuple of (filtered_df, removed_records_log)
     """
     if group_cols is None:
         group_cols = ["gvkey", "iid"]
+    p = params or Section8Params()
     df = df.sort(group_cols + [sort_col])
 
     # Compute observation number and ratios
@@ -2223,12 +2344,12 @@ def filter_8h_initial_errors(
     # Note: obs_num is 0-indexed, so first 3 obs are 0, 1, 2
     df = df.with_columns(
         (
-            (col("_obs_num") <= 2)
+            (col("_obs_num") <= p.h_max_obs)
             & (
-                (col("_prc_ratio") > 10)
-                | (col("_prc_ratio") < 0.1)
-                | (col("_me_ratio") > 10)
-                | (col("_me_ratio") < 0.1)
+                (col("_prc_ratio") > p.h_ratio_hi)
+                | (col("_prc_ratio") < p.h_ratio_lo)
+                | (col("_me_ratio") > p.h_ratio_hi)
+                | (col("_me_ratio") < p.h_ratio_lo)
             )
         ).alias("_initial_error")
     )
@@ -2268,6 +2389,7 @@ def _apply_section8_slim(
     country_col: str,
     spill_dir: Path,
     presorted_path: Path | None = None,
+    params: Section8Params | None = None,
 ) -> tuple[pl.LazyFrame, pl.LazyFrame | None]:
     """
     Description:
@@ -2361,6 +2483,7 @@ def _apply_section8_slim(
         keys[sort_col].cast(pl.Date).to_physical().cast(pl.Int32).to_numpy().copy(),
         data["_low"].to_numpy().copy(),
         data["_chn"].to_numpy().copy(),
+        (params or Section8Params()).to_array(),
     )
 
     removed_idx = np.flatnonzero(reason != bk.R_NULL)
@@ -2391,6 +2514,7 @@ def apply_bessembinder_section8(
     country_col: str = "excntry",
     spill_dir: Path | None = None,
     presorted_path: Path | None = None,
+    params: Section8Params | None = None,
 ) -> tuple[pl.LazyFrame, pl.LazyFrame]:
     """
     Apply all Bessembinder Section 8 filters in sequence.
@@ -2420,6 +2544,8 @@ def apply_bessembinder_section8(
             wrote sorted by group_cols + sort_col (e.g. via DuckDB ORDER BY).
             The sort step is skipped and the file's sort order is verified;
             df is ignored beyond its role as documentation of the source.
+        params: Tunable 8e-8h thresholds (None = paper defaults); applied
+            identically on both paths.
 
     Returns:
         Tuple of (filtered_df, all_removed_log)
@@ -2429,7 +2555,7 @@ def apply_bessembinder_section8(
 
     if spill_dir is not None:
         return _apply_section8_slim(
-            df, group_cols, sort_col, country_col, spill_dir, presorted_path
+            df, group_cols, sort_col, country_col, spill_dir, presorted_path, params
         )
 
     all_removed = []
@@ -2455,22 +2581,22 @@ def apply_bessembinder_section8(
         all_removed.append(removed)
 
     # 8e: adjCSHO jumps filter
-    df, removed = filter_8e_adjcsho_jumps(df, group_cols, sort_col, country_col)
+    df, removed = filter_8e_adjcsho_jumps(df, group_cols, sort_col, country_col, params)
     if removed is not None:
         all_removed.append(removed)
 
     # 8f: ME jumps filter
-    df, removed = filter_8f_me_jumps(df, group_cols, sort_col)
+    df, removed = filter_8f_me_jumps(df, group_cols, sort_col, params)
     if removed is not None:
         all_removed.append(removed)
 
     # 8g: Return filter
-    df, removed = filter_8g_return_filter(df, group_cols, sort_col)
+    df, removed = filter_8g_return_filter(df, group_cols, sort_col, params)
     if removed is not None:
         all_removed.append(removed)
 
     # 8h: Initial errors filter
-    df, removed = filter_8h_initial_errors(df, group_cols, sort_col)
+    df, removed = filter_8h_initial_errors(df, group_cols, sort_col, params)
     if removed is not None:
         all_removed.append(removed)
 
