@@ -8291,16 +8291,47 @@ def _mp_pct_via_quantile_disc(m, descending, mp_con):
     return _mp_pct_core(m, descending, mp_con, id_select=["permno"], group_keys=["eom"])
 
 
-def _mp_percentile_rank_anomalies(me_panel, min_stks, mp_con, interim_dir: Path):
+def _mp_rank_anomalies_core(
+    me_panel: pl.DataFrame,
+    min_stks: int,
+    mp_con,
+    *,
+    panel_cols: list[str],
+    sort_keys: list[str],
+    id_cols: list[str],
+    group_keys: list[str],
+    anom_source,
+) -> pl.DataFrame:
+    """
+    Description:
+        Per-group percentile-rank each anomaly and left-join (value, pct)
+        onto the base return panel.
+    Steps:
+        1) Filter base universe (lag_prc > 5, mktcap > 0, non-null ret).
+        2) For each anomaly from `anom_source(anom)` (None skips): inner-join
+           onto base, percentile-rank via _mp_pct_core, null pct where the
+           effective group count < min_stks, left-join onto the panel.
+    Output:
+        Panel with one (anom, pct_anom) column pair per available anomaly.
+    """
     base = me_panel.filter((col("lag_prc") > 5) & (col("mktcap") > 0) & col("ret").is_not_null())
-    panel = base.select("permno", "eom", "ret", "lag_prc", "mktcap", "exchcd").sort("permno", "eom")
+    panel = base.select(*panel_cols).sort(*sort_keys)
+    src_join = [*id_cols, "eom"]  # anomaly frames are keyed by (id, eom) only
+    panel_join = [*id_cols, *group_keys]
 
     for anom in MP_ANOMALY_LIST:
-        fcol = _MP_ANOMALY_FILE[anom]
-        anom_df = _mp_read(fcol, interim_dir).select("permno", "eom", col(fcol).alias("rank_var"))
-        m = base.select("permno", "eom", "mktcap").join(anom_df, on=["permno", "eom"], how="inner")
+        anom_df = anom_source(anom)
+        if anom_df is None:
+            continue
+        m = base.select(*panel_join, "mktcap").join(anom_df, on=src_join, how="inner")
         m = (
-            _mp_pct_via_quantile_disc(m, descending=anom in MP_POSITIVE_ANOMALIES, mp_con=mp_con)
+            _mp_pct_core(
+                m,
+                descending=anom in MP_POSITIVE_ANOMALIES,
+                mp_con=mp_con,
+                id_select=id_cols,
+                group_keys=group_keys,
+            )
             .filter(col("cnt") >= min_stks)
             .with_columns(
                 pct=pl.when((col("eff") < min_stks) | col("rank_var").is_null())
@@ -8308,13 +8339,29 @@ def _mp_percentile_rank_anomalies(me_panel, min_stks, mp_con, interim_dir: Path)
                 .otherwise(col("pct_raw").cast(pl.Float64))
             )
         )
-
         panel = panel.join(
-            m.select("permno", "eom", col("rank_var").alias(anom), col("pct").alias(f"pct_{anom}")),
-            on=["permno", "eom"],
+            m.select(*panel_join, col("rank_var").alias(anom), col("pct").alias(f"pct_{anom}")),
+            on=panel_join,
             how="left",
         )
     return panel
+
+
+def _mp_percentile_rank_anomalies(me_panel, min_stks, mp_con, interim_dir: Path):
+    def anom_source(anom: str) -> pl.DataFrame:
+        fcol = _MP_ANOMALY_FILE[anom]
+        return _mp_read(fcol, interim_dir).select("permno", "eom", col(fcol).alias("rank_var"))
+
+    return _mp_rank_anomalies_core(
+        me_panel,
+        min_stks,
+        mp_con,
+        panel_cols=["permno", "eom", "ret", "lag_prc", "mktcap", "exchcd"],
+        sort_keys=["permno", "eom"],
+        id_cols=["permno"],
+        group_keys=["eom"],
+        anom_source=anom_source,
+    )
 
 
 def _mp_build_mispricing_panel(min_stks, mp_con, interim_dir: Path):
@@ -8330,15 +8377,31 @@ def _mp_build_mispricing_panel(min_stks, mp_con, interim_dir: Path):
     )
 
 
-def _mp_build_stock_scores(mispricing_panel, min_fcts):
+def _mp_build_stock_scores_core(
+    mispricing_panel: pl.DataFrame,
+    min_fcts: int,
+    *,
+    sort_keys: list[str],
+    select_cols: list,
+) -> pl.DataFrame:
+    """Mgmt/perf leg scores per stock-month; keeps rows with either score."""
     return (
         _mp_add_leg_score(
             mispricing_panel, _MP_MGMT_COLS, "mispricing_mgmt", "_n_mgmt", min_count=min_fcts
         )
         .pipe(_mp_add_leg_score, _MP_PERF_COLS, "mispricing_perf", "_n_perf", min_count=min_fcts)
         .filter(col("mispricing_mgmt").is_not_null() | col("mispricing_perf").is_not_null())
-        .sort("permno", "eom")
-        .select(col("permno").alias("id"), "eom", "mispricing_mgmt", "mispricing_perf")
+        .sort(*sort_keys)
+        .select(*select_cols, "mispricing_mgmt", "mispricing_perf")
+    )
+
+
+def _mp_build_stock_scores(mispricing_panel, min_fcts):
+    return _mp_build_stock_scores_core(
+        mispricing_panel,
+        min_fcts,
+        sort_keys=["permno", "eom"],
+        select_cols=[col("permno").alias("id"), "eom"],
     )
 
 
@@ -8419,16 +8482,38 @@ def _mp_vw_monthly(df, group_cols):
     return df.group_by(group_cols).agg(vwret=_mp_vw_return(), _freq_=pl.len())
 
 
-def _mp_vw_daily(panel, group_cols, mp_con, interim_dir: Path):
-    mp_con.register("panel", panel)
+def _mp_vw_daily_core(
+    panel: pl.DataFrame,
+    group_cols: list[str],
+    mp_con,
+    *,
+    daily_path: str,
+    id_col: str,
+    table: str,
+    qualify_group: bool,
+) -> pl.DataFrame:
+    """
+    Description:
+        Daily VW portfolio returns: join the monthly bucket panel onto the
+        daily return file per (id, eom), then SUM(ret*mktcap)/SUM(mktcap)
+        per (date, group_cols) via DuckDB.
+    Steps:
+        1) Register `panel` under `table`; join read_parquet(daily_path).
+        2) Aggregate VW return and bucket frequency.
+    Output:
+        One row per (date, *group_cols) with vwret and _freq_.
+    """
+    mp_con.register(table, panel)
     group_sql = ", ".join(group_cols)
-    daily_path = (interim_dir / "crsp_daily.parquet").as_posix()
+    # Qualify with a.<col> when group cols (e.g. excntry) exist on both join
+    # sides, else DuckDB raises a BinderError.
+    sel_sql = ", ".join(f"a.{c}" for c in group_cols) if qualify_group else group_sql
     return mp_con.execute(f"""
         WITH joined AS (
-            SELECT b.date AS date, a.mktcap, b.ret AS ret_d, {group_sql}
-            FROM panel a
+            SELECT b.date AS date, a.mktcap, b.ret AS ret_d, {sel_sql}
+            FROM {table} a
             JOIN read_parquet('{daily_path}') b
-              ON a.permno = b.permno AND a.eom = b.eom
+              ON a.{id_col} = b.{id_col} AND a.eom = b.eom
             WHERE b.ret IS NOT NULL AND a.mktcap IS NOT NULL
         )
         SELECT date, {group_sql},
@@ -8436,6 +8521,18 @@ def _mp_vw_daily(panel, group_cols, mp_con, interim_dir: Path):
                COUNT(*) AS _freq_
         FROM joined GROUP BY date, {group_sql}
     """).pl()
+
+
+def _mp_vw_daily(panel, group_cols, mp_con, interim_dir: Path):
+    return _mp_vw_daily_core(
+        panel,
+        group_cols,
+        mp_con,
+        daily_path=(interim_dir / "crsp_daily.parquet").as_posix(),
+        id_col="permno",
+        table="panel",
+        qualify_group=False,
+    )
 
 
 def _mp_diff_legs(df, by, key_col, key_a, key_b, out_name):
@@ -8451,17 +8548,22 @@ def _mp_spread_per_size_then_diff(port_ret, by):
     return _mp_diff_legs(misp.rename({"misp": "vwret"}), by_cols, "port_var", 1, 3, "umo")
 
 
-def _mp_build_mispricing_legs(mispricing_panel, min_fcts):
+def _mp_build_legs_core(mispricing_panel, min_fcts, bucket_fn) -> dict[str, pl.DataFrame]:
+    """Mgmt/perf legs: filter to active stocks, then 2x3 double-sort buckets."""
     spec = {
         "mgmt": (_MP_MGMT_COLS, "score_mgmt", "n_mgmt"),
         "perf": (_MP_PERF_COLS, "score_perf", "n_perf"),
     }
     return {
-        name: _mp_size_score_buckets(
+        name: bucket_fn(
             _mp_filter_active(mispricing_panel, cols_list, score_col, num_col, min_fcts), score_col
         )
         for name, (cols_list, score_col, num_col) in spec.items()
     }
+
+
+def _mp_build_mispricing_legs(mispricing_panel, min_fcts):
+    return _mp_build_legs_core(mispricing_panel, min_fcts, _mp_size_score_buckets)
 
 
 def _mp_smb_panel_from_legs(legs, key_cols):
@@ -8476,77 +8578,149 @@ def _mp_smb_panel_from_legs(legs, key_cols):
     return a.join(b, on=[*key_cols, "eom", "port_size"], how="inner")
 
 
-def _mp_build_portfolios_monthly(legs, smb_panel, min_obs):
+def _mp_build_portfolios_monthly_core(
+    legs: dict[str, pl.DataFrame],
+    smb_panel: pl.DataFrame,
+    *,
+    by: str | list[str],
+    thin,
+    out_cols: list[str],
+    out_sort: list[str],
+) -> pl.DataFrame:
+    """
+    Description:
+        Monthly UMO (mgmt/perf) and SMB factor returns from bucketed legs.
+    Steps:
+        1) Per leg: VW returns per (by, port_size, port_var), thin-bucket
+           handling via `thin`, drop groups without all 6 buckets, spread
+           per size then 1-3 diff → UMO.
+        2) SMB: VW per (by, port_size), thin, 1-2 diff.
+        3) Inner-join legs + SMB, start-date filter, project + sort.
+    Output:
+        One row per `by` group with smb/mgmt/perf factor returns.
+    """
+    by_cols = [by] if isinstance(by, str) else list(by)
     leg_umo = {}
     for name, panel in legs.items():
         pr = (
             _mp_vw_monthly(
                 panel.filter(col("port_size").is_not_null() & col("port_var").is_not_null()),
-                ["eom", "port_size", "port_var"],
+                [*by_cols, "port_size", "port_var"],
             )
-            .pipe(_mp_truncate_thin, by="eom", freq_col="_freq_", min_n=min_obs)
-            .pipe(_mp_filter_full_buckets, 6, by="eom")
-            .sort("eom", "port_size", "port_var")
+            .pipe(thin)
+            .pipe(_mp_filter_full_buckets, 6, by=by)
+            .sort(*by_cols, "port_size", "port_var")
         )
-        leg_umo[name] = _mp_spread_per_size_then_diff(pr, "eom").select(
-            "eom", col("umo").alias(f"mispricing_{name}")
+        leg_umo[name] = _mp_spread_per_size_then_diff(pr, by).select(
+            *by_cols, col("umo").alias(f"mispricing_{name}")
         )
 
     smb_port = (
-        _mp_vw_monthly(smb_panel, ["eom", "port_size"])
-        .pipe(_mp_truncate_thin, by="eom", freq_col="_freq_", min_n=min_obs)
-        .pipe(_mp_filter_full_buckets, 2, by="eom")
-        .sort("eom", "port_size")
+        _mp_vw_monthly(smb_panel, [*by_cols, "port_size"])
+        .pipe(thin)
+        .pipe(_mp_filter_full_buckets, 2, by=by)
+        .sort(*by_cols, "port_size")
     )
-    smb_df = _mp_diff_legs(smb_port, "eom", "port_size", 1, 2, "smb_mispricing").select(
-        "eom", "smb_mispricing"
+    smb_df = _mp_diff_legs(smb_port, by, "port_size", 1, 2, "smb_mispricing").select(
+        *by_cols, "smb_mispricing"
     )
 
     return (
         leg_umo["mgmt"]
-        .join(leg_umo["perf"], on="eom", how="inner")
-        .join(smb_df, on="eom", how="inner")
+        .join(leg_umo["perf"], on=by_cols, how="inner")
+        .join(smb_df, on=by_cols, how="inner")
         .filter(col("eom") >= MP_START_FACTOR_EOM)
-        .select("eom", "smb_mispricing", "mispricing_mgmt", "mispricing_perf")
-        .sort("eom")
+        .select(*out_cols, "smb_mispricing", "mispricing_mgmt", "mispricing_perf")
+        .sort(*out_sort)
     )
 
 
-def _mp_build_portfolios_daily(legs, smb_panel, min_obs, mp_con, interim_dir: Path):
+def _mp_build_portfolios_monthly(legs, smb_panel, min_obs):
+    # US: thin buckets are truncated cross-sectionally, not hard-filtered.
+    def thin(df):
+        return _mp_truncate_thin(df, by="eom", freq_col="_freq_", min_n=min_obs)
+
+    return _mp_build_portfolios_monthly_core(
+        legs, smb_panel, by="eom", thin=thin, out_cols=["eom"], out_sort=["eom"]
+    )
+
+
+def _mp_build_portfolios_daily_core(
+    legs: dict[str, pl.DataFrame],
+    smb_panel: pl.DataFrame,
+    min_obs: int,
+    *,
+    id_cols: list[str],
+    extra_group: list[str],
+    by: str | list[str],
+    vw_fn,
+    out_cols: list[str],
+    out_sort: list[str],
+) -> pl.DataFrame:
+    """
+    Description:
+        Daily UMO (mgmt/perf) and SMB factor returns from bucketed legs.
+    Steps:
+        1) Per leg: project bucketed stocks, daily VW via `vw_fn`, min_obs
+           filter, drop groups without all 6 buckets, spread per size then
+           1-3 diff → UMO.
+        2) SMB: daily VW per (extra_group, port_size), 1-2 diff.
+        3) Inner-join legs + SMB, start-date filter, project + sort.
+    Output:
+        One row per `by` group with smb/mgmt/perf factor returns.
+    """
+    by_cols = [by] if isinstance(by, str) else list(by)
     leg_umo = {}
     for name, panel in legs.items():
         bucketed = panel.filter(
             col("port_size").is_not_null() & col("port_var").is_not_null()
-        ).select("permno", "eom", "mktcap", "port_size", "port_var")
+        ).select(*id_cols, "eom", "mktcap", "port_size", "port_var")
         pr = (
-            _mp_vw_daily(bucketed, ["port_size", "port_var"], mp_con, interim_dir)
+            vw_fn(bucketed, [*extra_group, "port_size", "port_var"])
             .filter(col("_freq_") >= min_obs)
-            .pipe(_mp_filter_full_buckets, 6, by="date")
-            .sort("date", "port_size", "port_var")
+            .pipe(_mp_filter_full_buckets, 6, by=by)
+            .sort(*by_cols, "port_size", "port_var")
         )
-        leg_umo[name] = _mp_spread_per_size_then_diff(pr, "date").select(
-            "date", col("umo").alias(f"mispricing_{name}")
+        leg_umo[name] = _mp_spread_per_size_then_diff(pr, by).select(
+            *by_cols, col("umo").alias(f"mispricing_{name}")
         )
 
-    smb_daily = smb_panel.select("permno", "eom", "mktcap", "port_size")
+    smb_daily = smb_panel.select(*id_cols, "eom", "mktcap", "port_size")
     smb_port = (
-        _mp_vw_daily(smb_daily, ["port_size"], mp_con, interim_dir)
+        vw_fn(smb_daily, [*extra_group, "port_size"])
         .filter(col("_freq_") >= min_obs)
-        .pipe(_mp_filter_full_buckets, 2, by="date")
-        .sort("date", "port_size")
+        .pipe(_mp_filter_full_buckets, 2, by=by)
+        .sort(*by_cols, "port_size")
     )
-    smb_df = _mp_diff_legs(smb_port, "date", "port_size", 1, 2, "smb_mispricing").select(
-        "date", "smb_mispricing"
+    smb_df = _mp_diff_legs(smb_port, by, "port_size", 1, 2, "smb_mispricing").select(
+        *by_cols, "smb_mispricing"
     )
 
     daily_start = date(MP_START_FACTOR_EOM.year, MP_START_FACTOR_EOM.month, 1)
     return (
         leg_umo["mgmt"]
-        .join(leg_umo["perf"], on="date", how="inner")
-        .join(smb_df, on="date", how="inner")
+        .join(leg_umo["perf"], on=by_cols, how="inner")
+        .join(smb_df, on=by_cols, how="inner")
         .filter(col("date") >= daily_start)
-        .select("date", "smb_mispricing", "mispricing_mgmt", "mispricing_perf")
-        .sort("date")
+        .select(*out_cols, "smb_mispricing", "mispricing_mgmt", "mispricing_perf")
+        .sort(*out_sort)
+    )
+
+
+def _mp_build_portfolios_daily(legs, smb_panel, min_obs, mp_con, interim_dir: Path):
+    def vw_fn(panel, group_cols):
+        return _mp_vw_daily(panel, group_cols, mp_con, interim_dir)
+
+    return _mp_build_portfolios_daily_core(
+        legs,
+        smb_panel,
+        min_obs,
+        id_cols=["permno"],
+        extra_group=[],
+        by="date",
+        vw_fn=vw_fn,
+        out_cols=["date"],
+        out_sort=["date"],
     )
 
 
@@ -9154,35 +9328,24 @@ def _mp_world_pct_via_quantile_disc(m, descending, mp_con):
 
 def _mp_world_percentile_rank_anomalies(me_panel, anomalies, min_stks, mp_con):
     """Per-(excntry, eom) percentile rank for each world anomaly value."""
-    base = me_panel.filter((col("lag_prc") > 5) & (col("mktcap") > 0) & col("ret").is_not_null())
-    panel = base.select("id", "excntry", "eom", "ret", "lag_prc", "mktcap").sort("id", "eom")
 
-    for anom in MP_ANOMALY_LIST:
+    def anom_source(anom: str) -> pl.DataFrame | None:
         if anom not in anomalies:
-            continue
+            return None
         a = anomalies[anom]
         val_col = [c for c in a.columns if c not in ("id", "excntry", "eom")][0]
-        a = a.select("id", "eom", col(val_col).alias("rank_var"))
-        m = base.select("id", "excntry", "eom", "mktcap").join(a, on=["id", "eom"], how="inner")
-        m = (
-            _mp_world_pct_via_quantile_disc(
-                m, descending=anom in MP_POSITIVE_ANOMALIES, mp_con=mp_con
-            )
-            .filter(col("cnt") >= min_stks)
-            .with_columns(
-                pct=pl.when((col("eff") < min_stks) | col("rank_var").is_null())
-                .then(None)
-                .otherwise(col("pct_raw").cast(pl.Float64))
-            )
-        )
-        panel = panel.join(
-            m.select(
-                "id", "excntry", "eom", col("rank_var").alias(anom), col("pct").alias(f"pct_{anom}")
-            ),
-            on=["id", "excntry", "eom"],
-            how="left",
-        )
-    return panel
+        return a.select("id", "eom", col(val_col).alias("rank_var"))
+
+    return _mp_rank_anomalies_core(
+        me_panel,
+        min_stks,
+        mp_con,
+        panel_cols=["id", "excntry", "eom", "ret", "lag_prc", "mktcap"],
+        sort_keys=["id", "eom"],
+        id_cols=["id"],
+        group_keys=["excntry", "eom"],
+        anom_source=anom_source,
+    )
 
 
 def _mp_world_build_mispricing_panel(
@@ -9213,125 +9376,60 @@ def _mp_world_size_score_buckets(df, score_col):
 
 
 def _mp_world_build_mispricing_legs(mispricing_panel, min_fcts):
-    spec = {
-        "mgmt": (_MP_MGMT_COLS, "score_mgmt", "n_mgmt"),
-        "perf": (_MP_PERF_COLS, "score_perf", "n_perf"),
-    }
-    return {
-        name: _mp_world_size_score_buckets(
-            _mp_filter_active(mispricing_panel, cols_list, score_col, num_col, min_fcts), score_col
-        )
-        for name, (cols_list, score_col, num_col) in spec.items()
-    }
+    return _mp_build_legs_core(mispricing_panel, min_fcts, _mp_world_size_score_buckets)
 
 
 def _mp_world_build_portfolios_monthly(legs, smb_panel, min_obs):
-    leg_umo = {}
-    for name, panel in legs.items():
-        pr = (
-            _mp_vw_monthly(
-                panel.filter(col("port_size").is_not_null() & col("port_var").is_not_null()),
-                ["excntry", "eom", "port_size", "port_var"],
-            )
-            .filter(col("_freq_") >= min_obs)
-            .pipe(_mp_filter_full_buckets, 6, by=["excntry", "eom"])
-            .sort("excntry", "eom", "port_size", "port_var")
-        )
-        leg_umo[name] = _mp_spread_per_size_then_diff(pr, ["excntry", "eom"]).select(
-            "excntry", "eom", col("umo").alias(f"mispricing_{name}")
-        )
+    # World: thin (excntry, eom) buckets are hard-filtered, not truncated.
+    def thin(df):
+        return df.filter(col("_freq_") >= min_obs)
 
-    smb_port = (
-        _mp_vw_monthly(smb_panel, ["excntry", "eom", "port_size"])
-        .filter(col("_freq_") >= min_obs)
-        .pipe(_mp_filter_full_buckets, 2, by=["excntry", "eom"])
-        .sort("excntry", "eom", "port_size")
-    )
-    smb_df = _mp_diff_legs(
-        smb_port, ["excntry", "eom"], "port_size", 1, 2, "smb_mispricing"
-    ).select("excntry", "eom", "smb_mispricing")
-
-    return (
-        leg_umo["mgmt"]
-        .join(leg_umo["perf"], on=["excntry", "eom"], how="inner")
-        .join(smb_df, on=["excntry", "eom"], how="inner")
-        .filter(col("eom") >= MP_START_FACTOR_EOM)
-        .select("eom", "excntry", "smb_mispricing", "mispricing_mgmt", "mispricing_perf")
-        .sort("excntry", "eom")
+    return _mp_build_portfolios_monthly_core(
+        legs,
+        smb_panel,
+        by=["excntry", "eom"],
+        thin=thin,
+        out_cols=["eom", "excntry"],
+        out_sort=["excntry", "eom"],
     )
 
 
 def _mp_world_vw_daily(panel, group_cols, mp_con, interim_dir: Path):
-    mp_con.register("panel_w", panel)
-    group_sql = ", ".join(group_cols)
-    # group_cols (e.g. "excntry") exist on both panel_w (a) and world_dsf (b);
-    # qualify the SELECT with a.<col> to avoid DuckDB BinderError on JOIN.
-    group_sql_a = ", ".join(f"a.{c}" for c in group_cols)
-    world_dsf_path = (interim_dir / "world_dsf.parquet").as_posix()
-    return mp_con.execute(f"""
-        WITH joined AS (
-            SELECT b.date AS date, a.mktcap, b.ret AS ret_d, {group_sql_a}
-            FROM panel_w a
-            JOIN read_parquet('{world_dsf_path}') b
-              ON a.id = b.id AND a.eom = b.eom
-            WHERE b.ret IS NOT NULL AND a.mktcap IS NOT NULL
-        )
-        SELECT date, {group_sql},
-               SUM(ret_d * mktcap) / SUM(mktcap) AS vwret,
-               COUNT(*) AS _freq_
-        FROM joined GROUP BY date, {group_sql}
-    """).pl()
+    return _mp_vw_daily_core(
+        panel,
+        group_cols,
+        mp_con,
+        daily_path=(interim_dir / "world_dsf.parquet").as_posix(),
+        id_col="id",
+        table="panel_w",
+        qualify_group=True,
+    )
 
 
 def _mp_world_build_portfolios_daily(legs, smb_panel, min_obs, mp_con, interim_dir: Path):
-    leg_umo = {}
-    for name, panel in legs.items():
-        bucketed = panel.filter(
-            col("port_size").is_not_null() & col("port_var").is_not_null()
-        ).select("id", "excntry", "eom", "mktcap", "port_size", "port_var")
-        pr = (
-            _mp_world_vw_daily(bucketed, ["excntry", "port_size", "port_var"], mp_con, interim_dir)
-            .filter(col("_freq_") >= min_obs)
-            .pipe(_mp_filter_full_buckets, 6, by=["excntry", "date"])
-            .sort("excntry", "date", "port_size", "port_var")
-        )
-        leg_umo[name] = _mp_spread_per_size_then_diff(pr, ["excntry", "date"]).select(
-            "excntry", "date", col("umo").alias(f"mispricing_{name}")
-        )
+    def vw_fn(panel, group_cols):
+        return _mp_world_vw_daily(panel, group_cols, mp_con, interim_dir)
 
-    smb_daily = smb_panel.select("id", "excntry", "eom", "mktcap", "port_size")
-    smb_port = (
-        _mp_world_vw_daily(smb_daily, ["excntry", "port_size"], mp_con, interim_dir)
-        .filter(col("_freq_") >= min_obs)
-        .pipe(_mp_filter_full_buckets, 2, by=["excntry", "date"])
-        .sort("excntry", "date", "port_size")
-    )
-    smb_df = _mp_diff_legs(
-        smb_port, ["excntry", "date"], "port_size", 1, 2, "smb_mispricing"
-    ).select("excntry", "date", "smb_mispricing")
-
-    daily_start = date(MP_START_FACTOR_EOM.year, MP_START_FACTOR_EOM.month, 1)
-    return (
-        leg_umo["mgmt"]
-        .join(leg_umo["perf"], on=["excntry", "date"], how="inner")
-        .join(smb_df, on=["excntry", "date"], how="inner")
-        .filter(col("date") >= daily_start)
-        .select("date", "excntry", "smb_mispricing", "mispricing_mgmt", "mispricing_perf")
-        .sort("excntry", "date")
+    return _mp_build_portfolios_daily_core(
+        legs,
+        smb_panel,
+        min_obs,
+        id_cols=["id", "excntry"],
+        extra_group=["excntry"],
+        by=["excntry", "date"],
+        vw_fn=vw_fn,
+        out_cols=["date", "excntry"],
+        out_sort=["excntry", "date"],
     )
 
 
 def _mp_world_build_stock_scores(mispricing_panel, min_fcts):
-    out = (
-        _mp_add_leg_score(
-            mispricing_panel, _MP_MGMT_COLS, "mispricing_mgmt", "_n_mgmt", min_count=min_fcts
-        )
-        .pipe(_mp_add_leg_score, _MP_PERF_COLS, "mispricing_perf", "_n_perf", min_count=min_fcts)
-        .filter(col("mispricing_mgmt").is_not_null() | col("mispricing_perf").is_not_null())
-        .sort("id", "eom")
-        .select("id", "eom", "excntry", "mispricing_mgmt", "mispricing_perf")
+    return _mp_build_stock_scores_core(
+        mispricing_panel,
+        min_fcts,
+        sort_keys=["id", "eom"],
+        select_cols=["id", "eom", "excntry"],
     )
-    return out
 
 
 def _mp_stage1_load_returns(mp_con, raw_dir: Path, interim_dir: Path):
