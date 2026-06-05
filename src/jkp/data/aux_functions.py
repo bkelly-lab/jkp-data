@@ -13429,6 +13429,120 @@ def _hxz_add_me_lag1_ym(df: pl.DataFrame, key: str, freq: str) -> pl.DataFrame:
     return df.with_columns(me_lag1=pl.col("me").shift(1).over(key))
 
 
+def hxz_delist_impute_us(raw_dir: Path, us_panel: pl.DataFrame) -> pl.DataFrame:
+    """
+    Description:
+        BMP-style imputation for MISSING delisting event returns, per the
+        q-factors testing-portfolios doc §3: "we replace missing delisting
+        event returns using the average available delisting returns with the
+        same stock exchange and delisting type (1-digit delisting code)
+        during the past 60 months". CIZ mthret/dlyret already embed observed
+        delisting returns, so only delret-null events need treatment; the
+        imputed return is compounded into the stock's final panel row.
+        CIZ delactiontype (MER/GDR/GEX/GLI/LOS) stands in for the legacy
+        1-digit delisting code. Timing simplification vs the doc: the
+        imputed return lands on the stock's last panel row (the doc books
+        last-day delistings at t+1, which would need synthetic rows).
+    Steps:
+        1) Universe delistings (inner join on panel ids), nonfinancial pool.
+        2) Strictly-past 60-month rolling mean of available delret per
+           (exchcd, delactiontype) on a dense month grid; fallbacks:
+           same type across exchanges, then 0.
+        3) Missing-delret events matched to the stock's last panel row
+           within 31 days of the delisting date.
+    Output:
+        [id, date, ret_adj] replacement rows; empty frame when
+        crsp_stkdelists.parquet is absent (synthetic golden fixtures).
+    """
+    empty = us_panel.select(pl.col("id"), pl.col("date"), ret_adj=pl.col("ret")).head(0)
+    delist_path = raw_dir / "crsp_stkdelists.parquet"
+    if not delist_path.exists():
+        return empty
+
+    last_row = (
+        us_panel.sort(["id", "date"])
+        .unique(subset=["id"], keep="last")
+        .select("id", "is_fin", "exchcd", last_date=pl.col("date"), last_ret=pl.col("ret"))
+    )
+    events = (
+        pl.read_parquet(delist_path)
+        .with_columns(
+            pl.col("delistingdt").cast(pl.Date),
+            pl.col("delret").cast(pl.Float64, strict=False),
+            pl.col("permno").cast(pl.Int64).alias("id"),
+        )
+        .select("id", "delistingdt", "delret", "delactiontype")
+        .join(last_row, on="id", how="inner")
+        .filter(~pl.col("is_fin"))
+        .with_columns(ym=pl.col("delistingdt").dt.year() * 12 + pl.col("delistingdt").dt.month())
+    )
+
+    def _past60_mean(grp_keys: list[str], alias: str) -> pl.DataFrame:
+        """Strictly-past 60-month rolling mean of available delret per group."""
+        avail = (
+            events.filter(pl.col("delret").is_not_null())
+            .group_by(*grp_keys, "ym")
+            .agg(_s=pl.col("delret").sum(), _n=pl.len())
+        )
+        grid = (
+            avail.group_by(grp_keys)
+            .agg(_lo=pl.col("ym").min(), _hi=pl.col("ym").max() + 60)
+            .with_columns(ym=pl.int_ranges("_lo", pl.col("_hi") + 1))
+            .explode("ym")
+            .drop("_lo", "_hi")
+        )
+        return (
+            grid.join(avail, on=[*grp_keys, "ym"], how="left")
+            .sort([*grp_keys, "ym"])
+            .with_columns(
+                _s60=pl.col("_s").fill_null(0.0).rolling_sum(60, min_samples=1).over(grp_keys),
+                _n60=pl.col("_n").fill_null(0).rolling_sum(60, min_samples=1).over(grp_keys),
+            )
+            .with_columns(
+                pl.col("_s60", "_n60").shift(1).over(grp_keys)  # strictly past
+            )
+            .with_columns(safe_div(pl.col("_s60"), pl.col("_n60").cast(pl.Float64), alias, mode=3))
+            .select(*grp_keys, "ym", alias)
+        )
+
+    by_exch_type = _past60_mean(["exchcd", "delactiontype"], "imp_et")
+    by_type = _past60_mean(["delactiontype"], "imp_t")
+
+    return (
+        events.filter(
+            pl.col("delret").is_null()
+            & ((pl.col("delistingdt") - pl.col("last_date")).dt.total_days().abs() <= 31)
+        )
+        .join(by_exch_type, on=["exchcd", "delactiontype", "ym"], how="left")
+        .join(by_type, on=["delactiontype", "ym"], how="left")
+        .with_columns(imp=pl.coalesce("imp_et", "imp_t", pl.lit(0.0)))
+        .select(
+            "id",
+            date=pl.col("last_date"),
+            ret_adj=(1.0 + pl.col("last_ret").fill_null(0.0)) * (1.0 + pl.col("imp")) - 1.0,
+        )
+        .unique(subset=["id", "date"], keep="first")
+    )
+
+
+def _hxz_apply_delist_imputation(raw_dir: Path, panel: pl.DataFrame) -> pl.DataFrame:
+    """Replace `ret` on US final rows matched by `hxz_delist_impute_us`;
+    ROW rows pass through untouched."""
+    us = panel.filter(pl.col("excntry") == US_EXCNTRY)
+    adj = hxz_delist_impute_us(raw_dir, us)
+    if adj.height == 0:
+        return panel
+    return (
+        panel.join(
+            adj.with_columns(excntry=pl.lit(US_EXCNTRY)),
+            on=["excntry", "id", "date"],
+            how="left",
+        )
+        .with_columns(ret=pl.coalesce("ret_adj", "ret"))
+        .drop("ret_adj")
+    )
+
+
 def hxz_load_returns(
     raw_dir: Path,
     interim_dir: Path,
@@ -13882,7 +13996,9 @@ def gen_hxz_data(
     chars_out = chars_path
 
     # ---- 1. Load + filter returns/me (monthly) ----
-    panel_m_raw = hxz_load_returns(raw_dir, interim_dir, freq="monthly")
+    panel_m_raw = _hxz_apply_delist_imputation(
+        raw_dir, hxz_load_returns(raw_dir, interim_dir, freq="monthly")
+    )
 
     # ---- 2. Load + filter fundamentals ----
     fundamentals = hxz_load_fundamentals(raw_dir)
@@ -13917,7 +14033,9 @@ def gen_hxz_data(
         # Floor scan at 6mo before output_start so me_lag1 has prior-day data
         # on the first output day without holding the full 1925+ daily file.
         daily_start = date(output_start.year - 1, 7, 1)
-        panel_d_raw = hxz_load_returns(raw_dir, interim_dir, freq="daily", date_start=daily_start)
+        panel_d_raw = _hxz_apply_delist_imputation(
+            raw_dir, hxz_load_returns(raw_dir, interim_dir, freq="daily", date_start=daily_start)
+        )
         panel_d = (
             panel_d_raw.filter(start_filter)
             .with_columns(eom=pl.col("date").dt.month_end())
