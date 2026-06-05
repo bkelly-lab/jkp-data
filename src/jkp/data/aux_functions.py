@@ -13201,7 +13201,6 @@ def hxz_link_compustat(comp: pl.DataFrame, raw_dir: Path) -> pl.DataFrame:
             pl.col("lpermno").cast(pl.Int64),
             pl.col("linkdt", "linkenddt").cast(pl.Date),
         )
-        .collect()
     )
     # Economic tie-break ladder when a permno links to multiple gvkeys at the
     # same datadate (e.g. CCM "research" + "primary" pairs):
@@ -13213,7 +13212,8 @@ def hxz_link_compustat(comp: pl.DataFrame, raw_dir: Path) -> pl.DataFrame:
     #      identity, the primary entity going forward.
     #   4. linkdt ASC, gvkey ASC: final deterministic tie-breakers.
     return (
-        comp.join(lnk, on="gvkey", how="inner")
+        comp.lazy()
+        .join(lnk, on="gvkey", how="inner")
         .filter(
             (pl.col("linkdt") <= pl.col("datadate"))
             & (pl.col("linkenddt").is_null() | (pl.col("linkenddt") >= pl.col("datadate")))
@@ -13230,6 +13230,7 @@ def hxz_link_compustat(comp: pl.DataFrame, raw_dir: Path) -> pl.DataFrame:
         )
         .unique(subset=["datadate", "permno"], keep="first")
         .drop("linktype", "_link_days")
+        .collect()
     )
 
 
