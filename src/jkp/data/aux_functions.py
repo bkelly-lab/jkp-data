@@ -9336,11 +9336,12 @@ def _mp_world_compute_distress(
 
     fundq = _mp_world_distress_fundq(raw_dir)
     be = _mp_world_distress_book_equity_mb(fundq, wm)
-    dist3 = _mp_world_distress_quarterly_join(dist1, id_gvkey, be, fundq, mp_con)
-    dist3 = _mp_world_distress_nimtaavg(dist3)
-    dist3 = _mp_world_distress_exretavg(dist3)
-    sigma = _mp_world_distress_sigma(wd_daily, wm)
-    return _mp_world_distress_final_score(dist3, sigma)
+    return (
+        _mp_world_distress_quarterly_join(dist1, id_gvkey, be, fundq, mp_con)
+        .pipe(_mp_world_distress_nimtaavg)
+        .pipe(_mp_world_distress_exretavg)
+        .pipe(_mp_world_distress_final_score, _mp_world_distress_sigma(wd_daily, wm))
+    )
 
 
 def _mp_world_build_anomalies_panel(wm, wd, market_m, world_daily, mp_con, raw_dir: Path):
