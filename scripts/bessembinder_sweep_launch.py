@@ -97,11 +97,13 @@ def build_sandbox(tag: str) -> Path:
         (raw / "raw_tables", SHARED / "raw" / "raw_tables"),
         (interim / "raw_data_dfs", SHARED / "interim" / "raw_data_dfs"),
     ]:
-        if not name.exists():
+        # is_symlink, not exists: exists() follows the link and returns False
+        # for a link whose target is missing, then symlink_to crashes
+        if not (name.is_symlink() or name.exists()):
             name.symlink_to(target, target_is_directory=True)
     for fname in SHARED_INTERIM_FILES:
         link = interim / fname
-        if not link.exists():
+        if not (link.is_symlink() or link.exists()):
             link.symlink_to(SHARED / "interim" / fname)
     return base
 
