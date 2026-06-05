@@ -11489,6 +11489,25 @@ _CIZ_UNIVERSE = (
 )
 
 
+def _collapse_to_latest_fy(lf: pl.LazyFrame, *, resort: bool = True) -> pl.LazyFrame:
+    """
+    Description:
+        Collapse to one accounting obs per (gvkey, fiscal year), keeping the
+        latest datadate. A fiscal-year-end change yields two datadate in one
+        calendar year; without this the downstream at.shift(1) lag spans the
+        sub-annual stub (fy_gap=0) and nulls inv on the surviving row.
+        keep="last" is deterministic given (gvkey, datadate) uniqueness
+        (Compustat filters + INDL-over-FS guard; see issue #69).
+    Steps:
+        1) Sort by (gvkey, datadate); unique on (gvkey, year) keeping last.
+        2) Optionally re-sort by (gvkey, datadate) for downstream lags.
+    Output:
+        LazyFrame with one row per (gvkey, year). Requires a `year` column.
+    """
+    out = lf.sort(["gvkey", "datadate"]).unique(subset=["gvkey", "year"], keep="last")
+    return out.sort(["gvkey", "datadate"]) if resort else out
+
+
 def ff_load_compustat_us(
     raw_dir: Path,
     ff5: bool,
@@ -11569,13 +11588,8 @@ def ff_load_compustat_us(
             year=pl.col("datadate").dt.year(),
         )
         .with_columns(be=pl.when(be_raw < 0).then(None).otherwise(be_raw))
-        # One accounting obs per (gvkey, fiscal year), latest datadate, BEFORE the
-        # inv lag below. A fiscal-year-end change yields two datadate in one calendar
-        # year; otherwise the at.shift(1) lag spans the sub-annual stub (fy_gap=0) and
-        # nulls inv on the surviving row. Mirrors the ROW loader (_ff_load_world_funda).
-        .sort(["gvkey", "datadate"])
-        .unique(subset=["gvkey", "year"], keep="last")
-        .sort(["gvkey", "datadate"])
+        # BEFORE the inv lag below; mirrors the ROW loader (_ff_load_world_funda).
+        .pipe(_collapse_to_latest_fy)
     )
 
     if ff5:
@@ -12081,16 +12095,9 @@ def _ff_load_world_funda(raw_dir: Path, parquet: str, is_global: bool) -> pl.Laz
             .filter((pl.col("_n") == 1) | ((pl.col("_n") == 2) & (pl.col("indfmt") == "INDL")))
             .drop("_n")
         )
-    # Collapse to one accounting obs per (gvkey, fiscal year), keeping the latest
-    # datadate, BEFORE be/op/inv are computed. A fiscal-year-end change yields two
-    # datadate in one calendar year; without this the downstream at.shift(1) lag
-    # spans the sub-annual stub (fy_gap=0) and nulls inv on the surviving row.
-    # keep="last" is deterministic given (gvkey, datadate) uniqueness (Compustat
-    # filters + INDL-over-FS guard; see issue #69).
-    return (
-        lf.with_columns(year=pl.col("datadate").dt.year())
-        .sort(["gvkey", "datadate"])
-        .unique(subset=["gvkey", "year"], keep="last")
+    # Collapse BEFORE be/op/inv are computed (see _collapse_to_latest_fy).
+    return lf.with_columns(year=pl.col("datadate").dt.year()).pipe(
+        _collapse_to_latest_fy, resort=False
     )
 
 
@@ -12845,13 +12852,10 @@ def hxz_load_funda(raw_dir: Path) -> pl.DataFrame:
             sh_a=pl.coalesce("seq", pl.col("ceq") + pl.col("pstk"), pl.col("at") - pl.col("lt")),
         )
         .with_columns(be_a=pl.col("sh_a") + pl.col("txditc").fill_null(0.0) - pl.col("ps_a"))
-        # One accounting obs per (gvkey, fiscal year), latest datadate, BEFORE the
-        # inv lag — fiscal-year-end changes otherwise null inv on the surviving row.
-        # Mirrors ff_load_compustat_us. (year is transient; dropped by the select.)
+        # BEFORE the inv lag; mirrors ff_load_compustat_us. (year is transient;
+        # dropped by the select.)
         .with_columns(year=pl.col("datadate").dt.year())
-        .sort(["gvkey", "datadate"])
-        .unique(subset=["gvkey", "year"], keep="last")
-        .sort(["gvkey", "datadate"])
+        .pipe(_collapse_to_latest_fy)
         .with_columns(
             inv=pl.when(at_lag.is_not_null() & (at_lag > 0) & (fy_gap == 1))
             .then((pl.col("at") - at_lag) / at_lag)
@@ -13145,13 +13149,8 @@ def _hxz_compustat_be_inv(lf: pl.LazyFrame, is_global: bool) -> pl.LazyFrame:
     fy_gap = pl.col("datadate").dt.year() - pl.col("datadate").shift(1).over("gvkey").dt.year()
     return (
         lf.with_columns(be_a=be_a, year=pl.col("datadate").dt.year())
-        # One accounting obs per (gvkey, fiscal year), latest datadate, BEFORE the
-        # inv lag. A fiscal-year-end change yields two datadate in one calendar year;
-        # otherwise at.shift(1) spans the sub-annual stub (fy_gap=0) and nulls inv.
-        # Mirrors the FF loaders (_ff_load_world_funda / ff_load_compustat_us).
-        .sort(["gvkey", "datadate"])
-        .unique(subset=["gvkey", "year"], keep="last")
-        .sort(["gvkey", "datadate"])
+        # BEFORE the inv lag; mirrors the FF loaders.
+        .pipe(_collapse_to_latest_fy)
         .with_columns(
             inv=pl.when(at_lag.is_not_null() & (at_lag > 0) & (fy_gap == 1))
             .then((pl.col("at") - at_lag) / at_lag)
