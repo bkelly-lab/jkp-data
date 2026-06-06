@@ -43,12 +43,11 @@ from jkp.data.aux_functions import (
     _mp_distress_sigma,
     _mp_filter_full_buckets,
     _mp_rolling_calendar_sum,
-    _mp_size_score_buckets,
+    _mp_size_buckets_core,
     _mp_spread_per_size_then_diff,
     _mp_truncate_thin,
     _mp_vw_monthly,
     _mp_world_percentile_rank_anomalies,
-    _mp_world_size_score_buckets,
 )
 from jkp.data.config import (
     MP_ANOMALY_LIST,
@@ -65,6 +64,23 @@ from jkp.data.config import (
 # ---------------------------------------------------------------------------
 _MGMT_COLS = [f"pct_{MP_ANOMALY_LIST[i - 1]}" for i in MP_MGMT_IDX]
 _PERF_COLS = [f"pct_{MP_ANOMALY_LIST[i - 1]}" for i in MP_PERF_IDX]
+
+
+def _mp_size_score_buckets(df: pl.DataFrame, score_col: str) -> pl.DataFrame:
+    """US bucket knobs as used in _mp_stage4_form_portfolios (NYSE-only size median)."""
+    return _mp_size_buckets_core(
+        df,
+        score_col,
+        group_keys=["eom"],
+        size_break_sql="CASE WHEN exchcd = 1 THEN mktcap END",
+    )
+
+
+def _mp_world_size_score_buckets(df: pl.DataFrame, score_col: str) -> pl.DataFrame:
+    """World bucket knobs as used in _mp_stage4_form_portfolios (per-country breaks)."""
+    return _mp_size_buckets_core(
+        df, score_col, group_keys=["excntry", "eom"], size_break_sql="mktcap"
+    )
 
 
 # ===========================================================================
@@ -2089,10 +2105,10 @@ class TestAnomalyListConfig:
 
 
 class TestMpWorldBuildPortfoliosDaily:
-    """Tests for _mp_world_build_portfolios_daily.
+    """Tests for the world _mp_build_portfolios_daily_core configuration.
 
     Requires real world_dsf.parquet via DuckDB read_parquet SQL embedded in
-    _mp_world_vw_daily — cannot be isolated with synthetic in-memory data
+    _mp_vw_daily_core — cannot be isolated with synthetic in-memory data
     without patching the file path.
     """
 
