@@ -9,7 +9,7 @@ sub-annual stub and nulled `inv` on the surviving row. The loaders now collapse
 to one row per `(gvkey, year)` (latest datadate) BEFORE the lag.
 
 Covers:
-  - _hxz_compustat_be_inv   (ROW annual inv)
+  - _hxz_global_be_inv      (ROW annual inv)
   - hxz_load_funda          (US annual inv)
 """
 
@@ -19,9 +19,9 @@ from datetime import date
 
 import polars as pl
 
-from jkp.data.aux_functions import _hxz_compustat_be_inv, hxz_load_funda
+from jkp.data.aux_functions import _hxz_global_be_inv, hxz_load_funda
 
-# Columns _hxz_compustat_be_inv / hxz_load_funda reference, defaulted to None.
+# Columns _hxz_global_be_inv / hxz_load_funda reference, defaulted to None.
 _FLOAT_COLS = [
     "pstk",
     "pstkrv",
@@ -67,8 +67,8 @@ def _lazy(rows):
     )
 
 
-def test_hxz_compustat_be_inv_collapses_and_recovers_inv():
-    out = _hxz_compustat_be_inv(_lazy(_fiscal_change_rows("001")), is_global=True).collect()
+def test_hxz_global_be_inv_collapses_and_recovers_inv():
+    out = _hxz_global_be_inv(_lazy(_fiscal_change_rows("001"))).collect()
 
     # One row per (gvkey, year); the 2019 stub (06-30) dropped for 12-31.
     assert out.height == 2

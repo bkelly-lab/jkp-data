@@ -224,79 +224,6 @@ ROLLING_DAILY_SPECS: list[tuple[str, int, list[str]]] = [
 # min-stocks gates).
 US_EXCNTRY = "USA"
 
-# Raw CRSP parquet + column-prefix per frequency. US-only.
-FF_CRSP_SPECS = {
-    "monthly": ("crsp_msf_v2.parquet", "mth"),
-    "daily": ("crsp_dsf_v2.parquet", "dly"),
-}
-
-# port_year = formation year y for any date t in Jul(y)..Jun(y+1).
-FF_PORT_YEAR = (
-    pl.when(pl.col("date").dt.month() >= 7)
-    .then(pl.col("date").dt.year())
-    .otherwise(pl.col("date").dt.year() - 1)
-    .alias("port_year")
-)
-
-# Per-sort definitions: value col, NYSE 30/70 break column names, bucket
-# labels (ladder), port column, eligibility flag, bucket label space, the
-# SN/BN rename to disambiguate across OP/INV legs, and us_size_all_nyse:
-# whether the US size median pools all NYSE me>0 stocks instead of the
-# sort-eligible pool (DFF 2000 "all NYSE stocks on CRSP" -- true for the
-# B/M and momentum sorts, per the source papers / French's counts).
-FF_SORT_SPECS: dict[str, dict] = {
-    "bm": {
-        "value": "beme",
-        "breaks": ["beme30", "beme70"],
-        "labels": ["L", "M", "H"],
-        "port": "btmport",
-        "flag": "positivebeme",
-        "buckets": ["SL", "SM", "SH", "BL", "BM", "BH"],
-        "rename": {},
-        "us_size_all_nyse": True,
-    },
-    "op": {
-        "value": "op",
-        "breaks": ["op30", "op70"],
-        "labels": ["W", "N", "R"],
-        "port": "opport",
-        "flag": "nonmiss_op",
-        "buckets": ["SW", "SN", "SR", "BW", "BN", "BR"],
-        "rename": {"SN": "SN_op", "BN": "BN_op"},
-    },
-    "inv": {
-        "value": "inv",
-        "breaks": ["inv30", "inv70"],
-        "labels": ["C", "N", "A"],
-        "port": "invport",
-        "flag": "nonmiss_inv",
-        "buckets": ["SC", "SN", "SA", "BC", "BN", "BA"],
-        "rename": {"SN": "SN_inv", "BN": "BN_inv"},
-    },
-    "mom": {
-        "value": "mom_2_12",
-        "breaks": ["mom30", "mom70"],
-        "labels": ["L", "N", "H"],
-        "port": "momport",
-        "flag": "nonmiss_mom",
-        "buckets": ["SL", "SN", "SH", "BL", "BN", "BH"],
-        "rename": {},
-        "us_size_all_nyse": True,
-    },
-}
-
-# Portfolio assignment columns broadcast from June(y) to the daily/monthly
-# panel.
-FF_PORT_COLS = (
-    "sizeport",
-    "btmport",
-    "positivebeme",
-    "opport",
-    "nonmiss_op",
-    "invport",
-    "nonmiss_inv",
-)
-
 # Min firms per (excntry, June(y)) for ROW breakpoints; US bypassed.
 FF_MIN_STOCKS_BP = 10
 
@@ -317,21 +244,6 @@ FF_UMD_DAILY_SKIP = 21
 FF_UMD_DAILY_LOOKBACK = 251
 FF_UMD_MONTHLY_LOOKBACK = 12
 FF_UMD_MONTHLY_SKIP = 1
-
-# Common output schema of the monthly/daily UMD signal builders.
-FF_MOM_OUTPUT_COLS = (
-    "excntry",
-    "id",
-    "date",
-    "ret",
-    "w",
-    "me",
-    "exchcd_us",
-    "size_grp",
-    "me_lag1",
-    "mom_2_12",
-    "eligible_mom",
-)
 
 # DFF (Davis-Fama-French) hand-collected Moody's BE splice into the US FF path.
 # When True, union DFF BE (permno-keyed, bundled resource) with Compustat BE;

@@ -1763,8 +1763,7 @@ class TestHxzClassifyPortfolios:
             pl.col("size_grp").cast(pl.Utf8),
         )
 
-        chars_formation = (size_ia_form, roe_m)
-        result = hxz_classify_portfolios(panel, chars_formation)
+        result = hxz_classify_portfolios(panel, size_ia_form, roe_m)
         result_sorted = result.sort("date")
         # All months in Jul..Dec 2020 should have non-null sizeport and invport
         jul_row = result_sorted.filter(pl.col("date") == date(2020, 7, 31))
@@ -1817,7 +1816,7 @@ class TestHxzClassifyPortfolios:
             pl.col("size_grp").cast(pl.Utf8),
         )
 
-        result = hxz_classify_portfolios(panel, (size_ia_form, roe_m)).sort("date")
+        result = hxz_classify_portfolios(panel, size_ia_form, roe_m).sort("date")
         assert result["roe"][0] == pytest.approx(0.07)
         assert result["roe"][1] == pytest.approx(0.08)
 
@@ -1864,7 +1863,7 @@ class TestHxzClassifyPortfolios:
             pl.col("size_grp").cast(pl.Utf8),
         )
 
-        result = hxz_classify_portfolios(panel, (size_ia_form, roe_m))
+        result = hxz_classify_portfolios(panel, size_ia_form, roe_m)
         for col in ("sizeport", "invport", "roeport"):
             assert col in result.columns
 

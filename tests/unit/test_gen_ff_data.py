@@ -2,9 +2,11 @@
 Unit tests for FF3/FF5/UMD factor-builder helpers in aux_functions.py.
 
 Covers:
-  - _ff_eligible("bm" / "op" / "inv" / "mom")
-  - ff_country_breakpoints, ff_country_breaks_for_spec
-  - ff_prepare_chars_weights_rets (no-BE June stocks kept for the size pool)
+  - _ff_bm_eligible / _ff_op_eligible / _ff_inv_eligible / _ff_mom_eligible
+  - ff_country_breakpoints, _ff_bm_breaks / _ff_op_breaks / _ff_inv_breaks,
+    _ff_size_breaks
+  - _ff_us_finish_prepare / _ff_row_finish_prepare (no-BE June stocks kept
+    for the size pool)
   - ff_assign_portfolios
   - ff_assign_to_panel
   - _ff_vw_leg
@@ -22,9 +24,20 @@ import numpy as np
 import polars as pl
 
 from jkp.data.aux_functions import (
-    _ff_eligible,
+    _ff_bm_breaks,
+    _ff_bm_eligible,
+    _ff_inv_breaks,
+    _ff_inv_eligible,
+    _ff_mom_eligible,
     _ff_mom_signal_daily,
     _ff_mom_signal_monthly,
+    _ff_op_breaks,
+    _ff_op_eligible,
+    _ff_row_finish_prepare,
+    _ff_row_rets_weights_lazy,
+    _ff_size_breaks,
+    _ff_us_finish_prepare,
+    _ff_us_rets_weights_lazy,
     _ff_vw_leg,
     ff_assign_portfolios,
     ff_assign_to_panel,
@@ -32,14 +45,11 @@ from jkp.data.aux_functions import (
     ff_compute_factors,
     ff_compute_umd_factor,
     ff_country_breakpoints,
-    ff_country_breaks_for_spec,
-    ff_prepare_chars_weights_rets,
 )
 from jkp.data.config import (
     FF_MIN_STOCKS_BP,
     FF_MIN_STOCKS_PF,
     FF_MISSING_RET_CODE,
-    FF_SORT_SPECS,
     US_EXCNTRY,
 )
 
@@ -65,24 +75,24 @@ def _apply_eligible(df: pl.DataFrame, expr: pl.Expr) -> pl.Series:
 
 
 class TestFFBmEligible:
-    """Tests for _ff_eligible("bm")."""
+    """Tests for _ff_bm_eligible()."""
 
     def test_all_conditions_met(self):
         """Returns True when beme>0, me>0, count>=2."""
         df = pl.DataFrame({"beme": [1.0], "me": [1.0], "count": [2]})
-        result = _apply_eligible(df, _ff_eligible("bm"))
+        result = _apply_eligible(df, _ff_bm_eligible())
         assert result[0] is True
 
     def test_beme_zero_fails(self):
         """Returns False when beme == 0."""
         df = pl.DataFrame({"beme": [0.0], "me": [1.0], "count": [2]})
-        result = _apply_eligible(df, _ff_eligible("bm"))
+        result = _apply_eligible(df, _ff_bm_eligible())
         assert result[0] is False
 
     def test_beme_negative_fails(self):
         """Returns False when beme < 0."""
         df = pl.DataFrame({"beme": [-1.0], "me": [1.0], "count": [2]})
-        result = _apply_eligible(df, _ff_eligible("bm"))
+        result = _apply_eligible(df, _ff_bm_eligible())
         assert result[0] is False
 
     def test_beme_null_fails(self):
@@ -91,37 +101,37 @@ class TestFFBmEligible:
             {"beme": [None], "me": [1.0], "count": [2]},
             schema={"beme": pl.Float64, "me": pl.Float64, "count": pl.Int64},
         )
-        result = _apply_eligible(df, _ff_eligible("bm"))
+        result = _apply_eligible(df, _ff_bm_eligible())
         assert result[0] is not True
 
     def test_me_zero_fails(self):
         """Returns False when me == 0."""
         df = pl.DataFrame({"beme": [1.0], "me": [0.0], "count": [2]})
-        result = _apply_eligible(df, _ff_eligible("bm"))
+        result = _apply_eligible(df, _ff_bm_eligible())
         assert result[0] is False
 
     def test_me_negative_fails(self):
         """Returns False when me < 0."""
         df = pl.DataFrame({"beme": [1.0], "me": [-1.0], "count": [2]})
-        result = _apply_eligible(df, _ff_eligible("bm"))
+        result = _apply_eligible(df, _ff_bm_eligible())
         assert result[0] is False
 
     def test_count_one_fails(self):
         """ROW: returns False when count < 2 (count == 1)."""
         df = pl.DataFrame({"beme": [1.0], "me": [1.0], "count": [1]})
-        result = _apply_eligible(df, _ff_eligible("bm"))
+        result = _apply_eligible(df, _ff_bm_eligible())
         assert result[0] is False
 
     def test_count_two_passes(self):
         """ROW: returns True when count == 2 (boundary)."""
         df = pl.DataFrame({"beme": [1.0], "me": [1.0], "count": [2]})
-        result = _apply_eligible(df, _ff_eligible("bm"))
+        result = _apply_eligible(df, _ff_bm_eligible())
         assert result[0] is True
 
     def test_us_count_one_passes(self):
         """US is exempt from the FF (1993) two-year count gate."""
         df = pl.DataFrame({"beme": [1.0], "me": [1.0], "count": [1], "excntry": [US_EXCNTRY]})
-        result = _apply_eligible(df, _ff_eligible("bm"))
+        result = _apply_eligible(df, _ff_bm_eligible())
         assert result[0] is True
 
     def test_vectorised_mixed(self):
@@ -133,7 +143,7 @@ class TestFFBmEligible:
                 "count": [3, 3, 3, 3],
             }
         )
-        result = _apply_eligible(df, _ff_eligible("bm"))
+        result = _apply_eligible(df, _ff_bm_eligible())
         assert result[0] is True
         assert result[1] is False
         assert result[2] is False
@@ -146,12 +156,12 @@ class TestFFBmEligible:
 
 
 class TestFFOpEligible:
-    """Tests for _ff_eligible("op")."""
+    """Tests for _ff_op_eligible()."""
 
     def test_all_conditions_met(self):
         """Returns True when me>0, be>0, count>=2, op not null."""
         df = pl.DataFrame({"me": [1.0], "be": [1.0], "count": [2], "op": [0.5]})
-        assert _apply_eligible(df, _ff_eligible("op"))[0] is True
+        assert _apply_eligible(df, _ff_op_eligible())[0] is True
 
     def test_op_null_fails(self):
         """Returns False when op is null."""
@@ -159,34 +169,34 @@ class TestFFOpEligible:
             {"me": [1.0], "be": [1.0], "count": [2], "op": [None]},
             schema={"me": pl.Float64, "be": pl.Float64, "count": pl.Int64, "op": pl.Float64},
         )
-        assert _apply_eligible(df, _ff_eligible("op"))[0] is False
+        assert _apply_eligible(df, _ff_op_eligible())[0] is False
 
     def test_be_zero_fails(self):
         """Returns False when be == 0."""
         df = pl.DataFrame({"me": [1.0], "be": [0.0], "count": [2], "op": [0.5]})
-        assert _apply_eligible(df, _ff_eligible("op"))[0] is False
+        assert _apply_eligible(df, _ff_op_eligible())[0] is False
 
     def test_be_negative_fails(self):
         """Returns False when be < 0."""
         df = pl.DataFrame({"me": [1.0], "be": [-1.0], "count": [2], "op": [0.5]})
-        assert _apply_eligible(df, _ff_eligible("op"))[0] is False
+        assert _apply_eligible(df, _ff_op_eligible())[0] is False
 
     def test_me_zero_fails(self):
         """Returns False when me == 0."""
         df = pl.DataFrame({"me": [0.0], "be": [1.0], "count": [2], "op": [0.5]})
-        assert _apply_eligible(df, _ff_eligible("op"))[0] is False
+        assert _apply_eligible(df, _ff_op_eligible())[0] is False
 
     def test_count_one_fails(self):
         """ROW: returns False when count == 1."""
         df = pl.DataFrame({"me": [1.0], "be": [1.0], "count": [1], "op": [0.5]})
-        assert _apply_eligible(df, _ff_eligible("op"))[0] is False
+        assert _apply_eligible(df, _ff_op_eligible())[0] is False
 
     def test_us_count_one_passes(self):
         """US is exempt from the FF (1993) two-year count gate."""
         df = pl.DataFrame(
             {"me": [1.0], "be": [1.0], "count": [1], "op": [0.5], "excntry": [US_EXCNTRY]}
         )
-        assert _apply_eligible(df, _ff_eligible("op"))[0] is True
+        assert _apply_eligible(df, _ff_op_eligible())[0] is True
 
     def test_vectorised_mixed(self):
         """Batch with two valid and two invalid rows."""
@@ -198,7 +208,7 @@ class TestFFOpEligible:
                 "op": [0.5, 0.5, 0.5, None],
             }
         )
-        result = _apply_eligible(df, _ff_eligible("op"))
+        result = _apply_eligible(df, _ff_op_eligible())
         assert result.to_list() == [True, False, False, False]
 
 
@@ -208,39 +218,39 @@ class TestFFOpEligible:
 
 
 class TestFFInvEligible:
-    """Tests for _ff_eligible("inv")."""
+    """Tests for _ff_inv_eligible()."""
 
     def test_passes_with_positive_me_and_inv(self):
         """Returns True when me>0 and inv is not null."""
         df = pl.DataFrame({"me": [1.0], "inv": [0.1]})
-        assert _apply_eligible(df, _ff_eligible("inv"))[0] is True
+        assert _apply_eligible(df, _ff_inv_eligible())[0] is True
 
     def test_inv_null_fails(self):
         """Returns False when inv is null."""
         df = pl.DataFrame(
             {"me": [1.0], "inv": [None]}, schema={"me": pl.Float64, "inv": pl.Float64}
         )
-        assert _apply_eligible(df, _ff_eligible("inv"))[0] is False
+        assert _apply_eligible(df, _ff_inv_eligible())[0] is False
 
     def test_me_zero_fails(self):
         """Returns False when me == 0."""
         df = pl.DataFrame({"me": [0.0], "inv": [0.1]})
-        assert _apply_eligible(df, _ff_eligible("inv"))[0] is False
+        assert _apply_eligible(df, _ff_inv_eligible())[0] is False
 
     def test_me_negative_fails(self):
         """Returns False when me < 0."""
         df = pl.DataFrame({"me": [-1.0], "inv": [0.1]})
-        assert _apply_eligible(df, _ff_eligible("inv"))[0] is False
+        assert _apply_eligible(df, _ff_inv_eligible())[0] is False
 
     def test_inv_zero_passes(self):
         """Returns True when inv == 0 (zero is valid, only null is excluded)."""
         df = pl.DataFrame({"me": [1.0], "inv": [0.0]})
-        assert _apply_eligible(df, _ff_eligible("inv"))[0] is True
+        assert _apply_eligible(df, _ff_inv_eligible())[0] is True
 
     def test_inv_negative_passes(self):
         """Returns True when inv < 0 (sign not gated)."""
         df = pl.DataFrame({"me": [1.0], "inv": [-0.5]})
-        assert _apply_eligible(df, _ff_eligible("inv"))[0] is True
+        assert _apply_eligible(df, _ff_inv_eligible())[0] is True
 
 
 # =============================================================================
@@ -249,12 +259,12 @@ class TestFFInvEligible:
 
 
 class TestFFMomEligible:
-    """Tests for _ff_eligible("mom")."""
+    """Tests for _ff_mom_eligible()."""
 
     def test_passes_with_valid_inputs(self):
         """Returns True when mom_2_12 not null and me_lag1 > 0."""
         df = pl.DataFrame({"mom_2_12": [0.1], "me_lag1": [1.0]})
-        assert _apply_eligible(df, _ff_eligible("mom"))[0] is True
+        assert _apply_eligible(df, _ff_mom_eligible())[0] is True
 
     def test_mom_null_fails(self):
         """Returns False when mom_2_12 is null."""
@@ -262,17 +272,17 @@ class TestFFMomEligible:
             {"mom_2_12": [None], "me_lag1": [1.0]},
             schema={"mom_2_12": pl.Float64, "me_lag1": pl.Float64},
         )
-        assert _apply_eligible(df, _ff_eligible("mom"))[0] is False
+        assert _apply_eligible(df, _ff_mom_eligible())[0] is False
 
     def test_me_lag1_zero_fails(self):
         """Returns False when me_lag1 == 0."""
         df = pl.DataFrame({"mom_2_12": [0.1], "me_lag1": [0.0]})
-        assert _apply_eligible(df, _ff_eligible("mom"))[0] is False
+        assert _apply_eligible(df, _ff_mom_eligible())[0] is False
 
     def test_me_lag1_negative_fails(self):
         """Returns False when me_lag1 < 0."""
         df = pl.DataFrame({"mom_2_12": [0.1], "me_lag1": [-1.0]})
-        assert _apply_eligible(df, _ff_eligible("mom"))[0] is False
+        assert _apply_eligible(df, _ff_mom_eligible())[0] is False
 
     def test_me_lag1_null_fails(self):
         """Returns null (not True) when me_lag1 is null — Polars null propagation."""
@@ -280,7 +290,7 @@ class TestFFMomEligible:
             {"mom_2_12": [0.1], "me_lag1": [None]},
             schema={"mom_2_12": pl.Float64, "me_lag1": pl.Float64},
         )
-        assert _apply_eligible(df, _ff_eligible("mom"))[0] is not True
+        assert _apply_eligible(df, _ff_mom_eligible())[0] is not True
 
     def test_both_null_fails(self):
         """Returns null (not True) when both are null."""
@@ -288,7 +298,7 @@ class TestFFMomEligible:
             {"mom_2_12": [None], "me_lag1": [None]},
             schema={"mom_2_12": pl.Float64, "me_lag1": pl.Float64},
         )
-        assert _apply_eligible(df, _ff_eligible("mom"))[0] is not True
+        assert _apply_eligible(df, _ff_mom_eligible())[0] is not True
 
     def test_vectorised(self):
         """Batch: True for valid row, False/null for invalid rows."""
@@ -298,7 +308,7 @@ class TestFFMomEligible:
                 "me_lag1": [1.0, 1.0, 0.0, None],
             }
         )
-        result = _apply_eligible(df, _ff_eligible("mom"))
+        result = _apply_eligible(df, _ff_mom_eligible())
         assert result[0] is True
         assert result[1] is not True  # mom_2_12 null
         assert result[2] is False  # me_lag1 == 0
@@ -334,7 +344,7 @@ class TestFFCountryBreakpoints:
         vals = list(range(1, 11))  # 1..10
         june = _make_june_us(10, vals)
         specs = [("beme", 0.30, "beme30"), ("beme", 0.70, "beme70")]
-        bp = ff_country_breakpoints(june, specs, _ff_eligible("bm"))
+        bp = ff_country_breakpoints(june, specs, _ff_bm_eligible())
         assert len(bp) == 1
         row = bp.row(0, named=True)
         # QUANTILE_DISC at 0.30 of [1..10] => 3, at 0.70 => 7
@@ -345,7 +355,7 @@ class TestFFCountryBreakpoints:
         """US bypasses the FF_MIN_STOCKS_BP gate even with 1 stock."""
         june = _make_june_us(1, [5.0])
         specs = [("beme", 0.50, "beme50")]
-        bp = ff_country_breakpoints(june, specs, _ff_eligible("bm"))
+        bp = ff_country_breakpoints(june, specs, _ff_bm_eligible())
         assert len(bp) == 1
 
     def test_row_below_min_stocks_suppressed(self):
@@ -364,7 +374,7 @@ class TestFFCountryBreakpoints:
             }
         )
         specs = [("beme", 0.30, "beme30"), ("beme", 0.70, "beme70")]
-        bp = ff_country_breakpoints(june, specs, _ff_eligible("bm"))
+        bp = ff_country_breakpoints(june, specs, _ff_bm_eligible())
         # No GBR rows should survive
         gbr = bp.filter(pl.col("excntry") == "GBR")
         assert len(gbr) == 0
@@ -385,7 +395,7 @@ class TestFFCountryBreakpoints:
             }
         )
         specs = [("beme", 0.30, "beme30"), ("beme", 0.70, "beme70")]
-        bp = ff_country_breakpoints(june, specs, _ff_eligible("bm"))
+        bp = ff_country_breakpoints(june, specs, _ff_bm_eligible())
         gbr = bp.filter(pl.col("excntry") == "GBR")
         assert len(gbr) == 1
 
@@ -405,7 +415,7 @@ class TestFFCountryBreakpoints:
             }
         )
         specs = [("beme", 0.30, "beme30"), ("beme", 0.70, "beme70")]
-        bp = ff_country_breakpoints(june, specs, _ff_eligible("bm"))
+        bp = ff_country_breakpoints(june, specs, _ff_bm_eligible())
         deu = bp.filter(pl.col("excntry") == "DEU")
         assert len(deu) == 0
 
@@ -424,47 +434,56 @@ class TestFFCountryBreakpoints:
             }
         )
         specs = [("beme", 0.30, "beme30"), ("beme", 0.70, "beme70")]
-        bp = ff_country_breakpoints(june, specs, _ff_eligible("bm"))
+        bp = ff_country_breakpoints(june, specs, _ff_bm_eligible())
         assert len(bp) == 0
 
     def test_output_schema_includes_excntry_date(self):
         """Output always includes excntry and date columns."""
         june = _make_june_us(10, list(range(1, 11)))
         specs = [("beme", 0.30, "beme30"), ("beme", 0.70, "beme70")]
-        bp = ff_country_breakpoints(june, specs, _ff_eligible("bm"))
+        bp = ff_country_breakpoints(june, specs, _ff_bm_eligible())
         assert "excntry" in bp.columns
         assert "date" in bp.columns
 
 
 # =============================================================================
-# TestFFCountryBreaksForSpec
+# TestFFSpecBreaks
 # =============================================================================
 
 
-class TestFFCountryBreaksForSpec:
-    """Tests for ff_country_breaks_for_spec()."""
+# Standalone B/M 30/70 breakpoints (no size median), matching the former
+# ff_country_breaks_for_spec(june, "bm", with_size_median=False).
+def _bm_value_breaks(june: pl.DataFrame) -> pl.DataFrame:
+    return ff_country_breakpoints(
+        june, [("beme", 0.30, "beme30"), ("beme", 0.70, "beme70")], _ff_bm_eligible()
+    )
+
+
+class TestFFSpecBreaks:
+    """Tests for _ff_bm_breaks / _ff_op_breaks / _ff_inv_breaks and the
+    standalone B/M value breakpoints."""
 
     def test_bm_spec_returns_30_70_breaks(self):
-        """bm spec emits beme30, beme70 columns."""
+        """bm value breaks emit beme30, beme70 columns."""
         june = _make_june_us(20, [float(i) for i in range(1, 21)])
-        bp = ff_country_breaks_for_spec(june, "bm")
+        bp = _bm_value_breaks(june)
         assert "beme30" in bp.columns
         assert "beme70" in bp.columns
 
     def test_with_size_median_adds_sizemedn(self):
-        """with_size_median=True adds sizemedn column."""
+        """_ff_bm_breaks adds the sizemedn column."""
         june = _make_june_us(20, [float(i) for i in range(1, 21)])
-        bp = ff_country_breaks_for_spec(june, "bm", with_size_median=True)
+        bp = _ff_bm_breaks(june)
         assert "sizemedn" in bp.columns
 
     def test_without_size_median_no_sizemedn(self):
-        """with_size_median=False (default) omits sizemedn."""
+        """Standalone value breaks omit sizemedn."""
         june = _make_june_us(20, [float(i) for i in range(1, 21)])
-        bp = ff_country_breaks_for_spec(june, "bm", with_size_median=False)
+        bp = _bm_value_breaks(june)
         assert "sizemedn" not in bp.columns
 
     def test_op_spec_returns_op30_op70(self):
-        """op spec emits op30, op70 columns."""
+        """_ff_op_breaks emits op30, op70 columns."""
         june = pl.DataFrame(
             {
                 "excntry": [US_EXCNTRY] * 20,
@@ -478,12 +497,12 @@ class TestFFCountryBreaksForSpec:
                 "size_grp": ["large"] * 20,
             }
         )
-        bp = ff_country_breaks_for_spec(june, "op")
+        bp = _ff_op_breaks(june)
         assert "op30" in bp.columns
         assert "op70" in bp.columns
 
     def test_inv_spec_returns_inv30_inv70(self):
-        """inv spec emits inv30, inv70 columns."""
+        """_ff_inv_breaks emits inv30, inv70 columns."""
         june = pl.DataFrame(
             {
                 "excntry": [US_EXCNTRY] * 20,
@@ -496,7 +515,7 @@ class TestFFCountryBreaksForSpec:
                 "size_grp": ["large"] * 20,
             }
         )
-        bp = ff_country_breaks_for_spec(june, "inv")
+        bp = _ff_inv_breaks(june)
         assert "inv30" in bp.columns
         assert "inv70" in bp.columns
 
@@ -522,30 +541,30 @@ class TestFFCountryBreaksForSpec:
             }
         )
 
-    def test_us_size_all_nyse_widens_median_pool(self, monkeypatch):
-        """us_size_all_nyse spec: US sizemedn over all NYSE me>0 stocks
-        (incl. bm-ineligible); me<=0 and non-NYSE stay excluded."""
+    def test_us_size_all_nyse_widens_median_pool(self):
+        """All-NYSE US size median (production) widens the pool to all NYSE
+        me>0 stocks (incl. bm-ineligible); the sort-eligible pool is
+        narrower. me<=0 and non-NYSE stay excluded from both."""
         june = self._make_june_size_pool()
-        monkeypatch.setitem(FF_SORT_SPECS["bm"], "us_size_all_nyse", False)
-        strict = ff_country_breaks_for_spec(june, "bm", with_size_median=True)
-        monkeypatch.setitem(FF_SORT_SPECS["bm"], "us_size_all_nyse", True)
-        lenient = ff_country_breaks_for_spec(june, "bm", with_size_median=True)
+        strict = ff_country_breakpoints(june, [("me", 0.50, "sizemedn")], _ff_bm_eligible())
+        lenient = _ff_size_breaks(june, _ff_bm_eligible())
         assert strict["sizemedn"][0] == 20.0  # bm-eligible pool: 10/20/30
         assert lenient["sizemedn"][0] == 30.0  # all NYSE me>0: 10/20/30/40/50
 
-    def test_us_size_all_nyse_leaves_value_breaks_unchanged(self, monkeypatch):
-        """30/70 value breakpoints keep the strict (bm-eligible) pool."""
+    def test_us_size_all_nyse_leaves_value_breaks_unchanged(self):
+        """30/70 value breakpoints keep the strict (bm-eligible) pool: the
+        beme30/70 in _ff_bm_breaks match the standalone value breaks
+        regardless of the (widened) size-median pool."""
         june = self._make_june_size_pool()
-        monkeypatch.setitem(FF_SORT_SPECS["bm"], "us_size_all_nyse", False)
-        strict = ff_country_breaks_for_spec(june, "bm", with_size_median=True)
-        monkeypatch.setitem(FF_SORT_SPECS["bm"], "us_size_all_nyse", True)
-        lenient = ff_country_breaks_for_spec(june, "bm", with_size_median=True)
-        assert strict.select("excntry", "date", "beme30", "beme70").equals(
-            lenient.select("excntry", "date", "beme30", "beme70")
+        value = _bm_value_breaks(june)
+        combined = _ff_bm_breaks(june)
+        assert combined.select("excntry", "date", "beme30", "beme70").equals(
+            value.select("excntry", "date", "beme30", "beme70")
         )
 
-    def test_row_unaffected_by_us_size_all_nyse(self, monkeypatch):
-        """ROW keeps the sort-eligible sizemedn pool under the flag."""
+    def test_row_unaffected_by_us_size_all_nyse(self):
+        """ROW keeps the sort-eligible sizemedn pool: the all-NYSE helper and
+        the plain sort-eligible breakpoints agree for a ROW country."""
         n = FF_MIN_STOCKS_BP + 5
         june = pl.DataFrame(
             {
@@ -560,10 +579,8 @@ class TestFFCountryBreaksForSpec:
             },
             schema_overrides={"exchcd_us": pl.Int64},
         )
-        monkeypatch.setitem(FF_SORT_SPECS["bm"], "us_size_all_nyse", False)
-        strict = ff_country_breaks_for_spec(june, "bm", with_size_median=True)
-        monkeypatch.setitem(FF_SORT_SPECS["bm"], "us_size_all_nyse", True)
-        lenient = ff_country_breaks_for_spec(june, "bm", with_size_median=True)
+        strict = ff_country_breakpoints(june, [("me", 0.50, "sizemedn")], _ff_bm_eligible())
+        lenient = _ff_size_breaks(june, _ff_bm_eligible())
         assert strict.equals(lenient)
 
 
@@ -573,8 +590,9 @@ class TestFFCountryBreaksForSpec:
 
 
 class TestFFPrepareCharsLeftJoin:
-    """No-BE June stocks survive the comp join in ff_prepare_chars_weights_rets
-    (they widen the US size-median pool) with null accounting fields, while
+    """No-BE June stocks survive the comp join in the finish-prepare step
+    (_ff_us_finish_prepare / _ff_row_finish_prepare): they widen the US
+    size-median pool with null accounting fields, while
     comp-matched rows are unchanged and recoverable via count.is_not_null().
     US-only, stocks without Dec(t-1) ME also stay (null dec_me/beme, sortable
     on OP/INV); ROW keeps the inner dec_me join."""
@@ -606,7 +624,9 @@ class TestFFPrepareCharsLeftJoin:
             },
             schema_overrides={"year": pl.Int32},
         )
-        _, data_chars = ff_prepare_chars_weights_rets(panel, comp, "monthly", is_us=True)
+        _, data_chars = _ff_us_finish_prepare(
+            _ff_us_rets_weights_lazy(panel.lazy(), "monthly").collect(), comp
+        )
         return data_chars
 
     def test_no_comp_stock_kept_with_null_accounting(self):
@@ -669,7 +689,9 @@ class TestFFPrepareCharsLeftJoin:
             },
             schema_overrides={"year": pl.Int32},
         )
-        _, data_chars = ff_prepare_chars_weights_rets(panel, comp, "monthly", is_us=False)
+        _, data_chars = _ff_row_finish_prepare(
+            _ff_row_rets_weights_lazy(panel.lazy()).collect(), comp
+        )
         # id 3 (no Dec ME) dropped by the inner dec_me join; id 2 (no comp)
         # kept by the left comp join.
         assert sorted(data_chars["id"].to_list()) == [1, 2]
@@ -680,6 +702,34 @@ class TestFFPrepareCharsLeftJoin:
 # =============================================================================
 
 
+def _empty_op_breaks(excntry: str) -> pl.DataFrame:
+    """Trivial op breakpoint frame (null op30/op70) for the (excntry, date)
+    key used by the assign tests, so the op left-join contributes no OP sort."""
+    return pl.DataFrame(
+        {
+            "excntry": [excntry],
+            "date": [date(2020, 6, 30)],
+            "op30": [None],
+            "op70": [None],
+        },
+        schema={"excntry": pl.Utf8, "date": pl.Date, "op30": pl.Float64, "op70": pl.Float64},
+    )
+
+
+def _empty_inv_breaks(excntry: str) -> pl.DataFrame:
+    """Trivial inv breakpoint frame (null inv30/inv70) for the (excntry, date)
+    key used by the assign tests, so the inv left-join contributes no sort."""
+    return pl.DataFrame(
+        {
+            "excntry": [excntry],
+            "date": [date(2020, 6, 30)],
+            "inv30": [None],
+            "inv70": [None],
+        },
+        schema={"excntry": pl.Utf8, "date": pl.Date, "inv30": pl.Float64, "inv70": pl.Float64},
+    )
+
+
 def _make_june_with_bp(
     n: int,
     beme_vals: list[float],
@@ -688,8 +738,10 @@ def _make_june_with_bp(
     beme30: float,
     beme70: float,
     excntry: str = US_EXCNTRY,
-) -> tuple[pl.DataFrame, list[pl.DataFrame]]:
-    """Build a June frame and matching bp_tables list for ff_assign_portfolios."""
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+    """Build a June frame and matching bm/op/inv break frames for
+    ff_assign_portfolios. op/inv breaks are trivial (null) so only the
+    Size + B/M assignment is exercised."""
     june = pl.DataFrame(
         {
             "excntry": [excntry] * n,
@@ -700,9 +752,15 @@ def _make_june_with_bp(
             "count": [3] * n,
             "exchcd_us": [1] * n,
             "size_grp": ["large"] * n,
-        }
+            # be/op/inv referenced by the OP/INV eligibility exprs; null here
+            # since op/inv breaks are trivial (no OP/INV assignment exercised).
+            "be": [None] * n,
+            "op": [None] * n,
+            "inv": [None] * n,
+        },
+        schema_overrides={"be": pl.Float64, "op": pl.Float64, "inv": pl.Float64},
     )
-    bp_size = pl.DataFrame(
+    bm_breaks = pl.DataFrame(
         {
             "excntry": [excntry],
             "date": [date(2020, 6, 30)],
@@ -711,7 +769,7 @@ def _make_june_with_bp(
             "beme70": [beme70],
         }
     )
-    return june, [bp_size]
+    return june, bm_breaks, _empty_op_breaks(excntry), _empty_inv_breaks(excntry)
 
 
 class TestFFAssignPortfolios:
@@ -719,7 +777,7 @@ class TestFFAssignPortfolios:
 
     def test_size_split_correct(self):
         """Firms below sizemedn → S; at or above → B."""
-        june, bp_tables = _make_june_with_bp(
+        june, bm_breaks, op_breaks, inv_breaks = _make_june_with_bp(
             n=4,
             beme_vals=[1.0, 1.0, 5.0, 5.0],
             me_vals=[1.0, 3.0, 1.0, 3.0],
@@ -727,7 +785,7 @@ class TestFFAssignPortfolios:
             beme30=2.0,
             beme70=4.0,
         )
-        result = ff_assign_portfolios(june, bp_tables, ["bm"])
+        result = ff_assign_portfolios(june, bm_breaks, op_breaks, inv_breaks)
         size_ports = result["sizeport"].to_list()
         # me=1 < 2=sizemedn → S; me=3 >= 2 → B
         assert size_ports[0] == "S"
@@ -737,7 +795,7 @@ class TestFFAssignPortfolios:
 
     def test_bm_portfolio_labels(self):
         """beme <= beme30 → L, beme30 < beme <= beme70 → M, beme > beme70 → H."""
-        june, bp_tables = _make_june_with_bp(
+        june, bm_breaks, op_breaks, inv_breaks = _make_june_with_bp(
             n=3,
             beme_vals=[1.0, 3.0, 5.0],
             me_vals=[1.0, 1.0, 1.0],
@@ -745,13 +803,13 @@ class TestFFAssignPortfolios:
             beme30=2.0,
             beme70=4.0,
         )
-        result = ff_assign_portfolios(june, bp_tables, ["bm"])
+        result = ff_assign_portfolios(june, bm_breaks, op_breaks, inv_breaks)
         ports = result["btmport"].to_list()
         assert ports == ["L", "M", "H"]
 
     def test_ineligible_rows_get_null_port(self):
         """Rows failing eligibility (beme<=0) get null btmport."""
-        june, bp_tables = _make_june_with_bp(
+        june, bm_breaks, op_breaks, inv_breaks = _make_june_with_bp(
             n=2,
             beme_vals=[-1.0, 1.0],  # first row ineligible
             me_vals=[1.0, 1.0],
@@ -759,7 +817,7 @@ class TestFFAssignPortfolios:
             beme30=0.5,
             beme70=1.5,
         )
-        result = ff_assign_portfolios(june, bp_tables, ["bm"])
+        result = ff_assign_portfolios(june, bm_breaks, op_breaks, inv_breaks)
         assert result["btmport"][0] is None
         assert result["btmport"][1] is not None
 
@@ -775,7 +833,11 @@ class TestFFAssignPortfolios:
                 "count": [3],
                 "exchcd_us": [1],
                 "size_grp": ["large"],
-            }
+                "be": [None],
+                "op": [None],
+                "inv": [None],
+            },
+            schema_overrides={"be": pl.Float64, "op": pl.Float64, "inv": pl.Float64},
         )
         bp_size = pl.DataFrame(
             {
@@ -793,13 +855,15 @@ class TestFFAssignPortfolios:
                 "beme70": pl.Float64,
             },
         )
-        result = ff_assign_portfolios(june, [bp_size], ["bm"])
+        result = ff_assign_portfolios(
+            june, bp_size, _empty_op_breaks(US_EXCNTRY), _empty_inv_breaks(US_EXCNTRY)
+        )
         # With null breakpoints the eligibility gate includes is_not_null check
         assert result["btmport"][0] is None
 
     def test_output_columns_include_required(self):
         """Output always has excntry, id, date, sizeport."""
-        june, bp_tables = _make_june_with_bp(
+        june, bm_breaks, op_breaks, inv_breaks = _make_june_with_bp(
             n=4,
             beme_vals=[1.0, 2.0, 4.0, 6.0],
             me_vals=[1.0, 1.0, 1.0, 1.0],
@@ -807,13 +871,13 @@ class TestFFAssignPortfolios:
             beme30=2.5,
             beme70=5.0,
         )
-        result = ff_assign_portfolios(june, bp_tables, ["bm"])
+        result = ff_assign_portfolios(june, bm_breaks, op_breaks, inv_breaks)
         for col in ("excntry", "id", "date", "sizeport", "btmport", "positivebeme"):
             assert col in result.columns
 
     def test_positivebeme_flag(self):
         """positivebeme == 1 when bm-eligible, 0 otherwise."""
-        june, bp_tables = _make_june_with_bp(
+        june, bm_breaks, op_breaks, inv_breaks = _make_june_with_bp(
             n=2,
             beme_vals=[1.0, -1.0],
             me_vals=[1.0, 1.0],
@@ -821,7 +885,7 @@ class TestFFAssignPortfolios:
             beme30=0.5,
             beme70=1.5,
         )
-        result = ff_assign_portfolios(june, bp_tables, ["bm"])
+        result = ff_assign_portfolios(june, bm_breaks, op_breaks, inv_breaks)
         flags = result["positivebeme"].to_list()
         assert flags[0] == 1
         assert flags[1] == 0
@@ -949,8 +1013,23 @@ class TestFFAssignToPanel:
 # =============================================================================
 
 
+# Inlined former FF_SORT_SPECS["bm"] literals for the B/M VW leg.
+_BM_PORT = "btmport"
+_BM_FLAG = "positivebeme"
+_BM_BUCKETS = ["SL", "SM", "SH", "BL", "BM", "BH"]
+
+
+def _vw_leg_bm(panel: pl.DataFrame) -> pl.DataFrame:
+    """Apply the shared (w>0, ret not null, sizeport not null) filter — which
+    _ff_vw_leg no longer does internally — then run the B/M VW leg."""
+    filtered = panel.filter(
+        (pl.col("w") > 0) & pl.col("ret").is_not_null() & pl.col("sizeport").is_not_null()
+    )
+    return _ff_vw_leg(filtered, port=_BM_PORT, flag=_BM_FLAG, buckets=_BM_BUCKETS)
+
+
 def _make_panel_bm(rows: list[dict]) -> pl.DataFrame:
-    """Build a minimal panel frame for _ff_vw_leg('bm') tests."""
+    """Build a minimal panel frame for the B/M _ff_vw_leg tests."""
     schema = {
         "excntry": pl.Utf8,
         "id": pl.Int64,
@@ -1002,7 +1081,7 @@ class TestFFVwLeg:
                 },
             ]
         )
-        result = _ff_vw_leg(panel, "bm")
+        result = _vw_leg_bm(panel)
         sh_val = result["SH"][0]
         np.testing.assert_allclose(sh_val, 0.175, **tolerance.TIGHT)
 
@@ -1024,11 +1103,9 @@ class TestFFVwLeg:
                 },
             ]
         )
-        result = _ff_vw_leg(panel, "bm")
-        bm_spec = FF_SORT_SPECS["bm"]
-        for col in bm_spec["buckets"]:
-            renamed = bm_spec["rename"].get(col, col)
-            assert renamed in result.columns
+        result = _vw_leg_bm(panel)
+        for col in _BM_BUCKETS:
+            assert col in result.columns
 
     def test_us_bypasses_min_stocks_gate(self):
         """US bucket with only 1 stock passes (no FF_MIN_STOCKS_PF gate for US)."""
@@ -1047,7 +1124,7 @@ class TestFFVwLeg:
                 },
             ]
         )
-        result = _ff_vw_leg(panel, "bm")
+        result = _vw_leg_bm(panel)
         # With 1 stock, US should still emit a value
         assert result["SH"][0] is not None
 
@@ -1069,7 +1146,7 @@ class TestFFVwLeg:
             for i in range(n)
         ]
         panel = _make_panel_bm(rows)
-        result = _ff_vw_leg(panel, "bm")
+        result = _vw_leg_bm(panel)
         gbr_rows = result.filter(pl.col("excntry") == "GBR")
         if len(gbr_rows) > 0:
             assert gbr_rows["SH"][0] is None
@@ -1092,7 +1169,7 @@ class TestFFVwLeg:
             for i in range(n)
         ]
         panel = _make_panel_bm(rows)
-        result = _ff_vw_leg(panel, "bm")
+        result = _vw_leg_bm(panel)
         gbr_rows = result.filter(pl.col("excntry") == "GBR")
         assert len(gbr_rows) == 1
         assert gbr_rows["SH"][0] is not None
@@ -1125,7 +1202,7 @@ class TestFFVwLeg:
                 },
             ]
         )
-        result = _ff_vw_leg(panel, "bm")
+        result = _vw_leg_bm(panel)
         # Only id=2 contributes; vwret = 0.1
         np.testing.assert_allclose(result["SH"][0], 0.1, rtol=1e-9)
 
@@ -1157,11 +1234,11 @@ class TestFFVwLeg:
                 },
             ]
         )
-        result = _ff_vw_leg(panel, "bm")
+        result = _vw_leg_bm(panel)
         np.testing.assert_allclose(result["SH"][0], 0.05, rtol=1e-9)
 
     def test_output_schema(self):
-        """Output has excntry, date, and all 6 renamed BM buckets."""
+        """Output has excntry, date, and all 6 BM buckets."""
         panel = _make_panel_bm(
             [
                 {
@@ -1177,13 +1254,11 @@ class TestFFVwLeg:
                 },
             ]
         )
-        result = _ff_vw_leg(panel, "bm")
+        result = _vw_leg_bm(panel)
         assert "excntry" in result.columns
         assert "date" in result.columns
-        bm_spec = FF_SORT_SPECS["bm"]
-        for col in bm_spec["buckets"]:
-            renamed = bm_spec["rename"].get(col, col)
-            assert renamed in result.columns
+        for col in _BM_BUCKETS:
+            assert col in result.columns
 
 
 # =============================================================================
@@ -1433,7 +1508,7 @@ class TestFFMomSignalMonthly:
     """Tests for _ff_mom_signal_monthly()."""
 
     def test_output_schema(self):
-        """Output has the expected 11 columns from _FF_MOM_OUTPUT_COLS."""
+        """Output has the expected 11 columns of the mom-signal output schema."""
         panel = _make_monthly_panel(months=20)
         lf = panel.lazy()
         result = _ff_mom_signal_monthly(lf).collect()

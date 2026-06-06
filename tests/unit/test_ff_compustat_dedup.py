@@ -10,8 +10,8 @@ nulling `inv` on the surviving row. The loaders now collapse to one row per
 removes the downstream `(id, eom)` fan-out and recovers the annual `inv`.
 
 Covers:
-  - _ff_load_world_funda      (ROW per-source collapse)
-  - _ff_compute_be_op_inv     (ROW inv recovery)
+  - _ff_load_funda_global     (ROW per-source collapse)
+  - _ff_global_be_op_inv      (ROW inv recovery)
   - ff_load_compustat_us      (US collapse + inv recovery + BE ladder)
 """
 
@@ -22,8 +22,8 @@ from datetime import date
 import polars as pl
 
 from jkp.data.aux_functions import (
-    _ff_compute_be_op_inv,
-    _ff_load_world_funda,
+    _ff_global_be_op_inv,
+    _ff_load_funda_global,
     ff_load_compustat_us,
 )
 
@@ -96,10 +96,10 @@ def _fiscal_change_rows(gvkey, *, indl):
 # =============================================================================
 
 
-def test_ff_load_world_funda_collapses_fiscal_change(tmp_path):
-    _write_funda(tmp_path / "g_funda.parquet", _fiscal_change_rows("001", indl=False))
+def test_ff_load_funda_global_collapses_fiscal_change(tmp_path):
+    _write_funda(tmp_path / "comp_g_funda.parquet", _fiscal_change_rows("001", indl=False))
 
-    out = _ff_load_world_funda(tmp_path, "g_funda.parquet", is_global=True).collect()
+    out = _ff_load_funda_global(tmp_path).collect()
 
     # One row per (gvkey, year); the 2019 stub (06-30) is dropped for 12-31.
     assert out.height == 2
@@ -108,11 +108,11 @@ def test_ff_load_world_funda_collapses_fiscal_change(tmp_path):
     assert rows_2019["datadate"].item() == date(2019, 12, 31)
 
 
-def test_ff_compute_be_op_inv_recovers_annual_inv(tmp_path):
-    _write_funda(tmp_path / "g_funda.parquet", _fiscal_change_rows("001", indl=False))
+def test_ff_global_be_op_inv_recovers_annual_inv(tmp_path):
+    _write_funda(tmp_path / "comp_g_funda.parquet", _fiscal_change_rows("001", indl=False))
 
-    lf = _ff_load_world_funda(tmp_path, "g_funda.parquet", is_global=True)
-    out = _ff_compute_be_op_inv(lf, is_global=True).collect()
+    lf = _ff_load_funda_global(tmp_path)
+    out = _ff_global_be_op_inv(lf).collect()
 
     inv_2019 = out.filter(pl.col("year") == 2019)["inv"].item()
     # at_lag is the 2018 row (100) -> fy_gap == 1 -> inv = (120-100)/100.
