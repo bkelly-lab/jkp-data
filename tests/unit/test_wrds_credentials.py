@@ -114,6 +114,24 @@ def test_plaintext_no_optin_no_warning(monkeypatch, recwarn):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("value", ["true", "True", "yes", "on", "0", "2", ""])
+def test_plaintext_opt_in_requires_exact_1(monkeypatch, recwarn, value):
+    """Only the exact string "1" opts in. Anything else — including
+    truthy-looking values like "true"/"yes" and falsy ones like "0" — is treated
+    as not set: no backend swap, no warning. Guards the strict comparison against
+    being loosened into a fuzzy truthiness check later."""
+    monkeypatch.setenv("JKP_ALLOW_PLAINTEXT_KEYRING", value)
+
+    import jkp.data.wrds_credentials as mod
+
+    set_keyring_calls = []
+    monkeypatch.setattr(mod.keyring, "set_keyring", lambda kr: set_keyring_calls.append(kr))
+    mod._ensure_keyring_backend()
+    assert not set_keyring_calls, f"value {value!r} must not swap the keyring backend"
+    assert len(recwarn.list) == 0, f"value {value!r} must not emit a warning"
+
+
+@pytest.mark.unit
 def test_backend_swap_is_cached(monkeypatch, recwarn):
     """The opt-in swap happens at most once per process: repeated keyring access
     must not re-run the swap or re-emit the warning."""
