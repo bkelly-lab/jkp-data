@@ -1,9 +1,7 @@
 """Tests for WRDS credential resolution.
 
-Covers the documented precedence order:
-    1. WRDS_USERNAME / WRDS_PASSWORD environment variables.
-    2. The system keyring.
-    3. Plaintext keyring, only if JKP_ALLOW_PLAINTEXT_KEYRING=1.
+See ``jkp connect --help`` for the canonical credential precedence order;
+these tests exercise it.
 """
 
 from __future__ import annotations

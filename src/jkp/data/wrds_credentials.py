@@ -1,27 +1,14 @@
 """WRDS credential resolution.
 
-Credential precedence (highest first):
+Credentials are resolved in a defined precedence order: environment variables,
+then the system keyring, then an opt-in file-backed keyring. Run
+``jkp connect --help`` for the full order and the ``JKP_ALLOW_PLAINTEXT_KEYRING``
+opt-in details.
 
-1. ``WRDS_USERNAME`` / ``WRDS_PASSWORD`` environment variables. Useful for
-   container deployments and shared service accounts where the source of
-   truth shouldn't be a per-user filesystem location.
-2. The system keyring (Keychain on macOS, Secret Service on Linux desktop,
-   Credential Vault on Windows). The default for interactive sessions.
-3. The file-backed keyring (``keyrings.alt.file.PlaintextKeyring``), which
-   stores the password in a mode-600 file under ``~/.local/share/python_keyring/``.
-   This is appropriate for headless environments (HPC compute nodes,
-   minimal Docker images) where no system keyring daemon is available — the
-   stored secret has the same security posture as any other 600-mode dotfile
-   in the user's home directory.
-
-   This backend is not selected automatically. The previous implementation
-   set ``PYTHON_KEYRING_BACKEND=keyrings.alt.file.PlaintextKeyring`` at
-   module-import time, which silently changed the keyring backend for every
-   process that imported anything from ``jkp.data`` — surprising, undocumented,
-   and unnecessary on machines where a system keyring is available. Now the
-   user must opt in with ``JKP_ALLOW_PLAINTEXT_KEYRING=1``, and the swap
-   happens only inside this module's credential-resolution functions, never
-   at import time.
+The file-backed keyring is never selected automatically: the user opts in with
+``JKP_ALLOW_PLAINTEXT_KEYRING=1``, and the swap happens only inside this module's
+credential-resolution functions — importing ``jkp.data`` never changes the
+process-wide keyring backend.
 """
 
 from __future__ import annotations
