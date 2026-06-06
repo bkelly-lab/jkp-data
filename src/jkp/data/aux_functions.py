@@ -11565,37 +11565,22 @@ def dimsonbeta(
     )
 
 
-def _ff_count_gate() -> pl.Expr:
-    """The FF (1993) two-years-on-Compustat requirement is NOT applied to the
-    US: French's modern portfolio descriptions never state it, and dropping it
-    improves every IPO-heavy decade vs his published factors (A/B 2026-06:
-    monthly HML 1980s 0.9978->0.9990, RMW 1990s 0.9954->0.9976; 2000s+ flat).
-    ROW keeps the JKP convention (count >= 2)."""
-    return (pl.col("excntry") == US_EXCNTRY) | (pl.col("count") >= 2)
+def _ff_eligible(key: str) -> pl.Expr:
+    """Sort-eligibility predicate per FF_SORT_SPECS key.
 
-
-def _ff_bm_eligible() -> pl.Expr:
-    return (pl.col("beme") > 0) & (pl.col("me") > 0) & _ff_count_gate()
-
-
-def _ff_op_eligible() -> pl.Expr:
-    return (pl.col("me") > 0) & (pl.col("be") > 0) & _ff_count_gate() & pl.col("op").is_not_null()
-
-
-def _ff_inv_eligible() -> pl.Expr:
-    return (pl.col("me") > 0) & pl.col("inv").is_not_null()
-
-
-def _ff_mom_eligible() -> pl.Expr:
-    return pl.col("mom_2_12").is_not_null() & (pl.col("me_lag1") > 0)
-
-
-_FF_ELIGIBLE = {
-    "bm": _ff_bm_eligible,
-    "op": _ff_op_eligible,
-    "inv": _ff_inv_eligible,
-    "mom": _ff_mom_eligible,
-}
+    The count gate on bm/op: the FF (1993) two-years-on-Compustat requirement
+    is NOT applied to the US — French's modern portfolio descriptions never
+    state it, and dropping it improves every IPO-heavy decade vs his published
+    factors (A/B 2026-06: monthly HML 1980s 0.9978->0.9990, RMW 1990s
+    0.9954->0.9976; 2000s+ flat). ROW keeps the JKP convention (count >= 2).
+    """
+    count_gate = (pl.col("excntry") == US_EXCNTRY) | (pl.col("count") >= 2)
+    return {
+        "bm": (pl.col("beme") > 0) & (pl.col("me") > 0) & count_gate,
+        "op": (pl.col("me") > 0) & (pl.col("be") > 0) & count_gate & pl.col("op").is_not_null(),
+        "inv": (pl.col("me") > 0) & pl.col("inv").is_not_null(),
+        "mom": pl.col("mom_2_12").is_not_null() & (pl.col("me_lag1") > 0),
+    }[key]
 
 
 def _ciz_universe() -> pl.Expr:
@@ -12055,7 +12040,7 @@ def _ff_finish_prepare(
     # Left joins: June stocks without accounting data (and, US-only, without
     # Dec(t-1) ME) stay in the frame (null be/op/inv/count → null beme) so the
     # US size-median pool covers all NYSE stocks per DFF 2000; the sort
-    # eligibility gates (_FF_ELIGIBLE) still exclude them from the B/M sort,
+    # eligibility gates (_ff_eligible) still exclude them from the B/M sort,
     # while US stocks lacking only Dec ME stay sortable on OP/INV (French's
     # OP/INV sorts require June ME but not Dec ME). ROW keeps the inner
     # dec_me join (JKP convention).
@@ -12403,14 +12388,14 @@ def ff_country_breaks_for_spec(
     """
     s = FF_SORT_SPECS[key]
     specs = [(s["value"], 0.30, s["breaks"][0]), (s["value"], 0.70, s["breaks"][1])]
-    bps = ff_country_breakpoints(june, specs, _FF_ELIGIBLE[key]())
+    bps = ff_country_breakpoints(june, specs, _ff_eligible(key))
     if with_size_median:
         size_elig = (
             pl.when(pl.col("excntry") == US_EXCNTRY)
             .then(pl.col("me") > 0)
-            .otherwise(_FF_ELIGIBLE[key]())
+            .otherwise(_ff_eligible(key))
             if s.get("us_size_all_nyse", False)
-            else _FF_ELIGIBLE[key]()
+            else _ff_eligible(key)
         )
         size_bp = ff_country_breakpoints(june, [("me", 0.50, "sizemedn")], size_elig)
         bps = size_bp.join(bps, on=["excntry", "date"], how="inner")
@@ -12435,7 +12420,7 @@ def ff_assign_portfolios(
 
     specs = [FF_SORT_SPECS[k] for k in spec_keys]
     if size_gate is None:
-        size_gate = _FF_ELIGIBLE[spec_keys[0]]()
+        size_gate = _ff_eligible(spec_keys[0])
 
     cols: dict[str, pl.Expr] = {
         "sizeport": pl.when(size_gate)
@@ -12443,7 +12428,7 @@ def ff_assign_portfolios(
         .otherwise(None)
     }
     for k, s in zip(spec_keys, specs, strict=True):
-        elig = _FF_ELIGIBLE[k]() & pl.col(s["breaks"][0]).is_not_null()
+        elig = _ff_eligible(k) & pl.col(s["breaks"][0]).is_not_null()
         cols[s["flag"]] = elig.cast(pl.Int64)
         cols[s["port"]] = (
             pl.when(elig).then(_ff_bucket(s["value"], s["breaks"], s["labels"])).otherwise(None)
