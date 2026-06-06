@@ -6908,11 +6908,6 @@ def gen_misp_exp(var_list, min_fcts):
     )
 
 
-# ============================================================================
-# Mispricing factors (Stambaugh-Yuan) — entry point: gen_mispricing_data()
-# ============================================================================
-
-
 def _mp_universe() -> pl.Expr:
     """Universe filter — legacy SHRCD={10,11} + EXCHCD={1,2,3} equivalent in
     CIZ. Stricter than `_ciz_universe()` (extra conditionaltype /
@@ -7048,11 +7043,6 @@ def _mp_add_leg_score(df, cols_list, score_col, num_col, *, min_count=3):
 
 _MP_MSF_V2_NUMERIC = ["mthprc", "mthret", "mthretx", "mthcap", "mthvol"]
 _MP_DSF_V2_NUMERIC = ["dlyprc", "dlyret", "dlyretx", "dlycap", "dlyvol"]
-
-
-# ============================================================================
-# STAGE 1 — LOAD + FILTER RETURNS / ME (US CRSP + world panels)
-# ============================================================================
 
 
 def _mp_build_crsp_monthly(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
@@ -7270,11 +7260,6 @@ _MP_FUNDQ_NUMERIC = [
     "dlttq",
     "revtq",
 ]
-
-
-# ============================================================================
-# STAGE 2 — LOAD + FILTER FUNDAMENTALS (Compustat US + acc_chars_world + g_fundq)
-# ============================================================================
 
 
 @functools.cache
@@ -7520,11 +7505,6 @@ def _mp_rolling_calendar_sum(df, value_col, *, lag_min, lag_max, n_required, id_
             pl.when(col("_cnt") == n_required).then(col("_sum")).otherwise(None).alias("r"),
         )
     )
-
-
-# ============================================================================
-# STAGE 3 — COMPUTE CHARACTERISTICS (11 anomalies + CHS DISTRESS, US + world)
-# ============================================================================
 
 
 def _mp_compute_accrual(raw_dir: Path, interim_dir: Path):
@@ -8218,11 +8198,6 @@ def _mp_compute_distress(mp_con, raw_dir: Path, interim_dir: Path):
     return _mp_write(out, "distress", interim_dir)
 
 
-# ============================================================================
-# STAGE 4 — FORM PORTFOLIOS (percentile rank, size/score buckets, legs, SMB)
-# ============================================================================
-
-
 def _mp_monthly_lagged_me_panel(interim_dir: Path):
     # Pure CIZ: ME = mthcap directly (CRSP end-of-month market cap). Sort by
     # (permno, eom) ascending so .shift(1).over("permno") yields the prior eom obs.
@@ -8473,11 +8448,6 @@ def _mp_size_score_buckets(df, score_col):
     )
 
 
-# ============================================================================
-# STAGE 5 — COMPUTE PORTFOLIO RETURNS (VW monthly + daily, SMB/MGMT/PERF)
-# ============================================================================
-
-
 def _mp_vw_monthly(df, group_cols):
     return df.group_by(group_cols).agg(vwret=_mp_vw_return(), _freq_=pl.len())
 
@@ -8723,10 +8693,6 @@ def _mp_build_portfolios_daily(legs, smb_panel, min_obs, mp_con, interim_dir: Pa
         out_sort=["date"],
     )
 
-
-# ============================================================================
-# Mispricing factors — WORLD extension (ROW countries)
-# ============================================================================
 
 # Map MisprProject anomaly names to jkp pre-computed chars in world_data_prelim.parquet.
 # Direction follows MisprProject's MP_POSITIVE_ANOMALIES convention
@@ -9598,11 +9564,6 @@ def _mp_stage5_compute_returns(
         "pd_world": pd_world,
         "sc_world": sc_world.with_columns(id=col("id").cast(pl.Int64)),
     }
-
-
-# ============================================================================
-# STAGE 6 — OUTPUT (concat US + world, write 3 parquets)
-# ============================================================================
 
 
 def _mp_stage6_write_outputs(
@@ -11615,11 +11576,6 @@ def dimsonbeta(
     )
 
 
-# =============================================================================
-# Fama-French 3/5-factor replication — entry point: gen_ff_data()
-# =============================================================================
-
-
 def _ff_count_gate() -> pl.Expr:
     """The FF (1993) two-years-on-Compustat requirement is NOT applied to the
     US: French's modern portfolio descriptions never state it, and dropping it
@@ -12198,11 +12154,6 @@ def _ff_bucket(val: str, breaks: list[str], labels: list[str]) -> pl.Expr:
     for br, lab in zip(breaks[1:], labels[1:-1], strict=True):
         out = out.when(pl.col(val) <= pl.col(br)).then(pl.lit(lab))
     return out.otherwise(pl.lit(labels[-1]))
-
-
-# =============================================================================
-# Per-country (rest-of-world) FF helpers
-# =============================================================================
 
 
 def _ff_compute_be_op_inv(lf: pl.LazyFrame, is_global: bool) -> pl.LazyFrame:
@@ -12975,11 +12926,6 @@ def gen_ff_data(
             ).rename({"date": "eom"}).drop("excntry").write_parquet(chars_out)
 
 
-# =============================================================================
-# HXZ q-factor replication — entry point: gen_hxz_data()
-# =============================================================================
-
-
 def hxz_attach_siccd(lf: pl.LazyFrame, raw_dir: Path, date_col: str) -> pl.LazyFrame:
     """Event-time join with stksecurityinfohist on permno where
     secinfostartdt ≤ `date_col` ≤ secinfoenddt; adds siccd + is_fin."""
@@ -13639,11 +13585,6 @@ def hxz_build_characteristics(panel_m: pl.DataFrame) -> pl.DataFrame:
         ia_hxz=pl.col("inv"),
         roe_hxz=pl.col("roe"),
     ).sort(["eom", "excntry", "id"])
-
-
-# =============================================================================
-# Stage helpers for `gen_hxz_data`
-# =============================================================================
 
 
 class HxzFundamentals(NamedTuple):
