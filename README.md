@@ -48,8 +48,8 @@ If you do not have a WRDS subscription, you can still access pre-computed factor
         environments (HPC compute nodes, minimal Docker images) where no
         system keyring daemon is available. The variable must be exactly `1` —
         `true`, `yes`, etc. are treated as not set. The package emits a
-        warning each time the swap occurs so the change of backend is never
-        silent.
+        warning on first use (once per process) so the change of backend is
+        never silent.
 
    On a Slurm/HPC compute node, run `jkp connect` once on the login node
    under `JKP_ALLOW_PLAINTEXT_KEYRING=1` to populate the file keyring, then
