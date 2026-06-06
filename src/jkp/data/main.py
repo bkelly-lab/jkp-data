@@ -158,7 +158,6 @@ def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> No
         min_obs=10,
     )
     ap_factor_model_data(
-        paths,
         monthly_factor_inputs=[
             interim / "ff_factors_monthly.parquet",
             interim / "hxz_factors_monthly.parquet",
