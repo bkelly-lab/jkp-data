@@ -9,7 +9,7 @@ import time
 from datetime import date
 from math import exp, sqrt
 from pathlib import Path
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Literal, NamedTuple
 
 if TYPE_CHECKING:
     from .paths import DataPaths
@@ -6961,14 +6961,14 @@ def _mp_write(df: pl.DataFrame, name: str, interim_dir: Path) -> pl.DataFrame:
     return df
 
 
-def _mp_offset_months(c, n):
+def _mp_offset_months(c: str | pl.Expr, n: int | pl.Expr) -> pl.Expr:
     c = col(c) if isinstance(c, str) else c
     if isinstance(n, int):
         return c.dt.offset_by(f"{n}mo").dt.month_end()
     return c.dt.offset_by(pl.format("{}mo", n)).dt.month_end()
 
 
-def _mp_offset_qtrs_end(c, n: int):
+def _mp_offset_qtrs_end(c: str | pl.Expr, n: int) -> pl.Expr:
     c = col(c) if isinstance(c, str) else c
     q = (c.dt.month() - 1) // 3
     target = q + n
@@ -6978,7 +6978,7 @@ def _mp_offset_qtrs_end(c, n: int):
     return pl.date(yr, end_month, 1).dt.month_end()
 
 
-def _mp_month_diff(a, b):
+def _mp_month_diff(a: pl.Expr, b: pl.Expr) -> pl.Expr:
     return (a.dt.year() - b.dt.year()) * 12 + (a.dt.month() - b.dt.month())
 
 
@@ -6988,7 +6988,9 @@ def _mp_polars_sql(df: pl.DataFrame, query: str, table: str = "src") -> pl.DataF
     return ctx.execute(query).collect()
 
 
-def _mp_winsorize_per_group(df, cols_list, *, lo=5, hi=95, by="eom"):
+def _mp_winsorize_per_group(
+    df: pl.DataFrame, cols_list: list[str], *, lo: int = 5, hi: int = 95, by: str = "eom"
+) -> pl.DataFrame:
     select = [by] + [
         f"quantile_disc({c}, {lo / 100}) AS _{c}_lo, quantile_disc({c}, {hi / 100}) AS _{c}_hi"
         for c in cols_list
@@ -7011,24 +7013,30 @@ def _mp_winsorize_per_group(df, cols_list, *, lo=5, hi=95, by="eom"):
     )
 
 
-def _mp_truncate_thin(port_ret, *, by="eom", freq_col="_freq_", min_n=10):
+def _mp_truncate_thin(
+    port_ret: pl.DataFrame, *, by: str = "eom", freq_col: str = "_freq_", min_n: int = 10
+) -> pl.DataFrame:
     bad = port_ret.filter(col(freq_col) < min_n)
     if bad.height == 0:
         return port_ret
     return port_ret.filter(col(by) > bad[by].max())
 
 
-def _mp_filter_full_buckets(port_ret, n_buckets, *, by="eom"):
+def _mp_filter_full_buckets(
+    port_ret: pl.DataFrame, n_buckets: int, *, by: str | list[str] = "eom"
+) -> pl.DataFrame:
     return (
         port_ret.with_columns(_cnt=pl.len().over(by)).filter(col("_cnt") == n_buckets).drop("_cnt")
     )
 
 
-def _mp_vw_return():
+def _mp_vw_return() -> pl.Expr:
     return (col("ret") * col("mktcap")).sum() / col("mktcap").sum()
 
 
-def _mp_add_leg_score(df, cols_list, score_col, num_col, *, min_count=3):
+def _mp_add_leg_score(
+    df: pl.DataFrame, cols_list: list[str], score_col: str, num_col: str, *, min_count: int = 3
+) -> pl.DataFrame:
     return df.with_columns(
         **{num_col: sum((col(c) != 0).cast(pl.Int64) for c in cols_list)}
     ).with_columns(
@@ -7061,7 +7069,7 @@ def _mp_build_crsp_monthly(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
             nulls_last=True,
         )
         .unique(subset=["permno", "mthcaldt"], keep="first", maintain_order=True)
-        .with_columns([col(c).cast(pl.Float64, strict=False) for c in _MP_MSF_V2_NUMERIC if c])
+        .with_columns([col(c).cast(pl.Float64, strict=False) for c in _MP_MSF_V2_NUMERIC])
     )
     m2 = sf.filter(_mp_universe()).rename(
         {
@@ -7090,18 +7098,14 @@ def _mp_build_crsp_monthly(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
     # monthly return — CRSP already daily-compounds the delisting-day DA-row into it.
     # No delret fallback (legacy SIZ field, redundant under CIZ). No Shumway imputation
     # (DA-row carries realized delist return; no gap to patch).
-    m4 = (
-        m3.with_columns(ret=pl.when(col("ret").is_not_null()).then(col("ret")).otherwise(None))
-        .filter(
-            col("permno").is_not_null()
-            & col("prc").is_not_null()
-            & col("cap").is_not_null()
-            & (col("cap") > 0)
-            & col("ret").is_not_null()
-            & col("date").is_not_null()
-        )
-        .with_columns(me=col("cap"), exchcd=exchcd)
-    )
+    m4 = m3.filter(
+        col("permno").is_not_null()
+        & col("prc").is_not_null()
+        & col("cap").is_not_null()
+        & (col("cap") > 0)
+        & col("ret").is_not_null()
+        & col("date").is_not_null()
+    ).with_columns(me=col("cap"), exchcd=exchcd)
 
     out = m4.select(
         col("eom"),
@@ -7261,7 +7265,7 @@ _MP_FUNDQ_NUMERIC = [
 
 
 @functools.cache
-def _mp_load_funda(raw_dir: Path):
+def _mp_load_funda(raw_dir: Path) -> pl.DataFrame:
     df = pl.read_parquet(raw_dir / "comp_funda.parquet").filter(_compustat_na_filter())
     return df.with_columns(
         [col(c).cast(pl.Float64, strict=False) for c in _MP_FUNDA_NUMERIC if c in df.columns]
@@ -7269,7 +7273,7 @@ def _mp_load_funda(raw_dir: Path):
 
 
 @functools.cache
-def _mp_load_fundq(raw_dir: Path):
+def _mp_load_fundq(raw_dir: Path) -> pl.DataFrame:
     df = pl.read_parquet(raw_dir / "comp_fundq.parquet").filter(_compustat_na_filter())
     return df.with_columns(
         [col(c).cast(pl.Float64, strict=False) for c in _MP_FUNDQ_NUMERIC if c in df.columns]
@@ -7455,7 +7459,15 @@ def _mp_expand_to_crsp_window(
     )
 
 
-def _mp_rolling_calendar_sum(df, value_col, *, lag_min, lag_max, n_required, id_col="permno"):
+def _mp_rolling_calendar_sum(
+    df: pl.DataFrame,
+    value_col: str,
+    *,
+    lag_min: int,
+    lag_max: int,
+    n_required: int,
+    id_col: str = "permno",
+) -> pl.DataFrame:
     """Calendar-aware rolling sum of `value_col` over the inclusive window
     [eom - lag_max months, eom - lag_min months], per `id_col`.
 
@@ -7495,7 +7507,7 @@ def _mp_rolling_calendar_sum(df, value_col, *, lag_min, lag_max, n_required, id_
     )
 
 
-def _mp_compute_accrual(raw_dir: Path, interim_dir: Path):
+def _mp_compute_accrual(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
     ca = (
         _mp_read("compustat_annual", interim_dir)
         .filter(
@@ -7546,7 +7558,7 @@ def _mp_compute_accrual(raw_dir: Path, interim_dir: Path):
     )
 
 
-def _mp_compute_gross_profit(raw_dir: Path, interim_dir: Path):
+def _mp_compute_gross_profit(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
     ca = (
         _mp_read("compustat_annual", interim_dir)
         .select("permno", "gvkey", "datadate", "fyear", "fyr", "at", "cogs")
@@ -7575,7 +7587,7 @@ def _mp_compute_gross_profit(raw_dir: Path, interim_dir: Path):
     return _mp_write(_mp_expand_to_crsp_window(ca, "gp_adj", interim_dir), "gp_adj", interim_dir)
 
 
-def _mp_compute_oscore(raw_dir: Path, interim_dir: Path):
+def _mp_compute_oscore(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
     base = (
         _mp_read("compustat_annual", interim_dir)
         .select("permno", "gvkey", "datadate", "fyear", "fyr", "at", "lt", "act", "lct")
@@ -7648,7 +7660,7 @@ def _mp_compute_oscore(raw_dir: Path, interim_dir: Path):
     return _mp_write(_mp_expand_to_crsp_window(out, "oscore", interim_dir), "oscore", interim_dir)
 
 
-def _mp_compute_nsi_ag_inv_noa(raw_dir: Path, interim_dir: Path):
+def _mp_compute_nsi_ag_inv_noa(raw_dir: Path, interim_dir: Path) -> None:
     base = (
         _mp_read("compustat_annual", interim_dir)
         .filter(
@@ -7745,7 +7757,7 @@ def _mp_compute_nsi_ag_inv_noa(raw_dir: Path, interim_dir: Path):
         _mp_write(_mp_expand_to_crsp_window(slice_df, name, interim_dir), name, interim_dir)
 
 
-def _mp_compute_momentum(interim_dir: Path):
+def _mp_compute_momentum(interim_dir: Path) -> pl.DataFrame:
     m3 = (
         _mp_read("crsp_monthly", interim_dir)
         .select("permno", "eom", "RET")
@@ -7762,7 +7774,7 @@ def _mp_compute_momentum(interim_dir: Path):
     return _mp_write(out, "momentum", interim_dir)
 
 
-def _mp_compute_composite_issue(interim_dir: Path):
+def _mp_compute_composite_issue(interim_dir: Path) -> pl.DataFrame:
     m3 = (
         _mp_read("crsp_monthly", interim_dir)
         .select("permno", "eom", "me", "RET")
@@ -7792,7 +7804,7 @@ def _mp_compute_composite_issue(interim_dir: Path):
     return _mp_write(out, "composite_issue", interim_dir)
 
 
-def _mp_compute_roa(mp_con, interim_dir: Path):
+def _mp_compute_roa(mp_con, interim_dir: Path) -> pl.DataFrame:
     cq = (
         _mp_read("compustat_quarterly", interim_dir)
         .select("permno", "datadate", "rdq", "rdq_crsp", "lead_rdq_crsp", "ibq", "atq")
@@ -7835,7 +7847,7 @@ def _mp_compute_roa(mp_con, interim_dir: Path):
 # ---------- CHS DISTRESS (8-component, 7-stage) ----------
 
 
-def _mp_distress_market_inputs(m3_full, msp):
+def _mp_distress_market_inputs(m3_full: pl.DataFrame, msp: pl.DataFrame) -> pl.DataFrame:
     return (
         m3_full.with_columns(prc=col("PRC").abs().clip(upper_bound=15.0))
         .join(msp, on="eom", how="left")
@@ -7870,7 +7882,7 @@ def _mp_distress_market_inputs(m3_full, msp):
     )
 
 
-def _mp_distress_book_equity_mb(cq_base, m3_full):
+def _mp_distress_book_equity_mb(cq_base: pl.DataFrame, m3_full: pl.DataFrame) -> pl.DataFrame:
     return (
         cq_base.with_columns(pre_stock=pl.coalesce(col("pstkrq"), col("pstkq"), pl.lit(0.0)))
         .with_columns(extra=-col("pre_stock"))
@@ -7902,7 +7914,13 @@ def _mp_distress_book_equity_mb(cq_base, m3_full):
     )
 
 
-def _mp_distress_quarterly_inputs(dist1, be, cq_base, compustat_quarterly, mp_con):
+def _mp_distress_quarterly_inputs(
+    dist1: pl.DataFrame,
+    be: pl.DataFrame,
+    cq_base: pl.DataFrame,
+    compustat_quarterly: pl.DataFrame,
+    mp_con,
+) -> pl.DataFrame:
     mp_con.register("d1", dist1)
     mp_con.register(
         "be",
@@ -7955,7 +7973,7 @@ def _mp_distress_quarterly_inputs(dist1, be, cq_base, compustat_quarterly, mp_co
     )
 
 
-def _mp_distress_nimtaavg(dist3):
+def _mp_distress_nimtaavg(dist3: pl.DataFrame) -> tuple[pl.DataFrame, date]:
     nimta_mean = (
         dist3.filter(col("NIMTA").is_not_null())
         .group_by("eom")
@@ -8013,7 +8031,7 @@ def _mp_distress_nimtaavg(dist3):
     return dist3, floor_eom
 
 
-def _mp_distress_exretavg(dist3, floor_eom):
+def _mp_distress_exretavg(dist3: pl.DataFrame, floor_eom: date) -> pl.DataFrame:
     exret_mean = (
         dist3.filter(col("EXRET").is_not_null()).group_by("eom").agg(mean_EXRET=col("EXRET").mean())
     )
@@ -8038,7 +8056,7 @@ def _mp_distress_exretavg(dist3, floor_eom):
     return dist3.with_columns(EXRETAVG=pl.when(consec).then(scale_e * weighted).otherwise(None))
 
 
-def _mp_distress_sigma(crsp_daily):
+def _mp_distress_sigma(crsp_daily: pl.DataFrame) -> pl.DataFrame:
     crsp_daily = crsp_daily.with_columns(eom=col("date").dt.month_end())
     monthly = (
         crsp_daily.with_columns(ret2=col("ret") ** 2)
@@ -8082,7 +8100,7 @@ def _mp_distress_sigma(crsp_daily):
     )
 
 
-def _mp_distress_final_score(dist4, sigma):
+def _mp_distress_final_score(dist4: pl.DataFrame, sigma: pl.DataFrame) -> pl.DataFrame:
     dist5 = (
         dist4.join(sigma, on=["permno", "eom"], how="left")
         .sort("permno", "eom")
@@ -8133,7 +8151,7 @@ def _mp_distress_final_score(dist4, sigma):
     ).select("eom", "permno", "distress")
 
 
-def _mp_compute_distress(mp_con, raw_dir: Path, interim_dir: Path):
+def _mp_compute_distress(mp_con, raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
     crsp_monthly_panel = _mp_read("crsp_monthly", interim_dir).select(
         "permno", "eom", "me", "RET", "PRC"
     )
@@ -8186,7 +8204,7 @@ def _mp_compute_distress(mp_con, raw_dir: Path, interim_dir: Path):
     return _mp_write(out, "distress", interim_dir)
 
 
-def _mp_monthly_lagged_me_panel(interim_dir: Path):
+def _mp_monthly_lagged_me_panel(interim_dir: Path) -> pl.DataFrame:
     # Pure CIZ: ME = mthcap directly (CRSP end-of-month market cap). Sort by
     # (permno, eom) ascending so .shift(1).over("permno") yields the prior eom obs.
     return (
@@ -8307,7 +8325,9 @@ def _mp_rank_anomalies_core(
     return panel
 
 
-def _mp_percentile_rank_anomalies(me_panel, min_stks, mp_con, interim_dir: Path):
+def _mp_percentile_rank_anomalies(
+    me_panel: pl.DataFrame, min_stks: int, mp_con, interim_dir: Path
+) -> pl.DataFrame:
     def anom_source(anom: str) -> pl.DataFrame:
         fcol = _MP_ANOMALY_FILE[anom]
         return _mp_read(fcol, interim_dir).select("permno", "eom", col(fcol).alias("rank_var"))
@@ -8324,7 +8344,7 @@ def _mp_percentile_rank_anomalies(me_panel, min_stks, mp_con, interim_dir: Path)
     )
 
 
-def _mp_build_mispricing_panel(min_stks, mp_con, interim_dir: Path):
+def _mp_build_mispricing_panel(min_stks: int, mp_con, interim_dir: Path) -> pl.DataFrame:
     panel = _mp_percentile_rank_anomalies(
         _mp_monthly_lagged_me_panel(interim_dir), min_stks, mp_con, interim_dir
     )
@@ -8356,7 +8376,13 @@ def _mp_build_stock_scores_core(
     )
 
 
-def _mp_filter_active(mispricing_panel, cols_list, score_col, num_col, min_fcts):
+def _mp_filter_active(
+    mispricing_panel: pl.DataFrame,
+    cols_list: list[str],
+    score_col: str,
+    num_col: str,
+    min_fcts: int,
+) -> pl.DataFrame:
     return _mp_add_leg_score(
         mispricing_panel, cols_list, score_col, num_col, min_count=min_fcts
     ).filter(col(num_col) >= min_fcts)
@@ -8373,10 +8399,6 @@ def _mp_size_buckets_core(
     Description:
         2x3 double-sort buckets: size median (port_size 1/2) and score
         20/80 terciles (port_var 1/2/3), with per-group breakpoints.
-    Steps:
-        1) Polars SQL: per-group quantile_disc(size_break_sql, 0.50) and
-           score 20/80 breaks.
-        2) Left-join breaks, cut port_size / port_var, drop break cols.
     Output:
         Input frame plus port_size, port_var.
     """
@@ -8411,7 +8433,7 @@ def _mp_size_buckets_core(
     )
 
 
-def _mp_vw_monthly(df, group_cols):
+def _mp_vw_monthly(df: pl.DataFrame, group_cols: list[str]) -> pl.DataFrame:
     return df.group_by(group_cols).agg(vwret=_mp_vw_return(), _freq_=pl.len())
 
 
@@ -8430,9 +8452,6 @@ def _mp_vw_daily_core(
         Daily VW portfolio returns: join the monthly bucket panel onto the
         daily return file per (id, eom), then SUM(ret*mktcap)/SUM(mktcap)
         per (date, group_cols) via DuckDB.
-    Steps:
-        1) Register `panel` under `table`; join read_parquet(daily_path).
-        2) Aggregate VW return and bucket frequency.
     Output:
         One row per (date, *group_cols) with vwret and _freq_.
     """
@@ -8456,14 +8475,21 @@ def _mp_vw_daily_core(
     """).pl()
 
 
-def _mp_diff_legs(df, by, key_col, key_a, key_b, out_name):
+def _mp_diff_legs(
+    df: pl.DataFrame,
+    by: str | list[str],
+    key_col: str,
+    key_a: int,
+    key_b: int,
+    out_name: str,
+) -> pl.DataFrame:
     by_cols = [by] if isinstance(by, str) else list(by)
     a = df.filter(col(key_col) == key_a).select(*by_cols, col("vwret").alias("a"))
     b = df.filter(col(key_col) == key_b).select(*by_cols, col("vwret").alias("b"))
     return a.join(b, on=by_cols, how="inner").with_columns((col("a") - col("b")).alias(out_name))
 
 
-def _mp_spread_per_size_then_diff(port_ret, by):
+def _mp_spread_per_size_then_diff(port_ret: pl.DataFrame, by: str | list[str]) -> pl.DataFrame:
     by_cols = [by] if isinstance(by, str) else list(by)
     misp = port_ret.group_by(*by_cols, "port_var").agg(misp=col("vwret").mean())
     return _mp_diff_legs(misp.rename({"misp": "vwret"}), by_cols, "port_var", 1, 3, "umo")
@@ -8492,7 +8518,9 @@ def _mp_build_legs_core(
     }
 
 
-def _mp_smb_panel_from_legs(legs, key_cols):
+def _mp_smb_panel_from_legs(
+    legs: dict[str, pl.DataFrame], key_cols: tuple[str, ...]
+) -> pl.DataFrame:
     """SMB neutral panel (port_var == 2 stocks). key_cols identifies the
     stock: ("permno",) for US, ("id", "excntry") for world."""
     a = (
@@ -8504,7 +8532,9 @@ def _mp_smb_panel_from_legs(legs, key_cols):
     return a.join(b, on=[*key_cols, "eom", "port_size"], how="inner")
 
 
-def _mp_thin_buckets(port_ret, *, truncate: bool, by, min_n: int):
+def _mp_thin_buckets(
+    port_ret: pl.DataFrame, *, truncate: bool, by: str | list[str], min_n: int
+) -> pl.DataFrame:
     """Thin-bucket handling: US truncates cross-sectionally, world hard-filters."""
     if truncate:
         return _mp_truncate_thin(port_ret, by=by, freq_col="_freq_", min_n=min_n)
@@ -9281,17 +9311,24 @@ def _mp_world_compute_distress(
     )
 
 
-def _mp_world_build_anomalies_panel(wm, wd, market_m, world_daily, mp_con, raw_dir: Path):
+def _mp_world_build_anomalies_panel(
+    wm: pl.DataFrame,
+    wd: pl.DataFrame,
+    market_m: pl.DataFrame,
+    world_daily: pl.DataFrame,
+    mp_con,
+    raw_dir: Path,
+) -> dict[str, pl.DataFrame]:
     """Assemble per-anomaly (id, eom, excntry, value) frames into a unified panel."""
     anomalies = _mp_world_compute_jkp_anomalies(wd)
-    anomalies["MOMENTUM"] = _mp_world_compute_momentum(wm).rename({"momentum": "momentum"})
+    anomalies["MOMENTUM"] = _mp_world_compute_momentum(wm)
     anomalies["COMPOSITE_ISSUE"] = _mp_world_compute_composite_issue(wm)
     anomalies["STOCK_ISSUE"] = _mp_world_compute_stock_issue(wm)
     anomalies["DISTRESS"] = _mp_world_compute_distress(wm, world_daily, market_m, mp_con, raw_dir)
     return anomalies
 
 
-def _mp_world_monthly_lagged_me_panel(wm):
+def _mp_world_monthly_lagged_me_panel(wm: pl.DataFrame) -> pl.DataFrame:
     """Lag-ME panel for world: id, eom, excntry, prc, ret, ME, mktcap, lag_prc."""
     return (
         wm.select("id", "eom", "excntry", "prc", "ret", "me")
@@ -9309,7 +9346,12 @@ def _mp_world_monthly_lagged_me_panel(wm):
     )
 
 
-def _mp_world_percentile_rank_anomalies(me_panel, anomalies, min_stks, mp_con):
+def _mp_world_percentile_rank_anomalies(
+    me_panel: pl.DataFrame,
+    anomalies: dict[str, pl.DataFrame],
+    min_stks: int,
+    mp_con,
+) -> pl.DataFrame:
     """Per-(excntry, eom) percentile rank for each world anomaly value."""
 
     def anom_source(anom: str) -> pl.DataFrame | None:
@@ -9351,7 +9393,7 @@ def _mp_world_build_mispricing_panel(
     )
 
 
-def _mp_stage1_load_returns(mp_con, raw_dir: Path, interim_dir: Path):
+def _mp_stage1_load_returns(raw_dir: Path, interim_dir: Path) -> dict[str, pl.DataFrame]:
     """Stage 1: Load + filter return/ME panels.
     US: writes crsp_monthly, crsp_monthly_full, crsp_daily interim parquets.
     World: loads world_data, world_dsf, market_returns into memory.
@@ -9365,19 +9407,17 @@ def _mp_stage1_load_returns(mp_con, raw_dir: Path, interim_dir: Path):
     return {"wd": wd, "world_daily": world_daily, "market_m": market_m}
 
 
-def _mp_stage2_load_fundamentals(mp_con, raw_dir: Path, interim_dir: Path):
+def _mp_stage2_load_fundamentals(mp_con, raw_dir: Path, interim_dir: Path) -> None:
     """Stage 2: Load + filter fundamentals.
     US: writes compustat_annual, compustat_quarterly interim parquets (via CCM link).
     World: acc_chars_world is already part of stage1's wd; fundq_global loaded lazily
            by world distress (heavy, in-memory only).
-    Returns dict (US fundamentals on disk; world handles deferred to consumers).
     """
     _mp_build_compustat_annual(mp_con, raw_dir, interim_dir)
     _mp_build_compustat_quarterly(mp_con, raw_dir, interim_dir)
-    return {}
 
 
-def _mp_stage3_compute_chars(mp_con, raw_dir: Path, interim_dir: Path):
+def _mp_stage3_compute_chars(mp_con, raw_dir: Path, interim_dir: Path) -> None:
     """Stage 3: Compute characteristics for US side (11 anomalies + CHS DISTRESS).
     Writes per-anomaly interim parquets consumed by Stage 4. Reads compustat_annual,
     compustat_quarterly, crsp_monthly, crsp_monthly_full, crsp_daily produced by
@@ -9394,17 +9434,17 @@ def _mp_stage3_compute_chars(mp_con, raw_dir: Path, interim_dir: Path):
 
 
 def _mp_stage4_form_portfolios(
-    min_stks,
-    min_fcts,
-    min_stks_world,
+    min_stks: int,
+    min_fcts: int,
+    min_stks_world: int,
     mp_con,
     mp_con_world,
-    wd,
-    world_daily,
-    market_m,
+    wd: pl.DataFrame,
+    world_daily: pl.DataFrame,
+    market_m: pl.DataFrame,
     raw_dir: Path,
     interim_dir: Path,
-):
+) -> dict[str, pl.DataFrame]:
     """Stage 4: Build per-stock mispricing panels + size/score buckets + legs + SMB
     for US and world. Returns dict with US panel/legs/smb and world panel/legs/smb."""
     us_panel = _mp_build_mispricing_panel(min_stks, mp_con, interim_dir)
@@ -9437,8 +9477,14 @@ def _mp_stage4_form_portfolios(
 
 
 def _mp_stage5_compute_returns(
-    s4, min_fcts, min_obs, min_obs_world, mp_con, mp_con_world, interim_dir: Path
-):
+    s4: dict[str, pl.DataFrame],
+    min_fcts: int,
+    min_obs: int,
+    min_obs_world: int,
+    mp_con,
+    mp_con_world,
+    interim_dir: Path,
+) -> dict[str, pl.DataFrame]:
     """Stage 5: Compute portfolio returns. Takes Stage 4 dict; returns dict with
     pm_us, pd_us, sc_us, pm_world, pd_world, sc_world (each tagged with excntry)."""
     pm_us = _mp_build_portfolios_monthly_core(
@@ -9515,8 +9561,11 @@ def _mp_stage5_compute_returns(
 
 
 def _mp_stage6_write_outputs(
-    s5, monthly_factors_path: Path, daily_factors_path: Path, chars_path: Path
-):
+    s5: dict[str, pl.DataFrame],
+    monthly_factors_path: Path,
+    daily_factors_path: Path,
+    chars_path: Path,
+) -> None:
     """Stage 6: Concat US + world; write the monthly/daily factor and chars parquets."""
     pm_us, pd_us, sc_us = s5["pm_us"], s5["pd_us"], s5["sc_us"]
     pm_world, pd_world, sc_world = s5["pm_world"], s5["pd_world"], s5["sc_world"]
@@ -9591,7 +9640,7 @@ def gen_mispricing_data(
     mp_con_world = duckdb.connect()
     mp_con.execute("PRAGMA disable_progress_bar")
     mp_con_world.execute("PRAGMA disable_progress_bar")
-    rets = _mp_stage1_load_returns(mp_con, raw_dir, interim_dir)
+    rets = _mp_stage1_load_returns(raw_dir, interim_dir)
     _mp_stage2_load_fundamentals(mp_con, raw_dir, interim_dir)
     _mp_stage3_compute_chars(mp_con, raw_dir, interim_dir)
     s4 = _mp_stage4_form_portfolios(
@@ -11527,11 +11576,9 @@ def dimsonbeta(
 def _ff_eligible(key: str) -> pl.Expr:
     """Sort-eligibility predicate per FF_SORT_SPECS key.
 
-    The count gate on bm/op: the FF (1993) two-years-on-Compustat requirement
-    is NOT applied to the US — French's modern portfolio descriptions never
-    state it, and dropping it improves every IPO-heavy decade vs his published
-    factors (A/B 2026-06: monthly HML 1980s 0.9978->0.9990, RMW 1990s
-    0.9954->0.9976; 2000s+ flat). ROW keeps the JKP convention (count >= 2).
+    The count gate on bm/op (two years on Compustat) is not applied to the
+    US — French's modern portfolio descriptions never state it. ROW keeps
+    the JKP convention (count >= 2).
     """
     count_gate = (pl.col("excntry") == US_EXCNTRY) | (pl.col("count") >= 2)
     eligible = {
@@ -11803,7 +11850,7 @@ def ff_load_compustat_us(
     return pl.concat([comp_pool, dff_only], how="vertical_relaxed")
 
 
-def ff_load_crsp_panel(raw_dir: Path, freq: str) -> pl.LazyFrame:
+def ff_load_crsp_panel(raw_dir: Path, freq: Literal["monthly", "daily"]) -> pl.LazyFrame:
     """
     Description:
         Load CRSP msf_v2 / dsf_v2 with strict CIZ universe filters and
@@ -11864,7 +11911,9 @@ def ff_load_crsp_panel(raw_dir: Path, freq: str) -> pl.LazyFrame:
     )
 
 
-def _ff_rets_weights_lazy(raw_panel: pl.LazyFrame, freq: str, *, is_us: bool) -> pl.LazyFrame:
+def _ff_rets_weights_lazy(
+    raw_panel: pl.LazyFrame, freq: Literal["monthly", "daily"], *, is_us: bool
+) -> pl.LazyFrame:
     """
     Description:
         Lazy build of the pre-projection returns/weights panel for one leg
@@ -11922,7 +11971,7 @@ def _ff_rets_weights_lazy(raw_panel: pl.LazyFrame, freq: str, *, is_us: bool) ->
 def ff_prepare_chars_weights_rets(
     raw_panel: pl.DataFrame | pl.LazyFrame,
     comp: pl.DataFrame,
-    freq: str,
+    freq: Literal["monthly", "daily"],
     *,
     is_us: bool,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
@@ -11959,7 +12008,7 @@ def ff_prepare_chars_weights_rets(
 def _ff_finish_prepare(
     data_rets_weights: pl.DataFrame,
     comp: pl.DataFrame,
-    freq: str,
+    freq: Literal["monthly", "daily"],
     *,
     is_us: bool,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
@@ -12074,6 +12123,8 @@ def _ff_finish_prepare(
 def _ff_bucket(val: str, breaks: list[str], labels: list[str]) -> pl.Expr:
     """Ladder label: `val <= breaks[i]` -> `labels[i]`, else `labels[-1]`.
     Requires `len(labels) == len(breaks) + 1`."""
+    if len(labels) != len(breaks) + 1:
+        raise ValueError("labels must have exactly one more entry than breaks")
     out = pl.when(pl.col(val) <= pl.col(breaks[0])).then(pl.lit(labels[0]))
     for br, lab in zip(breaks[1:], labels[1:-1], strict=True):
         out = out.when(pl.col(val) <= pl.col(br)).then(pl.lit(lab))
@@ -12648,7 +12699,7 @@ def _ff_mom_signal_daily(panel: pl.LazyFrame) -> pl.LazyFrame:
     ).select(*FF_MOM_OUTPUT_COLS)
 
 
-def ff_build_mom_signal(panel: pl.DataFrame, freq: str) -> pl.DataFrame:
+def ff_build_mom_signal(panel: pl.DataFrame, freq: Literal["monthly", "daily"]) -> pl.DataFrame:
     """Per-(excntry, id) prior (2-12) return signal + eligibility.
 
     Dispatches to monthly (calendar-month-indexed lags, sentinel-aware
@@ -12687,11 +12738,13 @@ def ff_compute_umd_factor(panel: pl.DataFrame) -> pl.DataFrame:
 def ff_build_characteristics(
     panel: pl.DataFrame,
     june: pl.DataFrame,
-    freq: str,
+    freq: Literal["monthly", "daily"],
     mom_signal: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     """Per-(excntry, id, eom) characteristics on monthly grid. Daily input
-    downsampled to last trading day per (excntry, id, month).
+    downsampled to last trading day per (excntry, id, month). The returned
+    frame carries `excntry`; the writer in `gen_ff_data` drops it (`id` is
+    globally unique).
 
     If `mom_signal` is provided (output of `ff_build_mom_signal`), the
     per-stock `mom_2_12` is joined on (excntry, id, date) and emitted as
@@ -12867,7 +12920,9 @@ def hxz_attach_siccd(lf: pl.LazyFrame, raw_dir: Path, date_col: str) -> pl.LazyF
     )
 
 
-def hxz_load_crsp(raw_dir: Path, freq: str, date_start: date | None = None) -> pl.DataFrame:
+def hxz_load_crsp(
+    raw_dir: Path, freq: Literal["monthly", "daily"], date_start: date | None = None
+) -> pl.DataFrame:
     """
     Description:
         Load CRSP CIZ (msf_v2 or dsf_v2) under HXZ universe; attach siccd.
@@ -13374,7 +13429,7 @@ def hxz_load_compustat_row(raw_dir: Path) -> pl.DataFrame:
     )
 
 
-def hxz_load_panel_row(interim_dir: Path, freq: str) -> pl.DataFrame:
+def hxz_load_panel_row(interim_dir: Path, freq: Literal["monthly", "daily"]) -> pl.DataFrame:
     """
     Description:
         ROW panel via `ff_load_world_panel` + attach (naics, sic) from
@@ -13478,7 +13533,9 @@ def hxz_compute_factors(panel: pl.DataFrame) -> pl.DataFrame:
 
 
 def hxz_build_characteristics(panel_m: pl.DataFrame) -> pl.DataFrame:
-    """(excntry, id, eom) stock-level chars used to form HXZ sorts."""
+    """(excntry, id, eom) stock-level chars used to form HXZ sorts. The
+    returned frame carries `excntry`; the writer in `gen_hxz_data` drops it
+    (`id` is globally unique)."""
     return panel_m.select(
         eom=pl.col("date").dt.month_end(),
         excntry=pl.col("excntry"),
@@ -13498,7 +13555,9 @@ class HxzFundamentals(NamedTuple):
     funda_row: pl.DataFrame
 
 
-def _hxz_add_me_lag1_ym(df: pl.DataFrame, key: str, freq: str) -> pl.DataFrame:
+def _hxz_add_me_lag1_ym(
+    df: pl.DataFrame, key: str, freq: Literal["monthly", "daily"]
+) -> pl.DataFrame:
     """Attach me_lag1 to a returns frame keyed by `key`.
 
     Monthly: YM-int (year*100 + month) join — gap-robust + correct when `date`
@@ -13527,7 +13586,7 @@ def _hxz_add_me_lag1_ym(df: pl.DataFrame, key: str, freq: str) -> pl.DataFrame:
 def hxz_load_returns(
     raw_dir: Path,
     interim_dir: Path,
-    freq: str,
+    freq: Literal["monthly", "daily"],
     date_start: date | None = None,
 ) -> pl.DataFrame:
     """
@@ -13684,7 +13743,7 @@ def hxz_compute_chars(
         )  # fmt: skip
     )
 
-    # ---- US: monthly ROE (RDQ-gated post-1972, 4mo-lag pre-1972) ----
+    # ---- US: monthly ROE (RDQ-gated; pre-1972 extension deliberately not used) ----
     us_roe_raw = _hxz_us_roe_monthly(
         fundamentals.fundq_us, raw_dir, us_panel.select("date").unique()
     )
