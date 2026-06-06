@@ -7,6 +7,11 @@ your output directory, it accompanies generated factor portfolios, stock
 returns, and firm characteristics; those outputs are also subject to your
 WRDS and vendor license terms.
 
+## Data Changelog
+
+For a history of changes to the underlying data, see
+[CHANGELOG_DATA.md](https://github.com/bkelly-lab/jkp-data/blob/main/CHANGELOG_DATA.md).
+
 ## Usage
 
 You are free to share and adapt this data for non-commercial purposes,

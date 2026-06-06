@@ -84,6 +84,8 @@ Please see the release notes (`documentation/release_notes.html`) for a descript
 
 - To understand the data, please refer to our [documentation](https://jkpfactors.s3.amazonaws.com/documents/Documentation.pdf).
 
+- For a history of changes to the underlying data, see [CHANGELOG_DATA.md](CHANGELOG_DATA.md).
+
 - We distribute the global factor returns generated from this codebase at [jkpfactors.com](https://jkpfactors.com) and the stock returns and firm characteristics at [wrds-www.wharton.upenn.edu/pages/get-data/contributed-data-forms/global-factor-data/](https://wrds-www.wharton.upenn.edu/pages/get-data/contributed-data-forms/global-factor-data/).
 
 - The original SAS/R codebase is still available at [github.com/bkelly-lab/ReplicationCrisis](https://github.com/bkelly-lab/ReplicationCrisis), but we recommend using this new Python codebase for future work.
