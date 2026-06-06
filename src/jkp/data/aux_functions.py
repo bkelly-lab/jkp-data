@@ -36,6 +36,7 @@ from .config import (
     FF_MIN_STOCKS_PF,
     FF_MISSING_RET_CODE,
     FF_MISSING_RET_TOL,
+    FF_MOM_OUTPUT_COLS,
     FF_PORT_COLS,
     FF_PORT_YEAR,
     FF_SORT_SPECS,
@@ -7161,11 +7162,8 @@ def _mp_load_ccm(raw_dir: Path) -> pl.DataFrame:
     falls back to ccmxpf_lnkhist with synthesized usedflag=1 if linktable absent).
     8-link-type filter matches MisprProject SY-parity baseline."""
     lt_path = raw_dir / "crsp_ccmxpf_linktable.parquet"
-    if lt_path.exists():
-        df = pl.read_parquet(lt_path)
-    else:
-        df = pl.read_parquet(raw_dir / "crsp_ccmxpf_lnkhist.parquet")
-    df = df.rename({c: c.lower() for c in df.columns})
+    src_path = lt_path if lt_path.exists() else raw_dir / "crsp_ccmxpf_lnkhist.parquet"
+    df = pl.read_parquet(src_path).rename(str.lower)
     if "usedflag" not in df.columns:
         df = df.with_columns(usedflag=pl.lit(1).cast(pl.Int64))
     return df.filter(
@@ -7264,12 +7262,7 @@ _MP_FUNDQ_NUMERIC = [
 
 @functools.cache
 def _mp_load_funda(raw_dir: Path):
-    df = pl.read_parquet(raw_dir / "comp_funda.parquet").filter(
-        (col("indfmt") == "INDL")
-        & (col("datafmt") == "STD")
-        & (col("popsrc") == "D")
-        & (col("consol") == "C")
-    )
+    df = pl.read_parquet(raw_dir / "comp_funda.parquet").filter(_compustat_na_filter())
     return df.with_columns(
         [col(c).cast(pl.Float64, strict=False) for c in _MP_FUNDA_NUMERIC if c in df.columns]
     )
@@ -7277,12 +7270,7 @@ def _mp_load_funda(raw_dir: Path):
 
 @functools.cache
 def _mp_load_fundq(raw_dir: Path):
-    df = pl.read_parquet(raw_dir / "comp_fundq.parquet").filter(
-        (col("indfmt") == "INDL")
-        & (col("datafmt") == "STD")
-        & (col("popsrc") == "D")
-        & (col("consol") == "C")
-    )
+    df = pl.read_parquet(raw_dir / "comp_fundq.parquet").filter(_compustat_na_filter())
     return df.with_columns(
         [col(c).cast(pl.Float64, strict=False) for c in _MP_FUNDQ_NUMERIC if c in df.columns]
     )
@@ -8298,10 +8286,11 @@ def _mp_rank_anomalies_core(
         anom_df = anom_source(anom)
         if anom_df is None:
             continue
-        m = base.select(*panel_join, "mktcap").join(anom_df, on=src_join, how="inner")
         m = (
-            _mp_pct_core(
-                m,
+            base.select(*panel_join, "mktcap")
+            .join(anom_df, on=src_join, how="inner")
+            .pipe(
+                _mp_pct_core,
                 descending=anom in MP_POSITIVE_ANOMALIES,
                 mp_con=mp_con,
                 id_select=id_cols,
@@ -11710,12 +11699,7 @@ def ff_load_compustat_us(
             pl.col("datadate").cast(pl.Date),
             pl.col(*floats).cast(pl.Float64),
         )
-        .filter(
-            (pl.col("indfmt") == "INDL")
-            & (pl.col("datafmt") == "STD")
-            & (pl.col("popsrc") == "D")
-            & (pl.col("consol") == "C")
-        )
+        .filter(_compustat_na_filter())
         .with_columns(
             ps=pl.coalesce("pstkrv", "pstkl", "pstk", pl.lit(0.0)),
             txditc=pl.when(pl.col("datadate").dt.year() < 1993)
@@ -11913,10 +11897,10 @@ def ff_load_crsp_panel(raw_dir: Path, freq: str) -> pl.LazyFrame:
         )
         .rename({date_c: "date", ret_c: "retadj", retx_c: "retx", prc_c: "prc"})
     )
-    if freq == "monthly":
-        lf = lf.with_columns(date=pl.col("date").dt.month_end())
+    date_expr = pl.col("date").dt.month_end() if freq == "monthly" else pl.col("date")
     return (
-        lf.select(
+        lf.with_columns(date=date_expr)
+        .select(
             "permno",
             "permco",
             "date",
@@ -12045,14 +12029,9 @@ def _ff_finish_prepare(
         (data_rets_weights, data_chars) as documented on
         ff_prepare_chars_weights_rets.
     """
-    if is_us:
-        id_keys = ["permno"]
-        link_key = "permno"
-        beme_scale = 1000.0
-    else:
-        id_keys = ["excntry", "id"]
-        link_key = "gvkey"
-        beme_scale = 1.0
+    id_keys, link_key, beme_scale = (
+        (["permno"], "permno", 1000.0) if is_us else (["excntry", "id"], "gvkey", 1.0)
+    )
 
     # Per-month filter-then-dedup (cheap for daily; no-op dedup for monthly)
     def _last_per_year(month: int) -> pl.DataFrame:
@@ -12172,22 +12151,25 @@ def _ff_compute_be_op_inv(lf: pl.LazyFrame, is_global: bool) -> pl.LazyFrame:
     pstkrv/pstkl/itcb."""
     if is_global:
         ps_x = pl.col("pstk")
-        itcb_expr = pl.lit(None, dtype=pl.Float64)
+        txditc = pl.coalesce("txditc", pl.col("txdb") + pl.lit(None, dtype=pl.Float64))
     else:
         ps_x = pl.coalesce("pstkrv", "pstkl", "pstk")
-        itcb_expr = pl.col("itcb")
-    txditc_x = pl.coalesce("txditc", pl.col("txdb") + itcb_expr)
-    seq_x = pl.coalesce("seq", pl.col("ceq") + pl.coalesce(ps_x, 0.0), pl.col("at") - pl.col("lt"))
-    be_jkp = seq_x + pl.coalesce(txditc_x, 0.0) - pl.coalesce(ps_x, 0.0)
-
-    sale_x = pl.coalesce("sale", "revt")
-    opex_x = pl.coalesce("xopr", pl.col("cogs") + pl.col("xsga"))
-    ebitda_x = pl.coalesce("ebitda", "oibdp", sale_x - opex_x)
-    ope_x = ebitda_x - pl.col("xint")
-
-    fy_gap = pl.col("datadate").dt.year() - pl.col("datadate_lag").dt.year()
+        txditc = pl.coalesce("txditc", pl.col("txdb") + pl.col("itcb"))
     return (
-        lf.with_columns(be_local=be_jkp, ope_x=ope_x, year=pl.col("datadate").dt.year())
+        lf.with_columns(
+            be_local=pl.coalesce(
+                "seq", pl.col("ceq") + pl.coalesce(ps_x, 0.0), pl.col("at") - pl.col("lt")
+            )
+            + pl.coalesce(txditc, 0.0)
+            - pl.coalesce(ps_x, 0.0),
+            ope_x=pl.coalesce(
+                "ebitda",
+                "oibdp",
+                pl.coalesce("sale", "revt") - pl.coalesce("xopr", pl.col("cogs") + pl.col("xsga")),
+            )
+            - pl.col("xint"),
+            year=pl.col("datadate").dt.year(),
+        )
         .sort(["gvkey", "datadate"])
         .with_columns(
             op=pl.when(pl.col("ope_x").is_not_null() & (pl.col("be_local") > 0))
@@ -12201,7 +12183,7 @@ def _ff_compute_be_op_inv(lf: pl.LazyFrame, is_global: bool) -> pl.LazyFrame:
                 pl.col("at").is_not_null()
                 & pl.col("at_lag").is_not_null()
                 & (pl.col("at_lag") > 0)
-                & (fy_gap == 1)
+                & (pl.col("datadate").dt.year() - pl.col("datadate_lag").dt.year() == 1)
             )
             .then(safe_div(pl.col("at") - pl.col("at_lag"), pl.col("at_lag"), "inv"))
             .otherwise(None),
@@ -12238,12 +12220,7 @@ def _ff_load_world_funda(raw_dir: Path, parquet: str, is_global: bool) -> pl.Laz
             & (pl.col("consol") == "C")
         )
     else:
-        flt = (
-            (pl.col("indfmt") == "INDL")
-            & (pl.col("datafmt") == "STD")
-            & (pl.col("popsrc") == "D")
-            & (pl.col("consol") == "C")
-        )
+        flt = _compustat_na_filter()
     lf = (
         pl.scan_parquet(raw_dir / parquet)
         .with_columns(
@@ -12493,25 +12470,26 @@ def ff_assign_to_panel(panel: pl.DataFrame, june: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def _ff_vw_shared_filter() -> pl.Expr:
-    """Predicate shared by every FF VW leg (positive weight, non-null return,
-    assigned size bucket); applied once in ff_compute_factors."""
-    return (pl.col("w") > 0) & pl.col("ret").is_not_null() & pl.col("sizeport").is_not_null()
-
-
 def _ff_vw_leg(panel: pl.DataFrame, spec_key: str, *, prefiltered: bool = False) -> pl.DataFrame:
     """VW per (excntry, date, sizeport+<port>) bucket for one FF_SORT_SPECS entry.
 
     Applies ROW-only FF_MIN_STOCKS_PF gate (US bypassed) and pivots to wide
     [excntry, date, *spec.buckets] with the spec's rename map applied.
-    `prefiltered=True` skips _ff_vw_shared_filter() when the caller already
-    applied it (filter composition is row-order-preserving, so the per-group
-    float-sum sequence is unchanged).
+    `prefiltered=True` skips the shared (w/ret/sizeport) predicate when the
+    caller already applied it (filter composition is row-order-preserving, so
+    the per-group float-sum sequence is unchanged).
     """
     s = FF_SORT_SPECS[spec_key]
     spec_filter = (pl.col(s["flag"]) == 1) & pl.col(s["port"]).is_not_null()
     leg = (
-        panel.filter(spec_filter if prefiltered else _ff_vw_shared_filter() & spec_filter)
+        panel.filter(
+            spec_filter
+            if prefiltered
+            else (pl.col("w") > 0)
+            & pl.col("ret").is_not_null()
+            & pl.col("sizeport").is_not_null()
+            & spec_filter
+        )
         .with_columns(bucket=pl.col("sizeport") + pl.col(s["port"]))
         .group_by("excntry", "date", "bucket")
         .agg(
@@ -12542,27 +12520,28 @@ def ff_compute_factors(ccm4: pl.DataFrame) -> pl.DataFrame:
     # One shared-predicate pass over the full panel instead of three;
     # filter(a).filter(b) ≡ filter(a & b) row-for-row, so each leg's group
     # float-sum sequence is unchanged.
-    base = ccm4.filter(_ff_vw_shared_filter())
+    base = ccm4.filter(
+        (pl.col("w") > 0) & pl.col("ret").is_not_null() & pl.col("sizeport").is_not_null()
+    )
     legs = [_ff_vw_leg(base, k, prefiltered=True) for k in ("bm", "op", "inv")]
     wide = legs[0]
     for leg in legs[1:]:
         wide = wide.join(leg, on=["excntry", "date"], how="full", coalesce=True)
     wide = wide.sort("excntry", "date")
 
-    smb_bm = pl.mean_horizontal("SL", "SM", "SH", ignore_nulls=False) - pl.mean_horizontal(
-        "BL", "BM", "BH", ignore_nulls=False
-    )
-    smb_op = pl.mean_horizontal("SW", "SN_op", "SR", ignore_nulls=False) - pl.mean_horizontal(
-        "BW", "BN_op", "BR", ignore_nulls=False
-    )
-    smb_inv = pl.mean_horizontal("SC", "SN_inv", "SA", ignore_nulls=False) - pl.mean_horizontal(
-        "BC", "BN_inv", "BA", ignore_nulls=False
-    )
+    smb = {
+        k: pl.mean_horizontal(*s, ignore_nulls=False) - pl.mean_horizontal(*b, ignore_nulls=False)
+        for k, (s, b) in {
+            "bm": (["SL", "SM", "SH"], ["BL", "BM", "BH"]),
+            "op": (["SW", "SN_op", "SR"], ["BW", "BN_op", "BR"]),
+            "inv": (["SC", "SN_inv", "SA"], ["BC", "BN_inv", "BA"]),
+        }.items()
+    }
     return wide.select(
         pl.col("excntry"),
         pl.col("date"),
-        smb_ff3=smb_bm,
-        smb_ff5=(smb_bm + smb_op + smb_inv) / 3,
+        smb_ff3=smb["bm"],
+        smb_ff5=(smb["bm"] + smb["op"] + smb["inv"]) / 3,
         hml=pl.mean_horizontal("SH", "BH", ignore_nulls=False)
         - pl.mean_horizontal("SL", "BL", ignore_nulls=False),
         rmw=pl.mean_horizontal("SR", "BR", ignore_nulls=False)
@@ -12570,21 +12549,6 @@ def ff_compute_factors(ccm4: pl.DataFrame) -> pl.DataFrame:
         cma=pl.mean_horizontal("SC", "BC", ignore_nulls=False)
         - pl.mean_horizontal("SA", "BA", ignore_nulls=False),
     )
-
-
-_FF_MOM_OUTPUT_COLS = (
-    "excntry",
-    "id",
-    "date",
-    "ret",
-    "w",
-    "me",
-    "exchcd_us",
-    "size_grp",
-    "me_lag1",
-    "mom_2_12",
-    "eligible_mom",
-)
 
 
 def _ff_is_neg99(col: str) -> pl.Expr:
@@ -12608,29 +12572,32 @@ def _ff_mom_signal_monthly(panel: pl.LazyFrame) -> pl.LazyFrame:
     by = ["excntry", "id"]
     idx = pl.col("date").dt.year() * 12 + pl.col("date").dt.month()
 
-    df = panel.with_columns(mth_idx=idx.cast(pl.Int64)).sort([*by, "mth_idx"])
-    df = df.with_columns(
-        pl.col("me").shift(1).over(by).alias("me_lag1"),
-        pl.col("me").shift(L + 1).over(by).alias(f"me_lag{L + 1}"),
-        *[pl.col("ret").shift(k).over(by).alias(f"ret_lag{k}") for k in range(1, L + 1)],
-        *[
-            (pl.col("mth_idx") - pl.col("mth_idx").shift(k).over(by)).alias(f"gap{k}")
-            for k in (*range(1, L + 1), L + 1)
-        ],
-    )
-    df = df.with_columns(
-        pl.when(pl.col("gap1") == 1).then(pl.col("me_lag1")).otherwise(None).alias("me_lag1"),
-        pl.when(pl.col(f"gap{L + 1}") == L + 1)
-        .then(pl.col(f"me_lag{L + 1}"))
-        .otherwise(None)
-        .alias(f"me_lag{L + 1}"),
-        *[
-            pl.when(pl.col(f"gap{k}") == k)
-            .then(pl.col(f"ret_lag{k}"))
+    df = (
+        panel.with_columns(mth_idx=idx.cast(pl.Int64))
+        .sort([*by, "mth_idx"])
+        .with_columns(
+            pl.col("me").shift(1).over(by).alias("me_lag1"),
+            pl.col("me").shift(L + 1).over(by).alias(f"me_lag{L + 1}"),
+            *[pl.col("ret").shift(k).over(by).alias(f"ret_lag{k}") for k in range(1, L + 1)],
+            *[
+                (pl.col("mth_idx") - pl.col("mth_idx").shift(k).over(by)).alias(f"gap{k}")
+                for k in (*range(1, L + 1), L + 1)
+            ],
+        )
+        .with_columns(
+            pl.when(pl.col("gap1") == 1).then(pl.col("me_lag1")).otherwise(None).alias("me_lag1"),
+            pl.when(pl.col(f"gap{L + 1}") == L + 1)
+            .then(pl.col(f"me_lag{L + 1}"))
             .otherwise(None)
-            .alias(f"ret_lag{k}")
-            for k in range(1, L + 1)
-        ],
+            .alias(f"me_lag{L + 1}"),
+            *[
+                pl.when(pl.col(f"gap{k}") == k)
+                .then(pl.col(f"ret_lag{k}"))
+                .otherwise(None)
+                .alias(f"ret_lag{k}")
+                for k in range(1, L + 1)
+            ],
+        )
     )
 
     elig = (
@@ -12661,7 +12628,7 @@ def _ff_mom_signal_monthly(panel: pl.LazyFrame) -> pl.LazyFrame:
     return df.with_columns(
         eligible_mom=elig,
         mom_2_12=pl.when(elig).then(mom_expr).otherwise(None),
-    ).select(*_FF_MOM_OUTPUT_COLS)
+    ).select(*FF_MOM_OUTPUT_COLS)
 
 
 def _ff_mom_signal_daily(panel: pl.LazyFrame) -> pl.LazyFrame:
@@ -12674,18 +12641,6 @@ def _ff_mom_signal_daily(panel: pl.LazyFrame) -> pl.LazyFrame:
         .unique()
         .sort(["excntry", "date"])
         .with_columns(tidx=pl.int_range(0, pl.len()).cast(pl.Int64).over("excntry"))
-    )
-    df = (
-        panel.join(trading_idx, on=["excntry", "date"], how="left")
-        .sort([*by, "tidx"])
-        .with_columns(
-            is_null_ret=pl.col("ret").is_null(),
-            log_eff=(1.0 + _ff_neg99_to_zero(pl.col("ret")).fill_null(0.0)).log(),
-        )
-    )
-    df = df.with_columns(
-        cum_log=pl.col("log_eff").cum_sum().over(by),
-        cum_null=pl.col("is_null_ret").cast(pl.Int64).cum_sum().over(by),
     )
     # US window per French's daily detail page: returns t-250..t-21 (the
     # good-return day t-21 is the last window day, mirroring the monthly
@@ -12704,19 +12659,31 @@ def _ff_mom_signal_daily(panel: pl.LazyFrame) -> pl.LazyFrame:
             .otherwise(pl.col(col).shift(us_n + 1).over(by))
         )
 
-    df = df.with_columns(
-        gap_one=pl.col("tidx") - pl.col("tidx").shift(1).over(by),
-        gap_skip=pl.col("tidx") - _us_row_lag("tidx", skip),
-        gap_look=pl.col("tidx") - pl.col("tidx").shift(look).over(by),
-        cum_log_lag_skip=_us_row_lag("cum_log", skip),
-        cum_log_lag_look=_us_row_lag("cum_log", look),
-        nulls_in_window=(
-            pl.col("cum_null").shift(skip + 1).over(by)
-            - pl.col("cum_null").shift(look + 1).over(by)
-        ),
-        ret_lag_skip=pl.col("ret").shift(skip).over(by),
-        me_lag1=pl.col("me").shift(1).over(by),
-        me_lag_look=pl.col("me").shift(look).over(by),
+    df = (
+        panel.join(trading_idx, on=["excntry", "date"], how="left")
+        .sort([*by, "tidx"])
+        .with_columns(
+            is_null_ret=pl.col("ret").is_null(),
+            log_eff=(1.0 + _ff_neg99_to_zero(pl.col("ret")).fill_null(0.0)).log(),
+        )
+        .with_columns(
+            cum_log=pl.col("log_eff").cum_sum().over(by),
+            cum_null=pl.col("is_null_ret").cast(pl.Int64).cum_sum().over(by),
+        )
+        .with_columns(
+            gap_one=pl.col("tidx") - pl.col("tidx").shift(1).over(by),
+            gap_skip=pl.col("tidx") - _us_row_lag("tidx", skip),
+            gap_look=pl.col("tidx") - pl.col("tidx").shift(look).over(by),
+            cum_log_lag_skip=_us_row_lag("cum_log", skip),
+            cum_log_lag_look=_us_row_lag("cum_log", look),
+            nulls_in_window=(
+                pl.col("cum_null").shift(skip + 1).over(by)
+                - pl.col("cum_null").shift(look + 1).over(by)
+            ),
+            ret_lag_skip=pl.col("ret").shift(skip).over(by),
+            me_lag1=pl.col("me").shift(1).over(by),
+            me_lag_look=pl.col("me").shift(look).over(by),
+        )
     )
     elig = (
         (pl.col("gap_one") == 1)
@@ -12733,7 +12700,7 @@ def _ff_mom_signal_daily(panel: pl.LazyFrame) -> pl.LazyFrame:
     return df.with_columns(
         eligible_mom=elig,
         mom_2_12=pl.when(elig).then(mom_raw).otherwise(None),
-    ).select(*_FF_MOM_OUTPUT_COLS)
+    ).select(*FF_MOM_OUTPUT_COLS)
 
 
 def ff_build_mom_signal(panel: pl.DataFrame, freq: str) -> pl.DataFrame:
@@ -12868,12 +12835,11 @@ def gen_ff_data(
         # Both legs as fused lazy plans (loader scan + weights chain), executed
         # together by polars' own scheduler — single collect_all, no Python
         # threads. The chars tails then run eagerly off the collected panels.
-        us_rw, row_rw = pl.collect_all(
-            [
-                _ff_rets_weights_lazy(ff_load_crsp_panel(raw_dir, freq), freq, is_us=True),
-                _ff_rets_weights_lazy(ff_load_world_panel(interim_dir, freq), freq, is_us=False),
-            ]
+        us_lf = ff_load_crsp_panel(raw_dir, freq).pipe(_ff_rets_weights_lazy, freq, is_us=True)
+        row_lf = ff_load_world_panel(interim_dir, freq).pipe(
+            _ff_rets_weights_lazy, freq, is_us=False
         )
+        us_rw, row_rw = pl.collect_all([us_lf, row_lf])
         us_panel, us_chars = _ff_finish_prepare(us_rw, ccm2a, freq, is_us=True)
         row_panel, row_chars = _ff_finish_prepare(row_rw, comp_world, freq, is_us=False)
         panel = pl.concat([us_panel, row_panel], how="vertical_relaxed")
@@ -12971,30 +12937,34 @@ def hxz_load_crsp(raw_dir: Path, freq: str, date_start: date | None = None) -> p
     """
     pq, p = FF_CRSP_SPECS[freq]
     date_c, ret_c, retx_c, prc_c = f"{p}caldt", f"{p}ret", f"{p}retx", f"{p}prc"
-    lf = pl.scan_parquet(raw_dir / pq)
-    if date_start is not None:
-        lf = lf.filter(pl.col(date_c) >= date_start)
-    lf = lf.filter(_ciz_universe()).with_columns(pl.col(ret_c, retx_c, prc_c).cast(pl.Float64))
-    lf = hxz_attach_siccd(lf, raw_dir, date_c)
-    return lf.select(
-        "permno",
-        "permco",
-        pl.col(date_c).alias("date"),
-        pl.col(ret_c).alias("ret"),
-        pl.col(retx_c).alias("retx"),
-        pl.col(prc_c).alias("prc"),
-        "shrout",
-        (pl.col(prc_c).abs() * pl.col("shrout")).alias("me"),
-        pl.col("primaryexch")
-        .replace_strict({"N": 1, "A": 2, "Q": 3}, default=None, return_dtype=pl.Int64)
-        .alias("exchcd"),
-        "siccd",
-        "is_fin",
-    ).collect()
+    date_floor = pl.lit(True) if date_start is None else pl.col(date_c) >= date_start
+    return (
+        pl.scan_parquet(raw_dir / pq)
+        .filter(date_floor & _ciz_universe())
+        .with_columns(pl.col(ret_c, retx_c, prc_c).cast(pl.Float64))
+        .pipe(hxz_attach_siccd, raw_dir, date_c)
+        .select(
+            "permno",
+            "permco",
+            pl.col(date_c).alias("date"),
+            pl.col(ret_c).alias("ret"),
+            pl.col(retx_c).alias("retx"),
+            pl.col(prc_c).alias("prc"),
+            "shrout",
+            (pl.col(prc_c).abs() * pl.col("shrout")).alias("me"),
+            pl.col("primaryexch")
+            .replace_strict({"N": 1, "A": 2, "Q": 3}, default=None, return_dtype=pl.Int64)
+            .alias("exchcd"),
+            "siccd",
+            "is_fin",
+        )
+        .collect()
+    )
 
 
-def _hxz_comp_filter() -> pl.Expr:
-    """Standard Compustat NA screen (INDL/STD/D/C) for the HXZ funda/fundq loads."""
+def _compustat_na_filter() -> pl.Expr:
+    """Standard Compustat NA screen (INDL/STD/D/C), shared by the FF, HXZ and
+    mispricing funda/fundq loaders."""
     return (
         (pl.col("indfmt") == "INDL")
         & (pl.col("datafmt") == "STD")
@@ -13017,7 +12987,7 @@ def hxz_load_funda(raw_dir: Path) -> pl.DataFrame:
     floats = ["pstkrv", "pstkl", "pstk", "seq", "ceq", "txditc", "lt", "at", "csho", "ajex"]
     return (
         pl.scan_parquet(raw_dir / "comp_funda.parquet")
-        .filter(_hxz_comp_filter())
+        .filter(_compustat_na_filter())
         .with_columns(pl.col(*floats).cast(pl.Float64), pl.col("datadate").cast(pl.Date))
         .with_columns(
             ps_a=pl.coalesce("pstkrv", "pstkl", "pstk", pl.lit(0.0)),
@@ -13052,7 +13022,7 @@ def hxz_load_fundq(raw_dir: Path) -> pl.DataFrame:
     ]  # fmt: skip
     return (
         pl.scan_parquet(raw_dir / "comp_fundq.parquet")
-        .filter(_hxz_comp_filter())
+        .filter(_compustat_na_filter())
         .with_columns(
             pl.col(*floats).cast(pl.Float64),
             pl.col("datadate").cast(pl.Date),
@@ -13350,22 +13320,32 @@ def _hxz_compustat_be_inv(lf: pl.LazyFrame, is_global: bool) -> pl.LazyFrame:
     pstkrv/pstkl/itcb chain; global branch collapses to pstk + txdb."""
     if is_global:
         ps = pl.col("pstk")
-        itcb_expr = pl.lit(None, dtype=pl.Float64)
+        txditc = pl.coalesce("txditc", pl.col("txdb") + pl.lit(None, dtype=pl.Float64))
     else:
         ps = pl.coalesce("pstkrv", "pstkl", "pstk")
-        itcb_expr = pl.col("itcb")
-    txditc_x = pl.coalesce("txditc", pl.col("txdb") + itcb_expr)
-    seq_x = pl.coalesce("seq", pl.col("ceq") + pl.coalesce(ps, 0.0), pl.col("at") - pl.col("lt"))
-    be_a = seq_x + pl.coalesce(txditc_x, 0.0) - pl.coalesce(ps, 0.0)
-
+        txditc = pl.coalesce("txditc", pl.col("txdb") + pl.col("itcb"))
     at_lag = pl.col("at").shift(1).over("gvkey")
-    fy_gap = pl.col("datadate").dt.year() - pl.col("datadate").shift(1).over("gvkey").dt.year()
     return (
-        lf.with_columns(be_a=be_a, year=pl.col("datadate").dt.year())
+        lf.with_columns(
+            be_a=pl.coalesce(
+                "seq", pl.col("ceq") + pl.coalesce(ps, 0.0), pl.col("at") - pl.col("lt")
+            )
+            + pl.coalesce(txditc, 0.0)
+            - pl.coalesce(ps, 0.0),
+            year=pl.col("datadate").dt.year(),
+        )
         # BEFORE the inv lag; mirrors the FF loaders.
         .pipe(_collapse_to_latest_fy)
         .with_columns(
-            inv=pl.when(at_lag.is_not_null() & (at_lag > 0) & (fy_gap == 1))
+            inv=pl.when(
+                at_lag.is_not_null()
+                & (at_lag > 0)
+                & (
+                    pl.col("datadate").dt.year()
+                    - pl.col("datadate").shift(1).over("gvkey").dt.year()
+                    == 1
+                )
+            )
             .then((pl.col("at") - at_lag) / at_lag)
             .otherwise(None),
         )

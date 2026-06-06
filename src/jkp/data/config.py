@@ -318,6 +318,21 @@ FF_UMD_DAILY_LOOKBACK = 251
 FF_UMD_MONTHLY_LOOKBACK = 12
 FF_UMD_MONTHLY_SKIP = 1
 
+# Common output schema of the monthly/daily UMD signal builders.
+FF_MOM_OUTPUT_COLS = (
+    "excntry",
+    "id",
+    "date",
+    "ret",
+    "w",
+    "me",
+    "exchcd_us",
+    "size_grp",
+    "me_lag1",
+    "mom_2_12",
+    "eligible_mom",
+)
+
 # DFF (Davis-Fama-French) hand-collected Moody's BE splice into the US FF path.
 # When True, union DFF BE (permno-keyed, bundled resource) with Compustat BE;
 # DFF fills (permno, formation year) cells Compustat lacks, extending SMB/HML
