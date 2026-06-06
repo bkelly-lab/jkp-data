@@ -11575,12 +11575,13 @@ def _ff_eligible(key: str) -> pl.Expr:
     0.9954->0.9976; 2000s+ flat). ROW keeps the JKP convention (count >= 2).
     """
     count_gate = (pl.col("excntry") == US_EXCNTRY) | (pl.col("count") >= 2)
-    return {
+    eligible = {
         "bm": (pl.col("beme") > 0) & (pl.col("me") > 0) & count_gate,
         "op": (pl.col("me") > 0) & (pl.col("be") > 0) & count_gate & pl.col("op").is_not_null(),
         "inv": (pl.col("me") > 0) & pl.col("inv").is_not_null(),
         "mom": pl.col("mom_2_12").is_not_null() & (pl.col("me_lag1") > 0),
-    }[key]
+    }
+    return eligible[key]
 
 
 def _ciz_universe() -> pl.Expr:
