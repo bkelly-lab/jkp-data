@@ -428,7 +428,6 @@ MP_LAG_M = 4
 MP_START_FACTOR_EOM = date(1963, 1, 31)
 
 # World extension constants (per-country breakpoint pool gates, mirrors jkp ROW gen_ff_data)
-MP_MAIN_FILTERS_COLS = ["primary_sec", "common", "obs_main", "exch_main"]
 MP_MIN_STKS_BP_WORLD = 10  # min stocks per (excntry, eom) for percentile rank inclusion
 MP_MIN_OBS_PF_WORLD = 3  # min stocks per (excntry, eom, bucket) for portfolio VW
 
