@@ -580,7 +580,7 @@ def gen_crsp_sf(paths: DataPaths, freq):
     senames = con.read_parquet(paths.raw_tables_dir / "crsp_stksecurityinfohist.parquet")
     ccmxpf_lnkhist = con.read_parquet(paths.raw_tables_dir / "crsp_ccmxpf_lnkhist.parquet")
 
-    # ---------- CIZ name mapping by frequency ----------
+    # CIZ name mapping by frequency
     if freq == "m":
         date_expr = sf.mthcaldt.cast("date")
         prc_expr = sf.mthprc
@@ -9411,20 +9411,20 @@ def gen_mispricing_data(
         mp_con.execute("PRAGMA disable_progress_bar")
         mp_con_world.execute("PRAGMA disable_progress_bar")
 
-        # ---- 1. Return/ME panels: US to interim parquets, world in memory ----
+        # 1. Return/ME panels: US to interim parquets, world in memory
         _mp_build_crsp_monthly(raw_dir, interim_dir)
         _mp_build_crsp_daily(raw_dir, interim_dir)
         world_data = _mp_world_load_world_data(interim_dir)
         world_daily = _mp_world_load_world_dsf(interim_dir)
         market_monthly = _mp_world_load_market(interim_dir, daily=False)
 
-        # ---- 2. US fundamentals (CCM-linked) to interim parquets ----
+        # 2. US fundamentals (CCM-linked) to interim parquets
         _mp_build_compustat_annual(mp_con, raw_dir, interim_dir)
         _mp_build_compustat_quarterly(mp_con, raw_dir, interim_dir)
 
-        # ---- 3. US anomaly characteristics (11 anomalies + CHS DISTRESS),
+        # 3. US anomaly characteristics (11 anomalies + CHS DISTRESS),
         # one interim parquet each; world chars are computed in-memory inside
-        # the world panel build below ----
+        # the world panel build below
         _mp_compute_accrual(raw_dir, interim_dir)
         _mp_compute_gross_profit(raw_dir, interim_dir)
         _mp_compute_oscore(raw_dir, interim_dir)
@@ -9434,7 +9434,7 @@ def gen_mispricing_data(
         _mp_compute_roa(mp_con, interim_dir)
         _mp_compute_distress(mp_con, raw_dir, interim_dir)
 
-        # ---- 4. Per-stock panels, 2x3 double-sort legs, SMB panels ----
+        # 4. Per-stock panels, 2x3 double-sort legs, SMB panels
         us_panel = _mp_build_mispricing_panel(min_stks, mp_con, interim_dir)
         # US size median is NYSE-only (exchcd == 1), per-eom breaks.
         us_legs = _mp_mispricing_legs(
@@ -9461,7 +9461,7 @@ def gen_mispricing_data(
         )
         world_smb = _mp_smb_panel_from_legs(world_legs, key_cols=("id", "excntry"))
 
-        # ---- 5. Factor returns and per-stock scores ----
+        # 5. Factor returns and per-stock scores
         monthly_us = _mp_monthly_factor_returns(
             us_legs,
             us_smb,
@@ -9502,7 +9502,7 @@ def gen_mispricing_data(
             select_cols=["id", "eom", "excntry"],
         ).with_columns(id=col("id").cast(pl.Int64))
 
-        # ---- 6. Concat US + world; write outputs ----
+        # 6. Concat US + world; write outputs
         factor_cols = ["smb_mispricing", "mispricing_mgmt", "mispricing_perf"]
         _mp_concat_write(
             monthly_us,
@@ -11521,11 +11521,8 @@ def _ff_us_accounting(raw_dir: Path, ff5: bool) -> pl.LazyFrame:
     extra = ["revt", "cogs", "xsga", "xint", "mib"]
     floats = base + (extra if ff5 else [])
     # Stockholders' equity ladder per French (data library / DFF 2000):
-    # "the value reported by Moody's or Compustat, if it is available. If
-    # not, we measure stockholders' equity as the book value of common
-    # equity plus the par value of preferred stock, or the book value of
-    # assets minus total liabilities (in that order)". ceq + pstk nulls
-    # when pstk is missing, falling to at - lt (SAS sum semantics).
+    # seq, else ceq + pstk, else at - lt. ceq + pstk nulls when pstk is
+    # missing, falling to at - lt (SAS sum semantics).
     she = pl.coalesce(
         pl.col("seq"),
         pl.col("ceq") + pl.col("pstk"),
@@ -11565,9 +11562,8 @@ def _ff_us_accounting(raw_dir: Path, ff5: bool) -> pl.LazyFrame:
             - pl.coalesce("xint", pl.lit(0.0))
         )
         fy_gap = pl.col("datadate").dt.year() - pl.col("datadate_lag").dt.year()
-        # OP denominator per French's variable definitions: "divided by the
-        # sum of book equity and minority interest"; the positive-BE screen
-        # stays on BE alone (his ME x OP description: "(positive) BE").
+        # OP denominator per French's variable definitions: book equity plus
+        # minority interest; the positive-BE screen stays on BE alone.
         lf = lf.with_columns(
             op=pl.when(op_elig & (pl.col("be") > 0))
             .then(safe_div(op_num, pl.col("be") + pl.coalesce("mib", pl.lit(0.0)), "op"))
@@ -11660,7 +11656,7 @@ def _ff_merge_dff_be(
     if not use_dff:
         return comp_ccm
 
-    # ---- DFF hand-collected BE union (see ff_load_compustat_us docstring step 6) ----
+    # DFF hand-collected BE union (see ff_load_compustat_us docstring step 6)
     keep = ["op", "inv"] if ff5 else []
     select_cols = ["gvkey", "permno", "year", "datadate", "be", *keep, "count"]
     dff = (
@@ -12307,10 +12303,8 @@ def ff_country_breakpoints(
 
 def _ff_size_breaks(june: pl.DataFrame, value_eligible: pl.Expr) -> pl.DataFrame:
     """Per-country size median (sizemedn). US pools ALL NYSE me>0 stocks per
-    DFF 2000 — the size breakpoint is "the median for all NYSE stocks on
-    CRSP", "not just those in our annual samples" (no BE requirement) —
-    while value breakpoints stay on the sort-eligible pool. ROW keeps the
-    JKP convention (sort-eligible pool)."""
+    DFF 2000 (no BE requirement), while value breakpoints stay on the
+    sort-eligible pool. ROW keeps the JKP convention (sort-eligible pool)."""
     size_elig = (
         pl.when(pl.col("excntry") == US_EXCNTRY).then(pl.col("me") > 0).otherwise(value_eligible)
     )
@@ -12585,9 +12579,8 @@ def _ff_mom_signal_monthly(panel: pl.LazyFrame) -> pl.LazyFrame:
         & ~_ff_is_neg99(f"ret_lag{skip + 1}")
     )
     # Interior window months (t-12..t-3): French requires the stock be on
-    # file but tolerates a missing price ("any missing returns from t-12 to
-    # t-3 must be -99.0, CRSP's code for a missing price"). CIZ codes those
-    # as null, so the US gate requires only the row (gap == k) and the
+    # file but tolerates a missing price (coded -99.0 on CRSP). CIZ codes
+    # those as null, so the US gate requires only the row (gap == k) and the
     # compounding below zero-fills. ROW keeps the strict non-null gate
     # (JKP convention) — its mom values are untouched by the zero-fill.
     is_us = pl.col("excntry") == US_EXCNTRY
@@ -12634,9 +12627,9 @@ def _ff_mom_signal_daily(panel: pl.LazyFrame) -> pl.LazyFrame:
     # US window per French's daily detail page: returns t-250..t-21 (the
     # good-return day t-21 is the last window day, mirroring the monthly
     # t-2), price anchor at t-251, interior missing-price days tolerated
-    # ("any missing returns from day t-250 to t-22 must be -99.0") — CIZ
-    # codes those as null; log_eff zero-fills them. ROW keeps the legacy
-    # t-251..t-22 window and the zero-missing gate (JKP convention).
+    # (-99.0 on CRSP) — CIZ codes those as null; log_eff zero-fills them.
+    # ROW keeps the legacy t-251..t-22 window and the zero-missing gate
+    # (JKP convention).
     is_us = pl.col("excntry") == US_EXCNTRY
     skip_eff = pl.when(is_us).then(skip).otherwise(skip + 1)
 
@@ -12895,10 +12888,10 @@ def gen_ff_data(
     }
     chars_out = chars_path
 
-    # ---- US Compustat (FF-strict) ----
+    # US Compustat (FF-strict)
     ccm2a = ff_load_compustat_us(raw_dir, ff5=True, use_dff=FF_USE_DFF_BE)
 
-    # ---- ROW Compustat (JKP) ----
+    # ROW Compustat (JKP)
     comp_world = ff_load_world_compustat(raw_dir, interim_dir)
 
     for freq in freqs:
@@ -13665,7 +13658,7 @@ def _hxz_us_chars(
     raw_dir: Path,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
     """US size+inv (June, CCM-linked) and monthly ROE (RDQ-gated) frames."""
-    # ---- US: June size + inv (annual, link via CCM at fiscal-y-end) ----
+    # US: June size + inv (annual, link via CCM at fiscal-y-end)
     us_june = us_panel.filter(pl.col("date").dt.month() == 6)
     ia_us_lnk = (
         hxz_link_compustat(
@@ -13705,7 +13698,7 @@ def _hxz_us_chars(
         )  # fmt: skip
     )
 
-    # ---- US: monthly ROE (RDQ-gated; pre-1972 extension deliberately not used) ----
+    # US: monthly ROE (RDQ-gated; pre-1972 extension deliberately not used)
     us_roe_raw = _hxz_us_roe_monthly(fundq_us, raw_dir, us_panel.select("date").unique())
     us_roe = us_panel.select("excntry", "id", "permno", "date", "is_fin", "exchcd").join(
         us_roe_raw, on=["permno", "date"], how="left"
@@ -13719,7 +13712,7 @@ def _hxz_row_chars(
     funda_row: pl.DataFrame,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
     """ROW size+inv (June, gvkey-linked) and monthly ROE (annual broadcast) frames."""
-    # ---- ROW: June size + inv (annual, link via gvkey directly) ----
+    # ROW: June size + inv (annual, link via gvkey directly)
     row_june = row_panel.filter(pl.col("date").dt.month() == 6)
     ia_row_lnk = (
         funda_row.sort(["gvkey", "year", "datadate"])
@@ -13750,7 +13743,7 @@ def _hxz_row_chars(
         )  # fmt: skip
     )
 
-    # ---- ROW: monthly ROE broadcast (datadate+6mo..datadate+18mo) ----
+    # ROW: monthly ROE broadcast (datadate+6mo..datadate+18mo)
     fmtimes = row_panel.select("date").unique()
     row_roe_raw = (
         funda_row.select("gvkey", "datadate", "roe_a")
@@ -13830,7 +13823,7 @@ def _hxz_classify_size_ia(size_ia_form: pl.DataFrame) -> pl.DataFrame:
     with `sizeport`, `invport` (and `inv` preserved for downstream)."""
     specs = [("me", 0.50, "sizemedn"), ("inv", 0.30, "inv30"), ("inv", 0.70, "inv70")]
 
-    # ---- US: NYSE-only pool, per-date breaks (sizemedn always present) ----
+    # US: NYSE-only pool, per-date breaks (sizemedn always present)
     us = size_ia_form.filter(pl.col("excntry") == US_EXCNTRY)
     us_breaks = _hxz_quantile_breaks(
         us, specs, group_keys=["date"], pool_filter=(pl.col("exchcd") == 1) & pl.col("elig")
@@ -13853,7 +13846,7 @@ def _hxz_classify_size_ia(size_ia_form: pl.DataFrame) -> pl.DataFrame:
         .select("excntry", "id", "permno", "date", "sizeport", "invport", "inv")
     )
 
-    # ---- ROW: size_grp pool + HXZ_MIN_STOCKS_BP gate, per-(excntry, date) ----
+    # ROW: size_grp pool + HXZ_MIN_STOCKS_BP gate, per-(excntry, date)
     # ROW joins breaks per (excntry, date) with a HAVING gate, so sizemedn can be
     # null after the left join; the size gate therefore also requires it non-null.
     row = size_ia_form.filter(pl.col("excntry") != US_EXCNTRY)
@@ -13891,7 +13884,7 @@ def _hxz_classify_roe(roe_m: pl.DataFrame) -> pl.DataFrame:
     specs = [("roe", 0.30, "roe30"), ("roe", 0.70, "roe70")]
     elig = (~pl.col("is_fin")) & pl.col("roe").is_not_null()
 
-    # ---- US: NYSE-only pool, per-date breaks ----
+    # US: NYSE-only pool, per-date breaks
     us = roe_m.filter(pl.col("excntry") == US_EXCNTRY).with_columns(elig=elig)
     us_breaks = _hxz_quantile_breaks(
         us, specs, group_keys=["date"], pool_filter=(pl.col("exchcd") == 1) & pl.col("elig")
@@ -13906,7 +13899,7 @@ def _hxz_classify_roe(roe_m: pl.DataFrame) -> pl.DataFrame:
         .select("excntry", "id", "date", "roeport", "roe")
     )
 
-    # ---- ROW: size_grp pool, per-(excntry, date) breaks with HXZ_MIN_STOCKS_BP gate ----
+    # ROW: size_grp pool, per-(excntry, date) breaks with HXZ_MIN_STOCKS_BP gate
     row = roe_m.filter(pl.col("excntry") != US_EXCNTRY).with_columns(elig=elig)
     row_breaks = _hxz_quantile_breaks(
         row,
@@ -13945,7 +13938,7 @@ def hxz_classify_portfolios(
     size_ia_classified = _hxz_classify_size_ia(size_ia_form)
     roe_classified = _hxz_classify_roe(roe_m)
 
-    # ---- US broadcast: join June classification on permno + port_year ----
+    # US broadcast: join June classification on permno + port_year
     us_panel = panel_m.filter(pl.col("excntry") == US_EXCNTRY)
     us_size_ia_keyed = (
         size_ia_classified.filter(pl.col("excntry") == US_EXCNTRY)
@@ -13963,7 +13956,7 @@ def hxz_classify_portfolios(
         .drop("port_year")
     )
 
-    # ---- ROW broadcast: join June classification on id + port_year ----
+    # ROW broadcast: join June classification on id + port_year
     # Key on id (security-level), NOT gvkey: a firm with >1 share class has >1 id
     # in the June frame, and a gvkey-keyed join would fan each panel row out per
     # share class. Matches the ROE broadcast, the US permno branch, and the FF
@@ -14033,10 +14026,10 @@ def gen_hxz_data(
         pl.lit(us_output_start)
     ).otherwise(pl.lit(output_start))
 
-    # ---- 1. Load + filter returns/me (monthly) ----
+    # 1. Load + filter returns/me (monthly)
     panel_m_raw = hxz_load_returns(raw_dir, interim_dir, freq="monthly")
 
-    # ---- 2. Load + filter fundamentals ----
+    # 2. Load + filter fundamentals
     funda_us = hxz_load_funda(raw_dir)
     fundq_us = hxz_impute_be_clean_surplus(
         hxz_merge_be_chain(
@@ -14046,10 +14039,10 @@ def gen_hxz_data(
     )
     funda_row = hxz_load_compustat_row(raw_dir)
 
-    # ---- 3. Compute characteristics at formation date ----
+    # 3. Compute characteristics at formation date
     size_ia_form, roe_m = hxz_compute_chars(panel_m_raw, funda_us, fundq_us, funda_row, raw_dir)
 
-    # ---- 4. Classify into portfolios + broadcast to monthly grid ----
+    # 4. Classify into portfolios + broadcast to monthly grid
     panel_m = hxz_classify_portfolios(panel_m_raw, size_ia_form, roe_m).filter(start_filter)
 
     port_assigns = panel_m.select(
@@ -14061,7 +14054,7 @@ def gen_hxz_data(
         eom=pl.col("date").dt.month_end(),
     )
 
-    # ---- 5+6. Monthly sorts + output ----
+    # 5+6. Monthly sorts + output
     if "monthly" in freqs:
         (
             hxz_compute_factors(panel_m)
@@ -14074,7 +14067,7 @@ def gen_hxz_data(
     # free the monthly frames before the 1925+ daily scan (peak-memory control)
     del panel_m_raw, panel_m, funda_us, fundq_us, funda_row, size_ia_form, roe_m
 
-    # ---- 5+6. Daily sorts + output ----
+    # 5+6. Daily sorts + output
     if "daily" in freqs:
         # Floor scan at 6mo before output_start so me_lag1 has prior-day data
         # on the first output day without holding the full 1925+ daily file.
