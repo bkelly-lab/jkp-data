@@ -9,7 +9,7 @@ import time
 from datetime import date
 from math import exp, sqrt
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, NamedTuple
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from .paths import DataPaths
@@ -9416,51 +9416,21 @@ def _mp_world_build_mispricing_panel(
     )
 
 
-class MpReturnsData(NamedTuple):
-    """World return/ME handles loaded by MP Stage 1; US data lives on disk
-    as interim parquets accessed via `_mp_read` downstream."""
-
-    world_data: pl.DataFrame
-    world_daily: pl.DataFrame
-    market_monthly: pl.DataFrame
-
-
-class MpPortfolioPanels(NamedTuple):
-    """MP Stage 4 output per region: per-stock mispricing panel, mgmt/perf
-    2x3 bucket legs, and the SMB (score-neutral) panel."""
-
-    us_panel: pl.DataFrame
-    us_legs: dict[str, pl.DataFrame]
-    us_smb: pl.DataFrame
-    world_panel: pl.DataFrame
-    world_legs: dict[str, pl.DataFrame]
-    world_smb: pl.DataFrame
-
-
-class MpRegionOutputs(NamedTuple):
-    """MP Stage 5 output per region: monthly/daily factor returns and
-    per-stock mispricing scores, each tagged with `excntry`."""
-
-    monthly_us: pl.DataFrame
-    daily_us: pl.DataFrame
-    chars_us: pl.DataFrame
-    monthly_world: pl.DataFrame
-    daily_world: pl.DataFrame
-    chars_world: pl.DataFrame
-
-
-def _mp_stage1_load_returns(raw_dir: Path, interim_dir: Path) -> MpReturnsData:
+def _mp_stage1_load_returns(
+    raw_dir: Path, interim_dir: Path
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     """Stage 1: Load + filter return/ME panels.
     US: writes crsp_monthly, crsp_monthly_full, crsp_daily interim parquets.
     World: loads world_data, world_dsf, market_returns into memory.
+    Output:
+        (world_data, world_daily, market_monthly).
     """
     _mp_build_crsp_monthly(raw_dir, interim_dir)
     _mp_build_crsp_daily(raw_dir, interim_dir)
-    return MpReturnsData(
-        world_data=_mp_world_load_world_data(interim_dir),
-        world_daily=_mp_world_load_world_dsf(interim_dir),
-        market_monthly=_mp_world_load_market(interim_dir, daily=False),
-    )
+    world_data = _mp_world_load_world_data(interim_dir)
+    world_daily = _mp_world_load_world_dsf(interim_dir)
+    market_monthly = _mp_world_load_market(interim_dir, daily=False)
+    return world_data, world_daily, market_monthly
 
 
 def _mp_stage2_load_fundamentals(mp_con, raw_dir: Path, interim_dir: Path) -> None:
@@ -9500,9 +9470,19 @@ def _mp_stage4_form_portfolios(
     market_m: pl.DataFrame,
     raw_dir: Path,
     interim_dir: Path,
-) -> MpPortfolioPanels:
+) -> tuple[
+    pl.DataFrame,
+    dict[str, pl.DataFrame],
+    pl.DataFrame,
+    pl.DataFrame,
+    dict[str, pl.DataFrame],
+    pl.DataFrame,
+]:
     """Stage 4: Build per-stock mispricing panels + size/score buckets + legs + SMB
-    for US and world."""
+    for US and world.
+    Output:
+        (us_panel, us_legs, us_smb, world_panel, world_legs, world_smb).
+    """
     us_panel = _mp_build_mispricing_panel(min_stks, mp_con, interim_dir)
     # US size median is NYSE-only (exchcd == 1), per-eom breaks.
     us_legs = _mp_build_legs_core(
@@ -9522,30 +9502,32 @@ def _mp_stage4_form_portfolios(
         world_panel, min_fcts, group_keys=["excntry", "eom"], size_break_sql="mktcap"
     )
     world_smb = _mp_smb_panel_from_legs(world_legs, key_cols=("id", "excntry"))
-    return MpPortfolioPanels(
-        us_panel=us_panel,
-        us_legs=us_legs,
-        us_smb=us_smb,
-        world_panel=world_panel,
-        world_legs=world_legs,
-        world_smb=world_smb,
-    )
+    return us_panel, us_legs, us_smb, world_panel, world_legs, world_smb
 
 
 def _mp_stage5_compute_returns(
-    panels: MpPortfolioPanels,
+    us_panel: pl.DataFrame,
+    us_legs: dict[str, pl.DataFrame],
+    us_smb: pl.DataFrame,
+    world_panel: pl.DataFrame,
+    world_legs: dict[str, pl.DataFrame],
+    world_smb: pl.DataFrame,
     min_fcts: int,
     min_obs: int,
     min_obs_world: int,
     mp_con,
     mp_con_world,
     interim_dir: Path,
-) -> MpRegionOutputs:
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     """Stage 5: Compute monthly/daily portfolio returns and stock scores from
-    the Stage 4 panels."""
+    the Stage 4 panels.
+    Output:
+        (monthly_us, daily_us, chars_us, monthly_world, daily_world,
+        chars_world), each tagged with excntry.
+    """
     pm_us = _mp_build_portfolios_monthly_core(
-        panels.us_legs,
-        panels.us_smb,
+        us_legs,
+        us_smb,
         min_obs,
         by="eom",
         truncate_thin=True,
@@ -9553,8 +9535,8 @@ def _mp_stage5_compute_returns(
         out_sort=["eom"],
     )
     pd_us = _mp_build_portfolios_daily_core(
-        panels.us_legs,
-        panels.us_smb,
+        us_legs,
+        us_smb,
         min_obs,
         mp_con,
         daily_path=(interim_dir / "crsp_daily.parquet").as_posix(),
@@ -9568,14 +9550,14 @@ def _mp_stage5_compute_returns(
         out_sort=["date"],
     )
     sc_us = _mp_build_stock_scores_core(
-        panels.us_panel,
+        us_panel,
         min_fcts,
         sort_keys=["permno", "eom"],
         select_cols=[col("permno").alias("id"), "eom"],
     )
     pm_world = _mp_build_portfolios_monthly_core(
-        panels.world_legs,
-        panels.world_smb,
+        world_legs,
+        world_smb,
         min_obs_world,
         by=["excntry", "eom"],
         truncate_thin=False,
@@ -9583,8 +9565,8 @@ def _mp_stage5_compute_returns(
         out_sort=["excntry", "eom"],
     )
     pd_world = _mp_build_portfolios_daily_core(
-        panels.world_legs,
-        panels.world_smb,
+        world_legs,
+        world_smb,
         min_obs_world,
         mp_con_world,
         daily_path=(interim_dir / "world_dsf.parquet").as_posix(),
@@ -9598,21 +9580,21 @@ def _mp_stage5_compute_returns(
         out_sort=["excntry", "date"],
     )
     sc_world = _mp_build_stock_scores_core(
-        panels.world_panel,
+        world_panel,
         min_fcts,
         sort_keys=["id", "eom"],
         select_cols=["id", "eom", "excntry"],
     )
-    return MpRegionOutputs(
-        monthly_us=pm_us.with_columns(excntry=pl.lit("USA")),
-        daily_us=pd_us.with_columns(excntry=pl.lit("USA")),
-        # Keep `id` as Int64 to match jkp convention (world_msf.id = BIGINT for both
-        # US permnos and Compustat-derived ids per `combine_crsp_comp_sf`). Casting to
-        # String would break outer-joins in `ap_factor_model_data` against ff/hxz chars.
-        chars_us=sc_us.with_columns(excntry=pl.lit("USA"), id=col("id").cast(pl.Int64)),
-        monthly_world=pm_world,
-        daily_world=pd_world,
-        chars_world=sc_world.with_columns(id=col("id").cast(pl.Int64)),
+    # Keep `id` as Int64 to match jkp convention (world_msf.id = BIGINT for both
+    # US permnos and Compustat-derived ids per `combine_crsp_comp_sf`). Casting to
+    # String would break outer-joins in `ap_factor_model_data` against ff/hxz chars.
+    return (
+        pm_us.with_columns(excntry=pl.lit("USA")),
+        pd_us.with_columns(excntry=pl.lit("USA")),
+        sc_us.with_columns(excntry=pl.lit("USA"), id=col("id").cast(pl.Int64)),
+        pm_world,
+        pd_world,
+        sc_world.with_columns(id=col("id").cast(pl.Int64)),
     )
 
 
@@ -9626,7 +9608,12 @@ def _mp_concat_write(
 
 
 def _mp_stage6_write_outputs(
-    outputs: MpRegionOutputs,
+    monthly_us: pl.DataFrame,
+    daily_us: pl.DataFrame,
+    chars_us: pl.DataFrame,
+    monthly_world: pl.DataFrame,
+    daily_world: pl.DataFrame,
+    chars_world: pl.DataFrame,
     monthly_factors_path: Path,
     daily_factors_path: Path,
     chars_path: Path,
@@ -9634,22 +9621,22 @@ def _mp_stage6_write_outputs(
     """Stage 6: Concat US + world; write the monthly/daily factor and chars parquets."""
     factor_cols = ["smb_mispricing", "mispricing_mgmt", "mispricing_perf"]
     _mp_concat_write(
-        outputs.monthly_us,
-        outputs.monthly_world,
+        monthly_us,
+        monthly_world,
         ["eom", "excntry", *factor_cols],
         ["excntry", "eom"],
         monthly_factors_path,
     )
     _mp_concat_write(
-        outputs.daily_us,
-        outputs.daily_world,
+        daily_us,
+        daily_world,
         ["date", "excntry", *factor_cols],
         ["excntry", "date"],
         daily_factors_path,
     )
     _mp_concat_write(
-        outputs.chars_us,
-        outputs.chars_world,
+        chars_us,
+        chars_world,
         ["id", "eom", "mispricing_mgmt", "mispricing_perf"],
         ["id", "eom"],
         chars_path,
@@ -9692,25 +9679,48 @@ def gen_mispricing_data(
     try:
         mp_con.execute("PRAGMA disable_progress_bar")
         mp_con_world.execute("PRAGMA disable_progress_bar")
-        returns_data = _mp_stage1_load_returns(raw_dir, interim_dir)
+        world_data, world_daily, market_monthly = _mp_stage1_load_returns(raw_dir, interim_dir)
         _mp_stage2_load_fundamentals(mp_con, raw_dir, interim_dir)
         _mp_stage3_compute_chars(mp_con, raw_dir, interim_dir)
-        panels = _mp_stage4_form_portfolios(
+        us_panel, us_legs, us_smb, world_panel, world_legs, world_smb = _mp_stage4_form_portfolios(
             min_stks,
             min_fcts,
             min_stks_world,
             mp_con,
             mp_con_world,
-            world_data=returns_data.world_data,
-            world_daily=returns_data.world_daily,
-            market_m=returns_data.market_monthly,
+            world_data=world_data,
+            world_daily=world_daily,
+            market_m=market_monthly,
             raw_dir=raw_dir,
             interim_dir=interim_dir,
         )
-        outputs = _mp_stage5_compute_returns(
-            panels, min_fcts, min_obs, min_obs_world, mp_con, mp_con_world, interim_dir
+        monthly_us, daily_us, chars_us, monthly_world, daily_world, chars_world = (
+            _mp_stage5_compute_returns(
+                us_panel,
+                us_legs,
+                us_smb,
+                world_panel,
+                world_legs,
+                world_smb,
+                min_fcts,
+                min_obs,
+                min_obs_world,
+                mp_con,
+                mp_con_world,
+                interim_dir,
+            )
         )
-        _mp_stage6_write_outputs(outputs, monthly_factors_path, daily_factors_path, chars_path)
+        _mp_stage6_write_outputs(
+            monthly_us,
+            daily_us,
+            chars_us,
+            monthly_world,
+            daily_world,
+            chars_world,
+            monthly_factors_path,
+            daily_factors_path,
+            chars_path,
+        )
     finally:
         mp_con.close()
         mp_con_world.close()
@@ -13679,15 +13689,6 @@ def hxz_build_characteristics(panel_m: pl.DataFrame) -> pl.DataFrame:
     ).sort(["eom", "excntry", "id"])
 
 
-class HxzFundamentals(NamedTuple):
-    """Bundle of US (annual + supplemented quarterly with imputed BEQ) and ROW
-    (Compustat NA + global annual) tables. Produced by `hxz_load_fundamentals`."""
-
-    funda_us: pl.DataFrame
-    fundq_us: pl.DataFrame
-    funda_row: pl.DataFrame
-
-
 def _hxz_add_me_lag1_ym(
     df: pl.DataFrame, key: str, freq: Literal["monthly", "daily"]
 ) -> pl.DataFrame:
@@ -13749,14 +13750,14 @@ def hxz_load_returns(
     return pl.concat([us, row], how="diagonal_relaxed")
 
 
-def hxz_load_fundamentals(raw_dir: Path) -> HxzFundamentals:
+def hxz_load_fundamentals(raw_dir: Path) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     """
     Description:
-        Stage 2 — wraps US (annual funda + supplemented fundq with imputed
-        BEQ via clean-surplus) and ROW (Compustat NA + global annual with
-        roe_a fallback) into a single struct.
+        Stage 2 — US (annual funda + supplemented fundq with imputed BEQ via
+        clean-surplus) and ROW (Compustat NA + global annual with roe_a
+        fallback) tables.
     Output:
-        HxzFundamentals(funda_us, fundq_us, funda_row).
+        (funda_us, fundq_us, funda_row).
     """
     funda = hxz_load_funda(raw_dir)
     fundq = hxz_impute_be_clean_surplus(
@@ -13766,7 +13767,7 @@ def hxz_load_fundamentals(raw_dir: Path) -> HxzFundamentals:
         )
     )
     funda_row = hxz_load_compustat_row(raw_dir)
-    return HxzFundamentals(funda_us=funda, fundq_us=fundq, funda_row=funda_row)
+    return funda, fundq, funda_row
 
 
 def _hxz_us_roe_monthly(
@@ -13943,7 +13944,9 @@ def _hxz_row_chars(
 
 def hxz_compute_chars(
     panel_m: pl.DataFrame,
-    fundamentals: HxzFundamentals,
+    funda_us: pl.DataFrame,
+    fundq_us: pl.DataFrame,
+    funda_row: pl.DataFrame,
     raw_dir: Path,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
     """
@@ -13961,10 +13964,8 @@ def hxz_compute_chars(
     us_panel = panel_m.filter(pl.col("excntry") == US_EXCNTRY)
     row_panel = panel_m.filter(pl.col("excntry") != US_EXCNTRY)
 
-    us_size_ia, us_roe = _hxz_us_chars(
-        us_panel, fundamentals.funda_us, fundamentals.fundq_us, raw_dir
-    )
-    row_size_ia, row_roe = _hxz_row_chars(row_panel, fundamentals.funda_row)
+    us_size_ia, us_roe = _hxz_us_chars(us_panel, funda_us, fundq_us, raw_dir)
+    row_size_ia, row_roe = _hxz_row_chars(row_panel, funda_row)
 
     size_ia_form = pl.concat([us_size_ia, row_size_ia], how="diagonal_relaxed")
     roe_m = pl.concat([us_roe, row_roe], how="diagonal_relaxed")
@@ -14179,10 +14180,10 @@ def _hxz_monthly_phase(
     panel_m_raw = hxz_load_returns(raw_dir, interim_dir, freq="monthly")
 
     # ---- 2. Load + filter fundamentals ----
-    fundamentals = hxz_load_fundamentals(raw_dir)
+    funda_us, fundq_us, funda_row = hxz_load_fundamentals(raw_dir)
 
     # ---- 3. Compute characteristics at formation date ----
-    chars_formation = hxz_compute_chars(panel_m_raw, fundamentals, raw_dir)
+    chars_formation = hxz_compute_chars(panel_m_raw, funda_us, fundq_us, funda_row, raw_dir)
 
     # ---- 4. Classify into portfolios + broadcast to monthly grid ----
     panel_m = hxz_classify_portfolios(panel_m_raw, chars_formation).filter(start_filter)
