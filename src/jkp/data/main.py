@@ -9,6 +9,7 @@ from .aux_functions import (
     combine_ann_qtr_chars,
     combine_crsp_comp_sf,
     comp_industry,
+    compound_daily_to_monthly_overnight_intraday,
     create_acc_chars,
     create_world_data_prelim,
     crsp_industry,
@@ -70,6 +71,7 @@ def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> No
     prepare_crsp_sf(paths, "m")
     prepare_crsp_sf(paths, "d")
     combine_crsp_comp_sf(paths)
+    compound_daily_to_monthly_overnight_intraday(paths)
     crsp_industry(paths)
     comp_industry(paths)
     merge_industry_to_world_msf(paths)
