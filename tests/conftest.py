@@ -216,6 +216,26 @@ def make_dataframe():
     return make_test_dataframe
 
 
+def assert_unique_keys(df: pl.DataFrame, keys: list[str]) -> None:
+    """Assert that ``df`` has no duplicate rows on the given key columns."""
+    assert df.unique(keys).height == df.height, (
+        f"Found duplicate {tuple(keys)} rows: {df.height} total vs {df.unique(keys).height} unique"
+    )
+
+
+def assert_sorted_by_keys(df: pl.DataFrame, group_col: str, date_col: str) -> None:
+    """Assert that ``df`` is sorted by ``(group_col, date_col)`` ascending."""
+    groups = df[group_col].to_list()
+    dates = df[date_col].to_list()
+    assert groups == sorted(groups), f"{group_col} not sorted ascending: {groups}"
+    for i in range(1, len(df)):
+        same_group = groups[i] == groups[i - 1]
+        assert (not same_group) or dates[i] >= dates[i - 1], (
+            f"{date_col} not sorted within {group_col} {groups[i]}: "
+            f"{dates[i - 1]} > {dates[i]} at rows {i - 1},{i}"
+        )
+
+
 # =============================================================================
 # Temporary Directory Fixtures
 # =============================================================================
