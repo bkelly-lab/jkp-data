@@ -25,8 +25,7 @@ from jkp.data.aux_functions import (
     _hxz_add_me_lag1_ym,
     _hxz_classify_roe,
     _hxz_classify_size_ia,
-    _hxz_country_breaks,
-    _hxz_nyse_breaks,
+    _hxz_quantile_breaks,
     hxz_attach_siccd,
     hxz_build_characteristics,
     hxz_classify_portfolios,
@@ -37,6 +36,25 @@ from jkp.data.aux_functions import (
 from jkp.data.config import (
     HXZ_MIN_STOCKS_BP,
 )
+
+
+def _hxz_nyse_breaks(df, specs):
+    """Test convenience: US NYSE-pool wrapper over _hxz_quantile_breaks."""
+    return _hxz_quantile_breaks(
+        df, specs, group_keys=["date"], pool_filter=(pl.col("exchcd") == 1) & pl.col("elig")
+    )
+
+
+def _hxz_country_breaks(df, specs):
+    """Test convenience: ROW pool wrapper over _hxz_quantile_breaks."""
+    return _hxz_quantile_breaks(
+        df,
+        specs,
+        group_keys=["excntry", "date"],
+        pool_filter=pl.col("elig") & pl.col("size_grp").is_in(["small", "large", "mega"]),
+        min_count=HXZ_MIN_STOCKS_BP,
+    )
+
 
 # ---------------------------------------------------------------------------
 # Stage 1 helpers

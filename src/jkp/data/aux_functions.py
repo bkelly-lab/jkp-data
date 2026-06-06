@@ -13290,16 +13290,6 @@ def _hxz_quantile_breaks(
     )
 
 
-def _hxz_nyse_breaks(df: pl.DataFrame, specs: list[tuple[str, float, str]]) -> pl.DataFrame:
-    """Per-date NYSE-only QUANTILE_DISC breakpoints via DuckDB SQL."""
-    return _hxz_quantile_breaks(
-        df,
-        specs,
-        group_keys=["date"],
-        pool_filter=(pl.col("exchcd") == 1) & pl.col("elig"),
-    )
-
-
 def _hxz_compustat_be_inv(lf: pl.LazyFrame, is_global: bool) -> pl.LazyFrame:
     """Compute be_a, inv, ib (raw) on a Compustat funda LazyFrame. Mirrors
     JKP BE chain in `_ff_compute_be_op_inv`: NA branch has full
@@ -13464,19 +13454,6 @@ def hxz_load_panel_row(interim_dir: Path, freq: str) -> pl.DataFrame:
         .join(ind, left_on=["id", "_eom"], right_on=["id", "eom"], how="left")
         .with_columns(is_fin=is_fin)
         .drop("_eom")
-    )
-
-
-def _hxz_country_breaks(df: pl.DataFrame, specs: list[tuple[str, float, str]]) -> pl.DataFrame:
-    """Per-(excntry, date) breakpoints over ROW HXZ pool (size_grp ∈
-    {small, large, mega} + elig). Drops (excntry, date) where COUNT(*) <
-    HXZ_MIN_STOCKS_BP."""
-    return _hxz_quantile_breaks(
-        df,
-        specs,
-        group_keys=["excntry", "date"],
-        pool_filter=pl.col("elig") & pl.col("size_grp").is_in(["small", "large", "mega"]),
-        min_count=HXZ_MIN_STOCKS_BP,
     )
 
 
@@ -13884,14 +13861,22 @@ def _hxz_classify_size_ia(size_ia_form: pl.DataFrame) -> pl.DataFrame:
     row = size_ia_form.filter(pl.col("excntry") != US_EXCNTRY)
     us_cls = assign(
         us,
-        _hxz_nyse_breaks(us, specs),
+        _hxz_quantile_breaks(
+            us, specs, group_keys=["date"], pool_filter=(pl.col("exchcd") == 1) & pl.col("elig")
+        ),
         join_keys=["date"],
         id_col="permno",
         require_size_break=False,
     )
     row_cls = assign(
         row,
-        _hxz_country_breaks(row, specs),
+        _hxz_quantile_breaks(
+            row,
+            specs,
+            group_keys=["excntry", "date"],
+            pool_filter=pl.col("elig") & pl.col("size_grp").is_in(["small", "large", "mega"]),
+            min_count=HXZ_MIN_STOCKS_BP,
+        ),
         join_keys=["excntry", "date"],
         id_col="gvkey",
         require_size_break=True,
@@ -13919,8 +13904,18 @@ def _hxz_classify_roe(roe_m: pl.DataFrame) -> pl.DataFrame:
 
     us = roe_m.filter(pl.col("excntry") == US_EXCNTRY).with_columns(elig=elig)
     row = roe_m.filter(pl.col("excntry") != US_EXCNTRY).with_columns(elig=elig)
-    us_cls = assign(us, _hxz_nyse_breaks(us, specs), join_keys=["date"])
-    row_cls = assign(row, _hxz_country_breaks(row, specs), join_keys=["excntry", "date"])
+    us_breaks = _hxz_quantile_breaks(
+        us, specs, group_keys=["date"], pool_filter=(pl.col("exchcd") == 1) & pl.col("elig")
+    )
+    row_breaks = _hxz_quantile_breaks(
+        row,
+        specs,
+        group_keys=["excntry", "date"],
+        pool_filter=pl.col("elig") & pl.col("size_grp").is_in(["small", "large", "mega"]),
+        min_count=HXZ_MIN_STOCKS_BP,
+    )
+    us_cls = assign(us, us_breaks, join_keys=["date"])
+    row_cls = assign(row, row_breaks, join_keys=["excntry", "date"])
     return pl.concat([us_cls, row_cls], how="vertical_relaxed")
 
 
