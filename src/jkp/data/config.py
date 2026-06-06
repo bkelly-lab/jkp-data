@@ -432,6 +432,35 @@ MP_MAIN_FILTERS_COLS = ["primary_sec", "common", "obs_main", "exch_main"]
 MP_MIN_STKS_BP_WORLD = 10  # min stocks per (excntry, eom) for percentile rank inclusion
 MP_MIN_OBS_PF_WORLD = 3  # min stocks per (excntry, eom, bucket) for portfolio VW
 
+# pct_* column names per leg, derived from the anomaly index lists above.
+MP_MGMT_PCT_COLS = [f"pct_{MP_ANOMALY_LIST[i - 1]}" for i in MP_MGMT_IDX]
+MP_PERF_PCT_COLS = [f"pct_{MP_ANOMALY_LIST[i - 1]}" for i in MP_PERF_IDX]
+
+# CCM link types accepted by the SY US fundamental join (SAS-parity baseline).
+MP_CCM_LINKTYPES = ["LU", "LC", "LD", "LF", "LN", "LO", "LS", "LX"]
+
+# CHS distress geometric weight (annual half-life ~3 quarters).
+MP_CHS_DECAY = 2.0 ** (-1.0 / 3.0)
+
+# comp_fundq numeric columns cast to Float64 (raw is Decimal).
+MP_FUNDQ_NUMERIC = [
+    "ibq", "saleq", "niq", "cheq", "seqq", "ceqq", "pstkq", "atq",
+    "ltq", "pstkrq", "txditcq", "actq", "lctq", "piq", "dlttq", "revtq",
+]  # fmt: skip
+
+# Map MisprProject anomaly names to jkp pre-computed chars in world_data_prelim.parquet.
+# Direction follows MisprProject's MP_POSITIVE_ANOMALIES convention
+# (those anomalies bucketed descending so "bigger pct = more overpriced").
+MP_WORLD_JKP_CHAR = {
+    "ACCRUAL_ADJ": "oaccruals_at",  # higher accruals -> overpriced (asc)
+    "ASSET_GROWTH": "at_gr1",  # higher growth -> overpriced (asc)
+    "GP_ADJ": "gp_at",  # higher GP -> underpriced; flip -> descending sort
+    "INVASSET": "ppeinv_gr1a",  # higher invest -> overpriced (asc)
+    "NOA": "noa_at",  # higher NOA -> overpriced (asc)
+    "OSCORE": "o_score",  # higher O -> overpriced (asc)
+    "ROA": "niq_at",  # higher ROA -> underpriced; flip -> descending
+}
+
 
 PORTFOLIO_SETTINGS = {
     "end_date": END_DATE,
