@@ -12505,19 +12505,20 @@ def ff_compute_factors(ccm4: pl.DataFrame) -> pl.DataFrame:
         .sort("excntry", "date")
     )
 
-    smb = {
-        k: pl.mean_horizontal(*s, ignore_nulls=False) - pl.mean_horizontal(*b, ignore_nulls=False)
-        for k, (s, b) in {
-            "bm": (["SL", "SM", "SH"], ["BL", "BM", "BH"]),
-            "op": (["SW", "SN_op", "SR"], ["BW", "BN_op", "BR"]),
-            "inv": (["SC", "SN_inv", "SA"], ["BC", "BN_inv", "BA"]),
-        }.items()
-    }
+    smb_bm = pl.mean_horizontal("SL", "SM", "SH", ignore_nulls=False) - pl.mean_horizontal(
+        "BL", "BM", "BH", ignore_nulls=False
+    )
+    smb_op = pl.mean_horizontal("SW", "SN_op", "SR", ignore_nulls=False) - pl.mean_horizontal(
+        "BW", "BN_op", "BR", ignore_nulls=False
+    )
+    smb_inv = pl.mean_horizontal("SC", "SN_inv", "SA", ignore_nulls=False) - pl.mean_horizontal(
+        "BC", "BN_inv", "BA", ignore_nulls=False
+    )
     return wide.select(
         pl.col("excntry"),
         pl.col("date"),
-        smb_ff3=smb["bm"],
-        smb_ff5=(smb["bm"] + smb["op"] + smb["inv"]) / 3,
+        smb_ff3=smb_bm,
+        smb_ff5=(smb_bm + smb_op + smb_inv) / 3,
         hml=pl.mean_horizontal("SH", "BH", ignore_nulls=False)
         - pl.mean_horizontal("SL", "BL", ignore_nulls=False),
         rmw=pl.mean_horizontal("SR", "BR", ignore_nulls=False)
