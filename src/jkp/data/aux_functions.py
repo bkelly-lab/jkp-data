@@ -6743,7 +6743,7 @@ def market_beta(paths: DataPaths, output_path, data_path, fcts_path, __n, __min)
 
     Steps:
         1) Prep data via prep_data_factor_regs; load '__msf2' lazily.
-        2) Generate rolling-window mappings; run process_map_chunks(..., 'capm') per mapping.
+        2) Generate staggered window specs; run process_window(..., 'capm') per window.
         3) Map back to ids/dates; select beta_{__n}m and ivol_capm_{__n}m; sort.
 
     Output:
@@ -6751,9 +6751,8 @@ def market_beta(paths: DataPaths, output_path, data_path, fcts_path, __n, __min)
     """
     con = prep_data_factor_regs(paths, data_path, fcts_path)
     base_data = con.table("__msf2").to_polars().lazy()
-    aux_maps = gen_aux_maps(__n)
     df = pl.concat(
-        [process_map_chunks(base_data, mapping, "capm", __n, __min) for mapping in aux_maps]
+        [process_window(base_data, w, "capm", __n, __min) for w in gen_aux_windows(__n)]
     ).collect()
     ids = con.table("__msf2").select(["id", "id_int"]).distinct().to_polars()
     dates = (
@@ -6788,7 +6787,7 @@ def residual_momentum(paths: DataPaths, output_path, data_path, fcts_path, __n, 
         Compute residual momentum from FF3 regressions with rolling windows and skip/inclusion rules.
 
     Steps:
-        1) Prep '__msf2'; build window mappings; run process_map_chunks(..., 'res_mom', __n, __min, incl, skip).
+        1) Prep '__msf2'; build window specs; run process_window(..., 'res_mom', __n, __min, incl, skip).
         2) Join back ids/dates and keep resff3_{incl}_{skip}; sort.
 
     Output:
@@ -6799,11 +6798,10 @@ def residual_momentum(paths: DataPaths, output_path, data_path, fcts_path, __n, 
     """
     con = prep_data_factor_regs(paths, data_path, fcts_path)
     base_data = con.table("__msf2").to_polars().lazy()
-    aux_maps = gen_aux_maps(__n)
     df = pl.concat(
         [
-            process_map_chunks(base_data, mapping, "res_mom", __n, __min, incl, skip)
-            for mapping in aux_maps
+            process_window(base_data, w, "res_mom", __n, __min, incl, skip)
+            for w in gen_aux_windows(__n)
         ]
     ).collect()
     ids = con.table("__msf2").select(["id", "id_int"]).distinct().to_polars()
@@ -8089,15 +8087,9 @@ def merge_roll_apply_daily_results(paths: DataPaths):
         'roll_apply_daily.parquet' with merged roll regression results.
     """
     date_idx = END_DATE.month + END_DATE.year * 12
-    df_dates = pl.DataFrame(
-        {
-            "aux_date": [i + 1 for i in range(23112, date_idx + 1)],
-            "eom": [f"{i // 12}-{i % 12 + 1}-1" for i in range(23112, date_idx + 1)],
-        }
-    )
-    df_dates = df_dates.with_columns(
-        col("eom").str.strptime(pl.Date, "%Y-%m-%d").dt.month_end().alias("eom"),
+    df_dates = pl.DataFrame({"aux_date": range(23113, date_idx + 2)}).with_columns(
         col("aux_date").cast(pl.Int64),
+        eom=pl.date((col("aux_date") - 1) // 12, (col("aux_date") - 1) % 12 + 1, 1).dt.month_end(),
     )
     df_id = pl.scan_parquet(paths.interim_dir / "id_int_key.parquet")
     file_paths = sorted(
@@ -8220,93 +8212,49 @@ def roll_apply_daily(paths: DataPaths, stats, sfx, __min):
         Run rolling daily-stat calculations over grouped date windows and save results.
 
     Steps:
-        1) Generate date-group mappings from sfx (e.g., _21d → k=1, _252d → k=12).
+        1) Generate staggered window specs from sfx (e.g., _21d → k=1, _252d → k=12).
         2) Prepare base daily data per stat.
-        3) Apply process_map_chunks for each mapping and concat results.
+        3) Apply process_window for each window spec and concat results.
         4) Write to '__roll{sfx}_{stats}.parquet'.
 
     Output:
-        Parquet with per-(id_int, group_number) rolling metrics for `stats`.
+        Parquet with per-(id_int, aux_date) rolling metrics for `stats`.
     """
     print(f"Processing {stats} - {sfx.replace('_', '')} - {__min}", flush=True)
-    aux_maps = gen_aux_maps(sfx)
     base_data = prepare_base_data(paths, stat=stats)
     results = pl.concat(
-        [process_map_chunks(base_data, mapping, stats, sfx, __min) for mapping in aux_maps]
+        [process_window(base_data, w, stats, sfx, __min) for w in gen_aux_windows(sfx)]
     )
     results.collect(engine="streaming").write_parquet(
         paths.interim_dir / f"__roll{sfx}_{stats}.parquet"
     )
 
 
-def gen_consecutive_lists(input_list, k):
+def gen_aux_windows(sfx: str | int) -> list[tuple[int, int, int]]:
     """
     Description:
-        Split a list into consecutive, non-overlapping sublists of length k.
+        Build k staggered window specs from suffix window length.
 
     Steps:
-        1) Slice input_list in steps of k.
-        2) Keep only full-length chunks.
+        1) Map suffix to k: {'_21d':1,'_126d':6,'_252d':12,'_1260d':60} or int(sfx).
+        2) For each offset in [0..k-1], compute the window start month and the
+           end of the last full k-month window that fits before the END_DATE
+           month index. Within an offset, month m belongs to
+           group_number = (m - start) // k, and the group's window ends at
+           start + (group_number + 1) * k - 1.
 
     Output:
-        List of k-length sublists.
+        List of k tuples (start, k, last_end), one per offset.
     """
-    return [
-        input_list[i : i + k]
-        for i in range(0, len(input_list), k)
-        if len(input_list[i : i + k]) == k
-    ]
-
-
-def build_groups(input_list, k):
-    """
-    Description:
-        Build k staggered groupings (offset windows) over a list.
-
-    Steps:
-        1) For each offset in [0..k-1], take consecutive k-sublists from input_list[offset:].
-        2) Aggregate into a list of group lists.
-
-    Output:
-        List of k lists, each containing k-length sublists.
-    """
-    return [gen_consecutive_lists(input_list[offset:], k) for offset in range(k)]
-
-
-def group_mapping_dfs(input_list, k):
-    """
-    Description:
-        Create mapping DataFrames linking aux_date to group_number, and group_number to new (max) aux_date.
-
-    Steps:
-        1) Build groups via build_groups(input_list, k).
-        2) For each group, create a DataFrame with aux_date arrays and group_number.
-        3) Return:
-        - group_map: exploded (aux_date, group_number)
-        - date_map : (group_number, aux_date=max group date)
-
-    Output:
-        List of dicts: {'group_map': LazyFrame, 'date_map': LazyFrame}.
-    """
-    groups = build_groups(input_list, k)
-    dfs = [
-        pl.DataFrame({"aux_date": group}).with_columns(
-            group_number=pl.cum_count("aux_date"), new_date=col("aux_date").list.max()
-        )
-        for group in groups
-    ]
-    return [
-        {
-            "group_map": df.explode("aux_date")
-            .select([col("aux_date").cast(pl.Int32), "group_number"])
-            .lazy(),
-            "date_map": df.select(["group_number", col("new_date").alias("aux_date")])
-            .unique()
-            .sort(["group_number"])
-            .lazy(),
-        }
-        for df in dfs
-    ]
+    parameter_mapping = {"_21d": 1, "_126d": 6, "_252d": 12, "_1260d": 60}
+    k = parameter_mapping.get(sfx) or int(sfx)
+    date_aux = END_DATE.month + END_DATE.year * 12
+    windows = []
+    for offset in range(k):
+        start = 23113 - k + offset
+        n_groups = (date_aux - start + 1) // k
+        windows.append((start, k, start + n_groups * k - 1))
+    return windows
 
 
 def base_data_filter_exp(stat):
@@ -8321,12 +8269,10 @@ def base_data_filter_exp(stat):
     Output:
         Polars expression usable in .filter().
     """
-    if stat == "zero_trades":
+    if stat in ("zero_trades", "turnover"):
         return col("tvol").is_not_null()
     elif stat == "dolvol":
         return col("dolvol_d").is_not_null()
-    elif stat == "turnover":
-        return col("tvol").is_not_null()
     elif stat == "mktcorr":
         # corr_data.parquet pre-filtered upstream in prepare_daily.
         return pl.lit(True)
@@ -8381,7 +8327,7 @@ def apply_group_filter(df, stat, min_obs):
     Output:
         Filtered LazyFrame for subsequent aggregation/regression.
     """
-    if stat == "turnover" or stat == "mktcorr":
+    if stat in ("turnover", "mktcorr"):
         pass
     elif stat == "dimsonbeta":
         df = df.with_columns(
@@ -8394,31 +8340,31 @@ def apply_group_filter(df, stat, min_obs):
             & (col("mktrf_ld1").is_not_null())
         )
     else:
-        if stat == "zero_trades":
-            filter_var = "tvol"
-        elif stat == "dolvol":
-            filter_var = "dolvol_d"
-        else:
-            filter_var = "ret_exc"
+        filter_var = {"zero_trades": "tvol", "dolvol": "dolvol_d"}.get(stat, "ret_exc")
         df = df.with_columns(n=pl.count(filter_var).over(["id_int", "group_number"])).filter(
             col("n") >= min_obs
         )
     return df
 
 
-def process_map_chunks(base_data, mapping, stats, sfx, __min, incl=None, skip=None):
+def process_window(
+    base_data, window: tuple[int, int, int], stats, sfx, __min, incl=None, skip=None
+):
     """
     Description:
-        Execute a rolling computation for a mapping: join groups, filter, compute stat, remap to end date.
+        Execute a rolling computation for one staggered window offset:
+        assign groups arithmetically, filter, compute stat, stamp end date.
 
     Steps:
-        1) Join base_data with mapping['group_map'] on aux_date.
+        1) Filter base_data to [start, last_end] and assign
+           group_number = (aux_date - start) // k.
         2) Apply apply_group_filter(stat, __min).
         3) Run the appropriate function from `funcs` dict (res_mom with incl/skip).
-        4) Join mapping['date_map'] to replace group_number by new aux_date.
+        4) Replace group_number by the window end month:
+           aux_date = start + (group_number + 1) * k - 1.
 
     Output:
-        LazyFrame of per-(id_int, group_number) results with remapped aux_date.
+        LazyFrame of per-(id_int, aux_date) results.
     """
     funcs = {
         "rvol": rvol,
@@ -8441,8 +8387,11 @@ def process_map_chunks(base_data, mapping, stats, sfx, __min, incl=None, skip=No
         "res_mom": res_mom,
     }
 
-    df = base_data.join(mapping["group_map"], how="inner", on="aux_date").pipe(
-        apply_group_filter, stat=stats, min_obs=__min
+    start, k, last_end = window
+    df = (
+        base_data.filter(pl.col("aux_date").is_between(start, last_end))
+        .with_columns(group_number=(pl.col("aux_date") - start) // k)
+        .pipe(apply_group_filter, stat=stats, min_obs=__min)
     )
 
     if stats == "res_mom":
@@ -8450,9 +8399,9 @@ def process_map_chunks(base_data, mapping, stats, sfx, __min, incl=None, skip=No
     else:
         df = df.pipe(funcs[stats], sfx=sfx, __min=__min)
 
-    df = df.join(mapping["date_map"], how="left", on="group_number").drop("group_number")
-
-    return df
+    return df.with_columns(
+        aux_date=(start + (pl.col("group_number") + 1) * k - 1).cast(pl.Int64)
+    ).drop("group_number")
 
 
 def res_mom(df, sfx, __min, incl, skip):
@@ -8490,30 +8439,6 @@ def res_mom(df, sfx, __min, incl, skip):
         .agg((col("res").mean() / col("res").std()).fill_nan(None).alias(f"resff3_{incl}_{skip}"))
     )
     return df
-
-
-def gen_aux_maps(sfx):
-    """
-    Description:
-        Build date-group maps from suffix window length.
-
-    Steps:
-        1) Map suffix to k: {'_21d':1,'_126d':6,'_252d':12,'_1260d':60} or int(sfx).
-        2) Build aux_date range from start index to END_DATE month index.
-        3) Create grouped mappings via group_mapping_dfs(date_idx, k).
-
-    Output:
-        List of {'group_map','date_map'} mappings.
-    """
-    parameter_mapping = {"_21d": 1, "_126d": 6, "_252d": 12, "_1260d": 60}
-    date_aux = END_DATE.month + END_DATE.year * 12
-    if sfx in parameter_mapping:
-        date_idx = list(range(23113 - parameter_mapping[sfx], date_aux + 1))
-        aux_maps = group_mapping_dfs(date_idx, parameter_mapping[sfx])
-    else:
-        date_idx = list(range(23113 - int(sfx), date_aux + 1))
-        aux_maps = group_mapping_dfs(date_idx, int(sfx))
-    return aux_maps
 
 
 def rvol(df, sfx, __min):
