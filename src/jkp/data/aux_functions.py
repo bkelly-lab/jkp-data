@@ -12595,49 +12595,15 @@ def ff_compute_factors(ccm4: pl.DataFrame) -> pl.DataFrame:
 
     smb_ff3 = BM size leg only; smb_ff5 = average of BM/OP/INV size legs.
     """
-    # Single pass: one group_by(excntry, date) with conditional VW sums per
-    # (spec, bucket) replaces three full-panel group_bys + full joins. Within
-    # a group, .filter(cond) preserves input row order, so each bucket's
-    # float-sum sequence matches the per-leg grouping (verified bit-identical
-    # on full data). Groups where no spec matches any row are dropped to
-    # reproduce the old full-join row set.
+    # One shared-predicate pass over the full panel instead of three;
+    # filter(a).filter(b) ≡ filter(a & b) row-for-row, so each leg's group
+    # float-sum sequence is unchanged.
     base = ccm4.filter(_FF_VW_SHARED_FILTER)
-    aggs: list[pl.Expr] = []
-    out_names: list[str] = []
-    for k in ("bm", "op", "inv"):
-        s = FF_SORT_SPECS[k]
-        spec_cond = (pl.col(s["flag"]) == 1) & pl.col(s["port"]).is_not_null()
-        for b in s["buckets"]:
-            out = s["rename"].get(b, b)
-            cond = spec_cond & ((pl.col("sizeport") + pl.col(s["port"])) == b)
-            aggs.append(
-                safe_div(
-                    (pl.col("ret") * pl.col("w")).filter(cond).sum(),
-                    pl.col("w").filter(cond).sum(),
-                    out,
-                )
-            )
-            aggs.append(cond.sum().alias(f"_n_{out}"))
-            out_names.append(out)
-    n_cols = [f"_n_{out}" for out in out_names]
-    wide = (
-        base.group_by("excntry", "date")
-        .agg(aggs)
-        .filter(pl.sum_horizontal(n_cols) > 0)
-        .with_columns(
-            [
-                pl.when(
-                    (pl.col("excntry") == US_EXCNTRY) | (pl.col(f"_n_{out}") >= FF_MIN_STOCKS_PF)
-                )
-                .then(pl.col(out))
-                .otherwise(None)
-                .alias(out)
-                for out in out_names
-            ]
-        )
-        .drop(n_cols)
-        .sort("excntry", "date")
-    )
+    legs = [_ff_vw_leg(base, k, prefiltered=True) for k in ("bm", "op", "inv")]
+    wide = legs[0]
+    for leg in legs[1:]:
+        wide = wide.join(leg, on=["excntry", "date"], how="full", coalesce=True)
+    wide = wide.sort("excntry", "date")
 
     smb_bm = pl.mean_horizontal("SL", "SM", "SH", ignore_nulls=False) - pl.mean_horizontal(
         "BL", "BM", "BH", ignore_nulls=False
