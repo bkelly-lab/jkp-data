@@ -67,7 +67,7 @@ _PERF_COLS = [f"pct_{MP_ANOMALY_LIST[i - 1]}" for i in MP_PERF_IDX]
 
 
 def _mp_size_score_buckets(df: pl.DataFrame, score_col: str) -> pl.DataFrame:
-    """US bucket knobs as used by _mp_us_mispricing_legs (NYSE-only size median)."""
+    """US bucket knobs as used in gen_mispricing_data (NYSE-only size median)."""
     return _mp_double_sort_buckets(
         df,
         score_col,
@@ -77,7 +77,7 @@ def _mp_size_score_buckets(df: pl.DataFrame, score_col: str) -> pl.DataFrame:
 
 
 def _mp_world_size_score_buckets(df: pl.DataFrame, score_col: str) -> pl.DataFrame:
-    """World bucket knobs as used by _mp_world_mispricing_legs (per-country breaks)."""
+    """World bucket knobs as used in gen_mispricing_data (per-country breaks)."""
     return _mp_double_sort_buckets(
         df, score_col, group_keys=["excntry", "eom"], size_break_sql="mktcap"
     )

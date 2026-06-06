@@ -442,12 +442,6 @@ MP_CCM_LINKTYPES = ["LU", "LC", "LD", "LF", "LN", "LO", "LS", "LX"]
 # CHS distress geometric weight (annual half-life ~3 quarters).
 MP_CHS_DECAY = 2.0 ** (-1.0 / 3.0)
 
-# comp_fundq numeric columns cast to Float64 (raw is Decimal).
-MP_FUNDQ_NUMERIC = [
-    "ibq", "saleq", "niq", "cheq", "seqq", "ceqq", "pstkq", "atq",
-    "ltq", "pstkrq", "txditcq", "actq", "lctq", "piq", "dlttq", "revtq",
-]  # fmt: skip
-
 # Map MisprProject anomaly names to jkp pre-computed chars in world_data_prelim.parquet.
 # Direction follows MisprProject's MP_POSITIVE_ANOMALIES convention
 # (those anomalies bucketed descending so "bigger pct = more overpriced").

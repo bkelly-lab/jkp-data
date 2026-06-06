@@ -53,7 +53,6 @@ from .config import (
     MP_CCM_LINKTYPES,
     MP_CHS_DECAY,
     MP_DISTRESS_BETAS,
-    MP_FUNDQ_NUMERIC,
     MP_LAG_M,
     MP_MGMT_PCT_COLS,
     MP_MIN_OBS_PF_WORLD,
@@ -7197,9 +7196,13 @@ def _mp_load_funda(raw_dir: Path) -> pl.DataFrame:
 
 @functools.cache
 def _mp_load_fundq(raw_dir: Path) -> pl.DataFrame:
+    numeric = [
+        "ibq", "saleq", "niq", "cheq", "seqq", "ceqq", "pstkq", "atq",
+        "ltq", "pstkrq", "txditcq", "actq", "lctq", "piq", "dlttq", "revtq",
+    ]  # fmt: skip
     df = pl.read_parquet(raw_dir / "comp_fundq.parquet").filter(_compustat_na_filter())
     return df.with_columns(
-        [col(c).cast(pl.Float64, strict=False) for c in MP_FUNDQ_NUMERIC if c in df.columns]
+        [col(c).cast(pl.Float64, strict=False) for c in numeric if c in df.columns]
     )
 
 
@@ -8299,23 +8302,6 @@ def _mp_stock_mispricing_scores(
     )
 
 
-def _mp_us_stock_scores(us_panel: pl.DataFrame, min_fcts: int) -> pl.DataFrame:
-    """US per-stock mgmt/perf scores keyed by (id, eom); id = permno."""
-    return _mp_stock_mispricing_scores(
-        us_panel,
-        min_fcts,
-        sort_keys=["permno", "eom"],
-        select_cols=[col("permno").alias("id"), "eom"],
-    )
-
-
-def _mp_world_stock_scores(world_panel: pl.DataFrame, min_fcts: int) -> pl.DataFrame:
-    """World per-stock mgmt/perf scores keyed by (id, eom, excntry)."""
-    return _mp_stock_mispricing_scores(
-        world_panel, min_fcts, sort_keys=["id", "eom"], select_cols=["id", "eom", "excntry"]
-    )
-
-
 def _mp_filter_active(
     mispricing_panel: pl.DataFrame,
     cols_list: list[str],
@@ -8451,23 +8437,6 @@ def _mp_mispricing_legs(
     }
 
 
-def _mp_us_mispricing_legs(us_panel: pl.DataFrame, min_fcts: int) -> dict[str, pl.DataFrame]:
-    """US legs: NYSE-only (exchcd == 1) size median, per-eom breaks."""
-    return _mp_mispricing_legs(
-        us_panel,
-        min_fcts,
-        group_keys=["eom"],
-        size_break_sql="CASE WHEN exchcd = 1 THEN mktcap END",
-    )
-
-
-def _mp_world_mispricing_legs(world_panel: pl.DataFrame, min_fcts: int) -> dict[str, pl.DataFrame]:
-    """World legs: per-(excntry, eom) size median over the full pool."""
-    return _mp_mispricing_legs(
-        world_panel, min_fcts, group_keys=["excntry", "eom"], size_break_sql="mktcap"
-    )
-
-
 def _mp_smb_panel_from_legs(
     legs: dict[str, pl.DataFrame], key_cols: tuple[str, ...]
 ) -> pl.DataFrame:
@@ -8542,104 +8511,6 @@ def _mp_monthly_factor_returns(
     )
 
 
-def _mp_us_monthly_factor_returns(
-    legs: dict[str, pl.DataFrame], smb_panel: pl.DataFrame, min_obs: int
-) -> pl.DataFrame:
-    """US monthly factors per eom; thin buckets truncated cross-sectionally."""
-    return _mp_monthly_factor_returns(
-        legs, smb_panel, min_obs, by="eom", truncate_thin=True, out_cols=["eom"], out_sort=["eom"]
-    )
-
-
-def _mp_world_monthly_factor_returns(
-    legs: dict[str, pl.DataFrame], smb_panel: pl.DataFrame, min_obs: int
-) -> pl.DataFrame:
-    """World monthly factors per (excntry, eom); thin buckets hard-filtered."""
-    return _mp_monthly_factor_returns(
-        legs,
-        smb_panel,
-        min_obs,
-        by=["excntry", "eom"],
-        truncate_thin=False,
-        out_cols=["eom", "excntry"],
-        out_sort=["excntry", "eom"],
-    )
-
-
-def _mp_daily_factor_returns(
-    legs: dict[str, pl.DataFrame],
-    smb_panel: pl.DataFrame,
-    min_obs: int,
-    mp_con: duckdb.DuckDBPyConnection,
-    *,
-    daily_path: str,
-    id_col: str,
-    table: str,
-    qualify_group: bool,
-    id_cols: list[str],
-    extra_group: list[str],
-    by: str | list[str],
-    out_cols: list[str],
-    out_sort: list[str],
-) -> pl.DataFrame:
-    """Daily UMO (mgmt/perf) and SMB factor returns from bucketed legs.
-    Per leg: daily VW via _mp_daily_vw_returns, min_obs filter, 6-bucket
-    completeness gate, 1-3 spread → UMO. SMB: 1-2 diff per port_size.
-    Returns one row per `by` group with smb/mgmt/perf factor returns."""
-    by_cols = [by] if isinstance(by, str) else list(by)
-    leg_umo = {}
-    for name, panel in legs.items():
-        bucketed = panel.filter(
-            col("port_size").is_not_null() & col("port_var").is_not_null()
-        ).select(*id_cols, "eom", "mktcap", "port_size", "port_var")
-        port_returns = (
-            _mp_daily_vw_returns(
-                bucketed,
-                [*extra_group, "port_size", "port_var"],
-                mp_con,
-                daily_path=daily_path,
-                id_col=id_col,
-                table=table,
-                qualify_group=qualify_group,
-            )
-            .filter(col("_freq_") >= min_obs)
-            .pipe(_mp_filter_full_buckets, 6, by=by)
-            .sort(*by_cols, "port_size", "port_var")
-        )
-        leg_umo[name] = _mp_spread_per_size_then_diff(port_returns, by).select(
-            *by_cols, col("umo").alias(f"mispricing_{name}")
-        )
-
-    smb_daily = smb_panel.select(*id_cols, "eom", "mktcap", "port_size")
-    smb_port = (
-        _mp_daily_vw_returns(
-            smb_daily,
-            [*extra_group, "port_size"],
-            mp_con,
-            daily_path=daily_path,
-            id_col=id_col,
-            table=table,
-            qualify_group=qualify_group,
-        )
-        .filter(col("_freq_") >= min_obs)
-        .pipe(_mp_filter_full_buckets, 2, by=by)
-        .sort(*by_cols, "port_size")
-    )
-    smb_df = _mp_diff_legs(smb_port, by, "port_size", 1, 2, "smb_mispricing").select(
-        *by_cols, "smb_mispricing"
-    )
-
-    daily_start = date(MP_START_FACTOR_EOM.year, MP_START_FACTOR_EOM.month, 1)
-    return (
-        leg_umo["mgmt"]
-        .join(leg_umo["perf"], on=by_cols, how="inner")
-        .join(smb_df, on=by_cols, how="inner")
-        .filter(col("date") >= daily_start)
-        .select(*out_cols, "smb_mispricing", "mispricing_mgmt", "mispricing_perf")
-        .sort(*out_sort)
-    )
-
-
 def _mp_us_daily_factor_returns(
     legs: dict[str, pl.DataFrame],
     smb_panel: pl.DataFrame,
@@ -8647,21 +8518,60 @@ def _mp_us_daily_factor_returns(
     mp_con: duckdb.DuckDBPyConnection,
     interim_dir: Path,
 ) -> pl.DataFrame:
-    """US daily factors per date, VW against crsp_daily on permno."""
-    return _mp_daily_factor_returns(
-        legs,
-        smb_panel,
-        min_obs,
-        mp_con,
-        daily_path=(interim_dir / "crsp_daily.parquet").as_posix(),
-        id_col="permno",
-        table="panel",
-        qualify_group=False,
-        id_cols=["permno"],
-        extra_group=[],
-        by="date",
-        out_cols=["date"],
-        out_sort=["date"],
+    """US daily UMO (mgmt/perf) and SMB factor returns per date, VW against
+    crsp_daily on permno. Per leg: min_obs filter, 6-bucket completeness
+    gate, 1-3 spread per size -> UMO; SMB: 1-2 diff per port_size."""
+    daily_path = (interim_dir / "crsp_daily.parquet").as_posix()
+    leg_umo = {}
+    for name, panel in legs.items():
+        bucketed = panel.filter(
+            col("port_size").is_not_null() & col("port_var").is_not_null()
+        ).select("permno", "eom", "mktcap", "port_size", "port_var")
+        port_returns = (
+            _mp_daily_vw_returns(
+                bucketed,
+                ["port_size", "port_var"],
+                mp_con,
+                daily_path=daily_path,
+                id_col="permno",
+                table="panel",
+                qualify_group=False,
+            )
+            .filter(col("_freq_") >= min_obs)
+            .pipe(_mp_filter_full_buckets, 6, by="date")
+            .sort("date", "port_size", "port_var")
+        )
+        leg_umo[name] = _mp_spread_per_size_then_diff(port_returns, "date").select(
+            "date", col("umo").alias(f"mispricing_{name}")
+        )
+
+    smb_daily = smb_panel.select("permno", "eom", "mktcap", "port_size")
+    smb_port = (
+        _mp_daily_vw_returns(
+            smb_daily,
+            ["port_size"],
+            mp_con,
+            daily_path=daily_path,
+            id_col="permno",
+            table="panel",
+            qualify_group=False,
+        )
+        .filter(col("_freq_") >= min_obs)
+        .pipe(_mp_filter_full_buckets, 2, by="date")
+        .sort("date", "port_size")
+    )
+    smb_df = _mp_diff_legs(smb_port, "date", "port_size", 1, 2, "smb_mispricing").select(
+        "date", "smb_mispricing"
+    )
+
+    daily_start = date(MP_START_FACTOR_EOM.year, MP_START_FACTOR_EOM.month, 1)
+    return (
+        leg_umo["mgmt"]
+        .join(leg_umo["perf"], on=["date"], how="inner")
+        .join(smb_df, on=["date"], how="inner")
+        .filter(col("date") >= daily_start)
+        .select("date", "smb_mispricing", "mispricing_mgmt", "mispricing_perf")
+        .sort("date")
     )
 
 
@@ -8672,21 +8582,60 @@ def _mp_world_daily_factor_returns(
     mp_con: duckdb.DuckDBPyConnection,
     interim_dir: Path,
 ) -> pl.DataFrame:
-    """World daily factors per (excntry, date), VW against world_dsf on id."""
-    return _mp_daily_factor_returns(
-        legs,
-        smb_panel,
-        min_obs,
-        mp_con,
-        daily_path=(interim_dir / "world_dsf.parquet").as_posix(),
-        id_col="id",
-        table="panel_w",
-        qualify_group=True,
-        id_cols=["id", "excntry"],
-        extra_group=["excntry"],
-        by=["excntry", "date"],
-        out_cols=["date", "excntry"],
-        out_sort=["excntry", "date"],
+    """World daily UMO (mgmt/perf) and SMB factor returns per (excntry, date),
+    VW against world_dsf on id. Same construction as the US version with
+    per-country grouping."""
+    daily_path = (interim_dir / "world_dsf.parquet").as_posix()
+    leg_umo = {}
+    for name, panel in legs.items():
+        bucketed = panel.filter(
+            col("port_size").is_not_null() & col("port_var").is_not_null()
+        ).select("id", "excntry", "eom", "mktcap", "port_size", "port_var")
+        port_returns = (
+            _mp_daily_vw_returns(
+                bucketed,
+                ["excntry", "port_size", "port_var"],
+                mp_con,
+                daily_path=daily_path,
+                id_col="id",
+                table="panel_w",
+                qualify_group=True,
+            )
+            .filter(col("_freq_") >= min_obs)
+            .pipe(_mp_filter_full_buckets, 6, by=["excntry", "date"])
+            .sort("excntry", "date", "port_size", "port_var")
+        )
+        leg_umo[name] = _mp_spread_per_size_then_diff(port_returns, ["excntry", "date"]).select(
+            "excntry", "date", col("umo").alias(f"mispricing_{name}")
+        )
+
+    smb_daily = smb_panel.select("id", "excntry", "eom", "mktcap", "port_size")
+    smb_port = (
+        _mp_daily_vw_returns(
+            smb_daily,
+            ["excntry", "port_size"],
+            mp_con,
+            daily_path=daily_path,
+            id_col="id",
+            table="panel_w",
+            qualify_group=True,
+        )
+        .filter(col("_freq_") >= min_obs)
+        .pipe(_mp_filter_full_buckets, 2, by=["excntry", "date"])
+        .sort("excntry", "date", "port_size")
+    )
+    smb_df = _mp_diff_legs(
+        smb_port, ["excntry", "date"], "port_size", 1, 2, "smb_mispricing"
+    ).select("excntry", "date", "smb_mispricing")
+
+    daily_start = date(MP_START_FACTOR_EOM.year, MP_START_FACTOR_EOM.month, 1)
+    return (
+        leg_umo["mgmt"]
+        .join(leg_umo["perf"], on=["excntry", "date"], how="inner")
+        .join(smb_df, on=["excntry", "date"], how="inner")
+        .filter(col("date") >= daily_start)
+        .select("date", "excntry", "smb_mispricing", "mispricing_mgmt", "mispricing_perf")
+        .sort("excntry", "date")
     )
 
 
@@ -8779,7 +8728,24 @@ def _mp_world_load_fundq_global(raw_dir: Path) -> pl.DataFrame:
         .with_columns(
             [
                 col(c).cast(pl.Float64, strict=False)
-                for c in MP_FUNDQ_NUMERIC
+                for c in [
+                    "ibq",
+                    "saleq",
+                    "niq",
+                    "cheq",
+                    "seqq",
+                    "ceqq",
+                    "pstkq",
+                    "atq",
+                    "ltq",
+                    "pstkrq",
+                    "txditcq",
+                    "actq",
+                    "lctq",
+                    "piq",
+                    "dlttq",
+                    "revtq",
+                ]  # fmt: skip
                 if c in pl.read_parquet(g_path, n_rows=1).columns
             ]
         )
@@ -9403,132 +9369,6 @@ def _mp_world_build_mispricing_panel(
     )
 
 
-def _mp_load_return_panels(
-    raw_dir: Path, interim_dir: Path
-) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
-    """Stage 1: Load + filter return/ME panels.
-    US: writes crsp_monthly, crsp_monthly_full, crsp_daily interim parquets.
-    World: loads world_data, world_dsf, market_returns into memory.
-    Output:
-        (world_data, world_daily, market_monthly).
-    """
-    _mp_build_crsp_monthly(raw_dir, interim_dir)
-    _mp_build_crsp_daily(raw_dir, interim_dir)
-    world_data = _mp_world_load_world_data(interim_dir)
-    world_daily = _mp_world_load_world_dsf(interim_dir)
-    market_monthly = _mp_world_load_market(interim_dir, daily=False)
-    return world_data, world_daily, market_monthly
-
-
-def _mp_load_fundamental_panels(
-    mp_con: duckdb.DuckDBPyConnection, raw_dir: Path, interim_dir: Path
-) -> None:
-    """Stage 2: Load + filter fundamentals.
-    US: writes compustat_annual, compustat_quarterly interim parquets (via CCM link).
-    World: acc_chars_world is already part of stage1's wd; fundq_global loaded lazily
-           by world distress (heavy, in-memory only).
-    """
-    _mp_build_compustat_annual(mp_con, raw_dir, interim_dir)
-    _mp_build_compustat_quarterly(mp_con, raw_dir, interim_dir)
-
-
-def _mp_compute_us_anomalies(
-    mp_con: duckdb.DuckDBPyConnection, raw_dir: Path, interim_dir: Path
-) -> None:
-    """Stage 3: Compute characteristics for US side (11 anomalies + CHS DISTRESS).
-    Writes per-anomaly interim parquets consumed by Stage 4. Reads compustat_annual,
-    compustat_quarterly, crsp_monthly, crsp_monthly_full, crsp_daily produced by
-    Stages 1-2 + raw S&P500/acti files. World chars computed inside Stage 4 panel
-    build (in-memory) using stage1 handles."""
-    _mp_compute_accrual(raw_dir, interim_dir)
-    _mp_compute_gross_profit(raw_dir, interim_dir)
-    _mp_compute_oscore(raw_dir, interim_dir)
-    _mp_compute_nsi_ag_inv_noa(raw_dir, interim_dir)
-    _mp_compute_momentum(interim_dir)
-    _mp_compute_composite_issue(interim_dir)
-    _mp_compute_roa(mp_con, interim_dir)
-    _mp_compute_distress(mp_con, raw_dir, interim_dir)
-
-
-def _mp_form_portfolios(
-    min_stks: int,
-    min_fcts: int,
-    min_stks_world: int,
-    mp_con: duckdb.DuckDBPyConnection,
-    mp_con_world: duckdb.DuckDBPyConnection,
-    world_data: pl.DataFrame,
-    world_daily: pl.DataFrame,
-    market_m: pl.DataFrame,
-    raw_dir: Path,
-    interim_dir: Path,
-) -> tuple[
-    pl.DataFrame,
-    dict[str, pl.DataFrame],
-    pl.DataFrame,
-    pl.DataFrame,
-    dict[str, pl.DataFrame],
-    pl.DataFrame,
-]:
-    """Stage 4: Build per-stock mispricing panels + size/score buckets + legs + SMB
-    for US and world.
-    Output:
-        (us_panel, us_legs, us_smb, world_panel, world_legs, world_smb).
-    """
-    us_panel = _mp_build_mispricing_panel(min_stks, mp_con, interim_dir)
-    us_legs = _mp_us_mispricing_legs(us_panel, min_fcts)
-    us_smb = _mp_smb_panel_from_legs(us_legs, key_cols=("permno",))
-    world_monthly = world_data.select(
-        "id", "permno", "gvkey", "excntry", "eom", "me", "prc", "ret", "adjfct", "shares"
-    )
-    world_panel = _mp_world_build_mispricing_panel(
-        world_monthly, world_data, market_m, world_daily, min_stks_world, mp_con_world, raw_dir
-    )
-    world_legs = _mp_world_mispricing_legs(world_panel, min_fcts)
-    world_smb = _mp_smb_panel_from_legs(world_legs, key_cols=("id", "excntry"))
-    return us_panel, us_legs, us_smb, world_panel, world_legs, world_smb
-
-
-def _mp_compute_factor_returns(
-    us_panel: pl.DataFrame,
-    us_legs: dict[str, pl.DataFrame],
-    us_smb: pl.DataFrame,
-    world_panel: pl.DataFrame,
-    world_legs: dict[str, pl.DataFrame],
-    world_smb: pl.DataFrame,
-    min_fcts: int,
-    min_obs: int,
-    min_obs_world: int,
-    mp_con: duckdb.DuckDBPyConnection,
-    mp_con_world: duckdb.DuckDBPyConnection,
-    interim_dir: Path,
-) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame]:
-    """Stage 5: Compute monthly/daily portfolio returns and stock scores from
-    the Stage 4 panels.
-    Output:
-        (monthly_us, daily_us, chars_us, monthly_world, daily_world,
-        chars_world), each tagged with excntry.
-    """
-    monthly_us = _mp_us_monthly_factor_returns(us_legs, us_smb, min_obs)
-    daily_us = _mp_us_daily_factor_returns(us_legs, us_smb, min_obs, mp_con, interim_dir)
-    chars_us = _mp_us_stock_scores(us_panel, min_fcts)
-    monthly_world = _mp_world_monthly_factor_returns(world_legs, world_smb, min_obs_world)
-    daily_world = _mp_world_daily_factor_returns(
-        world_legs, world_smb, min_obs_world, mp_con_world, interim_dir
-    )
-    chars_world = _mp_world_stock_scores(world_panel, min_fcts)
-    # Keep `id` as Int64 to match jkp convention (world_msf.id = BIGINT for both
-    # US permnos and Compustat-derived ids per `combine_crsp_comp_sf`). Casting to
-    # String would break outer-joins in `ap_factor_model_data` against ff/hxz chars.
-    return (
-        monthly_us.with_columns(excntry=pl.lit("USA")),
-        daily_us.with_columns(excntry=pl.lit("USA")),
-        chars_us.with_columns(excntry=pl.lit("USA"), id=col("id").cast(pl.Int64)),
-        monthly_world,
-        daily_world,
-        chars_world.with_columns(id=col("id").cast(pl.Int64)),
-    )
-
-
 def _mp_concat_write(
     us: pl.DataFrame, world: pl.DataFrame, cols: list[str], sort_keys: list[str], path: Path
 ) -> None:
@@ -9536,42 +9376,6 @@ def _mp_concat_write(
     pl.concat([us.select(*cols), world.select(*cols)], how="vertical_relaxed").sort(
         *sort_keys
     ).write_parquet(path)
-
-
-def _mp_write_outputs(
-    monthly_us: pl.DataFrame,
-    daily_us: pl.DataFrame,
-    chars_us: pl.DataFrame,
-    monthly_world: pl.DataFrame,
-    daily_world: pl.DataFrame,
-    chars_world: pl.DataFrame,
-    monthly_factors_path: Path,
-    daily_factors_path: Path,
-    chars_path: Path,
-) -> None:
-    """Stage 6: Concat US + world; write the monthly/daily factor and chars parquets."""
-    factor_cols = ["smb_mispricing", "mispricing_mgmt", "mispricing_perf"]
-    _mp_concat_write(
-        monthly_us,
-        monthly_world,
-        ["eom", "excntry", *factor_cols],
-        ["excntry", "eom"],
-        monthly_factors_path,
-    )
-    _mp_concat_write(
-        daily_us,
-        daily_world,
-        ["date", "excntry", *factor_cols],
-        ["excntry", "date"],
-        daily_factors_path,
-    )
-    _mp_concat_write(
-        chars_us,
-        chars_world,
-        ["id", "eom", "mispricing_mgmt", "mispricing_perf"],
-        ["id", "eom"],
-        chars_path,
-    )
 
 
 @measure_time
@@ -9610,46 +9414,119 @@ def gen_mispricing_data(
     try:
         mp_con.execute("PRAGMA disable_progress_bar")
         mp_con_world.execute("PRAGMA disable_progress_bar")
-        world_data, world_daily, market_monthly = _mp_load_return_panels(raw_dir, interim_dir)
-        _mp_load_fundamental_panels(mp_con, raw_dir, interim_dir)
-        _mp_compute_us_anomalies(mp_con, raw_dir, interim_dir)
-        us_panel, us_legs, us_smb, world_panel, world_legs, world_smb = _mp_form_portfolios(
-            min_stks,
+
+        # ---- 1. Return/ME panels: US to interim parquets, world in memory ----
+        _mp_build_crsp_monthly(raw_dir, interim_dir)
+        _mp_build_crsp_daily(raw_dir, interim_dir)
+        world_data = _mp_world_load_world_data(interim_dir)
+        world_daily = _mp_world_load_world_dsf(interim_dir)
+        market_monthly = _mp_world_load_market(interim_dir, daily=False)
+
+        # ---- 2. US fundamentals (CCM-linked) to interim parquets ----
+        _mp_build_compustat_annual(mp_con, raw_dir, interim_dir)
+        _mp_build_compustat_quarterly(mp_con, raw_dir, interim_dir)
+
+        # ---- 3. US anomaly characteristics (11 anomalies + CHS DISTRESS),
+        # one interim parquet each; world chars are computed in-memory inside
+        # the world panel build below ----
+        _mp_compute_accrual(raw_dir, interim_dir)
+        _mp_compute_gross_profit(raw_dir, interim_dir)
+        _mp_compute_oscore(raw_dir, interim_dir)
+        _mp_compute_nsi_ag_inv_noa(raw_dir, interim_dir)
+        _mp_compute_momentum(interim_dir)
+        _mp_compute_composite_issue(interim_dir)
+        _mp_compute_roa(mp_con, interim_dir)
+        _mp_compute_distress(mp_con, raw_dir, interim_dir)
+
+        # ---- 4. Per-stock panels, 2x3 double-sort legs, SMB panels ----
+        us_panel = _mp_build_mispricing_panel(min_stks, mp_con, interim_dir)
+        # US size median is NYSE-only (exchcd == 1), per-eom breaks.
+        us_legs = _mp_mispricing_legs(
+            us_panel,
             min_fcts,
+            group_keys=["eom"],
+            size_break_sql="CASE WHEN exchcd = 1 THEN mktcap END",
+        )
+        us_smb = _mp_smb_panel_from_legs(us_legs, key_cols=("permno",))
+        world_monthly = world_data.select(
+            "id", "permno", "gvkey", "excntry", "eom", "me", "prc", "ret", "adjfct", "shares"
+        )
+        world_panel = _mp_world_build_mispricing_panel(
+            world_monthly,
+            world_data,
+            market_monthly,
+            world_daily,
             min_stks_world,
-            mp_con,
             mp_con_world,
-            world_data=world_data,
-            world_daily=world_daily,
-            market_m=market_monthly,
-            raw_dir=raw_dir,
-            interim_dir=interim_dir,
+            raw_dir,
         )
-        monthly_us, daily_us, chars_us, monthly_world, daily_world, chars_world = (
-            _mp_compute_factor_returns(
-                us_panel,
-                us_legs,
-                us_smb,
-                world_panel,
-                world_legs,
-                world_smb,
-                min_fcts,
-                min_obs,
-                min_obs_world,
-                mp_con,
-                mp_con_world,
-                interim_dir,
-            )
+        world_legs = _mp_mispricing_legs(
+            world_panel, min_fcts, group_keys=["excntry", "eom"], size_break_sql="mktcap"
         )
-        _mp_write_outputs(
+        world_smb = _mp_smb_panel_from_legs(world_legs, key_cols=("id", "excntry"))
+
+        # ---- 5. Factor returns and per-stock scores ----
+        monthly_us = _mp_monthly_factor_returns(
+            us_legs,
+            us_smb,
+            min_obs,
+            by="eom",
+            truncate_thin=True,
+            out_cols=["eom"],
+            out_sort=["eom"],
+        ).with_columns(excntry=pl.lit("USA"))
+        daily_us = _mp_us_daily_factor_returns(
+            us_legs, us_smb, min_obs, mp_con, interim_dir
+        ).with_columns(excntry=pl.lit("USA"))
+        # Keep `id` as Int64 to match jkp convention (world_msf.id = BIGINT for both
+        # US permnos and Compustat-derived ids per `combine_crsp_comp_sf`). Casting to
+        # String would break outer-joins in `ap_factor_model_data` against ff/hxz chars.
+        chars_us = _mp_stock_mispricing_scores(
+            us_panel,
+            min_fcts,
+            sort_keys=["permno", "eom"],
+            select_cols=[col("permno").alias("id"), "eom"],
+        ).with_columns(excntry=pl.lit("USA"), id=col("id").cast(pl.Int64))
+        monthly_world = _mp_monthly_factor_returns(
+            world_legs,
+            world_smb,
+            min_obs_world,
+            by=["excntry", "eom"],
+            truncate_thin=False,
+            out_cols=["eom", "excntry"],
+            out_sort=["excntry", "eom"],
+        )
+        daily_world = _mp_world_daily_factor_returns(
+            world_legs, world_smb, min_obs_world, mp_con_world, interim_dir
+        )
+        chars_world = _mp_stock_mispricing_scores(
+            world_panel,
+            min_fcts,
+            sort_keys=["id", "eom"],
+            select_cols=["id", "eom", "excntry"],
+        ).with_columns(id=col("id").cast(pl.Int64))
+
+        # ---- 6. Concat US + world; write outputs ----
+        factor_cols = ["smb_mispricing", "mispricing_mgmt", "mispricing_perf"]
+        _mp_concat_write(
             monthly_us,
-            daily_us,
-            chars_us,
             monthly_world,
-            daily_world,
-            chars_world,
+            ["eom", "excntry", *factor_cols],
+            ["excntry", "eom"],
             monthly_factors_path,
+        )
+        _mp_concat_write(
+            daily_us,
+            daily_world,
+            ["date", "excntry", *factor_cols],
+            ["excntry", "date"],
             daily_factors_path,
+        )
+        _mp_concat_write(
+            chars_us,
+            chars_world,
+            ["id", "eom", "mispricing_mgmt", "mispricing_perf"],
+            ["id", "eom"],
             chars_path,
         )
     finally:
@@ -13918,16 +13795,6 @@ def _hxz_tercile_port(value_col: str, b30: str, b70: str, gate: pl.Expr) -> pl.E
     )
 
 
-def _hxz_invport_expr() -> pl.Expr:
-    """Tercile inv bucket; gated on elig + non-null inv and inv30 break."""
-    return _hxz_tercile_port(
-        "inv",
-        "inv30",
-        "inv70",
-        pl.col("elig") & pl.col("inv").is_not_null() & pl.col("inv30").is_not_null(),
-    )
-
-
 def _hxz_classify_size_ia(size_ia_form: pl.DataFrame) -> pl.DataFrame:
     """Apply country-aware breakpoints + bucket cuts to June size+inv frame.
     US: NYSE-only pool, per-date breaks. ROW: size_grp pool + HXZ_MIN_STOCKS_BP
@@ -13955,7 +13822,13 @@ def _hxz_classify_size_ia(size_ia_form: pl.DataFrame) -> pl.DataFrame:
                 .then(pl.when(pl.col("me") <= pl.col("sizemedn")).then(1).otherwise(2))
                 .otherwise(None)
                 .cast(pl.Int64),
-                invport=_hxz_invport_expr(),
+                # Tercile inv bucket; gated on elig + non-null inv and inv30 break.
+                invport=_hxz_tercile_port(
+                    "inv",
+                    "inv30",
+                    "inv70",
+                    pl.col("elig") & pl.col("inv").is_not_null() & pl.col("inv30").is_not_null(),
+                ),
             )
             .select("excntry", "id", id_col, "date", "sizeport", "invport", "inv")
         )
