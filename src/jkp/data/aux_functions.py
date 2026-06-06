@@ -11918,7 +11918,7 @@ def ff_load_compustat_us(
     return pl.concat([comp_pool, dff_only], how="vertical_relaxed")
 
 
-def ff_load_crsp_panel(raw_dir: Path, freq: str) -> pl.DataFrame:
+def ff_load_crsp_panel(raw_dir: Path, freq: str) -> pl.LazyFrame:
     """
     Description:
         Load CRSP msf_v2 / dsf_v2 with strict CIZ universe filters and
@@ -11934,8 +11934,9 @@ def ff_load_crsp_panel(raw_dir: Path, freq: str) -> pl.DataFrame:
         5) Permco-aggregate ME; keep largest-meq permno per (date, permco).
 
     Output:
-        Eager [permno, permco, date, retadj, retx, prc, shrout, me, exchcd,
-        shrcd].
+        Lazy [permno, permco, date, retadj, retx, prc, shrout, me, exchcd,
+        shrcd] — fused with the downstream prepare chain and collected once
+        per leg in gen_ff_data.
     """
     pq, p = FF_CRSP_SPECS[freq]
     date_c, ret_c, retx_c, prc_c = f"{p}caldt", f"{p}ret", f"{p}retx", f"{p}prc"
@@ -11975,12 +11976,66 @@ def ff_load_crsp_panel(raw_dir: Path, freq: str) -> pl.DataFrame:
         .with_columns(me=pl.col("meq").sum().over(["date", "permco"]))
         .unique(subset=["date", "permco"], keep="last")
         .drop("meq")
-        .collect()
+    )
+
+
+def _ff_rets_weights_lazy(raw_panel: pl.LazyFrame, freq: str, *, is_us: bool) -> pl.LazyFrame:
+    """
+    Description:
+        Lazy build of the pre-projection returns/weights panel for one leg
+        (US: FF cumretx weight machinery; ROW: me.shift(1) weight). Fuses
+        with the loader scan; collected once per leg.
+    Steps:
+        1) Sort by (permno, date) / (excntry, id, date).
+        2) US: period, lag_me, me_base forward-fill, cumretx, weight_port.
+           ROW: w = me.shift(1) over (excntry, id).
+    Output:
+        LazyFrame; US projected to [permno, date, retadj, weight_port, me,
+        exchcd, shrcd], ROW keeps loader cols + w (gvkey retained for the
+        chars join downstream).
+    """
+    if is_us:
+        period = (
+            (pl.col("date").dt.month() == 7).cast(pl.Int32).cum_sum().over("permno")
+            if freq == "monthly"
+            else pl.when(pl.col("date").dt.month() >= 7)
+            .then(pl.col("date").dt.year())
+            .otherwise(pl.col("date").dt.year() - 1)
+        )
+        return (
+            raw_panel.sort(["permno", "date"])
+            .with_columns(
+                period=period,
+                retx_safe=pl.col("retx").fill_null(0.0),
+                lag_me=pl.col("me").shift(1).over("permno"),
+            )
+            .with_columns(
+                me_base=pl.when(
+                    (pl.col("period") != pl.col("period").shift(1).over("permno")).fill_null(True)
+                )
+                .then(pl.col("lag_me"))
+                .otherwise(None)
+                .forward_fill()
+                .over(["permno", "period"]),
+                cumretx=(1.0 + pl.col("retx_safe")).cum_prod().over(["permno", "period"]),
+            )
+            .with_columns(
+                weight_port=pl.when(pl.col("lag_me").is_not_null() & (pl.col("lag_me") > 0))
+                .then(
+                    pl.col("me_base")
+                    * pl.col("cumretx").shift(1).over(["permno", "period"]).fill_null(1.0)
+                )
+                .otherwise(None),
+            )
+            .select("permno", "date", "retadj", "weight_port", "me", "exchcd", "shrcd")
+        )
+    return raw_panel.sort(["excntry", "id", "date"]).with_columns(
+        w=pl.col("me").shift(1).over("excntry", "id")
     )
 
 
 def ff_prepare_chars_weights_rets(
-    raw_panel: pl.DataFrame,
+    raw_panel: pl.DataFrame | pl.LazyFrame,
     comp: pl.DataFrame,
     freq: str,
     *,
@@ -12012,48 +12067,33 @@ def ff_prepare_chars_weights_rets(
     Disjoint cols (exchcd_us US-only, size_grp ROW-only) are null on the
     other side so vertical_relaxed concat works directly.
     """
+    rw = _ff_rets_weights_lazy(raw_panel.lazy(), freq, is_us=is_us).collect()
+    return _ff_finish_prepare(rw, comp, freq, is_us=is_us)
+
+
+def _ff_finish_prepare(
+    data_rets_weights: pl.DataFrame,
+    comp: pl.DataFrame,
+    freq: str,
+    *,
+    is_us: bool,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """
+    Description:
+        Eager tail of the prepare step: June formation frame (chars) from
+        the collected returns/weights panel, then common-schema projections.
+    Steps:
+        1) _last_per_year June + December frames; dec_me join; comp join.
+        2) beme; project panel + chars to the common US/ROW schema.
+    Output:
+        (data_rets_weights, data_chars) as documented on
+        ff_prepare_chars_weights_rets.
+    """
     if is_us:
-        period = (
-            (pl.col("date").dt.month() == 7).cast(pl.Int32).cum_sum().over("permno")
-            if freq == "monthly"
-            else pl.when(pl.col("date").dt.month() >= 7)
-            .then(pl.col("date").dt.year())
-            .otherwise(pl.col("date").dt.year() - 1)
-        )
-        data_rets_weights = (
-            raw_panel.sort(["permno", "date"])
-            .with_columns(
-                period=period,
-                retx_safe=pl.col("retx").fill_null(0.0),
-                lag_me=pl.col("me").shift(1).over("permno"),
-            )
-            .with_columns(
-                me_base=pl.when(
-                    (pl.col("period") != pl.col("period").shift(1).over("permno")).fill_null(True)
-                )
-                .then(pl.col("lag_me"))
-                .otherwise(None)
-                .forward_fill()
-                .over(["permno", "period"]),
-                cumretx=(1.0 + pl.col("retx_safe")).cum_prod().over(["permno", "period"]),
-            )
-            .with_columns(
-                weight_port=pl.when(pl.col("lag_me").is_not_null() & (pl.col("lag_me") > 0))
-                .then(
-                    pl.col("me_base")
-                    * pl.col("cumretx").shift(1).over(["permno", "period"]).fill_null(1.0)
-                )
-                .otherwise(None),
-            )
-            .select("permno", "date", "retadj", "weight_port", "me", "exchcd", "shrcd")
-        )
         id_keys = ["permno"]
         link_key = "permno"
         beme_scale = 1000.0
     else:
-        data_rets_weights = raw_panel.sort(["excntry", "id", "date"]).with_columns(
-            w=pl.col("me").shift(1).over("excntry", "id")
-        )
         id_keys = ["excntry", "id"]
         link_key = "gvkey"
         beme_scale = 1.0
@@ -12353,12 +12393,13 @@ def ff_load_world_compustat(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
     )
 
 
-def ff_load_world_panel(interim_dir: Path, freq: str) -> pl.DataFrame:
+def ff_load_world_panel(interim_dir: Path, freq: str) -> pl.LazyFrame:
     """Scan world_{m|d}sf.parquet for ROW FF computation; drop USA + apply
     universe (common/obs_main/primary_sec/exch_main/me/gvkey-not-null).
 
     Daily world_dsf lacks gvkey + size_grp (added only at monthly upstream
-    steps), so join those from world_msf on (id, eom)."""
+    steps), so join those from world_msf on (id, eom). Returns a LazyFrame —
+    fused with the downstream prepare chain and collected once per leg."""
     base_filter = (
         (pl.col("excntry") != US_EXCNTRY)
         & (pl.col("common") == 1)
@@ -12380,7 +12421,6 @@ def ff_load_world_panel(interim_dir: Path, freq: str) -> pl.DataFrame:
                 "me",
                 "size_grp",
             )
-            .collect()
         )
     msf_keys = pl.scan_parquet(interim_dir / "world_msf.parquet").select(
         "id", "eom", "gvkey", "size_grp"
@@ -12392,7 +12432,6 @@ def ff_load_world_panel(interim_dir: Path, freq: str) -> pl.DataFrame:
         .join(msf_keys, on=["id", "eom"], how="inner")
         .filter(pl.col("gvkey").is_not_null())
         .select("excntry", "id", "gvkey", "date", "ret", "me", "size_grp")
-        .collect()
     )
 
 
@@ -12511,21 +12550,24 @@ def ff_assign_to_panel(panel: pl.DataFrame, june: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def _ff_vw_leg(panel: pl.DataFrame, spec_key: str) -> pl.DataFrame:
+_FF_VW_SHARED_FILTER = (
+    (pl.col("w") > 0) & pl.col("ret").is_not_null() & pl.col("sizeport").is_not_null()
+)
+
+
+def _ff_vw_leg(panel: pl.DataFrame, spec_key: str, *, prefiltered: bool = False) -> pl.DataFrame:
     """VW per (excntry, date, sizeport+<port>) bucket for one FF_SORT_SPECS entry.
 
     Applies ROW-only FF_MIN_STOCKS_PF gate (US bypassed) and pivots to wide
     [excntry, date, *spec.buckets] with the spec's rename map applied.
+    `prefiltered=True` skips _FF_VW_SHARED_FILTER when the caller already
+    applied it (filter composition is row-order-preserving, so the per-group
+    float-sum sequence is unchanged).
     """
     s = FF_SORT_SPECS[spec_key]
+    spec_filter = (pl.col(s["flag"]) == 1) & pl.col(s["port"]).is_not_null()
     leg = (
-        panel.filter(
-            (pl.col("w") > 0)
-            & pl.col("ret").is_not_null()
-            & pl.col("sizeport").is_not_null()
-            & (pl.col(s["flag"]) == 1)
-            & pl.col(s["port"]).is_not_null()
-        )
+        panel.filter(spec_filter if prefiltered else _FF_VW_SHARED_FILTER & spec_filter)
         .with_columns(bucket=pl.col("sizeport") + pl.col(s["port"]))
         .group_by("excntry", "date", "bucket")
         .agg(
@@ -12553,7 +12595,11 @@ def ff_compute_factors(ccm4: pl.DataFrame) -> pl.DataFrame:
 
     smb_ff3 = BM size leg only; smb_ff5 = average of BM/OP/INV size legs.
     """
-    legs = [_ff_vw_leg(ccm4, k) for k in ("bm", "op", "inv")]
+    # One shared-predicate pass over the full panel instead of three;
+    # filter(a).filter(b) ≡ filter(a & b) row-for-row, so each leg's group
+    # float-sum sequence is unchanged.
+    base = ccm4.filter(_FF_VW_SHARED_FILTER)
+    legs = [_ff_vw_leg(base, k, prefiltered=True) for k in ("bm", "op", "inv")]
     wide = legs[0]
     for leg in legs[1:]:
         wide = wide.join(leg, on=["excntry", "date"], how="full", coalesce=True)
@@ -12871,12 +12917,17 @@ def gen_ff_data(
     comp_world = ff_load_world_compustat(raw_dir, interim_dir)
 
     for freq in freqs:
-        us_panel, us_chars = ff_prepare_chars_weights_rets(
-            ff_load_crsp_panel(raw_dir, freq), ccm2a, freq, is_us=True
+        # Both legs as fused lazy plans (loader scan + weights chain), executed
+        # together by polars' own scheduler — single collect_all, no Python
+        # threads. The chars tails then run eagerly off the collected panels.
+        us_rw, row_rw = pl.collect_all(
+            [
+                _ff_rets_weights_lazy(ff_load_crsp_panel(raw_dir, freq), freq, is_us=True),
+                _ff_rets_weights_lazy(ff_load_world_panel(interim_dir, freq), freq, is_us=False),
+            ]
         )
-        row_panel, row_chars = ff_prepare_chars_weights_rets(
-            ff_load_world_panel(interim_dir, freq), comp_world, freq, is_us=False
-        )
+        us_panel, us_chars = _ff_finish_prepare(us_rw, ccm2a, freq, is_us=True)
+        row_panel, row_chars = _ff_finish_prepare(row_rw, comp_world, freq, is_us=False)
         panel = pl.concat([us_panel, row_panel], how="vertical_relaxed")
         data_chars = pl.concat([us_chars, row_chars], how="vertical_relaxed")
 
@@ -13479,7 +13530,7 @@ def hxz_load_panel_row(interim_dir: Path, freq: str) -> pl.DataFrame:
     Output:
         Eager [excntry, id, gvkey, date, ret, me, size_grp, naics, sic, is_fin].
     """
-    panel = ff_load_world_panel(interim_dir, freq)
+    panel = ff_load_world_panel(interim_dir, freq).collect()
     # Dedup (id, eom) explicitly: world_msf can carry duplicate share-class
     # records for the same security-month. Without an explicit unique() the
     # downstream join would multiply panel rows non-deterministically under
