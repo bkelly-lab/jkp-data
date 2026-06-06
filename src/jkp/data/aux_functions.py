@@ -6909,25 +6909,25 @@ def gen_misp_exp(var_list, min_fcts):
 
 
 # ============================================================================
-# Mispricing Factors (Stambaugh-Yuan) — ported from MisprProject standalone.
-# Produces 3 outputs into paths.interim_dir: mp_factors_monthly.parquet,
-#   mp_factors_daily.parquet, mp_characteristics.parquet.
-# Reads jkp's CIZ raws from paths.raw_tables_dir/{crsp_msf_v2,crsp_dsf_v2,crsp_stkdelists,
-#   ccmxpf_lnkhist,funda,fundq,crsp_a_indexes_msp500,crsp_a_indexes_acti}.parquet.
-# raw_dir/interim_dir are threaded explicitly through every _mp_* helper that does IO.
+# Mispricing factors (Stambaugh-Yuan) — entry point: gen_mispricing_data()
 # ============================================================================
 
-# Universe filter — legacy SHRCD={10,11} + EXCHCD={1,2,3} equivalent in CIZ.
-_MP_UNIVERSE = (
-    (col("sharetype") == "NS")
-    & (col("securitytype") == "EQTY")
-    & (col("securitysubtype") == "COM")
-    & (col("usincflg") == "Y")
-    & col("issuertype").is_in(["ACOR", "CORP"])
-    & col("primaryexch").is_in(["N", "A", "Q"])
-    & (col("conditionaltype") == "RW")
-    & (col("tradingstatusflg") == "A")
-)
+
+def _mp_universe() -> pl.Expr:
+    """Universe filter — legacy SHRCD={10,11} + EXCHCD={1,2,3} equivalent in
+    CIZ. Stricter than `_ciz_universe()` (extra conditionaltype /
+    tradingstatusflg clauses); do not collapse the two."""
+    return (
+        (col("sharetype") == "NS")
+        & (col("securitytype") == "EQTY")
+        & (col("securitysubtype") == "COM")
+        & (col("usincflg") == "Y")
+        & col("issuertype").is_in(["ACOR", "CORP"])
+        & col("primaryexch").is_in(["N", "A", "Q"])
+        & (col("conditionaltype") == "RW")
+        & (col("tradingstatusflg") == "A")
+    )
+
 
 # CCM link-type quality rank: lower = preferred. SAS tiebreak ordering.
 _MP_LT_RANK = {"LU": 0, "LC": 1, "LD": 2, "LN": 3, "LX": 4, "LF": 5, "LO": 6, "LS": 7}
@@ -7072,7 +7072,7 @@ def _mp_build_crsp_monthly(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
         .unique(subset=["permno", "mthcaldt"], keep="first", maintain_order=True)
         .with_columns([col(c).cast(pl.Float64, strict=False) for c in _MP_MSF_V2_NUMERIC if c])
     )
-    m2 = sf.filter(_MP_UNIVERSE).rename(
+    m2 = sf.filter(_mp_universe()).rename(
         {
             "mthcaldt": "date",
             "mthprc": "prc",
@@ -7149,7 +7149,7 @@ def _mp_build_crsp_daily(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
         sf.filter(
             (col("dlycaldt") >= start_d)
             & (col("dlycaldt") <= end_d)
-            & _MP_UNIVERSE
+            & _mp_universe()
             & col("dlyret").is_not_null()
         )
         .rename({"dlycaldt": "date", "dlyret": "ret"})
@@ -9661,9 +9661,13 @@ def gen_mispricing_data(
 ) -> None:
     """Stambaugh-Yuan 11-anomaly mispricing factor pipeline (incl. CHS DISTRESS), US + WORLD.
 
-    Always runs both branches; outputs concatenated with `excntry` column.
-    Reads raw CRSP/Compustat from `paths.raw_tables_dir` and world inputs from
-    `paths.interim_dir`; the 3 output paths are passed in explicitly:
+    Ported from the MisprProject standalone. Always runs both branches;
+    outputs concatenated with `excntry` column. Reads jkp's CIZ raws from
+    `paths.raw_tables_dir` ({crsp_msf_v2, crsp_dsf_v2, ccmxpf_lnkhist, funda,
+    fundq, crsp_a_indexes_msp500, crsp_a_indexes_acti}.parquet) and world
+    inputs from `paths.interim_dir`; raw_dir/interim_dir are threaded
+    explicitly through every _mp_* helper that does IO. The 3 output paths
+    are passed in explicitly:
       <monthly_factors_path>  — eom, excntry, smb_mispricing, mispricing_mgmt, mispricing_perf
       <daily_factors_path>    — date, excntry, smb_mispricing, mispricing_mgmt, mispricing_perf (US + world)
       <chars_path>            — id, eom, mispricing_mgmt, mispricing_perf
@@ -11612,30 +11616,25 @@ def dimsonbeta(
 
 
 # =============================================================================
-# Fama-French 3/5-factor replication (US, CIZ universe).
-#
-# Strict-FF methodology: reads raw CRSP CIZ tables + Compustat funda, applies
-# CIZ universe filters, permco-level ME aggregation, NYSE QUANTILE_DISC
-# breakpoints, July-to-June portfolio assignment. The single entry point is
-# `gen_ff_data()`; everything below it is implementation. Numerics
-# track the FF data-library reference within 1 ULP.
+# Fama-French 3/5-factor replication — entry point: gen_ff_data()
 # =============================================================================
 
 
-# The FF (1993) two-years-on-Compustat requirement is NOT applied to the US:
-# French's modern portfolio descriptions never state it, and dropping it
-# improves every IPO-heavy decade vs his published factors (A/B 2026-06:
-# monthly HML 1980s 0.9978->0.9990, RMW 1990s 0.9954->0.9976; 2000s+ flat).
-# ROW keeps the JKP convention (count >= 2).
-_FF_COUNT_GATE = (pl.col("excntry") == US_EXCNTRY) | (pl.col("count") >= 2)
+def _ff_count_gate() -> pl.Expr:
+    """The FF (1993) two-years-on-Compustat requirement is NOT applied to the
+    US: French's modern portfolio descriptions never state it, and dropping it
+    improves every IPO-heavy decade vs his published factors (A/B 2026-06:
+    monthly HML 1980s 0.9978->0.9990, RMW 1990s 0.9954->0.9976; 2000s+ flat).
+    ROW keeps the JKP convention (count >= 2)."""
+    return (pl.col("excntry") == US_EXCNTRY) | (pl.col("count") >= 2)
 
 
 def _ff_bm_eligible() -> pl.Expr:
-    return (pl.col("beme") > 0) & (pl.col("me") > 0) & _FF_COUNT_GATE
+    return (pl.col("beme") > 0) & (pl.col("me") > 0) & _ff_count_gate()
 
 
 def _ff_op_eligible() -> pl.Expr:
-    return (pl.col("me") > 0) & (pl.col("be") > 0) & _FF_COUNT_GATE & pl.col("op").is_not_null()
+    return (pl.col("me") > 0) & (pl.col("be") > 0) & _ff_count_gate() & pl.col("op").is_not_null()
 
 
 def _ff_inv_eligible() -> pl.Expr:
@@ -11654,17 +11653,18 @@ _FF_ELIGIBLE = {
 }
 
 
-# CRSP CIZ universe filter shared by FF (ff_load_crsp_panel) and HXZ
-# (hxz_load_crsp). Mispricing has its own `_MP_UNIVERSE` with extra
-# conditionaltype / tradingstatusflg clauses; do not collapse those.
-_CIZ_UNIVERSE = (
-    (pl.col("sharetype") == "NS")
-    & (pl.col("securitytype") == "EQTY")
-    & (pl.col("securitysubtype") == "COM")
-    & (pl.col("usincflg") == "Y")
-    & pl.col("issuertype").is_in(["ACOR", "CORP"])
-    & pl.col("primaryexch").is_in(["N", "A", "Q"])
-)
+def _ciz_universe() -> pl.Expr:
+    """CRSP CIZ universe filter shared by FF (ff_load_crsp_panel) and HXZ
+    (hxz_load_crsp). Mispricing has its own `_mp_universe()` with extra
+    conditionaltype / tradingstatusflg clauses; do not collapse those."""
+    return (
+        (pl.col("sharetype") == "NS")
+        & (pl.col("securitytype") == "EQTY")
+        & (pl.col("securitysubtype") == "COM")
+        & (pl.col("usincflg") == "Y")
+        & pl.col("issuertype").is_in(["ACOR", "CORP"])
+        & pl.col("primaryexch").is_in(["N", "A", "Q"])
+    )
 
 
 def _collapse_to_latest_fy(lf: pl.LazyFrame, *, resort: bool = True) -> pl.LazyFrame:
@@ -11947,7 +11947,7 @@ def ff_load_crsp_panel(raw_dir: Path, freq: str) -> pl.LazyFrame:
             pl.col("permno", "permco").cast(pl.Int64),
             pl.col(ret_c, retx_c, prc_c, "shrout").cast(pl.Float64),
         )
-        .filter(_CIZ_UNIVERSE)
+        .filter(_ciz_universe())
         .with_columns(
             meq=pl.col(prc_c).abs() * pl.col("shrout"),
             exchcd=pl.col("primaryexch").replace_strict(
@@ -12202,14 +12202,6 @@ def _ff_bucket(val: str, breaks: list[str], labels: list[str]) -> pl.Expr:
 
 # =============================================================================
 # Per-country (rest-of-world) FF helpers
-# -----------------------------------------------------------------------------
-# Reuses the universe flags already computed by `prepare_crsp_sf` /
-# `combine_crsp_comp_sf` on `world_msf.parquet` / `world_dsf.parquet` (common,
-# obs_main, primary_sec, exch_main, me, gvkey). Breakpoints are per
-# `(excntry, June(y))` over the country-main-exchange subset (NYSE analog).
-# Compustat sourced from raw comp.funda + comp.g_funda, BE converted to USD
-# via comp_exrt_dly so ratios match world_msf's USD `me`. Same SMB/HML/RMW/CMA
-# arithmetic as the US path, grouped by excntry.
 # =============================================================================
 
 
@@ -12550,9 +12542,10 @@ def ff_assign_to_panel(panel: pl.DataFrame, june: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-_FF_VW_SHARED_FILTER = (
-    (pl.col("w") > 0) & pl.col("ret").is_not_null() & pl.col("sizeport").is_not_null()
-)
+def _ff_vw_shared_filter() -> pl.Expr:
+    """Predicate shared by every FF VW leg (positive weight, non-null return,
+    assigned size bucket); applied once in ff_compute_factors."""
+    return (pl.col("w") > 0) & pl.col("ret").is_not_null() & pl.col("sizeport").is_not_null()
 
 
 def _ff_vw_leg(panel: pl.DataFrame, spec_key: str, *, prefiltered: bool = False) -> pl.DataFrame:
@@ -12560,14 +12553,14 @@ def _ff_vw_leg(panel: pl.DataFrame, spec_key: str, *, prefiltered: bool = False)
 
     Applies ROW-only FF_MIN_STOCKS_PF gate (US bypassed) and pivots to wide
     [excntry, date, *spec.buckets] with the spec's rename map applied.
-    `prefiltered=True` skips _FF_VW_SHARED_FILTER when the caller already
+    `prefiltered=True` skips _ff_vw_shared_filter() when the caller already
     applied it (filter composition is row-order-preserving, so the per-group
     float-sum sequence is unchanged).
     """
     s = FF_SORT_SPECS[spec_key]
     spec_filter = (pl.col(s["flag"]) == 1) & pl.col(s["port"]).is_not_null()
     leg = (
-        panel.filter(spec_filter if prefiltered else _FF_VW_SHARED_FILTER & spec_filter)
+        panel.filter(spec_filter if prefiltered else _ff_vw_shared_filter() & spec_filter)
         .with_columns(bucket=pl.col("sizeport") + pl.col(s["port"]))
         .group_by("excntry", "date", "bucket")
         .agg(
@@ -12598,7 +12591,7 @@ def ff_compute_factors(ccm4: pl.DataFrame) -> pl.DataFrame:
     # One shared-predicate pass over the full panel instead of three;
     # filter(a).filter(b) ≡ filter(a & b) row-for-row, so each leg's group
     # float-sum sequence is unchanged.
-    base = ccm4.filter(_FF_VW_SHARED_FILTER)
+    base = ccm4.filter(_ff_vw_shared_filter())
     legs = [_ff_vw_leg(base, k, prefiltered=True) for k in ("bm", "op", "inv")]
     wide = legs[0]
     for leg in legs[1:]:
@@ -12882,7 +12875,11 @@ def gen_ff_data(
     """
     Description:
         Build FF3/FF5/UMD factor and characteristic files for all countries.
-        Reads raw CRSP/Compustat from `paths.raw_tables_dir` and
+        US follows strict-FF methodology on the CIZ universe: raw CRSP CIZ
+        tables + Compustat funda, CIZ universe filters, permco-level ME
+        aggregation, NYSE QUANTILE_DISC breakpoints, July-to-June portfolio
+        assignment; numerics track the FF data-library reference within
+        1 ULP. Reads raw CRSP/Compustat from `paths.raw_tables_dir` and
         world_msf/world_dsf from `paths.interim_dir`; output paths are passed
         in explicitly by the caller (composed against `paths.interim_dir`).
 
@@ -12979,13 +12976,7 @@ def gen_ff_data(
 
 
 # =============================================================================
-# HXZ q-factor replication (US, CIZ universe).
-#
-# Triple 2×3×3 sort on size × I/A × Roe. Builds R_ME, R_IA, R_ROE at monthly +
-# daily on CRSP CIZ msf_v2/dsf_v2 + Compustat funda/fundq. Permno-level (no
-# permco aggregation; HXZ tech doc is silent + the gap was empirically null).
-# CIZ `mthret` / `dlyret` already daily-compound delret per CRSP CIZ docs, so
-# no BMP-style reconstruction. The single entry point is `gen_hxz_data()`.
+# HXZ q-factor replication — entry point: gen_hxz_data()
 # =============================================================================
 
 
@@ -13037,7 +13028,7 @@ def hxz_load_crsp(raw_dir: Path, freq: str, date_start: date | None = None) -> p
     lf = pl.scan_parquet(raw_dir / pq)
     if date_start is not None:
         lf = lf.filter(pl.col(date_c) >= date_start)
-    lf = lf.filter(_CIZ_UNIVERSE).with_columns(pl.col(ret_c, retx_c, prc_c).cast(pl.Float64))
+    lf = lf.filter(_ciz_universe()).with_columns(pl.col(ret_c, retx_c, prc_c).cast(pl.Float64))
     lf = hxz_attach_siccd(lf, raw_dir, date_c)
     return lf.select(
         "permno",
@@ -13056,12 +13047,14 @@ def hxz_load_crsp(raw_dir: Path, freq: str, date_start: date | None = None) -> p
     ).collect()
 
 
-_HXZ_COMP_FILTER = (
-    (pl.col("indfmt") == "INDL")
-    & (pl.col("datafmt") == "STD")
-    & (pl.col("popsrc") == "D")
-    & (pl.col("consol") == "C")
-)
+def _hxz_comp_filter() -> pl.Expr:
+    """Standard Compustat NA screen (INDL/STD/D/C) for the HXZ funda/fundq loads."""
+    return (
+        (pl.col("indfmt") == "INDL")
+        & (pl.col("datafmt") == "STD")
+        & (pl.col("popsrc") == "D")
+        & (pl.col("consol") == "C")
+    )
 
 
 def hxz_load_funda(raw_dir: Path) -> pl.DataFrame:
@@ -13078,7 +13071,7 @@ def hxz_load_funda(raw_dir: Path) -> pl.DataFrame:
     floats = ["pstkrv", "pstkl", "pstk", "seq", "ceq", "txditc", "lt", "at", "csho", "ajex"]
     return (
         pl.scan_parquet(raw_dir / "comp_funda.parquet")
-        .filter(_HXZ_COMP_FILTER)
+        .filter(_hxz_comp_filter())
         .with_columns(pl.col(*floats).cast(pl.Float64), pl.col("datadate").cast(pl.Date))
         .with_columns(
             ps_a=pl.coalesce("pstkrv", "pstkl", "pstk", pl.lit(0.0)),
@@ -13113,7 +13106,7 @@ def hxz_load_fundq(raw_dir: Path) -> pl.DataFrame:
     ]  # fmt: skip
     return (
         pl.scan_parquet(raw_dir / "comp_fundq.parquet")
-        .filter(_HXZ_COMP_FILTER)
+        .filter(_hxz_comp_filter())
         .with_columns(
             pl.col(*floats).cast(pl.Float64),
             pl.col("datadate").cast(pl.Date),
@@ -13649,11 +13642,7 @@ def hxz_build_characteristics(panel_m: pl.DataFrame) -> pl.DataFrame:
 
 
 # =============================================================================
-# Stage helpers for `gen_hxz_data` — six-stage pipeline (load returns / load
-# fundamentals / compute chars / classify portfolios / portfolio sorts /
-# output). Compute and classify are decoupled so country-aware breakpoints
-# (US: NYSE-only pool, ROW: size_grp pool with HXZ_MIN_STOCKS_BP gate) live in a
-# single classifier rather than fused inside per-branch assign helpers.
+# Stage helpers for `gen_hxz_data`
 # =============================================================================
 
 
@@ -14106,15 +14095,24 @@ def gen_hxz_data(
 ) -> None:
     """
     Description:
-        Refactored 6-stage gen_hxz_data. Reads raw CRSP/Compustat from
-        `paths.raw_tables_dir` and world inputs from `paths.interim_dir`;
-        output paths are passed in explicitly by the caller. Stages:
-          1) Load + filter return/me data (US + ROW unified)
-          2) Load + filter fundamentals (US quarterly chain + ROW annual)
-          3) Compute characteristics at portfolio formation (size, inv, roe)
-          4) Classify stocks into portfolios (2×3×3, country-aware)
-          5) Portfolio sorts → factor returns
-          6) Output
+        HXZ q-factor replication: triple 2×3×3 sort on size × I/A × Roe,
+        building R_ME, R_IA, R_ROE at monthly + daily on CRSP CIZ
+        msf_v2/dsf_v2 + Compustat funda/fundq. Permno-level (no permco
+        aggregation; the HXZ tech doc is silent and the gap was empirically
+        null). CIZ `mthret`/`dlyret` already daily-compound delret per CRSP
+        CIZ docs, so no BMP-style reconstruction. Reads raw CRSP/Compustat
+        from `paths.raw_tables_dir` and world inputs from
+        `paths.interim_dir`; output paths are passed in explicitly. Compute
+        (stage 3) and classify (stage 4) are decoupled so country-aware
+        breakpoints (US: NYSE-only pool, ROW: size_grp pool with
+        HXZ_MIN_STOCKS_BP gate) live in a single classifier.
+    Steps:
+        1) Load + filter return/me data (US + ROW unified)
+        2) Load + filter fundamentals (US quarterly chain + ROW annual)
+        3) Compute characteristics at portfolio formation (size, inv, roe)
+        4) Classify stocks into portfolios (2×3×3, country-aware)
+        5) Portfolio sorts → factor returns
+        6) Output
     Output:
         - <monthly_factors_path>  [excntry, eom, me_hxz, ia_hxz, roe_hxz]
         - <daily_factors_path>    [excntry, date, me_hxz, ia_hxz, roe_hxz]
