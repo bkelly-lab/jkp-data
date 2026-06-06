@@ -7060,7 +7060,7 @@ def _mp_build_crsp_monthly(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
     duplicate rows that WRDS msf_v2 produces. Numeric cols cast to Float64 (raw is
     Decimal which would silently change arithmetic in downstream anomaly logic)."""
     start_d, end_d = date(1920, 1, 1), END_DATE
-    sf = (
+    msf_dedup = (
         pl.read_parquet(raw_dir / "crsp_msf_v2.parquet")
         .filter((col("mthcaldt") >= start_d) & (col("mthcaldt") <= end_d))
         .sort(
@@ -7071,18 +7071,20 @@ def _mp_build_crsp_monthly(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
         .unique(subset=["permno", "mthcaldt"], keep="first", maintain_order=True)
         .with_columns([col(c).cast(pl.Float64, strict=False) for c in _MP_MSF_V2_NUMERIC])
     )
-    m2 = sf.filter(_mp_universe()).rename(
-        {
-            "mthcaldt": "date",
-            "mthprc": "prc",
-            "mthret": "ret",
-            "mthretx": "retx",
-            "mthcap": "cap",
-            "mthvol": "vol",
-        }
+    universe = (
+        msf_dedup.filter(_mp_universe())
+        .rename(
+            {
+                "mthcaldt": "date",
+                "mthprc": "prc",
+                "mthret": "ret",
+                "mthretx": "retx",
+                "mthcap": "cap",
+                "mthvol": "vol",
+            }
+        )
+        .with_columns(eom=col("date").dt.month_end())
     )
-
-    m3 = m2.with_columns(eom=col("date").dt.month_end())
 
     exchcd = (
         pl.when(col("primaryexch") == "N")
@@ -7098,7 +7100,7 @@ def _mp_build_crsp_monthly(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
     # monthly return — CRSP already daily-compounds the delisting-day DA-row into it.
     # No delret fallback (legacy SIZ field, redundant under CIZ). No Shumway imputation
     # (DA-row carries realized delist return; no gap to patch).
-    m4 = m3.filter(
+    screened = universe.filter(
         col("permno").is_not_null()
         & col("prc").is_not_null()
         & col("cap").is_not_null()
@@ -7107,7 +7109,7 @@ def _mp_build_crsp_monthly(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
         & col("date").is_not_null()
     ).with_columns(me=col("cap"), exchcd=exchcd)
 
-    out = m4.select(
+    out = screened.select(
         col("eom"),
         col("permno").cast(pl.Int64),
         col("prc").alias("PRC"),
@@ -7117,7 +7119,7 @@ def _mp_build_crsp_monthly(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
     _mp_write(out, "crsp_monthly", interim_dir)
 
     full = (
-        m4.with_columns(shrcd=pl.lit(10).cast(pl.Int64))
+        screened.with_columns(shrcd=pl.lit(10).cast(pl.Int64))
         .select(
             col("eom"),
             col("permno").cast(pl.Int64),
@@ -7137,11 +7139,11 @@ def _mp_build_crsp_monthly(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
 def _mp_build_crsp_daily(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
     """Writes crsp_daily. Source: jkp's crsp_dsf_v2.parquet. Cast numerics to Float64."""
     start_d, end_d = date(1920, 1, 1), END_DATE
-    sf = pl.read_parquet(raw_dir / "crsp_dsf_v2.parquet").with_columns(
+    dsf = pl.read_parquet(raw_dir / "crsp_dsf_v2.parquet").with_columns(
         [col(c).cast(pl.Float64, strict=False) for c in _MP_DSF_V2_NUMERIC if c]
     )
     df = (
-        sf.filter(
+        dsf.filter(
             (col("dlycaldt") >= start_d)
             & (col("dlycaldt") <= end_d)
             & _mp_universe()
@@ -7449,9 +7451,9 @@ def _mp_expand_to_crsp_window(
         )
         .select("permno", "eom", "datadate", value_col)
     )
-    m3 = _mp_read("crsp_monthly", interim_dir).select("permno", "eom")
+    month_keys = _mp_read("crsp_monthly", interim_dir).select("permno", "eom")
     return (
-        m3.join(a, on=["permno", "eom"], how="left")
+        month_keys.join(a, on=["permno", "eom"], how="left")
         .sort(["permno", "eom", "datadate"], descending=[False, False, True])
         .unique(subset=["permno", "eom"], keep="first", maintain_order=True)
         .select("eom", "permno", value_col)
@@ -7758,14 +7760,14 @@ def _mp_compute_nsi_ag_inv_noa(raw_dir: Path, interim_dir: Path) -> None:
 
 
 def _mp_compute_momentum(interim_dir: Path) -> pl.DataFrame:
-    m3 = (
+    log_rets = (
         _mp_read("crsp_monthly", interim_dir)
         .select("permno", "eom", "RET")
         .with_columns(log_1p_ret=(1 + col("RET")).log())
     )
-    roll = _mp_rolling_calendar_sum(m3, "log_1p_ret", lag_min=2, lag_max=12, n_required=11)
+    roll = _mp_rolling_calendar_sum(log_rets, "log_1p_ret", lag_min=2, lag_max=12, n_required=11)
     out = (
-        m3.select("permno", "eom")
+        log_rets.select("permno", "eom")
         .join(roll, on=["permno", "eom"], how="left")
         .with_columns(momentum=col("r").exp() - 1)
         .select("eom", "permno", "momentum")
@@ -7775,17 +7777,17 @@ def _mp_compute_momentum(interim_dir: Path) -> pl.DataFrame:
 
 
 def _mp_compute_composite_issue(interim_dir: Path) -> pl.DataFrame:
-    m3 = (
+    log_rets = (
         _mp_read("crsp_monthly", interim_dir)
         .select("permno", "eom", "me", "RET")
         .with_columns(log_1p_ret=(1 + col("RET")).log())
     )
-    cumret = _mp_rolling_calendar_sum(m3, "log_1p_ret", lag_min=0, lag_max=11, n_required=12)
-    me_lag12 = m3.select("permno", "eom", col("me").alias("me_lag12")).with_columns(
+    cumret = _mp_rolling_calendar_sum(log_rets, "log_1p_ret", lag_min=0, lag_max=11, n_required=12)
+    me_lag12 = log_rets.select("permno", "eom", col("me").alias("me_lag12")).with_columns(
         eom=_mp_offset_months("eom", 12)
     )
     composite_t = (
-        m3.select("permno", "eom", "me")
+        log_rets.select("permno", "eom", "me")
         .join(me_lag12, on=["permno", "eom"], how="left")
         .join(cumret, on=["permno", "eom"], how="left")
         .select(
@@ -7795,7 +7797,7 @@ def _mp_compute_composite_issue(interim_dir: Path) -> pl.DataFrame:
         )
     )
     out = (
-        m3.select("permno", "eom")
+        log_rets.select("permno", "eom")
         .with_columns(eom_src=_mp_offset_months("eom", -5))
         .join(composite_t, on=["permno", "eom_src"], how="left")
         .select("eom", "permno", "composite_issue")
@@ -7825,12 +7827,12 @@ def _mp_compute_roa(mp_con, interim_dir: Path) -> pl.DataFrame:
         .select("permno", "datadate", "rdq", "rdq_crsp", "lead_rdq_crsp", "roa")
     )
 
-    m3 = _mp_read("crsp_monthly", interim_dir).select("permno", "eom")
+    month_keys = _mp_read("crsp_monthly", interim_dir).select("permno", "eom")
     mp_con.register("cq", cq)
-    mp_con.register("m3", m3)
+    mp_con.register("month_keys", month_keys)
     df = mp_con.execute("""
         SELECT a.permno, a.eom, b.roa, b.datadate, b.rdq
-        FROM m3 a
+        FROM month_keys a
         LEFT JOIN cq b
           ON a.permno = b.permno AND a.eom >= b.rdq_crsp AND a.eom < b.lead_rdq_crsp
     """).pl()
@@ -7847,9 +7849,9 @@ def _mp_compute_roa(mp_con, interim_dir: Path) -> pl.DataFrame:
 # ---------- CHS DISTRESS (8-component, 7-stage) ----------
 
 
-def _mp_distress_market_inputs(m3_full: pl.DataFrame, msp: pl.DataFrame) -> pl.DataFrame:
+def _mp_distress_market_inputs(crsp_full: pl.DataFrame, msp: pl.DataFrame) -> pl.DataFrame:
     return (
-        m3_full.with_columns(prc=col("PRC").abs().clip(upper_bound=15.0))
+        crsp_full.with_columns(prc=col("PRC").abs().clip(upper_bound=15.0))
         .join(msp, on="eom", how="left")
         .with_columns(
             PRICE=col("prc").log(),
@@ -7882,7 +7884,7 @@ def _mp_distress_market_inputs(m3_full: pl.DataFrame, msp: pl.DataFrame) -> pl.D
     )
 
 
-def _mp_distress_book_equity_mb(cq_base: pl.DataFrame, m3_full: pl.DataFrame) -> pl.DataFrame:
+def _mp_distress_book_equity_mb(cq_base: pl.DataFrame, crsp_full: pl.DataFrame) -> pl.DataFrame:
     return (
         cq_base.with_columns(pre_stock=pl.coalesce(col("pstkrq"), col("pstkq"), pl.lit(0.0)))
         .with_columns(extra=-col("pre_stock"))
@@ -7897,7 +7899,7 @@ def _mp_distress_book_equity_mb(cq_base: pl.DataFrame, m3_full: pl.DataFrame) ->
         )
         .with_columns(eom_match=col("datadate").dt.month_end())
         .join(
-            m3_full.select("permno", "eom", "me").rename({"me": "ME"}),
+            crsp_full.select("permno", "eom", "me").rename({"me": "ME"}),
             left_on=["permno", "eom_match"],
             right_on=["permno", "eom"],
             how="inner",
@@ -7915,13 +7917,13 @@ def _mp_distress_book_equity_mb(cq_base: pl.DataFrame, m3_full: pl.DataFrame) ->
 
 
 def _mp_distress_quarterly_inputs(
-    dist1: pl.DataFrame,
+    market_inputs: pl.DataFrame,
     be: pl.DataFrame,
     cq_base: pl.DataFrame,
     compustat_quarterly: pl.DataFrame,
     mp_con,
 ) -> pl.DataFrame:
-    mp_con.register("d1", dist1)
+    mp_con.register("market_inputs", market_inputs)
     mp_con.register(
         "be",
         be.select(
@@ -7934,12 +7936,12 @@ def _mp_distress_quarterly_inputs(
             col("ME").alias("ME_lag"),
         ),
     )
-    dist2 = mp_con.execute("""
+    quarterly_joined = mp_con.execute("""
         SELECT a.*, b.MB, b.ME_lag, b.datadate AS datadate_q, b.rdq AS rdq_be
-        FROM d1 a LEFT JOIN be b
+        FROM market_inputs a LEFT JOIN be b
           ON a.permno = b.permno AND a.eom >= b.rdq_crsp AND a.eom < b.lead_rdq_crsp
     """).pl()
-    dist2 = dist2.sort(
+    quarterly_joined = quarterly_joined.sort(
         ["permno", "eom", "datadate_q", "rdq_be"], descending=[False, False, True, True]
     ).unique(subset=["permno", "eom"], keep="first", maintain_order=True)
 
@@ -7952,16 +7954,16 @@ def _mp_distress_quarterly_inputs(
         )
         .join(cq_base.select("permno", "datadate", "ltq"), on=["permno", "datadate"], how="left")
     )
-    mp_con.register("d2", dist2)
+    mp_con.register("quarterly_joined", quarterly_joined)
     mp_con.register("cq", cq_extra)
-    dist3 = mp_con.execute("""
+    panel = mp_con.execute("""
         SELECT a.*, b.niq AS NIQ, b.ltq AS LTQ, b.cheq AS CHEQ,
                b.datadate AS datadate_q2, b.rdq AS rdq_q2
-        FROM d2 a LEFT JOIN cq b
+        FROM quarterly_joined a LEFT JOIN cq b
           ON a.permno = b.permno AND a.eom >= b.rdq_crsp AND a.eom < b.lead_rdq_crsp
     """).pl()
     return (
-        dist3.sort(
+        panel.sort(
             ["permno", "eom", "datadate_q2", "rdq_q2"], descending=[False, False, True, True]
         )
         .unique(subset=["permno", "eom"], keep="first", maintain_order=True)
@@ -7973,9 +7975,9 @@ def _mp_distress_quarterly_inputs(
     )
 
 
-def _mp_distress_nimtaavg(dist3: pl.DataFrame) -> tuple[pl.DataFrame, date]:
+def _mp_distress_nimtaavg(panel: pl.DataFrame) -> tuple[pl.DataFrame, date]:
     nimta_mean = (
-        dist3.filter(col("NIMTA").is_not_null())
+        panel.filter(col("NIMTA").is_not_null())
         .group_by("eom")
         .agg(mean_NIMTA=col("NIMTA").mean(), _f=pl.len())
         .filter(col("_f") >= 10)
@@ -7985,16 +7987,16 @@ def _mp_distress_nimtaavg(dist3: pl.DataFrame) -> tuple[pl.DataFrame, date]:
     min_eom = nimta_mean["eom"].min()
     floor_eom = pl.select(_mp_offset_months(pl.lit(min_eom), -12)).item()
 
-    dist3 = (
-        dist3.join(nimta_mean.select("eom", "mean_NIMTA"), on="eom", how="left")
+    panel = (
+        panel.join(nimta_mean.select("eom", "mean_NIMTA"), on="eom", how="left")
         .with_columns(adj_NIMTA=pl.coalesce(col("NIMTA"), col("mean_NIMTA")))
         .drop("mean_NIMTA")
         .sort("permno", "eom")
     )
 
     scale_n = (1 - _MP_R**3) / (1 - _MP_R**12)
-    dist3 = (
-        dist3.with_columns(
+    panel = (
+        panel.with_columns(
             nimta_lag0=col("adj_NIMTA"),
             nimta_lag3=col("adj_NIMTA").shift(3).over("permno"),
             nimta_lag6=col("adj_NIMTA").shift(6).over("permno"),
@@ -8028,15 +8030,15 @@ def _mp_distress_nimtaavg(dist3: pl.DataFrame) -> tuple[pl.DataFrame, date]:
             .otherwise(None)
         )
     )
-    return dist3, floor_eom
+    return panel, floor_eom
 
 
-def _mp_distress_exretavg(dist3: pl.DataFrame, floor_eom: date) -> pl.DataFrame:
+def _mp_distress_exretavg(panel: pl.DataFrame, floor_eom: date) -> pl.DataFrame:
     exret_mean = (
-        dist3.filter(col("EXRET").is_not_null()).group_by("eom").agg(mean_EXRET=col("EXRET").mean())
+        panel.filter(col("EXRET").is_not_null()).group_by("eom").agg(mean_EXRET=col("EXRET").mean())
     )
-    dist3 = (
-        dist3.join(exret_mean, on="eom", how="left")
+    panel = (
+        panel.join(exret_mean, on="eom", how="left")
         .with_columns(adj_EXRET=pl.coalesce(col("EXRET"), col("mean_EXRET")))
         .drop("mean_EXRET")
         .filter(col("eom") >= floor_eom)
@@ -8044,7 +8046,7 @@ def _mp_distress_exretavg(dist3: pl.DataFrame, floor_eom: date) -> pl.DataFrame:
     )
 
     scale_e = (1 - _MP_R) / (1 - _MP_R**12)
-    dist3 = dist3.with_columns(
+    panel = panel.with_columns(
         [col("adj_EXRET").shift(i).over("permno").alias(f"el{i}") for i in range(12)]
         + [col("eom").shift(i).over("permno").alias(f"eoml{i}") for i in range(12)]
     )
@@ -8053,7 +8055,7 @@ def _mp_distress_exretavg(dist3: pl.DataFrame, floor_eom: date) -> pl.DataFrame:
         consec = consec & (col(f"eoml{i}") == _mp_offset_months("eom", -i))
         consec = consec & col(f"el{i}").is_not_null()
     weighted = sum(col(f"el{i}") * (_MP_R**i) for i in range(12))
-    return dist3.with_columns(EXRETAVG=pl.when(consec).then(scale_e * weighted).otherwise(None))
+    return panel.with_columns(EXRETAVG=pl.when(consec).then(scale_e * weighted).otherwise(None))
 
 
 def _mp_distress_sigma(crsp_daily: pl.DataFrame) -> pl.DataFrame:
@@ -8100,9 +8102,9 @@ def _mp_distress_sigma(crsp_daily: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def _mp_distress_final_score(dist4: pl.DataFrame, sigma: pl.DataFrame) -> pl.DataFrame:
-    dist5 = (
-        dist4.join(sigma, on=["permno", "eom"], how="left")
+def _mp_distress_final_score(chs_inputs: pl.DataFrame, sigma: pl.DataFrame) -> pl.DataFrame:
+    scored = (
+        chs_inputs.join(sigma, on=["permno", "eom"], how="left")
         .sort("permno", "eom")
         .with_columns(
             eom_prev=col("eom").shift(1).over("permno"),
@@ -8119,15 +8121,15 @@ def _mp_distress_final_score(dist4: pl.DataFrame, sigma: pl.DataFrame) -> pl.Dat
         )
     )
 
-    dist5 = _mp_winsorize_per_group(
-        dist5,
+    scored = _mp_winsorize_per_group(
+        scored,
         ["NIMTAAVG", "lag_TLMTA", "EXRETAVG", "RSIZE", "lag_CASHMTA", "lag_MB", "SIGMA"],
         lo=5,
         hi=95,
         by="eom",
     )
 
-    dist5 = dist5.filter(
+    scored = scored.filter(
         col("NIMTAAVG").is_not_null()
         & col("lag_TLMTA").is_not_null()
         & col("EXRETAVG").is_not_null()
@@ -8138,7 +8140,7 @@ def _mp_distress_final_score(dist4: pl.DataFrame, sigma: pl.DataFrame) -> pl.Dat
         & col("SIGMA").is_not_null()
     )
 
-    return dist5.with_columns(
+    return scored.with_columns(
         distress=MP_DISTRESS_BETAS["intercept"]
         + MP_DISTRESS_BETAS["NIMTAAVG"] * col("NIMTAAVG")
         + MP_DISTRESS_BETAS["TLMTA"] * col("lag_TLMTA")
@@ -8182,17 +8184,17 @@ def _mp_compute_distress(mp_con, raw_dir: Path, interim_dir: Path) -> pl.DataFra
         "pstkrq",
     )
 
-    dist1 = _mp_distress_market_inputs(crsp_monthly_panel, msp)
+    market_inputs = _mp_distress_market_inputs(crsp_monthly_panel, msp)
     be = _mp_distress_book_equity_mb(cq_base, crsp_monthly_panel)
-    dist3 = _mp_distress_quarterly_inputs(dist1, be, cq_base, compustat_quarterly, mp_con)
-    dist3, floor_eom = _mp_distress_nimtaavg(dist3)
-    dist3 = _mp_distress_exretavg(dist3, floor_eom)
+    panel = _mp_distress_quarterly_inputs(market_inputs, be, cq_base, compustat_quarterly, mp_con)
+    panel, floor_eom = _mp_distress_nimtaavg(panel)
+    panel = _mp_distress_exretavg(panel, floor_eom)
 
-    dist4 = dist3.select(
+    chs_inputs = panel.select(
         "eom", "permno", "NIMTAAVG", "TLMTA", "EXRETAVG", "RSIZE", "CASHMTA", "MB", "PRICE"
     )
     sigma = _mp_distress_sigma(_mp_read("crsp_daily", interim_dir))
-    distress = _mp_distress_final_score(dist4, sigma)
+    distress = _mp_distress_final_score(chs_inputs, sigma)
 
     out = (
         crsp_monthly_panel.select("permno", "eom")
@@ -8793,25 +8795,27 @@ def _mp_world_load_fundq_global(raw_dir: Path) -> pl.DataFrame:
     return pl.concat([fq_us, fq_g], how="diagonal_relaxed")
 
 
-def _mp_world_compute_jkp_anomalies(wd: pl.DataFrame) -> dict[str, pl.DataFrame]:
+def _mp_world_compute_jkp_anomalies(world_data: pl.DataFrame) -> dict[str, pl.DataFrame]:
     """For 7 SY anomalies covered by jkp pre-computed chars, return per-anomaly
     (id, eom, value) frames. World only — US still computes its own."""
     out = {}
     for sy_name, jkp_col in _MP_WORLD_JKP_CHAR.items():
-        out[sy_name] = wd.select(
+        out[sy_name] = world_data.select(
             "id", "eom", "excntry", col(jkp_col).alias(sy_name.lower())
         ).filter(col(sy_name.lower()).is_not_null())
     return out
 
 
-def _mp_world_compute_momentum(wm: pl.DataFrame) -> pl.DataFrame:
-    """11-month log-return momentum (months t-2..t-12), per id. wm has id, eom, ret."""
-    m3 = wm.select("id", "excntry", "eom", "ret").with_columns(log_1p_ret=(1 + col("ret")).log())
+def _mp_world_compute_momentum(world_monthly: pl.DataFrame) -> pl.DataFrame:
+    """11-month log-return momentum (months t-2..t-12), per id. world_monthly has id, eom, ret."""
+    log_rets = world_monthly.select("id", "excntry", "eom", "ret").with_columns(
+        log_1p_ret=(1 + col("ret")).log()
+    )
     roll = _mp_rolling_calendar_sum(
-        m3, "log_1p_ret", lag_min=2, lag_max=12, n_required=11, id_col="id"
+        log_rets, "log_1p_ret", lag_min=2, lag_max=12, n_required=11, id_col="id"
     )
     return (
-        m3.select("id", "excntry", "eom")
+        log_rets.select("id", "excntry", "eom")
         .join(roll, on=["id", "eom"], how="left")
         .with_columns(momentum=col("r").exp() - 1)
         .select("id", "excntry", "eom", "momentum")
@@ -8819,20 +8823,20 @@ def _mp_world_compute_momentum(wm: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def _mp_world_compute_composite_issue(wm: pl.DataFrame) -> pl.DataFrame:
+def _mp_world_compute_composite_issue(world_monthly: pl.DataFrame) -> pl.DataFrame:
     """log(me_t / me_{t-12}) - cum_log_ret_12, lagged 5 months. USD-consistent
     (both me and ret from world_msf, both end-of-period USD)."""
-    m3 = wm.select("id", "excntry", "eom", "me", "ret").with_columns(
+    log_rets = world_monthly.select("id", "excntry", "eom", "me", "ret").with_columns(
         log_1p_ret=(1 + col("ret")).log()
     )
     cumret = _mp_rolling_calendar_sum(
-        m3, "log_1p_ret", lag_min=0, lag_max=11, n_required=12, id_col="id"
+        log_rets, "log_1p_ret", lag_min=0, lag_max=11, n_required=12, id_col="id"
     )
-    me_lag12 = m3.select("id", "eom", col("me").alias("me_lag12")).with_columns(
+    me_lag12 = log_rets.select("id", "eom", col("me").alias("me_lag12")).with_columns(
         eom=_mp_offset_months("eom", 12)
     )
     composite_t = (
-        m3.select("id", "excntry", "eom", "me")
+        log_rets.select("id", "excntry", "eom", "me")
         .join(me_lag12, on=["id", "eom"], how="left")
         .join(cumret, on=["id", "eom"], how="left")
         .select(
@@ -8842,7 +8846,7 @@ def _mp_world_compute_composite_issue(wm: pl.DataFrame) -> pl.DataFrame:
         )
     )
     return (
-        m3.select("id", "excntry", "eom")
+        log_rets.select("id", "excntry", "eom")
         .with_columns(eom_src=_mp_offset_months("eom", -5))
         .join(composite_t, on=["id", "eom_src"], how="left")
         .select("eom", "id", "excntry", "composite_issue")
@@ -8850,16 +8854,18 @@ def _mp_world_compute_composite_issue(wm: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def _mp_world_compute_stock_issue(wm: pl.DataFrame) -> pl.DataFrame:
+def _mp_world_compute_stock_issue(world_monthly: pl.DataFrame) -> pl.DataFrame:
     """log(shares_t * adjfct_t / shares_{t-12} * adjfct_{t-12}) — share count, FX-agnostic."""
-    m3 = (
-        wm.select("id", "excntry", "eom", "shares", "adjfct")
+    log_rets = (
+        world_monthly.select("id", "excntry", "eom", "shares", "adjfct")
         .with_columns(adj_shares=col("shares") * col("adjfct"))
         .sort("id", "eom")
     )
     # Lag 12 months
-    src = m3.select("id", col("eom").alias("eom_src"), col("adj_shares").alias("adj_shares_lag12"))
-    tgt = m3.select("id", "excntry", "eom", "adj_shares").with_columns(
+    src = log_rets.select(
+        "id", col("eom").alias("eom_src"), col("adj_shares").alias("adj_shares_lag12")
+    )
+    tgt = log_rets.select("id", "excntry", "eom", "adj_shares").with_columns(
         eom_src=_mp_offset_months("eom", -12)
     )
     return (
@@ -8879,15 +8885,17 @@ def _mp_world_compute_stock_issue(wm: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def _mp_world_distress_market_inputs(wm: pl.DataFrame, market_m: pl.DataFrame) -> pl.DataFrame:
+def _mp_world_distress_market_inputs(
+    world_monthly: pl.DataFrame, market_m: pl.DataFrame
+) -> pl.DataFrame:
     """Market inputs per (id, eom): formation-lagged ME, PRICE, EXRET, RSIZE.
     World analog of _mp_distress_market_inputs (market_returns vs msp500)."""
     msp = market_m.rename({"mkt_vw": "sprtrn", "me_lag1": "totval"})
-    m3_full = wm.select(
+    crsp_full = world_monthly.select(
         "id", "excntry", "eom", col("prc").alias("PRC"), col("ret").alias("RET"), col("me")
     )
     return (
-        m3_full.with_columns(prc=col("PRC").abs().clip(upper_bound=15.0))
+        crsp_full.with_columns(prc=col("PRC").abs().clip(upper_bound=15.0))
         .join(msp, on=["excntry", "eom"], how="left")
         .with_columns(
             PRICE=col("prc").log(),
@@ -8975,7 +8983,9 @@ def _mp_world_distress_fundq(raw_dir: Path) -> pl.DataFrame:
     )
 
 
-def _mp_world_distress_book_equity_mb(fundq: pl.DataFrame, wm: pl.DataFrame) -> pl.DataFrame:
+def _mp_world_distress_book_equity_mb(
+    fundq: pl.DataFrame, world_monthly: pl.DataFrame
+) -> pl.DataFrame:
     """BE via Davis-FF waterfall (missing pstkrq handled for global), then
     adj_BE = BE + 0.1*(ME - BE) floored at 1 and MB = ME / adj_BE."""
     return (
@@ -8992,7 +9002,7 @@ def _mp_world_distress_book_equity_mb(fundq: pl.DataFrame, wm: pl.DataFrame) -> 
         )
         .with_columns(eom_match=col("datadate").dt.month_end())
         .join(
-            wm.select("id", "gvkey", "eom", col("me").alias("ME")),
+            world_monthly.select("id", "gvkey", "eom", col("me").alias("ME")),
             left_on=["gvkey", "eom_match"],
             right_on=["gvkey", "eom"],
             how="inner",
@@ -9010,7 +9020,7 @@ def _mp_world_distress_book_equity_mb(fundq: pl.DataFrame, wm: pl.DataFrame) -> 
 
 
 def _mp_world_distress_quarterly_join(
-    dist1: pl.DataFrame,
+    market_inputs: pl.DataFrame,
     id_gvkey: pl.DataFrame,
     be: pl.DataFrame,
     fundq: pl.DataFrame,
@@ -9018,25 +9028,25 @@ def _mp_world_distress_quarterly_join(
 ) -> pl.DataFrame:
     """Window-join MB/ME then NIQ/LTQ/CHEQ onto (id, eom) via the gvkey rdq
     windows; derive NIMTA/TLMTA/CASHMTA."""
-    # Join dist1 to quarterly via id+eom window. Window uses gvkey-defined rdq_crsp.
+    # Join market_inputs to quarterly via id+eom window. Window uses gvkey-defined rdq_crsp.
     # Need (id, eom) → applicable (gvkey, rdq window). Use id_gvkey to translate.
-    mp_con.register("d1", dist1.join(id_gvkey, on=["id", "eom"], how="left"))
+    mp_con.register("market_inputs", market_inputs.join(id_gvkey, on=["id", "eom"], how="left"))
     mp_con.register(
         "be",
         be.select(
             "gvkey", "datadate", "rdq", "rdq_crsp", "lead_rdq_crsp", "MB", col("ME").alias("ME_lag")
         ),
     )
-    dist2 = mp_con.execute("""
+    quarterly_joined = mp_con.execute("""
         SELECT a.*, b.MB, b.ME_lag, b.datadate AS datadate_q, b.rdq AS rdq_be
-        FROM d1 a LEFT JOIN be b
+        FROM market_inputs a LEFT JOIN be b
           ON a.gvkey = b.gvkey AND a.eom >= b.rdq_crsp AND a.eom < b.lead_rdq_crsp
     """).pl()
     # `be` carries one row per (gvkey, datadate, share-class id), so a panel row
     # can match several b rows tied on (datadate_q, rdq_be) but with different
     # MB/ME_lag. MB/ME_lag DESC make the pick deterministic under the parallel
     # sort (ties beyond that have identical payloads).
-    dist2 = dist2.sort(
+    quarterly_joined = quarterly_joined.sort(
         ["id", "eom", "datadate_q", "rdq_be", "MB", "ME_lag"],
         descending=[False, False, True, True, True, True],
         nulls_last=True,
@@ -9045,16 +9055,16 @@ def _mp_world_distress_quarterly_join(
     cq_extra = fundq.select(
         "gvkey", "datadate", "rdq", "rdq_crsp", "lead_rdq_crsp", "niq", "cheq", "ltq"
     )
-    mp_con.register("d2", dist2)
+    mp_con.register("quarterly_joined", quarterly_joined)
     mp_con.register("cq", cq_extra)
-    dist3 = mp_con.execute("""
+    panel = mp_con.execute("""
         SELECT a.*, b.niq AS NIQ, b.ltq AS LTQ, b.cheq AS CHEQ,
                b.datadate AS datadate_q2, b.rdq AS rdq_q2
-        FROM d2 a LEFT JOIN cq b
+        FROM quarterly_joined a LEFT JOIN cq b
           ON a.gvkey = b.gvkey AND a.eom >= b.rdq_crsp AND a.eom < b.lead_rdq_crsp
     """).pl()
     return (
-        dist3.sort(["id", "eom", "datadate_q2", "rdq_q2"], descending=[False, False, True, True])
+        panel.sort(["id", "eom", "datadate_q2", "rdq_q2"], descending=[False, False, True, True])
         .unique(subset=["id", "eom"], keep="first", maintain_order=True)
         .with_columns(
             NIMTA=safe_div(col("NIQ"), col("LTQ") + col("ME_lag") / 1000, "NIMTA"),
@@ -9064,18 +9074,18 @@ def _mp_world_distress_quarterly_join(
     )
 
 
-def _mp_world_distress_nimtaavg(dist3: pl.DataFrame) -> pl.DataFrame:
+def _mp_world_distress_nimtaavg(panel: pl.DataFrame) -> pl.DataFrame:
     """NIMTAAVG: per-(excntry, eom) mean fill (>= 10 obs), then 4-quarter
     geometrically weighted average over consecutive months."""
     nimta_mean = (
-        dist3.filter(col("NIMTA").is_not_null())
+        panel.filter(col("NIMTA").is_not_null())
         .group_by("excntry", "eom")
         .agg(mean_NIMTA=col("NIMTA").mean(), _f=pl.len())
         .filter(col("_f") >= 10)
     )
     scale_n = (1 - _MP_R**3) / (1 - _MP_R**12)
     return (
-        dist3.join(
+        panel.join(
             nimta_mean.select("excntry", "eom", "mean_NIMTA"), on=["excntry", "eom"], how="left"
         )
         .with_columns(adj_NIMTA=pl.coalesce(col("NIMTA"), col("mean_NIMTA")))
@@ -9117,11 +9127,11 @@ def _mp_world_distress_nimtaavg(dist3: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def _mp_world_distress_exretavg(dist3: pl.DataFrame) -> pl.DataFrame:
+def _mp_world_distress_exretavg(panel: pl.DataFrame) -> pl.DataFrame:
     """EXRETAVG: per-(excntry, eom) mean fill, then 12-month geometrically
     weighted average over consecutive months."""
     exret_mean = (
-        dist3.filter(col("EXRET").is_not_null())
+        panel.filter(col("EXRET").is_not_null())
         .group_by("excntry", "eom")
         .agg(mean_EXRET=col("EXRET").mean())
     )
@@ -9132,7 +9142,7 @@ def _mp_world_distress_exretavg(dist3: pl.DataFrame) -> pl.DataFrame:
         consec = consec & col(f"el{i}").is_not_null()
     weighted = sum(col(f"el{i}") * (_MP_R**i) for i in range(12))
     return (
-        dist3.join(exret_mean, on=["excntry", "eom"], how="left")
+        panel.join(exret_mean, on=["excntry", "eom"], how="left")
         .with_columns(adj_EXRET=pl.coalesce(col("EXRET"), col("mean_EXRET")))
         .drop("mean_EXRET")
         .sort("id", "eom")
@@ -9144,10 +9154,12 @@ def _mp_world_distress_exretavg(dist3: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def _mp_world_distress_sigma(wd_daily: pl.DataFrame, wm: pl.DataFrame) -> pl.DataFrame:
+def _mp_world_distress_sigma(
+    world_daily: pl.DataFrame, world_monthly: pl.DataFrame
+) -> pl.DataFrame:
     """SIGMA: annualized 3-month rolling daily volatility from world_dsf,
     cross-sectionally mean-filled per (excntry, eom)."""
-    daily = wd_daily.with_columns(eom=col("date").dt.month_end())
+    daily = world_daily.with_columns(eom=col("date").dt.month_end())
     monthly = (
         daily.with_columns(ret2=col("ret") ** 2)
         .group_by("id", "eom")
@@ -9183,7 +9195,7 @@ def _mp_world_distress_sigma(wd_daily: pl.DataFrame, wm: pl.DataFrame) -> pl.Dat
 
     # Cross-sectional fill per (excntry, eom). Attach excntry first.
     sigma_with_x = sigma.join(
-        wm.select("id", "eom", "excntry")
+        world_monthly.select("id", "eom", "excntry")
         .sort(["id", "eom", "excntry"])
         .unique(["id", "eom"], keep="first", maintain_order=True),
         on=["id", "eom"],
@@ -9201,14 +9213,14 @@ def _mp_world_distress_sigma(wd_daily: pl.DataFrame, wm: pl.DataFrame) -> pl.Dat
     )
 
 
-def _mp_world_distress_final_score(dist3: pl.DataFrame, sigma: pl.DataFrame) -> pl.DataFrame:
+def _mp_world_distress_final_score(panel: pl.DataFrame, sigma: pl.DataFrame) -> pl.DataFrame:
     """Lag MB/TLMTA/CASHMTA (gap-gated), winsorize per (excntry, eom) at
     5/95, require all inputs, apply CHS coefficients."""
-    dist4 = dist3.select(
+    chs_inputs = panel.select(
         "id", "excntry", "eom", "NIMTAAVG", "TLMTA", "EXRETAVG", "RSIZE", "CASHMTA", "MB", "PRICE"
     )
-    dist5 = (
-        dist4.join(sigma, on=["id", "eom"], how="left")
+    scored = (
+        chs_inputs.join(sigma, on=["id", "eom"], how="left")
         .sort("id", "eom")
         .with_columns(
             eom_prev=col("eom").shift(1).over("id"),
@@ -9228,13 +9240,13 @@ def _mp_world_distress_final_score(dist3: pl.DataFrame, sigma: pl.DataFrame) -> 
     # Winsorize per (excntry, eom)
     wins_cols = ["NIMTAAVG", "lag_TLMTA", "EXRETAVG", "RSIZE", "lag_CASHMTA", "lag_MB", "SIGMA"]
     bounds = _mp_polars_sql(
-        dist5,
+        scored,
         f"""SELECT excntry, eom,
                   {", ".join(f"quantile_disc({c}, 0.05) AS _{c}_lo, quantile_disc({c}, 0.95) AS _{c}_hi" for c in wins_cols)}
             FROM src GROUP BY excntry, eom""",
     )
     return (
-        dist5.join(bounds, on=["excntry", "eom"], how="left")
+        scored.join(bounds, on=["excntry", "eom"], how="left")
         .with_columns(
             [
                 pl.when(col(c) > col(f"_{c}_hi"))
@@ -9273,7 +9285,11 @@ def _mp_world_distress_final_score(dist3: pl.DataFrame, sigma: pl.DataFrame) -> 
 
 
 def _mp_world_compute_distress(
-    wm: pl.DataFrame, wd_daily: pl.DataFrame, market_m: pl.DataFrame, mp_con, raw_dir: Path
+    world_monthly: pl.DataFrame,
+    world_daily: pl.DataFrame,
+    market_m: pl.DataFrame,
+    mp_con,
+    raw_dir: Path,
 ) -> pl.DataFrame:
     """
     Description:
@@ -9291,47 +9307,52 @@ def _mp_world_compute_distress(
     Output:
         (eom, id, excntry, distress) frame.
     """
-    dist1 = _mp_world_distress_market_inputs(wm, market_m)
+    market_inputs = _mp_world_distress_market_inputs(world_monthly, market_m)
 
-    if "gvkey" not in wm.columns:
+    if "gvkey" not in world_monthly.columns:
         raise RuntimeError("world wm must carry gvkey for distress linkage")
     id_gvkey = (
-        wm.select("id", "gvkey", "eom")
+        world_monthly.select("id", "gvkey", "eom")
         .sort(["id", "eom", "gvkey"])
         .unique(subset=["id", "eom"], keep="first", maintain_order=True)
     )
 
     fundq = _mp_world_distress_fundq(raw_dir)
-    be = _mp_world_distress_book_equity_mb(fundq, wm)
+    be = _mp_world_distress_book_equity_mb(fundq, world_monthly)
     return (
-        _mp_world_distress_quarterly_join(dist1, id_gvkey, be, fundq, mp_con)
+        _mp_world_distress_quarterly_join(market_inputs, id_gvkey, be, fundq, mp_con)
         .pipe(_mp_world_distress_nimtaavg)
         .pipe(_mp_world_distress_exretavg)
-        .pipe(_mp_world_distress_final_score, _mp_world_distress_sigma(wd_daily, wm))
+        .pipe(
+            _mp_world_distress_final_score,
+            _mp_world_distress_sigma(world_daily, world_monthly),
+        )
     )
 
 
 def _mp_world_build_anomalies_panel(
-    wm: pl.DataFrame,
-    wd: pl.DataFrame,
+    world_monthly: pl.DataFrame,
+    world_data: pl.DataFrame,
     market_m: pl.DataFrame,
     world_daily: pl.DataFrame,
     mp_con,
     raw_dir: Path,
 ) -> dict[str, pl.DataFrame]:
     """Assemble per-anomaly (id, eom, excntry, value) frames into a unified panel."""
-    anomalies = _mp_world_compute_jkp_anomalies(wd)
-    anomalies["MOMENTUM"] = _mp_world_compute_momentum(wm)
-    anomalies["COMPOSITE_ISSUE"] = _mp_world_compute_composite_issue(wm)
-    anomalies["STOCK_ISSUE"] = _mp_world_compute_stock_issue(wm)
-    anomalies["DISTRESS"] = _mp_world_compute_distress(wm, world_daily, market_m, mp_con, raw_dir)
+    anomalies = _mp_world_compute_jkp_anomalies(world_data)
+    anomalies["MOMENTUM"] = _mp_world_compute_momentum(world_monthly)
+    anomalies["COMPOSITE_ISSUE"] = _mp_world_compute_composite_issue(world_monthly)
+    anomalies["STOCK_ISSUE"] = _mp_world_compute_stock_issue(world_monthly)
+    anomalies["DISTRESS"] = _mp_world_compute_distress(
+        world_monthly, world_daily, market_m, mp_con, raw_dir
+    )
     return anomalies
 
 
-def _mp_world_monthly_lagged_me_panel(wm: pl.DataFrame) -> pl.DataFrame:
+def _mp_world_monthly_lagged_me_panel(world_monthly: pl.DataFrame) -> pl.DataFrame:
     """Lag-ME panel for world: id, eom, excntry, prc, ret, ME, mktcap, lag_prc."""
     return (
-        wm.select("id", "eom", "excntry", "prc", "ret", "me")
+        world_monthly.select("id", "eom", "excntry", "prc", "ret", "me")
         .rename({"prc": "prc", "ret": "ret", "me": "ME"})
         .with_columns(prc=col("prc").abs())
         .sort("id", "eom")
@@ -9374,11 +9395,13 @@ def _mp_world_percentile_rank_anomalies(
 
 
 def _mp_world_build_mispricing_panel(
-    wm, wd, market_m, world_daily, min_stks, mp_con, raw_dir: Path
+    world_monthly, world_data, market_m, world_daily, min_stks, mp_con, raw_dir: Path
 ):
-    anomalies = _mp_world_build_anomalies_panel(wm, wd, market_m, world_daily, mp_con, raw_dir)
+    anomalies = _mp_world_build_anomalies_panel(
+        world_monthly, world_data, market_m, world_daily, mp_con, raw_dir
+    )
     panel = _mp_world_percentile_rank_anomalies(
-        _mp_world_monthly_lagged_me_panel(wm), anomalies, min_stks, mp_con
+        _mp_world_monthly_lagged_me_panel(world_monthly), anomalies, min_stks, mp_con
     )
     pct_cols = [f"pct_{a}" for a in MP_ANOMALY_LIST]
     return (
@@ -9393,18 +9416,51 @@ def _mp_world_build_mispricing_panel(
     )
 
 
-def _mp_stage1_load_returns(raw_dir: Path, interim_dir: Path) -> dict[str, pl.DataFrame]:
+class MpReturnsData(NamedTuple):
+    """World return/ME handles loaded by MP Stage 1; US data lives on disk
+    as interim parquets accessed via `_mp_read` downstream."""
+
+    world_data: pl.DataFrame
+    world_daily: pl.DataFrame
+    market_monthly: pl.DataFrame
+
+
+class MpPortfolioPanels(NamedTuple):
+    """MP Stage 4 output per region: per-stock mispricing panel, mgmt/perf
+    2x3 bucket legs, and the SMB (score-neutral) panel."""
+
+    us_panel: pl.DataFrame
+    us_legs: dict[str, pl.DataFrame]
+    us_smb: pl.DataFrame
+    world_panel: pl.DataFrame
+    world_legs: dict[str, pl.DataFrame]
+    world_smb: pl.DataFrame
+
+
+class MpRegionOutputs(NamedTuple):
+    """MP Stage 5 output per region: monthly/daily factor returns and
+    per-stock mispricing scores, each tagged with `excntry`."""
+
+    monthly_us: pl.DataFrame
+    daily_us: pl.DataFrame
+    chars_us: pl.DataFrame
+    monthly_world: pl.DataFrame
+    daily_world: pl.DataFrame
+    chars_world: pl.DataFrame
+
+
+def _mp_stage1_load_returns(raw_dir: Path, interim_dir: Path) -> MpReturnsData:
     """Stage 1: Load + filter return/ME panels.
     US: writes crsp_monthly, crsp_monthly_full, crsp_daily interim parquets.
     World: loads world_data, world_dsf, market_returns into memory.
-    Returns dict with world handles; US data accessed via _mp_read downstream.
     """
     _mp_build_crsp_monthly(raw_dir, interim_dir)
     _mp_build_crsp_daily(raw_dir, interim_dir)
-    wd = _mp_world_load_world_data(interim_dir)
-    world_daily = _mp_world_load_world_dsf(interim_dir)
-    market_m = _mp_world_load_market(interim_dir, daily=False)
-    return {"wd": wd, "world_daily": world_daily, "market_m": market_m}
+    return MpReturnsData(
+        world_data=_mp_world_load_world_data(interim_dir),
+        world_daily=_mp_world_load_world_dsf(interim_dir),
+        market_monthly=_mp_world_load_market(interim_dir, daily=False),
+    )
 
 
 def _mp_stage2_load_fundamentals(mp_con, raw_dir: Path, interim_dir: Path) -> None:
@@ -9439,14 +9495,14 @@ def _mp_stage4_form_portfolios(
     min_stks_world: int,
     mp_con,
     mp_con_world,
-    wd: pl.DataFrame,
+    world_data: pl.DataFrame,
     world_daily: pl.DataFrame,
     market_m: pl.DataFrame,
     raw_dir: Path,
     interim_dir: Path,
-) -> dict[str, pl.DataFrame]:
+) -> MpPortfolioPanels:
     """Stage 4: Build per-stock mispricing panels + size/score buckets + legs + SMB
-    for US and world. Returns dict with US panel/legs/smb and world panel/legs/smb."""
+    for US and world."""
     us_panel = _mp_build_mispricing_panel(min_stks, mp_con, interim_dir)
     # US size median is NYSE-only (exchcd == 1), per-eom breaks.
     us_legs = _mp_build_legs_core(
@@ -9456,40 +9512,40 @@ def _mp_stage4_form_portfolios(
         size_break_sql="CASE WHEN exchcd = 1 THEN mktcap END",
     )
     us_smb = _mp_smb_panel_from_legs(us_legs, key_cols=("permno",))
-    wm = wd.select(
+    world_monthly = world_data.select(
         "id", "permno", "gvkey", "excntry", "eom", "me", "prc", "ret", "adjfct", "shares"
     )
     world_panel = _mp_world_build_mispricing_panel(
-        wm, wd, market_m, world_daily, min_stks_world, mp_con_world, raw_dir
+        world_monthly, world_data, market_m, world_daily, min_stks_world, mp_con_world, raw_dir
     )
     world_legs = _mp_build_legs_core(
         world_panel, min_fcts, group_keys=["excntry", "eom"], size_break_sql="mktcap"
     )
     world_smb = _mp_smb_panel_from_legs(world_legs, key_cols=("id", "excntry"))
-    return {
-        "us_panel": us_panel,
-        "us_legs": us_legs,
-        "us_smb": us_smb,
-        "world_panel": world_panel,
-        "world_legs": world_legs,
-        "world_smb": world_smb,
-    }
+    return MpPortfolioPanels(
+        us_panel=us_panel,
+        us_legs=us_legs,
+        us_smb=us_smb,
+        world_panel=world_panel,
+        world_legs=world_legs,
+        world_smb=world_smb,
+    )
 
 
 def _mp_stage5_compute_returns(
-    s4: dict[str, pl.DataFrame],
+    panels: MpPortfolioPanels,
     min_fcts: int,
     min_obs: int,
     min_obs_world: int,
     mp_con,
     mp_con_world,
     interim_dir: Path,
-) -> dict[str, pl.DataFrame]:
-    """Stage 5: Compute portfolio returns. Takes Stage 4 dict; returns dict with
-    pm_us, pd_us, sc_us, pm_world, pd_world, sc_world (each tagged with excntry)."""
+) -> MpRegionOutputs:
+    """Stage 5: Compute monthly/daily portfolio returns and stock scores from
+    the Stage 4 panels."""
     pm_us = _mp_build_portfolios_monthly_core(
-        s4["us_legs"],
-        s4["us_smb"],
+        panels.us_legs,
+        panels.us_smb,
         min_obs,
         by="eom",
         truncate_thin=True,
@@ -9497,8 +9553,8 @@ def _mp_stage5_compute_returns(
         out_sort=["eom"],
     )
     pd_us = _mp_build_portfolios_daily_core(
-        s4["us_legs"],
-        s4["us_smb"],
+        panels.us_legs,
+        panels.us_smb,
         min_obs,
         mp_con,
         daily_path=(interim_dir / "crsp_daily.parquet").as_posix(),
@@ -9512,14 +9568,14 @@ def _mp_stage5_compute_returns(
         out_sort=["date"],
     )
     sc_us = _mp_build_stock_scores_core(
-        s4["us_panel"],
+        panels.us_panel,
         min_fcts,
         sort_keys=["permno", "eom"],
         select_cols=[col("permno").alias("id"), "eom"],
     )
     pm_world = _mp_build_portfolios_monthly_core(
-        s4["world_legs"],
-        s4["world_smb"],
+        panels.world_legs,
+        panels.world_smb,
         min_obs_world,
         by=["excntry", "eom"],
         truncate_thin=False,
@@ -9527,8 +9583,8 @@ def _mp_stage5_compute_returns(
         out_sort=["excntry", "eom"],
     )
     pd_world = _mp_build_portfolios_daily_core(
-        s4["world_legs"],
-        s4["world_smb"],
+        panels.world_legs,
+        panels.world_smb,
         min_obs_world,
         mp_con_world,
         daily_path=(interim_dir / "world_dsf.parquet").as_posix(),
@@ -9542,67 +9598,62 @@ def _mp_stage5_compute_returns(
         out_sort=["excntry", "date"],
     )
     sc_world = _mp_build_stock_scores_core(
-        s4["world_panel"],
+        panels.world_panel,
         min_fcts,
         sort_keys=["id", "eom"],
         select_cols=["id", "eom", "excntry"],
     )
-    return {
-        "pm_us": pm_us.with_columns(excntry=pl.lit("USA")),
-        "pd_us": pd_us.with_columns(excntry=pl.lit("USA")),
+    return MpRegionOutputs(
+        monthly_us=pm_us.with_columns(excntry=pl.lit("USA")),
+        daily_us=pd_us.with_columns(excntry=pl.lit("USA")),
         # Keep `id` as Int64 to match jkp convention (world_msf.id = BIGINT for both
         # US permnos and Compustat-derived ids per `combine_crsp_comp_sf`). Casting to
         # String would break outer-joins in `ap_factor_model_data` against ff/hxz chars.
-        "sc_us": sc_us.with_columns(excntry=pl.lit("USA"), id=col("id").cast(pl.Int64)),
-        "pm_world": pm_world,
-        "pd_world": pd_world,
-        "sc_world": sc_world.with_columns(id=col("id").cast(pl.Int64)),
-    }
+        chars_us=sc_us.with_columns(excntry=pl.lit("USA"), id=col("id").cast(pl.Int64)),
+        monthly_world=pm_world,
+        daily_world=pd_world,
+        chars_world=sc_world.with_columns(id=col("id").cast(pl.Int64)),
+    )
+
+
+def _mp_concat_write(
+    us: pl.DataFrame, world: pl.DataFrame, cols: list[str], sort_keys: list[str], path: Path
+) -> None:
+    """Concat the US and world frames on a shared column set, sort, write."""
+    pl.concat([us.select(*cols), world.select(*cols)], how="vertical_relaxed").sort(
+        *sort_keys
+    ).write_parquet(path)
 
 
 def _mp_stage6_write_outputs(
-    s5: dict[str, pl.DataFrame],
+    outputs: MpRegionOutputs,
     monthly_factors_path: Path,
     daily_factors_path: Path,
     chars_path: Path,
 ) -> None:
     """Stage 6: Concat US + world; write the monthly/daily factor and chars parquets."""
-    pm_us, pd_us, sc_us = s5["pm_us"], s5["pd_us"], s5["sc_us"]
-    pm_world, pd_world, sc_world = s5["pm_world"], s5["pd_world"], s5["sc_world"]
-
-    pm = pm_us.select("eom", "excntry", "smb_mispricing", "mispricing_mgmt", "mispricing_perf")
-    if pm_world is not None:
-        pm = pl.concat(
-            [
-                pm,
-                pm_world.select(
-                    "eom", "excntry", "smb_mispricing", "mispricing_mgmt", "mispricing_perf"
-                ),
-            ],
-            how="vertical_relaxed",
-        )
-    pm.sort("excntry", "eom").write_parquet(monthly_factors_path)
-
-    pd_all = pd_us.select("date", "excntry", "smb_mispricing", "mispricing_mgmt", "mispricing_perf")
-    if pd_world is not None:
-        pd_all = pl.concat(
-            [
-                pd_all,
-                pd_world.select(
-                    "date", "excntry", "smb_mispricing", "mispricing_mgmt", "mispricing_perf"
-                ),
-            ],
-            how="vertical_relaxed",
-        )
-    pd_all.sort("excntry", "date").write_parquet(daily_factors_path)
-
-    sc = sc_us.select("id", "eom", "mispricing_mgmt", "mispricing_perf")
-    if sc_world is not None:
-        sc = pl.concat(
-            [sc, sc_world.select("id", "eom", "mispricing_mgmt", "mispricing_perf")],
-            how="vertical_relaxed",
-        )
-    sc.sort("id", "eom").write_parquet(chars_path)
+    factor_cols = ["smb_mispricing", "mispricing_mgmt", "mispricing_perf"]
+    _mp_concat_write(
+        outputs.monthly_us,
+        outputs.monthly_world,
+        ["eom", "excntry", *factor_cols],
+        ["excntry", "eom"],
+        monthly_factors_path,
+    )
+    _mp_concat_write(
+        outputs.daily_us,
+        outputs.daily_world,
+        ["date", "excntry", *factor_cols],
+        ["excntry", "date"],
+        daily_factors_path,
+    )
+    _mp_concat_write(
+        outputs.chars_us,
+        outputs.chars_world,
+        ["id", "eom", "mispricing_mgmt", "mispricing_perf"],
+        ["id", "eom"],
+        chars_path,
+    )
 
 
 @measure_time
@@ -9640,25 +9691,25 @@ def gen_mispricing_data(
     mp_con_world = duckdb.connect()
     mp_con.execute("PRAGMA disable_progress_bar")
     mp_con_world.execute("PRAGMA disable_progress_bar")
-    rets = _mp_stage1_load_returns(raw_dir, interim_dir)
+    returns_data = _mp_stage1_load_returns(raw_dir, interim_dir)
     _mp_stage2_load_fundamentals(mp_con, raw_dir, interim_dir)
     _mp_stage3_compute_chars(mp_con, raw_dir, interim_dir)
-    s4 = _mp_stage4_form_portfolios(
+    panels = _mp_stage4_form_portfolios(
         min_stks,
         min_fcts,
         min_stks_world,
         mp_con,
         mp_con_world,
-        wd=rets["wd"],
-        world_daily=rets["world_daily"],
-        market_m=rets["market_m"],
+        world_data=returns_data.world_data,
+        world_daily=returns_data.world_daily,
+        market_m=returns_data.market_monthly,
         raw_dir=raw_dir,
         interim_dir=interim_dir,
     )
-    s5 = _mp_stage5_compute_returns(
-        s4, min_fcts, min_obs, min_obs_world, mp_con, mp_con_world, interim_dir
+    outputs = _mp_stage5_compute_returns(
+        panels, min_fcts, min_obs, min_obs_world, mp_con, mp_con_world, interim_dir
     )
-    _mp_stage6_write_outputs(s5, monthly_factors_path, daily_factors_path, chars_path)
+    _mp_stage6_write_outputs(outputs, monthly_factors_path, daily_factors_path, chars_path)
 
 
 def impute_high_low(df):
