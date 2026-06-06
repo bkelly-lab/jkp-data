@@ -133,7 +133,8 @@ def _keyring_backend() -> Iterator[_WrdsKeyring]:
 
 
 def _credentials_from_env() -> Credentials | None:
-    """Return env-var credentials if both ``WRDS_USERNAME`` and ``WRDS_PASSWORD`` are set."""
+    """Return env-var credentials if both ``WRDS_USERNAME`` and ``WRDS_PASSWORD`` are set to
+    non-empty values."""
     user = os.environ.get(ENV_USERNAME)
     password = os.environ.get(ENV_PASSWORD)
     if user and password:
