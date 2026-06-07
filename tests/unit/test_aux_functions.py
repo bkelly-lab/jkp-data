@@ -103,6 +103,8 @@ def _write_sf_fixture(raw_tables: Path, freq: str) -> tuple[date, date]:
             "dlycumfacshr": [1.0, 1.0],
             "dlyhigh": [20.5, 21.5],
             "dlylow": [19.5, 20.5],
+            "dlyopen": [19.8, 20.8],
+            "dlyclose": [20.0, 21.0],
         }
     ).write_parquet(raw_tables / "crsp_dsf_v2.parquet")
     return matched_date, unmatched_date
