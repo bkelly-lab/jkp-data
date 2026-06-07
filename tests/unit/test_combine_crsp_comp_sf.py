@@ -79,6 +79,8 @@ def _make_crsp_msf(tmp: Path, n_permnos: int = 500) -> None:
             "vol": _random_float_col(n),
             "ret": _random_float_col(n),
             "ret_exc": _random_float_col(n),
+            "ret_intraday": [None] * n,
+            "ret_overnight": [None] * n,
             "div_tot": _random_float_col(n, 0.8),
         }
     ).cast(
@@ -92,6 +94,8 @@ def _make_crsp_msf(tmp: Path, n_permnos: int = 500) -> None:
             "shrcd": pl.Int64,
             "exchcd": pl.Int64,
             "date": pl.Date,
+            "ret_intraday": pl.Float64,
+            "ret_overnight": pl.Float64,
         }
     )
     df.write_parquet(tmp / "crsp_msf.parquet")
@@ -161,6 +165,8 @@ def _make_comp_msf(
             "ret": _random_float_col(n),
             "ret_local": _random_float_col(n),
             "ret_exc": _random_float_col(n),
+            "ret_intraday": [None] * n,
+            "ret_overnight": [None] * n,
             "ret_lag_dif": ret_lag_dif,
             "div_tot": _random_float_col(n, 0.8),
             "div_cash": _random_float_col(n, 0.8),
@@ -179,6 +185,8 @@ def _make_comp_msf(
             "datadate": pl.Date,
             "eom": pl.Date,
             "ret_lag_dif": pl.Int64,
+            "ret_intraday": pl.Float64,
+            "ret_overnight": pl.Float64,
         }
     )
     df.write_parquet(tmp / "comp_msf.parquet")
@@ -209,6 +217,8 @@ def _make_crsp_dsf(tmp: Path, n_permnos: int = 200) -> None:
             "prc_low": _random_float_col(n),
             "ret": _random_float_col(n),
             "ret_exc": _random_float_col(n),
+            "ret_intraday": _random_float_col(n, 0.3),
+            "ret_overnight": _random_float_col(n, 0.3),
         }
     ).cast(
         {
@@ -263,6 +273,8 @@ def _make_comp_dsf(tmp: Path, n_gvkeys: int = 200) -> None:
             "ret_local": _random_float_col(n),
             "ret": _random_float_col(n),
             "ret_exc": _random_float_col(n),
+            "ret_intraday": _random_float_col(n, 0.3),
+            "ret_overnight": _random_float_col(n, 0.3),
             "ret_lag_dif": ret_lag_dif,
         }
     ).cast(
@@ -405,6 +417,8 @@ def _polars_combine_crsp_comp_sf(tmp: Path) -> tuple[pl.DataFrame, pl.DataFrame]
         "ret",
         "ret_local",
         "ret_exc",
+        "ret_intraday",
+        "ret_overnight",
         "ret_lag_dif",
         "div_tot",
         "div_cash",
@@ -419,7 +433,13 @@ def _polars_combine_crsp_comp_sf(tmp: Path) -> tuple[pl.DataFrame, pl.DataFrame]
     __msf_world = __msf_world.sort(["id", "eom"]).with_columns(
         ret_exc_lead1m=pl.when(pl.col("ret_lag_dif").shift(-1).over("id") != 1)
         .then(None)
-        .otherwise(pl.col("ret_exc").shift(-1).over("id"))
+        .otherwise(pl.col("ret_exc").shift(-1).over("id")),
+        ret_intraday_lead1m=pl.when(pl.col("ret_lag_dif").shift(-1).over("id") != 1)
+        .then(None)
+        .otherwise(pl.col("ret_intraday").shift(-1).over("id")),
+        ret_overnight_lead1m=pl.when(pl.col("ret_lag_dif").shift(-1).over("id") != 1)
+        .then(None)
+        .otherwise(pl.col("ret_overnight").shift(-1).over("id")),
     )
 
     obs_main = (
@@ -506,6 +526,8 @@ def _polars_combine_crsp_comp_sf(tmp: Path) -> tuple[pl.DataFrame, pl.DataFrame]
         "ret_local",
         "ret",
         "ret_exc",
+        "ret_intraday",
+        "ret_overnight",
         "ret_lag_dif",
         "source_crsp",
     ]
@@ -897,12 +919,16 @@ class TestUnionAndLead:
             "ret",
             "ret_local",
             "ret_exc",
+            "ret_intraday",
+            "ret_overnight",
             "ret_lag_dif",
             "div_tot",
             "div_cash",
             "div_spc",
             "source_crsp",
             "ret_exc_lead1m",
+            "ret_intraday_lead1m",
+            "ret_overnight_lead1m",
             "obs_main",
         }
         assert set(msf.columns) == expected
@@ -931,6 +957,8 @@ class TestUnionAndLead:
             "ret_local",
             "ret",
             "ret_exc",
+            "ret_intraday",
+            "ret_overnight",
             "ret_lag_dif",
             "source_crsp",
             "obs_main",
@@ -1125,6 +1153,8 @@ class TestDedupDeterminism:
             "ret": 0.01,
             "ret_local": 0.01,
             "ret_exc": 0.005,
+            "ret_intraday": None,
+            "ret_overnight": None,
             "ret_lag_dif": 1,
             "div_tot": None,
             "div_cash": None,
@@ -1142,6 +1172,8 @@ class TestDedupDeterminism:
                 "datadate": pl.Date,
                 "eom": pl.Date,
                 "ret_lag_dif": pl.Int64,
+                "ret_intraday": pl.Float64,
+                "ret_overnight": pl.Float64,
             }
         ).write_parquet(interim / "comp_msf.parquet")
         _make_crsp_msf(interim, n_permnos=0)
@@ -1182,6 +1214,8 @@ class TestDedupDeterminism:
             "ret_local": 0.01,
             "ret": 0.01,
             "ret_exc": 0.005,
+            "ret_intraday": 0.003,
+            "ret_overnight": 0.007,
             "ret_lag_dif": 1,
         }
         interim = _make_test_layout(tmp_path)
@@ -1389,6 +1423,8 @@ class TestEdgeCases:
                 "vol": [100.0, 100.0],
                 "ret": [0.01, 0.01],
                 "ret_exc": [0.005, 0.005],
+                "ret_intraday": [None, None],
+                "ret_overnight": [None, None],
                 "div_tot": [None, None],
             }
         ).cast(
@@ -1400,6 +1436,8 @@ class TestEdgeCases:
                 "shrcd": pl.Int64,
                 "exchcd": pl.Int64,
                 "date": pl.Date,
+                "ret_intraday": pl.Float64,
+                "ret_overnight": pl.Float64,
             }
         )
         interim = _make_test_layout(tmp_path)
@@ -1444,6 +1482,8 @@ class TestEdgeCases:
                 "ret": [0.01] * n_dates,
                 "ret_local": [0.01] * n_dates,
                 "ret_exc": [0.005] * n_dates,
+                "ret_intraday": [None] * n_dates,
+                "ret_overnight": [None] * n_dates,
                 "ret_lag_dif": [2] * n_dates,  # All gaps!
                 "div_tot": [None] * n_dates,
                 "div_cash": [None] * n_dates,
@@ -1459,6 +1499,8 @@ class TestEdgeCases:
                 "exchg": pl.Int64,
                 "datadate": pl.Date,
                 "eom": pl.Date,
+                "ret_intraday": pl.Float64,
+                "ret_overnight": pl.Float64,
                 "ret_lag_dif": pl.Int64,
             }
         )
