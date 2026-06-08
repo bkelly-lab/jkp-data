@@ -23,8 +23,12 @@ jupyter: python3
 
 ## Overview
 
-We now replicate the standard factor zoo inside the JKP database. The
-`ap_factors_monthly.parquet` output produced by `jkp build` contains
+This note documents our work on replicating the pricing factors from
+several prominent asset pricing models. We thank the WRDS team, as well
+as Professors Lin Sun and Robert F. Stambaugh, for providing the code
+and data necessary for this replication.
+
+The `ap_factors_monthly.parquet` output produced by `jkp build` contains
 country-level monthly returns for:
 
 - **FF3** (Fama–French 3): `smb_ff3`, `hml`
@@ -157,12 +161,11 @@ def section_tables(name):
 
 **Sample windows.**
 
-- **FF (FF3, FF5, UMD) — 1970 onwards.** We restrict the FF comparison
-  sample to 1970 onwards: in the 1960s the effect of Fama and French
-  complementing Compustat with hand-collected Moody's book equity data
-  is more marked, so including those years would benchmark our
-  Compustat-based replication against a reference series built in part
-  on a different accounting source.
+- **FF3 and UMD — 1926 onwards.** We compare against the full published
+  FF3 and momentum series, which begin in 1926.
+- **FF5 — 1963 onwards.** The published FF5 series begins in July 1963,
+  reflecting the Compustat coverage required for the profitability and
+  investment factors.
 - **HXZ — January 1972 onwards.** We follow the Hou, Xue, and Zhang
   methodology and do not use the Hou et al. (2019) 1967–1972 backward
   extension. Compustat coverage in those years is thin. The US sample
@@ -307,9 +310,6 @@ section_tables("MP")
 
 ## Conclusion
 
-Residual differences are primarily attributable to data-vintage
-effects and construction details that are not publicly documented,
-both of which are beyond the scope of an external replication.
 Overall, the replicated JKP factor series closely track the published
 U.S. factors and are suitable for use as research substitutes. Beyond
 reproducing the U.S. factors, this project extends the methodology to
