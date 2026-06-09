@@ -24,9 +24,10 @@ jupyter: python3
 ## Overview
 
 This note documents our work on replicating the pricing factors from
-several prominent asset pricing models. We thank the WRDS team, as well
-as Professors Lin Sun and Robert F. Stambaugh, for providing the code
-and data necessary for this replication.
+several prominent asset pricing models. We would like to thank the [WRDS team](https://wrds-www.wharton.upenn.edu/pages/wrds-research/applications/risk-factors-and-industry-benchmarks/fama-french-factors-ciz-format/),
+as well as Professors [Robert F. Stambaugh](https://fnce.wharton.upenn.edu/profile/stambaug/) and [Kenneth R. French](https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/data_library.html)
+for providing the data and/or code necessary to make this Python
+replication.
 
 The `ap_factors_monthly.parquet` output produced by `jkp build` contains
 country-level monthly returns for:
@@ -302,11 +303,9 @@ section_tables("MP")
   — delisting returns, share codes, exchange codes — differ between
   the two CRSP products.
 
-- **Undisclosed filters in the papers.** Source papers omit secondary
-  screens (e.g., stale prices, thin trading, dual-class consolidation,
-  fiscal-year changers, share-class screens, price floors).
-  Exact parity is not achievable without the original construction
-  code.
+- **Unspecified implementation choices.** The published methodology may
+  not fully document every construction decision, making exact
+  replication require original code and data vintage.
 
 ## Conclusion
 
