@@ -119,6 +119,12 @@ Key conventions to know:
 - Available test markers: `unit`, `integration`, `methodology`, `regression`, `expensive`, `wrds`
 - Key fixtures: `tolerance` (pre-calibrated `ToleranceSpec` levels), `assert_series_equal` (NaN-aware series comparison), `make_dataframe` (test DataFrame factory), `temp_data_dir` (temp directory with pipeline subdirectories), `test_paths` (`DataPaths` instance rooted at `temp_data_dir`; use this for any test of a pipeline function that takes `paths: DataPaths`)
 
+## Data Changelog
+
+`CHANGELOG_DATA.md` is the **data changelog**. It records only *meaningful changes to the underlying dataset*: methodology changes, new/removed characteristics or columns, and bug fixes that change the values written to `data/processed/`. This is what most data users read. Entries are dated by merge date (`## DD-MM-YYYY` headers, newest first) and reference the PR number.
+
+When making a change, add a `CHANGELOG_DATA.md` entry only if it changes the values, columns, or methodology of anything written to `data/processed/`. Pure code/infra/tests/docs changes that don't affect the data output do not belong here.
+
 ## Development Workflow
 
 For standard contribution steps (branching, running tests, linting, and opening a PR), see [CONTRIBUTING.md](CONTRIBUTING.md).
