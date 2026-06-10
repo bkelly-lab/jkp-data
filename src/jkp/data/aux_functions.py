@@ -2209,8 +2209,6 @@ def combine_crsp_comp_sf(paths: DataPaths) -> None:
                     ret,
                     ret AS ret_local,
                     ret_exc,
-                    ret_intraday,
-                    ret_overnight,
                     1::BIGINT AS ret_lag_dif,
                     div_tot,
                     NULL::DOUBLE AS div_cash,
@@ -2249,8 +2247,6 @@ def combine_crsp_comp_sf(paths: DataPaths) -> None:
                     prc, prc_local, prc_high, prc_low, dolvol,
                     cshtrm AS tvol,
                     ret, ret_local, ret_exc,
-                    ret_intraday,
-                    ret_overnight,
                     ret_lag_dif::BIGINT AS ret_lag_dif,
                     div_tot, div_cash, div_spc,
                     0 AS source_crsp
@@ -2261,17 +2257,7 @@ def combine_crsp_comp_sf(paths: DataPaths) -> None:
                     WHEN LEAD(ret_lag_dif, 1) OVER (PARTITION BY id ORDER BY eom) != 1
                     THEN NULL
                     ELSE LEAD(ret_exc, 1) OVER (PARTITION BY id ORDER BY eom)
-                END AS ret_exc_lead1m,
-                CASE
-                    WHEN LEAD(ret_lag_dif, 1) OVER (PARTITION BY id ORDER BY eom) != 1
-                    THEN NULL
-                    ELSE LEAD(ret_intraday, 1) OVER (PARTITION BY id ORDER BY eom)
-                END AS ret_intraday_lead1m,
-                CASE
-                    WHEN LEAD(ret_lag_dif, 1) OVER (PARTITION BY id ORDER BY eom) != 1
-                    THEN NULL
-                    ELSE LEAD(ret_overnight, 1) OVER (PARTITION BY id ORDER BY eom)
-                END AS ret_overnight_lead1m
+                END AS ret_exc_lead1m
             FROM (
                 SELECT * FROM crsp_msf_norm
                 UNION ALL
@@ -2308,10 +2294,9 @@ def combine_crsp_comp_sf(paths: DataPaths) -> None:
                     primary_sec, bidask, crsp_shrcd, crsp_exchcd, comp_tpci, comp_exchg,
                     curcd, fx, date, eom, adjfct, shares, me, me_company, prc, prc_local,
                     prc_high, prc_low, dolvol, tvol, ret, ret_local, ret_exc,
-                    ret_intraday, ret_overnight,
                     ret_lag_dif,
                     div_tot, div_cash, div_spc, source_crsp,
-                    ret_exc_lead1m, ret_intraday_lead1m, ret_overnight_lead1m, obs_main
+                    ret_exc_lead1m, obs_main
                 FROM (
                     -- source_crsp DESC is a no-op today (CRSP/Comp ids don't collide);
                     -- primary_sec DESC is the real tie-break: when Compustat rows
@@ -2417,71 +2402,6 @@ def combine_crsp_comp_sf(paths: DataPaths) -> None:
     finally:
         con.close()
         (paths.interim_dir / "aux_combine_sf.ddb").unlink(missing_ok=True)
-
-
-@measure_time
-def compound_daily_to_monthly_overnight_intraday(paths: DataPaths) -> None:
-    """
-    Description:
-        Compound daily overnight and intraday returns to monthly and update the
-        monthly world file (__msf_world.parquet) with the results.
-
-    Steps:
-        1) Read world_dsf.parquet; filter to rows with non-null ret_intraday/ret_overnight.
-        2) Group by (id, eom) and compound: product(1 + r_d) - 1 for each component.
-        3) Read __msf_world.parquet, drop the placeholder null columns, and join the
-           compounded monthly values; also recompute the lead-1m columns.
-        4) Overwrite __msf_world.parquet.
-
-    Output:
-        Overwrites __msf_world.parquet with populated ret_intraday, ret_overnight,
-        ret_intraday_lead1m, and ret_overnight_lead1m columns.
-    """
-    dsf = pl.scan_parquet(paths.interim_dir / "world_dsf.parquet")
-
-    monthly_oi = (
-        dsf.filter(col("ret_intraday").is_not_null() & col("ret_overnight").is_not_null())
-        .group_by(["id", "eom"])
-        .agg(
-            ret_intraday_cmp=((1 + col("ret_intraday")).product() - 1),
-            ret_overnight_cmp=((1 + col("ret_overnight")).product() - 1),
-        )
-    ).collect()
-
-    msf_path = paths.interim_dir / "__msf_world.parquet"
-    msf = pl.read_parquet(msf_path)
-
-    cols_to_drop = [
-        c
-        for c in [
-            "ret_intraday",
-            "ret_overnight",
-            "ret_intraday_lead1m",
-            "ret_overnight_lead1m",
-        ]
-        if c in msf.columns
-    ]
-    if cols_to_drop:
-        msf = msf.drop(cols_to_drop)
-
-    msf = msf.join(
-        monthly_oi.rename(
-            {"ret_intraday_cmp": "ret_intraday", "ret_overnight_cmp": "ret_overnight"}
-        ),
-        on=["id", "eom"],
-        how="left",
-    )
-
-    msf = msf.sort(["id", "eom"]).with_columns(
-        ret_intraday_lead1m=pl.when(col("ret_lag_dif").shift(-1).over("id") != 1)
-        .then(pl.lit(None).cast(pl.Float64))
-        .otherwise(col("ret_intraday").shift(-1).over("id")),
-        ret_overnight_lead1m=pl.when(col("ret_lag_dif").shift(-1).over("id") != 1)
-        .then(pl.lit(None).cast(pl.Float64))
-        .otherwise(col("ret_overnight").shift(-1).over("id")),
-    )
-
-    msf.write_parquet(msf_path)
 
 
 @measure_time
@@ -2978,6 +2898,56 @@ def return_cutoffs(paths: DataPaths, freq, crsp_only):
 
 
 @measure_time
+def return_cutoffs_overnight_intraday(paths: DataPaths, freq: str) -> None:
+    """
+    Description:
+        Compute return percentile cutoffs for overnight and intraday components,
+        mirroring the structure of return_cutoffs but for ret_intraday and ret_overnight.
+
+    Steps:
+        1) Scan world_{freq}sf.parquet; apply standard stock filters (common, main, primary, non-ZWE).
+        2) Require non-null ret_intraday and ret_overnight.
+        3) Group by eom; aggregate counts and percentiles (0.1, 1, 99, 99.9) for each component.
+        4) Write separate cutoff files for overnight and intraday.
+
+    Output:
+        Writes 'return_cutoffs_{component}.parquet' (monthly) or
+        'return_cutoffs_daily_{component}.parquet' (daily) for each component.
+    """
+    group_vars = "eom"
+    base = pl.scan_parquet(paths.interim_dir / f"world_{freq}sf.parquet").filter(
+        (col("common") == 1)
+        & (col("obs_main") == 1)
+        & (col("exch_main") == 1)
+        & (col("primary_sec") == 1)
+        & (col("excntry") != "ZWE")
+    )
+
+    for component in ("overnight", "intraday"):
+        ret_col = f"ret_{component}"
+        data = base.filter(col(ret_col).is_not_null())
+        data = data.sql(f"""
+            SELECT
+                {group_vars},
+                COUNT({ret_col})                             AS n,
+                QUANTILE_DISC({ret_col}, 0.001)              AS ret_0_1,
+                QUANTILE_DISC({ret_col}, 0.01)               AS ret_1,
+                QUANTILE_DISC({ret_col}, 0.99)               AS ret_99,
+                QUANTILE_DISC({ret_col}, 0.999)              AS ret_99_9
+            FROM self
+            GROUP BY {group_vars}
+            ORDER BY {group_vars}
+            """)
+        if freq == "d":
+            data = data.with_columns(
+                year=pl.col("eom").dt.year(),
+                month=pl.col("eom").dt.month(),
+            )
+        suffix = "_daily" if freq == "d" else ""
+        data.sink_parquet(paths.interim_dir / f"return_cutoffs{suffix}_{component}.parquet")
+
+
+@measure_time
 def add_ret_exc_wins(
     paths: DataPaths, freq: str, lower: float = 0.001, upper: float = 0.999
 ) -> None:
@@ -3271,6 +3241,89 @@ def market_returns(paths: DataPaths, data_path, freq, wins_comp, wins_data_path,
     __common_stocks.sort(["excntry", dt_col]).collect().write_parquet(
         paths.interim_dir / f"market_returns{path_aux}.parquet"
     )
+
+
+@measure_time
+def market_returns_overnight_intraday(
+    paths: DataPaths, data_path: Path, freq: str, nyse_cutoffs_path: Path
+) -> None:
+    """
+    Description:
+        Build country-level VW/EW market returns for overnight and intraday components.
+        Follows the same stock selection and weighting as market_returns() but uses
+        ret_overnight / ret_intraday instead of ret / ret_local / ret_exc.
+        No winsorization is applied to component returns (per LPS 2019 methodology).
+
+    Steps:
+        1) Load data; keep standard stock fields plus ret_intraday and ret_overnight.
+        2) Add lags me_lag1, dolvol_lag1 per id.
+        3) Join NYSE P80 cutoffs and compute me_cap_lag1.
+        4) Apply standard stock filters; compute VW/EW overnight and intraday returns.
+        5) If daily, drop low-coverage trading days.
+        6) Write one file per component: market_returns{_daily}_{component}.parquet.
+
+    Output:
+        Parquet files of country x date market returns for each component.
+    """
+    dt_col, max_date_lag, path_aux, group_vars, base_cols = load_mkt_returns_params(freq)
+    oi_cols = list(set(base_cols) | {"ret_intraday", "ret_overnight"})
+
+    available = set(pl.scan_parquet(data_path).collect_schema().names())
+    if "ret_intraday" not in available or "ret_overnight" not in available:
+        print(
+            "Skipping market_returns_overnight_intraday (ret_intraday/ret_overnight not in data)",
+            flush=True,
+        )
+        return
+
+    filter_cond = (
+        (col("obs_main") == 1)
+        & (col("exch_main") == 1)
+        & (col("primary_sec") == 1)
+        & (col("common") == 1)
+        & (col("ret_lag_dif") <= max_date_lag)
+    )
+    stocks = (
+        pl.scan_parquet(data_path)
+        .select([c for c in oi_cols if c in available])
+        .unique()
+        .sort(["id", dt_col])
+        .with_columns(
+            me_lag1=col("me").shift(1).over("id"),
+            dolvol_lag1=col("dolvol").shift(1).over("id"),
+        )
+        .filter(filter_cond)
+        .filter(col("me_lag1").is_not_null() & col("ret_local").is_not_null())
+        .collect()
+    )
+    nyse = pl.read_parquet(nyse_cutoffs_path, columns=["eom", "nyse_p80"])
+    stocks = stocks.join(nyse, on="eom", how="left").with_columns(
+        me_cap_lag1=pl.min_horizontal(col("me_lag1"), col("nyse_p80"))
+    )
+
+    for component in ("overnight", "intraday"):
+        ret_col = f"ret_{component}"
+        df = stocks.filter(col(ret_col).is_not_null()).with_columns(
+            aux_vw=col(ret_col) * col("me_lag1"),
+            aux_vw_cap=col(ret_col) * col("me_cap_lag1"),
+        )
+        agg = (
+            df.lazy()
+            .group_by(["excntry", dt_col])
+            .agg(
+                stocks=pl.len(),
+                me_lag1=sas_sum_agg("me_lag1"),
+                dolvol_lag1=sas_sum_agg("dolvol_lag1"),
+                mkt_vw=sas_sum_agg("aux_vw") / sas_sum_agg("me_lag1"),
+                mkt_ew=pl.mean(ret_col),
+                mkt_vw_cap=sas_sum_agg("aux_vw_cap") / sas_sum_agg("me_cap_lag1"),
+            )
+        )
+        if freq == "d":
+            agg = drop_non_trading_days(agg, "stocks", dt_col, ["excntry", "eom"], 0.25)
+        agg.sort(["excntry", dt_col]).collect().write_parquet(
+            paths.interim_dir / f"market_returns{path_aux}_{component}.parquet"
+        )
 
 
 def quarterize(df, var_list):
@@ -8106,6 +8159,15 @@ def save_output_files(paths: DataPaths):
     ):
         shutil.copy2(paths.interim_dir / name, other_output / name)
 
+    for component in ("overnight", "intraday"):
+        for name in (
+            f"market_returns_daily_{component}.parquet",
+            f"return_cutoffs_daily_{component}.parquet",
+        ):
+            src = paths.interim_dir / name
+            if src.exists():
+                shutil.copy2(src, other_output / name)
+
 
 @measure_time
 def save_daily_ret(paths: DataPaths):
@@ -8245,8 +8307,6 @@ def save_monthly_ret(paths: DataPaths):
             "ret",
             "ret_local",
             "ret_exc_wins",
-            "ret_intraday",
-            "ret_overnight",
         ]
     )
     data.select(pl.all().shrink_dtype()).collect().write_parquet(

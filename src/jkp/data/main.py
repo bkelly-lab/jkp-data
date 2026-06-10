@@ -9,7 +9,6 @@ from .aux_functions import (
     combine_ann_qtr_chars,
     combine_crsp_comp_sf,
     comp_industry,
-    compound_daily_to_monthly_overnight_intraday,
     create_acc_chars,
     create_world_data_prelim,
     crsp_industry,
@@ -24,6 +23,7 @@ from .aux_functions import (
     market_beta,
     market_chars_monthly,
     market_returns,
+    market_returns_overnight_intraday,
     merge_industry_to_world_msf,
     merge_qmj_to_world_data,
     merge_roll_apply_daily_results,
@@ -36,6 +36,7 @@ from .aux_functions import (
     quality_minus_junk,
     residual_momentum,
     return_cutoffs,
+    return_cutoffs_overnight_intraday,
     roll_apply_daily,
     save_accounting_data,
     save_daily_ret,
@@ -71,7 +72,6 @@ def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> No
     prepare_crsp_sf(paths, "m")
     prepare_crsp_sf(paths, "d")
     combine_crsp_comp_sf(paths)
-    compound_daily_to_monthly_overnight_intraday(paths)
     crsp_industry(paths)
     comp_industry(paths)
     merge_industry_to_world_msf(paths)
@@ -80,6 +80,7 @@ def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> No
     classify_stocks_size_groups(paths)
     return_cutoffs(paths, "m", 0)
     return_cutoffs(paths, "d", 0)
+    return_cutoffs_overnight_intraday(paths, "d")
     add_ret_exc_wins(paths, "m")
     add_ret_exc_wins(paths, "d")
     market_returns(
@@ -97,6 +98,9 @@ def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> No
         1,
         interim / "return_cutoffs.parquet",
         interim / "nyse_cutoffs.parquet",
+    )
+    market_returns_overnight_intraday(
+        paths, interim / "world_dsf.parquet", "d", interim / "nyse_cutoffs.parquet"
     )
     standardized_accounting_data(
         paths, "world", 1, interim / "world_msf.parquet", 1, ACCOUNTING_START_DATE

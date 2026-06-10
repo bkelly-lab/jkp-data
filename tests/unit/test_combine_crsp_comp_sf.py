@@ -417,8 +417,6 @@ def _polars_combine_crsp_comp_sf(tmp: Path) -> tuple[pl.DataFrame, pl.DataFrame]
         "ret",
         "ret_local",
         "ret_exc",
-        "ret_intraday",
-        "ret_overnight",
         "ret_lag_dif",
         "div_tot",
         "div_cash",
@@ -434,12 +432,6 @@ def _polars_combine_crsp_comp_sf(tmp: Path) -> tuple[pl.DataFrame, pl.DataFrame]
         ret_exc_lead1m=pl.when(pl.col("ret_lag_dif").shift(-1).over("id") != 1)
         .then(None)
         .otherwise(pl.col("ret_exc").shift(-1).over("id")),
-        ret_intraday_lead1m=pl.when(pl.col("ret_lag_dif").shift(-1).over("id") != 1)
-        .then(None)
-        .otherwise(pl.col("ret_intraday").shift(-1).over("id")),
-        ret_overnight_lead1m=pl.when(pl.col("ret_lag_dif").shift(-1).over("id") != 1)
-        .then(None)
-        .otherwise(pl.col("ret_overnight").shift(-1).over("id")),
     )
 
     obs_main = (
@@ -919,16 +911,12 @@ class TestUnionAndLead:
             "ret",
             "ret_local",
             "ret_exc",
-            "ret_intraday",
-            "ret_overnight",
             "ret_lag_dif",
             "div_tot",
             "div_cash",
             "div_spc",
             "source_crsp",
             "ret_exc_lead1m",
-            "ret_intraday_lead1m",
-            "ret_overnight_lead1m",
             "obs_main",
         }
         assert set(msf.columns) == expected

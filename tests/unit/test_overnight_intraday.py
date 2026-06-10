@@ -216,61 +216,6 @@ class TestNullHandling:
 
 
 # ---------------------------------------------------------------------------
-# Monthly compounding
-# ---------------------------------------------------------------------------
-
-
-class TestMonthlyCompounding:
-    """Test compounding daily returns to monthly."""
-
-    def test_product_formula(self, daily_prices: pl.DataFrame):
-        """Monthly compounded return = product(1 + r_d) - 1 for each component."""
-        result = (
-            daily_prices.with_columns(
-                ret_intraday=pl.when(pl.col("prc_open") > 0)
-                .then(pl.col("prc") / pl.col("prc_open") - 1)
-                .otherwise(None)
-            )
-            .with_columns(
-                ret_overnight=pl.when(
-                    pl.col("ret_intraday").is_not_null() & pl.col("ret").is_not_null()
-                )
-                .then((1 + pl.col("ret")) / (1 + pl.col("ret_intraday")) - 1)
-                .otherwise(None)
-            )
-            .filter(pl.col("ret_intraday").is_not_null() & pl.col("ret_overnight").is_not_null())
-        )
-
-        monthly = result.group_by(["id", "eom"]).agg(
-            ret_intraday_m=((1 + pl.col("ret_intraday")).product() - 1),
-            ret_overnight_m=((1 + pl.col("ret_overnight")).product() - 1),
-        )
-
-        # Verify compounding works for stock 1 (4 valid daily rows).
-        stock1 = result.filter(pl.col("id") == 1)
-        expected_intraday_m = np.prod(1 + stock1["ret_intraday"].to_numpy()) - 1
-        actual = monthly.filter(pl.col("id") == 1)["ret_intraday_m"].item()
-        np.testing.assert_allclose(actual, expected_intraday_m, **ToleranceSpec.TIGHT)
-
-    def test_single_day_month(self):
-        """A month with one trading day: compounded == daily."""
-        df = pl.DataFrame(
-            {
-                "id": [1],
-                "eom": [date(2024, 2, 29)],
-                "ret_intraday": [0.02],
-                "ret_overnight": [0.01],
-            }
-        )
-        monthly = df.group_by(["id", "eom"]).agg(
-            ret_intraday_m=((1 + pl.col("ret_intraday")).product() - 1),
-            ret_overnight_m=((1 + pl.col("ret_overnight")).product() - 1),
-        )
-        np.testing.assert_allclose(monthly["ret_intraday_m"].item(), 0.02, **ToleranceSpec.TIGHT)
-        np.testing.assert_allclose(monthly["ret_overnight_m"].item(), 0.01, **ToleranceSpec.TIGHT)
-
-
-# ---------------------------------------------------------------------------
 # Portfolio aggregation
 # ---------------------------------------------------------------------------
 
