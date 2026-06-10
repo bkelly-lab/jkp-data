@@ -2377,6 +2377,11 @@ def comp_hgics(paths: DataPaths, lib):
         },
     }
     data = pl.read_parquet(file_paths["raw data"][lib])  # .sort(['gvkey', 'indfrom'])
+    if data.height == 0:
+        pl.DataFrame(schema={"gvkey": pl.Utf8, "date": pl.Date, "gics": pl.Int64}).write_parquet(
+            file_paths["output"][lib]
+        )
+        return
     data = data.with_columns(
         gics=pl.when(col("gics").is_null()).then(-999).otherwise(col("gics")),
         n=pl.len().over("gvkey"),
