@@ -1787,7 +1787,14 @@ def gen_comp_dsf(
             WHEN prcstd != 5 THEN prcld / qunit
             ELSE NULL
         END AS prc_low_lcl,
-        cshtrd, (prccd / qunit) / ajexdi * trfd AS ri_local,
+        -- trfd is null for never-dividend securities; substitute 1 only when the
+        -- security never pays a dividend (no dividends => price return = total
+        -- return), leaving genuine gaps for payers null.
+        cshtrd, (prccd / qunit) / ajexdi * COALESCE(trfd,
+            CASE WHEN NOT BOOL_OR(
+                     COALESCE(div, 0) > 0 OR COALESCE(divd, 0) > 0 OR COALESCE(divsp, 0) > 0
+                 ) OVER (PARTITION BY gvkey, iid)
+                 THEN 1 ELSE NULL END) AS ri_local,
         curcddv, div, divd, divsp
     FROM comp_g_secd;
 
@@ -1811,7 +1818,15 @@ def gen_comp_dsf(
             ELSE a.cshtrd
         END AS DECIMAL(28, 8)) AS cshtrd,
         COALESCE(a.cshoc / 1e6, b.csho_fund * b.ajex_fund / a.ajexdi) AS cshoc,
-        (a.prccd / a.ajexdi * a.trfd) AS ri_local, a.curcddv, a.div, a.divd, a.divsp
+        -- trfd (total return factor) is missing for securities that never pay
+        -- a dividend; per Compustat guidance, replace the missing factor with 1
+        -- (no dividends => price return = total return). Only do so when the
+        -- security never pays a dividend; leave genuine gaps for payers null.
+        (a.prccd / a.ajexdi * COALESCE(a.trfd,
+            CASE WHEN NOT BOOL_OR(
+                     COALESCE(a.div, 0) > 0 OR COALESCE(a.divd, 0) > 0 OR COALESCE(a.divsp, 0) > 0
+                 ) OVER (PARTITION BY a.gvkey, a.iid)
+                 THEN 1 ELSE NULL END)) AS ri_local, a.curcddv, a.div, a.divd, a.divsp
     FROM comp_secd AS a
     LEFT JOIN __firm_shares2 AS b
     ON a.gvkey = b.gvkey AND a.datadate = b.ddate;
