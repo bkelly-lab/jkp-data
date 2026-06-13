@@ -113,9 +113,21 @@ def test_gen_crsp_sf_exposes_ticker_after_senames_join(freq: str, test_paths) ->
 
     df = result.to_polars().sort("date")
 
-    assert {"permno", "permco", "date", "me", "ticker"}.issubset(df.columns), (
-        f"Missing expected columns from output: {df.columns}"
-    )
+    assert {
+        "permno",
+        "permco",
+        "date",
+        "me",
+        "ticker",
+        "common",
+        "primaryexch",
+        "conditionaltype",
+    }.issubset(df.columns), f"Missing expected columns from output: {df.columns}"
+
+    matched = df.filter(pl.col("date") == matched_date)
+    assert matched["common"][0] == 1
+    assert matched["primaryexch"][0] == "N"
+    assert matched["conditionaltype"][0] == "RW"
 
     ticker_by_date = {
         row["date"]: row["ticker"] for row in df.select(["date", "ticker"]).to_dicts()

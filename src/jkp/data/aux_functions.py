@@ -606,24 +606,12 @@ def gen_crsp_sf(paths: DataPaths, freq):
         & (issuertype_expr.isin(["ACOR", "CORP"]))
     )
 
-    shrcd_expr = ibis.cases(
-        (is_common_expr, 10),
-        else_=ibis.null(),
-    ).cast("int32")
-
     primaryexch_expr = sf.primaryexch
     conditionaltype_expr = sf.conditionaltype
 
     exch_main_expr = (primaryexch_expr.isin(["A", "N", "Q"]) & (conditionaltype_expr == "RW")).cast(
         "int32"
     )
-
-    exchcd_expr = ibis.cases(
-        ((primaryexch_expr == "N") & (conditionaltype_expr == "RW"), 1),
-        ((primaryexch_expr == "A") & (conditionaltype_expr == "RW"), 2),
-        ((primaryexch_expr == "Q") & (conditionaltype_expr == "RW"), 3),
-        else_=ibis.null(),
-    ).cast("int32")
 
     result = full_join.mutate(
         date=date_expr,
@@ -638,9 +626,10 @@ def gen_crsp_sf(paths: DataPaths, freq):
         retx=retx_expr,
         cfacshr=cfacshr_expr,
         vol=vol_expr,
-        exchcd=exchcd_expr,
+        common=is_common_expr.cast("int32"),
+        primaryexch=primaryexch_expr,
+        conditionaltype=conditionaltype_expr,
         exch_main=exch_main_expr,
-        shrcd=shrcd_expr,
         gvkey=ccmxpf_lnkhist.gvkey,
     ).select(
         [
@@ -656,11 +645,12 @@ def gen_crsp_sf(paths: DataPaths, freq):
             "vol",
             "prc_high",
             "prc_low",
-            "exchcd",
+            "common",
+            "primaryexch",
+            "conditionaltype",
             "gvkey",
             "iid",
             "exch_main",
-            "shrcd",
             "me",
             "ticker",
         ]
@@ -1082,21 +1072,21 @@ def compustat_fx(paths: DataPaths):
     return __fx1.collect()
 
 
-def adj_trd_vol_NASDAQ(datevar, col_to_adjust, exchg_var, exchg_val):
+def adj_trd_vol_NASDAQ(datevar, col_to_adjust, is_nasdaq_expr):
     """
     Description:
         Apply historic NASDAQ trade-volume adjustments (pre-decimalization reporting) to a volume column.
 
     Steps:
         1) Build date cutoffs: <2001-02-01, ≤2001-12-31, <2003-12-31.
-        2) If exchg_var == exchg_val (NASDAQ) and within windows, scale col_to_adjust by
+        2) If is_nasdaq_expr is true and within windows, scale col_to_adjust by
         1/2, 1/1.8, or 1/1.6 respectively; otherwise keep original.
         3) Return the adjusted expression aliased as the original column name.
 
     Output:
         Polars expression that yields adjusted trade volume for NASDAQ histories.
     """
-    c1 = col(exchg_var) == exchg_val
+    c1 = is_nasdaq_expr
     c2 = col(datevar) < pl.datetime(2001, 2, 1)
     c3 = col(datevar) <= pl.datetime(2001, 12, 31)
     c4 = col(datevar) < pl.datetime(2003, 12, 31)
@@ -1934,7 +1924,13 @@ def prepare_crsp_sf(paths: DataPaths, freq):
             ]
             + [col("vol").cast(pl.Int64)]
         )
-        .with_columns(adj_trd_vol_NASDAQ("date", "vol", "exchcd", 3))
+        .with_columns(
+            adj_trd_vol_NASDAQ(
+                "date",
+                "vol",
+                (pl.col("primaryexch") == "Q") & (pl.col("conditionaltype") == "RW"),
+            )
+        )
         .sort(["permno", "date"])
         .with_columns(
             dolvol=col("prc").abs() * col("vol"),
@@ -2112,11 +2108,11 @@ def combine_crsp_comp_sf(paths: DataPaths) -> None:
                     permno AS id, permno, permco, gvkey, iid,
                     'USA' AS excntry,
                     exch_main::INT AS exch_main,
-                    CASE WHEN shrcd IN (10, 11, 12) THEN 1 ELSE 0 END AS common,
+                    common::INT AS common,
                     1 AS primary_sec,
                     bidask::INT AS bidask,
-                    shrcd::DOUBLE AS crsp_shrcd,
-                    exchcd::DOUBLE AS crsp_exchcd,
+                    primaryexch,
+                    conditionaltype,
                     NULL::VARCHAR AS comp_tpci,
                     NULL::BIGINT AS comp_exchg,
                     'USD' AS curcd,
@@ -2155,8 +2151,8 @@ def combine_crsp_comp_sf(paths: DataPaths) -> None:
                     CASE WHEN tpci = '0' THEN 1 ELSE 0 END AS common,
                     primary_sec::INT AS primary_sec,
                     CASE WHEN prcstd = 4 THEN 1 ELSE 0 END AS bidask,
-                    NULL::DOUBLE AS crsp_shrcd,
-                    NULL::DOUBLE AS crsp_exchcd,
+                    NULL::VARCHAR AS primaryexch,
+                    NULL::VARCHAR AS conditionaltype,
                     tpci AS comp_tpci,
                     exchg::BIGINT AS comp_exchg,
                     curcdd AS curcd,
@@ -2214,7 +2210,7 @@ def combine_crsp_comp_sf(paths: DataPaths) -> None:
             COPY (
                 SELECT
                     id, permno, permco, gvkey, iid, excntry, exch_main, common,
-                    primary_sec, bidask, crsp_shrcd, crsp_exchcd, comp_tpci, comp_exchg,
+                    primary_sec, bidask, primaryexch, conditionaltype, comp_tpci, comp_exchg,
                     curcd, fx, date, eom, adjfct, shares, me, me_company, prc, prc_local,
                     prc_high, prc_low, dolvol, tvol, ret, ret_local, ret_exc, ret_lag_dif,
                     div_tot, div_cash, div_spc, source_crsp, ret_exc_lead1m, obs_main
@@ -2247,7 +2243,7 @@ def combine_crsp_comp_sf(paths: DataPaths) -> None:
                         permno AS id,
                         'USA' AS excntry,
                         exch_main::INT AS exch_main,
-                        CASE WHEN shrcd IN (10, 11, 12) THEN 1 ELSE 0 END AS common,
+                        common::INT AS common,
                         1 AS primary_sec,
                         bidask::INT AS bidask,
                         'USD' AS curcd,
@@ -2700,7 +2696,8 @@ def nyse_size_cutoffs(paths: DataPaths, data_path):
                 QUANTILE_DISC(me, 0.50)     AS nyse_p50,
                 QUANTILE_DISC(me, 0.80)     AS nyse_p80
             FROM self
-            WHERE  crsp_exchcd = 1
+            WHERE  primaryexch = 'N'
+                AND conditionaltype = 'RW'
                 AND obs_main   = 1
                 AND exch_main  = 1
                 AND primary_sec= 1
@@ -6461,7 +6458,10 @@ def sort_ff_style(char, min_stocks_bp, min_stocks_pf, date_col, data, sf):
     c1 = (
         ((col("size_grp_l").is_in(["small", "large", "mega"])) & (col("excntry_l") != "USA"))
         | (
-            ((col("crsp_exchcd_l") == 1) | (col("comp_exchg_l") == 11))
+            (
+                ((col("primaryexch_l") == "N") & (col("conditionaltype_l") == "RW"))
+                | (col("comp_exchg_l") == 11)
+            )
             & (col("excntry_l") == "USA")
         )
     ) & col(f"{char}_l").is_not_null()
@@ -6552,7 +6552,8 @@ def ap_factors(
     sf_cond = (col("ret_lag_dif") == 1) if freq == "m" else (col("ret_lag_dif") <= 5)
     lag_vars = [
         "comp_exchg",
-        "crsp_exchcd",
+        "primaryexch",
+        "conditionaltype",
         "exch_main",
         "obs_main",
         "common",
@@ -9178,7 +9179,8 @@ def portfolios(
             "eom",
             "source_crsp",
             "comp_exchg",
-            "crsp_exchcd",
+            "primaryexch",
+            "conditionaltype",
             "size_grp",
             "ret_exc",
             "ret_exc_lead1m",
@@ -9194,13 +9196,25 @@ def portfolios(
     # polars push predicate/null filters into the parquet reader (skipping row
     # groups on real production files) and fuse the ~15 intermediate steps into
     # one pass instead of allocating ~15 intermediate DataFrames.
-    cast_exclude = {"id", "eom", "source_crsp", "size_grp", "excntry"}
+    cast_exclude = {
+        "id",
+        "eom",
+        "source_crsp",
+        "size_grp",
+        "excntry",
+        "primaryexch",
+        "conditionaltype",
+    }
     cast_cols = [c for c in columns if c not in cast_exclude]
 
     if bps == "nyse":
         bp_stock_expr = (
-            ((pl.col("crsp_exchcd") == 1) & pl.col("comp_exchg").is_null())
-            | ((pl.col("comp_exchg") == 11) & pl.col("crsp_exchcd").is_null())
+            (
+                (pl.col("primaryexch") == "N")
+                & (pl.col("conditionaltype") == "RW")
+                & pl.col("comp_exchg").is_null()
+            )
+            | ((pl.col("comp_exchg") == 11) & pl.col("primaryexch").is_null())
         ).alias("bp_stock")
     else:  # "non_mc"
         bp_stock_expr = pl.col("size_grp").is_in(["mega", "large", "small"]).alias("bp_stock")

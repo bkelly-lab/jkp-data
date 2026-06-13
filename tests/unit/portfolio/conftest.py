@@ -189,10 +189,13 @@ def make_country_characteristics(
         p=[0.10, 0.25, 0.35, 0.20, 0.10],
     ).tolist()
     source_crsp_per_id: list[int] = rng.choice([0, 1], size=n_ids, p=[0.4, 0.6]).tolist()
-    crsp_exchcd_choices = rng.choice([1, 2, 3], size=n_ids).tolist()
+    primaryexch_choices = rng.choice(["N", "A", "Q"], size=n_ids).tolist()
     comp_exchg_choices = rng.choice([11, 12, 13], size=n_ids).tolist()
-    crsp_exchcd_per_id: list[int | None] = [
-        int(crsp_exchcd_choices[i]) if source_crsp_per_id[i] == 1 else None for i in range(n_ids)
+    primaryexch_per_id: list[str | None] = [
+        primaryexch_choices[i] if source_crsp_per_id[i] == 1 else None for i in range(n_ids)
+    ]
+    conditionaltype_per_id: list[str | None] = [
+        "RW" if primaryexch_per_id[i] is not None else None for i in range(n_ids)
     ]
     comp_exchg_per_id: list[int | None] = [
         int(comp_exchg_choices[i]) if source_crsp_per_id[i] == 0 else None for i in range(n_ids)
@@ -205,7 +208,8 @@ def make_country_characteristics(
     eom_col: list[date] = []
     sg_col: list[str] = []
     sc_col: list[int] = []
-    ce_col: list[int | None] = []
+    pe_col: list[str | None] = []
+    ct_col: list[str | None] = []
     cx_col: list[int | None] = []
     gics_col: list[str] = []
     ff49_col: list[int] = []
@@ -215,7 +219,8 @@ def make_country_characteristics(
             eom_col.append(eom)
             sg_col.append(size_grps_per_id[i])
             sc_col.append(int(source_crsp_per_id[i]))
-            ce_col.append(crsp_exchcd_per_id[i])
+            pe_col.append(primaryexch_per_id[i])
+            ct_col.append(conditionaltype_per_id[i])
             cx_col.append(comp_exchg_per_id[i])
             gics_col.append(gics_per_id[i])
             ff49_col.append(int(ff49_per_id[i]))
@@ -237,7 +242,8 @@ def make_country_characteristics(
             "eom": pl.Series("eom", eom_col, dtype=pl.Date),
             "source_crsp": pl.Series("source_crsp", sc_col, dtype=pl.Int64),
             "comp_exchg": pl.Series("comp_exchg", cx_col, dtype=pl.Int64),
-            "crsp_exchcd": pl.Series("crsp_exchcd", ce_col, dtype=pl.Int64),
+            "primaryexch": pl.Series("primaryexch", pe_col, dtype=pl.Utf8),
+            "conditionaltype": pl.Series("conditionaltype", ct_col, dtype=pl.Utf8),
             "size_grp": pl.Series("size_grp", sg_col, dtype=pl.Utf8),
             "ret_exc": pl.Series("ret_exc", ret_exc, dtype=pl.Float64),
             "ret_exc_lead1m": pl.Series("ret_exc_lead1m", ret_exc_lead1m, dtype=pl.Float64),
@@ -443,17 +449,17 @@ def make_known_monotone_dataset(
 
     size_grps = rng.choice(["mega", "large", "small", "nano"], size=n_ids).tolist()
     source_crsp = rng.choice([0, 1], size=n_ids, p=[0.4, 0.6]).tolist()
-    crsp_exchcd_raw = rng.choice([1, 2, 3], size=n_ids).tolist()
+    primaryexch_raw = rng.choice(["N", "A", "Q"], size=n_ids).tolist()
     comp_exchg_raw = rng.choice([11, 12, 13], size=n_ids).tolist()
     gics_sectors = rng.choice([10, 15, 20, 25], size=n_ids).tolist()
     ff49_per_id = rng.choice([1, 5, 10, 15, 20], size=n_ids).tolist()
 
     sg_col = [size_grps[(i - 1) % n_ids] for i in id_col]
     sc_col = [int(source_crsp[(i - 1) % n_ids]) for i in id_col]
-    ce_col = [
-        int(crsp_exchcd_raw[(i - 1) % n_ids]) if sc_col[k] == 1 else None
-        for k, i in enumerate(id_col)
+    pe_col = [
+        primaryexch_raw[(i - 1) % n_ids] if sc_col[k] == 1 else None for k, i in enumerate(id_col)
     ]
+    ct_col = ["RW" if pe is not None else None for pe in pe_col]
     cx_col = [
         int(comp_exchg_raw[(i - 1) % n_ids]) if sc_col[k] == 0 else None
         for k, i in enumerate(id_col)
@@ -478,7 +484,8 @@ def make_known_monotone_dataset(
             "me_cap": pl.Series("me_cap", me_cap, dtype=pl.Float64),
             "nyse_p80": pl.Series("nyse_p80", nyse_p80, dtype=pl.Float64),
             "comp_exchg": pl.Series("comp_exchg", cx_col, dtype=pl.Int64),
-            "crsp_exchcd": pl.Series("crsp_exchcd", ce_col, dtype=pl.Int64),
+            "primaryexch": pl.Series("primaryexch", pe_col, dtype=pl.Utf8),
+            "conditionaltype": pl.Series("conditionaltype", ct_col, dtype=pl.Utf8),
             "ret_exc": pl.Series("ret_exc", ret_exc, dtype=pl.Float64),
             "ret_exc_lead1m": pl.Series("ret_exc_lead1m", ret_exc_lead1m, dtype=pl.Float64),
             "ff49": pl.Series("ff49", ff49_col, dtype=pl.Int64),
@@ -499,7 +506,8 @@ def make_breakpoint_divergent_dataset(seed: int = 42) -> pl.DataFrame:
     # First half: NYSE-flagged but micro-cap. Second half: non-NYSE but large.
     size_grps = (["micro"] * half) + (["large"] * (n_ids - half))
     source_crsp = ([1] * half) + ([0] * (n_ids - half))
-    crsp_exchcd = ([1] * half) + ([None] * (n_ids - half))
+    primaryexch = (["N"] * half) + ([None] * (n_ids - half))
+    conditionaltype = (["RW"] * half) + ([None] * (n_ids - half))
     comp_exchg = ([None] * half) + ([12] * (n_ids - half))
 
     n_rows = n_ids * n_months
@@ -507,7 +515,8 @@ def make_breakpoint_divergent_dataset(seed: int = 42) -> pl.DataFrame:
     eom_col: list[date] = []
     sg_col: list[str] = []
     sc_col: list[int] = []
-    ce_col: list[int | None] = []
+    pe_col: list[str | None] = []
+    ct_col: list[str | None] = []
     cx_col: list[int | None] = []
     for eom in eoms:
         for i in range(n_ids):
@@ -515,7 +524,8 @@ def make_breakpoint_divergent_dataset(seed: int = 42) -> pl.DataFrame:
             eom_col.append(eom)
             sg_col.append(size_grps[i])
             sc_col.append(source_crsp[i])
-            ce_col.append(crsp_exchcd[i])
+            pe_col.append(primaryexch[i])
+            ct_col.append(conditionaltype[i])
             cx_col.append(comp_exchg[i])
 
     me = np.exp(rng.normal(7.0, 1.0, n_rows))
@@ -532,7 +542,8 @@ def make_breakpoint_divergent_dataset(seed: int = 42) -> pl.DataFrame:
             "excntry": pl.Series("excntry", ["USA"] * n_rows, dtype=pl.Utf8),
             "source_crsp": pl.Series("source_crsp", sc_col, dtype=pl.Int64),
             "comp_exchg": pl.Series("comp_exchg", cx_col, dtype=pl.Int64),
-            "crsp_exchcd": pl.Series("crsp_exchcd", ce_col, dtype=pl.Int64),
+            "primaryexch": pl.Series("primaryexch", pe_col, dtype=pl.Utf8),
+            "conditionaltype": pl.Series("conditionaltype", ct_col, dtype=pl.Utf8),
             "size_grp": pl.Series("size_grp", sg_col, dtype=pl.Utf8),
             "me": pl.Series("me", me, dtype=pl.Float64),
             "ret_exc": pl.Series("ret_exc", ret_exc, dtype=pl.Float64),
