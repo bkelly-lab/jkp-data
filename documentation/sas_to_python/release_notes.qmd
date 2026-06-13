@@ -44,6 +44,7 @@ The output is organized as follows:
 
 2. **characteristics/**
    - `world_data.parquet` contains the monthly stock file with stock-level characteristics, filtered by the standard screens: `primary_sec == 1` (primary security flag), `common == 1` (common stock flag), `obs_main == 1` (main observation flag), `exch_main == 1` (main exchange flag).
+   - CRSP-sourced rows carry native CIZ exchange descriptors `primaryexch` and `conditionaltype` (replacing legacy `crsp_shrcd` / `crsp_exchcd` passthrough columns). NYSE breakpoint logic uses `primaryexch == "N"` and `conditionaltype == "RW"` on CRSP rows; Compustat NYSE rows still use `comp_exchg == 11`.
    - Partitions of `world_data.parquet` by country (e.g., `GBR.parquet`, `USA.parquet`). Files are named using [ISO Alpha-3 country codes](https://www.nationsonline.org/oneworld/country_code_list.htm).
 
 3. **other_output/**
