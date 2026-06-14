@@ -33,6 +33,15 @@ If you do not have a WRDS subscription, you can still access pre-computed factor
 
      Note: If you need to change your password or credentials, run `jkp connect --reset` and then `jkp connect`
 
+   - **Credential precedence.** When the pipeline needs WRDS credentials, it
+     resolves them from environment variables, then the system keyring, then an
+     opt-in file-backed keyring. Run `jkp connect --help` for the full
+     precedence order and the `JKP_ALLOW_PLAINTEXT_KEYRING` opt-in details.
+
+   On a Slurm/HPC compute node, run `jkp connect` once on the login node
+   under `JKP_ALLOW_PLAINTEXT_KEYRING=1` to populate the file keyring, then
+   set the same variable in the batch script before invoking `jkp build`.
+
 3. **Run the script**
 
    - We run the code via a Slurm scheduler, but we also show how to run it in an interactive Python session.
@@ -83,6 +92,8 @@ Please see the release notes (`documentation/release_notes.html`) for a descript
 - To run the code, we utilize a high performance computing cluster, where we request 450 GB RAM and 128 CPU cores. Running the routine takes about 6 hours.
 
 - To understand the data, please refer to our [documentation](https://jkpfactors.s3.amazonaws.com/documents/Documentation.pdf).
+
+- For a history of changes to the underlying data, see [CHANGELOG_DATA.md](CHANGELOG_DATA.md).
 
 - We distribute the global factor returns generated from this codebase at [jkpfactors.com](https://jkpfactors.com) and the stock returns and firm characteristics at [wrds-www.wharton.upenn.edu/pages/get-data/contributed-data-forms/global-factor-data/](https://wrds-www.wharton.upenn.edu/pages/get-data/contributed-data-forms/global-factor-data/).
 

@@ -88,6 +88,9 @@ def portfolio(
     run_portfolio(output_format=output_format.value, output_dir=output_dir)
 
 
+# This help text is the canonical description of the credential precedence
+# order; the README, the wrds_credentials module docstring, and the tests point
+# here rather than restating it. Update here first.
 @app.command()
 def connect(
     reset: bool = typer.Option(
@@ -97,7 +100,23 @@ def connect(
         help="Reset stored WRDS credentials.",
     ),
 ) -> None:
-    """Test or configure WRDS connection."""
+    """Test or configure the WRDS connection.
+
+    Credential precedence (highest first):
+
+      1. WRDS_USERNAME and WRDS_PASSWORD environment variables. Useful for
+         containers and shared service accounts.
+      2. The system keyring (Keychain on macOS, Secret Service on Linux desktop,
+         Credential Vault on Windows). Default for interactive sessions.
+      3. The file-backed keyring (keyrings.alt.file.PlaintextKeyring), which
+         stores the password in a mode-600 file under
+         ~/.local/share/python_keyring/. Selected only when
+         JKP_ALLOW_PLAINTEXT_KEYRING is set to exactly "1" ("true", "yes", etc.
+         are treated as not set); appropriate for headless environments (HPC
+         compute nodes, minimal Docker images) where no system keyring daemon
+         is available. A warning is emitted on first use (once per process) so
+         the backend change is never silent.
+    """
     from .wrds_credentials import get_wrds_credentials, reset_credentials
 
     if reset:
