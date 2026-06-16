@@ -1687,31 +1687,26 @@ def gen_comp_dsf(
     if apply_bessembinder:
         print("Applying Bessembinder Section 6 decimal corrections...", flush=True)
 
-        # PROVISIONAL US-only experiment: skip Global corrections entirely and
-        # feed an empty (schema-only) global table into the merge, so the
-        # FULL OUTER JOIN degenerates to NA-only. Revert before merging.
-        # # Load and correct Global data (no ADRRC). spill_dir selects the
-        # # memory-bounded array path; spill files are removed after each sink.
-        # print("[section6] correcting Global data (comp_g_secd)...", flush=True)
-        # df_global = pl.scan_parquet(paths.raw_tables_dir / "comp_g_secd.parquet")
-        # df_global, log_global = apply_bessembinder_section6(
-        #     df_global,
-        #     group_cols=["gvkey", "iid"],
-        #     sort_col="datadate",
-        #     has_adrrc=False,
-        #     correction_method=correction_method,
-        #     spill_dir=paths.interim_dir,
-        # )
-        # log_global = log_global.collect() if log_global is not None else None
-        # print("[section6] sinking __comp_g_secd_corrected.parquet...", flush=True)
-        # df_global.sink_parquet(paths.interim_dir / "__comp_g_secd_corrected.parquet")
-        # for spill in paths.interim_dir.glob("__bess_*.parquet"):
-        #     spill.unlink()
-        log_global = None
-        print("[section6] US-only: writing empty __comp_g_secd_corrected.parquet...", flush=True)
-        pl.scan_parquet(paths.raw_tables_dir / "comp_g_secd.parquet").head(0).collect(
-            engine="streaming"
-        ).write_parquet(paths.interim_dir / "__comp_g_secd_corrected.parquet")
+        # Load and correct Global data (no ADRRC). spill_dir selects the
+        # memory-bounded array path; spill files are removed after each sink.
+        print("[section6] correcting Global data (comp_g_secd)...", flush=True)
+        df_global = pl.scan_parquet(paths.raw_tables_dir / "comp_g_secd.parquet")
+        df_global, log_global = apply_bessembinder_section6(
+            df_global,
+            group_cols=["gvkey", "iid"],
+            sort_col="datadate",
+            has_adrrc=False,
+            correction_method=correction_method,
+            spill_dir=paths.interim_dir,
+            variation_threshold=variation_threshold,
+        )
+        log_global = log_global.collect() if log_global is not None else None
+        print("[section6] sinking __comp_g_secd_corrected.parquet...", flush=True)
+        df_global.sink_parquet(
+            paths.interim_dir / "__comp_g_secd_corrected.parquet", compression=SPILL_COMPRESSION
+        )
+        for spill in paths.interim_dir.glob("__bess_*.parquet"):
+            spill.unlink()
 
         # Load and correct NA data (has ADRRC for ADRs)
         print("[section6] correcting NA data (comp_secd)...", flush=True)
