@@ -5,7 +5,9 @@ This module tests the download_raw_data_tables function and its helper functions
 particularly the persistent connection feature that uses ATTACH instead of postgres_scan().
 """
 
+import datetime as dt
 import threading
+from collections import Counter
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -368,3 +370,170 @@ class TestParallelDownload:
         assert mock.connect.call_count == 1
         # The override notice is a warning -> stderr.
         assert "single WRDS connection" in capsys.readouterr().err
+
+
+class TestDateRangeSplitting:
+    """Tests for splitting the giant daily tables into row-balanced date-range chunks."""
+
+    def test_date_where_clause(self):
+        from jkp.data.aux_functions import _date_where
+
+        assert _date_where(None, None, None) == ""
+        assert _date_where("d", None, dt.date(2025, 12, 31)) == "WHERE d <= '2025-12-31'"
+        assert _date_where("d", dt.date(2020, 1, 1), None) == "WHERE d >= '2020-01-01'"
+        assert (
+            _date_where("d", dt.date(2020, 1, 1), dt.date(2025, 12, 31))
+            == "WHERE d >= '2020-01-01' AND d <= '2025-12-31'"
+        )
+
+    def test_download_attached_emits_date_range(self):
+        from jkp.data.aux_functions import download_wrds_table_attached
+
+        con = MagicMock()
+        result = MagicMock()
+        result.description = [("dlycaldt",), ("x",)]
+        con.execute.return_value = result
+
+        download_wrds_table_attached(
+            con,
+            "wrds",
+            "crsp.dsf_v2",
+            "/tmp/c.parquet",
+            date_column="dlycaldt",
+            start_date=dt.date(2020, 1, 1),
+            end_date=dt.date(2025, 12, 31),
+        )
+
+        copy_sql = next(
+            str(c[0][0]) for c in con.execute.call_args_list if c[0] and "COPY" in str(c[0][0])
+        )
+        assert "dlycaldt >= '2020-01-01'" in copy_sql
+        assert "dlycaldt <= '2025-12-31'" in copy_sql
+
+    def test_balanced_chunks_cover_and_balance(self):
+        from jkp.data.aux_functions import _balanced_year_chunks
+
+        # Increasing rows per year (recent years denser), like the real daily tables.
+        hist = [(y, y - 1924) for y in range(1925, 2026)]
+        end = dt.date(2025, 12, 31)
+        ranges = _balanced_year_chunks(hist, 6, end)
+
+        assert len(ranges) == 6
+        assert ranges[0][0] is None  # unbounded below
+        assert ranges[-1][1] == end  # last bounded by overall end_date
+        # Contiguous and non-overlapping (year boundaries line up).
+        for (_s1, e1), (s2, _e2) in zip(ranges[:-1], ranges[1:], strict=True):
+            assert s2.year == e1.year + 1
+
+        def rows(start, end_):
+            return sum(n for y, n in hist if (start is None or y >= start.year) and y <= end_.year)
+
+        sizes = [rows(s, e) for s, e in ranges]
+        assert sum(sizes) == sum(n for _, n in hist)  # complete coverage, no double count
+        target = sum(sizes) / 6
+        assert max(sizes) <= 1.5 * target  # reasonably balanced
+
+    def test_balanced_chunks_degenerate_cases(self):
+        from jkp.data.aux_functions import _balanced_year_chunks
+
+        end = dt.date(2025, 12, 31)
+        assert _balanced_year_chunks([], 6, end) == [(None, end)]
+        assert _balanced_year_chunks([(2025, 100)], 6, end) == [(None, end)]  # single year
+        assert _balanced_year_chunks([(y, 1) for y in range(2000, 2010)], 1, end) == [(None, end)]
+
+    def test_build_tasks_splits_only_split_tables(self):
+        from jkp.data.aux_functions import _build_download_tasks
+
+        end = dt.date(2025, 12, 31)
+        hist = [(y, 10) for y in range(2010, 2022)]  # 12 equal years
+        tables = ["ff.factors_monthly", "crsp.dsf_v2"]
+        filenames = {
+            "ff.factors_monthly": "/o/ff_factors_monthly.parquet",
+            "crsp.dsf_v2": "/o/crsp_dsf_v2.parquet",
+        }
+        tasks, concat_map = _build_download_tasks(
+            tables,
+            filenames,
+            {"crsp.dsf_v2": "dlycaldt"},
+            end,
+            frozenset({"crsp.dsf_v2"}),
+            4,
+            {"crsp.dsf_v2": hist},
+        )
+
+        ff = [t for t in tasks if t.table == "ff.factors_monthly"]
+        dsf = [t for t in tasks if t.table == "crsp.dsf_v2"]
+        assert len(ff) == 1 and ff[0].out == filenames["ff.factors_monthly"]
+        assert len(dsf) == 4  # split into 4 chunks
+        assert all(".part" in t.out for t in dsf)
+        assert dsf[0].start_date is None and dsf[-1].end_date == end
+        assert concat_map[filenames["crsp.dsf_v2"]] == [t.out for t in dsf]
+
+    def test_build_tasks_no_split_without_histogram(self):
+        from jkp.data.aux_functions import _build_download_tasks
+
+        # No histogram (e.g. end_date was None upstream) -> single whole-table task, no concat.
+        tasks, concat_map = _build_download_tasks(
+            ["crsp.dsf_v2"],
+            {"crsp.dsf_v2": "/o/crsp_dsf_v2.parquet"},
+            {"crsp.dsf_v2": "dlycaldt"},
+            None,
+            frozenset({"crsp.dsf_v2"}),
+            4,
+            {},
+        )
+        assert len(tasks) == 1
+        assert tasks[0].out == "/o/crsp_dsf_v2.parquet"
+        assert not concat_map
+
+    def test_concat_chunks_combines_and_removes(self, tmp_path):
+        import polars as pl
+
+        from jkp.data.aux_functions import _concat_chunks
+
+        c0 = tmp_path / "t.part00.parquet"
+        c1 = tmp_path / "t.part01.parquet"
+        pl.DataFrame({"a": [1, 2], "b": ["x", "y"]}).write_parquet(c0)
+        pl.DataFrame({"a": [3], "b": ["z"]}).write_parquet(c1)
+        final = tmp_path / "t.parquet"
+
+        _concat_chunks(str(final), [str(c0), str(c1)])
+
+        out = pl.read_parquet(final)
+        assert out.height == 3
+        assert out["a"].to_list() == [1, 2, 3]  # chunk order preserved
+        assert not c0.exists() and not c1.exists()  # chunks cleaned up
+
+    @patch("jkp.data.aux_functions._compute_histograms")
+    @patch("jkp.data.aux_functions.download_wrds_table_attached")
+    def test_parallel_download_splits_giant_tables(self, mock_dl, mock_hist, test_paths):
+        """End-to-end (mocked): with an end_date, the giant tables expand into max_workers chunks."""
+        from jkp.data.aux_functions import SPLIT_TABLES, download_raw_data_tables
+
+        hist = [(y, 10) for y in range(2010, 2022)]
+        mock_hist.return_value = dict.fromkeys(SPLIT_TABLES, hist)
+
+        recorded: list[str] = []
+        lock = threading.Lock()
+
+        def record(con, alias, table, out, **kwargs):
+            with lock:
+                recorded.append(table)
+
+        mock_dl.side_effect = record
+
+        with patch("jkp.data.aux_functions.duckdb") as mock_duckdb:
+            conns = [MagicMock(name=f"c{i}") for i in range(40)]
+            for c in conns:
+                c.__enter__.return_value = c
+            mock_duckdb.connect.side_effect = conns
+            download_raw_data_tables(
+                test_paths, "user", "pass", end_date=dt.date(2025, 12, 31), max_workers=4
+            )
+
+        counts = Counter(recorded)
+        for split_table in SPLIT_TABLES:
+            assert counts[split_table] == 4, (
+                f"{split_table}: expected 4 chunks, got {counts[split_table]}"
+            )
+        assert counts["ff.factors_monthly"] == 1  # non-split table downloaded once
