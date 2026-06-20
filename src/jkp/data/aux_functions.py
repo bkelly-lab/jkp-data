@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import contextlib
 import functools
 import operator
 import os
+import queue
 import re
 import shutil
+import sys
+import threading
 import time
 import warnings
 from datetime import date
@@ -759,6 +763,133 @@ def download_wrds_table(
     """)
 
 
+# WRDS enforces a per-role PostgreSQL CONNECTION LIMIT (currently 7 for our account; see
+# `SELECT rolconnlimit FROM pg_roles WHERE rolname = current_user`). Each parallel worker holds
+# exactly one client connection (verified: with `SET threads = 1` and these tables being views,
+# one ATTACH == one TCP socket to wrds-pgdata), so the pool is capped below the limit to leave a
+# slot of headroom for any other WRDS session under the same login.
+#
+# NOTE for debugging: WRDS fronts PostgreSQL with pgpool, so `pg_stat_activity` reports the
+# server-side backend pool (it showed ~21 backends for 6 workers) -- that is NOT the client
+# connection count. The number that matters for the role limit is the client connections, which
+# equal the worker count (confirmed via the process's own sockets, e.g. psutil/`ss`).
+WRDS_MAX_CONNECTIONS = 7
+
+
+def _effective_download_workers(requested: int, n_tables: int) -> int:
+    """Clamp the requested worker count to a safe, useful range.
+
+    Never more workers than there are tables, and never more than WRDS allows concurrent
+    connections (minus one for headroom). A value of 1 (or less) means sequential download.
+    """
+    if requested <= 1:
+        return 1
+    return max(1, min(requested, n_tables, WRDS_MAX_CONNECTIONS - 1))
+
+
+def _attach_download_worker(
+    table_queue: queue.Queue,
+    conninfo: str,
+    filenames: dict[str, str],
+    date_columns: dict[str, str],
+    end_date: date | None,
+    password: str,
+    errors: list[str],
+    errors_lock: threading.Lock,
+) -> None:
+    """One parallel worker: open a private ATTACH connection and drain the table queue.
+
+    Each worker holds exactly one WRDS backend connection (``threads=1`` keeps DuckDB from
+    opening extra connections for a parallel scan) and reuses it for every table it pulls.
+    Failures are recorded per-table (password-redacted) instead of raised, so one bad table
+    doesn't abandon the rest; the caller raises a single aggregated error afterward.
+    """
+    # `with duckdb.connect(...)` closes the connection on every exit path (return / exception).
+    with duckdb.connect(":memory:") as con:
+        con.execute("SET threads TO 1")
+        con.execute("INSTALL postgres; LOAD postgres;")
+        try:
+            con.execute(f"ATTACH '{conninfo}' AS wrds (TYPE postgres, READ_ONLY)")
+        except Exception as e:
+            # DuckDB embeds the connection string (with password) in ATTACH errors.
+            reason = (
+                "check credentials and MFA approval" if password and password in str(e) else str(e)
+            )
+            with errors_lock:
+                errors.append(f"<attach>: {reason}")
+            return
+        try:
+            while True:
+                try:
+                    table = table_queue.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    download_wrds_table_attached(
+                        con,
+                        "wrds",
+                        table,
+                        filenames[table],
+                        date_column=date_columns.get(table),
+                        end_date=end_date,
+                    )
+                except Exception as e:  # noqa: BLE001
+                    msg = str(e)
+                    if password and password in msg:
+                        msg = "<redacted>"
+                    with errors_lock:
+                        errors.append(f"{table}: {msg}")
+        finally:
+            with contextlib.suppress(Exception):
+                con.execute("DETACH wrds")
+
+
+def _download_tables_parallel(
+    table_names: list[str],
+    filenames: dict[str, str],
+    conninfo: str,
+    date_columns: dict[str, str],
+    end_date: date | None,
+    password: str,
+    workers: int,
+) -> None:
+    """Download all tables concurrently over ``workers`` private ATTACH connections.
+
+    Tables are pulled from a shared queue (dynamic load balancing), so fast tables don't wait
+    behind slow ones. Raises a single aggregated ``RuntimeError`` if any table failed.
+    """
+    table_queue: queue.Queue = queue.Queue()
+    for table in table_names:
+        table_queue.put(table)
+    errors: list[str] = []
+    errors_lock = threading.Lock()
+    threads = [
+        threading.Thread(
+            target=_attach_download_worker,
+            args=(
+                table_queue,
+                conninfo,
+                filenames,
+                date_columns,
+                end_date,
+                password,
+                errors,
+                errors_lock,
+            ),
+            name=f"wrds-download-{i}",
+        )
+        for i in range(workers)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    if errors:
+        raise RuntimeError(
+            f"{len(errors)} WRDS table download(s) failed:\n  " + "\n  ".join(sorted(errors))
+        )
+
+
 @measure_time
 def download_raw_data_tables(
     paths: DataPaths,
@@ -766,6 +897,7 @@ def download_raw_data_tables(
     password: str,
     end_date: date | None = None,
     persistent_connection: bool = False,
+    max_workers: int = 1,
 ) -> None:
     """
     Description:
@@ -775,16 +907,26 @@ def download_raw_data_tables(
         1) Connect to WRDS; iterate through a fixed list of library.tables.
         2) For each table: download to raw_tables/lib_table.parquet, applying date filtering
            when end_date is provided and the table has a known date column.
-        3) If persistent_connection: ATTACH a single postgres connection and download all tables.
-           Otherwise: use postgres_scan() which creates a new connection per query.
+        3) If max_workers > 1: download tables concurrently over a pool of persistent ATTACH
+           connections (one per worker). Otherwise download sequentially over a single
+           connection, using ATTACH when persistent_connection is set or postgres_scan() if not.
         4) Disconnect.
 
     Args:
         username: WRDS username
         password: WRDS password
-        persistent_connection: If True, use a single persistent connection via ATTACH.
-            This reduces MFA prompts on systems with NAT IP rotation (e.g., Yale Bouchet).
-            If False (default), use postgres_scan() which creates a new connection per query.
+        persistent_connection: If True, use a single persistent connection via ATTACH. This
+            reduces MFA prompts on systems with NAT IP rotation (e.g., Yale Bouchet). If False
+            (default), use postgres_scan() which creates a new connection per query. This flag
+            takes precedence over max_workers: when set, the download stays sequential (one
+            connection) so the single-MFA-prompt guarantee is preserved.
+        max_workers: Number of concurrent download connections. The download is single-threaded
+            and transfer-bound, so the tables are otherwise pulled one at a time over a single
+            stream; running several in parallel cuts wall time substantially. Clamped to the WRDS
+            per-account connection limit (see WRDS_MAX_CONNECTIONS). Default 1 (sequential).
+            Ignored when persistent_connection is set. NOTE: each worker opens its own connection,
+            so on NAT-rotated networks (e.g., Bouchet) parallel mode would trigger one MFA prompt
+            per worker at startup — which is exactly why persistent_connection forces sequential.
 
     Output:
         Parquet files under raw_tables/ (Compustat, CRSP, FF, etc.).
@@ -832,7 +974,32 @@ def download_raw_data_tables(
         "comp.g_fundq": "datadate",
     }
 
-    wrds_session_data = gen_wrds_connection_info(username, password)
+    conninfo = gen_wrds_connection_info(username, password)
+    filenames = {
+        table: str(paths.raw_tables_dir / (table.replace(".", "_") + ".parquet"))
+        for table in table_names
+    }
+
+    workers = _effective_download_workers(max_workers, len(table_names))
+    if persistent_connection and workers > 1:
+        # --persistent-connection exists to hold ONE connection so NAT-rotated networks
+        # (e.g. Bouchet) get a single MFA prompt. Parallel workers each open their own
+        # connection (one MFA prompt apiece), defeating that, so the single-connection request
+        # wins and we download sequentially.
+        print(
+            "Note: --persistent-connection uses a single WRDS connection; "
+            f"ignoring max_workers={max_workers} and downloading sequentially.",
+            file=sys.stderr,
+            flush=True,
+        )
+        workers = 1
+    if workers > 1:
+        # Parallel: each worker holds its own persistent ATTACH connection and drains a queue.
+        _download_tables_parallel(
+            table_names, filenames, conninfo, date_columns, end_date, password, workers
+        )
+        return
+
     con = duckdb.connect(":memory:")
     con.execute("INSTALL postgres; LOAD postgres;")
 
@@ -842,7 +1009,7 @@ def download_raw_data_tables(
         # in error messages. If the connection fails, suppress the original exception to
         # avoid leaking credentials in logs/tracebacks, and raise a generic error instead.
         try:
-            con.execute(f"ATTACH '{wrds_session_data}' AS wrds (TYPE postgres, READ_ONLY)")
+            con.execute(f"ATTACH '{conninfo}' AS wrds (TYPE postgres, READ_ONLY)")
         except Exception as e:
             if password in str(e):
                 raise RuntimeError(
@@ -856,7 +1023,7 @@ def download_raw_data_tables(
                     con,
                     "wrds",
                     table,
-                    str(paths.raw_tables_dir / (table.replace(".", "_") + ".parquet")),
+                    filenames[table],
                     date_column=date_columns.get(table),
                     end_date=end_date,
                 )
@@ -866,10 +1033,10 @@ def download_raw_data_tables(
         # Use postgres_scan() which creates a new connection per query (default)
         for table in table_names:
             download_wrds_table(
-                wrds_session_data,
+                conninfo,
                 con,
                 table,
-                str(paths.raw_tables_dir / (table.replace(".", "_") + ".parquet")),
+                filenames[table],
                 date_column=date_columns.get(table),
                 end_date=end_date,
             )
