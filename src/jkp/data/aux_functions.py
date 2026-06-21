@@ -988,7 +988,7 @@ def _remove_chunk_parts(filename: str) -> None:
 
 
 def _attach_download_worker(
-    task_queue: queue.Queue,
+    task_queue: queue.Queue[_DownloadTask],
     conninfo: str,
     password: str,
     errors: list[str],
@@ -1077,7 +1077,7 @@ def _download_tables_parallel(
         if table in split_tables:
             _remove_chunk_parts(filenames[table])
 
-    task_queue: queue.Queue = queue.Queue()
+    task_queue: queue.Queue[_DownloadTask] = queue.Queue()
     for task in tasks:
         task_queue.put(task)
     errors: list[str] = []
