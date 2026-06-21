@@ -1048,9 +1048,11 @@ def _download_tables_parallel(
             f"{len(errors)} WRDS download task(s) failed:\n  " + "\n  ".join(sorted(errors))
         )
 
-    # Concatenate each split table's chunks back into its single parquet (local, no WRDS).
-    for final_file, chunk_files in concat_map.items():
-        _concat_chunks(final_file, chunk_files)
+    # Concatenate each split table's chunks back into its single parquet. These are local
+    # (no WRDS connection) and independent, so run them concurrently.
+    if concat_map:
+        with ThreadPoolExecutor(max_workers=len(concat_map)) as ex:
+            list(ex.map(lambda item: _concat_chunks(*item), concat_map.items()))
 
 
 @measure_time
