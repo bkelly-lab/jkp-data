@@ -542,9 +542,12 @@ class TestDateRangeSplitting:
                     test_paths, "user", "pass", end_date=dt.date(2025, 12, 31), max_workers=4
                 )
 
+    @patch("jkp.data.aux_functions._concat_chunks")
     @patch("jkp.data.aux_functions._compute_histograms")
     @patch("jkp.data.aux_functions.download_wrds_table_attached")
-    def test_parallel_download_splits_giant_tables(self, mock_dl, mock_hist, test_paths):
+    def test_parallel_download_splits_giant_tables(
+        self, mock_dl, mock_hist, mock_concat, test_paths
+    ):
         """End-to-end (mocked): with an end_date, the giant tables expand into max_workers chunks."""
         from jkp.data.aux_functions import SPLIT_TABLES, download_raw_data_tables
 

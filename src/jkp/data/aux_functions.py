@@ -968,11 +968,7 @@ def _build_download_tasks(
 
 def _concat_chunks(final_file: str, chunk_files: list[str]) -> None:
     """Concatenate ordered chunk parquets into one final parquet, then remove the chunks (local)."""
-    file_list = "[" + ", ".join(f"'{f}'" for f in chunk_files) + "]"
-    with duckdb.connect(":memory:") as con:
-        con.execute(
-            f"COPY (SELECT * FROM read_parquet({file_list})) TO '{final_file}' (FORMAT PARQUET)"  # noqa: S608
-        )
+    pl.scan_parquet(chunk_files).sink_parquet(final_file)
     for f in chunk_files:
         with contextlib.suppress(FileNotFoundError):
             os.remove(f)
