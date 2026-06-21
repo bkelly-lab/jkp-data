@@ -827,7 +827,31 @@ def _chunk_path(filename: str, i: int) -> str:
     return str(p.with_name(f"{p.stem}.part{i:02d}{p.suffix}"))
 
 
-def _year_histogram(con, db_alias, lib, table, date_column, end_date):
+def _attach_wrds(con: duckdb.DuckDBPyConnection, conninfo: str, password: str) -> None:
+    """ATTACH the WRDS Postgres database read-only on an existing DuckDB connection.
+
+    DuckDB's postgres extension embeds the full connection string (including the password) in
+    ATTACH error text, so on failure suppress the original exception and raise a generic,
+    password-free error. Errors that don't contain the password propagate unchanged.
+    """
+    try:
+        con.execute(f"ATTACH '{conninfo}' AS wrds (TYPE postgres, READ_ONLY)")
+    except Exception as e:
+        if password and password in str(e):
+            raise RuntimeError(
+                "Failed to attach WRDS connection. Check credentials and MFA approval."
+            ) from None
+        raise
+
+
+def _year_histogram(
+    con: duckdb.DuckDBPyConnection,
+    db_alias: str,
+    lib: str,
+    table: str,
+    date_column: str,
+    end_date: date | None,
+) -> list[tuple[int, int]]:
     """Server-side per-year row counts for a date-filtered table: [(year, n), ...] sorted by year."""
     where = _date_where(date_column, None, end_date)
     rows = con.execute(
@@ -837,7 +861,9 @@ def _year_histogram(con, db_alias, lib, table, date_column, end_date):
     return [(int(yr), int(n)) for yr, n in rows if yr is not None]
 
 
-def _balanced_year_chunks(histogram, n_chunks, end_date):
+def _balanced_year_chunks(
+    histogram: list[tuple[int, int]], n_chunks: int, end_date: date | None
+) -> list[tuple[date | None, date | None]]:
     """Split a year histogram into <= n_chunks contiguous inclusive (start, end) date ranges
     holding ~equal row counts.
 
@@ -864,7 +890,14 @@ def _balanced_year_chunks(histogram, n_chunks, end_date):
     ]
 
 
-def _compute_histograms(conninfo, tables, date_columns, end_date, max_conns):
+def _compute_histograms(
+    conninfo: str,
+    tables: list[str],
+    date_columns: dict[str, str],
+    end_date: date | None,
+    max_conns: int,
+    password: str,
+) -> dict[str, list[tuple[int, int]]]:
     """Concurrently compute per-year row histograms for ``tables`` (each over its own connection).
 
     Returns {table: [(year, n), ...]}. Runs up to ``max_conns`` queries at once so the up-front
@@ -873,12 +906,12 @@ def _compute_histograms(conninfo, tables, date_columns, end_date, max_conns):
     if not tables:
         return {}
 
-    def one(table):
+    def one(table: str) -> tuple[str, list[tuple[int, int]]]:
         lib, tbl = table.split(".")
         with duckdb.connect(":memory:") as con:
             con.execute("SET threads TO 1")
             con.execute("INSTALL postgres; LOAD postgres;")
-            con.execute(f"ATTACH '{conninfo}' AS wrds (TYPE postgres, READ_ONLY)")
+            _attach_wrds(con, conninfo, password)
             try:
                 return table, _year_histogram(con, "wrds", lib, tbl, date_columns[table], end_date)
             finally:
@@ -890,8 +923,14 @@ def _compute_histograms(conninfo, tables, date_columns, end_date, max_conns):
 
 
 def _build_download_tasks(
-    table_names, filenames, date_columns, end_date, split_tables, n_chunks, histograms
-):
+    table_names: list[str],
+    filenames: dict[str, str],
+    date_columns: dict[str, str],
+    end_date: date | None,
+    split_tables: frozenset[str],
+    n_chunks: int,
+    histograms: dict[str, list[tuple[int, int]]],
+) -> tuple[list[_DownloadTask], dict[str, list[str]]]:
     """Expand the table list into download tasks, splitting ``split_tables`` into date chunks.
 
     ``histograms`` maps a split table to its per-year row counts (see _compute_histograms).
@@ -910,7 +949,7 @@ def _build_download_tasks(
             and date_col
             and end_date is not None
         )
-        if not do_split:
+        if not do_split or hist is None:
             tasks.append(_DownloadTask(table, filenames[table], date_col, None, end_date))
             continue
         ranges = _balanced_year_chunks(hist, n_chunks, end_date)
@@ -958,14 +997,10 @@ def _attach_download_worker(
         con.execute("SET threads TO 1")
         con.execute("INSTALL postgres; LOAD postgres;")
         try:
-            con.execute(f"ATTACH '{conninfo}' AS wrds (TYPE postgres, READ_ONLY)")
-        except Exception as e:
-            # DuckDB embeds the connection string (with password) in ATTACH errors.
-            reason = (
-                "check credentials and MFA approval" if password and password in str(e) else str(e)
-            )
+            _attach_wrds(con, conninfo, password)
+        except Exception as e:  # noqa: BLE001
             with errors_lock:
-                errors.append(f"<attach>: {reason}")
+                errors.append(f"<attach>: {e}")
             return
         try:
             while True:
@@ -1018,7 +1053,7 @@ def _download_tables_parallel(
         t for t in table_names if t in split_tables and date_columns.get(t) and end_date is not None
     ]
     histograms = (
-        _compute_histograms(conninfo, split_present, date_columns, end_date, workers)
+        _compute_histograms(conninfo, split_present, date_columns, end_date, workers, password)
         if split_present and n_chunks > 1
         else {}
     )
@@ -1182,18 +1217,7 @@ def download_raw_data_tables(
 
     if persistent_connection:
         # Use ATTACH for a single persistent connection (reduces MFA on NAT-rotated networks).
-        # DuckDB's postgres extension includes the full connection string (with password)
-        # in error messages. If the connection fails, suppress the original exception to
-        # avoid leaking credentials in logs/tracebacks, and raise a generic error instead.
-        try:
-            con.execute(f"ATTACH '{conninfo}' AS wrds (TYPE postgres, READ_ONLY)")
-        except Exception as e:
-            if password in str(e):
-                raise RuntimeError(
-                    "Failed to attach persistent WRDS connection. "
-                    "Check credentials and MFA approval."
-                ) from None
-            raise
+        _attach_wrds(con, conninfo, password)
         try:
             for table in table_names:
                 download_wrds_table_attached(

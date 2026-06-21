@@ -537,3 +537,101 @@ class TestDateRangeSplitting:
                 f"{split_table}: expected 4 chunks, got {counts[split_table]}"
             )
         assert counts["ff.factors_monthly"] == 1  # non-split table downloaded once
+
+    def test_balanced_chunks_skewed_distribution(self):
+        # One year dwarfs the rest (its count exceeds the per-chunk target): chunks must still
+        # cover everything exactly once with contiguous, non-empty year ranges.
+        from jkp.data.aux_functions import _balanced_year_chunks
+
+        end = dt.date(2025, 12, 31)
+        hist = [(2000, 1), (2001, 1), (2002, 1000), (2003, 1), (2004, 1)]
+        ranges = _balanced_year_chunks(hist, 4, end)
+
+        assert ranges[0][0] is None
+        assert ranges[-1][1] == end
+        for (_s1, e1), (s2, _e2) in zip(ranges[:-1], ranges[1:], strict=True):
+            assert s2.year == e1.year + 1  # contiguous, non-overlapping
+        for s, e in ranges:
+            if s is not None:
+                assert s <= e  # no empty/inverted spans
+
+        def rows(start, end_):
+            return sum(n for y, n in hist if (start is None or y >= start.year) and y <= end_.year)
+
+        assert sum(rows(s, e) for s, e in ranges) == sum(n for _, n in hist)  # complete coverage
+
+    @patch("jkp.data.aux_functions._concat_chunks")
+    @patch("jkp.data.aux_functions._compute_histograms")
+    @patch("jkp.data.aux_functions.download_wrds_table_attached")
+    def test_parallel_download_concatenates_each_split_table(
+        self, mock_dl, mock_hist, mock_concat, test_paths
+    ):
+        """The concat_map -> ThreadPoolExecutor wiring invokes _concat_chunks once per split table."""
+        from jkp.data.aux_functions import SPLIT_TABLES, download_raw_data_tables
+
+        mock_hist.return_value = dict.fromkeys(SPLIT_TABLES, [(y, 10) for y in range(2010, 2022)])
+        with patch("jkp.data.aux_functions.duckdb") as mock_duckdb:
+            conns = [MagicMock(name=f"c{i}") for i in range(40)]
+            for c in conns:
+                c.__enter__.return_value = c
+            mock_duckdb.connect.side_effect = conns
+            download_raw_data_tables(
+                test_paths, "user", "pass", end_date=dt.date(2025, 12, 31), max_workers=4
+            )
+
+        assert mock_concat.call_count == len(SPLIT_TABLES)
+        for call in mock_concat.call_args_list:
+            _final_file, chunk_files = call.args
+            assert len(chunk_files) == 4
+            assert chunk_files == sorted(chunk_files)  # chunks concatenated in part00..part03 order
+            assert all(".part" in cf for cf in chunk_files)
+
+    def test_compute_histograms_attach_failure_is_redacted(self):
+        """A histogram-phase ATTACH failure must not leak the password (regression for M1)."""
+        from jkp.data.aux_functions import _compute_histograms
+
+        password = "topsecret"  # noqa: S105
+
+        def execute(sql, *args):
+            if "ATTACH" in sql:
+                raise RuntimeError(f"Connection failed: host=x password={password} dbname=wrds")
+            return MagicMock()
+
+        with patch("jkp.data.aux_functions.duckdb") as mock_duckdb:
+            con = MagicMock()
+            con.__enter__.return_value = con
+            con.execute.side_effect = execute
+            mock_duckdb.connect.return_value = con
+            with pytest.raises(Exception) as exc_info:  # noqa: PT011
+                _compute_histograms(
+                    f"host=x password={password}",
+                    ["crsp.dsf_v2"],
+                    {"crsp.dsf_v2": "dlycaldt"},
+                    dt.date(2025, 12, 31),
+                    4,
+                    password,
+                )
+        assert password not in str(exc_info.value)
+
+
+class TestAttachWrds:
+    """The shared WRDS ATTACH helper (password redaction)."""
+
+    def test_redacts_password_on_attach_error(self):
+        from jkp.data.aux_functions import _attach_wrds
+
+        con = MagicMock()
+        con.execute.side_effect = RuntimeError("ATTACH failed: host=x password=hunter2 dbname=wrds")
+        with pytest.raises(RuntimeError) as exc_info:
+            _attach_wrds(con, "host=x password=hunter2", "hunter2")
+        assert "hunter2" not in str(exc_info.value)
+        assert "credentials" in str(exc_info.value).lower()
+
+    def test_passes_through_non_password_error(self):
+        from jkp.data.aux_functions import _attach_wrds
+
+        con = MagicMock()
+        con.execute.side_effect = RuntimeError("FATAL: too many connections for role")
+        # A non-credential error (no password in it) propagates unchanged.
+        with pytest.raises(RuntimeError, match="too many connections"):
+            _attach_wrds(con, "host=x password=hunter2", "hunter2")
