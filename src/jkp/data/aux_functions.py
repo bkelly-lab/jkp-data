@@ -978,6 +978,19 @@ def _concat_chunks(final_file: str, chunk_files: list[str]) -> None:
             os.remove(f)
 
 
+def _remove_chunk_parts(filename: str) -> None:
+    """Delete any existing chunk-part files for ``filename`` (see _chunk_path).
+
+    A prior interrupted run may have written chunk parts that were never concatenated — possibly
+    with a different worker count, hence different indices — so clear them all before writing fresh
+    ones. The final (non-part) file itself is left untouched.
+    """
+    p = Path(filename)
+    for f in p.parent.glob(f"{p.stem}.part*{p.suffix}"):
+        with contextlib.suppress(FileNotFoundError):
+            f.unlink()
+
+
 def _attach_download_worker(
     task_queue: queue.Queue,
     conninfo: str,
@@ -1061,6 +1074,13 @@ def _download_tables_parallel(
         table_names, filenames, date_columns, end_date, split_tables, n_chunks, histograms
     )
 
+    # Clear any stale chunk parts left by a prior interrupted run before the workers write fresh
+    # ones, so leftover parts (e.g. from a run with a different worker count) can't linger
+    # un-concatenated alongside this run's output.
+    for table in table_names:
+        if table in split_tables:
+            _remove_chunk_parts(filenames[table])
+
     task_queue: queue.Queue = queue.Queue()
     for task in tasks:
         task_queue.put(task)
@@ -1084,10 +1104,28 @@ def _download_tables_parallel(
         )
 
     # Concatenate each split table's chunks back into its single parquet. These are local
-    # (no WRDS connection) and independent, so run them concurrently.
+    # (no WRDS connection) and independent, so run them concurrently. Failures are aggregated
+    # like the download phase rather than aborting on the first error; chunks left behind by a
+    # failed concat are cleaned up by the stale-part sweep on the next run.
     if concat_map:
+        concat_errors: list[str] = []
+        concat_lock = threading.Lock()
+
+        def concat_one(item: tuple[str, list[str]]) -> None:
+            final_file, chunk_files = item
+            try:
+                _concat_chunks(final_file, chunk_files)
+            except Exception as e:  # noqa: BLE001
+                with concat_lock:
+                    concat_errors.append(f"{Path(final_file).name}: {e}")
+
         with ThreadPoolExecutor(max_workers=len(concat_map)) as ex:
-            list(ex.map(lambda item: _concat_chunks(*item), concat_map.items()))
+            list(ex.map(concat_one, concat_map.items()))
+        if concat_errors:
+            raise RuntimeError(
+                f"{len(concat_errors)} chunk concatenation(s) failed:\n  "
+                + "\n  ".join(sorted(concat_errors))
+            )
 
 
 @measure_time

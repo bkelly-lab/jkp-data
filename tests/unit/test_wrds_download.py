@@ -504,6 +504,44 @@ class TestDateRangeSplitting:
         assert out["a"].to_list() == [1, 2, 3]  # chunk order preserved
         assert not c0.exists() and not c1.exists()  # chunks cleaned up
 
+    def test_remove_chunk_parts(self, tmp_path):
+        from jkp.data.aux_functions import _remove_chunk_parts
+
+        final = tmp_path / "crsp_dsf_v2.parquet"
+        final.write_bytes(b"keep")
+        (tmp_path / "crsp_dsf_v2.part00.parquet").write_bytes(b"x")
+        (tmp_path / "crsp_dsf_v2.part09.parquet").write_bytes(b"x")  # high index from a prior run
+        (tmp_path / "comp_secd.part00.parquet").write_bytes(b"other")  # different table
+
+        _remove_chunk_parts(str(final))
+
+        assert not (tmp_path / "crsp_dsf_v2.part00.parquet").exists()
+        assert not (tmp_path / "crsp_dsf_v2.part09.parquet").exists()
+        assert final.exists()  # the final (non-part) file is left untouched
+        assert (tmp_path / "comp_secd.part00.parquet").exists()  # other tables untouched
+
+    @patch("jkp.data.aux_functions._concat_chunks")
+    @patch("jkp.data.aux_functions._compute_histograms")
+    @patch("jkp.data.aux_functions.download_wrds_table_attached")
+    def test_parallel_download_aggregates_concat_failures(
+        self, mock_dl, mock_hist, mock_concat, test_paths
+    ):
+        """A concat failure surfaces as one aggregated error, not a raw first-failure exception."""
+        from jkp.data.aux_functions import SPLIT_TABLES, download_raw_data_tables
+
+        mock_hist.return_value = dict.fromkeys(SPLIT_TABLES, [(y, 10) for y in range(2010, 2022)])
+        mock_concat.side_effect = RuntimeError("disk full")
+
+        with patch("jkp.data.aux_functions.duckdb") as mock_duckdb:
+            conns = [MagicMock(name=f"c{i}") for i in range(40)]
+            for c in conns:
+                c.__enter__.return_value = c
+            mock_duckdb.connect.side_effect = conns
+            with pytest.raises(RuntimeError, match="concatenation"):
+                download_raw_data_tables(
+                    test_paths, "user", "pass", end_date=dt.date(2025, 12, 31), max_workers=4
+                )
+
     @patch("jkp.data.aux_functions._compute_histograms")
     @patch("jkp.data.aux_functions.download_wrds_table_attached")
     def test_parallel_download_splits_giant_tables(self, mock_dl, mock_hist, test_paths):
