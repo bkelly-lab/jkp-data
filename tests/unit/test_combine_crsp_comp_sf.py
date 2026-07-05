@@ -57,44 +57,52 @@ def _make_crsp_msf(tmp: Path, n_permnos: int = 500) -> None:
     gvkeys = [f"{p % 100000:06d}" if _RNG.rand() > 0.3 else None for p in permno]
     iids = ["01" if _RNG.rand() > 0.1 else None for _ in range(n)]
 
-    df = pl.DataFrame(
-        {
-            "permno": permno,
-            "permco": [p + 10000 for p in permno],
-            "gvkey": gvkeys,
-            "iid": iids,
-            "exch_main": _RNG.choice([1, 2, 3], n).tolist(),
-            "bidask": _RNG.choice([0, 1], n).tolist(),
-            "common": _RNG.choice([0, 1], n).tolist(),
-            "primaryexch": _RNG.choice(["N", "A", "Q", None], n).tolist(),
-            "conditionaltype": _RNG.choice(["RW", "RW", "RW", None], n).tolist(),
-            "date": dates,
-            "cfacshr": _random_float_col(n, 0.02),
-            "shrout": _random_float_col(n, 0.02),
-            "me": _random_float_col(n),
-            "me_company": _random_float_col(n),
-            "prc": _random_float_col(n),
-            "prc_high": _random_float_col(n),
-            "prc_low": _random_float_col(n),
-            "dolvol": _random_float_col(n),
-            "vol": _random_float_col(n),
-            "ret": _random_float_col(n),
-            "ret_exc": _random_float_col(n),
-            "div_tot": _random_float_col(n, 0.8),
-        }
-    ).cast(
-        {
-            "permno": pl.Int64,
-            "permco": pl.Int64,
-            "gvkey": pl.Utf8,
-            "iid": pl.Utf8,
-            "exch_main": pl.Int64,
-            "bidask": pl.Int64,
-            "common": pl.Int64,
-            "primaryexch": pl.Utf8,
-            "conditionaltype": pl.Utf8,
-            "date": pl.Date,
-        }
+    df = (
+        pl.DataFrame(
+            {
+                "permno": permno,
+                "permco": [p + 10000 for p in permno],
+                "gvkey": gvkeys,
+                "iid": iids,
+                "exch_main": _RNG.choice([1, 2, 3], n).tolist(),
+                "bidask": _RNG.choice([0, 1], n).tolist(),
+                "common": _RNG.choice([0, 1], n).tolist(),
+                "primaryexch": _RNG.choice(["N", "A", "Q", None], n).tolist(),
+                "conditionaltype": _RNG.choice(["RW", "RW", "RW", None], n).tolist(),
+                "date": dates,
+                "cfacshr": _random_float_col(n, 0.02),
+                "shrout": _random_float_col(n, 0.02),
+                "me": _random_float_col(n),
+                "me_company": _random_float_col(n),
+                "prc": _random_float_col(n),
+                "prc_high": _random_float_col(n),
+                "prc_low": _random_float_col(n),
+                "dolvol": _random_float_col(n),
+                "vol": _random_float_col(n),
+                "ret": _random_float_col(n),
+                "ret_exc": _random_float_col(n),
+                "div_tot": _random_float_col(n, 0.8),
+            }
+        )
+        .cast(
+            {
+                "permno": pl.Int64,
+                "permco": pl.Int64,
+                "gvkey": pl.Utf8,
+                "iid": pl.Utf8,
+                "exch_main": pl.Int64,
+                "bidask": pl.Int64,
+                "common": pl.Int64,
+                "primaryexch": pl.Utf8,
+                "conditionaltype": pl.Utf8,
+                "date": pl.Date,
+            }
+        )
+        .with_columns(
+            crsp_nyse=((pl.col("primaryexch") == "N") & (pl.col("conditionaltype") == "RW")).cast(
+                pl.Int32
+            )
+        )
     )
     df.write_parquet(tmp / "crsp_msf.parquet")
 
@@ -328,6 +336,7 @@ def _polars_combine_crsp_comp_sf(tmp: Path) -> tuple[pl.DataFrame, pl.DataFrame]
             div_cash=fl_none(),
             div_spc=fl_none(),
             source_crsp=pl.lit(1),
+            crsp_nyse=pl.col("crsp_nyse").cast(pl.Int32),
         )
         .rename(
             {
@@ -356,6 +365,7 @@ def _polars_combine_crsp_comp_sf(tmp: Path) -> tuple[pl.DataFrame, pl.DataFrame]
             bidask=pl.when(pl.col("prcstd") == 4).then(pl.lit(1)).otherwise(pl.lit(0)),
             primaryexch=pl.lit(None).cast(pl.Utf8),
             conditionaltype=pl.lit(None).cast(pl.Utf8),
+            crsp_nyse=pl.lit(0).cast(pl.Int32),
             me_company=pl.col("me"),
             source_crsp=pl.lit(0),
             ret_lag_dif=pl.col("ret_lag_dif").cast(pl.Int64),
@@ -386,6 +396,7 @@ def _polars_combine_crsp_comp_sf(tmp: Path) -> tuple[pl.DataFrame, pl.DataFrame]
         "bidask",
         "primaryexch",
         "conditionaltype",
+        "crsp_nyse",
         "comp_tpci",
         "comp_exchg",
         "curcd",
@@ -875,6 +886,7 @@ class TestUnionAndLead:
             "bidask",
             "primaryexch",
             "conditionaltype",
+            "crsp_nyse",
             "comp_tpci",
             "comp_exchg",
             "curcd",
@@ -1375,6 +1387,7 @@ class TestEdgeCases:
                 "common": [1, 1],
                 "primaryexch": ["N", "N"],
                 "conditionaltype": ["RW", "RW"],
+                "crsp_nyse": [1, 1],
                 "date": [date(2020, 2, 15), date(2019, 2, 15)],
                 "cfacshr": [1.0, 1.0],
                 "shrout": [100.0, 100.0],
@@ -1398,6 +1411,7 @@ class TestEdgeCases:
                 "common": pl.Int64,
                 "primaryexch": pl.Utf8,
                 "conditionaltype": pl.Utf8,
+                "crsp_nyse": pl.Int32,
                 "date": pl.Date,
             }
         )

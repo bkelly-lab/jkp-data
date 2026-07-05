@@ -244,6 +244,14 @@ def make_country_characteristics(
             "comp_exchg": pl.Series("comp_exchg", cx_col, dtype=pl.Int64),
             "primaryexch": pl.Series("primaryexch", pe_col, dtype=pl.Utf8),
             "conditionaltype": pl.Series("conditionaltype", ct_col, dtype=pl.Utf8),
+            "crsp_nyse": pl.Series(
+                "crsp_nyse",
+                [
+                    1 if pe == "N" and ct == "RW" else 0
+                    for pe, ct in zip(pe_col, ct_col, strict=True)
+                ],
+                dtype=pl.Int32,
+            ),
             "size_grp": pl.Series("size_grp", sg_col, dtype=pl.Utf8),
             "ret_exc": pl.Series("ret_exc", ret_exc, dtype=pl.Float64),
             "ret_exc_lead1m": pl.Series("ret_exc_lead1m", ret_exc_lead1m, dtype=pl.Float64),
@@ -486,6 +494,14 @@ def make_known_monotone_dataset(
             "comp_exchg": pl.Series("comp_exchg", cx_col, dtype=pl.Int64),
             "primaryexch": pl.Series("primaryexch", pe_col, dtype=pl.Utf8),
             "conditionaltype": pl.Series("conditionaltype", ct_col, dtype=pl.Utf8),
+            "crsp_nyse": pl.Series(
+                "crsp_nyse",
+                [
+                    1 if pe == "N" and ct == "RW" else 0
+                    for pe, ct in zip(pe_col, ct_col, strict=True)
+                ],
+                dtype=pl.Int32,
+            ),
             "ret_exc": pl.Series("ret_exc", ret_exc, dtype=pl.Float64),
             "ret_exc_lead1m": pl.Series("ret_exc_lead1m", ret_exc_lead1m, dtype=pl.Float64),
             "ff49": pl.Series("ff49", ff49_col, dtype=pl.Int64),
@@ -532,8 +548,8 @@ def make_breakpoint_divergent_dataset(seed: int = 42) -> pl.DataFrame:
     ret_exc = rng.normal(0.0, 0.05, n_rows)
     ret_exc_lead1m = rng.normal(0.0, 0.05, n_rows)
     char_a = rng.normal(0.0, 1.0, n_rows)
-    gics_col = ["20101010"] * n_rows
-    ff49_col = [1] * n_rows
+    gics_col_s = ["20101010"] * n_rows
+    ff49_col_s = [1] * n_rows
 
     return pl.DataFrame(
         {
@@ -544,12 +560,20 @@ def make_breakpoint_divergent_dataset(seed: int = 42) -> pl.DataFrame:
             "comp_exchg": pl.Series("comp_exchg", cx_col, dtype=pl.Int64),
             "primaryexch": pl.Series("primaryexch", pe_col, dtype=pl.Utf8),
             "conditionaltype": pl.Series("conditionaltype", ct_col, dtype=pl.Utf8),
+            "crsp_nyse": pl.Series(
+                "crsp_nyse",
+                [
+                    1 if pe == "N" and ct == "RW" else 0
+                    for pe, ct in zip(pe_col, ct_col, strict=True)
+                ],
+                dtype=pl.Int32,
+            ),
             "size_grp": pl.Series("size_grp", sg_col, dtype=pl.Utf8),
             "me": pl.Series("me", me, dtype=pl.Float64),
             "ret_exc": pl.Series("ret_exc", ret_exc, dtype=pl.Float64),
             "ret_exc_lead1m": pl.Series("ret_exc_lead1m", ret_exc_lead1m, dtype=pl.Float64),
-            "ff49": pl.Series("ff49", ff49_col, dtype=pl.Int64),
-            "gics": pl.Series("gics", gics_col, dtype=pl.Utf8),
+            "ff49": pl.Series("ff49", ff49_col_s, dtype=pl.Int64),
+            "gics": pl.Series("gics", gics_col_s, dtype=pl.Utf8),
             "char_a": pl.Series("char_a", char_a, dtype=pl.Float64),
         }
     )
