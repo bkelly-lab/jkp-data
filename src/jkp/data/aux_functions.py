@@ -612,6 +612,7 @@ def gen_crsp_sf(paths: DataPaths, freq):
     exch_main_expr = (primaryexch_expr.isin(["A", "N", "Q"]) & (conditionaltype_expr == "RW")).cast(
         "int32"
     )
+    crsp_nyse_expr = ((primaryexch_expr == "N") & (conditionaltype_expr == "RW")).cast("int32")
 
     result = full_join.mutate(
         date=date_expr,
@@ -630,6 +631,7 @@ def gen_crsp_sf(paths: DataPaths, freq):
         primaryexch=primaryexch_expr,
         conditionaltype=conditionaltype_expr,
         exch_main=exch_main_expr,
+        crsp_nyse=crsp_nyse_expr,
         gvkey=ccmxpf_lnkhist.gvkey,
     ).select(
         [
@@ -648,6 +650,7 @@ def gen_crsp_sf(paths: DataPaths, freq):
             "common",
             "primaryexch",
             "conditionaltype",
+            "crsp_nyse",
             "gvkey",
             "iid",
             "exch_main",
@@ -2113,6 +2116,7 @@ def combine_crsp_comp_sf(paths: DataPaths) -> None:
                     bidask::INT AS bidask,
                     primaryexch,
                     conditionaltype,
+                    crsp_nyse::INT AS crsp_nyse,
                     NULL::VARCHAR AS comp_tpci,
                     NULL::BIGINT AS comp_exchg,
                     'USD' AS curcd,
@@ -2153,6 +2157,7 @@ def combine_crsp_comp_sf(paths: DataPaths) -> None:
                     CASE WHEN prcstd = 4 THEN 1 ELSE 0 END AS bidask,
                     NULL::VARCHAR AS primaryexch,
                     NULL::VARCHAR AS conditionaltype,
+                    0 AS crsp_nyse,
                     tpci AS comp_tpci,
                     exchg::BIGINT AS comp_exchg,
                     curcdd AS curcd,
@@ -2210,7 +2215,7 @@ def combine_crsp_comp_sf(paths: DataPaths) -> None:
             COPY (
                 SELECT
                     id, permno, permco, gvkey, iid, excntry, exch_main, common,
-                    primary_sec, bidask, primaryexch, conditionaltype, comp_tpci, comp_exchg,
+                    primary_sec, bidask, primaryexch, conditionaltype, crsp_nyse, comp_tpci, comp_exchg,
                     curcd, fx, date, eom, adjfct, shares, me, me_company, prc, prc_local,
                     prc_high, prc_low, dolvol, tvol, ret, ret_local, ret_exc, ret_lag_dif,
                     div_tot, div_cash, div_spc, source_crsp, ret_exc_lead1m, obs_main
@@ -2696,8 +2701,7 @@ def nyse_size_cutoffs(paths: DataPaths, data_path):
                 QUANTILE_DISC(me, 0.50)     AS nyse_p50,
                 QUANTILE_DISC(me, 0.80)     AS nyse_p80
             FROM self
-            WHERE  primaryexch = 'N'
-                AND conditionaltype = 'RW'
+            WHERE  crsp_nyse   = 1
                 AND obs_main   = 1
                 AND exch_main  = 1
                 AND primary_sec= 1
@@ -6457,13 +6461,7 @@ def sort_ff_style(char, min_stocks_bp, min_stocks_pf, date_col, data, sf):
     # print(f"Executing sort_ff_style for {char}", flush=True)
     c1 = (
         ((col("size_grp_l").is_in(["small", "large", "mega"])) & (col("excntry_l") != "USA"))
-        | (
-            (
-                ((col("primaryexch_l") == "N") & (col("conditionaltype_l") == "RW"))
-                | (col("comp_exchg_l") == 11)
-            )
-            & (col("excntry_l") == "USA")
-        )
+        | (((col("crsp_nyse_l") == 1) | (col("comp_exchg_l") == 11)) & (col("excntry_l") == "USA"))
     ) & col(f"{char}_l").is_not_null()
     char_pf_exp = (
         pl.when(col(f"{char}_l") >= col("bp_p70"))
@@ -6552,8 +6550,7 @@ def ap_factors(
     sf_cond = (col("ret_lag_dif") == 1) if freq == "m" else (col("ret_lag_dif") <= 5)
     lag_vars = [
         "comp_exchg",
-        "primaryexch",
-        "conditionaltype",
+        "crsp_nyse",
         "exch_main",
         "obs_main",
         "common",
@@ -9179,8 +9176,7 @@ def portfolios(
             "eom",
             "source_crsp",
             "comp_exchg",
-            "primaryexch",
-            "conditionaltype",
+            "crsp_nyse",
             "size_grp",
             "ret_exc",
             "ret_exc_lead1m",
@@ -9202,19 +9198,14 @@ def portfolios(
         "source_crsp",
         "size_grp",
         "excntry",
-        "primaryexch",
-        "conditionaltype",
+        "crsp_nyse",
     }
     cast_cols = [c for c in columns if c not in cast_exclude]
 
     if bps == "nyse":
         bp_stock_expr = (
-            (
-                (pl.col("primaryexch") == "N")
-                & (pl.col("conditionaltype") == "RW")
-                & pl.col("comp_exchg").is_null()
-            )
-            | ((pl.col("comp_exchg") == 11) & pl.col("primaryexch").is_null())
+            ((pl.col("crsp_nyse") == 1) & pl.col("comp_exchg").is_null())
+            | ((pl.col("comp_exchg") == 11) & (pl.col("crsp_nyse") != 1))
         ).alias("bp_stock")
     else:  # "non_mc"
         bp_stock_expr = pl.col("size_grp").is_in(["mega", "large", "small"]).alias("bp_stock")
