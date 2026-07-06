@@ -102,6 +102,7 @@ class TestHgicsJoin:
 
         result = pl.read_parquet(self.output_path).sort(["gvkey", "date"])
         assert result.height == 2, f"Expected 2 rows (2-day span), got {result.height}"
+        assert result["gvkey"].unique().to_list() == ["100000"]
         assert result["gics"].unique().to_list() == [10101010], (
             f"Expected NA gics=10101010 preserved, got {result['gics'].unique().to_list()}"
         )
@@ -116,6 +117,7 @@ class TestHgicsJoin:
 
         result = pl.read_parquet(self.output_path).sort(["gvkey", "date"])
         assert result.height == 2, f"Expected 2 rows (2-day span), got {result.height}"
+        assert result["gvkey"].unique().to_list() == ["200000"]
         assert result["gics"].unique().to_list() == [20202020], (
             f"Expected GL gics=20202020 preserved, got {result['gics'].unique().to_list()}"
         )
@@ -169,32 +171,6 @@ class TestHgicsJoin:
         assert result["date"].to_list() == expected_dates, (
             f"Expected contiguous dates {expected_dates}, got {result['date'].to_list()}"
         )
-
-    def test_empty_na_side(self) -> None:
-        """NA side is empty; output should contain only GL rows."""
-        na = _empty_frame()
-        gl = _hgics_frame(["200000"], [date(2020, 2, 1)], [date(2020, 2, 3)], [20202020])
-        _write_inputs(self.paths, na, gl)
-
-        hgics_join(self.paths)
-
-        result = pl.read_parquet(self.output_path).sort(["gvkey", "date"])
-        assert result.height == 3, f"Expected 3 rows (3-day GL span), got {result.height}"
-        assert result["gvkey"].unique().to_list() == ["200000"]
-        assert result["gics"].unique().to_list() == [20202020]
-
-    def test_empty_gl_side(self) -> None:
-        """GL side is empty; output should contain only NA rows."""
-        na = _hgics_frame(["100000"], [date(2020, 1, 1)], [date(2020, 1, 3)], [10101010])
-        gl = _empty_frame()
-        _write_inputs(self.paths, na, gl)
-
-        hgics_join(self.paths)
-
-        result = pl.read_parquet(self.output_path).sort(["gvkey", "date"])
-        assert result.height == 3, f"Expected 3 rows (3-day NA span), got {result.height}"
-        assert result["gvkey"].unique().to_list() == ["100000"]
-        assert result["gics"].unique().to_list() == [10101010]
 
     def test_dedup_and_sort_invariants(self) -> None:
         """Output has unique ``(gvkey, date)`` keys and is sorted ascending."""
