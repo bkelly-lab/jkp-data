@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import time
+import warnings
 from datetime import date
 from math import exp, sqrt
 from pathlib import Path
@@ -2377,14 +2378,23 @@ def comp_hgics(paths: DataPaths, lib):
         },
     }
     data = pl.read_parquet(file_paths["raw data"][lib])  # .sort(['gvkey', 'indfrom'])
+    if data.height == 0:
+        warnings.warn(
+            f"comp_hgics: {lib} GICS input is empty "
+            f"({file_paths['raw data'][lib]}); "
+            "downstream comp_ind.parquet will have null GICS for all firms "
+            "unless the other side (national/global) provides coverage.",
+            stacklevel=2,
+        )
     data = data.with_columns(
         gics=pl.when(col("gics").is_null()).then(-999).otherwise(col("gics")),
         n=pl.len().over("gvkey"),
         n_aux=pl.cum_count("gvkey").over("gvkey"),
     )
+    max_indfrom = data[["indfrom"]].max()[0, 0]
     indthru_date = (
-        pl.lit(data[["indfrom"]].max()[0, 0])
-        if data[["indfrom"]].max()[0, 0] > END_DATE
+        pl.lit(max_indfrom)
+        if max_indfrom is not None and max_indfrom > END_DATE
         else pl.lit(END_DATE)
     )
     c1 = col("n") == col("n_aux")

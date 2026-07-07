@@ -63,6 +63,47 @@ def _date_subclass_returning(today_value: _dt.date) -> type:
 class TestCompHgics:
     """Tests for `comp_hgics`."""
 
+    def test_empty_input_produces_typed_empty_output(self, test_paths: DataPaths) -> None:
+        """A 0-row input must not crash, must warn, and must write a typed empty parquet."""
+        raw_data_dfs = test_paths.interim_dir / "raw_data_dfs"
+        raw_data_dfs.mkdir(parents=True, exist_ok=True)
+        pl.DataFrame(
+            schema={"gvkey": pl.Utf8, "indfrom": pl.Date, "indthru": pl.Date, "gics": pl.Int64}
+        ).write_parquet(raw_data_dfs / "comp_hgics_na.parquet")
+
+        with pytest.warns(UserWarning, match="national GICS input is empty"):
+            comp_hgics(test_paths, "national")
+
+        output = pl.read_parquet(test_paths.interim_dir / "na_hgics.parquet")
+        assert output.height == 0, f"Expected 0 rows, got {output.height}"
+        assert set(output.columns) == {"gvkey", "date", "gics"}, (
+            f"Expected columns {{gvkey, date, gics}}, got schema {output.schema}"
+        )
+
+    def test_all_null_indfrom_does_not_crash(self, test_paths: DataPaths) -> None:
+        """Non-empty input with all-null indfrom must not raise TypeError."""
+        raw_data_dfs = test_paths.interim_dir / "raw_data_dfs"
+        raw_data_dfs.mkdir(parents=True, exist_ok=True)
+        pl.DataFrame(
+            {
+                "gvkey": ["001000"],
+                "indfrom": [None],
+                "indthru": [None],
+                "gics": [10101010],
+            },
+            schema={
+                "gvkey": pl.Utf8,
+                "indfrom": pl.Date,
+                "indthru": pl.Date,
+                "gics": pl.Int64,
+            },
+        ).write_parquet(raw_data_dfs / "comp_hgics_na.parquet")
+
+        comp_hgics(test_paths, "national")
+
+        output = pl.read_parquet(test_paths.interim_dir / "na_hgics.parquet")
+        assert set(output.columns) == {"gvkey", "date", "gics"}
+
     @pytest.mark.regression
     def test_independent_of_wall_clock(
         self, test_paths: DataPaths, monkeypatch: pytest.MonkeyPatch

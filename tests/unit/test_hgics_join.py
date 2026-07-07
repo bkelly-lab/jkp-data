@@ -63,22 +63,9 @@ def _hgics_frame(
     )
 
 
-# Filler gvkey used as a non-interfering "other-side" row in tests that want to
-# isolate behavior of one source. ``comp_hgics`` does not handle empty inputs
-# (it calls ``data[["indfrom"]].max()[0, 0] > END_DATE``, which raises on None),
-# so each side needs at least one row. The filler is at an unused gvkey/date so
-# it can be excluded from assertions via a ``.filter(gvkey != _FILLER_GVKEY)``.
-_FILLER_GVKEY = "999999"
-
-
-def _filler_frame() -> pl.DataFrame:
-    """One-row frame used to keep ``comp_hgics`` happy on an otherwise-empty side."""
-    return _hgics_frame(
-        [_FILLER_GVKEY],
-        [_dt.date(1990, 1, 1)],
-        [_dt.date(1990, 1, 1)],
-        [99999999],
-    )
+def _empty_frame() -> pl.DataFrame:
+    """Typed 0-row frame for the unused side in single-source tests."""
+    return _hgics_frame([], [], [], [])
 
 
 def _date_subclass_returning(today_value: _dt.date) -> type:
@@ -108,35 +95,29 @@ class TestHgicsJoin:
     def test_national_only_gvkey_preserved(self) -> None:
         """A gvkey present only in NA carries its NA gics through the join."""
         na = _hgics_frame(["100000"], [date(2020, 1, 1)], [date(2020, 1, 2)], [10101010])
-        gl = _filler_frame()
+        gl = _empty_frame()
         _write_inputs(self.paths, na, gl)
 
         hgics_join(self.paths)
 
-        result = (
-            pl.read_parquet(self.output_path)
-            .filter(pl.col("gvkey") != _FILLER_GVKEY)
-            .sort(["gvkey", "date"])
-        )
+        result = pl.read_parquet(self.output_path).sort(["gvkey", "date"])
         assert result.height == 2, f"Expected 2 rows (2-day span), got {result.height}"
+        assert result["gvkey"].unique().to_list() == ["100000"]
         assert result["gics"].unique().to_list() == [10101010], (
             f"Expected NA gics=10101010 preserved, got {result['gics'].unique().to_list()}"
         )
 
     def test_global_only_gvkey_preserved(self) -> None:
         """A gvkey present only in GL carries its GL gics through the join."""
-        na = _filler_frame()
+        na = _empty_frame()
         gl = _hgics_frame(["200000"], [date(2020, 2, 1)], [date(2020, 2, 2)], [20202020])
         _write_inputs(self.paths, na, gl)
 
         hgics_join(self.paths)
 
-        result = (
-            pl.read_parquet(self.output_path)
-            .filter(pl.col("gvkey") != _FILLER_GVKEY)
-            .sort(["gvkey", "date"])
-        )
+        result = pl.read_parquet(self.output_path).sort(["gvkey", "date"])
         assert result.height == 2, f"Expected 2 rows (2-day span), got {result.height}"
+        assert result["gvkey"].unique().to_list() == ["200000"]
         assert result["gics"].unique().to_list() == [20202020], (
             f"Expected GL gics=20202020 preserved, got {result['gics'].unique().to_list()}"
         )
@@ -159,12 +140,12 @@ class TestHgicsJoin:
     def test_minus_999_sentinel_passthrough(self) -> None:
         """Null gics in input → -999 in ``comp_hgics`` output → -999 after join."""
         na = _hgics_frame(["400000"], [date(2020, 4, 1)], [date(2020, 4, 2)], [None])
-        gl = _filler_frame()
+        gl = _empty_frame()
         _write_inputs(self.paths, na, gl)
 
         hgics_join(self.paths)
 
-        result = pl.read_parquet(self.output_path).filter(pl.col("gvkey") != _FILLER_GVKEY)
+        result = pl.read_parquet(self.output_path)
         assert result.height == 2, f"Expected 2 rows (2-day span), got {result.height}"
         assert result["gics"].unique().to_list() == [-999], (
             f"Expected -999 sentinel for null gics, got {result['gics'].unique().to_list()}"
@@ -173,14 +154,12 @@ class TestHgicsJoin:
     def test_date_range_expansion(self) -> None:
         """``indfrom`` → ``indthru`` is exploded into one row per calendar day."""
         na = _hgics_frame(["100000"], [date(2020, 1, 1)], [date(2020, 1, 5)], [10101010])
-        gl = _filler_frame()
+        gl = _empty_frame()
         _write_inputs(self.paths, na, gl)
 
         hgics_join(self.paths)
 
-        result = (
-            pl.read_parquet(self.output_path).filter(pl.col("gvkey") != _FILLER_GVKEY).sort("date")
-        )
+        result = pl.read_parquet(self.output_path).sort("date")
         assert result.height == 5, f"Expected 5 rows (5-day span), got {result.height}"
         expected_dates = [
             date(2020, 1, 1),
