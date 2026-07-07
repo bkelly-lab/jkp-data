@@ -33,7 +33,7 @@ from .bessembinder import (
     Section8Params,
     apply_bessembinder_section6,
     apply_bessembinder_section8,
-    detect_potential_boundary_errors,
+    detect_potential_boundary_errors,  # noqa: F401  (used by commented-out diagnostic below)
     log_correction_summary_by_year,
 )
 from .config import COLLECT_CHUNK_SIZE, END_DATE, MAIN_FILTERS
@@ -1737,13 +1737,14 @@ def gen_comp_dsf(
             logger.info("Section 6 correction breakdowns:")
             log_correction_summary_by_year(section6_log)
 
-        # Log data quality after corrections
-        logger.info("Checking for potential boundary errors in corrected data...")
-        detect_potential_boundary_errors(
-            pl.scan_parquet(paths.interim_dir / "__comp_g_secd_corrected.parquet"),
-            price_col="prccd",
-            group_cols=["gvkey", "iid"],
-        )
+        # Boundary-error diagnostic disabled: flags first/last-obs price jumps
+        # for manual review only, corrects nothing.
+        # logger.info("Checking for potential boundary errors in corrected data...")
+        # detect_potential_boundary_errors(
+        #     pl.scan_parquet(paths.interim_dir / "__comp_g_secd_corrected.parquet"),
+        #     price_col="prccd",
+        #     group_cols=["gvkey", "iid"],
+        # )
 
         # Use corrected files
         g_secd_path = paths.interim_dir / "__comp_g_secd_corrected.parquet"
