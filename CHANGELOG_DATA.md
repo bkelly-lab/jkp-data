@@ -3,6 +3,10 @@ This change log keeps track of changes to the underlying data set. In brackets, 
 
 This repository ports the original SAS pipeline ([ReplicationCrisis](https://github.com/bkelly-lab/ReplicationCrisis)) to Python using Polars. Entries up to and including 05-03-2025 are from the original change log.
 
+## 04-07-2026
+__Changes__:
+- Replaced `crsp_shrcd` and `crsp_exchcd` with `primaryexch` and `conditionaltype` in the characteristics output ([#205](https://github.com/bkelly-lab/jkp-data/pull/205))
+
 ## 27-04-2026
 __Changes__:
 - Added `mkt_vw_cap_exc` (cap-weighted excess market return) to market returns output ([#81](https://github.com/bkelly-lab/jkp-data/pull/81))
