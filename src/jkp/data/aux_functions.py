@@ -3352,7 +3352,7 @@ def combine_crsp_comp_sf(paths: DataPaths) -> None:
     Steps:
         1) Connect to DuckDB (persistent file for out-of-core processing).
         2) Create monthly world table: normalize CRSP/Comp → UNION ALL → LEAD(ret_exc).
-        3) Derive obs_main: prefer Compustat when multiple observations per (gvkey, iid, eom).
+        3) Derive obs_main: prefer CRSP when multiple observations per (gvkey, iid, eom).
         4) Write __msf_world.parquet with deterministic dedup (primary_sec preferred
            on tie via ROW_NUMBER).
         5) Write world_dsf.parquet: normalize daily → UNION ALL → join obs_main → dedup.
@@ -3472,9 +3472,7 @@ def combine_crsp_comp_sf(paths: DataPaths) -> None:
             ) unioned
         """)
 
-        # Derive obs_main: prefer Compustat when multiple obs per (gvkey, iid, eom).
-        # Bessembinder et al. (2023) corrections improve Compustat quality; when both
-        # sources exist for the same security-date, Compustat is the preferred observation.
+        # Derive obs_main: prefer CRSP when multiple obs per (gvkey, iid, eom).
         # Deduplicate to (id, eom) before the join to avoid transient row inflation.
         con.execute("""
             CREATE TABLE obs_main AS
@@ -3483,7 +3481,7 @@ def combine_crsp_comp_sf(paths: DataPaths) -> None:
                 SELECT id, eom,
                     CAST(CASE
                         WHEN cnt IN (0, 1) THEN 1
-                        WHEN cnt > 1 AND source_crsp = 0 THEN 1
+                        WHEN cnt > 1 AND source_crsp = 1 THEN 1
                         ELSE 0
                     END AS INT) AS obs_main
                 FROM (
