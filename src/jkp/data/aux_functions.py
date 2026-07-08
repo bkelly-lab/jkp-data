@@ -989,7 +989,9 @@ def _remove_chunk_parts(filename: str) -> None:
     ones. The final (non-part) file itself is left untouched.
     """
     p = Path(filename)
-    for f in p.parent.glob(f"{p.stem}.part*{p.suffix}"):
+    # Match exactly what _chunk_path writes (.part00..part99) rather than `part*`, which would also
+    # sweep an unrelated file like `<stem>.partial.parquet`.
+    for f in p.parent.glob(f"{p.stem}.part[0-9][0-9]{p.suffix}"):
         with contextlib.suppress(FileNotFoundError):
             f.unlink()
 

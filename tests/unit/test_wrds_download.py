@@ -511,6 +511,7 @@ class TestDateRangeSplitting:
         final.write_bytes(b"keep")
         (tmp_path / "crsp_dsf_v2.part00.parquet").write_bytes(b"x")
         (tmp_path / "crsp_dsf_v2.part09.parquet").write_bytes(b"x")  # high index from a prior run
+        (tmp_path / "crsp_dsf_v2.partial.parquet").write_bytes(b"nope")  # must NOT be swept
         (tmp_path / "comp_secd.part00.parquet").write_bytes(b"other")  # different table
 
         _remove_chunk_parts(str(final))
@@ -518,6 +519,7 @@ class TestDateRangeSplitting:
         assert not (tmp_path / "crsp_dsf_v2.part00.parquet").exists()
         assert not (tmp_path / "crsp_dsf_v2.part09.parquet").exists()
         assert final.exists()  # the final (non-part) file is left untouched
+        assert (tmp_path / "crsp_dsf_v2.partial.parquet").exists()  # `part[0-9][0-9]` excludes this
         assert (tmp_path / "comp_secd.part00.parquet").exists()  # other tables untouched
 
     @patch("jkp.data.aux_functions._concat_chunks")
