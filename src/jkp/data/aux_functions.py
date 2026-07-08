@@ -1000,15 +1000,21 @@ def _attach_download_worker(
     task_queue: queue.Queue[_DownloadTask],
     conninfo: str,
     password: str,
-    errors: list[str],
+    task_errors: list[str],
+    attach_errors: list[str],
     errors_lock: threading.Lock,
 ) -> None:
     """One parallel worker: open a private ATTACH connection and drain the task queue.
 
     Each task is a whole table or one date-range chunk. The worker holds exactly one WRDS
     connection (``threads=1`` keeps DuckDB from opening extra connections for a parallel scan)
-    and reuses it. Failures are recorded (password-redacted) instead of raised, so one bad task
-    doesn't abandon the rest; the caller raises a single aggregated error afterward.
+    and reuses it.
+
+    Failures are recorded (password-redacted) instead of raised, so one bad task doesn't abandon
+    the rest. Attach failures and download (task) failures are kept in separate lists: because the
+    task queue is shared, a worker that fails to attach is not fatal as long as the surviving
+    workers still drain the queue, whereas a failed download leaves a table missing. The caller
+    decides what to raise (see _download_tables_parallel).
     """
     # `with duckdb.connect(...)` closes the connection on every exit path (return / exception).
     with duckdb.connect(":memory:") as con:
@@ -1017,8 +1023,16 @@ def _attach_download_worker(
         try:
             _attach_wrds(con, conninfo, password)
         except Exception as e:  # noqa: BLE001
+            # _attach_wrds already raises a password-free error; warn now so the user knows the
+            # run is proceeding under-provisioned rather than silently losing a worker.
             with errors_lock:
-                errors.append(f"<attach>: {e}")
+                attach_errors.append(str(e))
+                print(
+                    f"Warning: a WRDS download worker failed to attach ({e}); "
+                    "continuing with the remaining worker(s).",
+                    file=sys.stderr,
+                    flush=True,
+                )
             return
         try:
             while True:
@@ -1040,7 +1054,7 @@ def _attach_download_worker(
                     # Redact only the credential, keeping the rest of the error for diagnostics.
                     msg = str(e).replace(password, "***") if password else str(e)
                     with errors_lock:
-                        errors.append(f"{task.table} ({Path(task.out).name}): {msg}")
+                        task_errors.append(f"{task.table} ({Path(task.out).name}): {msg}")
         finally:
             with contextlib.suppress(Exception):
                 con.execute("DETACH wrds")
@@ -1088,12 +1102,13 @@ def _download_tables_parallel(
     task_queue: queue.Queue[_DownloadTask] = queue.Queue()
     for task in tasks:
         task_queue.put(task)
-    errors: list[str] = []
+    task_errors: list[str] = []
+    attach_errors: list[str] = []
     errors_lock = threading.Lock()
     threads = [
         threading.Thread(
             target=_attach_download_worker,
-            args=(task_queue, conninfo, password, errors, errors_lock),
+            args=(task_queue, conninfo, password, task_errors, attach_errors, errors_lock),
             name=f"wrds-download-{i}",
         )
         for i in range(workers)
@@ -1102,9 +1117,26 @@ def _download_tables_parallel(
         t.start()
     for t in threads:
         t.join()
-    if errors:
+
+    # A download failure means a table is missing -> always fatal.
+    if task_errors:
         raise RuntimeError(
-            f"{len(errors)} WRDS download task(s) failed:\n  " + "\n  ".join(sorted(errors))
+            f"{len(task_errors)} WRDS download task(s) failed:\n  "
+            + "\n  ".join(sorted(task_errors))
+        )
+    # If the queue never drained, every worker failed to attach -> nothing was downloaded.
+    if not task_queue.empty():
+        raise RuntimeError(
+            f"all {workers} WRDS download worker(s) failed to attach:\n  "
+            + "\n  ".join(sorted(attach_errors))
+        )
+    # Some workers failed to attach, but the survivors completed every table -> note it, don't fail.
+    if attach_errors:
+        print(
+            f"Note: {len(attach_errors)} of {workers} WRDS download worker(s) failed to attach; "
+            "the remaining worker(s) completed all tables.",
+            file=sys.stderr,
+            flush=True,
         )
 
     # Concatenate each split table's chunks back into its single parquet. These are local

@@ -352,6 +352,44 @@ class TestParallelDownload:
         assert "connection failed" in err and "while reading" in err  # ... diagnostic preserved
 
     @patch("jkp.data.aux_functions.download_wrds_table_attached")
+    @patch("jkp.data.aux_functions._attach_wrds")
+    def test_one_attach_failure_is_non_fatal_when_queue_drains(
+        self, mock_attach, mock_dl, mock_duckdb_multi, test_paths, capsys
+    ):
+        """One worker failing to attach must not fail the run if survivors download every table."""
+        from jkp.data.aux_functions import download_raw_data_tables
+
+        seen = {"n": 0}
+        seen_lock = threading.Lock()
+
+        def attach(con, conninfo, password):
+            with seen_lock:
+                seen["n"] += 1
+                first = seen["n"] == 1
+            if first:  # exactly one worker fails to attach
+                raise RuntimeError("Failed to attach WRDS connection. Check credentials and MFA.")
+
+        mock_attach.side_effect = attach
+        self._record_tables(mock_dl)
+
+        # Must NOT raise: the other workers drain the shared queue.
+        download_raw_data_tables(test_paths, "user", "pass", max_workers=3)
+
+        err = capsys.readouterr().err
+        assert "failed to attach" in err  # warned (immediately + in the summary)
+
+    @patch("jkp.data.aux_functions.download_wrds_table_attached")
+    @patch("jkp.data.aux_functions._attach_wrds")
+    def test_all_attach_failures_raise(self, mock_attach, mock_dl, mock_duckdb_multi, test_paths):
+        """If every worker fails to attach, the queue never drains -> raise (nothing downloaded)."""
+        from jkp.data.aux_functions import download_raw_data_tables
+
+        mock_attach.side_effect = RuntimeError("Failed to attach WRDS connection.")
+        with pytest.raises(RuntimeError, match="failed to attach"):
+            download_raw_data_tables(test_paths, "user", "pass", max_workers=3)
+        mock_dl.assert_not_called()  # no table was ever downloaded
+
+    @patch("jkp.data.aux_functions.download_wrds_table_attached")
     def test_persistent_connection_forces_sequential(
         self, mock_dl, mock_duckdb_multi, test_paths, capsys
     ):
