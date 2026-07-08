@@ -298,8 +298,15 @@ class TestParallelDownload:
 
         download_raw_data_tables(test_paths, "user", "pass", max_workers=3)
 
-        assert mock.connect.call_count == 3, "should open exactly one connection per worker"
-        for con in conns[:3]:
+        # One up-front connection to INSTALL the extension, then one per worker.
+        assert mock.connect.call_count == 1 + 3
+        install_sqls = " ".join(
+            str(c[0][0])
+            for c in conns[0].execute.call_args_list
+            if c[0] and isinstance(c[0][0], str)
+        )
+        assert "INSTALL" in install_sqls and "ATTACH" not in install_sqls  # install-only, no WRDS
+        for con in conns[1:4]:  # the three worker connections
             sqls = " ".join(
                 str(c[0][0])
                 for c in con.execute.call_args_list
@@ -319,7 +326,8 @@ class TestParallelDownload:
 
         download_raw_data_tables(test_paths, "user", "pass", max_workers=50)
 
-        assert mock.connect.call_count == WRDS_MAX_CONNECTIONS - 1
+        # Clamped worker connections, plus the one up-front extension-install connection.
+        assert mock.connect.call_count == (WRDS_MAX_CONNECTIONS - 1) + 1
 
     @patch("jkp.data.aux_functions.download_wrds_table_attached")
     def test_table_failure_is_aggregated(self, mock_dl, mock_duckdb_multi, test_paths):
@@ -376,7 +384,7 @@ class TestParallelDownload:
         download_raw_data_tables(test_paths, "user", "pass", max_workers=3)
 
         err = capsys.readouterr().err
-        assert "failed to attach" in err  # warned (immediately + in the summary)
+        assert "failed to start" in err  # warned (immediately + in the summary)
 
     @patch("jkp.data.aux_functions.download_wrds_table_attached")
     @patch("jkp.data.aux_functions._attach_wrds")
@@ -385,7 +393,7 @@ class TestParallelDownload:
         from jkp.data.aux_functions import download_raw_data_tables
 
         mock_attach.side_effect = RuntimeError("Failed to attach WRDS connection.")
-        with pytest.raises(RuntimeError, match="failed to attach"):
+        with pytest.raises(RuntimeError, match="failed to start"):
             download_raw_data_tables(test_paths, "user", "pass", max_workers=3)
         mock_dl.assert_not_called()  # no table was ever downloaded
 

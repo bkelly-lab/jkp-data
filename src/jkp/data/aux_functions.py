@@ -851,6 +851,18 @@ def _attach_wrds(con: duckdb.DuckDBPyConnection, conninfo: str, password: str) -
         raise
 
 
+def _install_postgres_extension() -> None:
+    """Install the DuckDB postgres extension once, up front (idempotent).
+
+    Doing it in the main thread means the parallel workers only ``LOAD`` it (a per-connection,
+    no-download operation), which avoids a concurrent-INSTALL race across the pool writing the same
+    extension file, and surfaces a fetch failure as one clean error here rather than N worker
+    tracebacks.
+    """
+    with duckdb.connect(":memory:") as con:
+        con.execute("INSTALL postgres;")
+
+
 def _year_histogram(
     con: duckdb.DuckDBPyConnection,
     db_alias: str,
@@ -917,7 +929,7 @@ def _compute_histograms(
         lib, tbl = table.split(".")
         with duckdb.connect(":memory:") as con:
             con.execute("SET threads TO 1")
-            con.execute("INSTALL postgres; LOAD postgres;")
+            con.execute("LOAD postgres;")  # extension installed once up front by the caller
             _attach_wrds(con, conninfo, password)
             try:
                 return table, _year_histogram(con, "wrds", lib, tbl, date_columns[table], end_date)
@@ -1001,7 +1013,7 @@ def _attach_download_worker(
     conninfo: str,
     password: str,
     task_errors: list[str],
-    attach_errors: list[str],
+    startup_errors: list[str],
     errors_lock: threading.Lock,
     stop_event: threading.Event,
 ) -> None:
@@ -1012,24 +1024,25 @@ def _attach_download_worker(
     and reuses it. It stops pulling new tasks once ``stop_event`` is set (used to unwind on Ctrl-C).
 
     Failures are recorded (password-redacted) instead of raised, so one bad task doesn't abandon
-    the rest. Attach failures and download (task) failures are kept in separate lists: because the
-    task queue is shared, a worker that fails to attach is not fatal as long as the surviving
-    workers still drain the queue, whereas a failed download leaves a table missing. The caller
-    decides what to raise (see _download_tables_parallel).
+    the rest. Worker-startup failures (LOAD/ATTACH) and download (task) failures are kept in separate
+    lists: because the task queue is shared, a worker that fails to start is not fatal as long as the
+    surviving workers still drain the queue, whereas a failed download leaves a table missing. The
+    caller decides what to raise (see _download_tables_parallel).
     """
     # `with duckdb.connect(...)` closes the connection on every exit path (return / exception).
     with duckdb.connect(":memory:") as con:
-        con.execute("SET threads TO 1")
-        con.execute("INSTALL postgres; LOAD postgres;")
         try:
+            con.execute("SET threads TO 1")
+            con.execute("LOAD postgres;")  # extension installed once up front by the caller
             _attach_wrds(con, conninfo, password)
         except Exception as e:  # noqa: BLE001
-            # _attach_wrds already raises a password-free error; warn now so the user knows the
-            # run is proceeding under-provisioned rather than silently losing a worker.
+            # _attach_wrds already raises a password-free error, and LOAD/SET can't leak the
+            # password; warn now so the user knows the run is proceeding under-provisioned rather
+            # than silently losing a worker.
             with errors_lock:
-                attach_errors.append(str(e))
+                startup_errors.append(str(e))
                 print(
-                    f"Warning: a WRDS download worker failed to attach ({e}); continuing with the "
+                    f"Warning: a WRDS download worker failed to start ({e}); continuing with the "
                     "remaining worker(s). Press Ctrl-C to cancel and re-run for full parallelism.",
                     file=sys.stderr,
                     flush=True,
@@ -1079,6 +1092,10 @@ def _download_tables_parallel(
     a single giant table can't bottleneck the pool. Work is pulled from a shared queue (dynamic
     load balancing). Raises a single aggregated ``RuntimeError`` if any task failed.
     """
+    # Install the postgres extension once, in this thread, so the parallel workers (and histogram
+    # workers) only LOAD it -- no concurrent-INSTALL race, and a fetch failure surfaces here cleanly.
+    _install_postgres_extension()
+
     # Up front: concurrently compute per-year row histograms for the split tables to derive chunk
     # boundaries (the giant tables need a full COUNT scan; running them in parallel hides the cost).
     split_present = [
@@ -1104,7 +1121,7 @@ def _download_tables_parallel(
     for task in tasks:
         task_queue.put(task)
     task_errors: list[str] = []
-    attach_errors: list[str] = []
+    startup_errors: list[str] = []
     errors_lock = threading.Lock()
     stop_event = threading.Event()
     threads = [
@@ -1115,7 +1132,7 @@ def _download_tables_parallel(
                 conninfo,
                 password,
                 task_errors,
-                attach_errors,
+                startup_errors,
                 errors_lock,
                 stop_event,
             ),
@@ -1155,16 +1172,16 @@ def _download_tables_parallel(
             f"{len(task_errors)} WRDS download task(s) failed:\n  "
             + "\n  ".join(sorted(task_errors))
         )
-    # If the queue never drained, every worker failed to attach -> nothing was downloaded.
+    # If the queue never drained, every worker failed to start -> nothing was downloaded.
     if not task_queue.empty():
         raise RuntimeError(
-            f"all {workers} WRDS download worker(s) failed to attach:\n  "
-            + "\n  ".join(sorted(attach_errors))
+            f"all {workers} WRDS download worker(s) failed to start:\n  "
+            + "\n  ".join(sorted(startup_errors))
         )
-    # Some workers failed to attach, but the survivors completed every table -> note it, don't fail.
-    if attach_errors:
+    # Some workers failed to start, but the survivors completed every table -> note it, don't fail.
+    if startup_errors:
         print(
-            f"Note: {len(attach_errors)} of {workers} WRDS download worker(s) failed to attach; "
+            f"Note: {len(startup_errors)} of {workers} WRDS download worker(s) failed to start; "
             "the remaining worker(s) completed all tables.",
             file=sys.stderr,
             flush=True,
