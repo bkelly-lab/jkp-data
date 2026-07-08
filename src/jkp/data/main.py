@@ -50,7 +50,9 @@ from .paths import DataPaths
 from .wrds_credentials import get_wrds_credentials
 
 
-def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> None:
+def run_pipeline(
+    *, persistent_connection: bool = False, max_workers: int = 1, output_dir: Path
+) -> None:
     """Run the full JKP data generation pipeline."""
     paths = DataPaths(base_dir=output_dir.resolve())
     creds = get_wrds_credentials()
@@ -64,6 +66,7 @@ def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> No
         password=creds.password,
         end_date=END_DATE,
         persistent_connection=persistent_connection,
+        max_workers=max_workers,
     )
     gen_raw_data_dfs(paths)
     prepare_comp_sf(paths, "both")

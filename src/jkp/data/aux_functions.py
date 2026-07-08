@@ -1,15 +1,23 @@
 from __future__ import annotations
 
+import contextlib
 import functools
 import operator
 import os
+import queue
 import re
 import shutil
+import sys
+import threading
 import time
 import warnings
+from collections.abc import Callable, Iterable
+from concurrent.futures import ThreadPoolExecutor, wait
+from dataclasses import dataclass
 from datetime import date
 from math import exp, sqrt
 from pathlib import Path
+from typing import TypeVar
 
 import duckdb
 import ibis
@@ -689,6 +697,18 @@ def get_columns_attached(conn, db_alias, lib, table):
     return [c[0] for c in cols]
 
 
+def _date_where(date_column: str | None, start_date: date | None, end_date: date | None) -> str:
+    """Build an inclusive ``WHERE date_column BETWEEN ...`` clause (empty if no date column)."""
+    if not date_column:
+        return ""
+    conds = []
+    if start_date is not None:
+        conds.append(f"{date_column} >= '{start_date}'")
+    if end_date is not None:
+        conds.append(f"{date_column} <= '{end_date}'")
+    return ("WHERE " + " AND ".join(conds)) if conds else ""
+
+
 def download_wrds_table_attached(
     duckdb_conn,
     db_alias,
@@ -696,15 +716,19 @@ def download_wrds_table_attached(
     filename,
     date_column: str | None = None,
     end_date: date | None = None,
+    start_date: date | None = None,
 ):
-    """Download a WRDS table using an attached persistent connection."""
+    """Download a WRDS table (or an inclusive date-range slice) via an attached connection.
+
+    When ``start_date``/``end_date`` are given (and the table has a ``date_column``), only rows
+    with ``start_date <= date_column <= end_date`` are downloaded. ``start_date`` enables
+    date-range chunking of large tables across parallel workers.
+    """
     lib, table = table_name.split(".")
     cols = get_columns_attached(duckdb_conn, db_alias, lib, table)
     projection = build_projection(cols)
 
-    where_clause = ""
-    if date_column and end_date:
-        where_clause = f"WHERE {date_column} <= '{end_date}'"
+    where_clause = _date_where(date_column, start_date, end_date)
 
     duckdb_conn.execute(f"""
         COPY (
@@ -759,6 +783,467 @@ def download_wrds_table(
     """)
 
 
+# The raw-data download is the one place in this pipeline that runs an explicit Python thread pool.
+# Elsewhere we follow an "engine-level parallelism only" convention: let Polars/DuckDB parallelize
+# internally rather than hand-rolling threads in compute code. This is a deliberate, narrow exception
+# -- the parallelism here is N concurrent client connections to WRDS, which the query engine cannot
+# provide (it parallelizes computation, not independent network connections). It is NOT a precedent
+# for introducing thread pools into characteristic/compute code.
+#
+# WRDS enforces a per-role PostgreSQL CONNECTION LIMIT (currently 7 for our account; see
+# `SELECT rolconnlimit FROM pg_roles WHERE rolname = current_user`). Each parallel worker holds
+# exactly one client connection (verified: with `SET threads = 1` and these tables being views,
+# one ATTACH == one TCP socket to wrds-pgdata), so the pool is capped below the limit to leave a
+# slot of headroom for any other WRDS session under the same login.
+#
+# NOTE for debugging: WRDS fronts PostgreSQL with pgpool, so `pg_stat_activity` reports the
+# server-side backend pool (it showed ~21 backends for 6 workers) -- that is NOT the client
+# connection count. The number that matters for the role limit is the client connections, which
+# equal the worker count (confirmed via the process's own sockets, e.g. psutil/`ss`).
+WRDS_MAX_CONNECTIONS = 7
+
+# These daily security tables dominate the download (hundreds of millions of rows each). In
+# parallel mode they are split into row-balanced date-range chunks so a single giant table can't
+# bottleneck the worker pool; the chunks are concatenated back into one parquet afterward.
+SPLIT_TABLES = frozenset({"crsp.dsf_v2", "comp.secd", "comp.g_secd"})
+
+
+def _effective_download_workers(requested: int, n_tables: int) -> int:
+    """Clamp the requested worker count to a safe, useful range.
+
+    Never more workers than there are tables, and never more than WRDS allows concurrent
+    connections (minus one for headroom). A value of 1 (or less) means sequential download.
+    """
+    if requested <= 1:
+        return 1
+    return max(1, min(requested, n_tables, WRDS_MAX_CONNECTIONS - 1))
+
+
+@dataclass(frozen=True)
+class _DownloadTask:
+    """One unit of download work: a whole table, or one date-range chunk of a split table."""
+
+    table: str
+    out: str
+    date_column: str | None
+    start_date: date | None
+    end_date: date | None
+
+
+def _chunk_path(filename: str, i: int) -> str:
+    """Per-chunk parquet path, e.g. .../crsp_dsf_v2.parquet -> .../crsp_dsf_v2.part00.parquet."""
+    p = Path(filename)
+    return str(p.with_name(f"{p.stem}.part{i:02d}{p.suffix}"))
+
+
+def _attach_wrds(con: duckdb.DuckDBPyConnection, conninfo: str, password: str) -> None:
+    """ATTACH the WRDS Postgres database read-only on an existing DuckDB connection.
+
+    DuckDB's postgres extension embeds the full connection string (including the password) in
+    ATTACH error text, so on failure suppress the original exception and raise a generic,
+    password-free error. Errors that don't contain the password propagate unchanged.
+    """
+    try:
+        con.execute(f"ATTACH '{conninfo}' AS wrds (TYPE postgres, READ_ONLY)")
+    except Exception as e:
+        if password and password in str(e):
+            raise RuntimeError(
+                "Failed to attach WRDS connection. Check credentials and MFA approval."
+            ) from None
+        raise
+
+
+def _install_postgres_extension() -> None:
+    """Install the DuckDB postgres extension once, up front (idempotent).
+
+    Doing it in the main thread means the parallel workers only ``LOAD`` it (a per-connection,
+    no-download operation), which avoids a concurrent-INSTALL race across the pool writing the same
+    extension file, and surfaces a fetch failure as one clean error here rather than N worker
+    tracebacks.
+    """
+    with duckdb.connect(":memory:") as con:
+        con.execute("INSTALL postgres;")
+
+
+_MapT = TypeVar("_MapT")
+_MapR = TypeVar("_MapR")
+
+
+def _map_interruptible(
+    fn: Callable[[_MapT], _MapR], items: Iterable[_MapT], max_workers: int
+) -> list[_MapR]:
+    """Run ``[fn(item) for item in items]`` concurrently, staying responsive to Ctrl-C.
+
+    Like a ``ThreadPoolExecutor`` map, but a KeyboardInterrupt cancels not-yet-started work and
+    propagates promptly instead of blocking in the pool's ``shutdown(wait=True)``. In-flight calls
+    still finish (a running query/COPY can't be interrupted mid-call). Task exceptions and results
+    propagate in order, exactly like ``list(ex.map(fn, items))``.
+    """
+    ex = ThreadPoolExecutor(max_workers=max_workers)
+    try:
+        futures = [ex.submit(fn, item) for item in items]
+        pending = set(futures)
+        while pending:  # timed waits keep the main thread returning to Python so Ctrl-C can fire
+            _, pending = wait(pending, timeout=0.5)
+        return [f.result() for f in futures]
+    except KeyboardInterrupt:
+        print(
+            "\nInterrupted: stopping after in-flight work finishes...",
+            file=sys.stderr,
+            flush=True,
+        )
+        raise
+    finally:
+        ex.shutdown(wait=True, cancel_futures=True)
+
+
+def _year_histogram(
+    con: duckdb.DuckDBPyConnection,
+    db_alias: str,
+    lib: str,
+    table: str,
+    date_column: str,
+    end_date: date | None,
+) -> list[tuple[int, int]]:
+    """Server-side per-year row counts for a date-filtered table: [(year, n), ...] sorted by year."""
+    where = _date_where(date_column, None, end_date)
+    rows = con.execute(
+        f"SELECT CAST(EXTRACT(YEAR FROM {date_column}) AS INTEGER) AS yr, COUNT(*) AS n "  # noqa: S608
+        f"FROM {db_alias}.{lib}.{table} {where} GROUP BY yr ORDER BY yr"
+    ).fetchall()
+    return [(int(yr), int(n)) for yr, n in rows if yr is not None]
+
+
+def _balanced_year_chunks(
+    histogram: list[tuple[int, int]], n_chunks: int, end_date: date | None
+) -> list[tuple[date | None, date | None]]:
+    """Split a year histogram into <= n_chunks contiguous inclusive (start, end) date ranges
+    holding ~equal row counts.
+
+    The first range's start is None (unbounded below) and the last range's end is the overall
+    end_date; ranges are non-overlapping and together cover every counted row. Cuts fall on
+    year boundaries, so chunks are only as balanced as the per-year granularity allows.
+    """
+    hist = [(y, n) for y, n in histogram if n > 0]
+    if n_chunks <= 1 or len(hist) <= 1:
+        return [(None, end_date)]
+    total = sum(n for _, n in hist)
+    target = total / n_chunks
+    cut_years: list[int] = []
+    acc = 0
+    for i, (yr, n) in enumerate(hist):
+        acc += n
+        last_year = i == len(hist) - 1
+        if len(cut_years) < n_chunks - 1 and not last_year and acc >= (len(cut_years) + 1) * target:
+            cut_years.append(yr)
+    starts = [None, *[cy + 1 for cy in cut_years]]
+    ends = [date(cy, 12, 31) for cy in cut_years] + [end_date]
+    return [
+        (date(s, 1, 1) if s is not None else None, e) for s, e in zip(starts, ends, strict=True)
+    ]
+
+
+def _compute_histograms(
+    conninfo: str,
+    tables: list[str],
+    date_columns: dict[str, str],
+    end_date: date | None,
+    max_conns: int,
+    password: str,
+) -> dict[str, list[tuple[int, int]]]:
+    """Concurrently compute per-year row histograms for ``tables`` (each over its own connection).
+
+    Returns {table: [(year, n), ...]}. Runs up to ``max_conns`` queries at once so the up-front
+    boundary scan of the giant tables doesn't serialize and leave the connection pool idle.
+    """
+    if not tables:
+        return {}
+
+    def one(table: str) -> tuple[str, list[tuple[int, int]]]:
+        lib, tbl = table.split(".")
+        with duckdb.connect(":memory:") as con:
+            con.execute("SET threads TO 1")
+            con.execute("LOAD postgres;")  # extension installed once up front by the caller
+            _attach_wrds(con, conninfo, password)
+            try:
+                return table, _year_histogram(con, "wrds", lib, tbl, date_columns[table], end_date)
+            finally:
+                with contextlib.suppress(Exception):
+                    con.execute("DETACH wrds")
+
+    return dict(_map_interruptible(one, tables, min(len(tables), max_conns)))
+
+
+def _build_download_tasks(
+    table_names: list[str],
+    filenames: dict[str, str],
+    date_columns: dict[str, str],
+    end_date: date | None,
+    split_tables: frozenset[str],
+    n_chunks: int,
+    histograms: dict[str, list[tuple[int, int]]],
+) -> tuple[list[_DownloadTask], dict[str, list[str]]]:
+    """Expand the table list into download tasks, splitting ``split_tables`` into date chunks.
+
+    ``histograms`` maps a split table to its per-year row counts (see _compute_histograms).
+    Returns (tasks, concat_map), where concat_map maps a final parquet path to its ordered chunk
+    files (only for tables actually split into >1 chunk).
+    """
+    tasks: list[_DownloadTask] = []
+    concat_map: dict[str, list[str]] = {}
+    for table in table_names:
+        date_col = date_columns.get(table)
+        hist = histograms.get(table)
+        do_split = (
+            hist is not None
+            and n_chunks > 1
+            and table in split_tables
+            and date_col
+            and end_date is not None
+        )
+        if not do_split or hist is None:
+            tasks.append(_DownloadTask(table, filenames[table], date_col, None, end_date))
+            continue
+        ranges = _balanced_year_chunks(hist, n_chunks, end_date)
+        if len(ranges) <= 1:
+            start, end = ranges[0]
+            tasks.append(_DownloadTask(table, filenames[table], date_col, start, end))
+            continue
+        chunk_files = []
+        for i, (start, end) in enumerate(ranges):
+            cf = _chunk_path(filenames[table], i)
+            chunk_files.append(cf)
+            tasks.append(_DownloadTask(table, cf, date_col, start, end))
+        concat_map[filenames[table]] = chunk_files
+    return tasks, concat_map
+
+
+def _concat_chunks(final_file: str, chunk_files: list[str]) -> None:
+    """Concatenate ordered chunk parquets into one final parquet, then remove the chunks (local)."""
+    pl.scan_parquet(chunk_files).sink_parquet(final_file)
+    for f in chunk_files:
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(f)
+
+
+def _remove_chunk_parts(filename: str) -> None:
+    """Delete any existing chunk-part files for ``filename`` (see _chunk_path).
+
+    A prior interrupted run may have written chunk parts that were never concatenated — possibly
+    with a different worker count, hence different indices — so clear them all before writing fresh
+    ones. The final (non-part) file itself is left untouched.
+    """
+    p = Path(filename)
+    # Match exactly what _chunk_path writes (.part00..part99) rather than `part*`, which would also
+    # sweep an unrelated file like `<stem>.partial.parquet`.
+    for f in p.parent.glob(f"{p.stem}.part[0-9][0-9]{p.suffix}"):
+        with contextlib.suppress(FileNotFoundError):
+            f.unlink()
+
+
+def _attach_download_worker(
+    task_queue: queue.Queue[_DownloadTask],
+    conninfo: str,
+    password: str,
+    task_errors: list[str],
+    startup_errors: list[str],
+    errors_lock: threading.Lock,
+    stop_event: threading.Event,
+) -> None:
+    """One parallel worker: open a private ATTACH connection and drain the task queue.
+
+    Each task is a whole table or one date-range chunk. The worker holds exactly one WRDS
+    connection (``threads=1`` keeps DuckDB from opening extra connections for a parallel scan)
+    and reuses it. It stops pulling new tasks once ``stop_event`` is set (used to unwind on Ctrl-C).
+
+    Failures are recorded (password-redacted) instead of raised, so one bad task doesn't abandon
+    the rest. Worker-startup failures (LOAD/ATTACH) and download (task) failures are kept in separate
+    lists: because the task queue is shared, a worker that fails to start is not fatal as long as the
+    surviving workers still drain the queue, whereas a failed download leaves a table missing. The
+    caller decides what to raise (see _download_tables_parallel).
+    """
+    # `with duckdb.connect(...)` closes the connection on every exit path (return / exception).
+    with duckdb.connect(":memory:") as con:
+        try:
+            con.execute("SET threads TO 1")
+            con.execute("LOAD postgres;")  # extension installed once up front by the caller
+            _attach_wrds(con, conninfo, password)
+        except Exception as e:  # noqa: BLE001
+            # _attach_wrds already raises a password-free error, and LOAD/SET can't leak the
+            # password; warn now so the user knows the run is proceeding under-provisioned rather
+            # than silently losing a worker.
+            with errors_lock:
+                startup_errors.append(str(e))
+                print(
+                    f"Warning: a WRDS download worker failed to start ({e}); continuing with the "
+                    "remaining worker(s). Press Ctrl-C to cancel and re-run for full parallelism.",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            return
+        try:
+            while not stop_event.is_set():
+                try:
+                    task = task_queue.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    download_wrds_table_attached(
+                        con,
+                        "wrds",
+                        task.table,
+                        task.out,
+                        date_column=task.date_column,
+                        end_date=task.end_date,
+                        start_date=task.start_date,
+                    )
+                except Exception as e:  # noqa: BLE001
+                    # Redact only the credential, keeping the rest of the error for diagnostics.
+                    msg = str(e).replace(password, "***") if password else str(e)
+                    with errors_lock:
+                        task_errors.append(f"{task.table} ({Path(task.out).name}): {msg}")
+        finally:
+            with contextlib.suppress(Exception):
+                con.execute("DETACH wrds")
+
+
+def _download_tables_parallel(
+    table_names: list[str],
+    filenames: dict[str, str],
+    conninfo: str,
+    date_columns: dict[str, str],
+    end_date: date | None,
+    password: str,
+    workers: int,
+    split_tables: frozenset[str] = frozenset(),
+    n_chunks: int = 1,
+) -> None:
+    """Download all tables concurrently over ``workers`` private ATTACH connections.
+
+    Tables in ``split_tables`` are divided into ``n_chunks`` row-balanced date-range chunks
+    (boundaries computed up front over one short-lived connection) and concatenated afterward, so
+    a single giant table can't bottleneck the pool. Work is pulled from a shared queue (dynamic
+    load balancing). Raises a single aggregated ``RuntimeError`` if any task failed.
+    """
+    # Install the postgres extension once, in this thread, so the parallel workers (and histogram
+    # workers) only LOAD it -- no concurrent-INSTALL race, and a fetch failure surfaces here cleanly.
+    _install_postgres_extension()
+
+    # Up front: concurrently compute per-year row histograms for the split tables to derive chunk
+    # boundaries (the giant tables need a full COUNT scan; running them in parallel hides the cost).
+    split_present = [
+        t for t in table_names if t in split_tables and date_columns.get(t) and end_date is not None
+    ]
+    histograms = (
+        _compute_histograms(conninfo, split_present, date_columns, end_date, workers, password)
+        if split_present and n_chunks > 1
+        else {}
+    )
+    tasks, concat_map = _build_download_tasks(
+        table_names, filenames, date_columns, end_date, split_tables, n_chunks, histograms
+    )
+
+    # Clear any stale chunk parts left by a prior interrupted run before the workers write fresh
+    # ones, so leftover parts (e.g. from a run with a different worker count) can't linger
+    # un-concatenated alongside this run's output.
+    for table in table_names:
+        if table in split_tables:
+            _remove_chunk_parts(filenames[table])
+
+    task_queue: queue.Queue[_DownloadTask] = queue.Queue()
+    for task in tasks:
+        task_queue.put(task)
+    task_errors: list[str] = []
+    startup_errors: list[str] = []
+    errors_lock = threading.Lock()
+    stop_event = threading.Event()
+    threads = [
+        threading.Thread(
+            target=_attach_download_worker,
+            args=(
+                task_queue,
+                conninfo,
+                password,
+                task_errors,
+                startup_errors,
+                errors_lock,
+                stop_event,
+            ),
+            name=f"wrds-download-{i}",
+        )
+        for i in range(workers)
+    ]
+    for t in threads:
+        t.start()
+    # Join with a timeout so the main thread stays responsive to Ctrl-C (a plain join() would defer
+    # the KeyboardInterrupt until the whole download finished). On Ctrl-C, ask the workers to stop
+    # pulling new tasks; they finish the download already in flight and exit.
+    #
+    # We deliberately do NOT call DuckDB's con.interrupt() to abort an in-flight COPY mid-transfer:
+    # it would require sharing every worker's connection with this thread plus telling a user-cancel
+    # apart from a real failure, and its effect on a COPY blocked in the postgres extension's network
+    # read is unverified. Consequently a Ctrl-C takes effect only after the currently-downloading
+    # task(s) finish -- bounded by one chunk, not the entire remaining download.
+    try:
+        for t in threads:
+            while t.is_alive():
+                t.join(timeout=0.5)
+    except KeyboardInterrupt:
+        print(
+            "\nInterrupted: stopping after the in-flight download(s) finish...",
+            file=sys.stderr,
+            flush=True,
+        )
+        stop_event.set()
+        for t in threads:
+            t.join()
+        raise
+
+    # A download failure means a table is missing -> always fatal.
+    if task_errors:
+        raise RuntimeError(
+            f"{len(task_errors)} WRDS download task(s) failed:\n  "
+            + "\n  ".join(sorted(task_errors))
+        )
+    # If the queue never drained, every worker failed to start -> nothing was downloaded.
+    if not task_queue.empty():
+        raise RuntimeError(
+            f"all {workers} WRDS download worker(s) failed to start:\n  "
+            + "\n  ".join(sorted(startup_errors))
+        )
+    # Some workers failed to start, but the survivors completed every table -> note it, don't fail.
+    if startup_errors:
+        print(
+            f"Note: {len(startup_errors)} of {workers} WRDS download worker(s) failed to start; "
+            "the remaining worker(s) completed all tables.",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    # Concatenate each split table's chunks back into its single parquet. These are local
+    # (no WRDS connection) and independent, so run them concurrently. Failures are aggregated
+    # like the download phase rather than aborting on the first error; chunks left behind by a
+    # failed concat are cleaned up by the stale-part sweep on the next run.
+    if concat_map:
+        concat_errors: list[str] = []
+        concat_lock = threading.Lock()
+
+        def concat_one(item: tuple[str, list[str]]) -> None:
+            final_file, chunk_files = item
+            try:
+                _concat_chunks(final_file, chunk_files)
+            except Exception as e:  # noqa: BLE001
+                with concat_lock:
+                    concat_errors.append(f"{Path(final_file).name}: {e}")
+
+        _map_interruptible(concat_one, list(concat_map.items()), len(concat_map))
+        if concat_errors:
+            raise RuntimeError(
+                f"{len(concat_errors)} chunk concatenation(s) failed:\n  "
+                + "\n  ".join(sorted(concat_errors))
+            )
+
+
 @measure_time
 def download_raw_data_tables(
     paths: DataPaths,
@@ -766,6 +1251,7 @@ def download_raw_data_tables(
     password: str,
     end_date: date | None = None,
     persistent_connection: bool = False,
+    max_workers: int = 1,
 ) -> None:
     """
     Description:
@@ -775,16 +1261,28 @@ def download_raw_data_tables(
         1) Connect to WRDS; iterate through a fixed list of library.tables.
         2) For each table: download to raw_tables/lib_table.parquet, applying date filtering
            when end_date is provided and the table has a known date column.
-        3) If persistent_connection: ATTACH a single postgres connection and download all tables.
-           Otherwise: use postgres_scan() which creates a new connection per query.
+        3) If max_workers > 1: download tables concurrently over a pool of persistent ATTACH
+           connections (one per worker). Otherwise download sequentially over a single
+           connection, using ATTACH when persistent_connection is set or postgres_scan() if not.
         4) Disconnect.
 
     Args:
         username: WRDS username
         password: WRDS password
-        persistent_connection: If True, use a single persistent connection via ATTACH.
-            This reduces MFA prompts on systems with NAT IP rotation (e.g., Yale Bouchet).
-            If False (default), use postgres_scan() which creates a new connection per query.
+        persistent_connection: If True, use a single persistent connection via ATTACH. This
+            reduces MFA prompts on systems with NAT IP rotation (e.g., Yale Bouchet). If False
+            (default), use postgres_scan() which creates a new connection per query. This flag
+            takes precedence over max_workers: when set, the download stays sequential (one
+            connection) so the single-MFA-prompt guarantee is preserved.
+        max_workers: Number of concurrent download connections. The download is single-threaded
+            and transfer-bound, so the tables are otherwise pulled one at a time over a single
+            stream; running several in parallel cuts wall time substantially. Clamped to the WRDS
+            per-account connection limit (see WRDS_MAX_CONNECTIONS). Default 1 (sequential).
+            Ignored when persistent_connection is set. In parallel mode the giant daily tables
+            (SPLIT_TABLES) are additionally split into max_workers date-range chunks so one huge
+            table can't bottleneck the pool. NOTE: each worker opens its own connection, so on
+            NAT-rotated networks (e.g., Bouchet) parallel mode would trigger one MFA prompt per
+            worker at startup — which is exactly why persistent_connection forces sequential.
 
     Output:
         Parquet files under raw_tables/ (Compustat, CRSP, FF, etc.).
@@ -832,31 +1330,55 @@ def download_raw_data_tables(
         "comp.g_fundq": "datadate",
     }
 
-    wrds_session_data = gen_wrds_connection_info(username, password)
+    conninfo = gen_wrds_connection_info(username, password)
+    filenames = {
+        table: str(paths.raw_tables_dir / (table.replace(".", "_") + ".parquet"))
+        for table in table_names
+    }
+
+    workers = _effective_download_workers(max_workers, len(table_names))
+    if persistent_connection and workers > 1:
+        # --persistent-connection exists to hold ONE connection so NAT-rotated networks
+        # (e.g. Bouchet) get a single MFA prompt. Parallel workers each open their own
+        # connection (one MFA prompt apiece), defeating that, so the single-connection request
+        # wins and we download sequentially.
+        print(
+            "Note: --persistent-connection uses a single WRDS connection; "
+            f"ignoring max_workers={max_workers} and downloading sequentially.",
+            file=sys.stderr,
+            flush=True,
+        )
+        workers = 1
+    if workers > 1:
+        # Parallel: each worker holds its own persistent ATTACH connection and drains a queue.
+        # The giant daily tables (SPLIT_TABLES) are split into `workers` date-range chunks so one
+        # huge table doesn't bottleneck the pool, then concatenated back into one parquet.
+        _download_tables_parallel(
+            table_names,
+            filenames,
+            conninfo,
+            date_columns,
+            end_date,
+            password,
+            workers,
+            split_tables=SPLIT_TABLES,
+            n_chunks=workers,
+        )
+        return
+
     con = duckdb.connect(":memory:")
     con.execute("INSTALL postgres; LOAD postgres;")
 
     if persistent_connection:
         # Use ATTACH for a single persistent connection (reduces MFA on NAT-rotated networks).
-        # DuckDB's postgres extension includes the full connection string (with password)
-        # in error messages. If the connection fails, suppress the original exception to
-        # avoid leaking credentials in logs/tracebacks, and raise a generic error instead.
-        try:
-            con.execute(f"ATTACH '{wrds_session_data}' AS wrds (TYPE postgres, READ_ONLY)")
-        except Exception as e:
-            if password in str(e):
-                raise RuntimeError(
-                    "Failed to attach persistent WRDS connection. "
-                    "Check credentials and MFA approval."
-                ) from None
-            raise
+        _attach_wrds(con, conninfo, password)
         try:
             for table in table_names:
                 download_wrds_table_attached(
                     con,
                     "wrds",
                     table,
-                    str(paths.raw_tables_dir / (table.replace(".", "_") + ".parquet")),
+                    filenames[table],
                     date_column=date_columns.get(table),
                     end_date=end_date,
                 )
@@ -866,10 +1388,10 @@ def download_raw_data_tables(
         # Use postgres_scan() which creates a new connection per query (default)
         for table in table_names:
             download_wrds_table(
-                wrds_session_data,
+                conninfo,
                 con,
                 table,
-                str(paths.raw_tables_dir / (table.replace(".", "_") + ".parquet")),
+                filenames[table],
                 date_column=date_columns.get(table),
                 end_date=end_date,
             )

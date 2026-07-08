@@ -52,6 +52,18 @@ def build(
         "-p",
         help="Use a single persistent WRDS connection (reduces MFA prompts on NAT-rotated networks).",
     ),
+    download_workers: int = typer.Option(
+        1,
+        "--download-workers",
+        "-j",
+        help=(
+            "Number of concurrent WRDS download connections (default 1 = sequential). "
+            "Higher values download tables in parallel and cut wall time, capped at the WRDS "
+            "per-account connection limit. Ignored when --persistent-connection is set (which "
+            "forces a single connection). On NAT-rotated networks each worker may trigger its "
+            "own MFA prompt at startup; keep at 1 there."
+        ),
+    ),
     force: bool = typer.Option(
         False,
         "--force",
@@ -68,7 +80,11 @@ def build(
             abort=True,
         )
 
-    run_pipeline(persistent_connection=persistent_connection, output_dir=output_dir)
+    run_pipeline(
+        persistent_connection=persistent_connection,
+        max_workers=download_workers,
+        output_dir=output_dir,
+    )
 
 
 @app.command()
