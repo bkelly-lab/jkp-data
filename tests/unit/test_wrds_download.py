@@ -390,6 +390,28 @@ class TestParallelDownload:
         mock_dl.assert_not_called()  # no table was ever downloaded
 
     @patch("jkp.data.aux_functions.download_wrds_table_attached")
+    @patch("jkp.data.aux_functions._attach_wrds")
+    @patch("jkp.data.aux_functions.duckdb")
+    def test_worker_respects_stop_event(self, mock_duckdb, mock_attach, mock_dl):
+        """A set stop_event makes a worker exit its drain loop without pulling any task (Ctrl-C path)."""
+        import queue as _queue
+
+        from jkp.data.aux_functions import _attach_download_worker, _DownloadTask
+
+        con = MagicMock()
+        con.__enter__.return_value = con
+        mock_duckdb.connect.return_value = con
+        task_queue: _queue.Queue = _queue.Queue()
+        task_queue.put(_DownloadTask("crsp.dsf_v2", "/tmp/x.parquet", None, None, None))
+        stop_event = threading.Event()
+        stop_event.set()  # already asked to stop
+
+        _attach_download_worker(task_queue, "conninfo", "pw", [], [], threading.Lock(), stop_event)
+
+        mock_dl.assert_not_called()  # nothing pulled/downloaded
+        assert task_queue.qsize() == 1  # task left un-pulled
+
+    @patch("jkp.data.aux_functions.download_wrds_table_attached")
     def test_persistent_connection_forces_sequential(
         self, mock_dl, mock_duckdb_multi, test_paths, capsys
     ):

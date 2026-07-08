@@ -1003,12 +1003,13 @@ def _attach_download_worker(
     task_errors: list[str],
     attach_errors: list[str],
     errors_lock: threading.Lock,
+    stop_event: threading.Event,
 ) -> None:
     """One parallel worker: open a private ATTACH connection and drain the task queue.
 
     Each task is a whole table or one date-range chunk. The worker holds exactly one WRDS
     connection (``threads=1`` keeps DuckDB from opening extra connections for a parallel scan)
-    and reuses it.
+    and reuses it. It stops pulling new tasks once ``stop_event`` is set (used to unwind on Ctrl-C).
 
     Failures are recorded (password-redacted) instead of raised, so one bad task doesn't abandon
     the rest. Attach failures and download (task) failures are kept in separate lists: because the
@@ -1028,14 +1029,14 @@ def _attach_download_worker(
             with errors_lock:
                 attach_errors.append(str(e))
                 print(
-                    f"Warning: a WRDS download worker failed to attach ({e}); "
-                    "continuing with the remaining worker(s).",
+                    f"Warning: a WRDS download worker failed to attach ({e}); continuing with the "
+                    "remaining worker(s). Press Ctrl-C to cancel and re-run for full parallelism.",
                     file=sys.stderr,
                     flush=True,
                 )
             return
         try:
-            while True:
+            while not stop_event.is_set():
                 try:
                     task = task_queue.get_nowait()
                 except queue.Empty:
@@ -1105,18 +1106,48 @@ def _download_tables_parallel(
     task_errors: list[str] = []
     attach_errors: list[str] = []
     errors_lock = threading.Lock()
+    stop_event = threading.Event()
     threads = [
         threading.Thread(
             target=_attach_download_worker,
-            args=(task_queue, conninfo, password, task_errors, attach_errors, errors_lock),
+            args=(
+                task_queue,
+                conninfo,
+                password,
+                task_errors,
+                attach_errors,
+                errors_lock,
+                stop_event,
+            ),
             name=f"wrds-download-{i}",
         )
         for i in range(workers)
     ]
     for t in threads:
         t.start()
-    for t in threads:
-        t.join()
+    # Join with a timeout so the main thread stays responsive to Ctrl-C (a plain join() would defer
+    # the KeyboardInterrupt until the whole download finished). On Ctrl-C, ask the workers to stop
+    # pulling new tasks; they finish the download already in flight and exit.
+    #
+    # We deliberately do NOT call DuckDB's con.interrupt() to abort an in-flight COPY mid-transfer:
+    # it would require sharing every worker's connection with this thread plus telling a user-cancel
+    # apart from a real failure, and its effect on a COPY blocked in the postgres extension's network
+    # read is unverified. Consequently a Ctrl-C takes effect only after the currently-downloading
+    # task(s) finish -- bounded by one chunk, not the entire remaining download.
+    try:
+        for t in threads:
+            while t.is_alive():
+                t.join(timeout=0.5)
+    except KeyboardInterrupt:
+        print(
+            "\nInterrupted: stopping after the in-flight download(s) finish...",
+            file=sys.stderr,
+            flush=True,
+        )
+        stop_event.set()
+        for t in threads:
+            t.join()
+        raise
 
     # A download failure means a table is missing -> always fatal.
     if task_errors:
