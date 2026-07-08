@@ -11,11 +11,13 @@ import sys
 import threading
 import time
 import warnings
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable, Iterable
+from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import date
 from math import exp, sqrt
 from pathlib import Path
+from typing import TypeVar
 
 import duckdb
 import ibis
@@ -863,6 +865,38 @@ def _install_postgres_extension() -> None:
         con.execute("INSTALL postgres;")
 
 
+_MapT = TypeVar("_MapT")
+_MapR = TypeVar("_MapR")
+
+
+def _map_interruptible(
+    fn: Callable[[_MapT], _MapR], items: Iterable[_MapT], max_workers: int
+) -> list[_MapR]:
+    """Run ``[fn(item) for item in items]`` concurrently, staying responsive to Ctrl-C.
+
+    Like a ``ThreadPoolExecutor`` map, but a KeyboardInterrupt cancels not-yet-started work and
+    propagates promptly instead of blocking in the pool's ``shutdown(wait=True)``. In-flight calls
+    still finish (a running query/COPY can't be interrupted mid-call). Task exceptions and results
+    propagate in order, exactly like ``list(ex.map(fn, items))``.
+    """
+    ex = ThreadPoolExecutor(max_workers=max_workers)
+    try:
+        futures = [ex.submit(fn, item) for item in items]
+        pending = set(futures)
+        while pending:  # timed waits keep the main thread returning to Python so Ctrl-C can fire
+            _, pending = wait(pending, timeout=0.5)
+        return [f.result() for f in futures]
+    except KeyboardInterrupt:
+        print(
+            "\nInterrupted: stopping after in-flight work finishes...",
+            file=sys.stderr,
+            flush=True,
+        )
+        raise
+    finally:
+        ex.shutdown(wait=True, cancel_futures=True)
+
+
 def _year_histogram(
     con: duckdb.DuckDBPyConnection,
     db_alias: str,
@@ -937,8 +971,7 @@ def _compute_histograms(
                 with contextlib.suppress(Exception):
                     con.execute("DETACH wrds")
 
-    with ThreadPoolExecutor(max_workers=min(len(tables), max_conns)) as ex:
-        return dict(ex.map(one, tables))
+    return dict(_map_interruptible(one, tables, min(len(tables), max_conns)))
 
 
 def _build_download_tasks(
@@ -1203,8 +1236,7 @@ def _download_tables_parallel(
                 with concat_lock:
                     concat_errors.append(f"{Path(final_file).name}: {e}")
 
-        with ThreadPoolExecutor(max_workers=len(concat_map)) as ex:
-            list(ex.map(concat_one, concat_map.items()))
+        _map_interruptible(concat_one, list(concat_map.items()), len(concat_map))
         if concat_errors:
             raise RuntimeError(
                 f"{len(concat_errors)} chunk concatenation(s) failed:\n  "

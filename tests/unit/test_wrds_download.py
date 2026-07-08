@@ -749,3 +749,33 @@ class TestAttachWrds:
         # A non-credential error (no password in it) propagates unchanged.
         with pytest.raises(RuntimeError, match="too many connections"):
             _attach_wrds(con, "host=x password=hunter2", "hunter2")
+
+
+class TestMapInterruptible:
+    """The interrupt-responsive concurrent map used by the histogram and concat phases."""
+
+    def test_preserves_order_and_returns_results(self):
+        from jkp.data.aux_functions import _map_interruptible
+
+        assert _map_interruptible(lambda x: x * 2, [1, 2, 3, 4], max_workers=3) == [2, 4, 6, 8]
+
+    def test_propagates_task_exception(self):
+        from jkp.data.aux_functions import _map_interruptible
+
+        def boom(x):
+            if x == 2:
+                raise ValueError("boom")
+            return x
+
+        with pytest.raises(ValueError, match="boom"):
+            _map_interruptible(boom, [1, 2, 3], max_workers=3)
+
+    def test_propagates_keyboard_interrupt(self):
+        """A Ctrl-C during the wait loop unwinds promptly rather than blocking in shutdown."""
+        from jkp.data.aux_functions import _map_interruptible
+
+        with (
+            patch("jkp.data.aux_functions.wait", side_effect=KeyboardInterrupt),
+            pytest.raises(KeyboardInterrupt),
+        ):
+            _map_interruptible(lambda x: x, [1, 2, 3], max_workers=2)
