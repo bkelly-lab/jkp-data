@@ -1037,9 +1037,8 @@ def _attach_download_worker(
                         start_date=task.start_date,
                     )
                 except Exception as e:  # noqa: BLE001
-                    msg = str(e)
-                    if password and password in msg:
-                        msg = "<redacted>"
+                    # Redact only the credential, keeping the rest of the error for diagnostics.
+                    msg = str(e).replace(password, "***") if password else str(e)
                     with errors_lock:
                         errors.append(f"{task.table} ({Path(task.out).name}): {msg}")
         finally:

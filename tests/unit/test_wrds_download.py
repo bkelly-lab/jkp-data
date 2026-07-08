@@ -346,7 +346,10 @@ class TestParallelDownload:
         with pytest.raises(RuntimeError) as exc_info:
             download_raw_data_tables(test_paths, "user", "hunter2secret", max_workers=2)
 
-        assert "hunter2secret" not in str(exc_info.value)
+        err = str(exc_info.value)
+        assert "hunter2secret" not in err  # credential redacted
+        assert "***" in err  # ... replaced in place
+        assert "connection failed" in err and "while reading" in err  # ... diagnostic preserved
 
     @patch("jkp.data.aux_functions.download_wrds_table_attached")
     def test_persistent_connection_forces_sequential(
