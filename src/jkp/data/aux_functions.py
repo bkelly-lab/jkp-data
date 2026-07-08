@@ -781,6 +781,13 @@ def download_wrds_table(
     """)
 
 
+# The raw-data download is the one place in this pipeline that runs an explicit Python thread pool.
+# Elsewhere we follow an "engine-level parallelism only" convention: let Polars/DuckDB parallelize
+# internally rather than hand-rolling threads in compute code. This is a deliberate, narrow exception
+# -- the parallelism here is N concurrent client connections to WRDS, which the query engine cannot
+# provide (it parallelizes computation, not independent network connections). It is NOT a precedent
+# for introducing thread pools into characteristic/compute code.
+#
 # WRDS enforces a per-role PostgreSQL CONNECTION LIMIT (currently 7 for our account; see
 # `SELECT rolconnlimit FROM pg_roles WHERE rolname = current_user`). Each parallel worker holds
 # exactly one client connection (verified: with `SET threads = 1` and these tables being views,
