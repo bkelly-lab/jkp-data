@@ -8925,7 +8925,12 @@ def res_mom(df, sfx, __min, incl, skip):
         .over(["id_int", "group_number"])
     )
     df = (
-        df.filter(col("hml").is_not_null() & col("smb_ff").is_not_null())
+        # Fix within-group row order before the OLS: base_data comes from a
+        # multithreaded DuckDB scan whose row order is nondeterministic, and the
+        # least-squares solve is float-order-sensitive, so an unsorted input
+        # yields byte-different residuals across runs.
+        df.sort(["id_int", "group_number", "aux_date"])
+        .filter(col("hml").is_not_null() & col("smb_ff").is_not_null())
         .with_columns(
             res=res_exp.alias("res"),
             max_date_gn=pl.max("aux_date").over("group_number"),
