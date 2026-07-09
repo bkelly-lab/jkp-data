@@ -15,7 +15,7 @@ import pytest
 from jkp.data.aux_functions import prepare_crsp_sf
 from jkp.data.paths import DataPaths
 from tests.conftest import ToleranceSpec, assert_series_equal
-from tests.golden.prepare_crsp_sf_inputs import write_all_inputs
+from tests.golden.prepare_crsp_sf_inputs import write_all_inputs, write_empty_inputs
 
 GOLDEN_DIR = Path(__file__).parent / "fixtures" / "prepare_crsp_sf"
 
@@ -56,3 +56,19 @@ def test_prepare_crsp_sf_golden(freq: str, tmp_path: Path, request: pytest.Fixtu
         pytest.skip(f"Regenerated {fixture_path}")
 
     _assert_frames_equal(actual, pl.read_parquet(fixture_path))
+
+
+@pytest.mark.regression
+@pytest.mark.parametrize("freq", ["m", "d"])
+def test_prepare_crsp_sf_empty_input(freq: str, tmp_path: Path) -> None:
+    """0-row typed inputs must not crash and must yield a 0-row, golden-schema output."""
+    paths = DataPaths(base_dir=tmp_path)
+    write_empty_inputs(paths, freq)
+    prepare_crsp_sf(paths, freq)
+    actual = pl.read_parquet(paths.interim_dir / f"crsp_{freq}sf.parquet")
+
+    golden = pl.read_parquet(GOLDEN_DIR / f"crsp_{freq}sf.parquet")
+    assert actual.height == 0, f"Expected 0 rows from empty inputs, got {actual.height}"
+    assert actual.columns == golden.columns, (
+        f"Column mismatch on empty input:\n actual={actual.columns}\n expected={golden.columns}"
+    )

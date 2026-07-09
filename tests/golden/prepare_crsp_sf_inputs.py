@@ -12,31 +12,11 @@ not data values.
 
 from __future__ import annotations
 
-import calendar
-from datetime import date, timedelta
+from datetime import date
 
-import numpy as np
 import polars as pl
 
 from jkp.data.paths import DataPaths
-
-# --- Deterministic bulk-panel sizing (Goal 1: scale each golden to ~1.5 MB) --
-#
-# A large synthetic panel is appended to the hand-crafted edge-case rows so the
-# committed golden parquets land in [1 MB, 2 MB]. Bulk entities live at high id
-# ranges (90_000+ monthly, 800_000+ daily) so they never collide with the
-# edge-case ids (10_00x monthly, 20_00x daily). Bulk dates live in 1975-1999,
-# strictly disjoint from every edge-case month (all 2000+), so appending bulk
-# rf/t30ret rows never perturbs the edge-case rf/t30ret null cascade.
-
-FIXED_SEED = 20240707
-_BULK_N_ENT_M = 180  # monthly bulk entities
-_BULK_T_M = 100  # months per monthly bulk entity (1991-09 .. 1999-12)
-_BULK_N_ENT_D = 180  # daily bulk entities
-_BULK_T_D = 100  # consecutive days per daily bulk entity (from 1990-01-02)
-_BULK_PERMNO0_M = 90_000
-_BULK_PERMNO0_D = 800_000
-_BULK_DATE0_D = date(1990, 1, 2)
 
 # --- Schemas (derived from the gen_crsp_sf select list + the four
 #     collect_and_write blocks in src/jkp/data/aux_functions.py) -------------
@@ -120,87 +100,6 @@ def _crsp_row(
     }
 
 
-def _month_end(y: int, m: int) -> date:
-    """Return the calendar month-end date for year ``y`` month ``m``."""
-    return date(y, m, calendar.monthrange(y, m)[1])
-
-
-def _bulk_month_ends() -> list[date]:
-    """Last ``_BULK_T_M`` month-ends of 1975-01 .. 1999-12 (monthly bulk dates)."""
-    all_months = [_month_end(y, m) for y in range(1975, 2000) for m in range(1, 13)]
-    return all_months[-_BULK_T_M:]
-
-
-def _bulk_daily_dates() -> list[date]:
-    """``_BULK_T_D`` consecutive calendar days from ``_BULK_DATE0_D`` (all 1990)."""
-    return [_BULK_DATE0_D + timedelta(days=k) for k in range(_BULK_T_D)]
-
-
-def _build_bulk_rows(freq: str) -> list[dict[str, object]]:
-    """Deterministic synthetic bulk panel appended to the edge-case rows.
-
-    Description:
-        Generate ``N_ENT`` entities that each span the same date grid, with
-        prices positive, returns ~N(0, 0.06), a small dividend wedge in retx,
-        constant cfacshr (so div_tot is computed, not null), integer volume and
-        positive ME. All draws come from one seeded PCG64 rng, so the panel is
-        identical run-to-run and thus safe to pin in a golden fixture.
-    Steps:
-        1) Pick the date grid and id base for the freq.
-        2) Vectorised draw of prc/ret/retx/vol/me over (n_ent, n_per).
-        3) Emit one ``_crsp_row`` per (entity, period); unique permco per entity.
-    Output:
-        list[dict] of SCHEMA_CRSP_SF rows (empty for unknown freq).
-    """
-    if freq == "m":
-        dates = _bulk_month_ends()
-        n_ent, permno0, seed = _BULK_N_ENT_M, _BULK_PERMNO0_M, FIXED_SEED
-    elif freq == "d":
-        dates = _bulk_daily_dates()
-        n_ent, permno0, seed = _BULK_N_ENT_D, _BULK_PERMNO0_D, FIXED_SEED + 1
-    else:
-        return []
-
-    n_per = len(dates)
-    rng = np.random.default_rng(seed)
-    prc = rng.uniform(2.0, 200.0, size=(n_ent, n_per))
-    ret = rng.normal(0.0, 0.06, size=(n_ent, n_per))
-    div = rng.uniform(0.0, 0.004, size=(n_ent, n_per))
-    vol = rng.integers(1_000, 1_000_000, size=(n_ent, n_per))
-    me = rng.uniform(10.0, 5_000.0, size=(n_ent, n_per))
-
-    rows: list[dict[str, object]] = []
-    for i in range(n_ent):
-        permno = permno0 + i
-        nasdaq = (i % 2) == 0
-        for j, d in enumerate(dates):
-            rows.append(
-                _crsp_row(
-                    permno,
-                    permno,  # unique permco per entity -> me_company == me
-                    d,
-                    float(prc[i, j]),
-                    1.0,
-                    float(ret[i, j]),
-                    float(ret[i, j] - div[i, j]),
-                    int(vol[i, j]),
-                    float(me[i, j]),
-                    nasdaq=nasdaq,
-                )
-            )
-    return rows
-
-
-def _bulk_rf_months() -> list[date]:
-    """Month-ends 1975-01 .. 1999-12 covering every bulk (monthly + daily) month.
-
-    Daily bulk dates live in 1990, whose months are a subset of this range, so a
-    single 1975-1999 month grid supplies rf/t30ret for both bulk panels while
-    remaining disjoint from every 2000+ edge-case month.
-    """
-    return [_month_end(y, m) for y in range(1975, 2000) for m in range(1, 13)]
-
-
 def build_crsp_sf_input(freq: str) -> pl.DataFrame:
     """Build the ``__crsp_sf_{freq}`` panel exercising every code path.
 
@@ -278,7 +177,7 @@ def build_crsp_sf_input(freq: str) -> pl.DataFrame:
         ]
     else:
         rows = []
-    return pl.DataFrame(rows + _build_bulk_rows(freq), schema=SCHEMA_CRSP_SF)
+    return pl.DataFrame(rows, schema=SCHEMA_CRSP_SF)
 
 
 def _del_row(
@@ -349,8 +248,6 @@ def build_mcti_input() -> pl.DataFrame:
         (date(2007, 6, 29), 0.0025),
         (date(2008, 7, 31), 0.001),
     ]
-    # Append bulk months (disjoint from the edge-case / rf-null-cascade months).
-    rows += [(d, 0.003) for d in _bulk_rf_months()]
     return pl.DataFrame(
         {"caldt": [r[0] for r in rows], "t30ret": [r[1] for r in rows]},
         schema=SCHEMA_MCTI,
@@ -375,8 +272,6 @@ def build_ff_input() -> pl.DataFrame:
         (date(2008, 7, 31), 0.0009),
         (date(2009, 8, 31), 0.002),  # rf-only fallback month
     ]
-    # Append bulk months (disjoint from the edge-case / rf-null-cascade months).
-    rows += [(d, 0.0009) for d in _bulk_rf_months()]
     return pl.DataFrame(
         {"date": [r[0] for r in rows], "rf": [r[1] for r in rows]},
         schema=SCHEMA_FF,
@@ -402,3 +297,23 @@ def write_all_inputs(paths: DataPaths, freq: str) -> None:
     build_sedelist_input(freq).write_parquet(raw_dir / f"crsp_{freq}sedelist.parquet")
     build_mcti_input().write_parquet(raw_dir / "crsp_mcti_t30ret.parquet")
     build_ff_input().write_parquet(raw_dir / "ff_factors_monthly.parquet")
+
+
+def write_empty_inputs(paths: DataPaths, freq: str) -> None:
+    """Write 0-row typed versions of the four input parquets for one freq.
+
+    Description:
+        Materialize empty but fully-typed inputs so tests can assert that
+        ``prepare_crsp_sf`` tolerates 0-row data without crashing.
+    Steps:
+        1) Ensure interim/raw_data_dfs exists.
+        2) Write each table as an empty DataFrame carrying its schema.
+    Output:
+        None (side effect: 0-row parquet files on disk).
+    """
+    raw_dir = paths.interim_dir / "raw_data_dfs"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(schema=SCHEMA_CRSP_SF).write_parquet(raw_dir / f"__crsp_sf_{freq}.parquet")
+    pl.DataFrame(schema=SCHEMA_SEDELIST).write_parquet(raw_dir / f"crsp_{freq}sedelist.parquet")
+    pl.DataFrame(schema=SCHEMA_MCTI).write_parquet(raw_dir / "crsp_mcti_t30ret.parquet")
+    pl.DataFrame(schema=SCHEMA_FF).write_parquet(raw_dir / "ff_factors_monthly.parquet")
