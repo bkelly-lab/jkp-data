@@ -2901,7 +2901,7 @@ def comp_hgics(paths: DataPaths, lib):
         },
     }
     data = pl.scan_parquet(file_paths["raw data"][lib])  # .sort(['gvkey', 'indfrom'])
-    if data.select(pl.len()).collect().item() == 0:
+    if data.limit(1).collect().is_empty():
         warnings.warn(
             f"comp_hgics: {lib} GICS input is empty "
             f"({file_paths['raw data'][lib]}); "

@@ -93,17 +93,38 @@ def _write_raw_fixtures(raw_data_dfs: Path) -> None:
     """Synthetic GICS histories and SIC/NAICS records exercising the gap-fill paths.
 
     Covers: multi-interval gvkeys with gaps, open-ended (null indthru) terminal
-    records, gvkeys present in only one source, misaligned gics vs sic dates, and
-    single-record gvkeys. Intervals within each library do not overlap, since
-    overlapping (gvkey, date) keys are resolved nondeterministically (unique
-    keep="any") by both old and new code.
+    records, gvkeys present in only one source, misaligned gics vs sic dates,
+    single-record gvkeys, and a gvkey mixing a null-indfrom record with
+    real-dated records (000007). The mixed gvkey pins the null-date handling:
+    the rewrite filters null dates *before* computing aux_date, while the
+    legacy SQL ran LEAD() over the unfiltered partition (nulls last) and only
+    dropped the rows afterwards — equivalent, but easy to break in a refactor.
+    Intervals within each library do not overlap, since overlapping
+    (gvkey, date) keys are resolved nondeterministically (unique keep="any")
+    by both old and new code.
     """
     pl.DataFrame(
         {
-            "gvkey": ["000001", "000001", "000003", "000006"],
-            "indfrom": [date(2020, 1, 1), date(2020, 1, 20), date(2020, 3, 1), None],
-            "indthru": [date(2020, 1, 10), date(2020, 2, 5), None, date(2020, 5, 1)],
-            "gics": [10101010, 20202020, None, 50505050],
+            "gvkey": ["000001", "000001", "000003", "000006", "000007", "000007", "000007"],
+            "indfrom": [
+                date(2020, 1, 1),
+                date(2020, 1, 20),
+                date(2020, 3, 1),
+                None,
+                date(2020, 6, 1),
+                None,
+                date(2020, 6, 20),
+            ],
+            "indthru": [
+                date(2020, 1, 10),
+                date(2020, 2, 5),
+                None,
+                date(2020, 5, 1),
+                date(2020, 6, 5),
+                date(2020, 7, 1),
+                date(2020, 6, 22),
+            ],
+            "gics": [10101010, 20202020, None, 50505050, 60606060, 61616161, 62626262],
         }
     ).write_parquet(raw_data_dfs / "comp_hgics_na.parquet")
     pl.DataFrame(
@@ -116,10 +137,10 @@ def _write_raw_fixtures(raw_data_dfs: Path) -> None:
     ).write_parquet(raw_data_dfs / "comp_hgics_gl.parquet")
     pl.DataFrame(
         {
-            "gvkey": ["000001", "000001", "000002"],
-            "datadate": [date(2020, 1, 5), date(2020, 1, 25), date(2020, 2, 1)],
-            "sic": [3711, None, 6020],
-            "naics": [336111, 336112, 522110],
+            "gvkey": ["000001", "000001", "000002", "000007"],
+            "datadate": [date(2020, 1, 5), date(2020, 1, 25), date(2020, 2, 1), date(2020, 6, 3)],
+            "sic": [3711, None, 6020, 1311],
+            "naics": [336111, 336112, 522110, 211120],
         }
     ).write_parquet(raw_data_dfs / "sic_naics_na.parquet")
     pl.DataFrame(
