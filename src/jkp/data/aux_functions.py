@@ -9050,13 +9050,21 @@ def capm(df, sfx, __min):
     Output:
         LazyFrame with f'beta{sfx}' and f'ivol_capm{sfx}'.
     """
-    df = df.group_by(["id_int", "group_number"]).agg(
-        [
-            (pl.cov("ret_exc", "mktrf") / pl.var("mktrf")).alias(f"beta{sfx}"),
-            (col("ret_exc") - col("mktrf") * (pl.cov("ret_exc", "mktrf") / pl.var("mktrf")))
-            .std()
-            .alias(f"ivol_capm{sfx}"),
-        ]
+    # Fix within-group row order before the reductions: base_data comes from a
+    # multithreaded DuckDB scan whose row order is nondeterministic, and cov/var/
+    # std are float-order-sensitive, so an unsorted input yields byte-different
+    # betas across runs.
+    df = (
+        df.sort(["id_int", "group_number", "aux_date"])
+        .group_by(["id_int", "group_number"])
+        .agg(
+            [
+                (pl.cov("ret_exc", "mktrf") / pl.var("mktrf")).alias(f"beta{sfx}"),
+                (col("ret_exc") - col("mktrf") * (pl.cov("ret_exc", "mktrf") / pl.var("mktrf")))
+                .std()
+                .alias(f"ivol_capm{sfx}"),
+            ]
+        )
     )
     return df
 
