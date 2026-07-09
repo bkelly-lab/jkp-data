@@ -87,8 +87,8 @@ def test_capm_math_recovery(test_paths, tolerance) -> None:
     out = _run(test_paths, msf, fac, 12, 6)
     row = out.filter(pl.col("eom") == _eom(11))
     assert row.height == 1
-    assert abs(row["beta_12m"][0] - 2.0) < 1e-9
-    assert abs(row["ivol_capm_12m"][0]) < 1e-9
+    np.testing.assert_allclose(row["beta_12m"][0], 2.0, **tolerance.TIGHT)
+    np.testing.assert_allclose(row["ivol_capm_12m"][0], 0.0, **tolerance.TIGHT)
 
 
 @pytest.mark.unit
