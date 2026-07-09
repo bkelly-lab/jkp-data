@@ -2900,8 +2900,8 @@ def comp_hgics(paths: DataPaths, lib):
             "global": paths.interim_dir / "g_hgics.parquet",
         },
     }
-    data = pl.read_parquet(file_paths["raw data"][lib])  # .sort(['gvkey', 'indfrom'])
-    if data.height == 0:
+    data = pl.scan_parquet(file_paths["raw data"][lib])  # .sort(['gvkey', 'indfrom'])
+    if data.limit(1).collect().is_empty():
         warnings.warn(
             f"comp_hgics: {lib} GICS input is empty "
             f"({file_paths['raw data'][lib]}); "
@@ -2914,12 +2914,7 @@ def comp_hgics(paths: DataPaths, lib):
         n=pl.len().over("gvkey"),
         n_aux=pl.cum_count("gvkey").over("gvkey"),
     )
-    max_indfrom = data[["indfrom"]].max()[0, 0]
-    indthru_date = (
-        pl.lit(max_indfrom)
-        if max_indfrom is not None and max_indfrom > END_DATE
-        else pl.lit(END_DATE)
-    )
+    indthru_date = pl.max_horizontal(pl.col("indfrom").max(), pl.lit(END_DATE))
     c1 = col("n") == col("n_aux")
     c2 = col("indthru").is_null()
     data = (
@@ -2929,7 +2924,7 @@ def comp_hgics(paths: DataPaths, lib):
         .unique(subset=["gvkey", "date"])
         .sort(["gvkey", "date"])
     )
-    data.write_parquet(file_paths["output"][lib])
+    data.sink_parquet(file_paths["output"][lib])
 
 
 def hgics_join(paths: DataPaths):
@@ -2955,7 +2950,7 @@ def hgics_join(paths: DataPaths):
         .unique(["gvkey", "date"])
         .sort(["gvkey", "date"])
     )
-    gjoin.collect().write_parquet(paths.interim_dir / "comp_hgics.parquet")
+    gjoin.sink_parquet(paths.interim_dir / "comp_hgics.parquet")
 
 
 def comp_sic_naics(paths: DataPaths):
@@ -3059,7 +3054,7 @@ def comp_sic_naics(paths: DataPaths):
         .unique(["gvkey", "date"])
         .sort(["gvkey", "date"])
     )
-    comp.collect().write_parquet(paths.interim_dir / "comp_other.parquet")
+    comp.sink_parquet(paths.interim_dir / "comp_other.parquet")
     con.disconnect()
 
 
@@ -3067,78 +3062,54 @@ def comp_sic_naics(paths: DataPaths):
 def comp_industry(paths: DataPaths):
     """
     Description:
-        Merge daily GICS and SIC/NAICS into a single daily Compustat industry file,
-        filling gaps day-by-day to ensure continuity.
+        Merge daily GICS and SIC/NAICS into a single daily Compustat industry file with a
+        continuous daily date axis; days between observations carry null industry codes.
 
     Steps:
-        1) Run comp_sic_naics() and hgics_join(); load into DuckDB.
+        1) Run comp_sic_naics() and hgics_join(); scan both panels lazily.
         2) Full-outer-join on (gvkey,date); compute aux_date = next date − 1 day to detect gaps.
-        3) Build gap ranges via generate_series and fill from gap_dates; union with continuous rows.
-        4) Select distinct first by (gvkey,date); write comp_ind.parquet.
+        3) Emit interior gap days [date+1, aux_date] with null codes (only the gap-start day
+           carries values, matching the historical SQL gap-fill behaviour).
+        4) Concatenate joined rows with gap rows; sort; sink comp_ind.parquet.
 
     Output:
         Parquet comp_ind.parquet with {gvkey,date,gics,sic,naics} daily.
     """
     comp_sic_naics(paths)
     hgics_join(paths)
-    (paths.interim_dir / "aux_comp_ind.ddb").unlink(missing_ok=True)
-    con = ibis.duckdb.connect(str(paths.interim_dir / "aux_comp_ind.ddb"), threads=os.cpu_count())
-    con.create_table("comp_other", con.read_parquet(paths.interim_dir / "comp_other.parquet"))
-    con.create_table("comp_gics", con.read_parquet(paths.interim_dir / "comp_hgics.parquet"))
-    con.raw_sql("""
-                DROP TABLE IF EXISTS join_table;
-                CREATE TABLE join_table AS
-                SELECT          *,
-                                COALESCE( LEAD(date) OVER (PARTITION BY gvkey ORDER BY date) - INTERVAL '1 day', date )::DATE AS aux_date
-                FROM            comp_gics
-                FULL OUTER JOIN comp_other
-                USING           (gvkey, date);
-
-                DROP TABLE IF EXISTS gap_dates;
-                CREATE TABLE gap_dates AS
-                SELECT *
-                FROM join_table
-                WHERE date <> aux_date;
-
-                DROP TABLE IF EXISTS gaps;
-                CREATE TABLE gaps AS
-                WITH full_span AS (
-                SELECT
-                    j.gvkey, gs.gap_date::DATE AS date,
-                    FROM gap_dates as j
-                    CROSS JOIN LATERAL
-                    generate_series(j.date, j.aux_date, INTERVAL '1 day') AS gs(gap_date)
-                    ORDER BY gvkey, date
-                )
-                SELECT
-                fs.gvkey, fs.date, gd.gics, gd.sic, gd.naics
-                FROM full_span fs
-                LEFT JOIN gap_dates gd
-                ON gd.gvkey = fs.gvkey
-                AND gd.date  = fs.date
-                ORDER BY fs.gvkey, fs.date;
-
-                DROP TABLE IF EXISTS continuous;
-                CREATE TABLE continuous AS
-                SELECT *
-                FROM join_table
-                WHERE date = aux_date;
-
-                DROP TABLE IF EXISTS merged_data;
-                CREATE TABLE merged_data AS
-                SELECT gvkey, date, gics, sic, naics FROM continuous
-                UNION
-                SELECT gvkey, date, gics, sic, naics FROM gaps;
-
-                DROP TABLE IF EXISTS comp_industry;
-                CREATE TABLE comp_industry AS
-                SELECT DISTINCT ON (gvkey, date)
-                    *
-                FROM merged_data
-                ORDER BY (gvkey, date);
-    """)
-    con.table("comp_industry").to_parquet(paths.interim_dir / "comp_ind.parquet")
-    con.disconnect()
+    comp_gics = pl.scan_parquet(paths.interim_dir / "comp_hgics.parquet")
+    comp_other = pl.scan_parquet(paths.interim_dir / "comp_other.parquet")
+    joined = (
+        comp_gics.join(comp_other, on=["gvkey", "date"], how="full", coalesce=True)
+        # Null dates (from GICS records with null indfrom) were silently dropped by the
+        # historical SQL: both `WHERE date <> aux_date` and `WHERE date = aux_date`
+        # evaluate to NULL for them, excluding the rows from every output branch.
+        .filter(pl.col("date").is_not_null())
+        .sort(["gvkey", "date"])
+        .with_columns(
+            aux_date=pl.coalesce(
+                pl.col("date").shift(-1).over("gvkey") - pl.duration(days=1),
+                pl.col("date"),
+            )
+        )
+    )
+    schema = joined.collect_schema()
+    # Interior days of each gap get null industry codes: the historical SQL left-joined
+    # gap_dates on the exact date, so only the gap-start day (already present in the
+    # joined panel) carried values.
+    gap_rows = (
+        joined.filter(pl.col("date") != pl.col("aux_date"))
+        .select(
+            "gvkey",
+            pl.date_ranges(pl.col("date") + pl.duration(days=1), "aux_date").alias("date"),
+            *[pl.lit(None, dtype=schema[c]).alias(c) for c in ["gics", "sic", "naics"]],
+        )
+        .explode("date")
+    )
+    out = pl.concat([joined.select(["gvkey", "date", "gics", "sic", "naics"]), gap_rows]).sort(
+        ["gvkey", "date"]
+    )
+    out.sink_parquet(paths.interim_dir / "comp_ind.parquet")
 
 
 def _parse_siccodes_file(filename: str, label: str) -> pl.DataFrame:
