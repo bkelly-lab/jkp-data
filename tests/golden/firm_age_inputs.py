@@ -31,14 +31,14 @@ import polars as pl
 
 from jkp.data.paths import DataPaths
 
-# Deterministic bulk panel that scales the golden fixture to ~1.5 MB.
+# Deterministic bulk panel that scales the golden fixture to ~0.5 MB.
 # The six hand-crafted edge-case entities (ids 10001..10006) pin specific code
 # paths; the bulk panel below (ids >= BULK_ID_START, permcos >= BULK_PERMCO_START,
 # gvkeys "9xxxxx") is appended purely to grow the committed golden and never
 # collides with any edge-case identifier. Every bulk entity carries a CRSP
 # signal, so each bulk row produces a non-null, monotonically increasing age.
 FIXED_SEED = 20240707
-BULK_N_ENTITIES = 70_000
+BULK_N_ENTITIES = 22_000
 BULK_N_MONTHS = 180
 BULK_ID_START = 100_000
 BULK_PERMCO_START = 900_000
