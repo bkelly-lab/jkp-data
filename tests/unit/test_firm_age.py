@@ -150,6 +150,7 @@ def test_crsp_only_age_zero_at_first_month(test_paths: DataPaths) -> None:
             {"permco": [1004], "mthcaldt": [date(2018, 2, 28)]}, schema=CRSP_MSF_V2_AUG_SCHEMA
         ),
     )
+    assert len(ages) == 2  # guards against joins fanning out duplicate rows
     assert ages[(10004, date(2018, 2, 28))] == 0
     assert ages[(10004, date(2018, 3, 31))] == 1
 
@@ -252,6 +253,7 @@ def test_first_alt_is_per_id_not_global(test_paths: DataPaths) -> None:
         ]
     )
     ages = _run(test_paths, world_msf=world)  # no signals -> pure first_alt fallback
+    assert len(ages) == 4  # guards against joins fanning out duplicate rows
     # each id: age 0 at its own min eom, 1 at the next month
     assert ages[(40001, date(2015, 3, 31))] == 0
     assert ages[(40001, date(2015, 4, 30))] == 1
