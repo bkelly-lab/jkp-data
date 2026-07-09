@@ -23,25 +23,15 @@ from tests.golden.residual_momentum_inputs import (
 _STEM = "resmom_ff3"
 _N = 36
 _MIN = 24
+_SEED = 42  # seed for the shared golden input builders
 _TERMINAL_IDX = 39  # m39 = 2016-04-30, terminal month of the fixture grid.
 _CHUNK_START_IDX = 4  # 36-month chunk ending at m39 spans m4..m39.
 
 
-def _write_inputs(paths, world_df: pl.DataFrame | None = None) -> tuple:
-    """Write world_msf + ap_factors inputs to interim_dir; return their paths."""
-    world = world_df if world_df is not None else build_world_msf_input(seed=42)
-    world_path = paths.interim_dir / "world_msf.parquet"
-    fcts_path = paths.interim_dir / "ap_factors_monthly.parquet"
-    world.write_parquet(world_path)
-    build_ap_factors_monthly_input(seed=42).write_parquet(fcts_path)
-    return world_path, fcts_path
-
-
 def _run(paths, incl: int, skip: int, world_df: pl.DataFrame | None = None) -> pl.DataFrame:
-    """Run residual_momentum for one variant and return the sorted output frame."""
-    world_path, fcts_path = _write_inputs(paths, world_df)
-    residual_momentum(paths, _STEM, world_path, fcts_path, _N, _MIN, incl, skip)
-    return pl.read_parquet(paths.interim_dir / f"{_STEM}_{incl}_{skip}.parquet").sort(["id", "eom"])
+    """Run residual_momentum on the shared golden inputs; return the sorted output."""
+    world = world_df if world_df is not None else build_world_msf_input(seed=_SEED)
+    return _run_frames(paths, incl, skip, world, build_ap_factors_monthly_input(seed=_SEED))
 
 
 def _oracle_at(
@@ -58,6 +48,9 @@ def _oracle_at(
     Description:
         Independently replicate ``resff3_{incl}_{skip}`` for one stock at one
         terminal month, from raw ``world_msf`` / ``ap_factors_monthly`` frames.
+        The per-eom winsorization in ``prep_data_factor_regs`` is deliberately
+        omitted: with <=4 stocks per eom in these fixtures, QUANTILE_DISC at
+        0.001/0.999 resolves to the group min/max, so the clip is a no-op.
     Steps:
         1) Slice ret_exc / mktrf / hml / smb_ff over the 36 months ending at the
            terminal (clamped to grid start) for (sid, country); drop any month
@@ -113,8 +106,8 @@ def _oracle_at(
 def _oracle_resff3(sid: int, country: str, incl: int, skip: int) -> float:
     """Numpy OLS oracle for the terminal-m39 chunk of a single golden stock."""
     return _oracle_at(
-        build_world_msf_input(seed=42),
-        build_ap_factors_monthly_input(seed=42),
+        build_world_msf_input(seed=_SEED),
+        build_ap_factors_monthly_input(seed=_SEED),
         sid,
         country,
         incl,
@@ -296,6 +289,7 @@ def test_empty_input(test_paths, incl: int, skip: int) -> None:
     assert out.columns == ["id", "eom", f"resff3_{incl}_{skip}"]
     assert out.schema["id"] == pl.Int64
     assert out.schema["eom"] == pl.Date
+    assert out.schema[f"resff3_{incl}_{skip}"] == pl.Float64
 
 
 @pytest.mark.unit
@@ -308,7 +302,13 @@ def test_value_correctness_nonterminal(test_paths, tolerance) -> None:
     row = out.filter((pl.col("id") == 1) & (pl.col("eom") == eom))
     assert row.height == 1
     expected = _oracle_at(
-        build_world_msf_input(seed=42), build_ap_factors_monthly_input(seed=42), 1, "US", 12, 1, idx
+        build_world_msf_input(seed=_SEED),
+        build_ap_factors_monthly_input(seed=_SEED),
+        1,
+        "US",
+        12,
+        1,
+        idx,
     )
     np.testing.assert_allclose(row["resff3_12_1"][0], expected, **tolerance.STANDARD)
 
@@ -323,8 +323,8 @@ def test_value_correctness_ca_partition(test_paths, tolerance) -> None:
     row = out.filter((pl.col("id") == 4) & (pl.col("eom") == terminal))
     assert row.height == 1
     expected = _oracle_at(
-        build_world_msf_input(seed=42),
-        build_ap_factors_monthly_input(seed=42),
+        build_world_msf_input(seed=_SEED),
+        build_ap_factors_monthly_input(seed=_SEED),
         4,
         "CA",
         12,
