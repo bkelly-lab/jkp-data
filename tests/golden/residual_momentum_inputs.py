@@ -58,7 +58,7 @@ _STOCKS: tuple[tuple[int, str, int, int], ...] = (
     (4, "CA", 0, 39),
 )
 
-# --- Bulk panel (Goal 1: scale each golden fixture to ~1.5 MB) ---------------
+# --- Bulk panel (Goal 1: scale each golden fixture to ~0.5 MB) ---------------
 # The bulk panel is a large deterministic synthetic cross-section appended ONLY
 # when ``bulk=True``. It lives on a country and a month range that are BOTH
 # disjoint from the hand-crafted edge grid, so:
@@ -67,11 +67,11 @@ _STOCKS: tuple[tuple[int, str, int, int], ...] = (
 #     winsorization inside ``prep_data_factor_regs`` cannot alter edge values;
 #   * bulk factor draws use an independent RNG seed, so the edge rng stream (and
 #     therefore every edge fixture value) is byte-for-byte unchanged.
-# Sizes are tuned by MEASUREMENT so each committed parquet lands in [1 MB, 2 MB].
+# Sizes are tuned by MEASUREMENT so each committed parquet lands around 0.5 MB.
 _BULK_SEED = 2024
 _BULK_COUNTRY = "BK"
 _BULK_ID0 = 100_000
-_BULK_N_ENTITIES = 1900
+_BULK_N_ENTITIES = 600
 _BULK_N_MONTHS = 132  # consecutive months >> _N (36)/__min (24): every entity fills windows
 _BULK_START_YEAR = 1995
 _BULK_START_MONTH = 1
