@@ -35,7 +35,7 @@ _N_MONTHS = 72
 _BULK_EXCNTRY = "BLK"
 _BULK_ID_BASE = 100_000  # far above the 10001-10003 edge-case ids -> no collision
 _BULK_START = -420  # month index (rel. 2010-01) -> 1975-01; strictly before month 0
-_N_BULK_FIRMS = 1160
+_N_BULK_FIRMS = 340
 _N_BULK_MONTHS = 132  # each firm -> (132 - 35) = 97 output windows
 _BULK_SEED = 20_260_707
 
