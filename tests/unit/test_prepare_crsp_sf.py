@@ -56,7 +56,7 @@ def _val(df: pl.DataFrame, permno: int, d: date, col: str) -> object:
     return df.filter((pl.col("permno") == permno) & (pl.col("date") == d))[col].item()
 
 
-def _row(permno: int, permco: int, d: date, vol: int, **over: object) -> dict[str, object]:
+def _nasdaq_row(permno: int, permco: int, d: date, vol: int, **over: object) -> dict[str, object]:
     """Build a NASDAQ (Q/RW) crsp row with sane defaults and field overrides.
 
     Description:
@@ -261,7 +261,7 @@ def test_output_unique_and_sorted(test_paths: DataPaths) -> None:
 def test_nasdaq_volume_window_boundaries(test_paths: DataPaths, d: date, divisor: float) -> None:
     """Each NASDAQ (Q/RW) volume divisor applies on the exact boundary days;
     2003-12-31 itself is unadjusted because the last window uses strict <."""
-    df = _run(test_paths, "d", [_row(1, 1, d, 3600)])
+    df = _run(test_paths, "d", [_nasdaq_row(1, 1, d, 3600)])
     assert _val(df, 1, d, "vol") == pytest.approx(3600.0 / divisor)
 
 
@@ -270,9 +270,9 @@ def test_nasdaq_condition_gate(test_paths: DataPaths) -> None:
     Q-but-not-RW and RW-but-not-Q rows are left unadjusted."""
     d = date(2001, 1, 15)  # in the /2 window
     rows = [
-        _row(1, 1, d, 1000, conditionaltype="XX"),  # Q, not RW -> no adj
-        _row(2, 2, d, 1000, primaryexch="N"),  # RW, not Q -> no adj
-        _row(3, 3, d, 1000),  # Q & RW -> /2
+        _nasdaq_row(1, 1, d, 1000, conditionaltype="XX"),  # Q, not RW -> no adj
+        _nasdaq_row(2, 2, d, 1000, primaryexch="N"),  # RW, not Q -> no adj
+        _nasdaq_row(3, 3, d, 1000),  # Q & RW -> /2
     ]
     df = _run(test_paths, "d", rows)
     assert _val(df, 1, d, "vol") == pytest.approx(1000.0)
@@ -283,7 +283,7 @@ def test_nasdaq_condition_gate(test_paths: DataPaths) -> None:
 def test_daily_vol_not_scaled_by_100(test_paths: DataPaths) -> None:
     """The x100 vol/dolvol rescale is monthly-only; daily keeps raw magnitude."""
     d = date(2004, 6, 15)  # no NASDAQ adjustment
-    df = _run(test_paths, "d", [_row(1, 1, d, 777)])
+    df = _run(test_paths, "d", [_nasdaq_row(1, 1, d, 777)])
     assert _val(df, 1, d, "vol") == pytest.approx(777.0)
     assert _val(df, 1, d, "dolvol") == pytest.approx(10.0 * 777.0)
 
