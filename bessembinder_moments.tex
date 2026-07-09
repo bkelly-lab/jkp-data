@@ -1,0 +1,64 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{amsmath}
+
+\begin{document}
+\thispagestyle{empty}
+
+\begin{center}
+{\large\bfseries Compustat US Daily Return Moments: Raw vs.\ Bessembinder}\\[2pt]
+{\small Effect of the $|\mathrm{ret}|>10$ clip and the Bessembinder (2023) corrections}
+\end{center}
+
+\vspace{0.5em}
+
+\begin{center}
+\begin{tabular}{l r r r r}
+\toprule
+Stat & {Raw} & {ret\,$<$\,10} & {Bessembinder} & {Bess.\ \& ret\,$<$\,10} \\
+\midrule
+N               & 96{,}759{,}406 & 96{,}695{,}386 & 70{,}102{,}914 & 70{,}102{,}318 \\
+Mean            & 0.83409  & 0.00655  & 0.00171  & 0.00127 \\
+Std             & 1{,}737.282 & 0.20300  & 0.34873  & 0.06642 \\
+Skewness        & 5{,}100.87  & 27.373   & 2{,}332.78  & 22.569 \\
+Excess Kurtosis & 29{,}582{,}397.70 & 1{,}074.01 & 8{,}412{,}285.37 & 1{,}942.08 \\
+Min             & $-1.00000$ & $-1.00000$ & $-0.99999$ & $-0.99999$ \\
+p1              & $-0.26082$ & $-0.26087$ & $-0.14460$ & $-0.14460$ \\
+p25             & $-0.01053$ & $-0.01053$ & $-0.01270$ & $-0.01270$ \\
+p50             & 0.00000  & 0.00000  & 0.00000  & 0.00000 \\
+p75             & 0.00906  & 0.00901  & 0.01171  & 0.01171 \\
+p99             & 0.34615  & 0.33333  & 0.17188  & 0.17188 \\
+Max             & 11{,}099{,}999.00 & 10.00000 & 1{,}559.00 & 10.00000 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\vspace{1em}
+
+\noindent\footnotesize
+\textbf{Sample.} Daily Compustat returns, US common stock, trfd-recovered
+(never-dividend securities get $\mathrm{trfd}=1$). Filters:
+$\mathrm{tpci}='0'$ (common), $\mathrm{prcstd}\in\{3,4,10\}$, valid price/currency,
+$\mathrm{excntry}='\mathrm{USA}'$, $\mathrm{primary\_sec}=1$. No exchange screen
+($\mathrm{exch\_main}$ \emph{not} applied), so OTC-coded rows remain.
+
+\smallskip
+\noindent
+\textbf{Columns.}
+\emph{Raw} --- uncorrected.
+\emph{ret\,$<$\,10} --- Raw, dropping $\mathrm{ret}>10$.
+\emph{Bessembinder} --- Section~6 decimal corrections $+$ Section~8 deletions
+($N$ falls to 70.1M).
+\emph{Bess.\ \& ret\,$<$\,10} --- Bessembinder, dropping $\mathrm{ret}>10$.
+
+\smallskip
+\noindent
+\textbf{Notes.} The clip removes only the extreme tail ($p1$--$p99$ unchanged
+within each correction regime) but collapses the variance-driven moments.
+Bessembinder caps Max at 1{,}559 vs.\ 11.1M raw (Section~8 kills the giant
+penny$\to$trade spikes); 596 residual $\mathrm{ret}>10$ obs still dominate Std,
+Skewness, and Excess Kurtosis until clipped.
+\normalsize
+
+\end{document}

@@ -1,0 +1,203 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{siunitx}
+\usepackage{caption}
+\usepackage{longtable}
+
+\title{\textbf{Bessembinder Corrections}}
+\author{}
+\date{Validation: Compustat daily vs.\ CRSP (all matches; CRSP common stock; trfd-recovered; $|\texttt{ret\_comp}|>10$ dropped)}
+
+\newcommand{\cmphead}{%
+  \toprule
+  Metric & Raw & Bessembinder \\
+  \midrule
+}
+
+\begin{document}
+\maketitle
+
+\noindent
+Daily Compustat prices/returns matched to CRSP on \texttt{(permno, date)}
+(inner join). \textsc{raw} uses the uncorrected Compustat panel;
+\textsc{bessembinder} applies the Section~6 decimal-error corrections and
+Section~8 outlier filters. $\Delta$ $=$ \texttt{ret\_comp} $-$
+\texttt{ret\_crsp}. Size groups use Compustat NYSE (\texttt{exchg=11}) monthly
+breakpoints (1/20/50/80 percentiles of month-end market equity).
+
+\medskip
+\noindent
+\textbf{All possible matches: Compustat is not filtered.} Only the CRSP ground
+truth is screened to common stock on a main exchange via the V2 (CIZ) fields
+(\texttt{securitytype=EQTY}, \texttt{securitysubtype=COM}, \texttt{sharetype=NS},
+\texttt{issuertype}$\in\{$ACOR,CORP$\}$, \texttt{primaryexch}$\in\{$A,N,Q$\}$,
+\texttt{conditionaltype=RW}). Returns are gap-guarded: when Section~8 removes an
+observation, the next surviving day's return is nulled rather than spanning the
+gap.
+
+\medskip
+\noindent
+\textbf{Missing-\texttt{trfd} returns recovered.} Compustat's daily total-return
+factor \texttt{trfd} is missing for securities that never pay a dividend
+($\sim$45\% of US securities; \texttt{ri} and hence the return were previously
+null for them). Per Compustat guidance we set \texttt{trfd}$=1$ for
+never-dividend securities only (no dividends $\Rightarrow$ price return $=$ total
+return), recovering $\sim$18M returns.
+
+\medskip
+\noindent
+\textbf{Extreme Compustat returns dropped.} Returns with
+$|\texttt{ret\_comp}|>10$ are dropped from both panels. The raw \texttt{ri}
+carries negative Compustat quote-prices (bid/ask) and residual decimal errors
+that produce a handful of impossible returns (e.g.\ \texttt{ret\_comp} of
+$+259$, $+177$, $+161$). A few hundred such rows are variance-dominant and
+single-handedly collapse the Pearson correlation; dropping
+$|\texttt{ret\_comp}|>10$ removes them and restores the all-stocks correlation
+from $0.821$ to $0.976$ (Bessembinder) and from $0.034$ to $0.953$ (raw). This
+is a coarse stand-in for JKP's downstream winsorization of Compustat returns
+against CRSP, which is not applied here.
+
+\section*{Universe}
+
+\begin{table}[h]
+\centering
+\caption*{\textbf{Universe} (aligned: daily obs on/after 1983-12-30)}
+\begin{tabular}{lrr}
+\toprule
+Source & Stocks & Daily obs \\
+\midrule
+CRSP (U.S.), all                         & 35{,}730 permno & 80{,}494{,}482 \\
+CRSP common stock (CIZ screen)           & 25{,}119 permno & 58{,}663{,}504 \\
+Compustat linkable to CRSP (CCM)         & 26{,}194 \texttt{gvkey+iid} & 67{,}943{,}336 \\
+\midrule
+Matched (CIZ CRSP $\cap$ Compustat)      & --- & 56{,}164{,}135 \\
+\quad with non-null return, $|\texttt{ret\_comp}|\le10$ ($n$) & --- & 56{,}132{,}957 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section*{All stocks}
+
+\begin{table}[h]
+\centering
+\caption*{\textbf{All stocks}}
+\begin{tabular}{lrr}
+\cmphead
+$n$                                          & 56{,}132{,}957 & 52{,}725{,}976 \\
+$\mathrm{Corr}[\mathrm{CRSP}, \mathrm{COMP}]$& 0.953 & 0.976 \\
+$E[|\Delta|]$ (MAD)                          & 0.000417 & 0.000357 \\
+$\mathrm{Std}[\Delta]$                       & 0.015657 & 0.010513 \\
+$\mathrm{Max}\,|\Delta|$                     & 16.93 & 11.16 \\
+$|\Delta|>0.1$                               & 35{,}315 & 27{,}342 \\
+$|\Delta|>0.5$                               & 2{,}696 & 1{,}750 \\
+$|\Delta|>1$                                 & 663 & 357 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section*{By size group}
+
+\begin{table}[h]
+\centering
+\caption*{\textbf{mega}}
+\begin{tabular}{lrr}
+\cmphead
+$n$                                          & 5{,}659{,}207 & 5{,}597{,}530 \\
+$\mathrm{Corr}[\mathrm{CRSP}, \mathrm{COMP}]$& 0.998 & 0.999 \\
+$E[|\Delta|]$ (MAD)                          & 0.000017 & 0.000017 \\
+$\mathrm{Std}[\Delta]$                       & 0.001329 & 0.000945 \\
+$\mathrm{Max}\,|\Delta|$                     & 1.80 & 0.88 \\
+$|\Delta|>0.1$                               & 58 & 53 \\
+$|\Delta|>0.5$                               & 5 & 2 \\
+$|\Delta|>1$                                 & 1 & 0 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]
+\centering
+\caption*{\textbf{large}}
+\begin{tabular}{lrr}
+\cmphead
+$n$                                          & 11{,}157{,}075 & 10{,}889{,}688 \\
+$\mathrm{Corr}[\mathrm{CRSP}, \mathrm{COMP}]$& 0.998 & 0.998 \\
+$E[|\Delta|]$ (MAD)                          & 0.000026 & 0.000025 \\
+$\mathrm{Std}[\Delta]$                       & 0.001978 & 0.001753 \\
+$\mathrm{Max}\,|\Delta|$                     & 2.92 & 2.92 \\
+$|\Delta|>0.1$                               & 224 & 210 \\
+$|\Delta|>0.5$                               & 19 & 15 \\
+$|\Delta|>1$                                 & 6 & 4 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]
+\centering
+\caption*{\textbf{small}}
+\begin{tabular}{lrr}
+\cmphead
+$n$                                          & 13{,}480{,}189 & 12{,}978{,}561 \\
+$\mathrm{Corr}[\mathrm{CRSP}, \mathrm{COMP}]$& 0.988 & 0.989 \\
+$E[|\Delta|]$ (MAD)                          & 0.000097 & 0.000095 \\
+$\mathrm{Std}[\Delta]$                       & 0.006040 & 0.005736 \\
+$\mathrm{Max}\,|\Delta|$                     & 6.97 & 6.97 \\
+$|\Delta|>0.1$                               & 1{,}286 & 1{,}186 \\
+$|\Delta|>0.5$                               & 149 & 136 \\
+$|\Delta|>1$                                 & 47 & 38 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]
+\centering
+\caption*{\textbf{micro}}
+\begin{tabular}{lrr}
+\cmphead
+$n$                                          & 20{,}293{,}607 & 18{,}931{,}852 \\
+$\mathrm{Corr}[\mathrm{CRSP}, \mathrm{COMP}]$& 0.955 & 0.974 \\
+$E[|\Delta|]$ (MAD)                          & 0.000613 & 0.000593 \\
+$\mathrm{Std}[\Delta]$                       & 0.016595 & 0.012407 \\
+$\mathrm{Max}\,|\Delta|$                     & 16.93 & 11.16 \\
+$|\Delta|>0.1$                               & 14{,}411 & 13{,}199 \\
+$|\Delta|>0.5$                               & 830 & 697 \\
+$|\Delta|>1$                                 & 246 & 171 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]
+\centering
+\caption*{\textbf{nano}}
+\begin{tabular}{lrr}
+\cmphead
+$n$                                          & 5{,}175{,}281 & 3{,}970{,}630 \\
+$\mathrm{Corr}[\mathrm{CRSP}, \mathrm{COMP}]$& 0.924 & 0.962 \\
+$E[|\Delta|]$ (MAD)                          & 0.001703 & 0.001400 \\
+$\mathrm{Std}[\Delta]$                       & 0.037865 & 0.024249 \\
+$\mathrm{Max}\,|\Delta|$                     & 12.90 & 9.94 \\
+$|\Delta|>0.1$                               & 18{,}752 & 12{,}191 \\
+$|\Delta|>0.5$                               & 1{,}622 & 837 \\
+$|\Delta|>1$                                 & 345 & 129 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]
+\centering
+\caption*{\textbf{unclassified} (\texttt{me} null that month)}
+\begin{tabular}{lrr}
+\cmphead
+$n$                                          & 367{,}598 & 357{,}715 \\
+$\mathrm{Corr}[\mathrm{CRSP}, \mathrm{COMP}]$& 0.886 & 0.932 \\
+$E[|\Delta|]$ (MAD)                          & 0.001301 & 0.001233 \\
+$\mathrm{Std}[\Delta]$                       & 0.024219 & 0.017964 \\
+$\mathrm{Max}\,|\Delta|$                     & 9.42 & 4.00 \\
+$|\Delta|>0.1$                               & 584 & 503 \\
+$|\Delta|>0.5$                               & 71 & 63 \\
+$|\Delta|>1$                                 & 18 & 15 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\end{document}

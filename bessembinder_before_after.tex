@@ -1,0 +1,215 @@
+\documentclass[11pt]{article}
+\usepackage[margin=0.6in,landscape]{geometry}
+\usepackage{booktabs}
+\usepackage{caption}
+\usepackage{graphicx}
+
+\newcommand{\bigtable}[8]{%
+\begin{table}[h]
+\centering
+\setlength{\tabcolsep}{3pt}
+\renewcommand{\arraystretch}{1.5}
+\small
+\begin{tabular*}{\textwidth}{l
+ @{\extracolsep{\fill}} c @{\extracolsep{0pt}\hspace{10pt}} c
+ @{\extracolsep{\fill}} c @{\extracolsep{0pt}\hspace{10pt}} c
+ @{\extracolsep{\fill}} c @{\extracolsep{0pt}\hspace{10pt}} c
+ @{\extracolsep{\fill}} c @{\extracolsep{0pt}\hspace{10pt}} c
+ @{\extracolsep{\fill}} c @{\extracolsep{0pt}\hspace{10pt}} c
+ @{\extracolsep{\fill}} c @{\extracolsep{0pt}\hspace{10pt}} c
+ @{\extracolsep{\fill}} c @{\extracolsep{0pt}\hspace{10pt}} c}
+\toprule
+Size Group & \multicolumn{2}{c}{All} & \multicolumn{2}{c}{Mega} & \multicolumn{2}{c}{Large}
+& \multicolumn{2}{c}{Small} & \multicolumn{2}{c}{Micro} & \multicolumn{2}{c}{Nano}
+& \multicolumn{2}{c}{Other} \\
+\cmidrule(l{-1pt}r{-1pt}){2-3}\cmidrule(l{-1pt}r{-1pt}){4-5}\cmidrule(l{-1pt}r{-1pt}){6-7}\cmidrule(l{-1pt}r{-1pt}){8-9}\cmidrule(l{-1pt}r{-1pt}){10-11}\cmidrule(l{-1pt}r{-1pt}){12-13}\cmidrule(l{-1pt}r{-1pt}){14-15}
+Metric & \multicolumn{1}{c}{Raw} & \multicolumn{1}{c}{New} & \multicolumn{1}{c}{Raw} & \multicolumn{1}{c}{New} & \multicolumn{1}{c}{Raw} & \multicolumn{1}{c}{New} & \multicolumn{1}{c}{Raw} & \multicolumn{1}{c}{New} & \multicolumn{1}{c}{Raw} & \multicolumn{1}{c}{New} & \multicolumn{1}{c}{Raw} & \multicolumn{1}{c}{New} & \multicolumn{1}{c}{Raw} & \multicolumn{1}{c}{New} \\
+\midrule
+#1 \\
+#2 \\
+#3 \\
+#4 \\
+#5 \\
+#6 \\
+#7 \\
+#8 \\
+\bottomrule
+\end{tabular*}
+\end{table}}
+
+\begin{document}
+
+%========================= PAGE 1: NO CLIP =========================
+\begin{center}\Large\textbf{Bessembinder Corrections: \texttt{trfd}-Recovered --- No Clip}\end{center}
+
+\noindent
+All matches; CRSP screened to CIZ common stock; gap-guarded returns;
+\texttt{trfd}$=1$ for never-dividend securities. \textbf{No clip: every matched
+return is included.} \textsc{raw} $=$ uncorrected Compustat; \textsc{new} $=$
+Bessembinder-corrected (Section~6 / Section~8).
+$\Delta = \texttt{ret\_comp}-\texttt{ret\_crsp}$. A handful of broken
+decimal-error returns (max $\Delta \approx 10453$) dominate the variance, so
+\textsc{raw} correlations collapse where they land (Small, Micro).
+
+\vfill
+
+\bigtable
+{$n$ (M)        & 56.13 & 52.73 & 5.66 & 5.60 & 11.16 & 10.89 & 13.48 & 12.98 & 20.29 & 18.93 & 5.18 & 3.97 & 0.37 & 0.36}
+{Corr          & 0.034 & 0.821 & 0.998 & 0.999 & 0.998 & 0.999 & 0.013 & 0.805 & 0.104 & 0.784 & 0.500 & 0.837 & 0.761 & 0.932}
+{$E|\Delta|$ ($10^{-4}$) & 6.98 & 3.65 & 0.17 & 0.17 & 0.26 & 0.25 & 8.81 & 1.04 & 7.69 & 6.03 & 21.0 & 14.3 & 13.5 & 12.3}
+{Std$\Delta$   & 1.430 & 0.033 & 0.0013 & 0.0009 & 0.0020 & 0.0018 & 2.848 & 0.028 & 0.514 & 0.042 & 0.158 & 0.056 & 0.039 & 0.018}
+{Max$|\Delta|$ & 10453.6 & 176.3 & 1.80 & 0.88 & 2.92 & 2.92 & 10453.6 & 97.0 & 2299.3 & 176.3 & 174.3 & 95.0 & 18.8 & 4.00}
+{$|\Delta|{>}0.1$ & 35406 & 27350 & 58 & 53 & 224 & 210 & 1290 & 1189 & 14436 & 13201 & 18813 & 12194 & 585 & 503}
+{$|\Delta|{>}0.5$ & 2787 & 1758 & 5 & 2 & 19 & 15 & 153 & 139 & 855 & 699 & 1683 & 840 & 72 & 63}
+{$|\Delta|{>}1$ & 754 & 365 & 1 & 0 & 6 & 4 & 51 & 41 & 271 & 173 & 406 & 132 & 19 & 15}
+
+\vfill
+
+\newpage
+
+%========================= PAGE 2: CLIPPED =========================
+\begin{center}\Large\textbf{Bessembinder Corrections: \texttt{trfd}-Recovered --- Clipped}\end{center}
+
+\noindent
+Same as page~1 but with $|\texttt{ret\_comp}|>10$ dropped from both panels
+(138 \textsc{raw} / 23 \textsc{new} rows in All). Removing the variance-dominant
+decimal-error returns restores the \textsc{raw} All correlation from $0.034$ to
+$0.953$ and \textsc{new} from $0.821$ to $0.976$. This is a coarse stand-in for
+JKP's downstream winsorization of Compustat returns against CRSP.
+
+\vfill
+
+\bigtable
+{$n$ (M)        & 56.13 & 52.73 & 5.66 & 5.60 & 11.16 & 10.89 & 13.48 & 12.98 & 20.29 & 18.93 & 5.18 & 3.97 & 0.37 & 0.36}
+{Corr          & 0.953 & 0.976 & 0.998 & 0.999 & 0.998 & 0.998 & 0.988 & 0.989 & 0.955 & 0.974 & 0.924 & 0.962 & 0.886 & 0.932}
+{$E|\Delta|$ ($10^{-4}$) & 4.17 & 3.57 & 0.17 & 0.17 & 0.26 & 0.25 & 0.97 & 0.95 & 6.13 & 5.93 & 17.0 & 14.0 & 13.0 & 12.3}
+{Std$\Delta$   & 0.0157 & 0.0105 & 0.0013 & 0.0009 & 0.0020 & 0.0018 & 0.0060 & 0.0057 & 0.0166 & 0.0124 & 0.0379 & 0.0242 & 0.0242 & 0.0180}
+{Max$|\Delta|$ & 16.93 & 11.16 & 1.80 & 0.88 & 2.92 & 2.92 & 6.97 & 6.97 & 16.93 & 11.16 & 12.90 & 9.94 & 9.42 & 4.00}
+{$|\Delta|{>}0.1$ & 35315 & 27342 & 58 & 53 & 224 & 210 & 1286 & 1186 & 14411 & 13199 & 18752 & 12191 & 584 & 503}
+{$|\Delta|{>}0.5$ & 2696 & 1750 & 5 & 2 & 19 & 15 & 149 & 136 & 830 & 697 & 1622 & 837 & 71 & 63}
+{$|\Delta|{>}1$ & 663 & 357 & 1 & 0 & 6 & 4 & 47 & 38 & 246 & 171 & 345 & 129 & 18 & 15}
+
+\vfill
+
+\newpage
+
+%========================= PAGE 3: |DELTA| FREQUENCY =========================
+\begin{center}\Large\textbf{$|\Delta|$ Frequency by Size Group}\end{center}
+
+\noindent
+Distribution of $|\Delta| = |\texttt{ret\_comp}-\texttt{ret\_crsp}|$ within each
+size group, as a percent of that group's matched returns. \textsc{raw} $=$
+uncorrected; \textsc{new} $=$ Bessembinder-corrected with the Section-8
+gap-guard. The corrections thin the heavy tail ($|\Delta|\ge1$) almost entirely
+in Nano/Micro, leaving Mega/Large unchanged.
+
+\vfill
+
+\begin{table}[h]
+\centering
+\setlength{\tabcolsep}{3pt}
+\renewcommand{\arraystretch}{1.5}
+\small
+\begin{tabular*}{\textwidth}{l
+ @{\extracolsep{\fill}} c @{\extracolsep{0pt}\hspace{10pt}} c
+ @{\extracolsep{\fill}} c @{\extracolsep{0pt}\hspace{10pt}} c
+ @{\extracolsep{\fill}} c @{\extracolsep{0pt}\hspace{10pt}} c
+ @{\extracolsep{\fill}} c @{\extracolsep{0pt}\hspace{10pt}} c
+ @{\extracolsep{\fill}} c @{\extracolsep{0pt}\hspace{10pt}} c
+ @{\extracolsep{\fill}} c @{\extracolsep{0pt}\hspace{10pt}} c}
+\toprule
+$|\Delta|$ bin & \multicolumn{2}{c}{Mega} & \multicolumn{2}{c}{Large} & \multicolumn{2}{c}{Small}
+& \multicolumn{2}{c}{Micro} & \multicolumn{2}{c}{Nano} & \multicolumn{2}{c}{Other} \\
+\cmidrule(l{-1pt}r{-1pt}){2-3}\cmidrule(l{-1pt}r{-1pt}){4-5}\cmidrule(l{-1pt}r{-1pt}){6-7}\cmidrule(l{-1pt}r{-1pt}){8-9}\cmidrule(l{-1pt}r{-1pt}){10-11}\cmidrule(l{-1pt}r{-1pt}){12-13}
+(\% of group) & \multicolumn{1}{c}{Raw} & \multicolumn{1}{c}{New} & \multicolumn{1}{c}{Raw} & \multicolumn{1}{c}{New} & \multicolumn{1}{c}{Raw} & \multicolumn{1}{c}{New} & \multicolumn{1}{c}{Raw} & \multicolumn{1}{c}{New} & \multicolumn{1}{c}{Raw} & \multicolumn{1}{c}{New} & \multicolumn{1}{c}{Raw} & \multicolumn{1}{c}{New} \\
+\midrule
+$=0$            & 98.6661 & 98.6744 & 98.5832 & 98.5962 & 97.3613 & 97.3753 & 90.4461 & 90.3999 & 79.3702 & 79.1091 & 88.2209 & 88.3505 \\
+$0$--$0.01$     & 1.2938 & 1.2855 & 1.3519 & 1.3383 & 2.4432 & 2.4273 & 8.2220 & 8.2710 & 18.8915 & 19.2188 & 9.0571 & 8.9067 \\
+$0.01$--$0.1$   & 0.0391 & 0.0391 & 0.0628 & 0.0635 & 0.1860 & 0.1883 & 1.2607 & 1.2593 & 1.3742 & 1.3646 & 2.5627 & 2.6020 \\
+$0.1$--$0.5$    & 0.00094 & 0.00091 & 0.00184 & 0.00179 & 0.00844 & 0.00809 & 0.06695 & 0.06606 & 0.33150 & 0.28634 & 0.13969 & 0.12308 \\
+$0.5$--$1$      & 0.00007 & 0.00004 & 0.00012 & 0.00010 & 0.00076 & 0.00076 & 0.00288 & 0.00278 & 0.02471 & 0.01786 & 0.01443 & 0.01343 \\
+$1$--$10$       & 0.00002 & 0 & 0.00005 & 0.00004 & 0.00036 & 0.00030 & 0.00120 & 0.00090 & 0.00660 & 0.00325 & 0.00490 & 0.00420 \\
+$\ge10$         & 0 & 0 & 0 & 0 & 0.00002 & 0.00002 & 0.00013 & 0.00002 & 0.00126 & 0.00008 & 0.00027 & 0 \\
+\bottomrule
+\end{tabular*}
+\end{table}
+
+\vfill
+
+\newpage
+
+%========================= PAGE 4: |DELTA| CDF =========================
+\begin{center}\Large\textbf{$|\Delta|$ Cumulative Distribution by Size Group}\end{center}
+
+\noindent
+Cumulative percent of each size group's matched returns with
+$|\Delta| = |\texttt{ret\_comp}-\texttt{ret\_crsp}|$ at or below the row
+threshold (the CDF; rows climb toward 100). \textsc{raw} $=$ uncorrected;
+\textsc{new} $=$ Bessembinder-corrected with the Section-8 gap-guard.
+
+\vfill
+
+\begin{table}[h]
+\centering
+\setlength{\tabcolsep}{3pt}
+\renewcommand{\arraystretch}{1.5}
+\small
+\begin{tabular*}{\textwidth}{l
+ @{\extracolsep{\fill}} c @{\extracolsep{0pt}\hspace{10pt}} c
+ @{\extracolsep{\fill}} c @{\extracolsep{0pt}\hspace{10pt}} c
+ @{\extracolsep{\fill}} c @{\extracolsep{0pt}\hspace{10pt}} c
+ @{\extracolsep{\fill}} c @{\extracolsep{0pt}\hspace{10pt}} c
+ @{\extracolsep{\fill}} c @{\extracolsep{0pt}\hspace{10pt}} c
+ @{\extracolsep{\fill}} c @{\extracolsep{0pt}\hspace{10pt}} c
+ @{\extracolsep{\fill}} c @{\extracolsep{0pt}\hspace{10pt}} c}
+\toprule
+$|\Delta|\le$ & \multicolumn{2}{c}{All} & \multicolumn{2}{c}{Mega} & \multicolumn{2}{c}{Large} & \multicolumn{2}{c}{Small}
+& \multicolumn{2}{c}{Micro} & \multicolumn{2}{c}{Nano} & \multicolumn{2}{c}{Other} \\
+\cmidrule(l{-1pt}r{-1pt}){2-3}\cmidrule(l{-1pt}r{-1pt}){4-5}\cmidrule(l{-1pt}r{-1pt}){6-7}\cmidrule(l{-1pt}r{-1pt}){8-9}\cmidrule(l{-1pt}r{-1pt}){10-11}\cmidrule(l{-1pt}r{-1pt}){12-13}\cmidrule(l{-1pt}r{-1pt}){14-15}
+(\% of group) & \multicolumn{1}{c}{Raw} & \multicolumn{1}{c}{New} & \multicolumn{1}{c}{Raw} & \multicolumn{1}{c}{New} & \multicolumn{1}{c}{Raw} & \multicolumn{1}{c}{New} & \multicolumn{1}{c}{Raw} & \multicolumn{1}{c}{New} & \multicolumn{1}{c}{Raw} & \multicolumn{1}{c}{New} & \multicolumn{1}{c}{Raw} & \multicolumn{1}{c}{New} & \multicolumn{1}{c}{Raw} & \multicolumn{1}{c}{New} \\
+\midrule
+$=0$      & 93.5194 & 93.8258 & 98.6661 & 98.6744 & 98.5832 & 98.5962 & 97.3613 & 97.3753 & 90.4461 & 90.3999 & 79.3702 & 79.1091 & 88.2209 & 88.3505 \\
+$<0.01$   & 99.2767 & 99.3120 & 99.9599 & 99.9599 & 99.9352 & 99.9345 & 99.8045 & 99.8025 & 98.6681 & 98.6709 & 98.2617 & 98.3279 & 97.2780 & 97.2573 \\
+$<0.1$    & 99.93690 & 99.94811 & 99.99898 & 99.99905 & 99.99799 & 99.99807 & 99.99043 & 99.99084 & 99.92884 & 99.93025 & 99.63594 & 99.69247 & 99.84070 & 99.85930 \\
+$<0.5$    & 99.99459 & 99.99644 & 99.99991 & 99.99996 & 99.99983 & 99.99986 & 99.99885 & 99.99891 & 99.99568 & 99.99623 & 99.96333 & 99.97657 & 99.97740 & 99.97958 \\
+$<1$      & 99.99843 & 99.99920 & 99.99998 & 100.00000 & 99.99995 & 99.99996 & 99.99961 & 99.99968 & 99.99861 & 99.99903 & 99.99011 & 99.99574 & 99.99265 & 99.99357 \\
+$<10$     & 99.99983 & 99.99998 & 100.00000 & 100.00000 & 100.00000 & 100.00000 & 99.99998 & 99.99998 & 99.99987 & 99.99998 & 99.99874 & 99.99992 & 99.99973 & 100.00000 \\
+\bottomrule
+\end{tabular*}
+\end{table}
+
+\vfill
+
+\newpage
+
+%========================= PAGE 5: UNIVERSE =========================
+\begin{center}\Large\textbf{Universe / Observation Counts}\end{center}
+
+\noindent
+Daily observations aligned to Compustat coverage (on/after 1983-12-30). CRSP is
+screened to common stock on a main exchange via the V2 (CIZ) fields; Compustat
+is linked to CRSP through CCM. The matched set is the intersection used in the
+tables above.
+
+\vfill
+
+\begin{table}[h]
+\centering
+\renewcommand{\arraystretch}{1.4}
+\begin{tabular}{lrr}
+\toprule
+Source & Stocks & Daily obs \\
+\midrule
+CRSP (U.S.), all                         & 35{,}730 permno & 80{,}494{,}482 \\
+CRSP common stock (CIZ screen)           & 25{,}119 permno & 58{,}663{,}504 \\
+Compustat linkable to CRSP (CCM)         & 26{,}194 \texttt{gvkey+iid} & 67{,}943{,}336 \\
+\midrule
+Matched (CIZ CRSP $\cap$ Compustat)      & --- & 56{,}164{,}135 \\
+\quad with non-null return, $|\texttt{ret\_comp}|\le10$ ($n$) & --- & 56{,}132{,}957 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\vfill
+
+\end{document}
