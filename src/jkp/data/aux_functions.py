@@ -8247,7 +8247,7 @@ def gen_aux_windows(sfx: str | int) -> list[tuple[int, int, int]]:
         List of k tuples (start, k, last_end), one per offset.
     """
     parameter_mapping = {"_21d": 1, "_126d": 6, "_252d": 12, "_1260d": 60}
-    k = parameter_mapping.get(sfx) or int(sfx)
+    k = parameter_mapping[sfx] if sfx in parameter_mapping else int(sfx)
     date_aux = END_DATE.month + END_DATE.year * 12
     windows = []
     for offset in range(k):
