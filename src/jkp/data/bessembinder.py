@@ -157,18 +157,18 @@ def apply_bessembinder_section6(
         group_cols + [sort_col] + [pl.col(c).cast(pl.Float64) for c in value_cols]
     ).collect()
     starts = _group_starts(data.select(group_cols + [sort_col]), group_cols)
-
-    def correct(variable: str, x_raw: np.ndarray, price_floor: bool = False) -> np.ndarray:
-        return _correct_variable_arrays(
-            x_raw, starts, window_sizes, correction_method, price_floor, variation_threshold
-        )
-
     corrected_cols: dict[str, np.ndarray] = {}
-    for variable in ("trfd", "qunit"):
-        if variable in schema_names:
-            corrected_cols[variable] = correct(variable, data[variable].to_numpy().copy())
-    if has_adrrc and "adrrc" in schema_names:
-        corrected_cols["adrrc"] = correct("adrrc", data["adrrc"].to_numpy().copy())
+
+    # trfd, qunit and (NA data only) adrrc are corrected independently.
+    for variable in ("trfd", "qunit", "adrrc"):
+        if variable in schema_names and (variable != "adrrc" or has_adrrc):
+            corrected_cols[variable] = _correct_variable_arrays(
+                data[variable].to_numpy().copy(),
+                starts,
+                window_sizes,
+                correction_method,
+                variation_threshold=variation_threshold,
+            )
 
     # Reconstruct prccd/cshoc from corrected split-adjusted values; only when
     # all three inputs are present (always so on the Compustat security files).
@@ -176,12 +176,21 @@ def apply_bessembinder_section6(
         ajexdi = data["ajexdi"].to_numpy().copy()
         with np.errstate(divide="ignore", invalid="ignore"):
             # The floor variants gate the price variable only (divide-direction, >=$1).
-            adjprc = correct(
-                "adjprc",
+            adjprc = _correct_variable_arrays(
                 data["prccd"].to_numpy().copy() / ajexdi,
+                starts,
+                window_sizes,
+                correction_method,
                 price_floor=correction_method in ("floor", "floor_interp"),
+                variation_threshold=variation_threshold,
             )
-            adjcsho = correct("adjcsho", data["cshoc"].to_numpy().copy() * ajexdi)
+            adjcsho = _correct_variable_arrays(
+                data["cshoc"].to_numpy().copy() * ajexdi,
+                starts,
+                window_sizes,
+                correction_method,
+                variation_threshold=variation_threshold,
+            )
             corrected_cols["prccd"] = adjprc * ajexdi
             corrected_cols["cshoc"] = adjcsho / ajexdi
 
@@ -242,18 +251,22 @@ def apply_bessembinder_section8(
         )
     lf = pl.scan_parquet(sorted_path)
 
+    # Collect every kernel input in one pass: float value columns, the date as
+    # physical int32 days, and the two country flags.
     value_cols = ["ajexdi", "prc", "me", "ri", "cshoc", "dolvol"]
     data = lf.select(
         group_cols
         + [sort_col]
         + [pl.col(c).cast(pl.Float64) for c in value_cols]
         + [
+            pl.col(sort_col).cast(pl.Date).to_physical().cast(pl.Int32).alias("_date"),
             pl.col(country_col).is_in(BESS_LOW_PRICE_COUNTRIES).fill_null(False).alias("_low"),
             (pl.col(country_col) == "CHN").fill_null(False).alias("_chn"),
         ]
     ).collect()
     keys = data.select(group_cols + [sort_col])
     starts = _group_starts(keys, group_cols)
+    arr = {c: data[c].to_numpy() for c in value_cols + ["_date", "_low", "_chn"]}
 
     if presorted_path is not None:
         # Trusting an externally sorted file: a stale or differently-ordered
@@ -261,7 +274,7 @@ def apply_bessembinder_section8(
         n_groups = keys.select(pl.struct(group_cols).n_unique()).item()
         if len(starts) - 1 != n_groups:
             raise ValueError(f"presorted file {sorted_path}: groups are not contiguous")
-        d = keys[sort_col].cast(pl.Date).to_physical().to_numpy()
+        d = arr["_date"]
         interior = np.ones(len(d), dtype=np.bool_)
         interior[starts[:-1]] = False  # group starts are exempt from the diff check
         idx = np.flatnonzero(interior)
@@ -298,14 +311,14 @@ def apply_bessembinder_section8(
         starts,
         reason,
         remove_8a,
-        data["ajexdi"].to_numpy().copy(),
-        data["prc"].to_numpy().copy(),
-        data["me"].to_numpy().copy(),
-        data["ri"].to_numpy().copy(),
-        data["cshoc"].to_numpy().copy(),
-        keys[sort_col].cast(pl.Date).to_physical().cast(pl.Int32).to_numpy().copy(),
-        data["_low"].to_numpy().copy(),
-        data["_chn"].to_numpy().copy(),
+        arr["ajexdi"],
+        arr["prc"],
+        arr["me"],
+        arr["ri"],
+        arr["cshoc"],
+        arr["_date"],
+        arr["_low"],
+        arr["_chn"],
         gap_calendar_days,
     )
 
