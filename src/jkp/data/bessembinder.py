@@ -170,17 +170,20 @@ def apply_bessembinder_section6(
     if has_adrrc and "adrrc" in schema_names:
         corrected_cols["adrrc"] = correct("adrrc", data["adrrc"].to_numpy().copy())
 
-    ajexdi = data["ajexdi"].to_numpy().copy()
-    with np.errstate(divide="ignore", invalid="ignore"):
-        # The floor variants gate the price variable only (divide-direction, >=$1).
-        adjprc = correct(
-            "adjprc",
-            data["prccd"].to_numpy().copy() / ajexdi,
-            price_floor=correction_method in ("floor", "floor_interp"),
-        )
-        adjcsho = correct("adjcsho", data["cshoc"].to_numpy().copy() * ajexdi)
-        corrected_cols["prccd"] = adjprc * ajexdi
-        corrected_cols["cshoc"] = adjcsho / ajexdi
+    # Reconstruct prccd/cshoc from corrected split-adjusted values; only when
+    # all three inputs are present (always so on the Compustat security files).
+    if {"ajexdi", "prccd", "cshoc"} <= set(schema_names):
+        ajexdi = data["ajexdi"].to_numpy().copy()
+        with np.errstate(divide="ignore", invalid="ignore"):
+            # The floor variants gate the price variable only (divide-direction, >=$1).
+            adjprc = correct(
+                "adjprc",
+                data["prccd"].to_numpy().copy() / ajexdi,
+                price_floor=correction_method in ("floor", "floor_interp"),
+            )
+            adjcsho = correct("adjcsho", data["cshoc"].to_numpy().copy() * ajexdi)
+            corrected_cols["prccd"] = adjprc * ajexdi
+            corrected_cols["cshoc"] = adjcsho / ajexdi
 
     corr_path = spill_dir / "__bess_corrected_cols.parquet"
     pl.DataFrame(corrected_cols).with_columns(
@@ -218,6 +221,10 @@ def apply_bessembinder_section8(
         3) Filter 8a's global cross-security decision: per-security mean of
            positive volume + 2% quantile, mapped to a per-security bool.
         4) section8_all kernel -> per-row keep/remove; filter lazily.
+    Note:
+        When presorted_path is given, the panel is read from that file and
+        `df` is NOT re-read — the caller must have written df's data, sorted
+        by group_cols + sort_col, to that path.
     Output:
         Filtered LazyFrame.
     """
@@ -225,6 +232,8 @@ def apply_bessembinder_section8(
         group_cols = ["gvkey", "iid"]
     if spill_dir is None:
         raise ValueError("apply_bessembinder_section8 requires spill_dir")
+    if presorted_path is not None and not presorted_path.exists():
+        raise FileNotFoundError(f"presorted_path does not exist: {presorted_path}")
 
     sorted_path = presorted_path or (spill_dir / "__bess_s8_sorted.parquet")
     if presorted_path is None:
