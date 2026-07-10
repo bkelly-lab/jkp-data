@@ -149,8 +149,8 @@ def _correct_variable_arrays(
 
 def _load_section6(
     sorted_path: Path, group_cols: list[str], sort_col: str
-) -> tuple[pl.DataFrame, list[str], np.ndarray]:
-    """Collect the Section 6 value columns as f64; return (data, schema, starts)."""
+) -> tuple[pl.DataFrame, np.ndarray]:
+    """Collect the Section 6 value columns as f64; return (data, starts)."""
     lf = pl.scan_parquet(sorted_path)
     schema_names = lf.collect_schema().names()
     value_cols = [
@@ -159,12 +159,11 @@ def _load_section6(
     data = lf.select(
         group_cols + [sort_col] + [pl.col(c).cast(pl.Float64) for c in value_cols]
     ).collect()
-    return data, schema_names, _group_starts(data, group_cols)
+    return data, _group_starts(data, group_cols)
 
 
 def _run_section6(
     data: pl.DataFrame,
-    schema_names: list[str],
     starts: np.ndarray,
     window_sizes: list[int],
     has_adrrc: bool,
@@ -172,10 +171,11 @@ def _run_section6(
     variation_threshold: float,
 ) -> dict[str, np.ndarray]:
     """Correct each variable (per Section 6c) and return {name: corrected array}."""
+    cols = set(data.columns)  # only the value columns actually present were collected
     corrected: dict[str, np.ndarray] = {}
     # trfd, qunit and (NA data only) adrrc are corrected independently
     for variable in ("trfd", "qunit", "adrrc"):
-        if variable in schema_names and (variable != "adrrc" or has_adrrc):
+        if variable in cols and (variable != "adrrc" or has_adrrc):
             corrected[variable] = _correct_variable_arrays(
                 data[variable].to_numpy(),
                 starts,
@@ -185,7 +185,7 @@ def _run_section6(
             )
 
     # reconstruct prccd/cshoc from the corrected split-adjusted price and shares
-    if {"ajexdi", "prccd", "cshoc"} <= set(schema_names):
+    if {"ajexdi", "prccd", "cshoc"} <= cols:
         ajexdi = data["ajexdi"].to_numpy()
         with np.errstate(divide="ignore", invalid="ignore"):
             # floor variants gate the price only (divide-direction, >=$1)
@@ -259,9 +259,9 @@ def apply_bessembinder_section6(
 
     sorted_path = spill_dir / "__bess_sorted.parquet"
     _sort_to_spill(df, group_cols + [sort_col], sorted_path)
-    data, schema_names, starts = _load_section6(sorted_path, group_cols, sort_col)
+    data, starts = _load_section6(sorted_path, group_cols, sort_col)
     corrected = _run_section6(
-        data, schema_names, starts, window_sizes, has_adrrc, correction_method, variation_threshold
+        data, starts, window_sizes, has_adrrc, correction_method, variation_threshold
     )
     return _reattach_corrected(sorted_path, corrected, spill_dir)
 
