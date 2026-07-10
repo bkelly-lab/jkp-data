@@ -1,276 +1,185 @@
 """
-Tests for overnight and intraday return decomposition.
+Tests for LPS (2019) overnight/intraday return decomposition.
 
-Validates the Lou, Polk, and Skouras (2019) return decomposition:
-    r_intraday  = P_close / P_open  - 1
-    r_overnight = (1 + r) / (1 + r_intraday) - 1
+Validates the formulas:
+    ret_intraday  = P_close / P_open - 1
+    ret_overnight = (1 + ret) / (1 + ret_intraday) - 1
 
-And the identity: (1 + r_intraday)(1 + r_overnight) = (1 + r).
+and the identity:
+    (1 + ret_intraday)(1 + ret_overnight) = (1 + ret)
 """
 
 from __future__ import annotations
 
-from datetime import date
-
 import numpy as np
 import polars as pl
-import pytest
-
-from tests.conftest import ToleranceSpec
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-def daily_prices() -> pl.DataFrame:
-    """Five-day panel for two stocks with known prices."""
-    return pl.DataFrame(
-        {
-            "id": [1, 1, 1, 1, 1, 2, 2, 2, 2, 2],
-            "date": [
-                date(2024, 1, 2),
-                date(2024, 1, 3),
-                date(2024, 1, 4),
-                date(2024, 1, 5),
-                date(2024, 1, 8),
-                date(2024, 1, 2),
-                date(2024, 1, 3),
-                date(2024, 1, 4),
-                date(2024, 1, 5),
-                date(2024, 1, 8),
-            ],
-            "prc": [100.0, 110.0, 105.0, 108.0, 112.0, 50.0, 52.0, 48.0, 51.0, 53.0],
-            "prc_open": [98.0, 108.0, 107.0, 104.0, 109.0, 49.0, 51.0, 50.0, 47.0, 52.0],
-            "ret": [
-                None,
-                0.10,
-                -0.04545454545,
-                0.02857142857,
-                0.03703703704,
-                None,
-                0.04,
-                -0.07692307692,
-                0.0625,
-                0.03921568627,
-            ],
-            "eom": [
-                date(2024, 1, 31),
-                date(2024, 1, 31),
-                date(2024, 1, 31),
-                date(2024, 1, 31),
-                date(2024, 1, 31),
-                date(2024, 1, 31),
-                date(2024, 1, 31),
-                date(2024, 1, 31),
-                date(2024, 1, 31),
-                date(2024, 1, 31),
-            ],
-        }
+def _compute_oi_returns(df: pl.DataFrame) -> pl.DataFrame:
+    """Apply the same LPS return decomposition logic used in the pipeline."""
+    return df.with_columns(
+        ret_intraday=pl.when(
+            pl.col("prc_close").is_not_null()
+            & pl.col("prc_open").is_not_null()
+            & (pl.col("prc_open") > 0)
+        )
+        .then(pl.col("prc_close") / pl.col("prc_open") - 1)
+        .otherwise(None),
+    ).with_columns(
+        ret_overnight=pl.when(pl.col("ret_intraday").is_not_null() & pl.col("ret").is_not_null())
+        .then((1 + pl.col("ret")) / (1 + pl.col("ret_intraday")) - 1)
+        .otherwise(None),
     )
 
 
-# ---------------------------------------------------------------------------
-# Daily return decomposition
-# ---------------------------------------------------------------------------
+class TestLPSReturnDecomposition:
+    """Validate LPS (2019) overnight/intraday return decomposition."""
 
+    def test_known_values(self) -> None:
+        """close=110, open=105, ret=0.10 → known intraday and overnight."""
+        df = pl.DataFrame({"prc_close": [110.0], "prc_open": [105.0], "ret": [0.10]})
+        result = _compute_oi_returns(df)
 
-class TestDailyReturnDecomposition:
-    """Test daily intraday and overnight return computation."""
+        expected_intra = 110.0 / 105.0 - 1
+        expected_overnight = (1 + 0.10) / (1 + expected_intra) - 1
 
-    def test_intraday_formula(self, daily_prices: pl.DataFrame):
-        """ret_intraday = P_close / P_open - 1."""
-        result = daily_prices.with_columns(
-            ret_intraday=pl.when(pl.col("prc_open") > 0)
-            .then(pl.col("prc") / pl.col("prc_open") - 1)
-            .otherwise(None)
-        )
+        np.testing.assert_allclose(result["ret_intraday"][0], expected_intra, rtol=1e-12)
+        np.testing.assert_allclose(result["ret_overnight"][0], expected_overnight, rtol=1e-12)
 
-        expected = daily_prices["prc"].to_numpy() / daily_prices["prc_open"].to_numpy() - 1
-        np.testing.assert_allclose(
-            result["ret_intraday"].to_numpy(), expected, **ToleranceSpec.TIGHT
-        )
-
-    def test_overnight_formula(self, daily_prices: pl.DataFrame):
-        """ret_overnight = (1 + ret) / (1 + ret_intraday) - 1."""
-        result = daily_prices.with_columns(
-            ret_intraday=pl.when(pl.col("prc_open") > 0)
-            .then(pl.col("prc") / pl.col("prc_open") - 1)
-            .otherwise(None)
-        ).with_columns(
-            ret_overnight=pl.when(
-                pl.col("ret_intraday").is_not_null() & pl.col("ret").is_not_null()
-            )
-            .then((1 + pl.col("ret")) / (1 + pl.col("ret_intraday")) - 1)
-            .otherwise(None)
-        )
-
-        # For the second row of stock 1: ret=0.10, prc_open=108, prc=110
-        # ret_intraday = 110/108 - 1 = 0.01851851...
-        # ret_overnight = 1.10/1.01851851... - 1 = 0.08
-        row = result.filter((pl.col("id") == 1) & (pl.col("date") == date(2024, 1, 3)))
-        np.testing.assert_allclose(row["ret_intraday"].item(), 110 / 108 - 1, **ToleranceSpec.TIGHT)
-        np.testing.assert_allclose(
-            row["ret_overnight"].item(), 1.10 / (110 / 108) - 1, **ToleranceSpec.TIGHT
-        )
-
-    def test_decomposition_identity(self, daily_prices: pl.DataFrame):
-        """(1 + r_intraday)(1 + r_overnight) == (1 + ret) for all non-null rows."""
-        result = (
-            daily_prices.with_columns(
-                ret_intraday=pl.when(pl.col("prc_open") > 0)
-                .then(pl.col("prc") / pl.col("prc_open") - 1)
-                .otherwise(None)
-            )
-            .with_columns(
-                ret_overnight=pl.when(
-                    pl.col("ret_intraday").is_not_null() & pl.col("ret").is_not_null()
-                )
-                .then((1 + pl.col("ret")) / (1 + pl.col("ret_intraday")) - 1)
-                .otherwise(None)
-            )
-            .filter(pl.col("ret").is_not_null())
-        )
-
-        recomposed = (1 + result["ret_intraday"].to_numpy()) * (
-            1 + result["ret_overnight"].to_numpy()
-        )
-        np.testing.assert_allclose(recomposed, 1 + result["ret"].to_numpy(), **ToleranceSpec.TIGHT)
-
-
-# ---------------------------------------------------------------------------
-# Null handling
-# ---------------------------------------------------------------------------
-
-
-class TestNullHandling:
-    """Test that missing open prices produce null returns."""
-
-    def test_null_open_gives_null_intraday(self):
-        """When prc_open is null, ret_intraday must be null."""
+    def test_identity_holds(self) -> None:
+        """(1 + ret_intraday)(1 + ret_overnight) == (1 + ret) for various values."""
         df = pl.DataFrame(
             {
-                "prc": [100.0, 110.0],
-                "prc_open": [None, 105.0],
-                "ret": [0.05, 0.10],
+                "prc_close": [110.0, 95.0, 50.0, 200.0, 100.0],
+                "prc_open": [105.0, 100.0, 48.0, 190.0, 100.0],
+                "ret": [0.10, -0.05, 0.04, 0.06, 0.02],
             }
         )
-        result = df.with_columns(
-            ret_intraday=pl.when(pl.col("prc_open") > 0)
-            .then(pl.col("prc") / pl.col("prc_open") - 1)
-            .otherwise(None)
-        )
+        result = _compute_oi_returns(df)
+
+        lhs = (1 + result["ret_intraday"].to_numpy()) * (1 + result["ret_overnight"].to_numpy())
+        rhs = 1 + result["ret"].to_numpy()
+        np.testing.assert_allclose(lhs, rhs, rtol=1e-12)
+
+    def test_null_when_open_missing(self) -> None:
+        """Both component returns are null when prc_open is null."""
+        df = pl.DataFrame({"prc_close": [110.0], "prc_open": [None], "ret": [0.10]})
+        result = _compute_oi_returns(df)
         assert result["ret_intraday"][0] is None
-        assert result["ret_intraday"][1] is not None
-
-    def test_null_open_gives_null_overnight(self):
-        """When prc_open is null, ret_overnight must also be null."""
-        df = pl.DataFrame(
-            {
-                "prc": [100.0, 110.0],
-                "prc_open": [None, 105.0],
-                "ret": [0.05, 0.10],
-            }
-        )
-        result = df.with_columns(
-            ret_intraday=pl.when(pl.col("prc_open") > 0)
-            .then(pl.col("prc") / pl.col("prc_open") - 1)
-            .otherwise(None)
-        ).with_columns(
-            ret_overnight=pl.when(
-                pl.col("ret_intraday").is_not_null() & pl.col("ret").is_not_null()
-            )
-            .then((1 + pl.col("ret")) / (1 + pl.col("ret_intraday")) - 1)
-            .otherwise(None)
-        )
         assert result["ret_overnight"][0] is None
-        assert result["ret_overnight"][1] is not None
 
-    def test_zero_open_gives_null(self):
-        """Open price of zero should not produce intraday return."""
-        df = pl.DataFrame({"prc": [100.0], "prc_open": [0.0], "ret": [0.05]})
-        result = df.with_columns(
-            ret_intraday=pl.when(pl.col("prc_open") > 0)
-            .then(pl.col("prc") / pl.col("prc_open") - 1)
-            .otherwise(None)
-        )
+    def test_null_when_open_zero(self) -> None:
+        """Both component returns are null when prc_open is zero."""
+        df = pl.DataFrame({"prc_close": [110.0], "prc_open": [0.0], "ret": [0.10]})
+        result = _compute_oi_returns(df)
         assert result["ret_intraday"][0] is None
+        assert result["ret_overnight"][0] is None
 
-    def test_null_ret_gives_null_overnight(self):
-        """When ret is null, ret_overnight must be null (even if open exists)."""
-        df = pl.DataFrame({"prc": [100.0], "prc_open": [98.0], "ret": [None]})
-        result = df.with_columns(
-            ret_intraday=pl.when(pl.col("prc_open") > 0)
-            .then(pl.col("prc") / pl.col("prc_open") - 1)
-            .otherwise(None)
-        ).with_columns(
-            ret_overnight=pl.when(
-                pl.col("ret_intraday").is_not_null() & pl.col("ret").is_not_null()
-            )
-            .then((1 + pl.col("ret")) / (1 + pl.col("ret_intraday")) - 1)
-            .otherwise(None)
-        )
+    def test_null_when_open_negative(self) -> None:
+        """Both component returns are null when prc_open is negative."""
+        df = pl.DataFrame({"prc_close": [110.0], "prc_open": [-5.0], "ret": [0.10]})
+        result = _compute_oi_returns(df)
+        assert result["ret_intraday"][0] is None
+        assert result["ret_overnight"][0] is None
+
+    def test_null_when_close_missing(self) -> None:
+        """Both component returns are null when prc_close is null."""
+        df = pl.DataFrame({"prc_close": [None], "prc_open": [105.0], "ret": [0.10]})
+        result = _compute_oi_returns(df)
+        assert result["ret_intraday"][0] is None
+        assert result["ret_overnight"][0] is None
+
+    def test_null_when_ret_missing(self) -> None:
+        """ret_intraday is computed but ret_overnight is null when ret is null."""
+        df = pl.DataFrame({"prc_close": [110.0], "prc_open": [105.0], "ret": [None]})
+        result = _compute_oi_returns(df)
         assert result["ret_intraday"][0] is not None
         assert result["ret_overnight"][0] is None
 
+    def test_zero_intraday(self) -> None:
+        """When close == open, ret_intraday = 0 and ret_overnight = ret."""
+        df = pl.DataFrame({"prc_close": [100.0], "prc_open": [100.0], "ret": [0.05]})
+        result = _compute_oi_returns(df)
+        np.testing.assert_allclose(result["ret_intraday"][0], 0.0, atol=1e-15)
+        np.testing.assert_allclose(result["ret_overnight"][0], 0.05, rtol=1e-12)
 
-# ---------------------------------------------------------------------------
-# Portfolio aggregation
-# ---------------------------------------------------------------------------
+    def test_negative_intraday(self) -> None:
+        """Price fell during the day: close < open."""
+        df = pl.DataFrame({"prc_close": [95.0], "prc_open": [100.0], "ret": [-0.02]})
+        result = _compute_oi_returns(df)
 
+        expected_intra = 95.0 / 100.0 - 1  # -0.05
+        expected_overnight = (1 - 0.02) / (1 + expected_intra) - 1
 
-class TestPortfolioAggregation:
-    """Test value-weighted portfolio return aggregation with OI returns."""
+        np.testing.assert_allclose(result["ret_intraday"][0], expected_intra, rtol=1e-12)
+        np.testing.assert_allclose(result["ret_overnight"][0], expected_overnight, rtol=1e-12)
+        lhs = (1 + result["ret_intraday"][0]) * (1 + result["ret_overnight"][0])
+        np.testing.assert_allclose(lhs, 1 - 0.02, rtol=1e-12)
 
-    def test_vw_aggregation(self):
-        """Value-weighted portfolio return = sum(w_i * r_i)."""
+    def test_batch_with_mixed_nulls(self) -> None:
+        """Batch of rows with some valid and some null open prices."""
         df = pl.DataFrame(
             {
-                "id": [1, 2, 3],
-                "me": [100.0, 200.0, 300.0],
-                "ret_intraday": [0.02, 0.04, -0.01],
-                "ret_overnight": [0.01, -0.02, 0.03],
-                "pf": [1, 1, 1],
-                "eom": [date(2024, 1, 31)] * 3,
+                "prc_close": [110.0, None, 50.0, 100.0],
+                "prc_open": [105.0, 100.0, None, 0.0],
+                "ret": [0.10, 0.02, 0.04, 0.05],
             }
         )
-        total_me = df["me"].sum()
-        expected_intraday_vw = (
-            df["me"].to_numpy() * df["ret_intraday"].to_numpy()
-        ).sum() / total_me
-        expected_overnight_vw = (
-            df["me"].to_numpy() * df["ret_overnight"].to_numpy()
-        ).sum() / total_me
+        result = _compute_oi_returns(df)
 
-        result = df.group_by(["pf", "eom"]).agg(
-            ret_intraday_vw=((pl.col("ret_intraday") * pl.col("me")).sum() / pl.col("me").sum()),
-            ret_overnight_vw=((pl.col("ret_overnight") * pl.col("me")).sum() / pl.col("me").sum()),
+        # Row 0: valid
+        assert result["ret_intraday"][0] is not None
+        assert result["ret_overnight"][0] is not None
+        lhs = (1 + result["ret_intraday"][0]) * (1 + result["ret_overnight"][0])
+        np.testing.assert_allclose(lhs, 1.10, rtol=1e-12)
+
+        # Row 1: close is null
+        assert result["ret_intraday"][1] is None
+
+        # Row 2: open is null
+        assert result["ret_intraday"][2] is None
+
+        # Row 3: open is zero
+        assert result["ret_intraday"][3] is None
+
+
+class TestCompustatReturnDecomposition:
+    """Validate LPS decomposition using prc (close) and prc_open as Compustat does."""
+
+    def _compute_comp_oi(self, df: pl.DataFrame) -> pl.DataFrame:
+        """Compustat-style computation using prc (close) instead of prc_close."""
+        return df.with_columns(
+            ret_intraday=pl.when(
+                pl.col("prc_open").is_not_null()
+                & (pl.col("prc_open") > 0)
+                & pl.col("prc").is_not_null()
+            )
+            .then(pl.col("prc") / pl.col("prc_open") - 1)
+            .otherwise(None),
+        ).with_columns(
+            ret_overnight=pl.when(
+                pl.col("ret_intraday").is_not_null() & pl.col("ret").is_not_null()
+            )
+            .then((1 + pl.col("ret")) / (1 + pl.col("ret_intraday")) - 1)
+            .otherwise(None),
         )
 
-        np.testing.assert_allclose(
-            result["ret_intraday_vw"].item(), expected_intraday_vw, **ToleranceSpec.TIGHT
-        )
-        np.testing.assert_allclose(
-            result["ret_overnight_vw"].item(),
-            expected_overnight_vw,
-            **ToleranceSpec.TIGHT,
-        )
-
-    def test_ew_aggregation(self):
-        """Equal-weighted portfolio return = mean(r_i)."""
+    def test_identity_holds_compustat(self) -> None:
+        """Identity holds using prc as close price."""
         df = pl.DataFrame(
             {
-                "id": [1, 2, 3],
-                "ret_intraday": [0.02, 0.04, -0.01],
-                "pf": [1, 1, 1],
-                "eom": [date(2024, 1, 31)] * 3,
+                "prc": [110.0, 95.0, 50.0],
+                "prc_open": [105.0, 100.0, 48.0],
+                "ret": [0.10, -0.05, 0.04],
             }
         )
-        expected_ew = np.mean([0.02, 0.04, -0.01])
-        result = df.group_by(["pf", "eom"]).agg(
-            ret_intraday_ew=pl.mean("ret_intraday"),
-        )
-        np.testing.assert_allclose(
-            result["ret_intraday_ew"].item(), expected_ew, **ToleranceSpec.TIGHT
-        )
+        result = self._compute_comp_oi(df)
+        lhs = (1 + result["ret_intraday"].to_numpy()) * (1 + result["ret_overnight"].to_numpy())
+        rhs = 1 + result["ret"].to_numpy()
+        np.testing.assert_allclose(lhs, rhs, rtol=1e-12)
+
+    def test_null_open_compustat(self) -> None:
+        df = pl.DataFrame({"prc": [110.0], "prc_open": [None], "ret": [0.10]})
+        result = self._compute_comp_oi(df)
+        assert result["ret_intraday"][0] is None
+        assert result["ret_overnight"][0] is None
