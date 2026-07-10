@@ -4,17 +4,20 @@ This change log keeps track of changes to the underlying data set. In brackets, 
 This repository ports the original SAS pipeline ([ReplicationCrisis](https://github.com/bkelly-lab/ReplicationCrisis)) to Python using Polars. Entries up to and including 05-03-2025 are from the original change log.
 
 ## 10-07-2026
+This entry covers the factor-model work on the `factors_rep` branch, which rebuilds the asset-pricing factor outputs on pure CRSP CIZ v2 (`msf_v2`/`dsf_v2`) and extends them to four models with international (per-country) coverage: Fama-French (FF3/FF5 + momentum), Hou-Xue-Zhang (q-factor), Mispricing (Stambaugh-Yuan), and the new DHS (Daniel-Hirshleifer-Sun) behavioral factors.
+
 __Changes__:
-- Added the DHS (Daniel, Hirshleifer, and Sun) behavioral factors: FIN (financing) and PEAD (post-earnings-announcement drift), value-weighted 2x5 sorts. FIN is built worldwide; PEAD is built internationally using IBES earnings-announcement dates bridged to the global security universe.
-  - New files: `dhs_factors_monthly.parquet`, `dhs_factors_daily.parquet`, `dhs_characteristics.parquet`.
-  - New columns in the combined factor-model outputs: `fin_dhs` and `pead_dhs` in `ap_factors_monthly.parquet` (keyed by `excntry, eom`) and `ap_factors_daily.parquet` (keyed by `excntry, date`); `ns_dhs`, `ir_dhs`, and `abr_dhs` in `ap_factors_characteristics.parquet` (keyed by `id, eom`).
-- Extended the Fama-French, Hou-Xue-Zhang, and Mispricing (Stambaugh-Yuan) factors to international (per-country) coverage, built on the pure CRSP CIZ v2 data (`msf_v2`/`dsf_v2`). This adds rows (more `excntry` values) to the existing factor files; no new columns.
-- Extended the FF3 SMB/HML history back to 1926 using Davis-Fama-French hand-collected book equity, spliced onto Compustat where the CCM link exists but early balance-sheet fields are missing.
-- HXZ US factors now start in 1972 (the original sample start), with the RDQ earnings-announcement gate applied over the full sample.
-- Fixed run-to-run nondeterminism in the HXZ ROE and Mispricing construction, so repeated builds now produce identical output.
+- Added the DHS behavioral factors: FIN (financing, worldwide) and PEAD (post-earnings-announcement drift, international via IBES earnings-announcement dates bridged to the global security universe).
+- Extended FF/HXZ/Mispricing to per-country international coverage on CIZ v2, added FF5 (RMW/CMA) and momentum, and split HXZ into the `me_hxz`/`ia_hxz`/`roe_hxz` q-factors.
+- Extended FF3 SMB/HML back to 1926 (Davis-Fama-French hand-collected book-equity splice); HXZ US factors start in 1972 with the RDQ gate over the full sample; fixed run-to-run nondeterminism in HXZ ROE and Mispricing.
+
+__Output folder__ (`other_output/`):
+- `ap_factors_monthly.parquet` (keyed by `excntry, eom`) and `ap_factors_daily.parquet` (keyed by `excntry, date`) — factor-return columns are now `mktrf`, `smb_ff3`, `smb_ff5`, `hml`, `rmw`, `cma`, `umd_ff`, `me_hxz`, `ia_hxz`, `roe_hxz`, `smb_mispricing`, `mispricing_mgmt`, `mispricing_perf`, `fin_dhs`, `pead_dhs`. `mktrf` and `hml` are unchanged; the previous `smb_ff` is now `smb_ff3` (plus new `smb_ff5`); the previous q-factor columns `inv`, `roe`, `smb_hxz` are replaced by `ia_hxz`, `roe_hxz`, `me_hxz`; `rmw`, `cma`, `umd_ff` and all Mispricing/DHS columns are new.
+- `ap_factors_characteristics.parquet` — new output file (per-stock sort variables, keyed by `id, eom`): `me_ff`, `beme_ff`, `op_ff`, `inv_ff`, `umd_ff`, `me_hxz`, `ia_hxz`, `roe_hxz`, `mispricing_mgmt`, `mispricing_perf`, `ns_dhs`, `ir_dhs`, `abr_dhs`.
+- Other output-folder files (`market_returns*`, `*cutoffs*`) are unchanged. No output file is removed.
 
 __Impact__:
-- Additive: no output files or columns are removed. Adds the new DHS files/columns above and international coverage across all four models. Existing US FF/HXZ/Mispricing series change where the CIZ v2 universe, the 1926/1972 sample extensions, or the determinism fixes apply.
+- Adds international coverage and the DHS/Mispricing/FF5/momentum series across the factor outputs. In the monthly/daily factor files the columns `smb_ff`, `inv`, `roe`, and `smb_hxz` are renamed/superseded (see above); consumers keying on those names must update.
 
 ## 27-04-2026
 __Changes__:
