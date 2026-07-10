@@ -9384,6 +9384,7 @@ def gen_mispricing_data(
     monthly_factors_path: Path,
     daily_factors_path: Path,
     chars_path: Path,
+    freqs: tuple[str, ...] = ("monthly", "daily"),
     min_stks: int = 30,
     min_fcts: int = 3,
     min_obs: int = 10,
@@ -9466,69 +9467,70 @@ def gen_mispricing_data(
         world_smb = _mp_smb_panel_from_legs(world_legs, key_cols=("id", "excntry"))
 
         # 5. Factor returns and per-stock scores
-        monthly_us = _mp_monthly_factor_returns(
-            us_legs,
-            us_smb,
-            min_obs,
-            by="eom",
-            truncate_thin=True,
-            out_cols=["eom"],
-            out_sort=["eom"],
-        ).with_columns(excntry=pl.lit("USA"))
-        daily_us = _mp_us_daily_factor_returns(
-            us_legs, us_smb, min_obs, mp_con, interim_dir
-        ).with_columns(excntry=pl.lit("USA"))
-        # Keep `id` as Int64 to match jkp convention (world_msf.id = BIGINT for both
-        # US permnos and Compustat-derived ids per `combine_crsp_comp_sf`). Casting to
-        # String would break outer-joins in `ap_factor_model_data` against ff/hxz chars.
-        chars_us = _mp_stock_mispricing_scores(
-            us_panel,
-            min_fcts,
-            sort_keys=["permno", "eom"],
-            select_cols=[col("permno").alias("id"), "eom"],
-        ).with_columns(excntry=pl.lit("USA"), id=col("id").cast(pl.Int64))
-        monthly_world = _mp_monthly_factor_returns(
-            world_legs,
-            world_smb,
-            min_obs_world,
-            by=["excntry", "eom"],
-            truncate_thin=False,
-            out_cols=["eom", "excntry"],
-            out_sort=["excntry", "eom"],
-        )
-        daily_world = _mp_world_daily_factor_returns(
-            world_legs, world_smb, min_obs_world, mp_con_world, interim_dir
-        )
-        chars_world = _mp_stock_mispricing_scores(
-            world_panel,
-            min_fcts,
-            sort_keys=["id", "eom"],
-            select_cols=["id", "eom", "excntry"],
-        ).with_columns(id=col("id").cast(pl.Int64))
-
-        # 6. Concat US + world; write outputs
+        # 6. Concat US + world; write outputs (per requested frequency)
         factor_cols = ["smb_mispricing", "mispricing_mgmt", "mispricing_perf"]
-        _mp_concat_write(
-            monthly_us,
-            monthly_world,
-            ["eom", "excntry", *factor_cols],
-            ["excntry", "eom"],
-            monthly_factors_path,
-        )
-        _mp_concat_write(
-            daily_us,
-            daily_world,
-            ["date", "excntry", *factor_cols],
-            ["excntry", "date"],
-            daily_factors_path,
-        )
-        _mp_concat_write(
-            chars_us,
-            chars_world,
-            ["id", "eom", "mispricing_mgmt", "mispricing_perf"],
-            ["id", "eom"],
-            chars_path,
-        )
+        if "monthly" in freqs:
+            monthly_us = _mp_monthly_factor_returns(
+                us_legs,
+                us_smb,
+                min_obs,
+                by="eom",
+                truncate_thin=True,
+                out_cols=["eom"],
+                out_sort=["eom"],
+            ).with_columns(excntry=pl.lit("USA"))
+            monthly_world = _mp_monthly_factor_returns(
+                world_legs,
+                world_smb,
+                min_obs_world,
+                by=["excntry", "eom"],
+                truncate_thin=False,
+                out_cols=["eom", "excntry"],
+                out_sort=["excntry", "eom"],
+            )
+            _mp_concat_write(
+                monthly_us,
+                monthly_world,
+                ["eom", "excntry", *factor_cols],
+                ["excntry", "eom"],
+                monthly_factors_path,
+            )
+            # Keep `id` as Int64 to match jkp convention (world_msf.id = BIGINT for both
+            # US permnos and Compustat-derived ids per `combine_crsp_comp_sf`). Casting to
+            # String would break outer-joins in `ap_factor_model_data` against ff/hxz chars.
+            chars_us = _mp_stock_mispricing_scores(
+                us_panel,
+                min_fcts,
+                sort_keys=["permno", "eom"],
+                select_cols=[col("permno").alias("id"), "eom"],
+            ).with_columns(excntry=pl.lit("USA"), id=col("id").cast(pl.Int64))
+            chars_world = _mp_stock_mispricing_scores(
+                world_panel,
+                min_fcts,
+                sort_keys=["id", "eom"],
+                select_cols=["id", "eom", "excntry"],
+            ).with_columns(id=col("id").cast(pl.Int64))
+            _mp_concat_write(
+                chars_us,
+                chars_world,
+                ["id", "eom", "mispricing_mgmt", "mispricing_perf"],
+                ["id", "eom"],
+                chars_path,
+            )
+        if "daily" in freqs:
+            daily_us = _mp_us_daily_factor_returns(
+                us_legs, us_smb, min_obs, mp_con, interim_dir
+            ).with_columns(excntry=pl.lit("USA"))
+            daily_world = _mp_world_daily_factor_returns(
+                world_legs, world_smb, min_obs_world, mp_con_world, interim_dir
+            )
+            _mp_concat_write(
+                daily_us,
+                daily_world,
+                ["date", "excntry", *factor_cols],
+                ["excntry", "date"],
+                daily_factors_path,
+            )
     finally:
         mp_con.close()
         mp_con_world.close()
@@ -12277,6 +12279,7 @@ def ff_country_breakpoints(
     june: pl.DataFrame,
     specs: list[tuple[str, float, str]],
     eligible: pl.Expr,
+    min_stocks_bp: int = FF_MIN_STOCKS_BP,
 ) -> pl.DataFrame:
     """Per-(excntry, date) DuckDB QUANTILE_DISC over the country breakpoint pool.
 
@@ -12300,44 +12303,48 @@ def ff_country_breakpoints(
         .sql(
             f"SELECT excntry, date, {breaks_sql} FROM self "
             f"GROUP BY excntry, date "
-            f"HAVING excntry = '{US_EXCNTRY}' OR COUNT(*) >= {FF_MIN_STOCKS_BP}"
+            f"HAVING excntry = '{US_EXCNTRY}' OR COUNT(*) >= {min_stocks_bp}"
         )
     )
 
 
-def _ff_size_breaks(june: pl.DataFrame, value_eligible: pl.Expr) -> pl.DataFrame:
+def _ff_size_breaks(
+    june: pl.DataFrame, value_eligible: pl.Expr, min_stocks_bp: int = FF_MIN_STOCKS_BP
+) -> pl.DataFrame:
     """Per-country size median (sizemedn). US pools ALL NYSE me>0 stocks per
     DFF 2000 (no BE requirement), while value breakpoints stay on the
     sort-eligible pool. ROW keeps the JKP convention (sort-eligible pool)."""
     size_elig = (
         pl.when(pl.col("excntry") == US_EXCNTRY).then(pl.col("me") > 0).otherwise(value_eligible)
     )
-    return ff_country_breakpoints(june, [("me", 0.50, "sizemedn")], size_elig)
+    return ff_country_breakpoints(june, [("me", 0.50, "sizemedn")], size_elig, min_stocks_bp)
 
 
-def _ff_bm_breaks(june: pl.DataFrame) -> pl.DataFrame:
+def _ff_bm_breaks(june: pl.DataFrame, min_stocks_bp: int = FF_MIN_STOCKS_BP) -> pl.DataFrame:
     """B/M NYSE 30/70 breakpoints + all-NYSE size median per (excntry, date)."""
     bps = ff_country_breakpoints(
-        june, [("beme", 0.30, "beme30"), ("beme", 0.70, "beme70")], _ff_bm_eligible()
+        june, [("beme", 0.30, "beme30"), ("beme", 0.70, "beme70")], _ff_bm_eligible(), min_stocks_bp
     )
-    return _ff_size_breaks(june, _ff_bm_eligible()).join(bps, on=["excntry", "date"], how="inner")
+    return _ff_size_breaks(june, _ff_bm_eligible(), min_stocks_bp).join(
+        bps, on=["excntry", "date"], how="inner"
+    )
 
 
-def _ff_op_breaks(june: pl.DataFrame) -> pl.DataFrame:
+def _ff_op_breaks(june: pl.DataFrame, min_stocks_bp: int = FF_MIN_STOCKS_BP) -> pl.DataFrame:
     """OP NYSE 30/70 breakpoints per (excntry, date)."""
     return ff_country_breakpoints(
-        june, [("op", 0.30, "op30"), ("op", 0.70, "op70")], _ff_op_eligible()
+        june, [("op", 0.30, "op30"), ("op", 0.70, "op70")], _ff_op_eligible(), min_stocks_bp
     )
 
 
-def _ff_inv_breaks(june: pl.DataFrame) -> pl.DataFrame:
+def _ff_inv_breaks(june: pl.DataFrame, min_stocks_bp: int = FF_MIN_STOCKS_BP) -> pl.DataFrame:
     """INV NYSE 30/70 breakpoints per (excntry, date)."""
     return ff_country_breakpoints(
-        june, [("inv", 0.30, "inv30"), ("inv", 0.70, "inv70")], _ff_inv_eligible()
+        june, [("inv", 0.30, "inv30"), ("inv", 0.70, "inv70")], _ff_inv_eligible(), min_stocks_bp
     )
 
 
-def _ff_mom_breaks(mom_signal: pl.DataFrame) -> pl.DataFrame:
+def _ff_mom_breaks(mom_signal: pl.DataFrame, min_stocks_bp: int = FF_MIN_STOCKS_BP) -> pl.DataFrame:
     """Momentum NYSE 30/70 breakpoints + all-NYSE size median per
     (excntry, date); size dimension is ME at end of t-1 (caller swaps
     me <- me_lag1 before calling)."""
@@ -12345,8 +12352,9 @@ def _ff_mom_breaks(mom_signal: pl.DataFrame) -> pl.DataFrame:
         mom_signal,
         [("mom_2_12", 0.30, "mom30"), ("mom_2_12", 0.70, "mom70")],
         _ff_mom_eligible(),
+        min_stocks_bp,
     )
-    return _ff_size_breaks(mom_signal, _ff_mom_eligible()).join(
+    return _ff_size_breaks(mom_signal, _ff_mom_eligible(), min_stocks_bp).join(
         bps, on=["excntry", "date"], how="inner"
     )
 
@@ -12446,7 +12454,10 @@ def ff_assign_to_panel(panel: pl.DataFrame, june: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def _ff_vw_leg(panel: pl.DataFrame, *, port: str, flag: str, buckets: list[str]) -> pl.DataFrame:
+def _ff_vw_leg(
+    panel: pl.DataFrame, *, port: str, flag: str, buckets: list[str],
+    min_stocks_pf: int = FF_MIN_STOCKS_PF,
+) -> pl.DataFrame:
     """VW return per (excntry, date, sizeport+port) bucket, pivoted wide to
     [excntry, date, *buckets] with absent buckets filled as null Float64.
     Applies the ROW-only FF_MIN_STOCKS_PF gate (US bypassed). The caller
@@ -12462,7 +12473,7 @@ def _ff_vw_leg(panel: pl.DataFrame, *, port: str, flag: str, buckets: list[str])
             _n=pl.len(),
         )
         .with_columns(
-            vwret=pl.when((pl.col("excntry") == US_EXCNTRY) | (pl.col("_n") >= FF_MIN_STOCKS_PF))
+            vwret=pl.when((pl.col("excntry") == US_EXCNTRY) | (pl.col("_n") >= min_stocks_pf))
             .then(pl.col("vwret"))
             .otherwise(None)
         )
@@ -12474,7 +12485,9 @@ def _ff_vw_leg(panel: pl.DataFrame, *, port: str, flag: str, buckets: list[str])
     return leg.select("excntry", "date", *buckets)
 
 
-def ff_compute_factors(ccm4: pl.DataFrame) -> pl.DataFrame:
+def ff_compute_factors(
+    ccm4: pl.DataFrame, min_stocks_pf: int = FF_MIN_STOCKS_PF
+) -> pl.DataFrame:
     """3 independent 2x3 sorts → per (excntry, date) factors.
 
     For each sort (BM/OP/INV): VW per (excntry, date, sizeport+sortport)
@@ -12489,13 +12502,16 @@ def ff_compute_factors(ccm4: pl.DataFrame) -> pl.DataFrame:
         (pl.col("w") > 0) & pl.col("ret").is_not_null() & pl.col("sizeport").is_not_null()
     )
     bm_leg = _ff_vw_leg(
-        base, port="btmport", flag="positivebeme", buckets=["SL", "SM", "SH", "BL", "BM", "BH"]
+        base, port="btmport", flag="positivebeme", buckets=["SL", "SM", "SH", "BL", "BM", "BH"],
+        min_stocks_pf=min_stocks_pf,
     )
     op_leg = _ff_vw_leg(
-        base, port="opport", flag="nonmiss_op", buckets=["SW", "SN", "SR", "BW", "BN", "BR"]
+        base, port="opport", flag="nonmiss_op", buckets=["SW", "SN", "SR", "BW", "BN", "BR"],
+        min_stocks_pf=min_stocks_pf,
     ).rename({"SN": "SN_op", "BN": "BN_op"})
     inv_leg = _ff_vw_leg(
-        base, port="invport", flag="nonmiss_inv", buckets=["SC", "SN", "SA", "BC", "BN", "BA"]
+        base, port="invport", flag="nonmiss_inv", buckets=["SC", "SN", "SA", "BC", "BN", "BA"],
+        min_stocks_pf=min_stocks_pf,
     ).rename({"SN": "SN_inv", "BN": "BN_inv"})
     wide = (
         bm_leg.join(op_leg, on=["excntry", "date"], how="full", coalesce=True)
@@ -12720,7 +12736,9 @@ def ff_build_mom_signal(panel: pl.DataFrame, freq: Literal["monthly", "daily"]) 
     return out.collect(engine="streaming")
 
 
-def ff_compute_umd_factor(panel: pl.DataFrame) -> pl.DataFrame:
+def ff_compute_umd_factor(
+    panel: pl.DataFrame, min_stocks_pf: int = FF_MIN_STOCKS_PF
+) -> pl.DataFrame:
     """2x3 size x mom_2_12 → per (excntry, date) umd_ff.
 
     Single-sort momentum leg collapsed to the UMD spread. Same per-bucket
@@ -12731,7 +12749,8 @@ def ff_compute_umd_factor(panel: pl.DataFrame) -> pl.DataFrame:
     )
     return (
         _ff_vw_leg(
-            base, port="momport", flag="nonmiss_mom", buckets=["SL", "SN", "SH", "BL", "BN", "BH"]
+            base, port="momport", flag="nonmiss_mom", buckets=["SL", "SN", "SH", "BL", "BN", "BH"],
+            min_stocks_pf=min_stocks_pf,
         )
         .select(
             "excntry",
@@ -12793,6 +12812,8 @@ def _ff_build_freq(
     comp_world: pl.DataFrame,
     raw_dir: Path,
     interim_dir: Path,
+    min_stocks_bp: int = FF_MIN_STOCKS_BP,
+    min_stocks_pf: int = FF_MIN_STOCKS_PF,
 ) -> tuple[pl.DataFrame, pl.DataFrame | None]:
     """Build FF3/FF5/UMD factors for one frequency; also returns monthly characteristics.
 
@@ -12811,24 +12832,25 @@ def _ff_build_freq(
 
     ports = ff_assign_portfolios(
         data_chars,
-        _ff_bm_breaks(data_chars),
-        _ff_op_breaks(data_chars),
-        _ff_inv_breaks(data_chars),
+        _ff_bm_breaks(data_chars, min_stocks_bp),
+        _ff_op_breaks(data_chars, min_stocks_bp),
+        _ff_inv_breaks(data_chars, min_stocks_bp),
     )
-    factors = ff_compute_factors(ff_assign_to_panel(panel, ports))
+    factors = ff_compute_factors(ff_assign_to_panel(panel, ports), min_stocks_pf)
 
     # UMD: same per-country breakpoints + ROW gates as the other FF sorts.
     # Size dimension is ME at end of t-1 (not row-t ME), so swap
     # me ← me_lag1 before breakpoints/assignment. mom_signal is reused by
     # ff_build_characteristics for the per-stock umd_ff column.
     mom_signal = ff_build_mom_signal(panel, freq).with_columns(me=pl.col("me_lag1"))
-    ports_mom = ff_assign_mom_portfolios(mom_signal, _ff_mom_breaks(mom_signal))
+    ports_mom = ff_assign_mom_portfolios(mom_signal, _ff_mom_breaks(mom_signal, min_stocks_bp))
     umd = ff_compute_umd_factor(
         mom_signal.join(
             ports_mom.select("excntry", "id", "date", "sizeport", "momport", "nonmiss_mom"),
             on=["excntry", "id", "date"],
             how="left",
-        ).with_columns(w=pl.col("me_lag1"))
+        ).with_columns(w=pl.col("me_lag1")),
+        min_stocks_pf,
     )
     factors = factors.join(umd, on=["excntry", "date"], how="left")
 
@@ -12855,6 +12877,8 @@ def gen_ff_data(
     daily_factors_path: Path,
     chars_path: Path,
     freqs: tuple[str, ...] = ("monthly", "daily"),
+    min_stocks_bp: int = FF_MIN_STOCKS_BP,
+    min_stocks_pf: int = FF_MIN_STOCKS_PF,
 ) -> None:
     """
     Description:
@@ -12899,7 +12923,9 @@ def gen_ff_data(
     comp_world = ff_load_world_compustat(raw_dir, interim_dir)
 
     for freq in freqs:
-        factors, chars = _ff_build_freq(freq, ccm2a, comp_world, raw_dir, interim_dir)
+        factors, chars = _ff_build_freq(
+            freq, ccm2a, comp_world, raw_dir, interim_dir, min_stocks_bp, min_stocks_pf
+        )
         dt = "eom" if freq == "monthly" else "date"
         factors.rename({"date": dt}).write_parquet(out_paths[freq])
         if chars is not None:
@@ -13477,9 +13503,11 @@ def hxz_load_panel_row(interim_dir: Path, freq: Literal["monthly", "daily"]) -> 
     )
 
 
-def hxz_compute_factors(panel: pl.DataFrame) -> pl.DataFrame:
+def hxz_compute_factors(
+    panel: pl.DataFrame, min_stocks_pf: int = HXZ_MIN_STOCKS_PF
+) -> pl.DataFrame:
     """18-bucket VW returns per (excntry, date) → HXZ formulas 1-3
-    (me_hxz, ia_hxz, roe_hxz). US bypasses HXZ_MIN_STOCKS_PF gate."""
+    (me_hxz, ia_hxz, roe_hxz). US bypasses the ROW min_stocks_pf gate."""
     buckets = [f"S{i}I{j}R{k}" for i in (1, 2) for j in (1, 2, 3) for k in (1, 2, 3)]
     bucket = (
         panel.filter(
@@ -13507,7 +13535,7 @@ def hxz_compute_factors(panel: pl.DataFrame) -> pl.DataFrame:
             _n=pl.len(),
         )
         .with_columns(
-            vwret=pl.when((pl.col("excntry") == US_EXCNTRY) | (pl.col("_n") >= HXZ_MIN_STOCKS_PF))
+            vwret=pl.when((pl.col("excntry") == US_EXCNTRY) | (pl.col("_n") >= min_stocks_pf))
             .then(pl.col("vwret"))
             .otherwise(None)
         )
@@ -13820,9 +13848,11 @@ def _hxz_tercile_port(value_col: str, b30: str, b70: str, gate: pl.Expr) -> pl.E
     )
 
 
-def _hxz_classify_size_ia(size_ia_form: pl.DataFrame) -> pl.DataFrame:
+def _hxz_classify_size_ia(
+    size_ia_form: pl.DataFrame, min_stocks_bp: int = HXZ_MIN_STOCKS_BP
+) -> pl.DataFrame:
     """Apply country-aware breakpoints + bucket cuts to June size+inv frame.
-    US: NYSE-only pool, per-date breaks. ROW: size_grp pool + HXZ_MIN_STOCKS_BP
+    US: NYSE-only pool, per-date breaks. ROW: size_grp pool + min_stocks_bp
     gate, per-(excntry, date) breaks. Returns June-level classified frame
     with `sizeport`, `invport` (and `inv` preserved for downstream)."""
     specs = [("me", 0.50, "sizemedn"), ("inv", 0.30, "inv30"), ("inv", 0.70, "inv70")]
@@ -13859,7 +13889,7 @@ def _hxz_classify_size_ia(size_ia_form: pl.DataFrame) -> pl.DataFrame:
         specs,
         group_keys=["excntry", "date"],
         pool_filter=pl.col("elig") & pl.col("size_grp").is_in(["small", "large", "mega"]),
-        min_count=HXZ_MIN_STOCKS_BP,
+        min_count=min_stocks_bp,
     )
     row_cls = (
         row.join(row_breaks, on=["excntry", "date"], how="left")
@@ -13881,10 +13911,12 @@ def _hxz_classify_size_ia(size_ia_form: pl.DataFrame) -> pl.DataFrame:
     return pl.concat([us_cls, row_cls], how="diagonal_relaxed")
 
 
-def _hxz_classify_roe(roe_m: pl.DataFrame) -> pl.DataFrame:
+def _hxz_classify_roe(
+    roe_m: pl.DataFrame, min_stocks_bp: int = HXZ_MIN_STOCKS_BP
+) -> pl.DataFrame:
     """Apply country-aware breakpoints + bucket cuts to monthly ROE frame.
     US: NYSE-only pool, per-date breaks. ROW: size_grp pool, per-(excntry,
-    date) breaks with HXZ_MIN_STOCKS_BP gate."""
+    date) breaks with min_stocks_bp gate."""
     specs = [("roe", 0.30, "roe30"), ("roe", 0.70, "roe70")]
     elig = (~pl.col("is_fin")) & pl.col("roe").is_not_null()
 
@@ -13910,7 +13942,7 @@ def _hxz_classify_roe(roe_m: pl.DataFrame) -> pl.DataFrame:
         specs,
         group_keys=["excntry", "date"],
         pool_filter=pl.col("elig") & pl.col("size_grp").is_in(["small", "large", "mega"]),
-        min_count=HXZ_MIN_STOCKS_BP,
+        min_count=min_stocks_bp,
     )
     row_cls = (
         row.join(row_breaks, on=["excntry", "date"], how="left")
@@ -13928,19 +13960,20 @@ def hxz_classify_portfolios(
     panel_m: pl.DataFrame,
     size_ia_form: pl.DataFrame,
     roe_m: pl.DataFrame,
+    min_stocks_bp: int = HXZ_MIN_STOCKS_BP,
 ) -> pl.DataFrame:
     """Classify stocks into HXZ 2×3×3 portfolios (stage 4).
 
     Country-aware breakpoints: US NYSE-only per-date; ROW size_grp pool
-    per-(excntry, date) with HXZ_MIN_STOCKS_BP gate. June (size, I/A)
+    per-(excntry, date) with min_stocks_bp gate. June (size, I/A)
     classification broadcast to Jul(y)..Jun(y+1) via _ff_port_year; monthly
     ROE classification attached on (excntry, id, date).
 
     Output: Eager panel [excntry, id, date, ret, me, me_lag1,
     sizeport, invport, roeport, inv, roe, ...].
     """
-    size_ia_classified = _hxz_classify_size_ia(size_ia_form)
-    roe_classified = _hxz_classify_roe(roe_m)
+    size_ia_classified = _hxz_classify_size_ia(size_ia_form, min_stocks_bp)
+    roe_classified = _hxz_classify_roe(roe_m, min_stocks_bp)
 
     # US broadcast: join June classification on permno + port_year
     us_panel = panel_m.filter(pl.col("excntry") == US_EXCNTRY)
@@ -13998,6 +14031,8 @@ def gen_hxz_data(
     daily_factors_path: Path,
     chars_path: Path,
     freqs: tuple[str, ...] = ("monthly", "daily"),
+    min_stocks_bp: int = HXZ_MIN_STOCKS_BP,
+    min_stocks_pf: int = HXZ_MIN_STOCKS_PF,
 ) -> None:
     """
     Description:
@@ -14047,7 +14082,9 @@ def gen_hxz_data(
     size_ia_form, roe_m = hxz_compute_chars(panel_m_raw, funda_us, fundq_us, funda_row, raw_dir)
 
     # 4. Classify into portfolios + broadcast to monthly grid
-    panel_m = hxz_classify_portfolios(panel_m_raw, size_ia_form, roe_m).filter(start_filter)
+    panel_m = hxz_classify_portfolios(
+        panel_m_raw, size_ia_form, roe_m, min_stocks_bp
+    ).filter(start_filter)
 
     port_assigns = panel_m.select(
         "excntry",
@@ -14061,7 +14098,7 @@ def gen_hxz_data(
     # 5+6. Monthly sorts + output
     if "monthly" in freqs:
         (
-            hxz_compute_factors(panel_m)
+            hxz_compute_factors(panel_m, min_stocks_pf)
             .with_columns(eom=pl.col("date").dt.month_end())
             .drop("date")
             .write_parquet(monthly_factors_path)
@@ -14083,7 +14120,7 @@ def gen_hxz_data(
             .join(port_assigns, on=["excntry", "id", "eom"], how="left")
             .drop("eom")
         )
-        hxz_compute_factors(panel_d).write_parquet(daily_factors_path)
+        hxz_compute_factors(panel_d, min_stocks_pf).write_parquet(daily_factors_path)
 
 
 def _ap_outer_join_all(frames: list[pl.LazyFrame], key: list[str]) -> pl.LazyFrame:
@@ -15148,10 +15185,13 @@ def _dhs_group_quantiles(
 
 def _dhs_form_factor(base: pl.DataFrame, *, long: tuple[str, str], short: tuple[str, str],
                 name: str, date_col: str = "eom", ret_col: str = "ret",
-                w_col: str = "lagCRSPSIZE") -> pl.DataFrame:
+                w_col: str = "lagCRSPSIZE",
+                min_stocks_pf: int = FF_MIN_STOCKS_PF) -> pl.DataFrame:
     """Value-weight `ret_col` by `w_col` per size×char cell (`portfolio`), pivot to
     the six SL..BH legs, and form ((long1+long2)-(short1+short2))/2. Shared by the
     monthly sorts (defaults) and the daily leg (date_col="date", w_col="w").
+    A ROW-only min_stocks_pf gate nulls any (excntry, date, portfolio) cell formed
+    from fewer than min_stocks_pf stocks (USA bypassed, so US is byte-identical).
     Returns [excntry, date_col, name] in the (decimal) return unit."""
     # VW mean: rows with missing return or weight are excluded; the group row
     # order is fixed (maintain_order) so the float sum is deterministic. excntry
@@ -15160,7 +15200,16 @@ def _dhs_form_factor(base: pl.DataFrame, *, long: tuple[str, str], short: tuple[
     pf = (
         sub.filter(pl.col(ret_col).is_not_null() & pl.col(w_col).is_not_null())
         .group_by(["excntry", date_col, "portfolio"], maintain_order=True)
-        .agg(((pl.col(ret_col) * pl.col(w_col)).sum() / pl.col(w_col).sum()).alias("vwret"))
+        .agg(
+            ((pl.col(ret_col) * pl.col(w_col)).sum() / pl.col(w_col).sum()).alias("vwret"),
+            _n=pl.len(),
+        )
+        # ROW-only thin-portfolio gate; USA bypassed (US byte-identical)
+        .with_columns(
+            vwret=pl.when((pl.col("excntry") == US_EXCNTRY) | (pl.col("_n") >= min_stocks_pf))
+            .then(pl.col("vwret"))
+            .otherwise(None)
+        )
     )
     long_leg = (pl.col(long[0]) + pl.col(long[1])) / 2
     short_leg = (pl.col(short[0]) + pl.col(short[1])) / 2
@@ -15766,7 +15815,9 @@ def _dhs_announcement_returns(
     return abr_panel, daily_stock
 
 
-def _dhs_nyse_size_median(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
+def _dhs_nyse_size_median(
+    raw_dir: Path, interim_dir: Path, min_stocks_bp: int = FF_MIN_STOCKS_BP
+) -> pl.DataFrame:
     """Per-(excntry) size median P50, via jkp's ff_country_breakpoints (US branch =
     NYSE exchcd_us==1; ROW branch = size_grp ∈ {small,large,mega}; me>0; per-country
     min-stocks gate, USA exempt). US pool = ff_load_crsp_panel (CIZ, permco ME,
@@ -15796,14 +15847,15 @@ def _dhs_nyse_size_median(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
         )
         panel = pl.concat([us, row], how="diagonal_relaxed")
     return (
-        ff_country_breakpoints(panel, [("me", 0.50, "P50")], pl.col("me") > 0)
+        ff_country_breakpoints(panel, [("me", 0.50, "P50")], pl.col("me") > 0, min_stocks_bp)
         .select("excntry", pl.col("date").alias("eom"), "P50")
         .sort(["excntry", "eom"])
     )
 
 
 def _dhs_fin_factor(
-    annual_chars: pl.DataFrame, monthly_panel: pl.DataFrame, nyse_p50: pl.DataFrame
+    annual_chars: pl.DataFrame, monthly_panel: pl.DataFrame, nyse_p50: pl.DataFrame,
+    min_stocks_bp: int = FF_MIN_STOCKS_BP, min_stocks_pf: int = FF_MIN_STOCKS_PF,
 ) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     """FIN factor (NS×IR overlap, 2 size groups, annual June rebalance; port of
     build_fin_factor). Returns (factor [excntry, eom, fin_dhs], chars [id, eom, ns, ir],
@@ -15852,7 +15904,7 @@ def _dhs_fin_factor(
     # US rows have size_grp null and ROW rows have primaryexch null, so exactly one
     # branch fires per row -> US pool is unchanged (byte-identical).
     bp_pool = (pl.col("primaryexch") == "N") | pl.col("size_grp").is_in(["small", "large", "mega"])
-    bp_neg = _dhs_group_quantiles(ns_rank, "YEAR", "NS", [50], "P", pool=is_neg & bp_pool, min_stocks=FF_MIN_STOCKS_BP)
+    bp_neg = _dhs_group_quantiles(ns_rank, "YEAR", "NS", [50], "P", pool=is_neg & bp_pool, min_stocks=min_stocks_bp)
     # a missing breakpoint means the (excntry, YEAR) pool was below min_stocks and
     # was dropped by the HAVING gate; those stocks are EXCLUDED (group1 null), not
     # forced into a default bucket (mirrors jkp ff_assign_portfolios' inner join).
@@ -15862,7 +15914,7 @@ def _dhs_fin_factor(
         .with_columns(group1=pl.when(pl.col("P50").is_null()).then(None)
                       .when(pl.col("NS") > pl.col("P50")).then(pl.lit("2")).otherwise(pl.lit("L")))
     )
-    bp_pos = _dhs_group_quantiles(ns_rank, "YEAR", "NS", [30, 70], "P", pool=(pl.col("NS") > 0) & bp_pool, min_stocks=FF_MIN_STOCKS_BP)
+    bp_pos = _dhs_group_quantiles(ns_rank, "YEAR", "NS", [30, 70], "P", pool=(pl.col("NS") > 0) & bp_pool, min_stocks=min_stocks_bp)
     ns_pos = (
         ns_rank.filter(pl.col("NS") > 0).join(bp_pos, on=["excntry", "YEAR"], how="left")
         .with_columns(
@@ -15882,7 +15934,7 @@ def _dhs_fin_factor(
         .unique(subset=["id", "YEAR"], keep="first", maintain_order=True)
         .select("excntry", "id", "YEAR", "IR", "primaryexch", "size_grp")
     )
-    bp_ir = _dhs_group_quantiles(ir_rank, "YEAR", "IR", [20, 40, 60, 80], "P", pool=bp_pool, min_stocks=FF_MIN_STOCKS_BP)
+    bp_ir = _dhs_group_quantiles(ir_rank, "YEAR", "IR", [20, 40, 60, 80], "P", pool=bp_pool, min_stocks=min_stocks_bp)
     umo_ir = ir_rank.join(bp_ir, on=["excntry", "YEAR"], how="left").with_columns(
         group1=pl.when(pl.col("IR").is_null() | pl.col("P20").is_null()).then(None)  # thin pool dropped -> exclude
         .when(pl.col("IR") > pl.col("P80")).then(pl.lit("H"))
@@ -15936,7 +15988,8 @@ def _dhs_fin_factor(
     )
 
     # FIN = low-issuance (L) long minus high (H) short
-    factor = _dhs_form_factor(base, long=("SL", "BL"), short=("SH", "BH"), name="fin_dhs")
+    factor = _dhs_form_factor(base, long=("SL", "BL"), short=("SH", "BH"), name="fin_dhs",
+                              min_stocks_pf=min_stocks_pf)
     # per-stock raw sort values, one row per (id, eom) where either char exists
     chars = ns_panel.select("id", "eom", pl.col("NS").alias("ns")).join(
         ir_panel.select("id", "eom", pl.col("IR").alias("ir")),
@@ -15947,7 +16000,8 @@ def _dhs_fin_factor(
 
 
 def _dhs_pead_factor(
-    abr_panel: pl.DataFrame, nyse_p50: pl.DataFrame
+    abr_panel: pl.DataFrame, nyse_p50: pl.DataFrame,
+    min_stocks_bp: int = FF_MIN_STOCKS_BP, min_stocks_pf: int = FF_MIN_STOCKS_PF,
 ) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     """PEAD factor (monthly 2×5 sort on lagged Abr; port of build_pead_factor).
     Returns (factor [excntry, eom, pead_dhs], chars [id, eom, abr], members
@@ -15981,7 +16035,7 @@ def _dhs_pead_factor(
     # one branch fires per row and the US pool is unchanged (byte-identical).
     bp_pool = (pl.col("primaryexch") == "N") | pl.col("size_grp").is_in(["small", "large", "mega"])
     bp_char = _dhs_group_quantiles(
-        sized, "eom", "lagAbr", [20, 40, 60, 80], "NYSEcharP", pool=bp_pool, min_stocks=FF_MIN_STOCKS_BP
+        sized, "eom", "lagAbr", [20, 40, 60, 80], "NYSEcharP", pool=bp_pool, min_stocks=min_stocks_bp
     )
     # a missing breakpoint means the (excntry, eom) pool was below min_stocks and was
     # dropped by the HAVING gate; those stocks are EXCLUDED (group2 null -> portfolio
@@ -16003,7 +16057,8 @@ def _dhs_pead_factor(
     merged = pead.join(ranked, on=["id", "eom"], how="left")
 
     # PEAD = high-Abr (H) long minus low-Abr (L) short
-    factor = _dhs_form_factor(merged, long=("SH", "BH"), short=("SL", "BL"), name="pead_dhs")
+    factor = _dhs_form_factor(merged, long=("SH", "BH"), short=("SL", "BL"), name="pead_dhs",
+                              min_stocks_pf=min_stocks_pf)
     chars = pead.select("id", "eom", pl.col("lagAbr").alias("abr"))
     members = merged.select("excntry", "id", "eom", "portfolio", pl.col("lagCRSPSIZE").alias("w"))
     return factor, chars, members
@@ -16029,7 +16084,7 @@ def _dhs_load_row_daily(interim_dir: Path) -> pl.DataFrame:
 
 def _dhs_daily_factors(
     fin_members: pl.DataFrame, pead_members: pl.DataFrame, daily_stock: pl.DataFrame,
-    row_daily: pl.DataFrame | None = None,
+    row_daily: pl.DataFrame | None = None, min_stocks_pf: int = FF_MIN_STOCKS_PF,
 ) -> pl.DataFrame:
     """Daily FIN/PEAD factor returns from the monthly portfolio membership.
 
@@ -16048,10 +16103,12 @@ def _dhs_daily_factors(
     fin = _dhs_form_factor(
         daily.join(fin_members, on=["excntry", "id", "eom"], how="inner"),
         long=("SL", "BL"), short=("SH", "BH"), name="fin_dhs", date_col="date", w_col="w",
+        min_stocks_pf=min_stocks_pf,
     )
     pead = _dhs_form_factor(
         daily.join(pead_members, on=["excntry", "id", "eom"], how="inner"),
         long=("SH", "BH"), short=("SL", "BL"), name="pead_dhs", date_col="date", w_col="w",
+        min_stocks_pf=min_stocks_pf,
     )
     return fin.join(pead, on=["excntry", "date"], how="full", coalesce=True).sort(["excntry", "date"])
 
@@ -16069,6 +16126,8 @@ def gen_dhs_data(
     daily_factors_path: Path,
     chars_path: Path,
     freqs: tuple[str, ...] = ("monthly", "daily"),
+    min_stocks_bp: int = FF_MIN_STOCKS_BP,
+    min_stocks_pf: int = FF_MIN_STOCKS_PF,
     beg: int = 1966,
     end: int = 2025,
     beg_q: int = 1971,
@@ -16139,9 +16198,13 @@ def gen_dhs_data(
             [abr_panel, _dhs_row_announcement_returns(monthly_panel, raw_dir, interim_dir, beg, end)],
             how="vertical_relaxed",
         )
-    nyse_p50 = _dhs_nyse_size_median(raw_dir, interim_dir)
-    fin, fin_chars, fin_members = _dhs_fin_factor(annual_chars, monthly_panel, nyse_p50)
-    pead, pead_chars, pead_members = _dhs_pead_factor(abr_panel, nyse_p50)
+    nyse_p50 = _dhs_nyse_size_median(raw_dir, interim_dir, min_stocks_bp)
+    fin, fin_chars, fin_members = _dhs_fin_factor(
+        annual_chars, monthly_panel, nyse_p50, min_stocks_bp, min_stocks_pf
+    )
+    pead, pead_chars, pead_members = _dhs_pead_factor(
+        abr_panel, nyse_p50, min_stocks_bp, min_stocks_pf
+    )
 
     # monthly factors + per-stock chars always written; daily only when requested
     _dhs_write_factors(fin.join(pead, on=["excntry", "eom"], how="full", coalesce=True).sort(["excntry", "eom"]),
@@ -16159,5 +16222,6 @@ def gen_dhs_data(
     )
     if "daily" in freqs:
         row_daily = _dhs_load_row_daily(interim_dir) if row else None
-        _dhs_write_factors(_dhs_daily_factors(fin_members, pead_members, daily_stock, row_daily),
-                       "date", daily_factors_path)
+        _dhs_write_factors(
+            _dhs_daily_factors(fin_members, pead_members, daily_stock, row_daily, min_stocks_pf),
+            "date", daily_factors_path)

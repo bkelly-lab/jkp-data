@@ -154,9 +154,6 @@ def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> No
         interim / "mp_factors_monthly.parquet",
         interim / "mp_factors_daily.parquet",
         interim / "mp_characteristics.parquet",
-        min_stks=30,
-        min_fcts=3,
-        min_obs=10,
     )
     gen_dhs_data(
         paths,
