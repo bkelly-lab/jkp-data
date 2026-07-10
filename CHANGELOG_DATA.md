@@ -14,10 +14,11 @@ __Changes__:
 __Output folder__ (`other_output/`):
 - `ap_factors_monthly.parquet` (keyed by `excntry, eom`) and `ap_factors_daily.parquet` (keyed by `excntry, date`) — factor-return columns are now `mktrf`, `smb_ff3`, `smb_ff5`, `hml`, `rmw`, `cma`, `umd_ff`, `me_hxz`, `ia_hxz`, `roe_hxz`, `smb_mispricing`, `mispricing_mgmt`, `mispricing_perf`, `fin_dhs`, `pead_dhs`. `mktrf` and `hml` are unchanged; the previous `smb_ff` is now `smb_ff3` (plus new `smb_ff5`); the previous q-factor columns `inv`, `roe`, `smb_hxz` are replaced by `ia_hxz`, `roe_hxz`, `me_hxz`; `rmw`, `cma`, `umd_ff` and all Mispricing/DHS columns are new.
 - `ap_factors_characteristics.parquet` — new output file (per-stock sort variables, keyed by `id, eom`): `me_ff`, `beme_ff`, `op_ff`, `inv_ff`, `umd_ff`, `me_hxz`, `ia_hxz`, `roe_hxz`, `mispricing_mgmt`, `mispricing_perf`, `ns_dhs`, `ir_dhs`, `abr_dhs`.
+- Characteristics data set — `characteristics/world_data.parquet` (the combined panel) and the per-country `characteristics/{excntry}.parquet` files now carry the per-stock factor sort variables, joined from `ap_factors_characteristics` on `id, eom`. New columns: `me_ff`, `beme_ff`, `op_ff`, `inv_ff`, `umd_ff`, `me_hxz`, `ia_hxz`, `roe_hxz`, `ns_dhs`, `ir_dhs`, `abr_dhs`. `mispricing_mgmt` and `mispricing_perf` were already present (previously from `mp_factors`) and keep their names.
 - Other output-folder files (`market_returns*`, `*cutoffs*`) are unchanged. No output file is removed.
 
 __Impact__:
-- Adds international coverage and the DHS/Mispricing/FF5/momentum series across the factor outputs. In the monthly/daily factor files the columns `smb_ff`, `inv`, `roe`, and `smb_hxz` are renamed/superseded (see above); consumers keying on those names must update.
+- Adds international coverage and the DHS/Mispricing/FF5/momentum series across the factor outputs, and adds the 11 new factor sort variables above to the per-country and combined characteristics files. In the monthly/daily factor files the columns `smb_ff`, `inv`, `roe`, and `smb_hxz` are renamed/superseded (see above); consumers keying on those names must update.
 
 ## 27-04-2026
 __Changes__:
