@@ -1,5 +1,5 @@
 ---
-title: "The Bessembinder Correction: Fixing Erroneous Price Observations in the Global Security Data"
+title: "The Bessembinder Correction: Fixing Observations in Compustat Global Data"
 author: "JKP data team"
 date: today
 format:
@@ -23,7 +23,7 @@ jupyter: python3
 ## Overview
 
 To improve the database, we apply the data correction from
-[Bessembinder et al. (2023)](#references). The correction is applied to the
+Bessembinder et al. (2023). The correction is applied to the
 Compustat daily security files and removes erroneous price observations
 before returns are calculated.
 
@@ -76,7 +76,34 @@ These include:
 These observations are dropped rather than repaired, so this step can also
 change the underlying stock universe.
 
-See [Bessembinder et al. (2023)](#references) for the full methodology.
+As an additional safeguard, we exclude daily returns greater than 1,000%
+(`ret` < 10). Any return exceeding this threshold after the Bessembinder
+correction is treated as a residual data error that could not be reliably
+repaired and is set to missing before entering the factor construction pipeline.
+
+### Modifications for Scale
+
+To make the algorithm computationally feasible on a global daily dataset, we
+modify only the multi-period detection step that identifies runs of
+consecutively mis-scaled prices.
+
+Bessembinder et al. (2023) apply the correction to monthly data, searching over
+all asymmetric combinations of up to three periods backward and three periods
+forward. Because we apply the correction to daily data, the number of
+observations increases by several orders of magnitude, making the original
+search computationally impractical. We therefore introduce two simplifications.
+
+First, we replace the asymmetric search with symmetric windows. Rather than
+evaluating every backward/forward combination, we compare each day's price with
+the prices n trading days before and after for a given window length n. Second,
+instead of searching every possible window length, we evaluate a priority set of
+horizons—1, 2, 3, 5, 10, and 21 trading days—covering intervals from one day to
+approximately one trading month. These horizons capture the vast majority of
+multi-period scaling errors while substantially reducing computation.
+
+All other aspects of the procedure—including the single-period detection
+algorithm, the rescaling factors, and the observation removal criteria—are
+identical to those of Bessembinder et al. (2023).
 
 ## Scope of the change
 
@@ -161,17 +188,26 @@ import bess_compare as bc
 
 
 import base64, io
+from matplotlib.transforms import Bbox
 
 
-def show(fig):
+def show(fig, top_pad=0.18, bottom_pad=0.18):
     """Embed a figure at its exact rendered size.
 
     The inline backend crops with bbox_inches='tight', which trims a different
     left margin per figure (US y-labels '140' vs WxUS '6000'), shifting the axes
     box between tabs. Saving with the standard bbox keeps every figure the same
-    pixel size with axes at a fixed fraction, so tabs don't move."""
+    pixel size with axes at a fixed fraction, so tabs don't move. We only pad the
+    saved region vertically (left/right stay fixed, so tabs stay aligned) so a
+    legend or x-label sitting just past the canvas edge is not clipped."""
+    w, h = fig.get_size_inches()
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=150, bbox_inches=None)
+    fig.savefig(
+        buf,
+        format="png",
+        dpi=150,
+        bbox_inches=Bbox.from_extents(0, -bottom_pad, w, h + top_pad),
+    )
     plt.close(fig)
     b64 = base64.b64encode(buf.getvalue()).decode()
     display(HTML(f'<img src="data:image/png;base64,{b64}" style="width:100%">'))
@@ -243,7 +279,7 @@ markets.
 #| fig-width: 12
 #| fig-height: 10.6
 #| out-width: 100%
-show(bc.moment_scatter(stats))
+show(bc.moment_scatter(stats), top_pad=0.5)
 ```
 
 ## Conclusion

@@ -69,16 +69,6 @@ main.content {
   border-bottom: 1.5px solid var(--rule);
   position: relative;
 }
-.quarto-title::before {
-  content: "JKP DATA · USA REPLICATION DIAGNOSTICS";
-  display: block;
-  font-family: var(--font-body);
-  font-size: 0.72rem;
-  font-weight: 600;
-  letter-spacing: 0.25em;
-  color: var(--accent);
-  margin-bottom: 0.85rem;
-}
 .quarto-title h1.title {
   font-family: var(--font-display);
   font-weight: 600;

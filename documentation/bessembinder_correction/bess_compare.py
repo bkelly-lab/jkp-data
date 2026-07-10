@@ -54,8 +54,8 @@ STATS_PATH = DATA_DIR / "bess_factor_stats.parquet"
 MIN_N = 12
 EXCLUDE_CNTRY = ["VEN", "ZWE"]
 
-BLUE = "#2a78d6"   # World ex-US
-RED = "#e03131"    # US
+BLUE = "#2a78d6"  # World ex-US
+RED = "#e03131"  # US
 GREY = "#52514e"
 
 # Row order for the moment grid: capped VW on top, EW at the bottom.
@@ -151,9 +151,14 @@ def corr_hist(df: pl.DataFrame | None = None, scope: str = "all", bins: int | No
         med = vals.median()
         ax.axvline(med, color=GREY, linewidth=1, linestyle="--")
         ax.text(
-            med - 0.06 * (xlim[1] - xlim[0]), 0.985, f"Median: {med:.3f}",
-            transform=ax.get_xaxis_transform(), ha="right", va="top",
-            fontsize=8.5, color=GREY,
+            med - 0.06 * (xlim[1] - xlim[0]),
+            0.985,
+            f"Median: {med:.3f}",
+            transform=ax.get_xaxis_transform(),
+            ha="right",
+            va="top",
+            fontsize=8.5,
+            color=GREY,
         )
         ax.set_title(WEIGHT_LABELS[c], fontsize=11, pad=8)
         ax.set_xlabel("Correlation")
@@ -183,15 +188,17 @@ def corr_stats(df: pl.DataFrame | None = None, scope: str = "us") -> pl.DataFram
     rows = []
     for c in RET_COLS:
         v = d[f"corr_{c}"].drop_nulls().drop_nans()
-        rows.append({
-            "Weighting": WEIGHT_LABELS[c],
-            "Pairs": v.len(),
-            "Min": v.min(),
-            "Q1": v.quantile(0.25),
-            "Q2 / Median": v.median(),
-            "Q3": v.quantile(0.75),
-            "Max": v.max(),
-        })
+        rows.append(
+            {
+                "Weighting": WEIGHT_LABELS[c],
+                "Pairs": v.len(),
+                "Min": v.min(),
+                "Q1": v.quantile(0.25),
+                "Q2 / Median": v.median(),
+                "Q3": v.quantile(0.75),
+                "Max": v.max(),
+            }
+        )
     out = pl.DataFrame(rows)
     stat_cols = ["Min", "Q1", "Q2 / Median", "Q3", "Max"]
     return out.with_columns([pl.col(c).round(3) for c in stat_cols])
@@ -231,24 +238,52 @@ def moment_scatter(df: pl.DataFrame | None = None):
         "sharpe": np.arange(-4, 5, 2),
     }
     from matplotlib.lines import Line2D
+
     handles = [
-        Line2D([0], [0], marker="o", linestyle="none", markerfacecolor=RED,
-               markeredgecolor="none", markersize=7, label="US"),
-        Line2D([0], [0], marker="o", linestyle="none", markerfacecolor=BLUE,
-               markeredgecolor="none", markersize=7, label="World ex-US"),
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            linestyle="none",
+            markerfacecolor=RED,
+            markeredgecolor="none",
+            markersize=7,
+            label="US",
+        ),
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            linestyle="none",
+            markerfacecolor=BLUE,
+            markeredgecolor="none",
+            markersize=7,
+            label="World ex-US",
+        ),
     ]
     fig = plt.figure(figsize=(12, 10.6))
     subfigs = fig.subfigures(3, 1, hspace=0.20)
     for i, c in enumerate(WEIGHT_ORDER):
         sf = subfigs[i]
         sf.suptitle(
-            WEIGHT_LABELS[c], x=0.5, y=1.11, ha="center",
-            fontsize=15, fontweight="normal", color="#1a1818",
+            WEIGHT_LABELS[c],
+            x=0.5,
+            y=1.11,
+            ha="center",
+            fontsize=15,
+            fontweight="normal",
+            color="#1a1818",
         )
         axes = sf.subplots(1, 3, gridspec_kw={"wspace": 0.32})
         sf.legend(
-            handles=handles, loc="lower center", bbox_to_anchor=(0.5, 0.935),
-            ncol=2, frameon=False, fontsize=9, handletextpad=0.4, columnspacing=1.6,
+            handles=handles,
+            loc="lower center",
+            bbox_to_anchor=(0.5, 0.935),
+            ncol=2,
+            frameon=False,
+            fontsize=9,
+            handletextpad=0.4,
+            columnspacing=1.6,
         )
         for j, (m, label) in enumerate(metrics):
             ax = axes[j]
@@ -289,8 +324,12 @@ def summary_table(df: pl.DataFrame | None = None) -> pl.DataFrame:
 
 COUNTS_PATH = Path(__file__).resolve().parent / "bess_corr_drop_counts.parquet"
 _SIZE_ROWS = [
-    ("mega", "Mega"), ("large", "Large"), ("small", "Small"),
-    ("micro", "Micro"), ("nano", "Nano"), ("unclassified", "Unclassified"),
+    ("mega", "Mega"),
+    ("large", "Large"),
+    ("small", "Small"),
+    ("micro", "Micro"),
+    ("nano", "Nano"),
+    ("unclassified", "Unclassified"),
 ]
 
 
@@ -304,9 +343,13 @@ def corr_drop_table(region: str, path: Path = COUNTS_PATH) -> pl.DataFrame:
 
     rows = []
     for key, label in _SIZE_ROWS:
-        rows.append({"Size group": label,
-                     "Corrected": cell("corrected", key),
-                     "Dropped": cell("dropped", key)})
+        rows.append(
+            {
+                "Size group": label,
+                "Corrected": cell("corrected", key),
+                "Dropped": cell("dropped", key),
+            }
+        )
     total_c = int(c.filter(pl.col("action") == "corrected")["len"].sum())
     total_d = int(c.filter(pl.col("action") == "dropped")["len"].sum())
     rows.append({"Size group": "Total", "Corrected": total_c, "Dropped": total_d})
@@ -332,24 +375,30 @@ def corr_drop_table_combined(path: Path = COUNTS_PATH) -> pl.DataFrame:
         )
 
     def total(region: str, action: str) -> int:
-        return int(c.filter((pl.col("region") == region) & (pl.col("action") == action))["len"].sum())
+        return int(
+            c.filter((pl.col("region") == region) & (pl.col("action") == action))["len"].sum()
+        )
 
     rows = []
     for key, label in _SIZE_ROWS:
-        rows.append({
-            "Size group": label,
-            "US — Corrected": cell("US", "corrected", key),
-            "US — Dropped": cell("US", "dropped", key),
-            "World — Corrected": cell("World", "corrected", key),
-            "World — Dropped": cell("World", "dropped", key),
-        })
-    rows.append({
-        "Size group": "Total",
-        "US — Corrected": total("US", "corrected"),
-        "US — Dropped": total("US", "dropped"),
-        "World — Corrected": total("World", "corrected"),
-        "World — Dropped": total("World", "dropped"),
-    })
+        rows.append(
+            {
+                "Size group": label,
+                "US — Corrected": cell("US", "corrected", key),
+                "US — Dropped": cell("US", "dropped", key),
+                "World — Corrected": cell("World", "corrected", key),
+                "World — Dropped": cell("World", "dropped", key),
+            }
+        )
+    rows.append(
+        {
+            "Size group": "Total",
+            "US — Corrected": total("US", "corrected"),
+            "US — Dropped": total("US", "dropped"),
+            "World — Corrected": total("World", "corrected"),
+            "World — Dropped": total("World", "dropped"),
+        }
+    )
     out = pl.DataFrame(rows)
     num_cols = [col for col in out.columns if col != "Size group"]
     return out.with_columns(
@@ -403,7 +452,8 @@ def additive_table_region(region: str, path: Path = REGION_PATH) -> pl.DataFrame
     d = (
         pl.read_parquet(path)
         .filter(pl.col("region") == region)
-        .group_by("action", "size").agg(pl.col("n").sum())
+        .group_by("action", "size")
+        .agg(pl.col("n").sum())
     )
 
     def val(action: str, size: str) -> int:
