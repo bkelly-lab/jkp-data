@@ -15132,25 +15132,6 @@ def _dhs_wd_idx(col: pl.Expr) -> pl.Expr:
     return weeks * 5 + pl.min_horizontal(n - weeks * 7, pl.lit(4))
 
 
-def _dhs_dedup_multidist(lf: pl.LazyFrame, date: str, ret: str, cap: str) -> pl.LazyFrame:
-    """Collapse the WRDS msf/dsf multi-distribution duplicate rows to one per
-    (permno, date), mirroring jkp's dedupe idiom (sort keys + keep-first)."""
-    return lf.sort(
-        ["permno", date, ret, cap], descending=[False, False, True, True], nulls_last=True
-    ).unique(subset=["permno", date], keep="first", maintain_order=True)
-
-
-def _dhs_clean_prices(frame: pl.DataFrame | pl.LazyFrame) -> pl.DataFrame | pl.LazyFrame:
-    """|prc|, then drop rows with a missing/zero price, missing return, or missing
-    shares outstanding. Shared by the monthly and daily panels; order-preserving."""
-    return frame.with_columns(prc=pl.col("prc").abs()).filter(
-        pl.col("prc").is_not_null()
-        & (pl.col("prc") != 0)
-        & pl.col("ret").is_not_null()
-        & pl.col("shrout").is_not_null()
-    )
-
-
 def _dhs_non_financial(col: str = "siccd") -> pl.Expr:
     """Keep non-financials: drop SIC 6000-6999, but KEEP a missing SIC."""
     return pl.col(col).is_null() | ~((pl.col(col) >= 6000) & (pl.col(col) <= 6999))
@@ -15249,33 +15230,28 @@ def _dhs_form_factor(
 
 
 def _dhs_universe() -> pl.Expr:
-    """Common US common-stock universe: jkp's CIZ screen + the 'RW' gate (legacy
-    SHRCD 10/11 × EXCHCD 1-3). Passing rows are already on a major exchange
-    (N/A/Q), so a later exchange screen is redundant. The NYSE size-median pool
-    deliberately does NOT gate on 'RW' (plain _ciz_universe via ff_load_crsp_panel)."""
-    return _ciz_universe() & (pl.col("conditionaltype") == "RW")
+    """US common-stock tradable universe — the CIZ legacy-SHRCD/EXCHCD replica
+    (== _mp_universe): CIZ screen + conditionaltype=='RW' + tradingstatusflg=='A'
+    (drops halted/suspended). The NYSE size-median pool uses the plain _ciz_universe
+    (via ff_load_crsp_panel), not this screen."""
+    return _mp_universe()
 
 
 def _dhs_load_msf(raw_dir: Path, beg: int, end: int) -> pl.LazyFrame:
-    """Scan crsp_msf_v2 (year window only, no universe screen): the monthly panel
-    screens itself and the IR build consumes all raw rows so its positional June
-    lags and 60-month windows see full history. Only Decimal prc/ret are cast to
-    Float64: WRDS stores them as Decimal, and Decimal division locks the result to
-    the operands' scale and truncates (a ratio 12.34/10.00 -> 1.23), silently
-    corrupting the IR ratio and the log1p cumret; jkp casts the same (see
-    _mp_build_crsp_monthly). permno/date/shrout/siccd keep their dtypes."""
+    """Scan crsp_msf_v2 for [beg, end] (no universe screen: the monthly panel
+    screens itself and the IR build needs full history for its 60-month window).
+    (permno, mthcaldt) is unique in CIZ v2, so no de-duplication is needed. Decimal
+    ret/cap are cast to Float64 — Decimal division truncates to the operands' scale
+    (12.34/10.00 -> 1.23), corrupting the IR ratio. `cap` is mthcap ($1000s)."""
     return (
-        _dhs_dedup_multidist(
-            pl.scan_parquet(raw_dir / "crsp_msf_v2.parquet"), "mthcaldt", "mthret", "mthcap"
-        )
-        .rename({"mthcaldt": "date", "mthprc": "prc", "mthret": "ret"})
-        .with_columns(pl.col("prc", "ret").cast(pl.Float64))
+        pl.scan_parquet(raw_dir / "crsp_msf_v2.parquet")
+        .rename({"mthcaldt": "date", "mthret": "ret", "mthcap": "cap"})
+        .with_columns(pl.col("ret", "cap").cast(pl.Float64))
         .select(
             "permno",
             "date",
-            "prc",
             "ret",
-            "shrout",
+            "cap",
             "siccd",
             "securitytype",
             "securitysubtype",
@@ -15283,6 +15259,7 @@ def _dhs_load_msf(raw_dir: Path, beg: int, end: int) -> pl.LazyFrame:
             "issuertype",
             "usincflg",
             "conditionaltype",
+            "tradingstatusflg",
             "primaryexch",
         )
         .filter(pl.col("date").dt.year().is_between(beg, end))
@@ -15290,19 +15267,12 @@ def _dhs_load_msf(raw_dir: Path, beg: int, end: int) -> pl.LazyFrame:
 
 
 def _dhs_monthly_panel(msf: pl.DataFrame, beg: int, end: int) -> pl.DataFrame:
-    """Master monthly return panel. The NYSE flag
-    is primaryexch ("N"/"A"/"Q"), not a numeric exchcd; siccd is dense per-row.
-
-    Steps:
-        1) Universe screen (_dhs_universe).
-        2) |prc|; drop missing/zero price, missing return, missing shrout.
-        3) SIZE = |prc|*shrout/1000 ($MM); eom/year/month; cyear maps
-           July(t)..June(t+1) to t within [beg, end].
-        4) lagCRSPSIZE = prior-month SIZE, nulled across a calendar gap.
-
-    Output: excntry ("USA"), id (== permno for US), eom, ret (decimal),
-        lagCRSPSIZE, primaryexch, siccd, CRSPDATE, year, month, cyear, CRSPSIZE.
-    """
+    """Master monthly return panel: _dhs_universe screen, price clean, SIZE =
+    mthcap/1000 ($MM), lagCRSPSIZE = prior-month SIZE nulled across a calendar gap.
+    cyear maps July(t)..June(t+1) to t within [beg, end]. The NYSE flag is
+    primaryexch ("N"), not a numeric exchcd; siccd is dense per-row. Output:
+    [excntry, id, CRSPDATE, eom, year, month, cyear, ret, CRSPSIZE, lagCRSPSIZE,
+    primaryexch, siccd, size_grp]."""
     cbase = pl.when(pl.col("month") >= 7).then(pl.col("year")).otherwise(pl.col("year") - 1)
     # reportbreak gates the lagged SIZE (a >1 month gap nulls the lag). Per-firm
     # ops partition on the globally-unique `id` (== permno for US), so ROW ids
@@ -15313,9 +15283,9 @@ def _dhs_monthly_panel(msf: pl.DataFrame, beg: int, end: int) -> pl.DataFrame:
     return (
         # passing rows are already RW + N/A/Q; NYSE flag carried as primaryexch (no exchcd screen)
         msf.filter(_dhs_universe())
-        .pipe(_dhs_clean_prices)
+        .filter((pl.col("cap") > 0) & pl.col("ret").is_not_null())  # cap-native validity
         .with_columns(
-            SIZE=pl.col("prc") * pl.col("shrout") / 1000,  # $MM
+            SIZE=pl.col("cap") / 1000,  # mthcap ($1000s) -> $MM
             eom=pl.col("date").dt.month_end(),  # canonical monthly key (real Date)
             year=pl.col("date").dt.year(),
             month=pl.col("date").dt.month(),
@@ -15604,8 +15574,7 @@ def _dhs_issuance_chars(msf: pl.DataFrame, raw_dir: Path, beg: int, end: int) ->
     #   log_cumret = trailing-60-month sum of log1p(ret); nonpositive gross -> null term,
     #                and any window missing a month is invalidated by the validity count.
     # One sort feeds both the rolling window and the post-filter shift(5); no self-join.
-    prc_clean = pl.when(pl.col("prc") == 0).then(None).otherwise(pl.col("prc"))
-    me_june = prc_clean.abs() * pl.col("shrout") / 1000
+    me_june = pl.when(pl.col("cap") > 0).then(pl.col("cap") / 1000).otherwise(None)  # $MM
     log1p = pl.when((1 + pl.col("ret")) > 0).then((1 + pl.col("ret")).log()).otherwise(None)
     n_valid = (
         log1p.is_not_null()
@@ -15616,7 +15585,7 @@ def _dhs_issuance_chars(msf: pl.DataFrame, raw_dir: Path, beg: int, end: int) ->
     me_lag5 = pl.col("ME_June").shift(5).over("permno")
     me_ratio = pl.when(me_lag5 != 0).then(pl.col("ME_June") / me_lag5).otherwise(None)
     ir = (
-        msf.select("permno", "date", "prc", "ret", "shrout")
+        msf.select("permno", "date", "cap", "ret")
         .sort(["permno", "date"])
         # ME_June + rolling sum need the full series, so compute before the June filter
         .with_columns(
@@ -15859,21 +15828,20 @@ def _dhs_announcement_returns(
     Output: (abr_panel with Abr/lagAbr + returns/size; daily_stock [permno, date,
         ret] DECIMAL for the daily factor build).
     """
-    # daily CRSP cleaned to (permno, date, ret decimal); universe screen at scan time (per-row flags); only Decimal prc/ret cast.
+    # daily CRSP cleaned to (permno, date, ret decimal); (permno, dlycaldt) is unique
+    # in CIZ v2, so no de-duplication is needed; universe screen at scan time.
+    # cap-native validity: dlycap>0 & ret present (dlycap == |dlyprc|*shrout, $1000s).
     daily_clean = (
-        _dhs_dedup_multidist(
-            pl.scan_parquet(raw_dir / "crsp_dsf_v2.parquet"), "dlycaldt", "dlyret", "dlycap"
-        )
+        pl.scan_parquet(raw_dir / "crsp_dsf_v2.parquet")
         .filter(_dhs_universe())
         .select(
             pl.col("permno"),
             pl.col("dlycaldt").alias("date"),
-            pl.col("dlyprc").cast(pl.Float64).alias("prc"),
             pl.col("dlyret").cast(pl.Float64).alias("ret"),
-            pl.col("shrout"),
+            pl.col("dlycap").cast(pl.Float64).alias("cap"),
         )
         .filter(pl.col("date").dt.year().is_between(beg, end))
-        .pipe(_dhs_clean_prices)
+        .filter((pl.col("cap") > 0) & pl.col("ret").is_not_null())
         .with_columns(excntry=pl.lit("USA"))  # country dimension (US-only stock feed)
     )
     market = _dhs_market_daily(interim_dir)
