@@ -30,11 +30,8 @@ from polars import col
 
 from .bessembinder import (
     SPILL_COMPRESSION,
-    Section8Params,
     apply_bessembinder_section6,
     apply_bessembinder_section8,
-    detect_potential_boundary_errors,  # noqa: F401  (used by commented-out diagnostic below)
-    log_correction_summary_by_year,
 )
 from .config import COLLECT_CHUNK_SIZE, END_DATE, MAIN_FILTERS
 from .output_writer import write_dataframe
@@ -1644,7 +1641,6 @@ def gen_comp_dsf(
     apply_bessembinder: bool = True,
     correction_method: str = "bessembinder",
     variation_threshold: float = 1.3,
-    s8_params: Section8Params | None = None,
 ):
     """
     Description:
@@ -1673,7 +1669,6 @@ def gen_comp_dsf(
 
     Output:
         Parquet: __comp_dsf.parquet (daily Compustat security observations in USD).
-        If apply_bessembinder: Also writes bessembinder_corrections_log.parquet
     """
     (paths.interim_dir / "aux_comp_dsf.ddb").unlink(missing_ok=True)
 
@@ -1683,7 +1678,6 @@ def gen_comp_dsf(
     # =========================================================================
     # Section 6: Apply decimal corrections to raw data (local currency)
     # =========================================================================
-    section6_log = None
     if apply_bessembinder:
         print("Applying Bessembinder Section 6 decimal corrections...", flush=True)
 
@@ -1691,7 +1685,7 @@ def gen_comp_dsf(
         # memory-bounded array path; spill files are removed after each sink.
         print("[section6] correcting Global data (comp_g_secd)...", flush=True)
         df_global = pl.scan_parquet(paths.raw_tables_dir / "comp_g_secd.parquet")
-        df_global, log_global = apply_bessembinder_section6(
+        df_global = apply_bessembinder_section6(
             df_global,
             group_cols=["gvkey", "iid"],
             sort_col="datadate",
@@ -1700,7 +1694,6 @@ def gen_comp_dsf(
             spill_dir=paths.interim_dir,
             variation_threshold=variation_threshold,
         )
-        log_global = log_global.collect() if log_global is not None else None
         print("[section6] sinking __comp_g_secd_corrected.parquet...", flush=True)
         df_global.sink_parquet(
             paths.interim_dir / "__comp_g_secd_corrected.parquet", compression=SPILL_COMPRESSION
@@ -1711,7 +1704,7 @@ def gen_comp_dsf(
         # Load and correct NA data (has ADRRC for ADRs)
         print("[section6] correcting NA data (comp_secd)...", flush=True)
         df_na = pl.scan_parquet(paths.raw_tables_dir / "comp_secd.parquet")
-        df_na, log_na = apply_bessembinder_section6(
+        df_na = apply_bessembinder_section6(
             df_na,
             group_cols=["gvkey", "iid"],
             sort_col="datadate",
@@ -1720,31 +1713,12 @@ def gen_comp_dsf(
             spill_dir=paths.interim_dir,
             variation_threshold=variation_threshold,
         )
-        log_na = log_na.collect() if log_na is not None else None
         print("[section6] sinking __comp_secd_corrected.parquet...", flush=True)
         df_na.sink_parquet(
             paths.interim_dir / "__comp_secd_corrected.parquet", compression=SPILL_COMPRESSION
         )
         for spill in paths.interim_dir.glob("__bess_*.parquet"):
             spill.unlink()
-
-        # Combine correction logs
-        logs = [log.lazy() for log in [log_global, log_na] if log is not None]
-        if logs:
-            section6_log = pl.concat(logs, how="vertical_relaxed")
-
-            # Log additional debug breakdowns
-            logger.info("Section 6 correction breakdowns:")
-            log_correction_summary_by_year(section6_log)
-
-        # Boundary-error diagnostic disabled: flags first/last-obs price jumps
-        # for manual review only, corrects nothing.
-        # logger.info("Checking for potential boundary errors in corrected data...")
-        # detect_potential_boundary_errors(
-        #     pl.scan_parquet(paths.interim_dir / "__comp_g_secd_corrected.parquet"),
-        #     price_col="prccd",
-        #     group_cols=["gvkey", "iid"],
-        # )
 
         # Use corrected files
         g_secd_path = paths.interim_dir / "__comp_g_secd_corrected.parquet"
@@ -1862,7 +1836,6 @@ def gen_comp_dsf(
     # =========================================================================
     # Section 8: Apply filters to USD-converted data
     # =========================================================================
-    section8_log = None
     if apply_bessembinder:
         print("Applying Bessembinder Section 8 filters...", flush=True)
 
@@ -1895,16 +1868,14 @@ def gen_comp_dsf(
         """)
         con.disconnect()
 
-        df, section8_log = apply_bessembinder_section8(
+        df = apply_bessembinder_section8(
             pl.scan_parquet(sorted_path),
             group_cols=["gvkey", "iid"],
             sort_col="datadate",
             country_col="excntry",
             spill_dir=paths.interim_dir,
             presorted_path=sorted_path,
-            params=s8_params,
         )
-        section8_log = section8_log.collect().lazy() if section8_log is not None else None
 
         print("[section8] sinking __comp_dsf.parquet...", flush=True)
         df.sink_parquet(paths.interim_dir / "__comp_dsf.parquet")
@@ -1913,36 +1884,7 @@ def gen_comp_dsf(
         for f in paths.interim_dir.glob("__bess_*.parquet"):
             f.unlink()
 
-        # Combine and write correction logs
-        all_logs = []
-        if section6_log is not None:
-            all_logs.append(
-                section6_log.collect() if isinstance(section6_log, pl.LazyFrame) else section6_log
-            )
-        if section8_log is not None:
-            # Section 8 log has different columns, normalize it
-            s8_log = (
-                section8_log.collect() if isinstance(section8_log, pl.LazyFrame) else section8_log
-            )
-            # Add placeholder columns to match Section 6 log format
-            s8_log = s8_log.with_columns(
-                [
-                    pl.lit(None).cast(pl.Float64).alias("original_value"),
-                    pl.lit(None).cast(pl.Float64).alias("corrected_value"),
-                    pl.lit(None).cast(pl.Float64).alias("correction_factor"),
-                    pl.lit(None).cast(pl.Utf8).alias("error_type"),
-                    pl.lit(None).cast(pl.Int32).alias("window_size"),
-                ]
-            ).rename({"filter_reason": "variable"})
-            all_logs.append(s8_log)
-
-        if all_logs:
-            combined_log = pl.concat(all_logs, how="diagonal_relaxed")
-            combined_log.write_parquet(paths.interim_dir / "bessembinder_corrections_log.parquet")
-            print(
-                "Bessembinder corrections applied. Log written to bessembinder_corrections_log.parquet",
-                flush=True,
-            )
+        print("Bessembinder corrections applied.", flush=True)
     else:
         con.raw_sql(f"""
         COPY (SELECT * FROM __comp_dsf3)
