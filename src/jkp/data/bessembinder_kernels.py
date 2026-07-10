@@ -35,6 +35,27 @@ from numba import njit, prange
 
 
 @njit(cache=True, error_model="numpy")
+def _magnitude_factor(rl, rr):
+    """
+    Correction factor for a spike whose ratios to both endpoints are rl, rr.
+    Nested first-match order (power-of-10 magnitude); 1.0 means no error.
+    """
+    if rl > 500.0 and rr > 500.0:
+        return 0.001
+    if rl > 50.0 and rr > 50.0:
+        return 0.01
+    if rl > 5.0 and rr > 5.0:
+        return 0.1
+    if rl < 0.002 and rr < 0.002:
+        return 1000.0
+    if rl < 0.02 and rr < 0.02:
+        return 100.0
+    if rl < 0.2 and rr < 0.2:
+        return 10.0
+    return 1.0
+
+
+@njit(cache=True, error_model="numpy")
 def _detect_single_one(x, factor, ep_l, ep_r):
     """Single-period detection for one security slice (arrays are views)."""
     n = len(x)
@@ -44,22 +65,8 @@ def _detect_single_one(x, factor, ep_l, ep_r):
         xn = x[t + 1]
         if np.isnan(xt) or np.isnan(xp) or np.isnan(xn):
             continue
-        rp = xt / xp
-        rn = xt / xn
-        # Nested first-match order identical to the original when-chain
-        if rp > 500.0 and rn > 500.0:
-            f = 0.001
-        elif rp > 50.0 and rn > 50.0:
-            f = 0.01
-        elif rp > 5.0 and rn > 5.0:
-            f = 0.1
-        elif rp < 0.002 and rn < 0.002:
-            f = 1000.0
-        elif rp < 0.02 and rn < 0.02:
-            f = 100.0
-        elif rp < 0.2 and rn < 0.2:
-            f = 10.0
-        else:
+        f = _magnitude_factor(xt / xp, xt / xn)
+        if f == 1.0:
             continue
         factor[t] = f
         ep_l[t] = xp
@@ -132,21 +139,8 @@ def _multi_pass_one(
             continue
         if not (imax / imin < vthr):
             continue
-        # Nested magnitude classing, mirroring the single-period chain
-        if high:
-            if rl > 500.0 and rr > 500.0:
-                det[t] = 0.001
-            elif rl > 50.0 and rr > 50.0:
-                det[t] = 0.01
-            else:
-                det[t] = 0.1
-        else:
-            if rl < 0.002 and rr < 0.002:
-                det[t] = 1000.0
-            elif rl < 0.02 and rr < 0.02:
-                det[t] = 100.0
-            else:
-                det[t] = 10.0
+        # high/low gate above guarantees a non-1.0 magnitude here
+        det[t] = _magnitude_factor(rl, rr)
         det_epl[t] = xl
         det_epr[t] = xr
 
@@ -175,57 +169,31 @@ def _multi_one(x, factor, wsize, ep_l, ep_r, nlags, vthr):
         nlag = nlags[i]
         if nlag <= 1:
             continue
-        # FULL window: endpoints t-nlag / t+nlag, interior -(nlag-1)..(nlag-1)
-        _multi_pass_one(
-            x,
-            factor,
-            wsize,
-            ep_l,
-            ep_r,
-            nlag,
-            nlag,  # ep_lag (left endpoint offset)
-            nlag,  # ep_lead (right endpoint offset)
-            -(nlag - 1),  # ilo (interior lo)
-            nlag - 1,  # ihi (interior hi)
-            vthr,
-            det,
-            det_epl,
-            det_epr,
-        )
-        # SUB_A: endpoints t-nlag / t+nlag-1, interior -(nlag-1)..(nlag-2)
-        _multi_pass_one(
-            x,
-            factor,
-            wsize,
-            ep_l,
-            ep_r,
-            nlag,
-            nlag,  # ep_lag
-            nlag - 1,  # ep_lead
-            -(nlag - 1),  # ilo
-            nlag - 2,  # ihi
-            vthr,
-            det,
-            det_epl,
-            det_epr,
-        )
-        # SUB_B: endpoints t-nlag+1 / t+nlag, interior -(nlag-2)..(nlag-1)
-        _multi_pass_one(
-            x,
-            factor,
-            wsize,
-            ep_l,
-            ep_r,
-            nlag,
-            nlag - 1,  # ep_lag
-            nlag,  # ep_lead
-            -(nlag - 2),  # ilo
-            nlag - 1,  # ihi
-            vthr,
-            det,
-            det_epl,
-            det_epr,
-        )
+        # Three window passes, each (ep_lag, ep_lead, ilo, ihi):
+        #   FULL : endpoints t-nlag  / t+nlag   , interior -(nlag-1)..(nlag-1)
+        #   SUB_A: endpoints t-nlag  / t+nlag-1 , interior -(nlag-1)..(nlag-2)
+        #   SUB_B: endpoints t-nlag+1/ t+nlag   , interior -(nlag-2)..(nlag-1)
+        for ep_lag, ep_lead, ilo, ihi in (
+            (nlag, nlag, -(nlag - 1), nlag - 1),
+            (nlag, nlag - 1, -(nlag - 1), nlag - 2),
+            (nlag - 1, nlag, -(nlag - 2), nlag - 1),
+        ):
+            _multi_pass_one(
+                x,
+                factor,
+                wsize,
+                ep_l,
+                ep_r,
+                nlag,
+                ep_lag,
+                ep_lead,
+                ilo,
+                ihi,
+                vthr,
+                det,
+                det_epl,
+                det_epr,
+            )
 
 
 @njit(parallel=True, cache=True, error_model="numpy")

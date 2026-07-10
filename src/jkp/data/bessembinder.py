@@ -40,8 +40,6 @@ def _group_starts(df: pl.DataFrame, group_cols: list[str]) -> np.ndarray:
 
 
 # Section 6: decimal-error corrections
-
-
 def _correct_variable_arrays(
     x_raw: np.ndarray,
     starts: np.ndarray,
@@ -211,8 +209,6 @@ def apply_bessembinder_section6(
 
 
 # Section 8: additional filters
-
-
 def apply_bessembinder_section8(
     df: pl.LazyFrame,
     group_cols: list[str] | None = None,
