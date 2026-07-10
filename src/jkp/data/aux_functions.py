@@ -1406,7 +1406,6 @@ def download_raw_data_tables(
     con.close()
 
 
-@measure_time
 def aug_msf_v2(paths: DataPaths):
     """
     Description:
@@ -1468,7 +1467,6 @@ def aug_msf_v2(paths: DataPaths):
     msf_aug.to_parquet(paths.interim_dir / "raw_data_dfs" / "crsp_msf_v2_aug.parquet")
 
 
-@measure_time
 def build_mcti(paths: DataPaths):
     """
     Description:
