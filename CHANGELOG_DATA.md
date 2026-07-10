@@ -5,14 +5,16 @@ This repository ports the original SAS pipeline ([ReplicationCrisis](https://git
 
 ## 10-07-2026
 __Changes__:
-- Added the DHS (Daniel, Hirshleifer, and Sun) behavioral factors to the factor-model outputs: FIN (financing) and PEAD (post-earnings-announcement drift), value-weighted annual/monthly 2x5 sorts. FIN is built worldwide; PEAD is built internationally using IBES earnings-announcement dates bridged to the global security universe. Adds `dhs` factor returns (monthly and daily) and `dhs` per-stock characteristics, merged into the combined factor-model data.
-- Extended the Fama-French, Hou-Xue-Zhang, and Mispricing (Stambaugh-Yuan) factors to international (per-country) coverage, built on the pure CRSP CIZ v2 data (`msf_v2`/`dsf_v2`).
+- Added the DHS (Daniel, Hirshleifer, and Sun) behavioral factors: FIN (financing) and PEAD (post-earnings-announcement drift), value-weighted 2x5 sorts. FIN is built worldwide; PEAD is built internationally using IBES earnings-announcement dates bridged to the global security universe.
+  - New files: `dhs_factors_monthly.parquet`, `dhs_factors_daily.parquet`, `dhs_characteristics.parquet`.
+  - New columns in the combined factor-model outputs: `fin_dhs` and `pead_dhs` in `ap_factors_monthly.parquet` (keyed by `excntry, eom`) and `ap_factors_daily.parquet` (keyed by `excntry, date`); `ns_dhs`, `ir_dhs`, and `abr_dhs` in `ap_factors_characteristics.parquet` (keyed by `id, eom`).
+- Extended the Fama-French, Hou-Xue-Zhang, and Mispricing (Stambaugh-Yuan) factors to international (per-country) coverage, built on the pure CRSP CIZ v2 data (`msf_v2`/`dsf_v2`). This adds rows (more `excntry` values) to the existing factor files; no new columns.
 - Extended the FF3 SMB/HML history back to 1926 using Davis-Fama-French hand-collected book equity, spliced onto Compustat where the CCM link exists but early balance-sheet fields are missing.
 - HXZ US factors now start in 1972 (the original sample start), with the RDQ earnings-announcement gate applied over the full sample.
 - Fixed run-to-run nondeterminism in the HXZ ROE and Mispricing construction, so repeated builds now produce identical output.
 
 __Impact__:
-- Adds new factor series (DHS FIN/PEAD) and international coverage across all four models. Existing US FF/HXZ/Mispricing series change where the CIZ v2 universe, the 1926/1972 sample extensions, or the determinism fixes apply.
+- Additive: no output files or columns are removed. Adds the new DHS files/columns above and international coverage across all four models. Existing US FF/HXZ/Mispricing series change where the CIZ v2 universe, the 1926/1972 sample extensions, or the determinism fixes apply.
 
 ## 27-04-2026
 __Changes__:
