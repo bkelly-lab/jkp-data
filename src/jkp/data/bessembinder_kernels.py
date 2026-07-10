@@ -192,41 +192,40 @@ def _multi_one(x, factor, wsize, ep_l, ep_r, nlags, vthr):
             det_epl,
             det_epr,
         )
-        if 2 * nlag - 2 >= 1:
-            # SUB_A: endpoints t-nlag / t+nlag-1, interior -(nlag-1)..(nlag-2)
-            _multi_pass_one(
-                x,
-                factor,
-                wsize,
-                ep_l,
-                ep_r,
-                nlag,
-                nlag,
-                nlag - 1,
-                -(nlag - 1),
-                nlag - 2,
-                vthr,
-                det,
-                det_epl,
-                det_epr,
-            )
-            # SUB_B: endpoints t-nlag+1 / t+nlag, interior -(nlag-2)..(nlag-1)
-            _multi_pass_one(
-                x,
-                factor,
-                wsize,
-                ep_l,
-                ep_r,
-                nlag,
-                nlag - 1,
-                nlag,
-                -(nlag - 2),
-                nlag - 1,
-                vthr,
-                det,
-                det_epl,
-                det_epr,
-            )
+        # SUB_A: endpoints t-nlag / t+nlag-1, interior -(nlag-1)..(nlag-2)
+        _multi_pass_one(
+            x,
+            factor,
+            wsize,
+            ep_l,
+            ep_r,
+            nlag,
+            nlag,
+            nlag - 1,
+            -(nlag - 1),
+            nlag - 2,
+            vthr,
+            det,
+            det_epl,
+            det_epr,
+        )
+        # SUB_B: endpoints t-nlag+1 / t+nlag, interior -(nlag-2)..(nlag-1)
+        _multi_pass_one(
+            x,
+            factor,
+            wsize,
+            ep_l,
+            ep_r,
+            nlag,
+            nlag - 1,
+            nlag,
+            -(nlag - 2),
+            nlag - 1,
+            vthr,
+            det,
+            det_epl,
+            det_epr,
+        )
 
 
 @njit(parallel=True, cache=True, error_model="numpy")
@@ -268,18 +267,12 @@ def _validate_one(factor, wsize, reject):
 
 
 @njit(parallel=True, cache=True, error_model="numpy")
-def validate_cascading_all(starts, factor, wsize, rejected_mask):
-    """Run cascading validation over all securities; record rejected rows."""
+def validate_cascading_all(starts, factor, wsize):
+    """Run cascading validation over all securities (factor reset in place)."""
     for g in prange(len(starts) - 1):
         s, e = starts[g], starts[g + 1]
-        f = factor[s:e]
-        before = np.empty(e - s, dtype=np.bool_)
-        for k in range(e - s):
-            before[k] = f[k] != 1.0
         scratch = np.empty(e - s, dtype=np.bool_)
-        _validate_one(f, wsize[s:e], scratch)
-        for k in range(e - s):
-            rejected_mask[s + k] = before[k] and f[k] == 1.0
+        _validate_one(factor[s:e], wsize[s:e], scratch)
 
 
 # Section 8 filter kernels (thresholds = Bessembinder et al. 2023 Data Appendix)

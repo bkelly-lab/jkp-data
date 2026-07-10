@@ -12,7 +12,6 @@ from pathlib import Path
 
 import numpy as np
 import polars as pl
-from polars import col
 
 from . import bessembinder_kernels as bk
 from .config import (
@@ -57,7 +56,9 @@ def _correct_variable_arrays(
         arrays: single-period detection, multi-period detection, cascading
         validation, and correction application.
     Steps:
-        1) zeros -> NaN copy for detection (raw kept for the multiply path).
+        1) Copy input, force zeros -> NaN. This working copy feeds both
+           detection and the correction output, so a zero input becomes null
+           in the result (legacy zero-to-null behavior).
         2) detect_single_period_all; window_size = 1 where flagged.
         3) detect_multi_period_all over windows > 1 (ascending).
         4) validate_cascading_all.
@@ -85,7 +86,7 @@ def _correct_variable_arrays(
         bk.detect_multi_period_all(
             x_det, starts, factor, wsize, ep_l, ep_r, nlags, variation_threshold
         )
-    bk.validate_cascading_all(starts, factor, wsize, np.zeros(n, dtype=np.bool_))
+    bk.validate_cascading_all(starts, factor, wsize)
 
     if price_floor:
         gated = (factor != 1.0) & ((factor > 1.0) | (x_det < 1.0))
@@ -183,7 +184,7 @@ def apply_bessembinder_section6(
 
     corr_path = spill_dir / "__bess_corrected_cols.parquet"
     pl.DataFrame(corrected_cols).with_columns(
-        [col(name).fill_nan(None) for name in corrected_cols]
+        [pl.col(name).fill_nan(None) for name in corrected_cols]
     ).write_parquet(corr_path, compression=BESS_SPILL_COMPRESSION)
 
     return pl.concat(
@@ -193,17 +194,6 @@ def apply_bessembinder_section6(
 
 
 # Section 8: additional filters
-
-
-def _avg_positive_volume(
-    df: pl.LazyFrame, group_cols: list[str], volume_col: str = "dolvol"
-) -> pl.LazyFrame:
-    """Per-security mean of positive volume — filter 8a's input statistic."""
-    return (
-        df.filter(col(volume_col) > 0)
-        .group_by(group_cols)
-        .agg(pl.mean(volume_col).alias("_avg_vol"))
-    )
 
 
 def apply_bessembinder_section8(
@@ -249,8 +239,8 @@ def apply_bessembinder_section8(
         + [sort_col]
         + [pl.col(c).cast(pl.Float64) for c in value_cols]
         + [
-            col(country_col).is_in(BESS_LOW_PRICE_COUNTRIES).fill_null(False).alias("_low"),
-            (col(country_col) == "CHN").fill_null(False).alias("_chn"),
+            pl.col(country_col).is_in(BESS_LOW_PRICE_COUNTRIES).fill_null(False).alias("_low"),
+            (pl.col(country_col) == "CHN").fill_null(False).alias("_chn"),
         ]
     ).collect()
     keys = data.select(group_cols + [sort_col])
@@ -269,14 +259,19 @@ def apply_bessembinder_section8(
         if not np.all(d[idx] >= d[idx - 1]):
             raise ValueError(f"presorted file {sorted_path}: dates not sorted within a group")
 
-    # Filter 8a's global decision (the only cross-security statistic): same
-    # expressions as _avg_positive_volume, evaluated once on the full panel;
-    # securities with no positive volume (null mean) are KEPT.
-    avg_vol = _avg_positive_volume(data.lazy(), group_cols)
+    # Filter 8a's global decision (the only cross-security statistic):
+    # per-security mean of positive volume + 2% quantile, evaluated once on the
+    # full panel; securities with no positive volume (null mean) are KEPT.
+    avg_vol = (
+        data.lazy()
+        .filter(pl.col("dolvol") > 0)
+        .group_by(group_cols)
+        .agg(pl.mean("dolvol").alias("_avg_vol"))
+    )
     remove_8a = (
         keys.lazy()
-        .group_by(group_cols)
-        .len()
+        .select(group_cols)
+        .unique()
         .join(avg_vol, on=group_cols, how="left")
         .join(avg_vol.select(pl.col("_avg_vol").quantile(0.02).alias("_cutoff")), how="cross")
         # joins do not preserve row order: re-sort into group_starts order
@@ -309,6 +304,6 @@ def apply_bessembinder_section8(
     pl.DataFrame({"_reason": reason}).write_parquet(reason_path, compression=BESS_SPILL_COMPRESSION)
     return (
         pl.concat([pl.scan_parquet(sorted_path), pl.scan_parquet(reason_path)], how="horizontal")
-        .filter(col("_reason") == 0)
+        .filter(pl.col("_reason") == 0)
         .drop("_reason")
     )
