@@ -299,35 +299,45 @@ def _s8_early_jump_stage(reason, jump_series, confirm_series, return_based, chn)
             reason[i] = 1
 
 
-@njit(cache=True, error_model="numpy")
-def _s8_one_security(reason, remove_8a, ajexdi, prc, me, ri, cshoc, dates, low_thr, chn, gap_days):
-    """
-    Run the Section 8 filter chain on one security's date-sorted slice. Filters
-    run sequentially, each deriving its shifts/obs-counts over the rows still
-    alive at its start (matching the polars chain). reason is mutated in place
-    (0 = kept, 1 = removed); gap_days is filter 8d's calendar-day bound.
-    """
-    n = reason.size
+# Each filter reads the rows still alive at its start (sequential survivor) and
+# marks removals in `reason`. Those that can void the whole security (8a/8b/8c
+# initial breach) return True to stop the chain.
 
-    # 8a: bottom-percentile average positive volume (global decision)
+
+@njit(cache=True, error_model="numpy")
+def _filter_8a_low_volume(reason, remove_8a):
+    """8a: drop the whole security if it is in the bottom 2% by average positive volume."""
     if remove_8a:
         _s8_kill_all(reason)
-        return
+        return True
+    return False
 
-    # 8b: any AJEXDI == 0 removes the security
-    for i in range(n):
+
+@njit(cache=True, error_model="numpy")
+def _filter_8b_zero_ajexdi(reason, ajexdi):
+    """8b: any AJEXDI == 0 removes the whole security."""
+    for i in range(reason.size):
         if ajexdi[i] == 0.0:
             _s8_kill_all(reason)
-            return
+            return True
+    return False
 
-    # 8c: low price / market equity
+
+@njit(cache=True, error_model="numpy")
+def _filter_8c_low_price_or_me(reason, prc, me, dates, low_thr):
+    """
+    8c: price below threshold ($0.01, or $0.001 in low_thr countries) or ME < $1M.
+    A breach on the first alive date voids the security; a later breach removes
+    all history from the breach date onward.
+    """
+    n = reason.size
     first = -1
     for i in range(n):
         if reason[i] == 0:
             first = i
             break
     if first < 0:
-        return
+        return True
     breach_idx = -1
     for i in range(first, n):
         if reason[i] != 0:
@@ -336,61 +346,74 @@ def _s8_one_security(reason, remove_8a, ajexdi, prc, me, ri, cshoc, dates, low_t
         if me[i] < 1.0 or prc[i] < thr:
             breach_idx = i
             break
-    if breach_idx >= 0:
-        # Initial breach (any alive row sharing the first alive date) removes
-        # the whole security; otherwise remove history from the breach date on
-        initial = False
-        for i in range(first, n):
-            if reason[i] != 0 or dates[i] != dates[first]:
-                break
-            thr = 0.001 if low_thr[i] else 0.01
-            if me[i] < 1.0 or prc[i] < thr:
-                initial = True
-                break
-        if initial:
-            _s8_kill_all(reason)
-            return
-        for i in range(n):
-            if reason[i] == 0 and dates[i] >= dates[breach_idx]:
-                reason[i] = 1
-
-    # 8d: drop observations after calendar gaps > ~11 months
-    prev = -1
+    if breach_idx < 0:
+        return False
+    initial = False
+    for i in range(first, n):
+        if reason[i] != 0 or dates[i] != dates[first]:
+            break
+        thr = 0.001 if low_thr[i] else 0.01
+        if me[i] < 1.0 or prc[i] < thr:
+            initial = True
+            break
+    if initial:
+        _s8_kill_all(reason)
+        return True
     for i in range(n):
+        if reason[i] == 0 and dates[i] >= dates[breach_idx]:
+            reason[i] = 1
+    return False
+
+
+@njit(cache=True, error_model="numpy")
+def _filter_8d_data_gaps(reason, dates, gap_days):
+    """8d: drop the observation after a calendar gap wider than gap_days."""
+    prev = -1
+    for i in range(reason.size):
         if reason[i] != 0:
             continue
         if prev >= 0 and dates[i] - dates[prev] > gap_days:
             reason[i] = 1
-            # polars computes all gaps against the pre-stage frame, so the
-            # removed row still serves as the next row's gap reference
+        # prev advances even past a removed row: polars measures gaps against
+        # the pre-stage frame, so a removed row is still the next row's reference
         prev = i
 
-    # 8e: adjCSHO jumps in early history
-    adjcsho = cshoc * ajexdi
-    _s8_early_jump_stage(reason, adjcsho, me, False, chn)
 
-    # 8f: ME jumps without commensurate returns in early history
+@njit(cache=True, error_model="numpy")
+def _filter_8e_adjcsho_jumps(reason, cshoc, ajexdi, me, chn):
+    """8e: early adjCSHO (= cshoc*ajexdi) jump not matched by ME (looser CHN bounds)."""
+    _s8_early_jump_stage(reason, cshoc * ajexdi, me, False, chn)
+
+
+@njit(cache=True, error_model="numpy")
+def _filter_8f_me_jumps(reason, me, ri, chn):
+    """8f: early ME jump not backed by a commensurate return (ri)."""
     _s8_early_jump_stage(reason, me, ri, True, chn)
 
-    # 8g: returns inconsistent with ME changes
+
+@njit(cache=True, error_model="numpy")
+def _filter_8g_return_me_mismatch(reason, ri, me):
+    """8g: |return| > 80% with |ME change| < 50%."""
     prev = -1
-    for i in range(n):
+    for i in range(reason.size):
         if reason[i] != 0:
             continue
         if prev >= 0:
             ret = ri[i] / ri[prev] - 1.0
             me_chg = me[i] / me[prev] - 1.0
-            # |return| > 80% not backed by a matching (>50%) ME move
             if abs(ret) > 0.8 and abs(me_chg) < 0.5:
-                # prev still advances below: the flagged row stays the shift
-                # source for the next row, matching polars stage-input shifts
                 reason[i] = 1
+        # a flagged row still advances prev, staying the shift source for the
+        # next row (matching the polars stage-input shift)
         prev = i
 
-    # 8h: large price/ME ratios within the first few observations
+
+@njit(cache=True, error_model="numpy")
+def _filter_8h_initial_ratio_errors(reason, prc, me):
+    """8h: a price or ME ratio outside [0.1, 10] among the first 3 observations."""
     prev = -1
     obs = -1
-    for i in range(n):
+    for i in range(reason.size):
         if reason[i] != 0:
             continue
         obs += 1
@@ -399,10 +422,25 @@ def _s8_one_security(reason, remove_8a, ajexdi, prc, me, ri, cshoc, dates, low_t
         if prev >= 0:
             pr = prc[i] / prc[prev]
             mr = me[i] / me[prev]
-            # price or ME ratio outside [0.1, 10] on an initial observation
             if pr > 10.0 or pr < 0.1 or mr > 10.0 or mr < 0.1:
-                reason[i] = 1  # prev still advances: see 8g note
-        prev = i
+                reason[i] = 1
+        prev = i  # flagged rows still advance prev (see 8g)
+
+
+@njit(cache=True, error_model="numpy")
+def _s8_one_security(reason, remove_8a, ajexdi, prc, me, ri, cshoc, dates, low_thr, chn, gap_days):
+    """Run filters 8a-8h in order on one security's date-sorted slice."""
+    if _filter_8a_low_volume(reason, remove_8a):
+        return
+    if _filter_8b_zero_ajexdi(reason, ajexdi):
+        return
+    if _filter_8c_low_price_or_me(reason, prc, me, dates, low_thr):
+        return
+    _filter_8d_data_gaps(reason, dates, gap_days)
+    _filter_8e_adjcsho_jumps(reason, cshoc, ajexdi, me, chn)
+    _filter_8f_me_jumps(reason, me, ri, chn)
+    _filter_8g_return_me_mismatch(reason, ri, me)
+    _filter_8h_initial_ratio_errors(reason, prc, me)
 
 
 @njit(parallel=True, cache=True, error_model="numpy")

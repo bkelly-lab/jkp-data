@@ -3,11 +3,16 @@ Bessembinder et al. (2023) Data Corrections for Compustat
 
 Implements the Section 6 decimal-error corrections and Section 8 filters from
 Bessembinder et al. (2023) "Do Global Stocks Outperform US Treasury Bills?"
-Data Appendix. Both sections run as memory-bounded array/numba passes: the
-input is streaming-sorted to a spill file, corrections/filters run in numpy,
-and the result is reattached via a lazy horizontal concat.
+Data Appendix.
+
+Layering: the public `apply_bessembinder_section6/8` functions are domain-level
+orchestrators (sort -> build typed inputs -> run -> reattach). A dedicated
+adapter converts the Polars panel to NumPy once, the numba kernels
+(bessembinder_kernels) do the per-security work, and the result is reattached
+lazily. NumPy is only the kernel boundary, not the whole design.
 """
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -21,6 +26,35 @@ from .config import (
     BESS_SECTION8_GAP_TRADING_DAYS,
     BESS_SPILL_COMPRESSION,
 )
+
+
+@dataclass(frozen=True)
+class Section6State:
+    """Per-variable detection state at the Section 6 kernel boundary. The
+    kernels mutate factor/window_size/endpoints in place."""
+
+    values: np.ndarray  # zero-nulled working copy (feeds detection and output)
+    factor: np.ndarray  # correction multiplier, 1.0 = clean
+    window_size: np.ndarray  # detection window, -1 = null
+    left_endpoint: np.ndarray  # clean value to the left of a flagged spike
+    right_endpoint: np.ndarray  # clean value to the right
+
+
+@dataclass(frozen=True)
+class Section8Inputs:
+    """Typed NumPy view of one Section 8 panel, ready for `section8_all`."""
+
+    starts: np.ndarray  # group-boundary offsets
+    remove_8a: np.ndarray  # per-security 8a (bottom-2% volume) decision
+    ajexdi: np.ndarray
+    prc: np.ndarray
+    me: np.ndarray
+    ri: np.ndarray
+    cshoc: np.ndarray
+    dates: np.ndarray  # physical int32 days
+    low: np.ndarray  # $0.001 price-threshold country flag (8c)
+    chn: np.ndarray  # China flag (looser 8e bounds)
+    gap_days: int  # filter 8d calendar-day gap bound
 
 
 def _group_starts(df: pl.DataFrame, group_cols: list[str]) -> np.ndarray:
@@ -38,9 +72,14 @@ def _group_starts(df: pl.DataFrame, group_cols: list[str]) -> np.ndarray:
     return np.concatenate(([0], changes, [n])).astype(np.int64)
 
 
+def _sort_to_spill(df: pl.LazyFrame, sort_keys: list[str], path: Path) -> None:
+    """Streaming-sort the input by sort_keys to a spill parquet."""
+    df.sort(sort_keys).sink_parquet(path, compression=BESS_SPILL_COMPRESSION)
+
+
 # Section 6: decimal-error corrections
 def _correct_variable_arrays(
-    x_raw: np.ndarray,
+    values: np.ndarray,
     starts: np.ndarray,
     window_sizes: list[int],
     correction_method: str,
@@ -49,55 +88,139 @@ def _correct_variable_arrays(
 ) -> np.ndarray:
     """
     Description:
-        Full Section 6 correction for one variable on a numpy array:
-        single- then multi-period detection, cascading validation, correction.
-    Steps:
-        1) Zeros -> NaN in a working copy that feeds detection AND output, so a
-           zero input becomes null (legacy zero-to-null behavior).
-        2) Detect single- then multi-period errors; validate cascading.
-        3) price_floor: keep only divide-direction corrections on >=$1 prices.
-        4) Apply: 'bessembinder'/'floor' multiply by the factor;
-           'interpolation'/'floor_interp' use the endpoint geometric mean
-           (single-endpoint fallback).
+        Correct one variable: single- then multi-period detection, cascading
+        validation, then apply. Zeros become NaN in the working copy that feeds
+        both detection and output, so a zero input ends up null.
     Output:
         Corrected float64 array (NaN = null).
     """
-    n = len(x_raw)
-    x_det = x_raw.copy()
-    x_det[x_det == 0.0] = np.nan
-    factor = np.ones(n, dtype=np.float64)
-    wsize = np.full(n, -1, dtype=np.int32)  # -1 = null window size
-    ep_l = np.full(n, np.nan, dtype=np.float64)
-    ep_r = np.full(n, np.nan, dtype=np.float64)
+    n = len(values)
+    x = values.copy()
+    x[x == 0.0] = np.nan
+    state = Section6State(
+        values=x,
+        factor=np.ones(n, dtype=np.float64),
+        window_size=np.full(n, -1, dtype=np.int32),
+        left_endpoint=np.full(n, np.nan, dtype=np.float64),
+        right_endpoint=np.full(n, np.nan, dtype=np.float64),
+    )
 
-    bk.detect_single_period_all(x_det, starts, factor, ep_l, ep_r)
-    wsize[factor != 1.0] = 1
+    bk.detect_single_period_all(
+        state.values, starts, state.factor, state.left_endpoint, state.right_endpoint
+    )
+    state.window_size[state.factor != 1.0] = 1
     nlags = np.array(sorted(w for w in window_sizes if w > 1), dtype=np.int64)
     if len(nlags) > 0:
         bk.detect_multi_period_all(
-            x_det, starts, factor, wsize, ep_l, ep_r, nlags, variation_threshold
+            state.values,
+            starts,
+            state.factor,
+            state.window_size,
+            state.left_endpoint,
+            state.right_endpoint,
+            nlags,
+            variation_threshold,
         )
-    bk.validate_cascading_all(starts, factor, wsize)
+    bk.validate_cascading_all(starts, state.factor, state.window_size)
 
     if price_floor:
-        is_multiply = factor > 1.0  # correction direction is multiply
-        is_sub_dollar = x_det < 1.0  # original price below $1
+        is_multiply = state.factor > 1.0  # correction direction is multiply
+        is_sub_dollar = state.values < 1.0  # original price below $1
         # keep only divide-direction corrections on >=$1 prices
-        gated = (factor != 1.0) & (is_multiply | is_sub_dollar)
-        factor[gated] = 1.0
+        state.factor[(state.factor != 1.0) & (is_multiply | is_sub_dollar)] = 1.0
 
     if correction_method not in ("interpolation", "floor_interp"):
-        return x_det * factor
+        return state.values * state.factor
 
-    flagged = factor != 1.0
-    corrected = x_det.copy()
-    both = flagged & ~np.isnan(ep_l) & ~np.isnan(ep_r)
+    # interpolation: replace a flagged spike with the geometric mean of its
+    # clean endpoints (falling back to whichever single endpoint exists)
+    flagged = state.factor != 1.0
+    ep_l, ep_r = state.left_endpoint, state.right_endpoint
+    has_l, has_r = ~np.isnan(ep_l), ~np.isnan(ep_r)
+    corrected = state.values.copy()
+    both = flagged & has_l & has_r
+    left_only = flagged & has_l & ~has_r
+    right_only = flagged & ~has_l & has_r
     corrected[both] = np.sqrt(ep_l[both] * ep_r[both])
-    left_only = flagged & ~np.isnan(ep_l) & np.isnan(ep_r)
     corrected[left_only] = ep_l[left_only]
-    right_only = flagged & np.isnan(ep_l) & ~np.isnan(ep_r)
     corrected[right_only] = ep_r[right_only]
     return corrected
+
+
+def _load_section6(
+    sorted_path: Path, group_cols: list[str], sort_col: str
+) -> tuple[pl.DataFrame, list[str], np.ndarray]:
+    """Collect the Section 6 value columns as f64; return (data, schema, starts)."""
+    lf = pl.scan_parquet(sorted_path)
+    schema_names = lf.collect_schema().names()
+    value_cols = [
+        v for v in ("trfd", "qunit", "adrrc", "ajexdi", "prccd", "cshoc") if v in schema_names
+    ]
+    data = lf.select(
+        group_cols + [sort_col] + [pl.col(c).cast(pl.Float64) for c in value_cols]
+    ).collect()
+    return data, schema_names, _group_starts(data, group_cols)
+
+
+def _run_section6(
+    data: pl.DataFrame,
+    schema_names: list[str],
+    starts: np.ndarray,
+    window_sizes: list[int],
+    has_adrrc: bool,
+    correction_method: str,
+    variation_threshold: float,
+) -> dict[str, np.ndarray]:
+    """Correct each variable (per Section 6c) and return {name: corrected array}."""
+    corrected: dict[str, np.ndarray] = {}
+    # trfd, qunit and (NA data only) adrrc are corrected independently
+    for variable in ("trfd", "qunit", "adrrc"):
+        if variable in schema_names and (variable != "adrrc" or has_adrrc):
+            corrected[variable] = _correct_variable_arrays(
+                data[variable].to_numpy(),
+                starts,
+                window_sizes,
+                correction_method,
+                variation_threshold=variation_threshold,
+            )
+
+    # reconstruct prccd/cshoc from the corrected split-adjusted price and shares
+    if {"ajexdi", "prccd", "cshoc"} <= set(schema_names):
+        ajexdi = data["ajexdi"].to_numpy()
+        with np.errstate(divide="ignore", invalid="ignore"):
+            # floor variants gate the price only (divide-direction, >=$1)
+            adjprc = _correct_variable_arrays(
+                data["prccd"].to_numpy() / ajexdi,
+                starts,
+                window_sizes,
+                correction_method,
+                price_floor=correction_method in ("floor", "floor_interp"),
+                variation_threshold=variation_threshold,
+            )
+            adjcsho = _correct_variable_arrays(
+                data["cshoc"].to_numpy() * ajexdi,
+                starts,
+                window_sizes,
+                correction_method,
+                variation_threshold=variation_threshold,
+            )
+            corrected["prccd"] = adjprc * ajexdi
+            corrected["cshoc"] = adjcsho / ajexdi
+    return corrected
+
+
+def _reattach_corrected(
+    sorted_path: Path, corrected: dict[str, np.ndarray], spill_dir: Path
+) -> pl.LazyFrame:
+    """Splice corrected columns over the originals (which move to the end)."""
+    corr_path = spill_dir / "__bess_corrected_cols.parquet"
+    pl.DataFrame(corrected).with_columns(
+        [pl.col(name).fill_nan(None) for name in corrected]
+    ).write_parquet(corr_path, compression=BESS_SPILL_COMPRESSION)
+    return pl.concat(
+        [pl.scan_parquet(sorted_path).drop(list(corrected)), pl.scan_parquet(corr_path)],
+        how="horizontal",
+    )
 
 
 def apply_bessembinder_section6(
@@ -131,75 +254,111 @@ def apply_bessembinder_section6(
         )
     if spill_dir is None:
         raise ValueError("apply_bessembinder_section6 requires spill_dir")
-    if group_cols is None:
-        group_cols = ["gvkey", "iid"]
-    if window_sizes is None:
-        window_sizes = BESS_DEFAULT_WINDOWS
+    group_cols = group_cols or ["gvkey", "iid"]
+    window_sizes = window_sizes if window_sizes is not None else BESS_DEFAULT_WINDOWS
 
     sorted_path = spill_dir / "__bess_sorted.parquet"
-    df.sort(group_cols + [sort_col]).sink_parquet(sorted_path, compression=BESS_SPILL_COMPRESSION)
-    lf = pl.scan_parquet(sorted_path)
-    schema_names = lf.collect_schema().names()
-
-    value_cols = [
-        v for v in ("trfd", "qunit", "adrrc", "ajexdi", "prccd", "cshoc") if v in schema_names
-    ]
-    data = lf.select(
-        group_cols + [sort_col] + [pl.col(c).cast(pl.Float64) for c in value_cols]
-    ).collect()
-    starts = _group_starts(data, group_cols)
-    corrected_cols: dict[str, np.ndarray] = {}
-
-    # trfd, qunit and (NA data only) adrrc are corrected independently.
-    # (_correct_variable_arrays copies its input internally, so no .copy() here.)
-    for variable in ("trfd", "qunit", "adrrc"):
-        if variable in schema_names and (variable != "adrrc" or has_adrrc):
-            corrected_cols[variable] = _correct_variable_arrays(
-                data[variable].to_numpy(),
-                starts,
-                window_sizes,
-                correction_method,
-                variation_threshold=variation_threshold,
-            )
-
-    # Reconstruct prccd/cshoc from corrected split-adjusted values; only when
-    # all three inputs are present (always so on the Compustat security files).
-    if {"ajexdi", "prccd", "cshoc"} <= set(schema_names):
-        ajexdi = data["ajexdi"].to_numpy()
-        with np.errstate(divide="ignore", invalid="ignore"):
-            # The floor variants gate the price variable only (divide-direction, >=$1).
-            adjprc = _correct_variable_arrays(
-                data["prccd"].to_numpy() / ajexdi,
-                starts,
-                window_sizes,
-                correction_method,
-                price_floor=correction_method in ("floor", "floor_interp"),
-                variation_threshold=variation_threshold,
-            )
-            adjcsho = _correct_variable_arrays(
-                data["cshoc"].to_numpy() * ajexdi,
-                starts,
-                window_sizes,
-                correction_method,
-                variation_threshold=variation_threshold,
-            )
-            corrected_cols["prccd"] = adjprc * ajexdi
-            corrected_cols["cshoc"] = adjcsho / ajexdi
-
-    corr_path = spill_dir / "__bess_corrected_cols.parquet"
-    pl.DataFrame(corrected_cols).with_columns(
-        [pl.col(name).fill_nan(None) for name in corrected_cols]
-    ).write_parquet(corr_path, compression=BESS_SPILL_COMPRESSION)
-
-    # Reattach the corrected columns in place of the originals (which are
-    # dropped from the sorted scan and reappear at the end of the column order).
-    return pl.concat(
-        [pl.scan_parquet(sorted_path).drop(list(corrected_cols)), pl.scan_parquet(corr_path)],
-        how="horizontal",
+    _sort_to_spill(df, group_cols + [sort_col], sorted_path)
+    data, schema_names, starts = _load_section6(sorted_path, group_cols, sort_col)
+    corrected = _run_section6(
+        data, schema_names, starts, window_sizes, has_adrrc, correction_method, variation_threshold
     )
+    return _reattach_corrected(sorted_path, corrected, spill_dir)
 
 
 # Section 8: additional filters
+def _load_section8(
+    sorted_path: Path, group_cols: list[str], sort_col: str, country_col: str
+) -> pl.DataFrame:
+    """Collect kernel inputs in one pass: f64 values, int32 date, country flags."""
+    value_cols = ["ajexdi", "prc", "me", "ri", "cshoc", "dolvol"]
+    return (
+        pl.scan_parquet(sorted_path)
+        .select(
+            group_cols
+            + [sort_col]
+            + [pl.col(c).cast(pl.Float64) for c in value_cols]
+            + [
+                pl.col(sort_col).cast(pl.Date).to_physical().cast(pl.Int32).alias("_date"),
+                pl.col(country_col).is_in(BESS_LOW_PRICE_COUNTRIES).fill_null(False).alias("_low"),
+                (pl.col(country_col) == "CHN").fill_null(False).alias("_chn"),
+            ]
+        )
+        .collect()
+    )
+
+
+def _filter_8a_decision(data: pl.DataFrame, group_cols: list[str]) -> np.ndarray:
+    """
+    Filter 8a's global cross-security decision: per-security mean of positive
+    volume, dropping the bottom 2% (scalar quantile, nulls ignored). Securities
+    with no positive volume (null mean) are KEPT. One row per group, in
+    group_starts (sorted) order.
+    """
+    avg_vol = (
+        data.lazy()
+        .filter(pl.col("dolvol") > 0)
+        .group_by(group_cols)
+        .agg(pl.mean("dolvol").alias("_avg_vol"))
+        .collect()
+    )
+    cutoff = avg_vol["_avg_vol"].quantile(0.02)
+    return (
+        data.select(group_cols)
+        .unique()
+        .join(avg_vol, on=group_cols, how="left")
+        .sort(group_cols)
+        .select((pl.col("_avg_vol") <= cutoff).fill_null(False))
+        .to_series()
+        .to_numpy()
+        .copy()
+    )
+
+
+def _section8_inputs(data: pl.DataFrame, group_cols: list[str]) -> Section8Inputs:
+    """Adapter: the collected Section 8 panel -> typed NumPy kernel inputs."""
+    return Section8Inputs(
+        starts=_group_starts(data, group_cols),
+        remove_8a=_filter_8a_decision(data, group_cols),
+        ajexdi=data["ajexdi"].to_numpy(),
+        prc=data["prc"].to_numpy(),
+        me=data["me"].to_numpy(),
+        ri=data["ri"].to_numpy(),
+        cshoc=data["cshoc"].to_numpy(),
+        dates=data["_date"].to_numpy(),
+        low=data["_low"].to_numpy(),
+        chn=data["_chn"].to_numpy(),
+        gap_days=int(BESS_SECTION8_GAP_TRADING_DAYS * 365 / 252),  # trading -> calendar days
+    )
+
+
+def _verify_presorted_order(
+    data: pl.DataFrame, group_cols: list[str], inp: Section8Inputs, sorted_path: Path
+) -> None:
+    """Trusting an externally sorted spill: a stale or misordered file would
+    silently corrupt the panel, so check groups are contiguous and dates rise."""
+    n_groups = data.select(pl.struct(group_cols).n_unique()).item()
+    if len(inp.starts) - 1 != n_groups:
+        raise ValueError(f"presorted file {sorted_path}: groups are not contiguous")
+    d = inp.dates
+    interior = np.ones(len(d), dtype=np.bool_)
+    interior[inp.starts[:-1]] = False  # group starts are exempt from the diff check
+    idx = np.flatnonzero(interior)
+    if not np.all(d[idx] >= d[idx - 1]):
+        raise ValueError(f"presorted file {sorted_path}: dates not sorted within a group")
+
+
+def _reattach_reason(sorted_path: Path, reason: np.ndarray, spill_dir: Path) -> pl.LazyFrame:
+    """Attach the kernel's keep/remove decision and filter to the kept rows."""
+    reason_path = spill_dir / "__bess_s8_reason.parquet"
+    pl.DataFrame({"_reason": reason}).write_parquet(reason_path, compression=BESS_SPILL_COMPRESSION)
+    return (
+        pl.concat([pl.scan_parquet(sorted_path), pl.scan_parquet(reason_path)], how="horizontal")
+        .filter(pl.col("_reason") == 0)
+        .drop("_reason")
+    )
+
+
 def apply_bessembinder_section8(
     df: pl.LazyFrame,
     group_cols: list[str] | None = None,
@@ -211,13 +370,11 @@ def apply_bessembinder_section8(
     """
     Description:
         Apply the Section 8 filter chain (8a-8h) as one numba pass per security,
-        preserving sequential-survivor semantics. Memory-bounded array path
-        with spill files.
+        preserving sequential-survivor semantics. Memory-bounded array path.
     Steps:
         1) Streaming-sort input to a spill file (or verify presorted_path).
-        2) Collect keys, kernel inputs and country flags in one pass.
-        3) Filter 8a global decision: positive-volume mean + 2% quantile.
-        4) section8_all kernel -> per-row keep/remove; filter lazily.
+        2) Build typed NumPy inputs (kernel arrays + 8a decision).
+        3) Run section8_all -> per-row keep/remove; filter lazily.
     Note:
         With presorted_path, the panel is read from that file and df is NOT
         re-read — the caller must have written df's data there, sorted by
@@ -225,8 +382,7 @@ def apply_bessembinder_section8(
     Output:
         Filtered LazyFrame.
     """
-    if group_cols is None:
-        group_cols = ["gvkey", "iid"]
+    group_cols = group_cols or ["gvkey", "iid"]
     if spill_dir is None:
         raise ValueError("apply_bessembinder_section8 requires spill_dir")
     if presorted_path is not None and not presorted_path.exists():
@@ -234,85 +390,26 @@ def apply_bessembinder_section8(
 
     sorted_path = presorted_path or (spill_dir / "__bess_s8_sorted.parquet")
     if presorted_path is None:
-        df.sort(group_cols + [sort_col]).sink_parquet(
-            sorted_path, compression=BESS_SPILL_COMPRESSION
-        )
-    lf = pl.scan_parquet(sorted_path)
+        _sort_to_spill(df, group_cols + [sort_col], sorted_path)
 
-    # Collect every kernel input in one pass: float value columns, the date as
-    # physical int32 days, and the two country flags.
-    value_cols = ["ajexdi", "prc", "me", "ri", "cshoc", "dolvol"]
-    data = lf.select(
-        group_cols
-        + [sort_col]
-        + [pl.col(c).cast(pl.Float64) for c in value_cols]
-        + [
-            pl.col(sort_col).cast(pl.Date).to_physical().cast(pl.Int32).alias("_date"),
-            pl.col(country_col).is_in(BESS_LOW_PRICE_COUNTRIES).fill_null(False).alias("_low"),
-            (pl.col(country_col) == "CHN").fill_null(False).alias("_chn"),
-        ]
-    ).collect()
-    starts = _group_starts(data, group_cols)
-    arr = {c: data[c].to_numpy() for c in value_cols + ["_date", "_low", "_chn"]}
-
+    data = _load_section8(sorted_path, group_cols, sort_col, country_col)
+    inp = _section8_inputs(data, group_cols)
     if presorted_path is not None:
-        # Trusting an externally sorted file: a stale or differently-ordered
-        # spill would silently corrupt the whole panel, so verify the order.
-        n_groups = data.select(pl.struct(group_cols).n_unique()).item()
-        if len(starts) - 1 != n_groups:
-            raise ValueError(f"presorted file {sorted_path}: groups are not contiguous")
-        d = arr["_date"]
-        interior = np.ones(len(d), dtype=np.bool_)
-        interior[starts[:-1]] = False  # group starts are exempt from the diff check
-        idx = np.flatnonzero(interior)
-        if not np.all(d[idx] >= d[idx - 1]):
-            raise ValueError(f"presorted file {sorted_path}: dates not sorted within a group")
-
-    # Filter 8a's global decision (the only cross-security statistic): the
-    # per-security mean of positive volume, computed once, with the bottom-2%
-    # cutoff taken as a scalar quantile (nulls ignored). Groups with no positive
-    # volume (null mean) are KEPT; rows are realigned to the group_starts order.
-    avg_vol = (
-        data.lazy()
-        .filter(pl.col("dolvol") > 0)
-        .group_by(group_cols)
-        .agg(pl.mean("dolvol").alias("_avg_vol"))
-        .collect()
-    )
-    cutoff = avg_vol["_avg_vol"].quantile(0.02)
-    remove_8a = (
-        data.select(group_cols)
-        .unique()
-        .join(avg_vol, on=group_cols, how="left")
-        .sort(group_cols)
-        .select((pl.col("_avg_vol") <= cutoff).fill_null(False))
-        .to_series()
-        .to_numpy()
-        .copy()
-    )
+        _verify_presorted_order(data, group_cols, inp, sorted_path)
 
     reason = np.zeros(data.height, dtype=np.int8)
-    # Filter 8d gap bound: trading days -> calendar days (~11 months).
-    gap_calendar_days = int(BESS_SECTION8_GAP_TRADING_DAYS * 365 / 252)
     bk.section8_all(
-        starts,
+        inp.starts,
         reason,
-        remove_8a,
-        arr["ajexdi"],
-        arr["prc"],
-        arr["me"],
-        arr["ri"],
-        arr["cshoc"],
-        arr["_date"],
-        arr["_low"],
-        arr["_chn"],
-        gap_calendar_days,
+        inp.remove_8a,
+        inp.ajexdi,
+        inp.prc,
+        inp.me,
+        inp.ri,
+        inp.cshoc,
+        inp.dates,
+        inp.low,
+        inp.chn,
+        inp.gap_days,
     )
-
-    reason_path = spill_dir / "__bess_s8_reason.parquet"
-    pl.DataFrame({"_reason": reason}).write_parquet(reason_path, compression=BESS_SPILL_COMPRESSION)
-    return (
-        pl.concat([pl.scan_parquet(sorted_path), pl.scan_parquet(reason_path)], how="horizontal")
-        .filter(pl.col("_reason") == 0)
-        .drop("_reason")
-    )
+    return _reattach_reason(sorted_path, reason, spill_dir)
