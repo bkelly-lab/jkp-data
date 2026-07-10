@@ -38,6 +38,7 @@ country-level monthly returns for:
 - **HXZ q-factors**: `me_hxz`, `ia_hxz`, `roe_hxz`
 - **MP (Stambaugh–Yuan mispricing)**: `smb_mispricing`,
   `mispricing_mgmt`, `mispricing_perf`
+- **DHS (Daniel–Hirshleifer–Sun behavioral)**: `fin_dhs`, `pead_dhs`
 
 This document benchmarks the USA replications against the
 original / WRDS-distributed series stored in
@@ -51,6 +52,7 @@ original / WRDS-distributed series stored in
 - [UMD — Fama–French momentum](#umd-famafrench-momentum)
 - [HXZ — q-factors](#hxz-q-factors)
 - [MP — Stambaugh–Yuan mispricing factors](#mp-stambaughyuan-mispricing-factors)
+- [DHS — Daniel–Hirshleifer–Sun behavioral factors](#dhs-danielhirshleifersun-behavioral-factors)
 - [Reasons for divergence](#reasons-for-divergence)
 - [Conclusion](#conclusion)
 - [Appendix: Replication of daily data](#appendix-replication-of-daily-data)
@@ -102,6 +104,12 @@ roughly the same Compustat snapshot.
   from 11 anomalies grouped into a "management" cluster and a
   "performance" cluster; `smb_mispricing` is the size factor from the
   same triple sort.
+- **DHS (Daniel, Hirshleifer, and Sun 2020)** — two behavioral factors.
+  `fin_dhs` (financing) is a long–short factor from the overlap of net
+  stock issuance and composite share issuance, on an annual June
+  rebalance; `pead_dhs` (post-earnings-announcement drift) is a
+  monthly-rebalanced factor on the cumulative abnormal return around
+  quarterly earnings announcements. Both are 2×5 size-conditional sorts.
 
 ```{python}
 #| label: setup
@@ -111,7 +119,7 @@ sys.path.insert(0, os.path.abspath("."))
 import matplotlib.pyplot as plt
 import polars as pl
 from IPython.display import HTML, Markdown, display
-from plot_cumsum_ff_usa import (
+from plot_cumsum_usa import (
     MODELS,
     daily_factor_period_stats,
     date_window_note,
@@ -174,6 +182,10 @@ def section_tables(name):
 - **MP — 1963 to 2016.** The comparison spans the published
   Stambaugh–Yuan series, which starts in January 1963 and ends in
   December 2016.
+- **DHS — 1968 onwards (PEAD ~1971 onwards).** FIN begins in July 1968;
+  PEAD begins in October 1971, once quarterly earnings-announcement
+  coverage is dense enough. The comparison is against the original
+  Daniel–Hirshleifer–Sun SAS reference series.
 
 ## FF3 — Fama–French 3 factors
 
@@ -295,6 +307,35 @@ factor_tab("MP", "PERF")
 
 ```{python}
 section_tables("MP")
+```
+
+## DHS — Daniel–Hirshleifer–Sun behavioral factors
+
+The reference here is the original Daniel–Hirshleifer–Sun SAS program
+(Lin Sun's code). That program produces monthly factors only, so we
+benchmark the monthly series below. Note that our port additionally
+produces daily FIN and PEAD factors (in `ap_factors_daily.parquet`),
+which the original code does not — there is no daily reference series to
+compare them against, so they are not shown here.
+
+::: {.panel-tabset}
+
+### FIN
+
+```{python}
+factor_tab("DHS", "FIN")
+```
+
+### PEAD
+
+```{python}
+factor_tab("DHS", "PEAD")
+```
+
+:::
+
+```{python}
+section_tables("DHS")
 ```
 
 ## Reasons for divergence
