@@ -1,33 +1,28 @@
 """
-Numba kernels for Bessembinder Section 6 decimal-error detection and Section 8
-filters.
+Numba kernels for the Bessembinder Section 6 corrections and Section 8 filters.
 
 Description:
-    Per-security loop kernels over date-sorted contiguous arrays, parallelized
-    with prange over group slices. Detection is strictly per security.
+    Per-security loops over date-sorted array slices, parallelized with prange
+    over group boundaries; kernels mutate preallocated arrays in place.
 Steps:
-    1) detect_single_period_all: single-period spike-and-reversal (window 1).
-    2) detect_multi_period_all: FULL / SUB_A / SUB_B window passes per nlag,
-       two-phase (detect on start-of-pass factor state, then propagate
-       first-write-wins in ascending offset order).
-    3) validate_cascading_all: iterative both-endpoints-flagged rejection.
-    4) section8_all: the 8a-8h filter chain as one pass per security.
+    1) detect_single_period_all — single-period spike-and-reversal (window 1).
+    2) detect_multi_period_all — FULL/SUB_A/SUB_B window passes per nlag.
+    3) validate_cascading_all — both-endpoints-flagged rejection.
+    4) section8_all — the 8a-8h filter chain, one pass per security.
 Output:
-    Kernels mutate preallocated arrays in place. factor holds the correction
-    multiplier (1.0 = clean); wsize the detection window (-1 = null); ep_l/ep_r
-    the clean endpoints used by the interpolation methods. Section 8 marks
+    factor = correction multiplier (1.0 = clean), wsize = detection window
+    (-1 = null), ep_l/ep_r = clean endpoints (interpolation); Section 8 marks
     removed rows in `reason` (0 = kept, 1 = removed).
 
 Equivalence notes (load-bearing — do not "simplify"):
-    - Out-of-range ENDPOINT factor counts as clean (1.0), but its VALUE is NaN,
+    - Out-of-range endpoint factor counts as clean (1.0) but its VALUE is NaN,
       so the reversal ratio fails and no detection fires.
-    - Interior variation max/min SKIP NaN cells; only an all-NaN interior kills
-      detection.
-    - Propagated rows carry the detection point's endpoints, window_size = nlag,
-      and are claimable only while their factor is still 1.0.
-    - Multi-period classes magnitudes with the nested 500/50/5 chain like
-      single-period (deliberate divergence from the original, whose magnitude
-      loop was dead code beyond 10x; see commit 507df7c).
+    - Interior variation max/min skip NaN cells; an all-NaN interior kills it.
+    - Propagated rows carry the detection point's endpoints and window_size=nlag,
+      claimable only while their factor is still 1.0.
+    - Multi-period classes magnitudes with the same nested 500/50/5 chain as
+      single-period (deliberate divergence from the original dead-code loop;
+      commit 507df7c).
 """
 
 import numpy as np
@@ -86,12 +81,9 @@ def _multi_pass_one(
     x, factor, wsize, ep_l, ep_r, nlag, ep_lag, ep_lead, ilo, ihi, vthr, det, det_epl, det_epr
 ):
     """
-    One window-type pass (FULL, SUB_A or SUB_B) for one security.
-
-    Two phases: detection against the factor state at pass start (markers in
-    det* scratch arrays, immutable during propagation), then propagation
-    first-write-wins in ascending offset order onto rows whose factor is
-    still 1.0.
+    One window pass (FULL/SUB_A/SUB_B) for one security. Phase 1 detects into
+    the det* scratch arrays against the pass-start factor state; phase 2
+    propagates first-write-wins in ascending offset order onto still-1.0 rows.
     """
     n = len(x)
     for k in range(n):
@@ -257,15 +249,10 @@ def _s8_kill_all(reason):
 @njit(cache=True, error_model="numpy")
 def _s8_early_jump_stage(reason, jump_series, confirm_series, return_based, chn):
     """
-    Shared early-jump stage for filters 8e (adjCSHO) and 8f (ME).
-
-    Scans alive rows with prev-alive shift semantics; a jump inside the early
-    period (first ~24 months, i.e. obs < 504, or < 20% of the alive count)
-    marks the security for deletion of alive rows 0..max-jump-obs.
-    `jump_series` is the series whose ratio defines the jump (adjCSHO for 8e,
-    ME for 8f); `confirm_series` is the corroborating series (ME for 8e; ri,
-    read as a return, for 8f with return_based=True). NaN operands fail all
-    comparisons, matching polars.
+    Shared early-jump stage for filters 8e (adjCSHO) and 8f (ME). A jump in
+    jump_series (confirmed by confirm_series) within the early period deletes
+    alive rows 0..max-jump-obs. 8f (return_based) reads confirm_series as a
+    return; 8e uses looser CHN bounds. NaN operands fail all tests (like polars).
     """
     n = reason.size
     total = 0
@@ -315,12 +302,10 @@ def _s8_early_jump_stage(reason, jump_series, confirm_series, return_based, chn)
 @njit(cache=True, error_model="numpy")
 def _s8_one_security(reason, remove_8a, ajexdi, prc, me, ri, cshoc, dates, low_thr, chn, gap_days):
     """
-    Apply the Section 8 filter chain to one security (arrays are views over
-    the date-sorted slice). Filters run sequentially: each stage's shift /
-    obs_num / totals are defined over the rows still alive at stage start,
-    exactly like the polars chain re-deriving them on each filtered frame.
-    reason is mutated in place (0 = kept, 1 = removed). gap_days is filter 8d's
-    calendar-day gap bound.
+    Run the Section 8 filter chain on one security's date-sorted slice. Filters
+    run sequentially, each deriving its shifts/obs-counts over the rows still
+    alive at its start (matching the polars chain). reason is mutated in place
+    (0 = kept, 1 = removed); gap_days is filter 8d's calendar-day bound.
     """
     n = reason.size
 

@@ -26,8 +26,7 @@ from .config import (
 def _group_starts(df: pl.DataFrame, group_cols: list[str]) -> np.ndarray:
     """
     Description:
-        Contiguous group boundary offsets for a frame sorted by group_cols
-        (+ date).
+        Contiguous group-boundary offsets for a frame sorted by group_cols + date.
     Output:
         int64 array of length n_groups + 1 (offsets into the frame).
     """
@@ -50,24 +49,18 @@ def _correct_variable_arrays(
 ) -> np.ndarray:
     """
     Description:
-        Full Section 6 correction pipeline for one variable on raw numpy
-        arrays: single-period detection, multi-period detection, cascading
-        validation, and correction application.
+        Full Section 6 correction for one variable on a numpy array:
+        single- then multi-period detection, cascading validation, correction.
     Steps:
-        1) Copy input, force zeros -> NaN. This working copy feeds both
-           detection and the correction output, so a zero input becomes null
-           in the result (legacy zero-to-null behavior).
-        2) detect_single_period_all; window_size = 1 where flagged.
-        3) detect_multi_period_all over windows > 1 (ascending).
-        4) validate_cascading_all.
-        5) If price_floor: drop flags where the original value is < 1.0 or the
-           correction direction is multiply (factor > 1) — divide corrections
-           on >=$1 prices are the only reliably accurate class.
-        6) Apply: 'bessembinder'/'floor' multiply by the factor;
-           'interpolation'/'floor_interp' use the geometric mean of endpoints
-           with single-endpoint fallbacks.
+        1) Zeros -> NaN in a working copy that feeds detection AND output, so a
+           zero input becomes null (legacy zero-to-null behavior).
+        2) Detect single- then multi-period errors; validate cascading.
+        3) price_floor: keep only divide-direction corrections on >=$1 prices.
+        4) Apply: 'bessembinder'/'floor' multiply by the factor;
+           'interpolation'/'floor_interp' use the endpoint geometric mean
+           (single-endpoint fallback).
     Output:
-        Corrected float64 array (NaN for nulls).
+        Corrected float64 array (NaN = null).
     """
     n = len(x_raw)
     x_det = x_raw.copy()
@@ -119,21 +112,18 @@ def apply_bessembinder_section6(
 ) -> pl.LazyFrame:
     """
     Description:
-        Apply Section 6 decimal corrections in order (per Section 6c): correct
-        TRFD and QUNIT independently, ADRRC if present (NA data only), then the
-        split-adjusted price adjPRC = PRCCD/AJEXDI and shares adjCSHO =
-        CSHOC*AJEXDI, and reconstruct PRCCD/CSHOC from the corrected values.
-        Runs the memory-bounded array path with spill files in spill_dir.
+        Apply Section 6 corrections (per 6c): correct TRFD, QUNIT and (NA only)
+        ADRRC independently, then adjPRC = PRCCD/AJEXDI and adjCSHO =
+        CSHOC*AJEXDI, and reconstruct PRCCD/CSHOC. Memory-bounded array path
+        using spill files in spill_dir (required).
     Args:
         correction_method: 'bessembinder' (fixed 10x/100x/1000x multipliers),
-            'interpolation' (geometric mean of clean endpoints), 'floor'
-            (multipliers, price corrections divide-direction on >=$1 only), or
-            'floor_interp' (floor gating with interpolation values).
+            'interpolation' (endpoint geometric mean), 'floor' (multipliers,
+            price divide-direction on >=$1 only), 'floor_interp' (both).
         has_adrrc: correct the ADRRC column (NA data only).
         variation_threshold: multi-period interior-variation bound.
     Output:
-        Corrected LazyFrame (NaN corrected values become null; replaced columns
-        move to the end of the column order).
+        Corrected LazyFrame (corrected columns move to the end; NaN -> null).
     """
     if correction_method not in BESS_SECTION6_METHODS:
         raise ValueError(
@@ -219,22 +209,18 @@ def apply_bessembinder_section8(
 ) -> pl.LazyFrame:
     """
     Description:
-        Apply the Section 8 filter chain (8a-8h) as a single numba pass per
-        security, with sequential-survivor semantics preserved inside the
-        kernel. Runs the memory-bounded array path with spill files.
+        Apply the Section 8 filter chain (8a-8h) as one numba pass per security,
+        preserving sequential-survivor semantics. Memory-bounded array path
+        with spill files.
     Steps:
-        1) Streaming-sort input to a spill file — or trust and verify
-           presorted_path when the caller already sorted it (e.g. DuckDB
-           ORDER BY).
-        2) Collect keys, kernel inputs and country flags in one pass; build
-           group-start offsets.
-        3) Filter 8a's global cross-security decision: per-security mean of
-           positive volume + 2% quantile, mapped to a per-security bool.
+        1) Streaming-sort input to a spill file (or verify presorted_path).
+        2) Collect keys, kernel inputs and country flags in one pass.
+        3) Filter 8a global decision: positive-volume mean + 2% quantile.
         4) section8_all kernel -> per-row keep/remove; filter lazily.
     Note:
-        When presorted_path is given, the panel is read from that file and
-        `df` is NOT re-read — the caller must have written df's data, sorted
-        by group_cols + sort_col, to that path.
+        With presorted_path, the panel is read from that file and df is NOT
+        re-read — the caller must have written df's data there, sorted by
+        group_cols + sort_col.
     Output:
         Filtered LazyFrame.
     """
