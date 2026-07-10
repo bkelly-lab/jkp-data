@@ -23,7 +23,6 @@ from .aux_functions import (
     market_beta,
     market_chars_monthly,
     market_returns,
-    market_returns_overnight_intraday,
     merge_industry_to_world_msf,
     merge_qmj_to_world_data,
     merge_roll_apply_daily_results,
@@ -36,7 +35,6 @@ from .aux_functions import (
     quality_minus_junk,
     residual_momentum,
     return_cutoffs,
-    return_cutoffs_overnight_intraday,
     roll_apply_daily,
     save_accounting_data,
     save_daily_ret,
@@ -83,7 +81,6 @@ def run_pipeline(
     classify_stocks_size_groups(paths)
     return_cutoffs(paths, "m", 0)
     return_cutoffs(paths, "d", 0)
-    return_cutoffs_overnight_intraday(paths, "d")
     add_ret_exc_wins(paths, "m")
     add_ret_exc_wins(paths, "d")
     market_returns(
@@ -101,9 +98,6 @@ def run_pipeline(
         1,
         interim / "return_cutoffs.parquet",
         interim / "nyse_cutoffs.parquet",
-    )
-    market_returns_overnight_intraday(
-        paths, interim / "world_dsf.parquet", "d", interim / "nyse_cutoffs.parquet"
     )
     standardized_accounting_data(
         paths, "world", 1, interim / "world_msf.parquet", 1, ACCOUNTING_START_DATE
