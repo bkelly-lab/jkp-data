@@ -15112,12 +15112,6 @@ def load_dff_be(path: Path | None = None) -> pl.DataFrame:
     )
 
 
-# =====================================================================
-# DHS behavioral factors (FIN + PEAD) — ported from build_dhs_factors_yale
-# via gen_dhs_data.py. US byte-identical; FIN international (ROW from world_*).
-# All private helpers/builders carry the _dhs_ prefix; gen_dhs_data is public.
-# =====================================================================
-
 def _dhs_wd_idx(col: pl.Expr) -> pl.Expr:
     # Weekday index (anchor 1960-01-04 = Monday): Mon-Fri step by 1, Sat/Sun
     # collapse onto the prior Friday. Weekdays between two dates = index difference.
@@ -15252,7 +15246,7 @@ def _dhs_load_msf(raw_dir: Path, beg: int, end: int) -> pl.LazyFrame:
 
 
 def _dhs_monthly_panel(msf: pl.DataFrame, beg: int, end: int) -> pl.DataFrame:
-    """Master monthly return panel (port of build_monthly_returns). The NYSE flag
+    """Master monthly return panel. The NYSE flag
     is primaryexch ("N"/"A"/"Q"), not a numeric exchcd; siccd is dense per-row.
 
     Steps:
@@ -15442,8 +15436,8 @@ def _dhs_ccm_link(comp: pl.LazyFrame, endfyr_col: str, raw_dir: Path) -> pl.Lazy
 
 
 def _dhs_issuance_chars(msf: pl.DataFrame, raw_dir: Path, beg: int, end: int) -> pl.DataFrame:
-    """Annual Compustat characteristics (NS, lagBE, IR per fiscal year; port of
-    build_issuance_chars). `msf` is the RAW unfiltered monthly file (IR is built
+    """Annual Compustat characteristics (NS, lagBE, IR per fiscal year).
+    `msf` is the RAW unfiltered monthly file (IR is built
     off it). Financials are screened later on the CRSP siccd, never on funda's
     sich.
 
@@ -15568,8 +15562,8 @@ def _dhs_market_daily(interim_dir: Path) -> pl.LazyFrame:
 
 def _dhs_abr_window(ann: pl.DataFrame, daily: pl.DataFrame) -> pl.DataFrame:
     """Abr per (id, RDQ) over the weekday window [RDQ-2, RDQ+1]. `ann` = [id,
-    datadate, rdq]; `daily` = [id, date, ret, mkt] (ret, mkt decimal). Mirrors
-    build_announcement_returns: an inner window join drops a missing RDQ, the window
+    datadate, rdq]; `daily` = [id, date, ret, mkt] (ret, mkt decimal). An inner
+    window join drops a missing RDQ, the window
     sum and non-missing day count are each scaled by the announcement rows sharing
     (id, RDQ), counts are kept in [2,4], and RDQ must sit >=1 weekday before its
     calendar month end. The window sum is ORDERED (sort + maintain_order) so the
@@ -15612,8 +15606,8 @@ def _dhs_abr_window(ann: pl.DataFrame, daily: pl.DataFrame) -> pl.DataFrame:
 
 
 def _dhs_align_abr(panel_rows: pl.DataFrame, abr: pl.DataFrame) -> pl.DataFrame:
-    """Align per-(id, RDQ) Abr to the monthly panel (port of build_announcement_returns
-    step 4). Two announcements in one id-month: the later RDQ is ordered FIRST, so its
+    """Align per-(id, RDQ) Abr to the monthly panel. Two announcements in one
+    id-month: the later RDQ is ordered FIRST, so its
     lagAbr is null across the month gap and it drops; the earlier-RDQ row survives
     carrying the later Abr as lagAbr, and the forward-fill feeds the earlier quarter's
     DATADATE into the 6-month staleness test. `panel_rows` must carry [excntry, eom,
@@ -15729,7 +15723,7 @@ def _dhs_announcement_returns(
     beg: int, end: int, beg_q: int, end_q: int,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
     """Cumulative abnormal return around earnings announcements (Abr), aligned to
-    the monthly CRSP panel (port of build_announcement_returns). Daily stock data
+    the monthly CRSP panel. Daily stock data
     is crsp_dsf_v2 under the per-row universe screen; the market return is the
     interim US panel.
 
@@ -15857,8 +15851,8 @@ def _dhs_fin_factor(
     annual_chars: pl.DataFrame, monthly_panel: pl.DataFrame, nyse_p50: pl.DataFrame,
     min_stocks_bp: int = FF_MIN_STOCKS_BP, min_stocks_pf: int = FF_MIN_STOCKS_PF,
 ) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
-    """FIN factor (NS×IR overlap, 2 size groups, annual June rebalance; port of
-    build_fin_factor). Returns (factor [excntry, eom, fin_dhs], chars [id, eom, ns, ir],
+    """FIN factor (NS×IR overlap, 2 size groups, annual June rebalance).
+    Returns (factor [excntry, eom, fin_dhs], chars [id, eom, ns, ir],
     members [excntry, id, eom, portfolio, w]).
 
     Steps:
@@ -16003,7 +15997,7 @@ def _dhs_pead_factor(
     abr_panel: pl.DataFrame, nyse_p50: pl.DataFrame,
     min_stocks_bp: int = FF_MIN_STOCKS_BP, min_stocks_pf: int = FF_MIN_STOCKS_PF,
 ) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
-    """PEAD factor (monthly 2×5 sort on lagged Abr; port of build_pead_factor).
+    """PEAD factor (monthly 2×5 sort on lagged Abr).
     Returns (factor [excntry, eom, pead_dhs], chars [id, eom, abr], members
     [excntry, id, eom, portfolio, w]).
 
@@ -16133,8 +16127,8 @@ def gen_dhs_data(
     beg_q: int = 1971,
     end_q: int = 2025,
 ) -> None:
-    """Build the DHS FIN + PEAD factors, US only, from the jkp data directory (no
-    downloads); factor mathematics is unchanged from build_dhs_factors_yale. Reads
+    """Build the DHS FIN + PEAD factors (US + international) from the jkp data
+    directory (no downloads). Reads
     raw CRSP/Compustat from `paths.raw_tables_dir` and market_returns_daily from
     `paths.interim_dir`. [beg, end] bound the monthly/annual sample; [beg_q, end_q]
     the quarterly announcement sample (coverage starts ~1971).
