@@ -89,10 +89,10 @@ class TestBpsModes:
 
         ``bp_stock`` is internal, so we replicate the NYSE bp_stock
         expression and confirm it picks out the rows where either
-        ``crsp_exchcd == 1`` (and ``comp_exchg`` null) or
-        ``comp_exchg == 11`` (and ``crsp_exchcd`` null). In the divergent
-        dataset, only the micros (with ``crsp_exchcd=1``, ``comp_exchg``
-        null) match.
+        ``primaryexch == "N"`` and ``conditionaltype == "RW"`` (and ``comp_exchg`` null) or
+        ``comp_exchg == 11`` (and ``primaryexch`` null). In the divergent
+        dataset, only the micros (with ``primaryexch="N"``, ``conditionaltype="RW"``,
+        ``comp_exchg`` null) match.
         """
         excntry = "USA"
         df = make_breakpoint_divergent_dataset(seed=0)
@@ -103,12 +103,16 @@ class TestBpsModes:
         # Replicate the nyse bp_stock expression from portfolio.py:288-291.
         bp_stock = df.select(
             (
-                ((pl.col("crsp_exchcd") == 1) & pl.col("comp_exchg").is_null())
-                | ((pl.col("comp_exchg") == 11) & pl.col("crsp_exchcd").is_null())
+                (
+                    (pl.col("primaryexch") == "N")
+                    & (pl.col("conditionaltype") == "RW")
+                    & pl.col("comp_exchg").is_null()
+                )
+                | ((pl.col("comp_exchg") == 11) & pl.col("primaryexch").is_null())
             ).alias("bp_stock"),
             pl.col("size_grp"),
         )
-        # Only micros (with crsp_exchcd=1, comp_exchg null) are NYSE flagged.
+        # Only micros (with primaryexch=N, conditionaltype=RW, comp_exchg null) are NYSE flagged.
         n_micro = bp_stock.filter(pl.col("size_grp") == "micro").height
         assert bp_stock.filter(pl.col("size_grp") == "micro")["bp_stock"].sum() == n_micro
         # Large rows have comp_exchg=12 (not NYSE) → not flagged.

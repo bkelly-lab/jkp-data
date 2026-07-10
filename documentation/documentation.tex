@@ -455,7 +455,7 @@ Nano  & Below 1st percentile. \\
 \begin{itemize}
     \item \texttt{nyse\_cutoffs.csv} reports the monthly NYSE market equity (ME) breakpoints used for the micro-cap screen and capped value weights.
     \item For each month, we compute discrete percentiles of market equity across the NYSE universe: 1st, 20th, 50th, and 80th.
-    \item The monthly cutoffs are derived from a universe of NYSE common stocks (primary share/security, main class) with non-missing market equity on CRSP.
+    \item The monthly cutoffs are derived from a universe of NYSE common stocks (primary share/security, main class) with non-missing market equity on CRSP. On CRSP rows, NYSE membership is identified by \texttt{primaryexch}='N' and \texttt{conditionaltype}='RW'.
     
 \end{itemize}
 
@@ -619,7 +619,7 @@ Nano  & Below 1st percentile. \\
 \end{longtable}}
     
 \section{Identifier Variables}
-This section covers all of the variables that give firm/date level identifiers and information. If a variable starts with 'comp' or 'crsp', then the following variable name is drawn from the specified dataset. For example, 'crsp\_shrcd' is the 'shrcd' variable from CRSP.
+This section covers all of the variables that give firm/date level identifiers and information. Variables prefixed with \texttt{comp\_} are drawn from Compustat. For CRSP-sourced rows, \texttt{primaryexch} and \texttt{conditionaltype} are native CRSP CIZ security-descriptor fields (not legacy CRSP V1 share or exchange codes).
 
 {\scriptsize
 	\begin{longtable}{@{\extracolsep{\fill}}|l|m{14.2cm}|@{}}
@@ -653,7 +653,7 @@ This section covers all of the variables that give firm/date level identifiers a
 		obs\_main & For US stocks, we often have two observations for each security-month pair. One from Compustat, and one from CRSP. In cases with duplicates, the observation from CRSP has \texttt{obs\_main=1}, and the observation from Compustat has \texttt{obs\_main=0}.  
 		If there are more than one firm observations for one date, this identifies if the observation is considered as the 'main' observation. If available, CRSP observations are considered as the 'main' observation.\\[1ex]
 		
-		exch\_main & Indicator for ordinary exchanges. If CRSP is the source, main exchanges are those with \textit{crsp\_exchcd} 1, 2 and 3. If Compustat is the source, main exchanges are all \texttt{comp\_exchg} except 0, 1, 2, 3, 4, 13, 15, 16, 17, 18, 19, 20, 21, 127, 150, 157, 229, 263, 269, 281, 283, 290, 320, 326, 341, 342, 347, 348, 349, 352.  \\[1ex]
+		exch\_main & Indicator for ordinary exchanges. If CRSP is the source, main exchanges are NYSE, AMEX, and NASDAQ with regular-way trading (\texttt{primaryexch} in \{A, N, Q\} and \texttt{conditionaltype} = RW). If Compustat is the source, main exchanges are all \texttt{comp\_exchg} except 0, 1, 2, 3, 4, 13, 15, 16, 17, 18, 19, 20, 21, 127, 150, 157, 229, 263, 269, 281, 283, 290, 320, 326, 341, 342, 347, 348, 349, 352.  \\[1ex]
 		
 		gvkey & Permanent six-digit unique firm identifier from Compustat\\[1ex]
 		
@@ -671,15 +671,15 @@ This section covers all of the variables that give firm/date level identifiers a
 		
 		fx & Ratio of \textit{curcd} to USD at the date of observation\\[1ex]
 		
-		common & Indicator for common stocks. If CRSP is the source, common is one if the SHRCD variable is 10, 11 or 12. If Compustat is the source, common is one if TPCI is '0'  \\[1ex]
+		common & Indicator for common stocks. If CRSP is the source, common is one for ordinary common shares: equity securities with common subtype, no special share type, and issuer type ACOR or CORP (derived from CRSP CIZ fields at construction). If Compustat is the source, common is one if TPCI is '0'  \\[1ex]
 		
 		comp\_tpci & Compustat issue type identifier \\[1ex]
 		
-		crsp\_shrcd & CRSP share code\\[1ex]
+		primaryexch & CRSP primary exchange code (N=NYSE, A=AMEX, Q=NASDAQ). Null for Compustat rows. \\[1ex]
+		
+		conditionaltype & CRSP trading status (RW = regular way). Null for Compustat rows. \\[1ex]
 		
 		comp\_exchg & Compustat stock exchange code \\[1ex]
-		
-		crsp\_exchd & CRSP stock exchange code \\[1ex]
 		
 		date & Date of the last return observation during the month. \\[1ex]
 		

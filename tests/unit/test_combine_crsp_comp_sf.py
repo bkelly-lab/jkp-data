@@ -65,8 +65,9 @@ def _make_crsp_msf(tmp: Path, n_permnos: int = 500) -> None:
             "iid": iids,
             "exch_main": _RNG.choice([1, 2, 3], n).tolist(),
             "bidask": _RNG.choice([0, 1], n).tolist(),
-            "shrcd": _RNG.choice([10, 11, 12, 14, 31, None], n).tolist(),
-            "exchcd": _RNG.choice([1, 2, 3, 4], n).tolist(),
+            "common": _RNG.choice([0, 1], n).tolist(),
+            "primaryexch": _RNG.choice(["N", "A", "Q", None], n).tolist(),
+            "conditionaltype": _RNG.choice(["RW", "RW", "RW", None], n).tolist(),
             "date": dates,
             "cfacshr": _random_float_col(n, 0.02),
             "shrout": _random_float_col(n, 0.02),
@@ -91,8 +92,9 @@ def _make_crsp_msf(tmp: Path, n_permnos: int = 500) -> None:
             "iid": pl.Utf8,
             "exch_main": pl.Int64,
             "bidask": pl.Int64,
-            "shrcd": pl.Int64,
-            "exchcd": pl.Int64,
+            "common": pl.Int64,
+            "primaryexch": pl.Utf8,
+            "conditionaltype": pl.Utf8,
             "date": pl.Date,
             "ret_intraday": pl.Float64,
             "ret_overnight": pl.Float64,
@@ -205,7 +207,7 @@ def _make_crsp_dsf(tmp: Path, n_permnos: int = 200) -> None:
             "permno": permno,
             "exch_main": _RNG.choice([1, 2, 3], n).tolist(),
             "bidask": _RNG.choice([0, 1], n).tolist(),
-            "shrcd": _RNG.choice([10, 11, 12, 14, 31], n).tolist(),
+            "common": _RNG.choice([0, 1], n).tolist(),
             "date": dates,
             "cfacshr": _random_float_col(n, 0.02),
             "shrout": _random_float_col(n, 0.02),
@@ -225,7 +227,7 @@ def _make_crsp_dsf(tmp: Path, n_permnos: int = 200) -> None:
             "permno": pl.Int64,
             "exch_main": pl.Int64,
             "bidask": pl.Int64,
-            "shrcd": pl.Int64,
+            "common": pl.Int64,
             "date": pl.Date,
         }
     )
@@ -324,7 +326,7 @@ def _polars_combine_crsp_comp_sf(tmp: Path) -> tuple[pl.DataFrame, pl.DataFrame]
             bidask=pl.col("bidask").cast(pl.Int32),
             id=pl.col("permno"),
             excntry=pl.lit("USA"),
-            common=(pl.col("shrcd").is_in([10, 11, 12]).fill_null(bo_false())).cast(pl.Int32),
+            common=pl.col("common").cast(pl.Int32),
             primary_sec=pl.lit(1),
             comp_tpci=pl.lit(None).cast(pl.Utf8),
             comp_exchg=pl.lit(None).cast(pl.Int64),
@@ -338,11 +340,10 @@ def _polars_combine_crsp_comp_sf(tmp: Path) -> tuple[pl.DataFrame, pl.DataFrame]
             div_cash=fl_none(),
             div_spc=fl_none(),
             source_crsp=pl.lit(1),
+            crsp_nyse=pl.col("crsp_nyse").cast(pl.Int32),
         )
         .rename(
             {
-                "shrcd": "crsp_shrcd",
-                "exchcd": "crsp_exchcd",
                 "cfacshr": "adjfct",
                 "shrout": "shares",
             }
@@ -366,8 +367,9 @@ def _polars_combine_crsp_comp_sf(tmp: Path) -> tuple[pl.DataFrame, pl.DataFrame]
             permco=pl.lit(None).cast(pl.Int64),
             common=pl.when(pl.col("tpci") == "0").then(pl.lit(1)).otherwise(pl.lit(0)),
             bidask=pl.when(pl.col("prcstd") == 4).then(pl.lit(1)).otherwise(pl.lit(0)),
-            crsp_shrcd=fl_none(),
-            crsp_exchcd=fl_none(),
+            primaryexch=pl.lit(None).cast(pl.Utf8),
+            conditionaltype=pl.lit(None).cast(pl.Utf8),
+            crsp_nyse=pl.lit(0).cast(pl.Int32),
             me_company=pl.col("me"),
             source_crsp=pl.lit(0),
             ret_lag_dif=pl.col("ret_lag_dif").cast(pl.Int64),
@@ -396,8 +398,9 @@ def _polars_combine_crsp_comp_sf(tmp: Path) -> tuple[pl.DataFrame, pl.DataFrame]
         "common",
         "primary_sec",
         "bidask",
-        "crsp_shrcd",
-        "crsp_exchcd",
+        "primaryexch",
+        "conditionaltype",
+        "crsp_nyse",
         "comp_tpci",
         "comp_exchg",
         "curcd",
@@ -462,7 +465,7 @@ def _polars_combine_crsp_comp_sf(tmp: Path) -> tuple[pl.DataFrame, pl.DataFrame]
         .with_columns(
             id=pl.col("permno"),
             excntry=pl.lit("USA"),
-            common=(pl.col("shrcd").is_in([10, 11, 12]).fill_null(bo_false())).cast(pl.Int32),
+            common=pl.col("common").cast(pl.Int32),
             primary_sec=pl.lit(1),
             curcd=pl.lit("USD"),
             fx=pl.lit(1.0),
@@ -632,11 +635,11 @@ class TestCrspNormalization:
             permno AS id, permno, permco, gvkey, iid,
             'USA' AS excntry,
             exch_main::INT AS exch_main,
-            CASE WHEN shrcd IN (10, 11, 12) THEN 1 ELSE 0 END AS common,
+            common::INT AS common,
             1 AS primary_sec,
             bidask::INT AS bidask,
-            shrcd::DOUBLE AS crsp_shrcd,
-            exchcd::DOUBLE AS crsp_exchcd,
+            primaryexch,
+            conditionaltype,
             NULL::VARCHAR AS comp_tpci,
             NULL::BIGINT AS comp_exchg,
             'USD' AS curcd,
@@ -670,7 +673,7 @@ class TestCrspNormalization:
     def test_crsp_msf_common_flag(self, toy_dir: Path) -> None:
         raw = pl.read_parquet(toy_dir / "crsp_msf.parquet")
         df = _run_cte_on_parquet(toy_dir, self._CRSP_MSF_CTE)
-        expected = raw["shrcd"].is_in([10, 11, 12]).fill_null(False).cast(pl.Int32)
+        expected = raw["common"].cast(pl.Int32)
         assert (df["common"] == expected).all()
 
     def test_crsp_msf_eom_is_month_end(self, toy_dir: Path) -> None:
@@ -702,14 +705,11 @@ class TestCrspNormalization:
         assert df["comp_tpci"].is_null().all()
         assert df["comp_exchg"].is_null().all()
 
-    def test_crsp_msf_column_renames(self, toy_dir: Path) -> None:
+    def test_crsp_msf_ciz_field_passthrough(self, toy_dir: Path) -> None:
         raw = pl.read_parquet(toy_dir / "crsp_msf.parquet")
         df = _run_cte_on_parquet(toy_dir, self._CRSP_MSF_CTE)
-        np.testing.assert_allclose(
-            df["crsp_shrcd"].to_numpy(),
-            raw["shrcd"].cast(pl.Float64).to_numpy(),
-            equal_nan=True,
-        )
+        assert (df["primaryexch"] == raw["primaryexch"]).all()
+        assert (df["conditionaltype"] == raw["conditionaltype"]).all()
         np.testing.assert_allclose(
             df["adjfct"].to_numpy(),
             raw["cfacshr"].cast(pl.Float64).to_numpy(),
@@ -721,7 +721,7 @@ class TestCrspNormalization:
             SELECT
                 permno AS id, 'USA' AS excntry,
                 exch_main::INT AS exch_main,
-                CASE WHEN shrcd IN (10, 11, 12) THEN 1 ELSE 0 END AS common,
+                common::INT AS common,
                 1 AS primary_sec, bidask::INT AS bidask,
                 'USD' AS curcd, 1.0 AS fx,
                 date, last_day(date) AS eom,
@@ -890,8 +890,9 @@ class TestUnionAndLead:
             "common",
             "primary_sec",
             "bidask",
-            "crsp_shrcd",
-            "crsp_exchcd",
+            "primaryexch",
+            "conditionaltype",
+            "crsp_nyse",
             "comp_tpci",
             "comp_exchg",
             "curcd",
@@ -1397,8 +1398,10 @@ class TestEdgeCases:
                 "iid": [None, None],
                 "exch_main": [1, 1],
                 "bidask": [0, 0],
-                "shrcd": [10, 10],
-                "exchcd": [1, 1],
+                "common": [1, 1],
+                "primaryexch": ["N", "N"],
+                "conditionaltype": ["RW", "RW"],
+                "crsp_nyse": [1, 1],
                 "date": [date(2020, 2, 15), date(2019, 2, 15)],
                 "cfacshr": [1.0, 1.0],
                 "shrout": [100.0, 100.0],
@@ -1421,8 +1424,10 @@ class TestEdgeCases:
                 "permco": pl.Int64,
                 "exch_main": pl.Int64,
                 "bidask": pl.Int64,
-                "shrcd": pl.Int64,
-                "exchcd": pl.Int64,
+                "common": pl.Int64,
+                "primaryexch": pl.Utf8,
+                "conditionaltype": pl.Utf8,
+                "crsp_nyse": pl.Int32,
                 "date": pl.Date,
                 "ret_intraday": pl.Float64,
                 "ret_overnight": pl.Float64,

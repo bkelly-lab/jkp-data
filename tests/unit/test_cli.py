@@ -36,6 +36,7 @@ class TestCliHelp:
         result = runner.invoke(app, ["build", "--help"])
         assert result.exit_code == 0
         assert "--persistent-connection" in _strip_ansi(result.output)
+        assert "--download-workers" in _strip_ansi(result.output)
         assert "OUTPUT_DIR" in _strip_ansi(result.output)
 
     def test_portfolio_help(self):
@@ -83,19 +84,41 @@ class TestBuildCommand:
     def test_build_calls_run_pipeline(self, mock_run_pipeline, tmp_path):
         result = runner.invoke(app, ["build", str(tmp_path)])
         assert result.exit_code == 0
-        mock_run_pipeline.assert_called_once_with(persistent_connection=False, output_dir=tmp_path)
+        mock_run_pipeline.assert_called_once_with(
+            persistent_connection=False, max_workers=1, output_dir=tmp_path
+        )
 
     @patch("jkp.data.main.run_pipeline")
     def test_build_persistent_connection(self, mock_run_pipeline, tmp_path):
         result = runner.invoke(app, ["build", str(tmp_path), "--persistent-connection"])
         assert result.exit_code == 0
-        mock_run_pipeline.assert_called_once_with(persistent_connection=True, output_dir=tmp_path)
+        mock_run_pipeline.assert_called_once_with(
+            persistent_connection=True, max_workers=1, output_dir=tmp_path
+        )
 
     @patch("jkp.data.main.run_pipeline")
     def test_build_persistent_connection_short(self, mock_run_pipeline, tmp_path):
         result = runner.invoke(app, ["build", str(tmp_path), "-p"])
         assert result.exit_code == 0
-        mock_run_pipeline.assert_called_once_with(persistent_connection=True, output_dir=tmp_path)
+        mock_run_pipeline.assert_called_once_with(
+            persistent_connection=True, max_workers=1, output_dir=tmp_path
+        )
+
+    @patch("jkp.data.main.run_pipeline")
+    def test_build_download_workers(self, mock_run_pipeline, tmp_path):
+        result = runner.invoke(app, ["build", str(tmp_path), "--download-workers", "6"])
+        assert result.exit_code == 0
+        mock_run_pipeline.assert_called_once_with(
+            persistent_connection=False, max_workers=6, output_dir=tmp_path
+        )
+
+    @patch("jkp.data.main.run_pipeline")
+    def test_build_download_workers_short(self, mock_run_pipeline, tmp_path):
+        result = runner.invoke(app, ["build", str(tmp_path), "-j", "4"])
+        assert result.exit_code == 0
+        mock_run_pipeline.assert_called_once_with(
+            persistent_connection=False, max_workers=4, output_dir=tmp_path
+        )
 
     def test_build_missing_output_dir(self):
         result = runner.invoke(app, ["build"])
