@@ -3,6 +3,17 @@ This change log keeps track of changes to the underlying data set. In brackets, 
 
 This repository ports the original SAS pipeline ([ReplicationCrisis](https://github.com/bkelly-lab/ReplicationCrisis)) to Python using Polars. Entries up to and including 05-03-2025 are from the original change log.
 
+## 10-07-2026
+__Changes__:
+- Added the DHS (Daniel, Hirshleifer, and Sun) behavioral factors to the factor-model outputs: FIN (financing) and PEAD (post-earnings-announcement drift), value-weighted annual/monthly 2x5 sorts. FIN is built worldwide; PEAD is built internationally using IBES earnings-announcement dates bridged to the global security universe. Adds `dhs` factor returns (monthly and daily) and `dhs` per-stock characteristics, merged into the combined factor-model data.
+- Extended the Fama-French, Hou-Xue-Zhang, and Mispricing (Stambaugh-Yuan) factors to international (per-country) coverage, built on the pure CRSP CIZ v2 data (`msf_v2`/`dsf_v2`).
+- Extended the FF3 SMB/HML history back to 1926 using Davis-Fama-French hand-collected book equity, spliced onto Compustat where the CCM link exists but early balance-sheet fields are missing.
+- HXZ US factors now start in 1972 (the original sample start), with the RDQ earnings-announcement gate applied over the full sample.
+- Fixed run-to-run nondeterminism in the HXZ ROE and Mispricing construction, so repeated builds now produce identical output.
+
+__Impact__:
+- Adds new factor series (DHS FIN/PEAD) and international coverage across all four models. Existing US FF/HXZ/Mispricing series change where the CIZ v2 universe, the 1926/1972 sample extensions, or the determinism fixes apply.
+
 ## 27-04-2026
 __Changes__:
 - Added `mkt_vw_cap_exc` (cap-weighted excess market return) to market returns output ([#81](https://github.com/bkelly-lab/jkp-data/pull/81))
