@@ -183,10 +183,10 @@ def _multi_one(x, factor, wsize, ep_l, ep_r, nlags, vthr):
             ep_l,
             ep_r,
             nlag,
-            nlag,
-            nlag,
-            -(nlag - 1),
-            nlag - 1,
+            nlag,  # ep_lag (left endpoint offset)
+            nlag,  # ep_lead (right endpoint offset)
+            -(nlag - 1),  # ilo (interior lo)
+            nlag - 1,  # ihi (interior hi)
             vthr,
             det,
             det_epl,
@@ -200,10 +200,10 @@ def _multi_one(x, factor, wsize, ep_l, ep_r, nlags, vthr):
             ep_l,
             ep_r,
             nlag,
-            nlag,
-            nlag - 1,
-            -(nlag - 1),
-            nlag - 2,
+            nlag,  # ep_lag
+            nlag - 1,  # ep_lead
+            -(nlag - 1),  # ilo
+            nlag - 2,  # ihi
             vthr,
             det,
             det_epl,
@@ -217,10 +217,10 @@ def _multi_one(x, factor, wsize, ep_l, ep_r, nlags, vthr):
             ep_l,
             ep_r,
             nlag,
-            nlag - 1,
-            nlag,
-            -(nlag - 2),
-            nlag - 1,
+            nlag - 1,  # ep_lag
+            nlag,  # ep_lead
+            -(nlag - 2),  # ilo
+            nlag - 1,  # ihi
             vthr,
             det,
             det_epl,
@@ -287,15 +287,17 @@ def _s8_kill_all(reason):
 
 
 @njit(cache=True, error_model="numpy")
-def _s8_early_jump_stage(reason, num, aux, is_ret, chn):
+def _s8_early_jump_stage(reason, jump_series, confirm_series, return_based, chn):
     """
     Shared early-jump stage for filters 8e (adjCSHO) and 8f (ME).
 
     Scans alive rows with prev-alive shift semantics; a jump inside the early
-    period (obs < 504 or < 20% of the alive count) marks the security for
-    deletion of alive rows 0..max-jump-obs. `num` is the jump series (adjCSHO
-    or ME); `aux` is the confirming series (ME ratio for 8e; ri-based return
-    for 8f, is_ret=True). NaN operands fail all comparisons, matching polars.
+    period (first ~24 months, i.e. obs < 504, or < 20% of the alive count)
+    marks the security for deletion of alive rows 0..max-jump-obs.
+    `jump_series` is the series whose ratio defines the jump (adjCSHO for 8e,
+    ME for 8f); `confirm_series` is the corroborating series (ME for 8e; ri,
+    read as a return, for 8f with return_based=True). NaN operands fail all
+    comparisons, matching polars.
     """
     n = reason.size
     total = 0
@@ -312,19 +314,23 @@ def _s8_early_jump_stage(reason, num, aux, is_ret, chn):
             continue
         obs += 1
         if prev >= 0:
-            r_num = num[i] / num[prev]
-            if is_ret:
-                a = aux[i] / aux[prev] - 1.0
-                up = r_num > 10.0 and a < 2.0
-                down = r_num < 0.1 and a > -0.5
+            jump = jump_series[i] / jump_series[prev]
+            if return_based:
+                # filter 8f: ME jump not backed by a commensurate return
+                ret = confirm_series[i] / confirm_series[prev] - 1.0
+                up = jump > 10.0 and ret < 2.0
+                down = jump < 0.1 and ret > -0.5
             else:
-                a = aux[i] / aux[prev]
+                # filter 8e: adjCSHO jump vs ME (CHN gets looser bounds)
+                confirm = confirm_series[i] / confirm_series[prev]
                 if chn[i]:
-                    up = r_num >= 50.0 and a >= 25.0
+                    up = jump >= 50.0 and confirm >= 25.0
                 else:
-                    up = r_num >= 5.0 and a >= 2.5
-                down = r_num <= 0.2 and a <= 0.4
-            if (up or down) and (obs < 504.0 or obs < 0.2 * total):
+                    up = jump >= 5.0 and confirm >= 2.5
+                down = jump <= 0.2 and confirm <= 0.4
+            # early period: first ~24 months (obs < 504) or 20% of the history
+            in_early_period = obs < 504.0 or obs < 0.2 * total
+            if (up or down) and in_early_period:
                 delete_through = obs
         prev = i
     if delete_through < 0:
@@ -421,6 +427,7 @@ def _s8_one_security(reason, remove_8a, ajexdi, prc, me, ri, cshoc, dates, low_t
         if prev >= 0:
             ret = ri[i] / ri[prev] - 1.0
             me_chg = me[i] / me[prev] - 1.0
+            # |return| > 80% not backed by a matching (>50%) ME move
             if abs(ret) > 0.8 and abs(me_chg) < 0.5:
                 # prev still advances below: the flagged row stays the shift
                 # source for the next row, matching polars stage-input shifts
@@ -434,11 +441,12 @@ def _s8_one_security(reason, remove_8a, ajexdi, prc, me, ri, cshoc, dates, low_t
         if reason[i] != 0:
             continue
         obs += 1
-        if obs > 2.0:
+        if obs > 2.0:  # only the first 3 observations (0-indexed)
             break
         if prev >= 0:
             pr = prc[i] / prc[prev]
             mr = me[i] / me[prev]
+            # price or ME ratio outside [0.1, 10] on an initial observation
             if pr > 10.0 or pr < 0.1 or mr > 10.0 or mr < 0.1:
                 reason[i] = 1  # prev still advances: see 8g note
         prev = i

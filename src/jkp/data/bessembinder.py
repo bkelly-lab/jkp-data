@@ -89,7 +89,10 @@ def _correct_variable_arrays(
     bk.validate_cascading_all(starts, factor, wsize)
 
     if price_floor:
-        gated = (factor != 1.0) & ((factor > 1.0) | (x_det < 1.0))
+        is_multiply = factor > 1.0  # correction direction is multiply
+        is_sub_dollar = x_det < 1.0  # original price below $1
+        # keep only divide-direction corrections on >=$1 prices
+        gated = (factor != 1.0) & (is_multiply | is_sub_dollar)
         factor[gated] = 1.0
 
     if correction_method not in ("interpolation", "floor_interp"):
@@ -199,6 +202,8 @@ def apply_bessembinder_section6(
         [pl.col(name).fill_nan(None) for name in corrected_cols]
     ).write_parquet(corr_path, compression=BESS_SPILL_COMPRESSION)
 
+    # Reattach the corrected columns in place of the originals (which are
+    # dropped from the sorted scan and reappear at the end of the column order).
     return pl.concat(
         [pl.scan_parquet(sorted_path).drop(list(corrected_cols)), pl.scan_parquet(corr_path)],
         how="horizontal",
