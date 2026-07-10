@@ -279,9 +279,10 @@ def _load_section8(
             + [sort_col]
             + [pl.col(c).cast(pl.Float64) for c in value_cols]
             + [
-                pl.col(sort_col).cast(pl.Date).to_physical().cast(pl.Int32).alias("_date"),
-                pl.col(country_col).is_in(BESS_LOW_PRICE_COUNTRIES).fill_null(False).alias("_low"),
-                (pl.col(country_col) == "CHN").fill_null(False).alias("_chn"),
+                # named to match the Section8Inputs fields (see _section8_inputs)
+                pl.col(sort_col).cast(pl.Date).to_physical().cast(pl.Int32).alias("dates"),
+                pl.col(country_col).is_in(BESS_LOW_PRICE_COUNTRIES).fill_null(False).alias("low"),
+                (pl.col(country_col) == "CHN").fill_null(False).alias("chn"),
             ]
         )
         .collect()
@@ -308,27 +309,22 @@ def _filter_8a_decision(data: pl.DataFrame, group_cols: list[str]) -> np.ndarray
         .unique()
         .join(avg_vol, on=group_cols, how="left")
         .sort(group_cols)
-        .select((pl.col("_avg_vol") <= cutoff).fill_null(False))
-        .to_series()
+        .get_column("_avg_vol")
+        .le(cutoff)
+        .fill_null(False)
         .to_numpy()
-        .copy()
     )
 
 
 def _section8_inputs(data: pl.DataFrame, group_cols: list[str]) -> Section8Inputs:
-    """Adapter: the collected Section 8 panel -> typed NumPy kernel inputs."""
+    """Adapter: the collected Section 8 panel -> typed NumPy kernel inputs. The
+    per-row array columns are named to match the Section8Inputs fields."""
+    array_fields = ("ajexdi", "prc", "me", "ri", "cshoc", "dates", "low", "chn")
     return Section8Inputs(
         starts=_group_starts(data, group_cols),
         remove_8a=_filter_8a_decision(data, group_cols),
-        ajexdi=data["ajexdi"].to_numpy(),
-        prc=data["prc"].to_numpy(),
-        me=data["me"].to_numpy(),
-        ri=data["ri"].to_numpy(),
-        cshoc=data["cshoc"].to_numpy(),
-        dates=data["_date"].to_numpy(),
-        low=data["_low"].to_numpy(),
-        chn=data["_chn"].to_numpy(),
         gap_days=int(BESS_SECTION8_GAP_TRADING_DAYS * 365 / 252),  # trading -> calendar days
+        **{f: data[f].to_numpy() for f in array_fields},
     )
 
 
