@@ -151,10 +151,11 @@ def apply_bessembinder_section6(
     corrected_cols: dict[str, np.ndarray] = {}
 
     # trfd, qunit and (NA data only) adrrc are corrected independently.
+    # (_correct_variable_arrays copies its input internally, so no .copy() here.)
     for variable in ("trfd", "qunit", "adrrc"):
         if variable in schema_names and (variable != "adrrc" or has_adrrc):
             corrected_cols[variable] = _correct_variable_arrays(
-                data[variable].to_numpy().copy(),
+                data[variable].to_numpy(),
                 starts,
                 window_sizes,
                 correction_method,
@@ -164,11 +165,11 @@ def apply_bessembinder_section6(
     # Reconstruct prccd/cshoc from corrected split-adjusted values; only when
     # all three inputs are present (always so on the Compustat security files).
     if {"ajexdi", "prccd", "cshoc"} <= set(schema_names):
-        ajexdi = data["ajexdi"].to_numpy().copy()
+        ajexdi = data["ajexdi"].to_numpy()
         with np.errstate(divide="ignore", invalid="ignore"):
             # The floor variants gate the price variable only (divide-direction, >=$1).
             adjprc = _correct_variable_arrays(
-                data["prccd"].to_numpy().copy() / ajexdi,
+                data["prccd"].to_numpy() / ajexdi,
                 starts,
                 window_sizes,
                 correction_method,
@@ -176,7 +177,7 @@ def apply_bessembinder_section6(
                 variation_threshold=variation_threshold,
             )
             adjcsho = _correct_variable_arrays(
-                data["cshoc"].to_numpy().copy() * ajexdi,
+                data["cshoc"].to_numpy() * ajexdi,
                 starts,
                 window_sizes,
                 correction_method,
