@@ -3,6 +3,12 @@ This change log keeps track of changes to the underlying data set. In brackets, 
 
 This repository ports the original SAS pipeline ([ReplicationCrisis](https://github.com/bkelly-lab/ReplicationCrisis)) to Python using Polars. Entries up to and including 05-03-2025 are from the original change log.
 
+## 10-07-2026
+__Changes__:
+- Applied the Bessembinder, Cooper, Gao, and Wei (2023) data corrections to the Compustat security files: Section 6 decimal-error detection and correction (single- and multi-period spike-and-reversal), and Section 8 filters (8a–8h) that flag remaining implausible observations ([#XXX](https://github.com/bkelly-lab/jkp-data/pull/XXX))
+- Recovered returns for never-dividend securities by substituting `trfd=1` in `gen_comp_dsf` ([#XXX](https://github.com/bkelly-lab/jkp-data/pull/XXX))
+- Added a post-correction sanity filter: Compustat returns above 1000% (`ret > 10`) are set to null in `gen_returns_df`, treating them as uncorrected data errors rather than real price moves ([#XXX](https://github.com/bkelly-lab/jkp-data/pull/XXX))
+
 ## 04-07-2026
 __Changes__:
 - Replaced `crsp_shrcd` and `crsp_exchcd` with `primaryexch` and `conditionaltype` in the characteristics output ([#205](https://github.com/bkelly-lab/jkp-data/pull/205))

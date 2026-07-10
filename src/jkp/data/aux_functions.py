@@ -2387,10 +2387,15 @@ def gen_returns_df(paths: DataPaths, freq):
             .otherwise(col("ret_local"))
         )
         .with_columns(
-            ret_local=pl.when(col("ret_local").is_infinite() | col("ret_local").is_nan())
+            # null inf/nan and implausible returns > 1000% (ret <= 10 filter):
+            # a return this large after the Bessembinder correction is a likely
+            # uncorrected data error rather than a real price move.
+            ret_local=pl.when(
+                col("ret_local").is_infinite() | col("ret_local").is_nan() | (col("ret_local") > 10)
+            )
             .then(None)
             .otherwise(col("ret_local")),
-            ret=pl.when(col("ret").is_infinite() | col("ret").is_nan())
+            ret=pl.when(col("ret").is_infinite() | col("ret").is_nan() | (col("ret") > 10))
             .then(None)
             .otherwise(col("ret")),
         )
