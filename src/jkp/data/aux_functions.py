@@ -868,6 +868,9 @@ def download_raw_data_tables(
         "crsp_a_indexes.acti",
         # ccmxpf_linktable has usedflag (ccmxpf_lnkhist drops it); needed for SY-parity tiebreak.
         "crsp.ccmxpf_linktable",
+        # IBES international EPS actuals — anndats supplies ex-US earnings
+        # announcement dates for DHS PEAD (Compustat g_fundq has no rdq).
+        "ibes.actu_epsint",
     ]
 
     # Tables with a known date column are filtered to end_date during download.
@@ -885,6 +888,7 @@ def download_raw_data_tables(
         "comp.g_fundq": "datadate",
         "crsp_a_indexes.msp500": "caldt",
         "crsp_a_indexes.acti": "caldt",
+        "ibes.actu_epsint": "anndats",
     }
 
     wrds_session_data = gen_wrds_connection_info(username, password)
@@ -15069,3 +15073,1091 @@ def load_dff_be(path: Path | None = None) -> pl.DataFrame:
         )
         .sort(["permno", "year"])
     )
+
+
+# =====================================================================
+# DHS behavioral factors (FIN + PEAD) — ported from build_dhs_factors_yale
+# via gen_dhs_data.py. US byte-identical; FIN international (ROW from world_*).
+# All private helpers/builders carry the _dhs_ prefix; gen_dhs_data is public.
+# =====================================================================
+
+def _dhs_wd_idx(col: pl.Expr) -> pl.Expr:
+    # Weekday index (anchor 1960-01-04 = Monday): Mon-Fri step by 1, Sat/Sun
+    # collapse onto the prior Friday. Weekdays between two dates = index difference.
+    n = (col - pl.date(1960, 1, 4)).dt.total_days()
+    weeks = n // 7
+    return weeks * 5 + pl.min_horizontal(n - weeks * 7, pl.lit(4))
+
+
+def _dhs_dedup_multidist(lf: pl.LazyFrame, date: str, ret: str, cap: str) -> pl.LazyFrame:
+    """Collapse the WRDS msf/dsf multi-distribution duplicate rows to one per
+    (permno, date), mirroring jkp's dedupe idiom (sort keys + keep-first)."""
+    return (
+        lf.sort(["permno", date, ret, cap], descending=[False, False, True, True], nulls_last=True)
+        .unique(subset=["permno", date], keep="first", maintain_order=True)
+    )
+
+
+def _dhs_clean_prices(frame: pl.DataFrame | pl.LazyFrame) -> pl.DataFrame | pl.LazyFrame:
+    """|prc|, then drop rows with a missing/zero price, missing return, or missing
+    shares outstanding. Shared by the monthly and daily panels; order-preserving."""
+    return frame.with_columns(prc=pl.col("prc").abs()).filter(
+        pl.col("prc").is_not_null() & (pl.col("prc") != 0)
+        & pl.col("ret").is_not_null() & pl.col("shrout").is_not_null()
+    )
+
+
+def _dhs_non_financial(col: str = "siccd") -> pl.Expr:
+    """Keep non-financials: drop SIC 6000-6999, but KEEP a missing SIC."""
+    return pl.col(col).is_null() | ~((pl.col(col) >= 6000) & (pl.col(col) <= 6999))
+
+
+def _dhs_size_group(me: str, p50: str = "P50") -> pl.Expr:
+    """NYSE-median size split: B if ME>P50; S if ME<=P50 or ME missing; null
+    (dropped) if the P50 breakpoint is missing."""
+    return (
+        pl.when(pl.col(me).is_not_null() & pl.col(p50).is_not_null() & (pl.col(me) > pl.col(p50)))
+        .then(pl.lit("B"))
+        .when(pl.col(me).is_null() | (pl.col(p50).is_not_null() & (pl.col(me) <= pl.col(p50))))
+        .then(pl.lit("S"))
+        .otherwise(None)
+    )
+
+
+def _dhs_group_quantiles(
+    df: pl.DataFrame, by: str, var: str, pcts: list[int], prefix: str,
+    *, pool: pl.Expr, min_stocks: int = 0,
+) -> pl.DataFrame:
+    """Per-(excntry, `by`) discrete percentiles (QUANTILE_DISC = an actual order
+    statistic, no interpolation) over the country breakpoint `pool`. One row per
+    (excntry, group); Float64 in, Float64 out.
+
+    `pool` selects the country breakpoint universe (US = primaryexch == "N"; the
+    ROW size_grp branch is a documented seam that never fires under US-only data).
+    Min-stocks mirrors ff_country_breakpoints: a (excntry, group) is emitted only
+    when excntry = 'USA' OR its pool count >= min_stocks (USA is always exempt, so
+    with US-only data no group is ever dropped)."""
+    sub = df.filter(pool).select(["excntry", by, var]).drop_nulls()
+    selects = ", ".join(f"QUANTILE_DISC({var}, {p / 100}) AS {prefix}{p}" for p in pcts)
+    return pl.SQLContext(t=sub).execute(
+        f"SELECT excntry, {by}, {selects} FROM t GROUP BY excntry, {by} "
+        f"HAVING excntry = 'USA' OR COUNT(*) >= {min_stocks}",
+        eager=True,
+    )
+
+
+def _dhs_form_factor(base: pl.DataFrame, *, long: tuple[str, str], short: tuple[str, str],
+                name: str, date_col: str = "eom", ret_col: str = "ret",
+                w_col: str = "lagCRSPSIZE") -> pl.DataFrame:
+    """Value-weight `ret_col` by `w_col` per size×char cell (`portfolio`), pivot to
+    the six SL..BH legs, and form ((long1+long2)-(short1+short2))/2. Shared by the
+    monthly sorts (defaults) and the daily leg (date_col="date", w_col="w").
+    Returns [excntry, date_col, name] in the (decimal) return unit."""
+    # VW mean: rows with missing return or weight are excluded; the group row
+    # order is fixed (maintain_order) so the float sum is deterministic. excntry
+    # is a constant leading key under US-only data (one country) -> no reorder.
+    sub = base.filter(pl.col("portfolio").is_not_null()).sort(["excntry", date_col, "portfolio"], maintain_order=True)
+    pf = (
+        sub.filter(pl.col(ret_col).is_not_null() & pl.col(w_col).is_not_null())
+        .group_by(["excntry", date_col, "portfolio"], maintain_order=True)
+        .agg(((pl.col(ret_col) * pl.col(w_col)).sum() / pl.col(w_col).sum()).alias("vwret"))
+    )
+    long_leg = (pl.col(long[0]) + pl.col(long[1])) / 2
+    short_leg = (pl.col(short[0]) + pl.col(short[1])) / 2
+    wide = pf.pivot(on="portfolio", index=["excntry", date_col], values="vwret").sort(["excntry", date_col])
+    return (
+        # a leg empty in every period is absent from the pivot -> add it as null
+        wide.with_columns(
+            pl.lit(None, dtype=pl.Float64).alias(c)
+            for c in (*long, *short) if c not in wide.columns
+        )
+        .select("excntry", date_col, (long_leg - short_leg).alias(name))
+    )
+
+
+def _dhs_universe() -> pl.Expr:
+    """Common US common-stock universe: jkp's CIZ screen + the 'RW' gate (legacy
+    SHRCD 10/11 × EXCHCD 1-3). Passing rows are already on a major exchange
+    (N/A/Q), so a later exchange screen is redundant. The NYSE size-median pool
+    deliberately does NOT gate on 'RW' (plain _ciz_universe via ff_load_crsp_panel)."""
+    return _ciz_universe() & (pl.col("conditionaltype") == "RW")
+
+
+def _dhs_load_msf(raw_dir: Path, beg: int, end: int) -> pl.LazyFrame:
+    """Scan crsp_msf_v2 (year window only, no universe screen): the monthly panel
+    screens itself and the IR build consumes all raw rows so its positional June
+    lags and 60-month windows see full history. Only Decimal prc/ret are cast to
+    Float64: WRDS stores them as Decimal, and Decimal division locks the result to
+    the operands' scale and truncates (a ratio 12.34/10.00 -> 1.23), silently
+    corrupting the IR ratio and the log1p cumret; jkp casts the same (see
+    _mp_build_crsp_monthly). permno/date/shrout/siccd keep their dtypes."""
+    return (
+        _dhs_dedup_multidist(pl.scan_parquet(raw_dir / "crsp_msf_v2.parquet"), "mthcaldt", "mthret", "mthcap")
+        .rename({"mthcaldt": "date", "mthprc": "prc", "mthret": "ret"})
+        .with_columns(pl.col("prc", "ret").cast(pl.Float64))
+        .select("permno", "date", "prc", "ret", "shrout", "siccd",
+                "securitytype", "securitysubtype", "sharetype", "issuertype",
+                "usincflg", "conditionaltype", "primaryexch")
+        .filter(pl.col("date").dt.year().is_between(beg, end))
+    )
+
+
+def _dhs_monthly_panel(msf: pl.DataFrame, beg: int, end: int) -> pl.DataFrame:
+    """Master monthly return panel (port of build_monthly_returns). The NYSE flag
+    is primaryexch ("N"/"A"/"Q"), not a numeric exchcd; siccd is dense per-row.
+
+    Steps:
+        1) Universe screen (_dhs_universe).
+        2) |prc|; drop missing/zero price, missing return, missing shrout.
+        3) SIZE = |prc|*shrout/1000 ($MM); eom/year/month; cyear maps
+           July(t)..June(t+1) to t within [beg, end].
+        4) lagCRSPSIZE = prior-month SIZE, nulled across a calendar gap.
+
+    Output: excntry ("USA"), id (== permno for US), eom, ret (decimal),
+        lagCRSPSIZE, primaryexch, siccd, CRSPDATE, year, month, cyear, CRSPSIZE.
+    """
+    cbase = pl.when(pl.col("month") >= 7).then(pl.col("year")).otherwise(pl.col("year") - 1)
+    # reportbreak gates the lagged SIZE (a >1 month gap nulls the lag). Per-firm
+    # ops partition on the globally-unique `id` (== permno for US), so ROW ids
+    # never share a partition with a US permno.
+    reportbreak = (
+        12 * (pl.col("year") - pl.col("year").shift(1).over("id"))
+        + (pl.col("month") - pl.col("month").shift(1).over("id"))
+    )
+    return (
+        # passing rows are already RW + N/A/Q; NYSE flag carried as primaryexch (no exchcd screen)
+        msf.filter(_dhs_universe())
+        .pipe(_dhs_clean_prices)
+        .with_columns(
+            SIZE=pl.col("prc") * pl.col("shrout") / 1000,  # $MM
+            eom=pl.col("date").dt.month_end(),  # canonical monthly key (real Date)
+            year=pl.col("date").dt.year(),
+            month=pl.col("date").dt.month(),
+            excntry=pl.lit("USA"),  # country dimension
+            id=pl.col("permno"),    # country-generic stock key (== permno for US)
+            size_grp=pl.lit(None, dtype=pl.String),  # ROW-only breakpoint pool tag; null for US (NYSE pool)
+        )
+        # sort by (excntry, id, date) so each id's rows are date-ordered for the
+        # per-id lags; id == permno for US, so the ordering is unchanged.
+        .sort(["excntry", "id", "date"])
+        .with_columns(
+            cyear=pl.when((cbase >= beg) & (cbase <= end)).then(cbase).otherwise(None),
+            lagCRSPSIZE=pl.when(reportbreak > 1).then(None).otherwise(pl.col("SIZE").shift(1).over("id")),
+        )
+        .rename({"date": "CRSPDATE", "SIZE": "CRSPSIZE"})
+        .select(
+            "excntry", "id", "CRSPDATE", "eom", "year", "month", "cyear", "ret",
+            "CRSPSIZE", "lagCRSPSIZE", "primaryexch", "siccd", "size_grp",
+        )
+    )
+
+
+def _dhs_row_universe() -> pl.Expr:
+    """ROW (ex-US) jkp main-sample screen: common stock, primary security, main
+    observation, main exchange, ME present; excntry != USA (US flows the CRSP path)."""
+    return (
+        (pl.col("excntry") != US_EXCNTRY)
+        & (pl.col("common") == 1) & (pl.col("primary_sec") == 1)
+        & (pl.col("obs_main") == 1) & (pl.col("exch_main") == 1)
+        & pl.col("me").is_not_null()
+    )
+
+
+def _dhs_load_row_panel(interim_dir: Path, beg: int, end: int) -> pl.DataFrame:
+    """ROW (ex-US) monthly panel from jkp's world_data, in the SAME schema as the
+    US _dhs_monthly_panel so the two concat. me -> CRSPSIZE; lagCRSPSIZE = prior-
+    month me nulled across a calendar gap (world_msf has no me_lag1, so it is
+    computed like the US panel); sic (from world_msf) -> siccd; primaryexch null
+    (ROW has no NYSE; the FIN breakpoint pool uses size_grp). cyear maps
+    July(t)..June(t+1) to t in [beg, end]. Dtypes match the US panel's so
+    pl.concat(vertical) leaves US bytes intact."""
+    sic = pl.scan_parquet(interim_dir / "world_msf.parquet").select(
+        "id", "eom", pl.col("sic").cast(pl.Int64).alias("siccd")
+    )
+    cbase = pl.when(pl.col("month") >= 7).then(pl.col("year")).otherwise(pl.col("year") - 1)
+    reportbreak = (
+        12 * (pl.col("year") - pl.col("year").shift(1).over("id"))
+        + (pl.col("month") - pl.col("month").shift(1).over("id"))
+    )
+    return (
+        pl.scan_parquet(interim_dir / "world_data.parquet")
+        .filter(_dhs_row_universe() & pl.col("eom").dt.year().is_between(beg, end))
+        .join(sic, on=["id", "eom"], how="left")
+        .with_columns(year=pl.col("eom").dt.year(), month=pl.col("eom").dt.month())
+        .sort(["id", "eom"])  # per-id date order for the gap-nulled prior-month lag
+        .with_columns(
+            lagCRSPSIZE=pl.when(reportbreak > 1).then(None)
+            .otherwise(pl.col("me").shift(1).over("id")).cast(pl.Float64),
+        )
+        .select(
+            "excntry",
+            pl.col("id").cast(pl.Int64),
+            pl.col("eom").alias("CRSPDATE"),
+            "eom",
+            pl.col("year").cast(pl.Int32),
+            pl.col("month").cast(pl.Int8),
+            pl.when((cbase >= beg) & (cbase <= end)).then(cbase).otherwise(None).cast(pl.Int32).alias("cyear"),
+            pl.col("ret").cast(pl.Float64),
+            pl.col("me").cast(pl.Float64).alias("CRSPSIZE"),
+            "lagCRSPSIZE",
+            pl.lit(None, dtype=pl.String).alias("primaryexch"),
+            "siccd",
+            pl.col("size_grp").cast(pl.String),
+        )
+        .collect()
+    )
+
+
+def _dhs_row_chars(interim_dir: Path, beg: int, end: int) -> pl.DataFrame:
+    """ROW (ex-US) annual FIN characteristics from jkp's world_data, in the US
+    annual_chars schema [id, datadate, YEAR, lagBE, NS, IR] (excntry flows in later
+    via the id join to the ROW panel). Computed at each June(t) per id:
+        NS = log(adj_shares_June(t) / adj_shares_June(t-1)), adj_shares=shares*adjfct
+        IR = log(me_June(t) / me_June(t-5)) - log(60-month gross cumret)  (DHS 5-yr)
+        lagBE = be_me_June(t-1)  (lagged positive-book-equity guard; be_me>0 <=> BE>0;
+                                  fin_factor keeps >=0)
+    IR's 60-month sum needs the full monthly series, so it is computed before the
+    June filter; the 5-yr / 1-yr / prior-June lags are positional shifts over the
+    June rows (after the filter). YEAR-relabel keeps the validated fin_factor
+    offsets untouched: IR belongs to the June(t) rebalance (cyear=t, YEAR==cyear)
+    so YEAR=t; NS uses YEAR+1==cyear so it is emitted at YEAR=t-1. [beg, end] clip
+    the eom year, matching the US msf window (60-mo warm-up applies as for the US)."""
+    log1p = pl.when((1 + pl.col("ret")) > 0).then((1 + pl.col("ret")).log()).otherwise(None)
+    n_valid = log1p.is_not_null().cast(pl.Int32).rolling_sum(window_size=60, min_samples=60).over("id")
+
+    # world_data has ~1% per-id month gaps, so the positional row lags are CALENDAR-
+    # guarded: a char is kept only when the required prior row sits at the exact
+    # calendar offset (12mo NS / 60mo IR), else nulled (dropped) rather than
+    # mis-horizoned. _mgap = calendar months between eom and its `n`-rows-prior eom.
+    def _mgap(n: int) -> pl.Expr:
+        e = pl.col("eom").shift(n).over("id")
+        return (pl.col("eom").dt.year() - e.dt.year()) * 12 + (pl.col("eom").dt.month() - e.dt.month())
+
+    me_lag5 = pl.col("me").shift(5).over("id")            # 5 June rows back (post-June-filter)
+    me_ratio = pl.when((me_lag5 != 0) & (_mgap(5) == 60)).then(pl.col("me") / me_lag5).otherwise(None)
+    adj_lag1 = pl.col("adj_shares").shift(1).over("id")   # 1 June row back (post-June-filter)
+    ns_ratio = pl.when((adj_lag1 != 0) & (_mgap(1) == 12)).then(pl.col("adj_shares") / adj_lag1).otherwise(None)
+    june = (
+        pl.scan_parquet(interim_dir / "world_data.parquet")
+        .filter((pl.col("excntry") != US_EXCNTRY) & pl.col("eom").dt.year().is_between(beg, end))
+        .select("id", "eom", "me", "ret", "shares", "adjfct", "be_me")
+        .sort(["id", "eom"])
+        .with_columns(
+            adj_shares=pl.col("shares") * pl.col("adjfct"),
+            # 60-month cumret: 60 valid rows AND the window spans exactly 60
+            # contiguous calendar months (window-start eom is 59 months back)
+            log_cumret=pl.when((n_valid == 60) & (_mgap(59) == 59))
+            .then(log1p.rolling_sum(window_size=60, min_samples=60).over("id"))
+            .otherwise(None),
+        )
+        .filter(pl.col("eom").dt.month() == 6)
+        .with_columns(
+            NS=pl.when(ns_ratio > 0).then(ns_ratio.log()).otherwise(None),
+            IR=pl.when(me_ratio > 0).then(me_ratio.log()).otherwise(None) - pl.col("log_cumret"),
+            lagBE=pl.col("be_me").shift(1).over("id"),    # prior-June be_me (book/market)
+            YEAR=pl.col("eom").dt.year().cast(pl.Int32),
+            datadate=pl.col("eom"),
+        )
+        .select("id", "datadate", "YEAR", "lagBE", "NS", "IR")
+        .collect()
+    )
+    # split so fin_factor's offsets land both on the June(t) rebalance:
+    #   IR-row at YEAR=t   (IR filter YEAR==cyear),  NS-row at YEAR=t-1 (NS filter YEAR+1==cyear)
+    ir_rows = june.select("id", "datadate", "YEAR", "lagBE", "IR").with_columns(NS=pl.lit(None, pl.Float64))
+    ns_rows = june.select(
+        "id", "datadate", (pl.col("YEAR") - 1).alias("YEAR"), "lagBE", "NS"
+    ).with_columns(IR=pl.lit(None, pl.Float64))
+    return pl.concat([ir_rows, ns_rows], how="diagonal_relaxed")
+
+
+def _dhs_ccm_link(comp: pl.LazyFrame, endfyr_col: str, raw_dir: Path) -> pl.LazyFrame:
+    """Link Compustat rows to CRSP permnos via CCM: LINKTYPE in (LU,LC,LD,LN,LS,LX),
+    usedflag == 1, LINKDT <= endfyr <= LINKENDDT (NULL bound = open). lpermno is
+    cast off Decimal (join key vs Int64 permno)."""
+    link = (
+        pl.scan_parquet(raw_dir / "crsp_ccmxpf_linktable.parquet")
+        .with_columns(pl.col("lpermno").cast(pl.Int64))
+        .filter(
+            pl.col("linktype").is_in(["LU", "LC", "LD", "LN", "LS", "LX"])
+            & (pl.col("usedflag") == 1)  # usedflag is Float64; == 1 serves
+            & pl.col("lpermno").is_not_null()
+        )
+    )
+    return (
+        comp.join(link, on="gvkey", how="inner")
+        .filter(
+            (pl.col("linkdt").is_null() | (pl.col("linkdt") <= pl.col(endfyr_col)))
+            & (pl.col("linkenddt").is_null() | (pl.col(endfyr_col) <= pl.col("linkenddt")))
+        )
+    )
+
+
+def _dhs_issuance_chars(msf: pl.DataFrame, raw_dir: Path, beg: int, end: int) -> pl.DataFrame:
+    """Annual Compustat characteristics (NS, lagBE, IR per fiscal year; port of
+    build_issuance_chars). `msf` is the RAW unfiltered monthly file (IR is built
+    off it). Financials are screened later on the CRSP siccd, never on funda's
+    sich.
+
+    Steps:
+        1) Scan comp_funda (industrial screen + fyear window), cast numerics to
+           Float64, link to CRSP via CCM; keep LATEST datadate per (LPERMNO, YEAR).
+        2) NS = log(adjusted-shares ratio) with divide/nonpositive guards; BE via
+           the equity waterfall; lagged BE across a calendar gap.
+        3) IR = log(ME_June/ME_June_5yr_ago) - log(60-month gross cumret), on the
+           raw msf's June rows.
+
+    Output: one row per (LPERMNO, YEAR) with NS, lagBE, IR.
+    """
+    funda_num = [
+        "at", "csho", "ajex", "pstkrv", "pstkl", "pstk",
+        "seq", "ceq", "lt", "txditc", "txdb", "itcb",
+    ]
+    funda = (
+        pl.scan_parquet(raw_dir / "comp_funda.parquet")
+        .filter(_compustat_na_filter())
+        .filter(pl.col("fyear").is_between(beg, end))  # datadate already Date
+        .with_columns(
+            endfyr=pl.col("datadate"),
+            *[pl.col(c).cast(pl.Float64) for c in funda_num],
+        )
+    )
+    # collect: linked pool feeds the eager per-(LPERMNO, YEAR) dedupe + char build
+    linked = _dhs_ccm_link(funda, "endfyr", raw_dir).rename({"lpermno": "LPERMNO"}).collect()
+
+    reportbreak = pl.col("YEAR") - pl.col("YEAR").shift(1).over("LPERMNO")
+
+    def _lag(val: pl.Expr) -> pl.Expr:
+        # gap-nulled 1-period lag over LPERMNO; missing break fails >1 (lag taken), first row null via shift()
+        return pl.when(reportbreak > 1).then(None).otherwise(val.shift(1).over("LPERMNO"))
+
+    # NS = log(adjusted-shares ratio); div-by-zero or nonpositive ratio -> missing
+    adj_csho = pl.col("csho") * pl.col("ajex")
+    lag_adj = _lag(adj_csho)
+    ratio = pl.when(lag_adj != 0).then(adj_csho / lag_adj).otherwise(None)
+
+    # Book-equity waterfall; each component falls back through its alternatives.
+    # preferred: redemption value, else liquidating value, else par
+    preferred = pl.coalesce("pstkrv", "pstkl", "pstk")
+    # shareholders' equity: SEQ, else CEQ + preferred par, else AT - LT
+    shareholders_equity = (
+        pl.when(pl.col("seq").is_not_null()).then(pl.col("seq"))
+        .when(pl.col("ceq").is_not_null()).then(pl.col("ceq") + pl.col("pstk"))
+        .otherwise(pl.col("at") - pl.col("lt"))
+    )
+    # deferred taxes: TXDITC, else TXDB+ITCB (missing addend -> the other alone; both missing -> missing)
+    deferred_tax = (
+        pl.when(pl.col("txditc").is_not_null()).then(pl.col("txditc"))
+        .when(pl.col("txdb").is_null()).then(pl.col("itcb"))
+        .when(pl.col("itcb").is_null()).then(pl.col("txdb"))
+        .otherwise(pl.col("txdb") + pl.col("itcb"))
+    )
+    # BE = equity + deferred_tax - preferred; missing deferred_tax/preferred -> 0, missing equity -> missing
+    be = shareholders_equity + deferred_tax.fill_null(0) - preferred.fill_null(0)
+
+    chars = (
+        linked.sort(["gvkey", "datadate"])  # gvkey order is the dedupe tie-break
+        .with_columns(YEAR=pl.col("datadate").dt.year())  # calendar year of FY-end, NOT fyear
+        # dedupe: keep LATEST datadate per (LPERMNO, YEAR)
+        .sort(["LPERMNO", "YEAR", "datadate"])
+        .unique(subset=["LPERMNO", "YEAR"], keep="last", maintain_order=True)
+        .sort(["LPERMNO", "YEAR"])
+        .with_columns(
+            NS=pl.when(ratio > 0).then(ratio.log()).otherwise(None),
+            lagBE=_lag(be),
+        )
+    )
+
+    # IR = log_ME - log_cumret, built in ONE (permno,date)-sorted pass over raw msf:
+    #   log_ME     = log(ME_June / ME_June_5yr_ago), 5-year positional June lag; ME/0 -> null
+    #   log_cumret = trailing-60-month sum of log1p(ret); nonpositive gross -> null term,
+    #                and any window missing a month is invalidated by the validity count.
+    # One sort feeds both the rolling window and the post-filter shift(5); no self-join.
+    prc_clean = pl.when(pl.col("prc") == 0).then(None).otherwise(pl.col("prc"))
+    me_june = prc_clean.abs() * pl.col("shrout") / 1000
+    log1p = pl.when((1 + pl.col("ret")) > 0).then((1 + pl.col("ret")).log()).otherwise(None)
+    n_valid = log1p.is_not_null().cast(pl.Int32).rolling_sum(window_size=60, min_samples=60).over("permno")
+    me_lag5 = pl.col("ME_June").shift(5).over("permno")
+    me_ratio = pl.when(me_lag5 != 0).then(pl.col("ME_June") / me_lag5).otherwise(None)
+    ir = (
+        msf.select("permno", "date", "prc", "ret", "shrout")
+        .sort(["permno", "date"])
+        # ME_June + rolling sum need the full series, so compute before the June filter
+        .with_columns(
+            ME_June=me_june,
+            log_cumret=pl.when(n_valid == 60)
+            .then(log1p.rolling_sum(window_size=60, min_samples=60).over("permno"))
+            .otherwise(None),
+        )
+        .filter(pl.col("date").dt.month() == 6)
+        # the 5-year June lag is positional over the June rows, so it comes after the filter
+        .with_columns(log_ME=pl.when(me_ratio > 0).then(me_ratio.log()).otherwise(None))
+        .select(
+            pl.col("permno").alias("LPERMNO"),
+            pl.col("date").dt.year().alias("YEAR"),
+            (pl.col("log_ME") - pl.col("log_cumret")).alias("IR"),
+        )
+    )
+    # expose the firm key as the globally-unique `id` (== LPERMNO for this US
+    # builder) so the concat-bound FIN path keys uniformly on id.
+    return chars.join(ir, on=["LPERMNO", "YEAR"], how="left").rename({"LPERMNO": "id"})
+
+
+def _dhs_market_daily(interim_dir: Path) -> pl.LazyFrame:
+    """Daily market return -> [excntry, date, mkt] DECIMAL: the interim
+    market_returns_daily mkt_vw, per country, for the announcement (ret - mkt)
+    window. Under US-only stock data only the USA rows are ever joined."""
+    return (
+        pl.scan_parquet(interim_dir / "market_returns_daily.parquet")
+        .select(
+            pl.col("excntry"),
+            pl.col("date").cast(pl.Date),
+            pl.col("mkt_vw").cast(pl.Float64).alias("mkt"),
+        )
+        .sort(["excntry", "date"])
+    )
+
+
+def _dhs_abr_window(ann: pl.DataFrame, daily: pl.DataFrame) -> pl.DataFrame:
+    """Abr per (id, RDQ) over the weekday window [RDQ-2, RDQ+1]. `ann` = [id,
+    datadate, rdq]; `daily` = [id, date, ret, mkt] (ret, mkt decimal). Mirrors
+    build_announcement_returns: an inner window join drops a missing RDQ, the window
+    sum and non-missing day count are each scaled by the announcement rows sharing
+    (id, RDQ), counts are kept in [2,4], and RDQ must sit >=1 weekday before its
+    calendar month end. The window sum is ORDERED (sort + maintain_order) so the
+    float add is deterministic at a discrete quantile breakpoint. Country-generic:
+    the US path renames LPERMNO->id, the ROW path is already id-keyed. Returns
+    [id, DATADATE, RDQ, Abr, eom]."""
+    ann = ann.filter(pl.col("rdq").is_not_null()).select("id", "datadate", "rdq")
+    ann_groups = ann.group_by(["id", "rdq"]).agg(n_arows=pl.len())
+    rdq_wd = _dhs_wd_idx(pl.col("rdq"))
+    win = ann_groups.with_columns(
+        wd=pl.concat_list(rdq_wd - 2, rdq_wd - 1, rdq_wd, rdq_wd + 1)
+    ).explode("wd")
+    daily_idx = daily.with_columns(wd=_dhs_wd_idx(pl.col("date")))
+    joined = win.join(daily_idx, on=["id", "wd"], how="inner")
+    stats = (
+        joined.sort(["id", "rdq", "wd"], maintain_order=True)
+        .group_by(["id", "rdq"], maintain_order=True)
+        .agg(
+            abr_sum=(pl.col("ret") - pl.col("mkt")).sum(),  # sum skips null terms
+            cnt=pl.col("ret").is_not_null().sum(),          # count of non-missing ret
+        )
+    )
+    rme = pl.col("rdq").dt.month_end()
+    return (
+        ann.join(ann_groups, on=["id", "rdq"], how="left")
+        .join(stats, on=["id", "rdq"], how="inner")
+        .with_columns(
+            Abr=pl.col("abr_sum") * pl.col("n_arows"),
+            count=pl.col("cnt") * pl.col("n_arows"),
+        )
+        .filter((pl.col("count") >= 2) & (pl.col("count") <= 4))
+        .with_columns(n_weekdays=_dhs_wd_idx(rme) - _dhs_wd_idx(pl.col("rdq")))
+        .filter(pl.col("n_weekdays") >= 1)
+        .select(
+            "id", pl.col("datadate").alias("DATADATE"), pl.col("rdq").alias("RDQ"),
+            "Abr", rme.alias("eom"),  # announcement month-end
+        )
+        .sort(["id", "eom", "RDQ", "DATADATE"])
+    )
+
+
+def _dhs_align_abr(panel_rows: pl.DataFrame, abr: pl.DataFrame) -> pl.DataFrame:
+    """Align per-(id, RDQ) Abr to the monthly panel (port of build_announcement_returns
+    step 4). Two announcements in one id-month: the later RDQ is ordered FIRST, so its
+    lagAbr is null across the month gap and it drops; the earlier-RDQ row survives
+    carrying the later Abr as lagAbr, and the forward-fill feeds the earlier quarter's
+    DATADATE into the 6-month staleness test. `panel_rows` must carry [excntry, eom,
+    id, primaryexch, lagCRSPSIZE, siccd, size_grp, year, month, CRSPDATE, ret]; `abr`
+    is [id, DATADATE, RDQ, Abr, eom]. Per-firm ops partition on the globally-unique id."""
+    filled_datadate = pl.col("DATADATE").forward_fill().over("id")
+    mreportbreak = (
+        12 * (pl.col("year") - pl.col("year").shift(1).over("id"))
+        + (pl.col("month") - pl.col("month").shift(1).over("id"))
+    )
+    return (
+        panel_rows.join(abr, on=["id", "eom"], how="left")
+        .sort(["id", "CRSPDATE", "RDQ", "DATADATE"], descending=[False, False, True, True])
+        # fill DATADATE/RDQ, then the fiscal-quarter->CRSP-month gap off the FILLED DATADATE
+        .with_columns(
+            DATADATE=filled_datadate,
+            RDQ=pl.col("RDQ").forward_fill().over("id"),
+            gap_crsp_fqtr=(pl.col("CRSPDATE").dt.year() - filled_datadate.dt.year()) * 12
+            + (pl.col("CRSPDATE").dt.month() - filled_datadate.dt.month()),
+        )
+        # keep rows within 6 months; rows with a missing gap are also kept
+        .filter(pl.col("gap_crsp_fqtr").is_null() | (pl.col("gap_crsp_fqtr") <= 6))
+        # Abr fill runs AFTER the gap filter (on the surviving rows)
+        .with_columns(Abr=pl.col("Abr").forward_fill().over("id"))
+        .sort(["id", "eom", "RDQ", "DATADATE"], descending=[False, False, True, True])
+        .with_columns(
+            lagAbr=pl.when(mreportbreak > 1).then(None).otherwise(pl.col("Abr").shift(1).over("id"))
+        )
+        # drop financials (SIC 6000-6999, missing siccd KEPT) AND require non-null lagAbr
+        .filter(_dhs_non_financial() & pl.col("lagAbr").is_not_null())
+    )
+
+
+def _dhs_ibes_announcements(raw_dir: Path, interim_dir: Path, beg: int, end: int) -> pl.DataFrame:
+    """IBES international quarterly EPS announcement dates bridged to the world `id`.
+    Compustat g_fundq has no rdq ex-US, so ibes.actu_epsint (usfirm=0, measure EPS,
+    QTR periodicity) supplies anndats (announcement date, the ex-US RDQ) and pends
+    (fiscal period end). The IBES ticker is linked to gvkey via the Compustat-global
+    security master's ibtic (the vendor-maintained IBES link), then to the world id
+    of the gvkey's primary security. Bridges are deduped one-to-one (deterministic
+    sort + keep-first). One (id, period-end) row keeps the EARLIEST anndats. Returns
+    [id, datadate (=pends), rdq (=anndats)]."""
+    # ibtic (IBES ticker) -> gvkey, one gvkey per ticker
+    ibtic_gv = (
+        pl.scan_parquet(raw_dir / "comp_g_security.parquet")
+        .filter(pl.col("ibtic").is_not_null() & pl.col("gvkey").is_not_null())
+        .select(pl.col("ibtic").alias("ticker"), pl.col("gvkey").cast(pl.Utf8))
+        .unique()
+        .sort(["ticker", "gvkey"])
+        .unique(subset=["ticker"], keep="first", maintain_order=True)
+    )
+    # gvkey -> world id (primary security in the ROW universe), one id per gvkey
+    gv_id = (
+        pl.scan_parquet(interim_dir / "world_data.parquet")
+        .filter(_dhs_row_universe())
+        .select(pl.col("gvkey").cast(pl.Utf8), pl.col("id").cast(pl.Int64))
+        .unique()
+        .sort(["gvkey", "id"])
+        .unique(subset=["gvkey"], keep="first", maintain_order=True)
+    )
+    return (
+        pl.scan_parquet(raw_dir / "ibes_actu_epsint.parquet")
+        .filter(
+            (pl.col("usfirm") == 0) & (pl.col("measure") == "EPS") & (pl.col("pdicity") == "QTR")
+            & pl.col("ticker").is_not_null() & pl.col("anndats").is_not_null() & pl.col("pends").is_not_null()
+        )
+        .select(
+            "ticker",
+            pl.col("anndats").cast(pl.Date).alias("rdq"),
+            pl.col("pends").cast(pl.Date).alias("datadate"),
+        )
+        .filter(pl.col("rdq").dt.year().is_between(beg, end))
+        .join(ibtic_gv, on="ticker", how="inner")
+        .join(gv_id, on="gvkey", how="inner")
+        .select("id", "datadate", "rdq")
+        # earliest announcement per (id, period-end)
+        .sort(["id", "datadate", "rdq"])
+        .unique(subset=["id", "datadate"], keep="first", maintain_order=True)
+        .collect()
+    )
+
+
+def _dhs_row_announcement_returns(
+    monthly_panel: pl.DataFrame, raw_dir: Path, interim_dir: Path, beg: int, end: int,
+) -> pl.DataFrame:
+    """ROW (ex-US) announcement returns (Abr) for international PEAD, in the SAME
+    schema as the US _dhs_announcement_returns abr_panel so the two concat. The
+    announcement date is IBES anndats (bridged to the world id via ibtic->gvkey);
+    Abr is the [anndats-2, anndats+1] weekday CAR of world_dsf daily returns net of
+    the per-country market_returns_daily benchmark, aligned to the ROW monthly panel
+    exactly like the US path."""
+    row_panel = monthly_panel.filter(pl.col("excntry") != US_EXCNTRY)
+    # ROW daily returns net of the per-country market benchmark: [id, date, ret, mkt]
+    daily = (
+        _dhs_load_row_daily(interim_dir)
+        .join(_dhs_market_daily(interim_dir).collect(), on=["excntry", "date"], how="left")
+        .filter(pl.col("date").dt.year().is_between(beg, end))
+        .select("id", "date", "ret", "mkt")
+    )
+    ann = _dhs_ibes_announcements(raw_dir, interim_dir, beg, end)
+    abr = _dhs_abr_window(ann, daily)
+    return _dhs_align_abr(
+        row_panel.select(
+            "excntry", "eom", "id", "primaryexch", "lagCRSPSIZE", "siccd", "size_grp",
+            "year", "month", "CRSPDATE", "ret",
+        ),
+        abr,
+    )
+
+
+def _dhs_announcement_returns(
+    monthly_panel: pl.DataFrame, raw_dir: Path, interim_dir: Path,
+    beg: int, end: int, beg_q: int, end_q: int,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Cumulative abnormal return around earnings announcements (Abr), aligned to
+    the monthly CRSP panel (port of build_announcement_returns). Daily stock data
+    is crsp_dsf_v2 under the per-row universe screen; the market return is the
+    interim US panel.
+
+    Steps:
+        1) Clean daily CRSP to (permno, date, ret, mkt) DECIMAL; the one decimal
+           ret feeds both the Abr window and the daily factor build.
+        2) Link fundq to CRSP, dedupe to one row per (LPERMNO, datadate).
+        3) Abr over the weekday window [RDQ-2, RDQ+1], scaling window sum and day
+           count by the announcement rows sharing (LPERMNO, RDQ); keep counts in
+           [2,4] and RDQ >=1 weekday before month end.
+        4) Align to the monthly panel: later-RDQ fan-out row ordered first,
+           forward-fill DATADATE/RDQ/Abr, 6-month staleness gate (missing gap
+           kept), financials screen (missing siccd kept), require non-null lagAbr.
+
+    Output: (abr_panel with Abr/lagAbr + returns/size; daily_stock [permno, date,
+        ret] DECIMAL for the daily factor build).
+    """
+    # daily CRSP cleaned to (permno, date, ret decimal); universe screen at scan time (per-row flags); only Decimal prc/ret cast.
+    daily_clean = (
+        _dhs_dedup_multidist(pl.scan_parquet(raw_dir / "crsp_dsf_v2.parquet"), "dlycaldt", "dlyret", "dlycap")
+        .filter(_dhs_universe())
+        .select(
+            pl.col("permno"),
+            pl.col("dlycaldt").alias("date"),
+            pl.col("dlyprc").cast(pl.Float64).alias("prc"),
+            pl.col("dlyret").cast(pl.Float64).alias("ret"),
+            pl.col("shrout"),
+        )
+        .filter(pl.col("date").dt.year().is_between(beg, end))
+        .pipe(_dhs_clean_prices)
+        .with_columns(excntry=pl.lit("USA"))  # country dimension (US-only stock feed)
+    )
+    market = _dhs_market_daily(interim_dir)
+    # collect once: daily reused by the Abr window, daily_stock, and coverage guard.
+    # join on (excntry, date): with US-only stock rows only USA market rows match,
+    # identical to first filtering the benchmark to USA and joining on date.
+    daily = (
+        daily_clean.join(market, on=["excntry", "date"], how="left")
+        .select("excntry", "permno", "date", "ret", "mkt")
+        .sort(["excntry", "permno", "date"])
+        .collect()
+    )
+    daily_stock = daily.select("excntry", pl.col("permno").alias("id"), "date", "ret")
+    # benchmark must cover the daily sample, else (ret - mkt) loses its mkt term and Abr -> ~0 on the uncovered tail
+    daily_max = daily["date"].max()
+    # coverage bound of the US benchmark specifically (daily is US-only here)
+    mkt_max = market.filter(pl.col("excntry") == "USA").select(pl.col("date").max()).collect().item()
+    if daily_max > mkt_max:
+        raise ValueError(
+            f"daily CRSP sample extends to {daily_max} but the market benchmark "
+            f"(market_returns_daily.parquet) only covers through {mkt_max}; "
+            f"refresh the stale market_returns_daily.parquet input"
+        )
+
+    fundq = (
+        pl.scan_parquet(raw_dir / "comp_fundq.parquet")
+        .filter(_compustat_na_filter())
+        .filter(pl.col("fyearq").is_between(beg_q, end_q))  # datadate/rdq already Date
+        .with_columns(endfyr=pl.col("datadate"))
+    )
+    # collect: linked quarterly pool feeds the eager dedupe + Abr build
+    qtr_linked = _dhs_ccm_link(fundq, "endfyr", raw_dir).rename({"lpermno": "LPERMNO"}).collect()
+    qtr_linked_dedup = (
+        # deterministic tie-break (gvkey, linkdt) among rows sharing (LPERMNO, datadate)
+        qtr_linked.sort(["LPERMNO", "datadate", "gvkey", "linkdt"])
+        .unique(subset=["LPERMNO", "datadate"], keep="first", maintain_order=True)
+    )
+
+    # Abr per (id, RDQ) over the weekday window, then aligned to the monthly panel;
+    # both steps are country-generic (US keys on LPERMNO == id). size_grp (null for
+    # US) rides along for the ROW PEAD breakpoint pool; it does not affect US values.
+    ann = qtr_linked_dedup.filter(pl.col("rdq").is_not_null()).select(
+        pl.col("LPERMNO").alias("id"), "datadate", "rdq"
+    )
+    abr = _dhs_abr_window(ann, daily.select(pl.col("permno").alias("id"), "date", "ret", "mkt"))
+    abr_panel = _dhs_align_abr(
+        monthly_panel.select(
+            "excntry", "eom", "id", "primaryexch", "lagCRSPSIZE", "siccd", "size_grp",
+            "year", "month", "CRSPDATE", "ret",
+        ),
+        abr,
+    )
+    return abr_panel, daily_stock
+
+
+def _dhs_nyse_size_median(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
+    """Per-(excntry) size median P50, via jkp's ff_country_breakpoints (US branch =
+    NYSE exchcd_us==1; ROW branch = size_grp ∈ {small,large,mega}; me>0; per-country
+    min-stocks gate, USA exempt). US pool = ff_load_crsp_panel (CIZ, permco ME,
+    DFF-2000); ROW pool = world_data (when present). US me is /1000 at INPUT so its
+    P50 is byte-identical to before AND in the same $MM unit as US CRSPSIZE; ROW me
+    is left in world units, matching ROW CRSPSIZE. Output: [excntry, eom, P50].
+    """
+    us = (
+        ff_load_crsp_panel(raw_dir, "monthly")
+        .select("date", (pl.col("me") / 1000).alias("me"), pl.col("exchcd").alias("exchcd_us"))
+        .with_columns(excntry=pl.lit("USA"), size_grp=pl.lit(None, dtype=pl.String))
+        .collect()  # ff_country_breakpoints takes an eager frame
+    )
+    panel = us
+    if (interim_dir / "world_data.parquet").exists():
+        row = (
+            pl.scan_parquet(interim_dir / "world_data.parquet")
+            .filter(_dhs_row_universe())
+            .select(
+                pl.col("eom").alias("date"),
+                pl.col("me").cast(pl.Float64),
+                "excntry",
+                pl.lit(None, dtype=pl.Int64).alias("exchcd_us"),
+                pl.col("size_grp").cast(pl.String),
+            )
+            .collect()
+        )
+        panel = pl.concat([us, row], how="diagonal_relaxed")
+    return (
+        ff_country_breakpoints(panel, [("me", 0.50, "P50")], pl.col("me") > 0)
+        .select("excntry", pl.col("date").alias("eom"), "P50")
+        .sort(["excntry", "eom"])
+    )
+
+
+def _dhs_fin_factor(
+    annual_chars: pl.DataFrame, monthly_panel: pl.DataFrame, nyse_p50: pl.DataFrame
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+    """FIN factor (NS×IR overlap, 2 size groups, annual June rebalance; port of
+    build_fin_factor). Returns (factor [excntry, eom, fin_dhs], chars [id, eom, ns, ir],
+    members [excntry, id, eom, portfolio, w]).
+
+    Steps:
+        1) Clean NS (lagBE guard, NS != 0) and IR into per-variable monthly panels
+           merged to the monthly returns.
+        2) Rank NS into L/2/3/4/H (negatives and positives separately, NYSE
+           breakpoints), IR into NYSE quintiles; take the H/L overlap.
+        3) Cross with the NYSE-median size split on June-of-CYEAR ME.
+        4) Value-weight the six SL..BH legs; FIN = low-issuance minus high.
+    """
+    # firm key is the globally-unique `id` (annual_chars and monthly_panel both
+    # expose it; == permno for US), so id-alone joins/dedupes are country-safe.
+    keep = ["id", "datadate", "YEAR", "lagBE"]
+    # 'lagBE < 0' also drops rows with a missing lagBE
+    lagbe_ok = pl.col("lagBE").is_not_null() & (pl.col("lagBE") >= 0)
+    ns_chars = annual_chars.select(keep + ["NS"]).filter(
+        lagbe_ok & pl.col("NS").is_not_null() & (pl.col("NS") != 0)
+    )
+    ir_chars = annual_chars.select(keep + ["IR"]).filter(lagbe_ok & pl.col("IR").is_not_null())
+
+    non_fin = _dhs_non_financial()  # drop financials (SIC 6000-6999), missing siccd KEPT
+    crsp_cols = monthly_panel.select("excntry", "id", "eom", "cyear", "primaryexch", "siccd", "size_grp")
+    ns_panel = (
+        ns_chars.join(crsp_cols, on="id", how="inner")
+        .filter((pl.col("YEAR") + 1 == pl.col("cyear")) & non_fin)  # NS: YEAR+1 = CYEAR
+        .sort(["id", "datadate", "eom"])
+    )
+    ir_panel = (
+        ir_chars.join(crsp_cols, on="id", how="inner")
+        .filter((pl.col("YEAR") == pl.col("cyear")) & non_fin)  # IR: YEAR = CYEAR (no shift)
+        .sort(["id", "datadate", "eom"])
+    )
+
+    # rank NS L/2/3/4/H, negatives and positives separately. One obs per (id,
+    # YEAR): first in (id, datadate, eom) order = the FY's first month (its NYSE flag feeds the pool).
+    ns_rank = (
+        ns_panel.sort(["id", "datadate", "eom"])
+        .unique(subset=["id", "YEAR"], keep="first", maintain_order=True)
+        .select("excntry", "id", "YEAR", "NS", "primaryexch", "size_grp")
+    )
+    is_neg = pl.col("NS").is_not_null() & (pl.col("NS") < 0)
+    # country breakpoint pool: US = NYSE (primaryexch=="N"); ROW = size_grp eligible.
+    # US rows have size_grp null and ROW rows have primaryexch null, so exactly one
+    # branch fires per row -> US pool is unchanged (byte-identical).
+    bp_pool = (pl.col("primaryexch") == "N") | pl.col("size_grp").is_in(["small", "large", "mega"])
+    bp_neg = _dhs_group_quantiles(ns_rank, "YEAR", "NS", [50], "P", pool=is_neg & bp_pool, min_stocks=FF_MIN_STOCKS_BP)
+    # a missing breakpoint means the (excntry, YEAR) pool was below min_stocks and
+    # was dropped by the HAVING gate; those stocks are EXCLUDED (group1 null), not
+    # forced into a default bucket (mirrors jkp ff_assign_portfolios' inner join).
+    # US pools are never dropped (HAVING exempts USA), so this never fires for US.
+    ns_neg = (
+        ns_rank.filter(is_neg).join(bp_neg, on=["excntry", "YEAR"], how="left")
+        .with_columns(group1=pl.when(pl.col("P50").is_null()).then(None)
+                      .when(pl.col("NS") > pl.col("P50")).then(pl.lit("2")).otherwise(pl.lit("L")))
+    )
+    bp_pos = _dhs_group_quantiles(ns_rank, "YEAR", "NS", [30, 70], "P", pool=(pl.col("NS") > 0) & bp_pool, min_stocks=FF_MIN_STOCKS_BP)
+    ns_pos = (
+        ns_rank.filter(pl.col("NS") > 0).join(bp_pos, on=["excntry", "YEAR"], how="left")
+        .with_columns(
+            group1=pl.when(pl.col("P30").is_null()).then(None)
+            .when(pl.col("NS") > pl.col("P70")).then(pl.lit("H"))
+            .when(pl.col("NS") > pl.col("P30")).then(pl.lit("4"))
+            .otherwise(pl.lit("3"))
+        )
+    )
+    umo_ns = pl.concat(
+        [ns_neg.select("id", "YEAR", "group1"), ns_pos.select("id", "YEAR", "group1")]
+    )
+
+    # rank IR into NYSE quintiles L/2/3/4/H
+    ir_rank = (
+        ir_panel.sort(["id", "datadate", "eom"])
+        .unique(subset=["id", "YEAR"], keep="first", maintain_order=True)
+        .select("excntry", "id", "YEAR", "IR", "primaryexch", "size_grp")
+    )
+    bp_ir = _dhs_group_quantiles(ir_rank, "YEAR", "IR", [20, 40, 60, 80], "P", pool=bp_pool, min_stocks=FF_MIN_STOCKS_BP)
+    umo_ir = ir_rank.join(bp_ir, on=["excntry", "YEAR"], how="left").with_columns(
+        group1=pl.when(pl.col("IR").is_null() | pl.col("P20").is_null()).then(None)  # thin pool dropped -> exclude
+        .when(pl.col("IR") > pl.col("P80")).then(pl.lit("H"))
+        .when(pl.col("IR") > pl.col("P60")).then(pl.lit("4"))
+        .when(pl.col("IR") > pl.col("P40")).then(pl.lit("3"))
+        .when(pl.col("IR") > pl.col("P20")).then(pl.lit("2"))
+        .otherwise(pl.lit("L"))
+    ).select("id", "YEAR", "group1")
+
+    ns_monthly = ns_panel.join(umo_ns, on=["id", "YEAR"], how="left").select(
+        "id", "eom", pl.col("group1").alias("group_NS")
+    )
+    ir_monthly = ir_panel.join(umo_ir, on=["id", "YEAR"], how="left").select(
+        "id", "eom", pl.col("group1").alias("group_IR")
+    )
+    # overlap: H needs H+H or H+missing; L symmetric; drop both-missing; else M
+    g = (
+        pl.when(
+            ((pl.col("group_NS") == "H") & (pl.col("group_IR") == "H"))
+            | ((pl.col("group_NS") == "H") & pl.col("group_IR").is_null())
+            | (pl.col("group_NS").is_null() & (pl.col("group_IR") == "H"))
+        ).then(pl.lit("H"))
+        .when(
+            ((pl.col("group_NS") == "L") & (pl.col("group_IR") == "L"))
+            | (pl.col("group_NS").is_null() & (pl.col("group_IR") == "L"))
+            | ((pl.col("group_NS") == "L") & pl.col("group_IR").is_null())
+        ).then(pl.lit("L"))
+        .otherwise(None)
+    )
+    me_june = monthly_panel.select(
+        "excntry", "id", pl.col("eom").alias("rankdate"), pl.col("CRSPSIZE").alias("MEJune")
+    )
+    bp = nyse_p50.filter(pl.col("eom").dt.month() == 6)  # June NYSE P50
+    group2 = _dhs_size_group("MEJune")  # size leg vs the June NYSE ME median
+    base = (
+        monthly_panel.select("excntry", "id", "eom", "lagCRSPSIZE", "cyear", "ret")
+        .join(ns_monthly, on=["id", "eom"], how="left")
+        .join(ir_monthly, on=["id", "eom"], how="left")
+        .filter(~(pl.col("group_NS").is_null() & pl.col("group_IR").is_null()))
+        # group1 = overlap (M fills the interior); rankdate = June-of-CYEAR
+        .with_columns(
+            group1=g.fill_null("M"),
+            rankdate=pl.date(pl.col("cyear"), 6, 1).dt.month_end(),
+        )
+        .join(me_june, on=["excntry", "id", "rankdate"], how="left")
+        .join(bp.rename({"eom": "rankdate"}), on=["excntry", "rankdate"], how="left")
+        .with_columns(
+            portfolio=pl.when(group2.is_null() | pl.col("group1").is_null())
+            .then(None).otherwise(group2 + pl.col("group1"))
+        )
+    )
+
+    # FIN = low-issuance (L) long minus high (H) short
+    factor = _dhs_form_factor(base, long=("SL", "BL"), short=("SH", "BH"), name="fin_dhs")
+    # per-stock raw sort values, one row per (id, eom) where either char exists
+    chars = ns_panel.select("id", "eom", pl.col("NS").alias("ns")).join(
+        ir_panel.select("id", "eom", pl.col("IR").alias("ir")),
+        on=["id", "eom"], how="full", coalesce=True,
+    )
+    members = base.select("excntry", "id", "eom", "portfolio", pl.col("lagCRSPSIZE").alias("w"))
+    return factor, chars, members
+
+
+def _dhs_pead_factor(
+    abr_panel: pl.DataFrame, nyse_p50: pl.DataFrame
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+    """PEAD factor (monthly 2×5 sort on lagged Abr; port of build_pead_factor).
+    Returns (factor [excntry, eom, pead_dhs], chars [id, eom, abr], members
+    [excntry, id, eom, portfolio, w]).
+
+    Steps:
+        1) One obs per (id, eom); lagAbr is the sort char.
+        2) Size split: month-t formation uses month t-1's NYSE P50, attached via a
+           +1-month date offset then joined on the formation month.
+        3) NYSE quintiles of lagAbr (2×5; only 20/80 bind).
+        4) Value-weight the six SL..BH legs; PEAD = high-Abr minus low-Abr.
+    """
+    # one row per (id, eom), keeping the first in the current fan-out order
+    # (abr_panel is sorted (id, eom) with the fan-out preserved)
+    pead = abr_panel.unique(subset=["id", "eom"], keep="first", maintain_order=True).with_columns(
+        SIZE=pl.col("lagCRSPSIZE")
+    )
+
+    # size leg: month-t formation uses month t-1's NYSE P50, shifted to the next
+    # month-end via a date offset (gap/year-safe), then joined on the formation eom.
+    bp = nyse_p50.with_columns(eom_next=pl.col("eom").dt.offset_by("1mo").dt.month_end())
+    sized = (
+        pead.join(bp.select("excntry", pl.col("eom_next").alias("eom"), "P50"), on=["excntry", "eom"], how="left")
+        .filter(pl.col("SIZE").is_not_null() & pl.col("lagAbr").is_not_null())
+        .with_columns(group1=_dhs_size_group("SIZE"))  # size leg vs the prior-month NYSE ME median
+    )
+
+    # char breakpoints for lagAbr per (excntry, formation month) (P20..P80; only
+    # 20/80 bind). Country pool: US = NYSE (primaryexch=="N"); ROW = size_grp
+    # eligible. US rows have size_grp null and ROW rows primaryexch null, so exactly
+    # one branch fires per row and the US pool is unchanged (byte-identical).
+    bp_pool = (pl.col("primaryexch") == "N") | pl.col("size_grp").is_in(["small", "large", "mega"])
+    bp_char = _dhs_group_quantiles(
+        sized, "eom", "lagAbr", [20, 40, 60, 80], "NYSEcharP", pool=bp_pool, min_stocks=FF_MIN_STOCKS_BP
+    )
+    # a missing breakpoint means the (excntry, eom) pool was below min_stocks and was
+    # dropped by the HAVING gate; those stocks are EXCLUDED (group2 null -> portfolio
+    # null), not forced into L. USA is HAVING-exempt, so this never fires for US.
+    group2 = (
+        pl.when(pl.col("NYSEcharP20").is_null()).then(None)
+        .when(pl.col("lagAbr") > pl.col("NYSEcharP80")).then(pl.lit("H"))
+        .when(pl.col("lagAbr") > pl.col("NYSEcharP20")).then(pl.lit("M"))
+        .otherwise(pl.lit("L"))
+    )
+    ranked = (
+        sized.join(bp_char, on=["excntry", "eom"], how="left")
+        .with_columns(
+            portfolio=pl.when(pl.col("group1").is_null() | group2.is_null())
+            .then(None).otherwise(pl.col("group1") + group2)
+        )
+        .select("id", "eom", "portfolio")
+    )
+    merged = pead.join(ranked, on=["id", "eom"], how="left")
+
+    # PEAD = high-Abr (H) long minus low-Abr (L) short
+    factor = _dhs_form_factor(merged, long=("SH", "BH"), short=("SL", "BL"), name="pead_dhs")
+    chars = pead.select("id", "eom", pl.col("lagAbr").alias("abr"))
+    members = merged.select("excntry", "id", "eom", "portfolio", pl.col("lagCRSPSIZE").alias("w"))
+    return factor, chars, members
+
+
+def _dhs_load_row_daily(interim_dir: Path) -> pl.DataFrame:
+    """ROW (ex-US) daily stock returns from jkp's world_dsf, matching the US
+    daily_stock schema [excntry, id, date, ret] so ROW monthly FIN membership can
+    be value-weighted on ROW daily returns. world_dsf has no ME, so the universe
+    screen omits the me>0 clause used for the monthly ROW panel."""
+    return (
+        pl.scan_parquet(interim_dir / "world_dsf.parquet")
+        .filter(
+            (pl.col("excntry") != US_EXCNTRY)
+            & (pl.col("common") == 1) & (pl.col("primary_sec") == 1)
+            & (pl.col("obs_main") == 1) & (pl.col("exch_main") == 1)
+            & pl.col("ret").is_not_null()
+        )
+        .select("excntry", pl.col("id").cast(pl.Int64), "date", pl.col("ret").cast(pl.Float64))
+        .collect()
+    )
+
+
+def _dhs_daily_factors(
+    fin_members: pl.DataFrame, pead_members: pl.DataFrame, daily_stock: pl.DataFrame,
+    row_daily: pl.DataFrame | None = None,
+) -> pl.DataFrame:
+    """Daily FIN/PEAD factor returns from the monthly portfolio membership.
+
+    Each factor's monthly membership (excntry, id, eom, portfolio, w=lagCRSPSIZE)
+    is applied to the SAME month's daily returns: the row at eom = m holds the
+    portfolio during month m weighted by ME(m-1), so daily returns join on
+    eom = month_end(date). _dhs_form_factor value-weights per (excntry, date, portfolio)
+    with the decimal `ret`, forming the same long-minus-short spreads as the monthly
+    path. `row_daily` (ex-US world_dsf returns) extends both FIN and PEAD daily to
+    ROW when the memberships carry ROW rows (ROW PEAD members exist only when the
+    IBES announcement inputs were present in the monthly build; else ROW drops out
+    of the PEAD inner join and only US daily PEAD is produced)."""
+    if row_daily is not None:
+        daily_stock = pl.concat([daily_stock, row_daily], how="vertical_relaxed")
+    daily = daily_stock.with_columns(eom=pl.col("date").dt.month_end())
+    fin = _dhs_form_factor(
+        daily.join(fin_members, on=["excntry", "id", "eom"], how="inner"),
+        long=("SL", "BL"), short=("SH", "BH"), name="fin_dhs", date_col="date", w_col="w",
+    )
+    pead = _dhs_form_factor(
+        daily.join(pead_members, on=["excntry", "id", "eom"], how="inner"),
+        long=("SH", "BH"), short=("SL", "BL"), name="pead_dhs", date_col="date", w_col="w",
+    )
+    return fin.join(pead, on=["excntry", "date"], how="full", coalesce=True).sort(["excntry", "date"])
+
+
+def _dhs_write_factors(frame: pl.DataFrame, date_col: str, path: Path) -> None:
+    """Write [excntry, <date_col>, fin_dhs, pead_dhs] (decimal); excntry is carried
+    from _dhs_form_factor (== "USA" under the US-only feed)."""
+    frame.select("excntry", date_col, "fin_dhs", "pead_dhs").write_parquet(path)
+
+
+@measure_time
+def gen_dhs_data(
+    paths: DataPaths,
+    monthly_factors_path: Path,
+    daily_factors_path: Path,
+    chars_path: Path,
+    freqs: tuple[str, ...] = ("monthly", "daily"),
+    beg: int = 1966,
+    end: int = 2025,
+    beg_q: int = 1971,
+    end_q: int = 2025,
+) -> None:
+    """Build the DHS FIN + PEAD factors, US only, from the jkp data directory (no
+    downloads); factor mathematics is unchanged from build_dhs_factors_yale. Reads
+    raw CRSP/Compustat from `paths.raw_tables_dir` and market_returns_daily from
+    `paths.interim_dir`. [beg, end] bound the monthly/annual sample; [beg_q, end_q]
+    the quarterly announcement sample (coverage starts ~1971).
+
+    Steps:
+        1) Monthly return panel from crsp_msf_v2 (read once).
+        2) Annual issuance chars (NS, IR) + the Abr panel (which also emits the
+           cleaned daily stock panel).
+        3) NYSE size median (June P50 for FIN, prior-month P50 for PEAD).
+        4) FIN and PEAD monthly factors + per-stock chars, keeping monthly
+           membership for the daily build.
+        5) If "daily" in freqs, value-weight the memberships on daily returns.
+
+    Output (monthly factors + chars always written, daily only when requested):
+        - <monthly_factors_path>: [excntry, eom, fin_dhs, pead_dhs]  (decimal)
+        - <daily_factors_path>:   [excntry, date, fin_dhs, pead_dhs]  (decimal)
+        - <chars_path>: [id, eom, ns_dhs, ir_dhs, abr_dhs]; id = permno (Int64),
+              ns/ir the log measures, abr_dhs the decimal abnormal return.
+    """
+    raw_dir, interim_dir = paths.raw_tables_dir, paths.interim_dir
+
+    # collect once: msf is reused by the monthly panel + the IR build (has a dedupe)
+    msf = _dhs_load_msf(raw_dir, beg, end).collect()
+    monthly_panel = _dhs_monthly_panel(msf, beg, end)
+    annual_chars = _dhs_issuance_chars(msf, raw_dir, beg, end)
+    # FIN goes international: append the ROW panel + chars when world_data is present
+    # (US byte-identity holds — per-country breakpoints/size/VW keep US self-contained)
+    row = (interim_dir / "world_data.parquet").exists()
+    if row:
+        # require every ROW input up front so a run can't write partial outputs
+        # (monthly with ROW, then crash before the daily leg)
+        needed = ["world_data.parquet", "world_msf.parquet"] + (
+            ["world_dsf.parquet"] if "daily" in freqs else []
+        )
+        missing = [f for f in needed if not (interim_dir / f).exists()]
+        if missing:
+            raise FileNotFoundError(f"ROW inputs missing from {interim_dir}: {missing}")
+        row_panel = _dhs_load_row_panel(interim_dir, beg, end)
+        # ROW ids and US permnos share the id column; they are disjoint by construction
+        # (US CRSP permno is 5-digit; jkp ROW id is a 9+ digit BIGINT). Assert it so a
+        # future id-scheme change can't silently cross-contaminate the id-keyed joins.
+        if row_panel.height and row_panel["id"].min() <= monthly_panel["id"].max():
+            raise ValueError("ROW id overlaps the US permno range; id-keyed joins would cross countries")
+        # vertical_relaxed: siccd is Int32 (US CRSP) vs Int64 (ROW) on real data;
+        # it only feeds the financial screen (never the output), so the supertype
+        # cast is byte-safe. All output-feeding columns already share dtypes.
+        monthly_panel = pl.concat([monthly_panel, row_panel], how="vertical_relaxed")
+        annual_chars = pl.concat(
+            [annual_chars.select("id", "datadate", "YEAR", "lagBE", "NS", "IR"),
+             _dhs_row_chars(interim_dir, beg, end)],
+            how="diagonal_relaxed",
+        )
+    abr_panel, daily_stock = _dhs_announcement_returns(
+        monthly_panel, raw_dir, interim_dir, beg, end, beg_q, end_q
+    )
+    # International PEAD: append the ROW announcement panel (IBES anndats bridged via
+    # ibtic->gvkey->id, Abr on world_dsf) when the ex-US daily + IBES inputs are
+    # present; without them ROW pead_dhs stays null (FIN-international is unaffected).
+    if row and (interim_dir / "world_dsf.parquet").exists() and (raw_dir / "ibes_actu_epsint.parquet").exists():
+        abr_panel = pl.concat(
+            [abr_panel, _dhs_row_announcement_returns(monthly_panel, raw_dir, interim_dir, beg, end)],
+            how="vertical_relaxed",
+        )
+    nyse_p50 = _dhs_nyse_size_median(raw_dir, interim_dir)
+    fin, fin_chars, fin_members = _dhs_fin_factor(annual_chars, monthly_panel, nyse_p50)
+    pead, pead_chars, pead_members = _dhs_pead_factor(abr_panel, nyse_p50)
+
+    # monthly factors + per-stock chars always written; daily only when requested
+    _dhs_write_factors(fin.join(pead, on=["excntry", "eom"], how="full", coalesce=True).sort(["excntry", "eom"]),
+                   "eom", monthly_factors_path)
+    (
+        fin_chars.join(pead_chars, on=["id", "eom"], how="full", coalesce=True)
+        .select(
+            "id", "eom",
+            pl.col("ns").alias("ns_dhs"),
+            pl.col("ir").alias("ir_dhs"),
+            pl.col("abr").alias("abr_dhs"),
+        )
+        .sort(["id", "eom"])
+        .write_parquet(chars_path)
+    )
+    if "daily" in freqs:
+        row_daily = _dhs_load_row_daily(interim_dir) if row else None
+        _dhs_write_factors(_dhs_daily_factors(fin_members, pead_members, daily_stock, row_daily),
+                       "date", daily_factors_path)

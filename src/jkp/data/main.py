@@ -19,6 +19,7 @@ from .aux_functions import (
     filter_world,
     finish_daily_chars,
     firm_age,
+    gen_dhs_data,
     gen_ff_data,
     gen_hxz_data,
     gen_mispricing_data,
@@ -157,21 +158,30 @@ def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> No
         min_fcts=3,
         min_obs=10,
     )
+    gen_dhs_data(
+        paths,
+        interim / "dhs_factors_monthly.parquet",
+        interim / "dhs_factors_daily.parquet",
+        interim / "dhs_characteristics.parquet",
+    )
     ap_factor_model_data(
         monthly_factor_inputs=[
             interim / "ff_factors_monthly.parquet",
             interim / "hxz_factors_monthly.parquet",
             interim / "mp_factors_monthly.parquet",
+            interim / "dhs_factors_monthly.parquet",
         ],
         daily_factor_inputs=[
             interim / "ff_factors_daily.parquet",
             interim / "hxz_factors_daily.parquet",
             interim / "mp_factors_daily.parquet",
+            interim / "dhs_factors_daily.parquet",
         ],
         chars_inputs=[
             interim / "ff_characteristics.parquet",
             interim / "hxz_characteristics.parquet",
             interim / "mp_characteristics.parquet",
+            interim / "dhs_characteristics.parquet",
         ],
         mkt_monthly_path=interim / "market_returns.parquet",
         mkt_daily_path=interim / "market_returns_daily.parquet",

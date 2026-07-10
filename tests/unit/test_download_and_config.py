@@ -344,6 +344,7 @@ class TestDownloadRawDataTables:
             "comp.fundq": "datadate",
             "comp.g_funda": "datadate",
             "comp.g_fundq": "datadate",
+            "ibes.actu_epsint": "anndats",
         }
         for c in captured_calls:
             table_name = c.args[2] if len(c.args) > 2 else c.kwargs.get("table_name")
@@ -385,7 +386,7 @@ class TestDownloadRawDataTables:
         downloaded = {
             c.args[2] if len(c.args) > 2 else c.kwargs.get("table_name") for c in captured_calls
         }
-        expected_subset = {"comp.funda", "crsp.msf_v2", "crsp.dsf_v2", "comp.secd"}
+        expected_subset = {"comp.funda", "crsp.msf_v2", "crsp.dsf_v2", "comp.secd", "ibes.actu_epsint"}
         assert expected_subset <= downloaded, f"Missing tables: {expected_subset - downloaded}"
 
 
