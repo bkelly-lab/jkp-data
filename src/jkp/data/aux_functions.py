@@ -8294,7 +8294,9 @@ def _mp_stock_mispricing_scores(
         _mp_add_leg_score(
             mispricing_panel, MP_MGMT_PCT_COLS, "mispricing_mgmt", "_n_mgmt", min_count=min_fcts
         )
-        .pipe(_mp_add_leg_score, MP_PERF_PCT_COLS, "mispricing_perf", "_n_perf", min_count=min_fcts)
+        .pipe(
+            _mp_add_leg_score, MP_PERF_PCT_COLS, "mispricing_perf", "_n_perf", min_count=min_fcts
+        )
         .filter(col("mispricing_mgmt").is_not_null() | col("mispricing_perf").is_not_null())
         .sort(*sort_keys)
         .select(*select_cols, "mispricing_mgmt", "mispricing_perf")
@@ -12292,19 +12294,18 @@ def ff_country_breakpoints(
     ROW additionally drops (excntry, date) where pool count < FF_MIN_STOCKS_BP;
     USA is exempt (always emits breakpoints).
     """
-    cols = list(dict.fromkeys(c for c, _, _ in specs))
-    breaks_sql = ", ".join(f"QUANTILE_DISC({c}, {q}) AS {a}" for c, q, a in specs)
-    pool = ((pl.col("excntry") == US_EXCNTRY) & (pl.col("exchcd_us") == 1)) | (
-        (pl.col("excntry") != US_EXCNTRY) & pl.col("size_grp").is_in(["small", "large", "mega"])
+    # US = NYSE-only (exchcd_us==1); ROW = size_grp pool (ME >= US-NYSE p20)
+    pool = eligible & (
+        ((pl.col("excntry") == US_EXCNTRY) & (pl.col("exchcd_us") == 1))
+        | ((pl.col("excntry") != US_EXCNTRY) & pl.col("size_grp").is_in(["small", "large", "mega"]))
     )
-    return (
-        june.filter(eligible & pool)
-        .select("excntry", "date", *cols)
-        .sql(
-            f"SELECT excntry, date, {breaks_sql} FROM self "
-            f"GROUP BY excntry, date "
-            f"HAVING excntry = '{US_EXCNTRY}' OR COUNT(*) >= {min_stocks_bp}"
-        )
+    return country_breakpoints(
+        june,
+        specs,
+        group_keys=["excntry", "date"],
+        pool=pool,
+        min_stocks=min_stocks_bp,
+        usa_exempt=True,
     )
 
 
@@ -12454,6 +12455,48 @@ def ff_assign_to_panel(panel: pl.DataFrame, june: pl.DataFrame) -> pl.DataFrame:
     )
 
 
+def vw_bucket_returns(
+    frame: pl.DataFrame,
+    *,
+    buckets: list[str],
+    weight_col: str,
+    bucket_col: str = "bucket",
+    ret_col: str = "ret",
+    date_col: str = "date",
+    min_stocks_pf: int,
+    ordered: bool = False,
+) -> pl.DataFrame:
+    """Value-weight `ret_col` by `weight_col` per (excntry, date_col, bucket_col),
+    apply the ROW min-stocks gate (USA bypassed), and pivot wide to `buckets`
+    (absent buckets filled as null Float64). Shared by the FF/HXZ/DHS size×char
+    sorts; the caller supplies the pre-built `bucket_col` and has already applied any
+    weight/return validity filter. `ordered`=True keeps input row order within each
+    group (maintain_order + a group-key presort) for float-sum determinism at a
+    discrete breakpoint; FF/HXZ leave it False. `safe_div` returns null on a zero
+    weight sum. Output: [excntry, date_col, *buckets]."""
+    if ordered:
+        frame = frame.sort(["excntry", date_col, bucket_col], maintain_order=True)
+    wide = (
+        frame.group_by(["excntry", date_col, bucket_col], maintain_order=ordered)
+        .agg(
+            vwret=safe_div(
+                (pl.col(ret_col) * pl.col(weight_col)).sum(), pl.col(weight_col).sum(), "vwret"
+            ),
+            _n=pl.len(),
+        )
+        .with_columns(
+            vwret=pl.when((pl.col("excntry") == US_EXCNTRY) | (pl.col("_n") >= min_stocks_pf))
+            .then(pl.col("vwret"))
+            .otherwise(None)
+        )
+        .pivot(values="vwret", index=["excntry", date_col], on=bucket_col)
+    )
+    missing = [c for c in buckets if c not in wide.columns]
+    if missing:
+        wide = wide.with_columns(*[pl.lit(None, dtype=pl.Float64).alias(c) for c in missing])
+    return wide.select("excntry", date_col, *buckets)
+
+
 def _ff_vw_leg(
     panel: pl.DataFrame,
     *,
@@ -12462,31 +12505,17 @@ def _ff_vw_leg(
     buckets: list[str],
     min_stocks_pf: int = FF_MIN_STOCKS_PF,
 ) -> pl.DataFrame:
-    """VW return per (excntry, date, sizeport+port) bucket, pivoted wide to
-    [excntry, date, *buckets] with absent buckets filled as null Float64.
-    Applies the ROW-only FF_MIN_STOCKS_PF gate (US bypassed). The caller
-    must already have applied the shared w>0 / ret-not-null /
-    sizeport-not-null filter (filter composition is row-order-preserving,
-    so the per-group float-sum sequence is unchanged)."""
-    leg = (
-        panel.filter((pl.col(flag) == 1) & pl.col(port).is_not_null())
-        .with_columns(bucket=pl.col("sizeport") + pl.col(port))
-        .group_by("excntry", "date", "bucket")
-        .agg(
-            vwret=safe_div((pl.col("ret") * pl.col("w")).sum(), pl.col("w").sum(), "vwret"),
-            _n=pl.len(),
-        )
-        .with_columns(
-            vwret=pl.when((pl.col("excntry") == US_EXCNTRY) | (pl.col("_n") >= min_stocks_pf))
-            .then(pl.col("vwret"))
-            .otherwise(None)
-        )
-        .pivot(values="vwret", index=["excntry", "date"], on="bucket")
+    """FF size×`port` VW leg → [excntry, date, *buckets] via vw_bucket_returns. The
+    caller has already applied the shared w>0 / ret-not-null / sizeport-not-null
+    filter."""
+    return vw_bucket_returns(
+        panel.filter((pl.col(flag) == 1) & pl.col(port).is_not_null()).with_columns(
+            bucket=pl.col("sizeport") + pl.col(port)
+        ),
+        buckets=buckets,
+        weight_col="w",
+        min_stocks_pf=min_stocks_pf,
     )
-    missing = [c for c in buckets if c not in leg.columns]
-    if missing:
-        leg = leg.with_columns(*[pl.lit(None, dtype=pl.Float64).alias(c) for c in missing])
-    return leg.select("excntry", "date", *buckets)
 
 
 def ff_compute_factors(ccm4: pl.DataFrame, min_stocks_pf: int = FF_MIN_STOCKS_PF) -> pl.DataFrame:
@@ -13308,21 +13337,29 @@ def hxz_link_compustat(comp: pl.DataFrame, raw_dir: Path) -> pl.DataFrame:
     )
 
 
-def _hxz_quantile_breaks(
+def country_breakpoints(
     df: pl.DataFrame,
     specs: list[tuple[str, float, str]],
     *,
     group_keys: list[str],
-    pool_filter: pl.Expr,
-    min_count: int | None = None,
+    pool: pl.Expr,
+    min_stocks: int | None = None,
+    usa_exempt: bool = False,
 ) -> pl.DataFrame:
-    """Per-group QUANTILE_DISC breakpoints over a filtered pool. One row per group."""
+    """Per-`group_keys` QUANTILE_DISC breakpoints over `pool`; one row per group.
+    specs = [(col, quantile, alias)]. `min_stocks` drops groups below that count;
+    `usa_exempt` keeps USA regardless. Shared by the FF/HXZ/DHS sorts — FF and DHS
+    exempt their US NYSE pool via usa_exempt, HXZ instead splits US/ROW into two
+    calls (US min_stocks=None, ROW gated), so the two idioms both route here."""
     breaks_sql = ", ".join(f"QUANTILE_DISC({c}, {q}) AS {a}" for c, q, a in specs)
     cols = list(dict.fromkeys(c for c, _, _ in specs))
     gk = ", ".join(group_keys)
-    having = f" HAVING COUNT(*) >= {min_count}" if min_count is not None else ""
+    having = ""
+    if min_stocks is not None:
+        gate = f"COUNT(*) >= {min_stocks}"
+        having = f" HAVING excntry = '{US_EXCNTRY}' OR {gate}" if usa_exempt else f" HAVING {gate}"
     return (
-        df.filter(pool_filter)
+        df.filter(pool)
         .select(*group_keys, *cols)
         .sql(f"SELECT {gk}, {breaks_sql} FROM self GROUP BY {gk}{having}")
     )
@@ -13523,7 +13560,7 @@ def hxz_compute_factors(
     """18-bucket VW returns per (excntry, date) → HXZ formulas 1-3
     (me_hxz, ia_hxz, roe_hxz). US bypasses the ROW min_stocks_pf gate."""
     buckets = [f"S{i}I{j}R{k}" for i in (1, 2) for j in (1, 2, 3) for k in (1, 2, 3)]
-    bucket = (
+    vw = vw_bucket_returns(
         panel.filter(
             (pl.col("me_lag1") > 0)
             & pl.col("me_lag1").is_finite()
@@ -13532,33 +13569,18 @@ def hxz_compute_factors(
             & pl.col("sizeport").is_not_null()
             & pl.col("invport").is_not_null()
             & pl.col("roeport").is_not_null()
-        )
-        .with_columns(
+        ).with_columns(
             bucket=pl.format(
                 "S{}I{}R{}",
                 pl.col("sizeport").cast(pl.Utf8),
                 pl.col("invport").cast(pl.Utf8),
                 pl.col("roeport").cast(pl.Utf8),
             )
-        )
-        .group_by(["excntry", "date", "bucket"])
-        .agg(
-            vwret=safe_div(
-                (pl.col("ret") * pl.col("me_lag1")).sum(), pl.col("me_lag1").sum(), "vwret"
-            ),
-            _n=pl.len(),
-        )
-        .with_columns(
-            vwret=pl.when((pl.col("excntry") == US_EXCNTRY) | (pl.col("_n") >= min_stocks_pf))
-            .then(pl.col("vwret"))
-            .otherwise(None)
-        )
-        .drop("_n")
+        ),
+        buckets=buckets,
+        weight_col="me_lag1",
+        min_stocks_pf=min_stocks_pf,
     )
-    vw = bucket.pivot(values="vwret", index=["excntry", "date"], on="bucket")
-    missing = [c for c in buckets if c not in vw.columns]
-    if missing:
-        vw = vw.with_columns(*[pl.lit(None, dtype=pl.Float64).alias(c) for c in missing])
 
     # mean_horizontal skips nulls so a missing bucket doesn't void the leg
     # — needed for thin ROW countries where 18 buckets often have empties.
@@ -13873,8 +13895,8 @@ def _hxz_classify_size_ia(
 
     # US: NYSE-only pool, per-date breaks (sizemedn always present)
     us = size_ia_form.filter(pl.col("excntry") == US_EXCNTRY)
-    us_breaks = _hxz_quantile_breaks(
-        us, specs, group_keys=["date"], pool_filter=(pl.col("exchcd") == 1) & pl.col("elig")
+    us_breaks = country_breakpoints(
+        us, specs, group_keys=["date"], pool=(pl.col("exchcd") == 1) & pl.col("elig")
     )
     us_cls = (
         us.join(us_breaks, on=["date"], how="left")
@@ -13898,12 +13920,12 @@ def _hxz_classify_size_ia(
     # ROW joins breaks per (excntry, date) with a HAVING gate, so sizemedn can be
     # null after the left join; the size gate therefore also requires it non-null.
     row = size_ia_form.filter(pl.col("excntry") != US_EXCNTRY)
-    row_breaks = _hxz_quantile_breaks(
+    row_breaks = country_breakpoints(
         row,
         specs,
         group_keys=["excntry", "date"],
-        pool_filter=pl.col("elig") & pl.col("size_grp").is_in(["small", "large", "mega"]),
-        min_count=min_stocks_bp,
+        pool=pl.col("elig") & pl.col("size_grp").is_in(["small", "large", "mega"]),
+        min_stocks=min_stocks_bp,
     )
     row_cls = (
         row.join(row_breaks, on=["excntry", "date"], how="left")
@@ -13934,8 +13956,8 @@ def _hxz_classify_roe(roe_m: pl.DataFrame, min_stocks_bp: int = HXZ_MIN_STOCKS_B
 
     # US: NYSE-only pool, per-date breaks
     us = roe_m.filter(pl.col("excntry") == US_EXCNTRY).with_columns(elig=elig)
-    us_breaks = _hxz_quantile_breaks(
-        us, specs, group_keys=["date"], pool_filter=(pl.col("exchcd") == 1) & pl.col("elig")
+    us_breaks = country_breakpoints(
+        us, specs, group_keys=["date"], pool=(pl.col("exchcd") == 1) & pl.col("elig")
     )
     us_cls = (
         us.join(us_breaks, on=["date"], how="left")
@@ -13949,12 +13971,12 @@ def _hxz_classify_roe(roe_m: pl.DataFrame, min_stocks_bp: int = HXZ_MIN_STOCKS_B
 
     # ROW: size_grp pool, per-(excntry, date) breaks with HXZ_MIN_STOCKS_BP gate
     row = roe_m.filter(pl.col("excntry") != US_EXCNTRY).with_columns(elig=elig)
-    row_breaks = _hxz_quantile_breaks(
+    row_breaks = country_breakpoints(
         row,
         specs,
         group_keys=["excntry", "date"],
-        pool_filter=pl.col("elig") & pl.col("size_grp").is_in(["small", "large", "mega"]),
-        min_count=min_stocks_bp,
+        pool=pl.col("elig") & pl.col("size_grp").is_in(["small", "large", "mega"]),
+        min_stocks=min_stocks_bp,
     )
     row_cls = (
         row.join(row_breaks, on=["excntry", "date"], how="left")
@@ -15159,21 +15181,17 @@ def _dhs_group_quantiles(
     pool: pl.Expr,
     min_stocks: int = 0,
 ) -> pl.DataFrame:
-    """Per-(excntry, `by`) discrete percentiles (QUANTILE_DISC = an actual order
-    statistic, no interpolation) over the country breakpoint `pool`. One row per
-    (excntry, group); Float64 in, Float64 out.
-
-    `pool` selects the country breakpoint universe (US = primaryexch == "N"; the
-    ROW size_grp branch is a documented seam that never fires under US-only data).
-    Min-stocks mirrors ff_country_breakpoints: a (excntry, group) is emitted only
-    when excntry = 'USA' OR its pool count >= min_stocks (USA is always exempt, so
-    with US-only data no group is ever dropped)."""
-    sub = df.filter(pool).select(["excntry", by, var]).drop_nulls()
-    selects = ", ".join(f"QUANTILE_DISC({var}, {p / 100}) AS {prefix}{p}" for p in pcts)
-    return pl.SQLContext(t=sub).execute(
-        f"SELECT excntry, {by}, {selects} FROM t GROUP BY excntry, {by} "
-        f"HAVING excntry = 'USA' OR COUNT(*) >= {min_stocks}",
-        eager=True,
+    """QUANTILE_DISC percentiles of `var` per (excntry, `by`) over the breakpoint
+    `pool` (US = primaryexch=='N'). Null `var` rows are dropped so the min-stocks
+    COUNT sees only rankable stocks. Thin wrapper over country_breakpoints."""
+    specs = [(var, p / 100, f"{prefix}{p}") for p in pcts]
+    return country_breakpoints(
+        df,
+        specs,
+        group_keys=["excntry", by],
+        pool=pool & pl.col(var).is_not_null(),
+        min_stocks=min_stocks,
+        usa_exempt=True,
     )
 
 
@@ -15188,45 +15206,28 @@ def _dhs_form_factor(
     w_col: str = "lagCRSPSIZE",
     min_stocks_pf: int = FF_MIN_STOCKS_PF,
 ) -> pl.DataFrame:
-    """Value-weight `ret_col` by `w_col` per size×char cell (`portfolio`), pivot to
-    the six SL..BH legs, and form ((long1+long2)-(short1+short2))/2. Shared by the
-    monthly sorts (defaults) and the daily leg (date_col="date", w_col="w").
-    A ROW-only min_stocks_pf gate nulls any (excntry, date, portfolio) cell formed
-    from fewer than min_stocks_pf stocks (USA bypassed, so US is byte-identical).
-    Returns [excntry, date_col, name] in the (decimal) return unit."""
-    # VW mean: rows with missing return or weight are excluded; the group row
-    # order is fixed (maintain_order) so the float sum is deterministic. excntry
-    # is a constant leading key under US-only data (one country) -> no reorder.
-    sub = base.filter(pl.col("portfolio").is_not_null()).sort(
-        ["excntry", date_col, "portfolio"], maintain_order=True
-    )
-    pf = (
-        sub.filter(pl.col(ret_col).is_not_null() & pl.col(w_col).is_not_null())
-        .group_by(["excntry", date_col, "portfolio"], maintain_order=True)
-        .agg(
-            ((pl.col(ret_col) * pl.col(w_col)).sum() / pl.col(w_col).sum()).alias("vwret"),
-            _n=pl.len(),
-        )
-        # ROW-only thin-portfolio gate; USA bypassed (US byte-identical)
-        .with_columns(
-            vwret=pl.when((pl.col("excntry") == US_EXCNTRY) | (pl.col("_n") >= min_stocks_pf))
-            .then(pl.col("vwret"))
-            .otherwise(None)
-        )
+    """VW the `portfolio` cells (via vw_bucket_returns, ordered for float
+    determinism) and form ((long1+long2)-(short1+short2))/2. Shared by the monthly
+    sorts (defaults) and the daily leg (date_col="date", w_col="w"); the ROW-only
+    min_stocks_pf gate is applied in vw_bucket_returns (USA bypassed). Returns
+    [excntry, date_col, name] in the (decimal) return unit."""
+    wide = vw_bucket_returns(
+        base.filter(
+            pl.col("portfolio").is_not_null()
+            & pl.col(ret_col).is_not_null()
+            & pl.col(w_col).is_not_null()
+        ),
+        buckets=[*long, *short],
+        weight_col=w_col,
+        bucket_col="portfolio",
+        ret_col=ret_col,
+        date_col=date_col,
+        min_stocks_pf=min_stocks_pf,
+        ordered=True,
     )
     long_leg = (pl.col(long[0]) + pl.col(long[1])) / 2
     short_leg = (pl.col(short[0]) + pl.col(short[1])) / 2
-    wide = pf.pivot(on="portfolio", index=["excntry", date_col], values="vwret").sort(
-        ["excntry", date_col]
-    )
-    return (
-        # a leg empty in every period is absent from the pivot -> add it as null
-        wide.with_columns(
-            pl.lit(None, dtype=pl.Float64).alias(c)
-            for c in (*long, *short)
-            if c not in wide.columns
-        ).select("excntry", date_col, (long_leg - short_leg).alias(name))
-    )
+    return wide.select("excntry", date_col, (long_leg - short_leg).alias(name))
 
 
 def _dhs_universe() -> pl.Expr:
