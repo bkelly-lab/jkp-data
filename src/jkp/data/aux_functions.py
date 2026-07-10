@@ -3945,6 +3945,92 @@ def market_returns(paths: DataPaths, data_path, freq, wins_comp, wins_data_path,
     )
 
 
+@measure_time
+def market_returns_overnight_intraday(
+    paths: DataPaths,
+    data_path: Path | str,
+    freq: str,
+    nyse_cutoffs_path: Path | str,
+) -> None:
+    """
+    Description:
+        Build country-level VW/EW market returns for overnight and intraday components.
+        Follows the same stock selection and weighting as market_returns() but uses
+        ret_overnight / ret_intraday instead of ret / ret_local / ret_exc.
+        No winsorization is applied to component returns (per LPS 2019 methodology).
+
+    Steps:
+        1) Load data; keep standard stock fields plus ret_intraday and ret_overnight.
+        2) Add lags me_lag1, dolvol_lag1 per id.
+        3) Join NYSE P80 cutoffs and compute me_cap_lag1.
+        4) Apply standard stock filters; compute VW/EW overnight and intraday returns.
+        5) If daily, drop low-coverage trading days.
+        6) Write one file per component: market_returns{_daily}_{component}.parquet.
+
+    Output:
+        Parquet files of country x date market returns for each component.
+    """
+    schema = pl.scan_parquet(data_path).collect_schema()
+    components = [c for c in ("overnight", "intraday") if f"ret_{c}" in schema.names()]
+    if not components:
+        return
+
+    dt_col, max_date_lag, path_aux, _group_vars, comm_stocks_cols = load_mkt_returns_params(freq)
+
+    extra_cols = [f"ret_{c}" for c in components]
+    select_cols = list(dict.fromkeys(comm_stocks_cols + extra_cols))
+
+    base = (
+        pl.scan_parquet(data_path)
+        .select(select_cols)
+        .unique()
+        .sort(["id", dt_col])
+        .with_columns(
+            me_lag1=col("me").shift(1).over("id"),
+            dolvol_lag1=col("dolvol").shift(1).over("id"),
+        )
+    )
+
+    nyse = pl.scan_parquet(nyse_cutoffs_path).select(["eom", "nyse_p80"])
+    base = base.join(nyse, on="eom", how="left").with_columns(
+        me_cap_lag1=pl.min_horizontal(col("me_lag1"), col("nyse_p80"))
+    )
+
+    stock_filter = (
+        (col("obs_main") == 1)
+        & (col("exch_main") == 1)
+        & (col("primary_sec") == 1)
+        & (col("common") == 1)
+        & (col("ret_lag_dif") <= max_date_lag)
+        & (col("me_lag1").is_not_null())
+    )
+
+    for component in components:
+        ret_col = f"ret_{component}"
+        filtered = base.filter(stock_filter & col(ret_col).is_not_null())
+
+        result = (
+            filtered.with_columns(
+                aux_vw=col(ret_col) * col("me_lag1"),
+            )
+            .group_by(["excntry", dt_col])
+            .agg(
+                stocks=pl.len(),
+                me_lag1=sas_sum_agg("me_lag1"),
+                dolvol_lag1=sas_sum_agg("dolvol_lag1"),
+                **{f"mkt_vw_{component}": sas_sum_agg("aux_vw") / sas_sum_agg("me_lag1")},
+                **{f"mkt_ew_{component}": pl.mean(ret_col)},
+            )
+        )
+
+        if freq == "d":
+            result = drop_non_trading_days(result, "stocks", dt_col, ["excntry", "eom"], 0.25)
+
+        result.sort(["excntry", dt_col]).collect().write_parquet(
+            paths.interim_dir / f"market_returns{path_aux}_{component}.parquet"
+        )
+
+
 def quarterize(df, var_list):
     """
     Description:
@@ -8775,6 +8861,13 @@ def save_output_files(paths: DataPaths):
         "ap_factors_daily.parquet",
     ):
         shutil.copy2(paths.interim_dir / name, other_output / name)
+
+    for component in ("overnight", "intraday"):
+        for prefix in ("market_returns_daily", "return_cutoffs_daily"):
+            name = f"{prefix}_{component}.parquet"
+            src = paths.interim_dir / name
+            if src.exists():
+                shutil.copy2(src, other_output / name)
 
 
 @measure_time
