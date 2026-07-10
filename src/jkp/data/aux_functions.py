@@ -8916,10 +8916,8 @@ def _mp_world_distress_fundq(raw_dir: Path) -> pl.DataFrame:
             "excntry_src",
         )
     )
-    # The NA + Global union can carry the same (gvkey, datadate) in both
-    # sources with different values. Prefer NA (matches the HXZ/FF NA-over-
-    # Global convention), then a fully-valued ladder so the parallel sort
-    # can't surface different tied rows across runs.
+    # NA+Global can carry the same (gvkey, datadate) with different values; prefer NA
+    # (HXZ/FF convention), then a fully-valued ladder so the parallel sort is stable.
     return (
         fundq.with_columns(_src=(col("excntry_src") != "USA").cast(pl.Int8))
         .sort(
@@ -9003,10 +9001,9 @@ def _mp_world_distress_quarterly_join(
         FROM market_inputs a LEFT JOIN be b
           ON a.gvkey = b.gvkey AND a.eom >= b.rdq_crsp AND a.eom < b.lead_rdq_crsp
     """).pl()
-    # `be` carries one row per (gvkey, datadate, share-class id), so a panel row
-    # can match several b rows tied on (datadate_q, rdq_be) but with different
-    # MB/ME_lag. MB/ME_lag DESC make the pick deterministic under the parallel
-    # sort (ties beyond that have identical payloads).
+    # `be` has one row per (gvkey, datadate, share-class id), so a panel row can match
+    # several b rows tied on (datadate_q, rdq_be); MB/ME_lag DESC makes the pick
+    # deterministic (remaining ties have identical payloads).
     quarterly_joined = quarterly_joined.sort(
         ["id", "eom", "datadate_q", "rdq_be", "MB", "ME_lag"],
         descending=[False, False, True, True, True, True],
@@ -11613,10 +11610,9 @@ def _ff_ccm_link(comp: pl.LazyFrame, raw_dir: Path) -> pl.DataFrame:
         )
         .with_columns(first_linkdt=pl.col("linkdt").min().over("lpermno"))
     )
-    # Backfill rescue (see FF_CCM_BACKDATE_* in config): June formations of
-    # [FROM, THROUGH] may use fiscal rows that predate the link window, when
-    # the link is the permno's first and starts within MAX_YEARS of the
-    # formation. In-window links beat backdated ones on any collision.
+    # Backfill rescue (FF_CCM_BACKDATE_* in config): a June formation may use fiscal
+    # rows predating the link window when the link is the permno's first and starts
+    # within MAX_YEARS of the formation. In-window links win any collision.
     in_window = (pl.col("linkdt") <= pl.col("jun_end")) & (
         pl.col("linkenddt").is_null() | (pl.col("linkenddt") >= pl.col("jun_end"))
     )
@@ -11702,22 +11698,18 @@ def _ff_merge_dff_be(
             "be coalesced (DFF first)",
             flush=True,
         )
-    # Value-level merge on (permno, year): be = coalesce(dff.be, comp.be).
-    # The sources agree where both are non-null (median |log ratio| ~ 0);
-    # most collisions are a Compustat row whose BE is NULL (the CCM link
-    # exists, the early balance-sheet field doesn't), so the coalesce fills
-    # BE from the hand-collected value while the Compustat row keeps its
-    # accounting fields (op/inv/count) for the FF5 sorts.
+    # be = coalesce(dff.be, comp.be) on (permno, year); sources agree where both are
+    # non-null (median |log ratio| ~ 0). Typical collision: the CCM-linked Compustat
+    # row has BE NULL, so DFF fills BE while that row keeps op/inv/count for FF5.
     keys = ["permno", "year"]
     comp_pool = (
         comp_pool.select(select_cols)
         .join(dff.select([*keys, "be"]).rename({"be": "_be_dff"}), on=keys, how="left")
         .with_columns(
             be=pl.coalesce("_be_dff", "be"),
-            # A DFF-covered cell is eligible regardless of Compustat history
-            # length: hand-collected BE needs no backfill-bias seasoning, so
-            # clear the count >= 2 BM gate exactly as a standalone DFF row
-            # (synthetic count) would.
+            # A DFF-covered cell is eligible regardless of Compustat history:
+            # hand-collected BE needs no backfill-bias seasoning, so it clears the
+            # count >= 2 BM gate like a standalone DFF row.
             count=pl.when(pl.col("_be_dff").is_not_null())
             .then(pl.max_horizontal("count", pl.lit(FF_DFF_SYNTH_COUNT, dtype=pl.Int64)))
             .otherwise(pl.col("count")),
@@ -11883,12 +11875,10 @@ def _ff_us_finish_prepare(
         .filter(pl.col("me") > 0)
         .select("permno", june_year=pl.col("_y") + 1, dec_me=pl.col("me"))
     )
-    # Left joins: June stocks without accounting data and without Dec(t-1) ME
-    # stay in the frame (null be/op/inv/count -> null beme) so the US
-    # size-median pool covers all NYSE stocks per DFF 2000; the sort
-    # eligibility gates still exclude them from the B/M sort, while US stocks
-    # lacking only Dec ME stay sortable on OP/INV (French's OP/INV sorts
-    # require June ME but not Dec ME).
+    # Left joins keep June stocks lacking accounting or Dec(t-1) ME (null beme) so the
+    # US size-median pool spans all NYSE stocks (DFF 2000); sort gates still drop them
+    # from B/M, but US stocks missing only Dec ME stay sortable on OP/INV (French's
+    # OP/INV need June ME, not Dec ME).
     data_chars = (
         june_only.join(dec_me, on=["permno", "june_year"], how="left")
         .join(
@@ -12202,10 +12192,8 @@ def ff_load_world_compustat(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
         pl.concat([na, gl], how="vertical_relaxed")
         .sort(["gvkey", "datadate", "_src"])
         .unique(subset=["gvkey", "datadate"], keep="first")
-        # Each source is already one row per (gvkey, year) (see the funda loaders),
-        # but a gvkey present in BOTH NA and Global can still yield two rows per
-        # (gvkey, year) with different datadate. Collapse to one, preferring NA
-        # (_src=0) then the latest datadate, so the June join can't fan out.
+        # A gvkey in both NA and Global yields two (gvkey, year) rows; collapse to
+        # one (prefer NA, then latest datadate) so the June join can't fan out.
         .sort(["gvkey", "year", "_src", "datadate"], descending=[False, False, False, True])
         .unique(subset=["gvkey", "year"], keep="first")
         .drop("_src")
@@ -12638,11 +12626,9 @@ def _ff_mom_signal_monthly(panel: pl.LazyFrame) -> pl.LazyFrame:
         & pl.col(f"ret_lag{skip + 1}").is_not_null()
         & ~_ff_is_neg99(f"ret_lag{skip + 1}")
     )
-    # Interior window months (t-12..t-3): French requires the stock be on
-    # file but tolerates a missing price (coded -99.0 on CRSP). CIZ codes
-    # those as null, so the US gate requires only the row (gap == k) and the
-    # compounding below zero-fills. ROW keeps the strict non-null gate
-    # (JKP convention) — its mom values are untouched by the zero-fill.
+    # Interior months (t-12..t-3): French requires the row on file but tolerates a
+    # missing price (-99.0 on CRSP; null under CIZ), so the US gate needs only gap==k
+    # and the compounding below zero-fills. ROW keeps the strict non-null gate (JKP).
     is_us = pl.col("excntry") == US_EXCNTRY
     for k in range(skip + 2, L + 1):
         elig = elig & pl.when(is_us).then(pl.col(f"gap{k}") == k).otherwise(
@@ -12684,12 +12670,9 @@ def _ff_mom_signal_daily(panel: pl.LazyFrame) -> pl.LazyFrame:
         .sort(["excntry", "date"])
         .with_columns(tidx=pl.int_range(0, pl.len()).cast(pl.Int64).over("excntry"))
     )
-    # US window per French's daily detail page: returns t-250..t-21 (the
-    # good-return day t-21 is the last window day, mirroring the monthly
-    # t-2), price anchor at t-251, interior missing-price days tolerated
-    # (-99.0 on CRSP) — CIZ codes those as null; log_eff zero-fills them.
-    # ROW keeps the legacy t-251..t-22 window and the zero-missing gate
-    # (JKP convention).
+    # US window (French daily detail): returns t-250..t-21 (t-21 the last day, mirrors
+    # monthly t-2), price anchor t-251, interior missing days tolerated (-99.0/CIZ-null,
+    # log_eff zero-fills). ROW keeps the legacy t-251..t-22 window + zero-missing gate.
     is_us = pl.col("excntry") == US_EXCNTRY
     skip_eff = pl.when(is_us).then(skip).otherwise(skip + 1)
 
@@ -12881,10 +12864,9 @@ def _ff_build_freq(
     )
     factors = ff_compute_factors(ff_assign_to_panel(panel, ports), min_stocks_pf)
 
-    # UMD: same per-country breakpoints + ROW gates as the other FF sorts.
-    # Size dimension is ME at end of t-1 (not row-t ME), so swap
-    # me ← me_lag1 before breakpoints/assignment. mom_signal is reused by
-    # ff_build_characteristics for the per-stock umd_ff column.
+    # UMD: same per-country breakpoints + ROW gates as the other FF sorts, but size is
+    # ME at t-1, so swap me ← me_lag1 first. mom_signal feeds ff_build_characteristics'
+    # umd_ff column.
     mom_signal = ff_build_mom_signal(panel, freq).with_columns(me=pl.col("me_lag1"))
     ports_mom = ff_assign_mom_portfolios(mom_signal, _ff_mom_breaks(mom_signal, min_stocks_bp))
     umd = ff_compute_umd_factor(
@@ -12900,10 +12882,9 @@ def _ff_build_freq(
     if freq != "monthly":
         return factors, None
 
-    # count is non-null iff the June stock had a Compustat/DFF row, so
-    # with the dec_me condition this reproduces the pre-left-join
-    # chars row set (the extra rows exist only to widen the US
-    # size-median pool / OP-INV sorts).
+    # count is non-null iff the June stock had a Compustat/DFF row; with the dec_me
+    # condition this reproduces the pre-left-join chars row set (extra rows only widen
+    # the US size-median / OP-INV pool).
     chars = ff_build_characteristics(
         panel,
         data_chars.filter(pl.col("count").is_not_null() & pl.col("dec_me").is_not_null()),
@@ -12983,10 +12964,8 @@ def hxz_attach_siccd(lf: pl.LazyFrame, raw_dir: Path, date_col: str) -> pl.LazyF
         .select("permno", "secinfostartdt", "secinfoenddt", "siccd")
         .unique()
     )
-    # Economic tie-break for overlapping CRSP security-history windows: prefer
-    # the most recent `secinfostartdt` (= latest re-classification, reflects
-    # the firm's current industry assignment). `siccd` ASC is the final
-    # deterministic tie-break.
+    # Tie-break for overlapping CRSP security-history windows: newest secinfostartdt
+    # (latest re-classification = current industry), then siccd ASC for determinism.
     return (
         lf.join(sec, on="permno", how="left")
         .filter(
@@ -13109,12 +13088,10 @@ def hxz_load_fundq(raw_dir: Path) -> pl.DataFrame:
             ),
         )
         .with_columns(beq=pl.col("sh_q") + pl.col("txditcq").fill_null(0.0) - pl.col("ps_q"))
-        # One row per (gvkey, fiscal quarter): fiscal-year-end changes can file
-        # the same (fyearq, fqtr) under two datadate. Duplicates would fan the
-        # dense qidx axis in hxz_impute_be_clean_surplus, making its shift/
-        # rolling lags depend on nondeterministic inter-duplicate order (the
-        # source of run-to-run roe_hxz flips). Prefer the latest datadate, then
-        # latest rdq, then the more valued filing.
+        # One row per (gvkey, fiscal quarter): FYE changes can file the same
+        # (fyearq, fqtr) under two datadate, and dups fan the dense qidx axis in
+        # hxz_impute_be_clean_surplus -> nondeterministic roe_hxz. Keep latest
+        # datadate, then rdq, then the more valued filing.
         .sort(
             ["gvkey", "fyearq", "fqtr", "datadate", "rdq", "ibq", "beq"],
             descending=[False, False, False, True, True, True, True],
@@ -13479,12 +13456,9 @@ def hxz_load_compustat_row(raw_dir: Path) -> pl.DataFrame:
 
     na = _hxz_na_be_inv(na_lf).with_columns(_src=pl.lit(0))
     gl = _hxz_global_be_inv(gl_lf).with_columns(_src=pl.lit(1))
-    # Sort tie-break (after _src=NA<GL preference) is fully numeric so polars'
-    # multi-threaded sort partitioning can't surface different tied rows across
-    # runs. Within same (gvkey, datadate, _src), we prefer non-null be_a (= the
-    # row with usable equity book value), then larger be_a (= the more material
-    # filing if duplicates), then larger `at` proxied via inv. ib/year ASC are
-    # final deterministic tie-breakers.
+    # Fully numeric tie-break (after _src=NA<GL) so polars' parallel sort can't surface
+    # different tied rows: within (gvkey, datadate, _src) prefer non-null then larger
+    # be_a, then larger `at` (via inv); ib/year ASC are final deterministic breakers.
     combined = (
         pl.concat([na, gl], how="vertical_relaxed")
         .with_columns(_be_null=pl.col("be_a").is_null())
@@ -13494,10 +13468,8 @@ def hxz_load_compustat_row(raw_dir: Path) -> pl.DataFrame:
             nulls_last=True,
         )
         .unique(subset=["gvkey", "datadate"], keep="first", maintain_order=True)
-        # Each source is already one row per (gvkey, year) (see _hxz_na_be_inv/_hxz_global_be_inv),
-        # but a gvkey present in BOTH NA and Global can still yield two rows per
-        # (gvkey, year) with different datadate. Collapse before the roe_a lag below,
-        # preferring NA (_src=0) then the latest datadate. Mirrors ff_load_world_compustat.
+        # A gvkey in both NA and Global yields two (gvkey, year) rows; collapse before
+        # the roe_a lag (prefer NA, then latest datadate). Mirrors ff_load_world_compustat.
         .sort(["gvkey", "year", "_src", "datadate"], descending=[False, False, False, True])
         .unique(subset=["gvkey", "year"], keep="first", maintain_order=True)
         .drop("_src", "_be_null")
@@ -13523,11 +13495,9 @@ def hxz_load_panel_row(interim_dir: Path, freq: Literal["monthly", "daily"]) -> 
     Output: Eager [excntry, id, gvkey, date, ret, me, size_grp, naics, sic, is_fin].
     """
     panel = ff_load_world_panel(interim_dir, freq).collect()
-    # Dedup (id, eom) explicitly: world_msf can carry duplicate share-class
-    # records for the same security-month. Without an explicit unique() the
-    # downstream join would multiply panel rows non-deterministically under
-    # polars' parallel scan. Tie-break prefers non-null naics, then larger sic
-    # (the more specific 4-digit code) for stable industry assignment.
+    # Dedup (id, eom): world_msf can carry duplicate share-class records per
+    # security-month; without unique() the join multiplies rows non-deterministically
+    # under the parallel scan. Tie-break: non-null naics, then larger (more specific) sic.
     ind = (
         pl.scan_parquet(interim_dir / "world_msf.parquet")
         .select("id", "eom", "naics", "sic")
@@ -13825,10 +13795,9 @@ def _hxz_row_chars(
             (pl.col("date") >= pl.col("formation_min"))
             & (pl.col("date") <= pl.col("formation_max"))
         )
-        # keep="last" after datadate ASC selects the most recent fiscal date.
-        # The trailing roe_a DESC only makes ties on (gvkey, date, datadate) —
-        # rare linker artifacts — break deterministically so polars threading
-        # can't shuffle them; which row wins among such ties is immaterial.
+        # datadate ASC + keep="last" takes the most recent fiscal date; the trailing
+        # roe_a DESC only breaks rare (gvkey, date, datadate) ties deterministically
+        # (which row wins is immaterial).
         .sort(
             ["gvkey", "date", "datadate", "roe_a"],
             descending=[False, False, False, True],
@@ -14027,11 +13996,9 @@ def hxz_classify_portfolios(
         .drop("port_year")
     )
 
-    # ROW broadcast: join June classification on id + port_year
-    # Key on id (security-level), NOT gvkey: a firm with >1 share class has >1 id
-    # in the June frame, and a gvkey-keyed join would fan each panel row out per
-    # share class. Matches the ROE broadcast, the US permno branch, and the FF
-    # analog.
+    # ROW broadcast: join June classification on (id, port_year). Key on id, NOT gvkey
+    # — a multi-share-class firm has >1 id, and a gvkey join would fan each panel row
+    # per share class. Matches the ROE broadcast, the US permno branch, and the FF analog.
     row_panel = panel_m.filter(pl.col("excntry") != US_EXCNTRY)
     row_size_ia_keyed = (
         size_ia_classified.filter(pl.col("excntry") != US_EXCNTRY)
@@ -14275,11 +14242,9 @@ def add_ecdf(
         )
     )
 
-    # asof-join the ECDF onto every row; rows below any bp value get null,
-    # filled with 0.0 to match the convention expected downstream.
-    # Both sides are sorted within each `by` group; skip the sortedness check
-    # (Polars can't verify it with `by` and would warn at collect time,
-    # outside any catch_warnings context).
+    # asof-join the ECDF onto every row; rows below any bp get null -> 0.0 (downstream
+    # convention). Skip the sortedness check: with `by`, Polars can't verify it and
+    # would warn at collect, outside any catch_warnings context.
     return (
         df.sort(sort_cols)
         .join_asof(bp_ecdf, on="var", by=group_cols, strategy="backward", check_sortedness=False)
@@ -14488,10 +14453,6 @@ def portfolios(
         + ["excntry"]
     )
 
-    # Build the full preprocessing chain as a single lazy pipeline. This lets
-    # polars push predicate/null filters into the parquet reader (skipping row
-    # groups on real production files) and fuse the ~15 intermediate steps into
-    # one pass instead of allocating ~15 intermediate DataFrames.
     cast_exclude = {"id", "eom", "source_crsp", "size_grp", "excntry"}
     cast_cols = [c for c in columns if c not in cast_exclude]
 
@@ -14646,27 +14607,17 @@ def portfolios(
                     excntry,
                 )
 
-    # Creating portfolios for all the characteristics.
-    #
-    # Each characteristic builds a per-char lazy pipeline (ECDF -> pf
-    # assignment -> monthly/daily aggregation).  The pipelines accumulate in
-    # ``pf_returns_lazys`` / ``pf_daily_lazys`` and are batch-collected via
-    # ``pl.collect_all`` so polars can execute them concurrently on its thread
-    # pool.  The signals=True branch is the exception: it needs the
-    # intermediate ``sub`` frame alive after each collect to compute
-    # pf_signals, so it collects eagerly per-char.
+    # Per-char lazy pipelines accumulate here and are batch-collected via
+    # collect_all. signals=True is the exception: it collects eagerly per-char
+    # because pf_signals needs the intermediate `sub` frame alive after collect.
     pf_returns_lazys: list[pl.LazyFrame] = []
     pf_daily_lazys: list[pl.LazyFrame] = []
     char_pfs: list[dict] = []  # populated only when signals=True
 
-    # Single shared LazyFrame node for the preprocessed data. All per-char
-    # pipelines branch off this node, enabling polars' common-subplan
-    # elimination (CSE) in collect_all to avoid redundant scans.
+    # Shared node so per-char branches share one scan (polars CSE in collect_all).
     data_lazy = data.lazy()
 
     for x in chars:
-        # Alias current char into a 'var' column on the per-char subset.
-        # Operate on `sub` only -- `data` is not mutated.
         if not signals:
             sub = (
                 data_lazy.with_columns(pl.col(x).cast(pl.Float64).alias("var"))
@@ -14693,12 +14644,8 @@ def portfolios(
             pl.col("bp_n") >= bp_min_n
         )
 
-        # Skip chars with no data after the bp_n filter.  For the
-        # collect_all path we cannot cheaply check emptiness without an
-        # eager collect, so we optimistically build the lazy pipeline and
-        # drop empty results after the batch collect.  For signals=True
-        # we still need the eager gate because the pf_signals block
-        # requires intermediate access to ``sub``.
+        # Lazy path drops empty results after batch collect; signals=True needs
+        # this eager emptiness gate because pf_signals reads `sub` intermediately.
         if signals and sub.limit(1).collect().height == 0:
             continue
 
@@ -14890,8 +14837,7 @@ def portfolios(
                 )
 
     if cmp_key:
-        # Vectorized over all characteristics: unpivot to long form, then compute
-        # ranks/weights/aggregates in a single lazy pipeline.
+        # Unpivot to long form so ranks/weights/aggregates run over all chars at once.
         grp = ["characteristic", "size_grp", "eom"]
         n_grp = pl.len().over(grp)
         p_rank = pl.col("var").rank("average").over(grp) / (n_grp + 1)
@@ -15406,10 +15352,9 @@ def _dhs_row_chars(interim_dir: Path, beg: int, end: int) -> pl.DataFrame:
         log1p.is_not_null().cast(pl.Int32).rolling_sum(window_size=60, min_samples=60).over("id")
     )
 
-    # world_data has ~1% per-id month gaps, so the positional row lags are CALENDAR-
-    # guarded: a char is kept only when the required prior row sits at the exact
-    # calendar offset (12mo NS / 60mo IR), else nulled (dropped) rather than
-    # mis-horizoned. _mgap = calendar months between eom and its `n`-rows-prior eom.
+    # world_data has ~1% per-id month gaps, so positional lags are CALENDAR-guarded: a
+    # char is kept only if the prior row sits at the exact offset (12mo NS / 60mo IR),
+    # else nulled. _mgap = calendar months between eom and its `n`-rows-prior eom.
     def _mgap(n: int) -> pl.Expr:
         e = pl.col("eom").shift(n).over("id")
         return (pl.col("eom").dt.year() - e.dt.year()) * 12 + (
@@ -15570,11 +15515,10 @@ def _dhs_issuance_chars(msf: pl.DataFrame, raw_dir: Path, beg: int, end: int) ->
         )
     )
 
-    # IR = log_ME - log_cumret, built in ONE (permno,date)-sorted pass over raw msf:
-    #   log_ME     = log(ME_June / ME_June_5yr_ago), 5-year positional June lag; ME/0 -> null
-    #   log_cumret = trailing-60-month sum of log1p(ret); nonpositive gross -> null term,
-    #                and any window missing a month is invalidated by the validity count.
-    # One sort feeds both the rolling window and the post-filter shift(5); no self-join.
+    # IR = log_ME - log_cumret in ONE (permno,date)-sorted pass over raw msf:
+    #   log_ME     = log(ME_June / ME_June_5yr_ago), 5-yr positional June lag; ME/0 -> null
+    #   log_cumret = trailing-60-month sum of log1p(ret); nonpositive gross or any missing
+    #                window month -> invalidated. One sort serves window + shift(5); no self-join.
     me_june = pl.when(pl.col("cap") > 0).then(pl.col("cap") / 1000).otherwise(None)  # $MM
     log1p = pl.when((1 + pl.col("ret")) > 0).then((1 + pl.col("ret")).log()).otherwise(None)
     n_valid = (
@@ -16007,10 +15951,9 @@ def _dhs_fin_factor(
     bp_neg = _dhs_group_quantiles(
         ns_rank, "YEAR", "NS", [50], "P", pool=is_neg & bp_pool, min_stocks=min_stocks_bp
     )
-    # a missing breakpoint means the (excntry, YEAR) pool was below min_stocks and
-    # was dropped by the HAVING gate; those stocks are EXCLUDED (group1 null), not
-    # forced into a default bucket (mirrors jkp ff_assign_portfolios' inner join).
-    # US pools are never dropped (HAVING exempts USA), so this never fires for US.
+    # a missing breakpoint = the (excntry, YEAR) pool was below min_stocks (dropped by
+    # HAVING), so those stocks are EXCLUDED (group1 null), not defaulted — mirrors jkp
+    # ff_assign_portfolios' inner join. USA is HAVING-exempt, so this never fires for US.
     ns_neg = (
         ns_rank.filter(is_neg)
         .join(bp_neg, on=["excntry", "YEAR"], how="left")
@@ -16172,10 +16115,9 @@ def _dhs_pead_factor(
         .with_columns(group1=_dhs_size_group("SIZE"))  # size leg vs the prior-month NYSE ME median
     )
 
-    # char breakpoints for lagAbr per (excntry, formation month) (P20..P80; only
-    # 20/80 bind). Country pool: US = NYSE (primaryexch=="N"); ROW = size_grp
-    # eligible. US rows have size_grp null and ROW rows primaryexch null, so exactly
-    # one branch fires per row and the US pool is unchanged (byte-identical).
+    # lagAbr breakpoints per (excntry, formation month) (P20..P80; only 20/80 bind).
+    # Pool: US = NYSE (primaryexch=="N"), ROW = size_grp eligible; US rows have size_grp
+    # null and ROW rows primaryexch null, so exactly one branch fires (US byte-identical).
     bp_pool = (pl.col("primaryexch") == "N") | pl.col("size_grp").is_in(["small", "large", "mega"])
     bp_char = _dhs_group_quantiles(
         sized,

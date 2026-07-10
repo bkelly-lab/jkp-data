@@ -53,6 +53,50 @@ from .paths import DataPaths
 from .wrds_credentials import get_wrds_credentials
 
 
+def factor_paths(interim: Path, prefix: str) -> tuple[Path, Path, Path]:
+    """The (monthly, daily, characteristics) output paths for one factor model."""
+    return (
+        interim / f"{prefix}_factors_monthly.parquet",
+        interim / f"{prefix}_factors_daily.parquet",
+        interim / f"{prefix}_characteristics.parquet",
+    )
+
+
+def generate_factor_models(paths: DataPaths, interim: Path) -> dict[str, tuple[Path, Path, Path]]:
+    """Run each factor-model generator; return its output paths keyed by prefix.
+
+    The generators mapping is the single source of truth: its order fixes the run
+    order and the order in which combine_factor_models feeds ap_factor_model_data.
+    """
+    generators = {
+        "ff": gen_ff_data,
+        "hxz": gen_hxz_data,
+        "mp": gen_mispricing_data,
+        "dhs": gen_dhs_data,
+    }
+    outputs = {prefix: factor_paths(interim, prefix) for prefix in generators}
+    for prefix, generator in generators.items():
+        generator(paths, *outputs[prefix])
+    return outputs
+
+
+def combine_factor_models(
+    interim: Path, factor_outputs: dict[str, tuple[Path, Path, Path]]
+) -> None:
+    """Merge the per-model outputs into the combined AP factor-model data."""
+    models = list(factor_outputs.values())
+    ap_factor_model_data(
+        monthly_factor_inputs=[monthly for monthly, _, _ in models],
+        daily_factor_inputs=[daily for _, daily, _ in models],
+        chars_inputs=[chars for _, _, chars in models],
+        mkt_monthly_path=interim / "market_returns.parquet",
+        mkt_daily_path=interim / "market_returns_daily.parquet",
+        out_monthly=interim / "ap_factors_monthly.parquet",
+        out_daily=interim / "ap_factors_daily.parquet",
+        out_chars=interim / "ap_factors_characteristics.parquet",
+    )
+
+
 def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> None:
     """Run the full JKP data generation pipeline."""
     paths = DataPaths(base_dir=output_dir.resolve())
@@ -137,55 +181,8 @@ def run_pipeline(*, persistent_connection: bool = False, output_dir: Path) -> No
         interim / "acc_chars_world.parquet",
         interim / "world_data_prelim.parquet",
     )
-    gen_ff_data(
-        paths,
-        interim / "ff_factors_monthly.parquet",
-        interim / "ff_factors_daily.parquet",
-        interim / "ff_characteristics.parquet",
-    )
-    gen_hxz_data(
-        paths,
-        interim / "hxz_factors_monthly.parquet",
-        interim / "hxz_factors_daily.parquet",
-        interim / "hxz_characteristics.parquet",
-    )
-    gen_mispricing_data(
-        paths,
-        interim / "mp_factors_monthly.parquet",
-        interim / "mp_factors_daily.parquet",
-        interim / "mp_characteristics.parquet",
-    )
-    gen_dhs_data(
-        paths,
-        interim / "dhs_factors_monthly.parquet",
-        interim / "dhs_factors_daily.parquet",
-        interim / "dhs_characteristics.parquet",
-    )
-    ap_factor_model_data(
-        monthly_factor_inputs=[
-            interim / "ff_factors_monthly.parquet",
-            interim / "hxz_factors_monthly.parquet",
-            interim / "mp_factors_monthly.parquet",
-            interim / "dhs_factors_monthly.parquet",
-        ],
-        daily_factor_inputs=[
-            interim / "ff_factors_daily.parquet",
-            interim / "hxz_factors_daily.parquet",
-            interim / "mp_factors_daily.parquet",
-            interim / "dhs_factors_daily.parquet",
-        ],
-        chars_inputs=[
-            interim / "ff_characteristics.parquet",
-            interim / "hxz_characteristics.parquet",
-            interim / "mp_characteristics.parquet",
-            interim / "dhs_characteristics.parquet",
-        ],
-        mkt_monthly_path=interim / "market_returns.parquet",
-        mkt_daily_path=interim / "market_returns_daily.parquet",
-        out_monthly=interim / "ap_factors_monthly.parquet",
-        out_daily=interim / "ap_factors_daily.parquet",
-        out_chars=interim / "ap_factors_characteristics.parquet",
-    )
+    factor_outputs = generate_factor_models(paths, interim)
+    combine_factor_models(interim, factor_outputs)
     firm_age(paths, interim / "world_msf.parquet")
     market_beta(
         paths,
