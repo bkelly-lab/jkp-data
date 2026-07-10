@@ -147,7 +147,7 @@ def apply_bessembinder_section6(
     data = lf.select(
         group_cols + [sort_col] + [pl.col(c).cast(pl.Float64) for c in value_cols]
     ).collect()
-    starts = _group_starts(data.select(group_cols + [sort_col]), group_cols)
+    starts = _group_starts(data, group_cols)
     corrected_cols: dict[str, np.ndarray] = {}
 
     # trfd, qunit and (NA data only) adrrc are corrected independently.
@@ -251,14 +251,13 @@ def apply_bessembinder_section8(
             (pl.col(country_col) == "CHN").fill_null(False).alias("_chn"),
         ]
     ).collect()
-    keys = data.select(group_cols + [sort_col])
-    starts = _group_starts(keys, group_cols)
+    starts = _group_starts(data, group_cols)
     arr = {c: data[c].to_numpy() for c in value_cols + ["_date", "_low", "_chn"]}
 
     if presorted_path is not None:
         # Trusting an externally sorted file: a stale or differently-ordered
         # spill would silently corrupt the whole panel, so verify the order.
-        n_groups = keys.select(pl.struct(group_cols).n_unique()).item()
+        n_groups = data.select(pl.struct(group_cols).n_unique()).item()
         if len(starts) - 1 != n_groups:
             raise ValueError(f"presorted file {sorted_path}: groups are not contiguous")
         d = arr["_date"]
@@ -268,30 +267,30 @@ def apply_bessembinder_section8(
         if not np.all(d[idx] >= d[idx - 1]):
             raise ValueError(f"presorted file {sorted_path}: dates not sorted within a group")
 
-    # Filter 8a's global decision (the only cross-security statistic):
-    # per-security mean of positive volume + 2% quantile, evaluated once on the
-    # full panel; securities with no positive volume (null mean) are KEPT.
+    # Filter 8a's global decision (the only cross-security statistic): the
+    # per-security mean of positive volume, computed once, with the bottom-2%
+    # cutoff taken as a scalar quantile (nulls ignored). Groups with no positive
+    # volume (null mean) are KEPT; rows are realigned to the group_starts order.
     avg_vol = (
         data.lazy()
         .filter(pl.col("dolvol") > 0)
         .group_by(group_cols)
         .agg(pl.mean("dolvol").alias("_avg_vol"))
+        .collect()
     )
+    cutoff = avg_vol["_avg_vol"].quantile(0.02)
     remove_8a = (
-        keys.lazy()
-        .select(group_cols)
+        data.select(group_cols)
         .unique()
         .join(avg_vol, on=group_cols, how="left")
-        .join(avg_vol.select(pl.col("_avg_vol").quantile(0.02).alias("_cutoff")), how="cross")
-        # joins do not preserve row order: re-sort into group_starts order
         .sort(group_cols)
-        .select((pl.col("_avg_vol") <= pl.col("_cutoff")).fill_null(False).alias("_remove"))
-        .collect()["_remove"]
+        .select((pl.col("_avg_vol") <= cutoff).fill_null(False))
+        .to_series()
         .to_numpy()
         .copy()
     )
 
-    reason = np.zeros(keys.height, dtype=np.int8)
+    reason = np.zeros(data.height, dtype=np.int8)
     # Filter 8d gap bound: trading days -> calendar days (~11 months).
     gap_calendar_days = int(BESS_SECTION8_GAP_TRADING_DAYS * 365 / 252)
     bk.section8_all(
