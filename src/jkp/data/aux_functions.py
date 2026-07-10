@@ -562,6 +562,8 @@ def gen_crsp_sf(paths: DataPaths, freq):
         cfacshr_expr = sf.mthcumfacshr
         askhi_expr = sf.mthaskhi
         bidlo_expr = sf.mthbidlo
+        open_expr = ibis.null()
+        close_expr = ibis.null()
     else:  # freq == "d", validated above
         date_expr = sf.dlycaldt.cast("date")
         prc_expr = sf.dlyprc
@@ -625,8 +627,16 @@ def gen_crsp_sf(paths: DataPaths, freq):
     )
     crsp_nyse_expr = ((primaryexch_expr == "N") & (conditionaltype_expr == "RW")).cast("int32")
 
-    prc_open_expr = open_expr if freq == "d" else ibis.null().cast("double")
-    prc_close_expr = close_expr if freq == "d" else ibis.null().cast("double")
+    prc_open_expr = (
+        ibis.cases(((prc_expr > 0) & (open_expr > 0), open_expr), else_=ibis.null())
+        if freq == "d"
+        else ibis.null()
+    )
+    prc_close_expr = (
+        ibis.cases(((prc_expr > 0) & (close_expr > 0), close_expr), else_=ibis.null())
+        if freq == "d"
+        else ibis.null()
+    )
 
     result = full_join.mutate(
         date=date_expr,
@@ -636,14 +646,8 @@ def gen_crsp_sf(paths: DataPaths, freq):
         me=(prc_expr * (sf.shrout / 1000)),
         prc_high=ibis.cases(((prc_expr > 0) & (askhi_expr > 0), askhi_expr), else_=ibis.null()),
         prc_low=ibis.cases(((prc_expr > 0) & (bidlo_expr > 0), bidlo_expr), else_=ibis.null()),
-        prc_open=ibis.cases(
-            ((prc_open_expr > 0), prc_open_expr),
-            else_=ibis.null(),
-        ),
-        prc_close=ibis.cases(
-            ((prc_close_expr > 0), prc_close_expr),
-            else_=ibis.null(),
-        ),
+        prc_open=prc_open_expr,
+        prc_close=prc_close_expr,
         iid=ccmxpf_lnkhist.liid,
         ret=ret_expr,
         retx=retx_expr,
@@ -662,8 +666,6 @@ def gen_crsp_sf(paths: DataPaths, freq):
             "date",
             "bidask",
             "prc",
-            "prc_open",
-            "prc_close",
             "shrout",
             "ret",
             "retx",
@@ -671,6 +673,8 @@ def gen_crsp_sf(paths: DataPaths, freq):
             "vol",
             "prc_high",
             "prc_low",
+            "prc_open",
+            "prc_close",
             "common",
             "primaryexch",
             "conditionaltype",
@@ -1820,7 +1824,6 @@ def gen_secd_data(paths: DataPaths):
                 "dolvol",
                 "prc_high",
                 "prc_low",
-                "prc_open",
                 "max_date",
             ]
         )
@@ -2386,8 +2389,7 @@ def process_comp_sf1(paths: DataPaths, freq):
         1) If monthly, run gen_comp_msf() to ensure comp_msf/parquets exist.
         2) Compute __returns → gen_delist_df → gen_temporary_sf.
         3) Add RF/exchange metadata; write __comp_sf2.parquet.
-        4) Compute overnight/intraday returns from prc_open (daily only).
-        5) Call add_primary_sec(...) to add primary_sec and write final comp_{freq}sf.parquet.
+        4) Call add_primary_sec(...) to add primary_sec and write final comp_{freq}sf.parquet.
 
     Output:
         comp_msf.parquet or comp_dsf.parquet with enriched fields (ret_exc, primary_sec, etc.).
@@ -2399,25 +2401,22 @@ def process_comp_sf1(paths: DataPaths, freq):
     __delist = gen_delist_df(paths, __returns)
     __comp_sf2 = gen_temporary_sf(paths, freq, __returns, __delist)
     __comp_sf2 = add_rf_and_exchange_data_to_temporary_sf(paths, freq, __comp_sf2)
-
     if freq == "d" and "prc_open" in __comp_sf2.columns:
         __comp_sf2 = __comp_sf2.with_columns(
-            ret_intraday=pl.when(pl.col("prc_open") > 0)
+            ret_intraday=pl.when(
+                pl.col("prc_open").is_not_null()
+                & (pl.col("prc_open") > 0)
+                & pl.col("prc").is_not_null()
+            )
             .then(pl.col("prc") / pl.col("prc_open") - 1)
-            .otherwise(fl_none()),
+            .otherwise(None),
         ).with_columns(
             ret_overnight=pl.when(
                 pl.col("ret_intraday").is_not_null() & pl.col("ret").is_not_null()
             )
             .then((1 + pl.col("ret")) / (1 + pl.col("ret_intraday")) - 1)
-            .otherwise(fl_none()),
+            .otherwise(None),
         )
-    else:
-        __comp_sf2 = __comp_sf2.with_columns(
-            ret_intraday=pl.lit(None).cast(pl.Float64),
-            ret_overnight=pl.lit(None).cast(pl.Float64),
-        )
-
     __comp_sf2.write_parquet(paths.interim_dir / "__comp_sf2.parquet")
     del __comp_sf2
     add_primary_sec(
@@ -2491,16 +2490,7 @@ def prepare_crsp_sf(paths: DataPaths, freq):
         .with_columns(
             [
                 col(var).cast(pl.Float64)
-                for var in [
-                    "prc",
-                    "cfacshr",
-                    "ret",
-                    "retx",
-                    "prc_high",
-                    "prc_low",
-                    "prc_open",
-                    "prc_close",
-                ]
+                for var in ["prc", "cfacshr", "ret", "retx", "prc_high", "prc_low"]
             ]
             + [col("vol").cast(pl.Int64)]
         )
@@ -2610,31 +2600,26 @@ def prepare_crsp_sf(paths: DataPaths, freq):
         .with_columns(ret_exc=ret_exc_exp, me_company=me_company_exp)
     )
 
-    # Compute intraday (open-to-close) and overnight (close-to-open) returns.
-    # Lou, Polk, and Skouras (2019):
-    #   ret_intraday = P_close / P_open - 1
-    #   ret_overnight = (1 + ret) / (1 + ret_intraday) - 1
-    # Uses dlyclose (actual closing trade price) rather than dlyprc (which may
-    # be a bid-ask midpoint) to align with LPS methodology.
-    if freq == "d":
-        __crsp_sf = __crsp_sf.with_columns(
-            ret_intraday=pl.when((col("prc_close") > 0) & (col("prc_open") > 0))
-            .then(col("prc_close") / col("prc_open") - 1)
-            .otherwise(fl_none()),
-        ).with_columns(
-            ret_overnight=pl.when(col("ret_intraday").is_not_null() & col("ret").is_not_null())
-            .then((1 + col("ret")) / (1 + col("ret_intraday")) - 1)
-            .otherwise(fl_none()),
-        )
-    else:
-        __crsp_sf = __crsp_sf.with_columns(
-            ret_intraday=pl.lit(None).cast(pl.Float64),
-            ret_overnight=pl.lit(None).cast(pl.Float64),
-        )
-
     if freq == "m":
         __crsp_sf = __crsp_sf.with_columns(
             [(col(var) * 100).alias(var) for var in ["vol", "dolvol"]]
+        )
+
+    if freq == "d":
+        __crsp_sf = __crsp_sf.with_columns(
+            ret_intraday=pl.when(
+                pl.col("prc_close").is_not_null()
+                & pl.col("prc_open").is_not_null()
+                & (pl.col("prc_open") > 0)
+            )
+            .then(pl.col("prc_close") / pl.col("prc_open") - 1)
+            .otherwise(None),
+        ).with_columns(
+            ret_overnight=pl.when(
+                pl.col("ret_intraday").is_not_null() & pl.col("ret").is_not_null()
+            )
+            .then((1 + pl.col("ret")) / (1 + pl.col("ret_intraday")) - 1)
+            .otherwise(None),
         )
 
     __crsp_sf = (
@@ -2816,10 +2801,8 @@ def combine_crsp_comp_sf(paths: DataPaths) -> None:
                     id, permno, permco, gvkey, iid, excntry, exch_main, common,
                     primary_sec, bidask, primaryexch, conditionaltype, crsp_nyse, comp_tpci, comp_exchg,
                     curcd, fx, date, eom, adjfct, shares, me, me_company, prc, prc_local,
-                    prc_high, prc_low, dolvol, tvol, ret, ret_local, ret_exc,
-                    ret_lag_dif,
-                    div_tot, div_cash, div_spc, source_crsp,
-                    ret_exc_lead1m, obs_main
+                    prc_high, prc_low, dolvol, tvol, ret, ret_local, ret_exc, ret_lag_dif,
+                    div_tot, div_cash, div_spc, source_crsp, ret_exc_lead1m, obs_main
                 FROM (
                     -- source_crsp DESC is a no-op today (CRSP/Comp ids don't collide);
                     -- primary_sec DESC is the real tie-break: when Compustat rows
@@ -3401,56 +3384,6 @@ def return_cutoffs(paths: DataPaths, freq, crsp_only):
 
 
 @measure_time
-def return_cutoffs_overnight_intraday(paths: DataPaths, freq: str) -> None:
-    """
-    Description:
-        Compute return percentile cutoffs for overnight and intraday components,
-        mirroring the structure of return_cutoffs but for ret_intraday and ret_overnight.
-
-    Steps:
-        1) Scan world_{freq}sf.parquet; apply standard stock filters (common, main, primary, non-ZWE).
-        2) Require non-null ret_intraday and ret_overnight.
-        3) Group by eom; aggregate counts and percentiles (0.1, 1, 99, 99.9) for each component.
-        4) Write separate cutoff files for overnight and intraday.
-
-    Output:
-        Writes 'return_cutoffs_{component}.parquet' (monthly) or
-        'return_cutoffs_daily_{component}.parquet' (daily) for each component.
-    """
-    group_vars = "eom"
-    base = pl.scan_parquet(paths.interim_dir / f"world_{freq}sf.parquet").filter(
-        (col("common") == 1)
-        & (col("obs_main") == 1)
-        & (col("exch_main") == 1)
-        & (col("primary_sec") == 1)
-        & (col("excntry") != "ZWE")
-    )
-
-    for component in ("overnight", "intraday"):
-        ret_col = f"ret_{component}"
-        data = base.filter(col(ret_col).is_not_null())
-        data = data.sql(f"""
-            SELECT
-                {group_vars},
-                COUNT({ret_col})                             AS n,
-                QUANTILE_DISC({ret_col}, 0.001)              AS ret_0_1,
-                QUANTILE_DISC({ret_col}, 0.01)               AS ret_1,
-                QUANTILE_DISC({ret_col}, 0.99)               AS ret_99,
-                QUANTILE_DISC({ret_col}, 0.999)              AS ret_99_9
-            FROM self
-            GROUP BY {group_vars}
-            ORDER BY {group_vars}
-            """)
-        if freq == "d":
-            data = data.with_columns(
-                year=pl.col("eom").dt.year(),
-                month=pl.col("eom").dt.month(),
-            )
-        suffix = "_daily" if freq == "d" else ""
-        data.sink_parquet(paths.interim_dir / f"return_cutoffs{suffix}_{component}.parquet")
-
-
-@measure_time
 def add_ret_exc_wins(
     paths: DataPaths, freq: str, lower: float = 0.001, upper: float = 0.999
 ) -> None:
@@ -3744,89 +3677,6 @@ def market_returns(paths: DataPaths, data_path, freq, wins_comp, wins_data_path,
     __common_stocks.sort(["excntry", dt_col]).collect().write_parquet(
         paths.interim_dir / f"market_returns{path_aux}.parquet"
     )
-
-
-@measure_time
-def market_returns_overnight_intraday(
-    paths: DataPaths, data_path: Path, freq: str, nyse_cutoffs_path: Path
-) -> None:
-    """
-    Description:
-        Build country-level VW/EW market returns for overnight and intraday components.
-        Follows the same stock selection and weighting as market_returns() but uses
-        ret_overnight / ret_intraday instead of ret / ret_local / ret_exc.
-        No winsorization is applied to component returns (per LPS 2019 methodology).
-
-    Steps:
-        1) Load data; keep standard stock fields plus ret_intraday and ret_overnight.
-        2) Add lags me_lag1, dolvol_lag1 per id.
-        3) Join NYSE P80 cutoffs and compute me_cap_lag1.
-        4) Apply standard stock filters; compute VW/EW overnight and intraday returns.
-        5) If daily, drop low-coverage trading days.
-        6) Write one file per component: market_returns{_daily}_{component}.parquet.
-
-    Output:
-        Parquet files of country x date market returns for each component.
-    """
-    dt_col, max_date_lag, path_aux, group_vars, base_cols = load_mkt_returns_params(freq)
-    oi_cols = list(set(base_cols) | {"ret_intraday", "ret_overnight"})
-
-    available = set(pl.scan_parquet(data_path).collect_schema().names())
-    if "ret_intraday" not in available or "ret_overnight" not in available:
-        print(
-            "Skipping market_returns_overnight_intraday (ret_intraday/ret_overnight not in data)",
-            flush=True,
-        )
-        return
-
-    filter_cond = (
-        (col("obs_main") == 1)
-        & (col("exch_main") == 1)
-        & (col("primary_sec") == 1)
-        & (col("common") == 1)
-        & (col("ret_lag_dif") <= max_date_lag)
-    )
-    stocks = (
-        pl.scan_parquet(data_path)
-        .select([c for c in oi_cols if c in available])
-        .unique()
-        .sort(["id", dt_col])
-        .with_columns(
-            me_lag1=col("me").shift(1).over("id"),
-            dolvol_lag1=col("dolvol").shift(1).over("id"),
-        )
-        .filter(filter_cond)
-        .filter(col("me_lag1").is_not_null() & col("ret_local").is_not_null())
-        .collect()
-    )
-    nyse = pl.read_parquet(nyse_cutoffs_path, columns=["eom", "nyse_p80"])
-    stocks = stocks.join(nyse, on="eom", how="left").with_columns(
-        me_cap_lag1=pl.min_horizontal(col("me_lag1"), col("nyse_p80"))
-    )
-
-    for component in ("overnight", "intraday"):
-        ret_col = f"ret_{component}"
-        df = stocks.filter(col(ret_col).is_not_null()).with_columns(
-            aux_vw=col(ret_col) * col("me_lag1"),
-            aux_vw_cap=col(ret_col) * col("me_cap_lag1"),
-        )
-        agg = (
-            df.lazy()
-            .group_by(["excntry", dt_col])
-            .agg(
-                stocks=pl.len(),
-                me_lag1=sas_sum_agg("me_lag1"),
-                dolvol_lag1=sas_sum_agg("dolvol_lag1"),
-                mkt_vw=sas_sum_agg("aux_vw") / sas_sum_agg("me_lag1"),
-                mkt_ew=pl.mean(ret_col),
-                mkt_vw_cap=sas_sum_agg("aux_vw_cap") / sas_sum_agg("me_cap_lag1"),
-            )
-        )
-        if freq == "d":
-            agg = drop_non_trading_days(agg, "stocks", dt_col, ["excntry", "eom"], 0.25)
-        agg.sort(["excntry", dt_col]).collect().write_parquet(
-            paths.interim_dir / f"market_returns{path_aux}_{component}.parquet"
-        )
 
 
 def quarterize(df, var_list):
@@ -8482,6 +8332,9 @@ def quality_minus_junk(paths: DataPaths, data_path, min_stks):
         & (col("ret_exc").is_not_null())
         & (col("me").is_not_null())
     )
+    # NOTE: input must be unique on (excntry, eom, id) — guaranteed upstream by
+    # construction of world_data_-1. Duplicate keys would fan out multiplicatively
+    # across the 16+3 full joins below and panic at the Polars frame-length limit.
     qmj = pl.scan_parquet(data_path).filter(c1).select(cols).sort(["excntry", "eom"]).collect()
     for var_z, dir in zip(z_vars, direction, strict=True):
         __z = z_ranks(qmj, var_z, min_stks, dir)
@@ -8657,15 +8510,6 @@ def save_output_files(paths: DataPaths):
     ):
         shutil.copy2(paths.interim_dir / name, other_output / name)
 
-    for component in ("overnight", "intraday"):
-        for name in (
-            f"market_returns_daily_{component}.parquet",
-            f"return_cutoffs_daily_{component}.parquet",
-        ):
-            src = paths.interim_dir / name
-            if src.exists():
-                shutil.copy2(src, other_output / name)
-
 
 @measure_time
 def save_daily_ret(paths: DataPaths):
@@ -8795,17 +8639,7 @@ def save_monthly_ret(paths: DataPaths):
         Parquet file with monthly returns by country/security.
     """
     data = pl.scan_parquet(paths.interim_dir / "world_msf_output.parquet").select(
-        [
-            "excntry",
-            "id",
-            "source_crsp",
-            "eom",
-            "me",
-            "ret_exc",
-            "ret",
-            "ret_local",
-            "ret_exc_wins",
-        ]
+        ["excntry", "id", "source_crsp", "eom", "me", "ret_exc", "ret", "ret_local", "ret_exc_wins"]
     )
     data.select(pl.all().shrink_dtype()).collect().write_parquet(
         paths.processed_dir / "return_data" / "world_ret_monthly.parquet"
@@ -9167,12 +9001,7 @@ def res_mom(df, sfx, __min, incl, skip):
         .over(["id_int", "group_number"])
     )
     df = (
-        # Fix within-group row order before the OLS: base_data comes from a
-        # multithreaded DuckDB scan whose row order is nondeterministic, and the
-        # least-squares solve is float-order-sensitive, so an unsorted input
-        # yields byte-different residuals across runs.
-        df.sort(["id_int", "group_number", "aux_date"])
-        .filter(col("hml").is_not_null() & col("smb_ff").is_not_null())
+        df.filter(col("hml").is_not_null() & col("smb_ff").is_not_null())
         .with_columns(
             res=res_exp.alias("res"),
             max_date_gn=pl.max("aux_date").over("group_number"),
@@ -9292,21 +9121,13 @@ def capm(df, sfx, __min):
     Output:
         LazyFrame with f'beta{sfx}' and f'ivol_capm{sfx}'.
     """
-    # Fix within-group row order before the reductions: base_data comes from a
-    # multithreaded DuckDB scan whose row order is nondeterministic, and cov/var/
-    # std are float-order-sensitive, so an unsorted input yields byte-different
-    # betas across runs.
-    df = (
-        df.sort(["id_int", "group_number", "aux_date"])
-        .group_by(["id_int", "group_number"])
-        .agg(
-            [
-                (pl.cov("ret_exc", "mktrf") / pl.var("mktrf")).alias(f"beta{sfx}"),
-                (col("ret_exc") - col("mktrf") * (pl.cov("ret_exc", "mktrf") / pl.var("mktrf")))
-                .std()
-                .alias(f"ivol_capm{sfx}"),
-            ]
-        )
+    df = df.group_by(["id_int", "group_number"]).agg(
+        [
+            (pl.cov("ret_exc", "mktrf") / pl.var("mktrf")).alias(f"beta{sfx}"),
+            (col("ret_exc") - col("mktrf") * (pl.cov("ret_exc", "mktrf") / pl.var("mktrf")))
+            .std()
+            .alias(f"ivol_capm{sfx}"),
+        ]
     )
     return df
 
@@ -9660,16 +9481,14 @@ def add_ecdf(
 
     # asof-join the ECDF onto every row; rows below any bp value get null,
     # filled with 0.0 to match the convention expected downstream.
-    # Polars emits a Sortedness UserWarning on join_asof with `by` even when
-    # both sides are pre-sorted; suppress locally rather than globally.
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", category=UserWarning, message=r"Sortedness.*by.*provided")
-        res = (
-            df.sort(sort_cols)
-            .join_asof(bp_ecdf, on="var", by=group_cols, strategy="backward")
-            .with_columns(pl.col("cdf").fill_null(0.0))
-        )
-    return res
+    # Both sides are sorted within each `by` group; skip the sortedness check
+    # (Polars can't verify it with `by` and would warn at collect time,
+    # outside any catch_warnings context).
+    return (
+        df.sort(sort_cols)
+        .join_asof(bp_ecdf, on="var", by=group_cols, strategy="backward", check_sortedness=False)
+        .with_columns(pl.col("cdf").fill_null(0.0))
+    )
 
 
 def _build_industry_daily_returns(
@@ -9848,8 +9667,6 @@ def portfolios(
     ind_pf=True,  # Should industry portfolio returns be estimated
     ret_cutoffs=None,  # Data frame for monthly winsorization. Neccesary when wins_ret=T
     ret_cutoffs_daily=None,  # Data frame for daily winsorization. Neccesary when wins_ret=T and daily_pf=T
-    monthly_ret_col: str = "ret_exc_lead1m",  # Monthly return column for portfolio aggregation
-    daily_ret_col: str = "ret_exc",  # Daily return column for portfolio aggregation
 ):
     if source is None:
         source = ["CRSP", "COMPUSTAT"]
@@ -9857,18 +9674,6 @@ def portfolios(
     file_path = paths.processed_dir / "characteristics" / f"{excntry}.parquet"
 
     # Select the required columns
-    _extra_ret_cols = {monthly_ret_col, "ret_exc", "ret_exc_lead1m"} - {
-        "id",
-        "eom",
-        "source_crsp",
-        "comp_exchg",
-        "crsp_exchcd",
-        "size_grp",
-        "me",
-        "gics",
-        "ff49",
-        "excntry",
-    }
     columns = (
         [
             "id",
@@ -9877,11 +9682,12 @@ def portfolios(
             "comp_exchg",
             "crsp_nyse",
             "size_grp",
+            "ret_exc",
+            "ret_exc_lead1m",
             "me",
             "gics",
             "ff49",
         ]
-        + sorted(_extra_ret_cols)
         + chars
         + ["excntry"]
     )
@@ -9918,7 +9724,7 @@ def portfolios(
         .filter(
             (pl.col("size_grp").is_not_null())
             & (pl.col("me").is_not_null())
-            & (pl.col(monthly_ret_col).is_not_null())
+            & (pl.col("ret_exc_lead1m").is_not_null())
         )
         .with_columns(bp_stock_expr)
     )
@@ -9935,21 +9741,17 @@ def portfolios(
         paths.processed_dir / "return_data" / "daily_rets_by_country" / f"{excntry}.parquet"
     )
     if daily_pf:
-        daily_select = ["id", "date", daily_ret_col]
-        if daily_ret_col != "ret_exc":
-            daily_select.append("ret_exc")
         daily_lazy = (
             pl.scan_parquet(daily_file_path)
-            .select(daily_select)
+            .select(["id", "date", "ret_exc"])
             .with_columns((pl.col("date").dt.month_start().dt.offset_by("-1d")).alias("eom_lag1"))
-            .with_columns(pl.col(daily_ret_col).cast(pl.Float64))
+            .with_columns(pl.col("ret_exc").cast(pl.Float64))
         )
     else:
         daily_lazy = None
 
     # Monthly winsorization: clip Compustat ret_exc_lead1m to CRSP quantiles.
-    # Only applied when using ret_exc_lead1m (not overnight/intraday).
-    if wins_ret and monthly_ret_col == "ret_exc_lead1m":
+    if wins_ret:
         data_lazy = (
             data_lazy.join(
                 ret_cutoffs.lazy()
@@ -9970,7 +9772,7 @@ def portfolios(
         )
 
         # Daily winsorization
-        if daily_pf and daily_ret_col == "ret_exc":
+        if daily_pf:
             daily_lazy = (
                 daily_lazy.with_columns(pl.col("date").dt.month_end().alias("eom"))
                 .join(
@@ -9990,8 +9792,6 @@ def portfolios(
                 )
                 .drop(["p001", "p999", "eom"])
             )
-    else:
-        data_lazy = data_lazy.drop("source_crsp")
 
     # Collect the lazy chain once — the single fused read + preprocess pass.
     data = data_lazy.collect()
@@ -10079,20 +9879,21 @@ def portfolios(
         # Alias current char into a 'var' column on the per-char subset.
         # Operate on `sub` only -- `data` is not mutated.
         if not signals:
-            sub_cols = [
-                "id",
-                "eom",
-                "var",
-                "size_grp",
-                monthly_ret_col,
-                "me",
-                "me_cap",
-                "bp_stock",
-            ]
             sub = (
                 data_lazy.with_columns(pl.col(x).cast(pl.Float64).alias("var"))
                 .filter(pl.col("var").is_not_null())
-                .select(sub_cols)
+                .select(
+                    [
+                        "id",
+                        "eom",
+                        "var",
+                        "size_grp",
+                        "ret_exc_lead1m",
+                        "me",
+                        "me_cap",
+                        "bp_stock",
+                    ]
+                )
             )
         else:
             sub = data_lazy.with_columns(pl.col(x).cast(pl.Float64).alias("var")).filter(
@@ -10133,12 +9934,12 @@ def portfolios(
                     pl.lit(x).alias("characteristic"),
                     pl.len().alias("n"),
                     pl.median("var").alias("signal"),
-                    pl.mean(monthly_ret_col).alias("ret_ew"),
-                    ((pl.col(monthly_ret_col) * pl.col("me")).sum() / pl.col("me").sum()).alias(
+                    pl.mean("ret_exc_lead1m").alias("ret_ew"),
+                    ((pl.col("ret_exc_lead1m") * pl.col("me")).sum() / pl.col("me").sum()).alias(
                         "ret_vw"
                     ),
                     (
-                        (pl.col(monthly_ret_col) * pl.col("me_cap")).sum() / pl.col("me_cap").sum()
+                        (pl.col("ret_exc_lead1m") * pl.col("me_cap")).sum() / pl.col("me_cap").sum()
                     ).alias("ret_vw_cap"),
                 ]
             )
@@ -10191,14 +9992,14 @@ def portfolios(
                     left_on=["id", "eom"],
                     right_on=["id", "eom_lag1"],
                     how="left",
-                ).filter((pl.col("pf").is_not_null()) & (pl.col(daily_ret_col).is_not_null()))
+                ).filter((pl.col("pf").is_not_null()) & (pl.col("ret_exc").is_not_null()))
                 pf_daily_x = daily_sub.group_by(["pf", "date"]).agg(
                     [
                         pl.lit(x).alias("characteristic"),
                         pl.len().alias("n"),
-                        ((pl.col("w_ew") * pl.col(daily_ret_col)).sum()).alias("ret_ew"),
-                        ((pl.col("w_vw") * pl.col(daily_ret_col)).sum()).alias("ret_vw"),
-                        ((pl.col("w_vw_cap") * pl.col(daily_ret_col)).sum()).alias("ret_vw_cap"),
+                        ((pl.col("w_ew") * pl.col("ret_exc")).sum()).alias("ret_ew"),
+                        ((pl.col("w_vw") * pl.col("ret_exc")).sum()).alias("ret_vw"),
+                        ((pl.col("w_vw_cap") * pl.col("ret_exc")).sum()).alias("ret_vw_cap"),
                     ]
                 )
                 op["pf_daily"] = pf_daily_x.collect()
@@ -10226,14 +10027,14 @@ def portfolios(
                     left_on=["id", "eom"],
                     right_on=["id", "eom_lag1"],
                     how="left",
-                ).filter((pl.col("pf").is_not_null()) & (pl.col(daily_ret_col).is_not_null()))
+                ).filter((pl.col("pf").is_not_null()) & (pl.col("ret_exc").is_not_null()))
                 pf_daily_x = daily_sub.group_by(["pf", "date"]).agg(
                     [
                         pl.lit(x).alias("characteristic"),
                         pl.len().alias("n"),
-                        ((pl.col("w_ew") * pl.col(daily_ret_col)).sum()).alias("ret_ew"),
-                        ((pl.col("w_vw") * pl.col(daily_ret_col)).sum()).alias("ret_vw"),
-                        ((pl.col("w_vw_cap") * pl.col(daily_ret_col)).sum()).alias("ret_vw_cap"),
+                        ((pl.col("w_ew") * pl.col("ret_exc")).sum()).alias("ret_ew"),
+                        ((pl.col("w_vw") * pl.col("ret_exc")).sum()).alias("ret_vw"),
+                        ((pl.col("w_vw_cap") * pl.col("ret_exc")).sum()).alias("ret_vw_cap"),
                     ]
                 )
                 pf_daily_lazys.append(pf_daily_x)

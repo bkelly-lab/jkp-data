@@ -57,48 +57,52 @@ def _make_crsp_msf(tmp: Path, n_permnos: int = 500) -> None:
     gvkeys = [f"{p % 100000:06d}" if _RNG.rand() > 0.3 else None for p in permno]
     iids = ["01" if _RNG.rand() > 0.1 else None for _ in range(n)]
 
-    df = pl.DataFrame(
-        {
-            "permno": permno,
-            "permco": [p + 10000 for p in permno],
-            "gvkey": gvkeys,
-            "iid": iids,
-            "exch_main": _RNG.choice([1, 2, 3], n).tolist(),
-            "bidask": _RNG.choice([0, 1], n).tolist(),
-            "common": _RNG.choice([0, 1], n).tolist(),
-            "primaryexch": _RNG.choice(["N", "A", "Q", None], n).tolist(),
-            "conditionaltype": _RNG.choice(["RW", "RW", "RW", None], n).tolist(),
-            "date": dates,
-            "cfacshr": _random_float_col(n, 0.02),
-            "shrout": _random_float_col(n, 0.02),
-            "me": _random_float_col(n),
-            "me_company": _random_float_col(n),
-            "prc": _random_float_col(n),
-            "prc_high": _random_float_col(n),
-            "prc_low": _random_float_col(n),
-            "dolvol": _random_float_col(n),
-            "vol": _random_float_col(n),
-            "ret": _random_float_col(n),
-            "ret_exc": _random_float_col(n),
-            "ret_intraday": [None] * n,
-            "ret_overnight": [None] * n,
-            "div_tot": _random_float_col(n, 0.8),
-        }
-    ).cast(
-        {
-            "permno": pl.Int64,
-            "permco": pl.Int64,
-            "gvkey": pl.Utf8,
-            "iid": pl.Utf8,
-            "exch_main": pl.Int64,
-            "bidask": pl.Int64,
-            "common": pl.Int64,
-            "primaryexch": pl.Utf8,
-            "conditionaltype": pl.Utf8,
-            "date": pl.Date,
-            "ret_intraday": pl.Float64,
-            "ret_overnight": pl.Float64,
-        }
+    df = (
+        pl.DataFrame(
+            {
+                "permno": permno,
+                "permco": [p + 10000 for p in permno],
+                "gvkey": gvkeys,
+                "iid": iids,
+                "exch_main": _RNG.choice([1, 2, 3], n).tolist(),
+                "bidask": _RNG.choice([0, 1], n).tolist(),
+                "common": _RNG.choice([0, 1], n).tolist(),
+                "primaryexch": _RNG.choice(["N", "A", "Q", None], n).tolist(),
+                "conditionaltype": _RNG.choice(["RW", "RW", "RW", None], n).tolist(),
+                "date": dates,
+                "cfacshr": _random_float_col(n, 0.02),
+                "shrout": _random_float_col(n, 0.02),
+                "me": _random_float_col(n),
+                "me_company": _random_float_col(n),
+                "prc": _random_float_col(n),
+                "prc_high": _random_float_col(n),
+                "prc_low": _random_float_col(n),
+                "dolvol": _random_float_col(n),
+                "vol": _random_float_col(n),
+                "ret": _random_float_col(n),
+                "ret_exc": _random_float_col(n),
+                "div_tot": _random_float_col(n, 0.8),
+            }
+        )
+        .cast(
+            {
+                "permno": pl.Int64,
+                "permco": pl.Int64,
+                "gvkey": pl.Utf8,
+                "iid": pl.Utf8,
+                "exch_main": pl.Int64,
+                "bidask": pl.Int64,
+                "common": pl.Int64,
+                "primaryexch": pl.Utf8,
+                "conditionaltype": pl.Utf8,
+                "date": pl.Date,
+            }
+        )
+        .with_columns(
+            crsp_nyse=((pl.col("primaryexch") == "N") & (pl.col("conditionaltype") == "RW")).cast(
+                pl.Int32
+            )
+        )
     )
     df.write_parquet(tmp / "crsp_msf.parquet")
 
@@ -167,8 +171,6 @@ def _make_comp_msf(
             "ret": _random_float_col(n),
             "ret_local": _random_float_col(n),
             "ret_exc": _random_float_col(n),
-            "ret_intraday": [None] * n,
-            "ret_overnight": [None] * n,
             "ret_lag_dif": ret_lag_dif,
             "div_tot": _random_float_col(n, 0.8),
             "div_cash": _random_float_col(n, 0.8),
@@ -187,8 +189,6 @@ def _make_comp_msf(
             "datadate": pl.Date,
             "eom": pl.Date,
             "ret_lag_dif": pl.Int64,
-            "ret_intraday": pl.Float64,
-            "ret_overnight": pl.Float64,
         }
     )
     df.write_parquet(tmp / "comp_msf.parquet")
@@ -434,7 +434,7 @@ def _polars_combine_crsp_comp_sf(tmp: Path) -> tuple[pl.DataFrame, pl.DataFrame]
     __msf_world = __msf_world.sort(["id", "eom"]).with_columns(
         ret_exc_lead1m=pl.when(pl.col("ret_lag_dif").shift(-1).over("id") != 1)
         .then(None)
-        .otherwise(pl.col("ret_exc").shift(-1).over("id")),
+        .otherwise(pl.col("ret_exc").shift(-1).over("id"))
     )
 
     obs_main = (
@@ -1142,8 +1142,6 @@ class TestDedupDeterminism:
             "ret": 0.01,
             "ret_local": 0.01,
             "ret_exc": 0.005,
-            "ret_intraday": None,
-            "ret_overnight": None,
             "ret_lag_dif": 1,
             "div_tot": None,
             "div_cash": None,
@@ -1161,8 +1159,6 @@ class TestDedupDeterminism:
                 "datadate": pl.Date,
                 "eom": pl.Date,
                 "ret_lag_dif": pl.Int64,
-                "ret_intraday": pl.Float64,
-                "ret_overnight": pl.Float64,
             }
         ).write_parquet(interim / "comp_msf.parquet")
         _make_crsp_msf(interim, n_permnos=0)
@@ -1203,8 +1199,8 @@ class TestDedupDeterminism:
             "ret_local": 0.01,
             "ret": 0.01,
             "ret_exc": 0.005,
-            "ret_intraday": 0.003,
-            "ret_overnight": 0.007,
+            "ret_intraday": None,
+            "ret_overnight": None,
             "ret_lag_dif": 1,
         }
         interim = _make_test_layout(tmp_path)
@@ -1414,8 +1410,6 @@ class TestEdgeCases:
                 "vol": [100.0, 100.0],
                 "ret": [0.01, 0.01],
                 "ret_exc": [0.005, 0.005],
-                "ret_intraday": [None, None],
-                "ret_overnight": [None, None],
                 "div_tot": [None, None],
             }
         ).cast(
@@ -1429,8 +1423,6 @@ class TestEdgeCases:
                 "conditionaltype": pl.Utf8,
                 "crsp_nyse": pl.Int32,
                 "date": pl.Date,
-                "ret_intraday": pl.Float64,
-                "ret_overnight": pl.Float64,
             }
         )
         interim = _make_test_layout(tmp_path)
@@ -1475,8 +1467,6 @@ class TestEdgeCases:
                 "ret": [0.01] * n_dates,
                 "ret_local": [0.01] * n_dates,
                 "ret_exc": [0.005] * n_dates,
-                "ret_intraday": [None] * n_dates,
-                "ret_overnight": [None] * n_dates,
                 "ret_lag_dif": [2] * n_dates,  # All gaps!
                 "div_tot": [None] * n_dates,
                 "div_cash": [None] * n_dates,
@@ -1492,8 +1482,6 @@ class TestEdgeCases:
                 "exchg": pl.Int64,
                 "datadate": pl.Date,
                 "eom": pl.Date,
-                "ret_intraday": pl.Float64,
-                "ret_overnight": pl.Float64,
                 "ret_lag_dif": pl.Int64,
             }
         )
