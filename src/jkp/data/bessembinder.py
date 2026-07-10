@@ -15,22 +15,13 @@ import polars as pl
 from polars import col
 
 from . import bessembinder_kernels as bk
-
-# Scratch spill files are read once then deleted; favor encode speed over size
-SPILL_COMPRESSION = "lz4"
-
-# Section 6 correction methods; the floor variants gate the price correction to
-# the divide direction on >=$1 prices (handoff research recommendation).
-SECTION6_METHODS = ("bessembinder", "interpolation", "floor", "floor_interp")
-_INTERP_METHODS = ("interpolation", "floor_interp")
-_FLOOR_METHODS = ("floor", "floor_interp")
-
-# Countries with a $0.001 price threshold instead of $0.01 (filter 8c)
-LOW_PRICE_THRESHOLD_COUNTRIES = ["BRA", "IDN", "NGA", "TUR"]
-
-# Priority windows covering common error durations (1 day to ~1 month). This
-# reduces iterations ~10x vs an exhaustive search while catching most errors.
-_DEFAULT_WINDOWS = [1, 2, 3, 5, 10, 21]
+from .config import (
+    BESS_DEFAULT_WINDOWS,
+    BESS_LOW_PRICE_COUNTRIES,
+    BESS_SECTION6_METHODS,
+    BESS_SECTION8_GAP_TRADING_DAYS,
+    BESS_SPILL_COMPRESSION,
+)
 
 
 def _group_starts(df: pl.DataFrame, group_cols: list[str]) -> np.ndarray:
@@ -49,9 +40,7 @@ def _group_starts(df: pl.DataFrame, group_cols: list[str]) -> np.ndarray:
     return np.concatenate(([0], changes, [n])).astype(np.int64)
 
 
-# =============================================================================
 # Section 6: decimal-error corrections
-# =============================================================================
 
 
 def _correct_variable_arrays(
@@ -85,7 +74,7 @@ def _correct_variable_arrays(
     x_det = x_raw.copy()
     x_det[x_det == 0.0] = np.nan
     factor = np.ones(n, dtype=np.float64)
-    wsize = np.full(n, bk.WS_NULL, dtype=np.int32)
+    wsize = np.full(n, -1, dtype=np.int32)  # -1 = null window size
     ep_l = np.full(n, np.nan, dtype=np.float64)
     ep_r = np.full(n, np.nan, dtype=np.float64)
 
@@ -102,7 +91,7 @@ def _correct_variable_arrays(
         gated = (factor != 1.0) & ((factor > 1.0) | (x_det < 1.0))
         factor[gated] = 1.0
 
-    if correction_method not in _INTERP_METHODS:
+    if correction_method not in ("interpolation", "floor_interp"):
         return x_det * factor
 
     flagged = factor != 1.0
@@ -144,24 +133,22 @@ def apply_bessembinder_section6(
         Corrected LazyFrame (NaN corrected values become null; replaced columns
         move to the end of the column order).
     """
-    if correction_method not in SECTION6_METHODS:
+    if correction_method not in BESS_SECTION6_METHODS:
         raise ValueError(
-            f"Unknown correction_method: {correction_method!r}; expected one of {SECTION6_METHODS}"
+            f"Unknown correction_method: {correction_method!r}; expected one of {BESS_SECTION6_METHODS}"
         )
     if spill_dir is None:
         raise ValueError("apply_bessembinder_section6 requires spill_dir")
     if group_cols is None:
         group_cols = ["gvkey", "iid"]
     if window_sizes is None:
-        window_sizes = _DEFAULT_WINDOWS
+        window_sizes = BESS_DEFAULT_WINDOWS
 
     sorted_path = spill_dir / "__bess_sorted.parquet"
-    print("[section6] streaming-sorting input to spill file...", flush=True)
-    df.sort(group_cols + [sort_col]).sink_parquet(sorted_path, compression=SPILL_COMPRESSION)
+    df.sort(group_cols + [sort_col]).sink_parquet(sorted_path, compression=BESS_SPILL_COMPRESSION)
     lf = pl.scan_parquet(sorted_path)
     schema_names = lf.collect_schema().names()
 
-    print("[section6] loading correction inputs...", flush=True)
     value_cols = [
         v for v in ("trfd", "qunit", "adrrc", "ajexdi", "prccd", "cshoc") if v in schema_names
     ]
@@ -171,7 +158,6 @@ def apply_bessembinder_section6(
     starts = _group_starts(data.select(group_cols + [sort_col]), group_cols)
 
     def correct(variable: str, x_raw: np.ndarray, price_floor: bool = False) -> np.ndarray:
-        print(f"[section6] correcting {variable}...", flush=True)
         return _correct_variable_arrays(
             x_raw, starts, window_sizes, correction_method, price_floor, variation_threshold
         )
@@ -189,17 +175,16 @@ def apply_bessembinder_section6(
         adjprc = correct(
             "adjprc",
             data["prccd"].to_numpy().copy() / ajexdi,
-            price_floor=correction_method in _FLOOR_METHODS,
+            price_floor=correction_method in ("floor", "floor_interp"),
         )
         adjcsho = correct("adjcsho", data["cshoc"].to_numpy().copy() * ajexdi)
         corrected_cols["prccd"] = adjprc * ajexdi
         corrected_cols["cshoc"] = adjcsho / ajexdi
 
-    print("[section6] writing corrected columns...", flush=True)
     corr_path = spill_dir / "__bess_corrected_cols.parquet"
     pl.DataFrame(corrected_cols).with_columns(
         [col(name).fill_nan(None) for name in corrected_cols]
-    ).write_parquet(corr_path, compression=SPILL_COMPRESSION)
+    ).write_parquet(corr_path, compression=BESS_SPILL_COMPRESSION)
 
     return pl.concat(
         [pl.scan_parquet(sorted_path).drop(list(corrected_cols)), pl.scan_parquet(corr_path)],
@@ -207,9 +192,7 @@ def apply_bessembinder_section6(
     )
 
 
-# =============================================================================
 # Section 8: additional filters
-# =============================================================================
 
 
 def _avg_positive_volume(
@@ -255,18 +238,18 @@ def apply_bessembinder_section8(
 
     sorted_path = presorted_path or (spill_dir / "__bess_s8_sorted.parquet")
     if presorted_path is None:
-        print("[section8] streaming-sorting input to spill file...", flush=True)
-        df.sort(group_cols + [sort_col]).sink_parquet(sorted_path, compression=SPILL_COMPRESSION)
+        df.sort(group_cols + [sort_col]).sink_parquet(
+            sorted_path, compression=BESS_SPILL_COMPRESSION
+        )
     lf = pl.scan_parquet(sorted_path)
 
-    print("[section8] loading kernel inputs...", flush=True)
     value_cols = ["ajexdi", "prc", "me", "ri", "cshoc", "dolvol"]
     data = lf.select(
         group_cols
         + [sort_col]
         + [pl.col(c).cast(pl.Float64) for c in value_cols]
         + [
-            col(country_col).is_in(LOW_PRICE_THRESHOLD_COUNTRIES).fill_null(False).alias("_low"),
+            col(country_col).is_in(BESS_LOW_PRICE_COUNTRIES).fill_null(False).alias("_low"),
             (col(country_col) == "CHN").fill_null(False).alias("_chn"),
         ]
     ).collect()
@@ -289,7 +272,6 @@ def apply_bessembinder_section8(
     # Filter 8a's global decision (the only cross-security statistic): same
     # expressions as _avg_positive_volume, evaluated once on the full panel;
     # securities with no positive volume (null mean) are KEPT.
-    print("[section8] computing 8a volume decisions...", flush=True)
     avg_vol = _avg_positive_volume(data.lazy(), group_cols)
     remove_8a = (
         keys.lazy()
@@ -305,8 +287,9 @@ def apply_bessembinder_section8(
         .copy()
     )
 
-    print("[section8] running filter kernel...", flush=True)
     reason = np.zeros(keys.height, dtype=np.int8)
+    # Filter 8d gap bound: trading days -> calendar days (~11 months).
+    gap_calendar_days = int(BESS_SECTION8_GAP_TRADING_DAYS * 365 / 252)
     bk.section8_all(
         starts,
         reason,
@@ -319,10 +302,11 @@ def apply_bessembinder_section8(
         keys[sort_col].cast(pl.Date).to_physical().cast(pl.Int32).to_numpy().copy(),
         data["_low"].to_numpy().copy(),
         data["_chn"].to_numpy().copy(),
+        gap_calendar_days,
     )
 
     reason_path = spill_dir / "__bess_s8_reason.parquet"
-    pl.DataFrame({"_reason": reason}).write_parquet(reason_path, compression=SPILL_COMPRESSION)
+    pl.DataFrame({"_reason": reason}).write_parquet(reason_path, compression=BESS_SPILL_COMPRESSION)
     return (
         pl.concat([pl.scan_parquet(sorted_path), pl.scan_parquet(reason_path)], how="horizontal")
         .filter(col("_reason") == 0)

@@ -29,11 +29,10 @@ from ibis import _
 from polars import col
 
 from .bessembinder import (
-    SPILL_COMPRESSION,
     apply_bessembinder_section6,
     apply_bessembinder_section8,
 )
-from .config import COLLECT_CHUNK_SIZE, END_DATE, MAIN_FILTERS
+from .config import BESS_SPILL_COMPRESSION, COLLECT_CHUNK_SIZE, END_DATE, MAIN_FILTERS
 from .output_writer import write_dataframe
 from .paths import DataPaths
 
@@ -1679,11 +1678,9 @@ def gen_comp_dsf(
     # Section 6: Apply decimal corrections to raw data (local currency)
     # =========================================================================
     if apply_bessembinder:
-        print("Applying Bessembinder Section 6 decimal corrections...", flush=True)
 
         # Load and correct Global data (no ADRRC). spill_dir selects the
         # memory-bounded array path; spill files are removed after each sink.
-        print("[section6] correcting Global data (comp_g_secd)...", flush=True)
         df_global = pl.scan_parquet(paths.raw_tables_dir / "comp_g_secd.parquet")
         df_global = apply_bessembinder_section6(
             df_global,
@@ -1694,15 +1691,13 @@ def gen_comp_dsf(
             spill_dir=paths.interim_dir,
             variation_threshold=variation_threshold,
         )
-        print("[section6] sinking __comp_g_secd_corrected.parquet...", flush=True)
         df_global.sink_parquet(
-            paths.interim_dir / "__comp_g_secd_corrected.parquet", compression=SPILL_COMPRESSION
+            paths.interim_dir / "__comp_g_secd_corrected.parquet", compression=BESS_SPILL_COMPRESSION
         )
         for spill in paths.interim_dir.glob("__bess_*.parquet"):
             spill.unlink()
 
         # Load and correct NA data (has ADRRC for ADRs)
-        print("[section6] correcting NA data (comp_secd)...", flush=True)
         df_na = pl.scan_parquet(paths.raw_tables_dir / "comp_secd.parquet")
         df_na = apply_bessembinder_section6(
             df_na,
@@ -1713,9 +1708,8 @@ def gen_comp_dsf(
             spill_dir=paths.interim_dir,
             variation_threshold=variation_threshold,
         )
-        print("[section6] sinking __comp_secd_corrected.parquet...", flush=True)
         df_na.sink_parquet(
-            paths.interim_dir / "__comp_secd_corrected.parquet", compression=SPILL_COMPRESSION
+            paths.interim_dir / "__comp_secd_corrected.parquet", compression=BESS_SPILL_COMPRESSION
         )
         for spill in paths.interim_dir.glob("__bess_*.parquet"):
             spill.unlink()
@@ -1837,7 +1831,6 @@ def gen_comp_dsf(
     # Section 8: Apply filters to USD-converted data
     # =========================================================================
     if apply_bessembinder:
-        print("Applying Bessembinder Section 8 filters...", flush=True)
 
         # One streaming pass: DuckDB executes the whole view pipeline, joins
         # the exchange-country mapping (needed for country-specific filters),
@@ -1848,7 +1841,6 @@ def gen_comp_dsf(
             paths.interim_dir / "__bess_exchanges.parquet"
         )
         sorted_path = paths.interim_dir / "__bess_s8_sorted.parquet"
-        print("[section8] merging, sorting and spilling via DuckDB...", flush=True)
         # insertion-order preservation is irrelevant under an explicit ORDER BY
         # and only inflates the external sort's memory; temp_directory
         # guarantees the sort can spill (the slim path verifies the resulting
@@ -1877,14 +1869,12 @@ def gen_comp_dsf(
             presorted_path=sorted_path,
         )
 
-        print("[section8] sinking __comp_dsf.parquet...", flush=True)
         df.sink_parquet(paths.interim_dir / "__comp_dsf.parquet")
 
         # Clean up temp files
         for f in paths.interim_dir.glob("__bess_*.parquet"):
             f.unlink()
 
-        print("Bessembinder corrections applied.", flush=True)
     else:
         con.raw_sql(f"""
         COPY (SELECT * FROM __comp_dsf3)

@@ -33,9 +33,6 @@ Equivalence notes (load-bearing — do not "simplify"):
 import numpy as np
 from numba import njit, prange
 
-# Sentinel for null window size (Int32)
-WS_NULL = -1
-
 
 @njit(cache=True, error_model="numpy")
 def _detect_single_one(x, factor, ep_l, ep_r):
@@ -93,7 +90,7 @@ def _multi_pass_one(
     for k in range(n):
         det[k] = np.nan
 
-    # ---- Phase 1: detection ----
+    # Phase 1: detection
     for t in range(n):
         if factor[t] != 1.0:
             continue
@@ -153,7 +150,7 @@ def _multi_pass_one(
         det_epl[t] = xl
         det_epr[t] = xr
 
-    # ---- Phase 2: propagation, first-write-wins in ascending offset order ----
+    # Phase 2: propagation, first-write-wins in ascending offset order
     for off in range(ilo, ihi + 1):
         for r in range(n):
             t = r - off  # shift(off) moves value from row r-off to row r
@@ -255,7 +252,7 @@ def _validate_one(factor, wsize, reject):
         for p in range(n):
             if factor[p] == 1.0:
                 continue
-            w = wsize[p] if wsize[p] != WS_NULL else 1
+            w = wsize[p] if wsize[p] != -1 else 1  # -1 = null window size
             lp = p - w
             rp = p + w
             lf = 0 <= lp < n and factor[lp] != 1.0
@@ -285,11 +282,7 @@ def validate_cascading_all(starts, factor, wsize, rejected_mask):
             rejected_mask[s + k] = before[k] and f[k] == 1.0
 
 
-# =============================================================================
 # Section 8 filter kernels (thresholds = Bessembinder et al. 2023 Data Appendix)
-# =============================================================================
-
-_GAP_THRESHOLD_DAYS = int(231 * 365 / 252)  # 334: ~11 months of trading days
 
 
 @njit(cache=True, error_model="numpy")
@@ -353,28 +346,29 @@ def _s8_early_jump_stage(reason, num, aux, is_ret, chn):
 
 
 @njit(cache=True, error_model="numpy")
-def _s8_one_security(reason, remove_8a, ajexdi, prc, me, ri, cshoc, dates, low_thr, chn):
+def _s8_one_security(reason, remove_8a, ajexdi, prc, me, ri, cshoc, dates, low_thr, chn, gap_days):
     """
     Apply the Section 8 filter chain to one security (arrays are views over
     the date-sorted slice). Filters run sequentially: each stage's shift /
     obs_num / totals are defined over the rows still alive at stage start,
     exactly like the polars chain re-deriving them on each filtered frame.
-    reason is mutated in place (0 = kept, 1 = removed).
+    reason is mutated in place (0 = kept, 1 = removed). gap_days is filter 8d's
+    calendar-day gap bound.
     """
     n = reason.size
 
-    # ---- 8a: bottom-percentile average positive volume (global decision) ----
+    # 8a: bottom-percentile average positive volume (global decision)
     if remove_8a:
         _s8_kill_all(reason)
         return
 
-    # ---- 8b: any AJEXDI == 0 removes the security ----
+    # 8b: any AJEXDI == 0 removes the security
     for i in range(n):
         if ajexdi[i] == 0.0:
             _s8_kill_all(reason)
             return
 
-    # ---- 8c: low price / market equity ----
+    # 8c: low price / market equity
     first = -1
     for i in range(n):
         if reason[i] == 0:
@@ -408,25 +402,25 @@ def _s8_one_security(reason, remove_8a, ajexdi, prc, me, ri, cshoc, dates, low_t
             if reason[i] == 0 and dates[i] >= dates[breach_idx]:
                 reason[i] = 1
 
-    # ---- 8d: drop observations after calendar gaps > ~11 months ----
+    # 8d: drop observations after calendar gaps > ~11 months
     prev = -1
     for i in range(n):
         if reason[i] != 0:
             continue
-        if prev >= 0 and dates[i] - dates[prev] > _GAP_THRESHOLD_DAYS:
+        if prev >= 0 and dates[i] - dates[prev] > gap_days:
             reason[i] = 1
             # polars computes all gaps against the pre-stage frame, so the
             # removed row still serves as the next row's gap reference
         prev = i
 
-    # ---- 8e: adjCSHO jumps in early history ----
+    # 8e: adjCSHO jumps in early history
     adjcsho = cshoc * ajexdi
     _s8_early_jump_stage(reason, adjcsho, me, False, chn)
 
-    # ---- 8f: ME jumps without commensurate returns in early history ----
+    # 8f: ME jumps without commensurate returns in early history
     _s8_early_jump_stage(reason, me, ri, True, chn)
 
-    # ---- 8g: returns inconsistent with ME changes ----
+    # 8g: returns inconsistent with ME changes
     prev = -1
     for i in range(n):
         if reason[i] != 0:
@@ -440,7 +434,7 @@ def _s8_one_security(reason, remove_8a, ajexdi, prc, me, ri, cshoc, dates, low_t
                 reason[i] = 1
         prev = i
 
-    # ---- 8h: large price/ME ratios within the first few observations ----
+    # 8h: large price/ME ratios within the first few observations
     prev = -1
     obs = -1
     for i in range(n):
@@ -458,7 +452,9 @@ def _s8_one_security(reason, remove_8a, ajexdi, prc, me, ri, cshoc, dates, low_t
 
 
 @njit(parallel=True, cache=True, error_model="numpy")
-def section8_all(starts, reason, remove_8a, ajexdi, prc, me, ri, cshoc, dates, low_thr, chn):
+def section8_all(
+    starts, reason, remove_8a, ajexdi, prc, me, ri, cshoc, dates, low_thr, chn, gap_days
+):
     """Run the Section 8 filter chain over all securities in parallel."""
     for g in prange(len(starts) - 1):
         s, e = starts[g], starts[g + 1]
@@ -473,4 +469,5 @@ def section8_all(starts, reason, remove_8a, ajexdi, prc, me, ri, cshoc, dates, l
             dates[s:e],
             low_thr[s:e],
             chn[s:e],
+            gap_days,
         )
