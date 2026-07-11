@@ -10051,6 +10051,8 @@ def portfolios(
     ind_pf=True,  # Should industry portfolio returns be estimated
     ret_cutoffs=None,  # Data frame for monthly winsorization. Neccesary when wins_ret=T
     ret_cutoffs_daily=None,  # Data frame for daily winsorization. Neccesary when wins_ret=T and daily_pf=T
+    monthly_ret_col: str = "ret_exc_lead1m",
+    daily_ret_col: str = "ret_exc",
 ):
     if source is None:
         source = ["CRSP", "COMPUSTAT"]
@@ -10067,7 +10069,7 @@ def portfolios(
             "crsp_nyse",
             "size_grp",
             "ret_exc",
-            "ret_exc_lead1m",
+            monthly_ret_col,
             "me",
             "gics",
             "ff49",
@@ -10075,6 +10077,8 @@ def portfolios(
         + chars
         + ["excntry"]
     )
+    # Deduplicate in case monthly_ret_col is already in the base set
+    columns = list(dict.fromkeys(columns))
 
     # Build the full preprocessing chain as a single lazy pipeline. This lets
     # polars push predicate/null filters into the parquet reader (skipping row
@@ -10108,7 +10112,7 @@ def portfolios(
         .filter(
             (pl.col("size_grp").is_not_null())
             & (pl.col("me").is_not_null())
-            & (pl.col("ret_exc_lead1m").is_not_null())
+            & (pl.col(monthly_ret_col).is_not_null())
         )
         .with_columns(bp_stock_expr)
     )
@@ -10127,15 +10131,17 @@ def portfolios(
     if daily_pf:
         daily_lazy = (
             pl.scan_parquet(daily_file_path)
-            .select(["id", "date", "ret_exc"])
+            .select(["id", "date", daily_ret_col])
             .with_columns((pl.col("date").dt.month_start().dt.offset_by("-1d")).alias("eom_lag1"))
-            .with_columns(pl.col("ret_exc").cast(pl.Float64))
+            .with_columns(pl.col(daily_ret_col).cast(pl.Float64))
         )
+        if daily_ret_col != "ret_exc":
+            daily_lazy = daily_lazy.rename({daily_ret_col: "ret_exc"})
     else:
         daily_lazy = None
 
     # Monthly winsorization: clip Compustat ret_exc_lead1m to CRSP quantiles.
-    if wins_ret:
+    if wins_ret and monthly_ret_col == "ret_exc_lead1m":
         data_lazy = (
             data_lazy.join(
                 ret_cutoffs.lazy()
@@ -10145,18 +10151,18 @@ def portfolios(
                 how="left",
             )
             .with_columns(
-                pl.when((pl.col("source_crsp") == 0) & (pl.col("ret_exc_lead1m") > pl.col("p999")))
+                pl.when((pl.col("source_crsp") == 0) & (pl.col(monthly_ret_col) > pl.col("p999")))
                 .then(pl.col("p999"))
-                .when((pl.col("source_crsp") == 0) & (pl.col("ret_exc_lead1m") < pl.col("p001")))
+                .when((pl.col("source_crsp") == 0) & (pl.col(monthly_ret_col) < pl.col("p001")))
                 .then(pl.col("p001"))
-                .otherwise(pl.col("ret_exc_lead1m"))
-                .alias("ret_exc_lead1m")
+                .otherwise(pl.col(monthly_ret_col))
+                .alias(monthly_ret_col)
             )
             .drop(["source_crsp", "p001", "p999"])
         )
 
-        # Daily winsorization
-        if daily_pf:
+        # Daily winsorization (only for standard ret_exc)
+        if daily_pf and daily_ret_col == "ret_exc":
             daily_lazy = (
                 daily_lazy.with_columns(pl.col("date").dt.month_end().alias("eom"))
                 .join(
@@ -10272,7 +10278,7 @@ def portfolios(
                         "eom",
                         "var",
                         "size_grp",
-                        "ret_exc_lead1m",
+                        monthly_ret_col,
                         "me",
                         "me_cap",
                         "bp_stock",
@@ -10318,12 +10324,12 @@ def portfolios(
                     pl.lit(x).alias("characteristic"),
                     pl.len().alias("n"),
                     pl.median("var").alias("signal"),
-                    pl.mean("ret_exc_lead1m").alias("ret_ew"),
-                    ((pl.col("ret_exc_lead1m") * pl.col("me")).sum() / pl.col("me").sum()).alias(
+                    pl.mean(monthly_ret_col).alias("ret_ew"),
+                    ((pl.col(monthly_ret_col) * pl.col("me")).sum() / pl.col("me").sum()).alias(
                         "ret_vw"
                     ),
                     (
-                        (pl.col("ret_exc_lead1m") * pl.col("me_cap")).sum() / pl.col("me_cap").sum()
+                        (pl.col(monthly_ret_col) * pl.col("me_cap")).sum() / pl.col("me_cap").sum()
                     ).alias("ret_vw_cap"),
                 ]
             )
@@ -10497,7 +10503,7 @@ def portfolios(
             data.lazy()
             .unpivot(
                 on=chars,
-                index=["eom", "size_grp", "ret_exc_lead1m"],
+                index=["eom", "size_grp", monthly_ret_col],
                 variable_name="characteristic",
                 value_name="var",
             )
@@ -10506,7 +10512,7 @@ def portfolios(
             .group_by(grp)
             .agg(
                 pl.len().alias("n_stocks"),
-                (pl.col("ret_exc_lead1m") * pl.col("weight")).sum().alias("ret_weighted"),
+                (pl.col(monthly_ret_col) * pl.col("weight")).sum().alias("ret_weighted"),
                 (pl.col("var") * pl.col("weight")).sum().alias("signal_weighted"),
                 pl.col("var").std().alias("sd_var"),
             )
@@ -10520,6 +10526,175 @@ def portfolios(
         )
 
     return output
+
+
+def _build_oi_factor_returns(
+    *,
+    paths: DataPaths,
+    component: str,
+    daily_ret_col: str,
+    countries: list[str],
+    chars: list[str],
+    settings: dict,
+    nyse_size_cutoffs: pl.DataFrame,
+    char_info: pl.DataFrame,
+    cluster_labels: pl.DataFrame,
+    regions: pl.DataFrame,
+    market_daily: pl.DataFrame,
+    ret_cutoffs: pl.DataFrame,
+) -> dict[str, pl.DataFrame | None]:
+    """Build daily factor portfolios for a single OI return component.
+
+    Description:
+        Run the full per-country portfolio loop using the standard monthly sort
+        (ret_exc_lead1m) but with a custom daily return column (overnight or
+        intraday). Only daily outputs are produced.
+    Steps:
+        1) Check that `daily_ret_col` exists in the daily return files; return
+           empty dict if not.
+        2) Call `portfolios()` for each country with `daily_ret_col` overridden.
+        3) Stack per-country daily results and build HML, LMS, cluster, and
+           regional outputs.
+    Output:
+        Dict with keys: pf_daily, hml_daily, lms_daily, cluster_daily,
+        regional_daily, regional_clusters_daily, lms_daily_by_country.
+    """
+    # Verify the required column exists in at least one daily return file.
+    sample_country = countries[0] if countries else None
+    if sample_country:
+        sample_path = (
+            paths.processed_dir
+            / "return_data"
+            / "daily_rets_by_country"
+            / f"{sample_country}.parquet"
+        )
+        if sample_path.exists():
+            schema = pl.scan_parquet(sample_path).collect_schema()
+            if daily_ret_col not in schema.names():
+                print(
+                    f"  Skipping {component}: column '{daily_ret_col}' not found in daily returns",
+                    flush=True,
+                )
+                return {}
+        else:
+            print(f"  Skipping {component}: no daily return file for {sample_country}", flush=True)
+            return {}
+
+    print(f"  Building daily {component} factor returns...", flush=True)
+
+    portfolio_data: dict = {}
+    for ex in countries:
+        result = portfolios(
+            paths=paths,
+            excntry=ex,
+            chars=chars,
+            pfs=settings["pfs"],
+            bps=settings["bps"],
+            bp_min_n=settings["bp_min_n"],
+            nyse_size_cutoffs=nyse_size_cutoffs,
+            source=settings["source"],
+            wins_ret=settings["wins_ret"],
+            cmp_key=False,
+            signals=False,
+            daily_pf=True,
+            ind_pf=False,
+            ret_cutoffs=ret_cutoffs,
+            ret_cutoffs_daily=None,
+            daily_ret_col=daily_ret_col,
+        )
+        portfolio_data[ex] = result
+
+    pf_daily = _stack_outputs(
+        portfolio_data, "pf_daily", ["excntry", "characteristic", "pf", "date"]
+    )
+    if pf_daily is None or pf_daily.height == 0:
+        print(f"  No daily portfolio data produced for {component}", flush=True)
+        return {}
+
+    hml_daily, lms_daily = _build_hml_lms(
+        pf_daily, char_info, settings["pfs"], "date", include_signal=False
+    )
+
+    # Cluster portfolios
+    cluster_daily = None
+    if lms_daily is not None:
+        cluster_daily = (
+            lms_daily.join(cluster_labels, on="characteristic", how="left")
+            .group_by(["excntry", "cluster", "date"])
+            .agg(
+                [
+                    pl.len().alias("n_factors"),
+                    pl.col("ret_ew").mean().alias("ret_ew"),
+                    pl.col("ret_vw").mean().alias("ret_vw"),
+                    pl.col("ret_vw_cap").mean().alias("ret_vw_cap"),
+                ]
+            )
+        )
+
+    # Regional portfolios
+    weighting = settings["regional_pfs"]["country_weights"]
+    months_min = settings["regional_pfs"]["months_min"]
+    stocks_min = settings["regional_pfs"]["stocks_min"]
+    lms_cols_daily = [
+        "region",
+        "characteristic",
+        "direction",
+        "date",
+        "n_countries",
+        "ret_ew",
+        "ret_vw",
+        "ret_vw_cap",
+        "mkt_vw_exc",
+    ]
+    cluster_cols_daily = [
+        "region",
+        "cluster",
+        "date",
+        "n_countries",
+        "ret_ew",
+        "ret_vw",
+        "ret_vw_cap",
+        "mkt_vw_exc",
+    ]
+
+    regional_daily = None
+    if lms_daily is not None:
+        regional_daily = _build_regional_loop(
+            data=lms_daily,
+            mkt=market_daily,
+            regions=regions,
+            date_col="date",
+            char_col="characteristic",
+            output_cols=lms_cols_daily,
+            weighting=weighting,
+            periods_min=months_min * 21,
+            stocks_min=stocks_min,
+        )
+
+    regional_clusters_daily = None
+    if cluster_daily is not None:
+        regional_clusters_daily = _build_regional_loop(
+            data=cluster_daily.rename({"n_factors": "n_stocks_min"}).with_columns(
+                pl.lit(None).cast(pl.Float64).alias("direction")
+            ),
+            mkt=market_daily,
+            regions=regions,
+            date_col="date",
+            char_col="cluster",
+            output_cols=cluster_cols_daily,
+            weighting=weighting,
+            periods_min=months_min * 21,
+            stocks_min=1,
+        )
+
+    return {
+        "pf_daily": pf_daily,
+        "hml_daily": hml_daily,
+        "lms_daily": lms_daily,
+        "cluster_daily": cluster_daily,
+        "regional_daily": regional_daily,
+        "regional_clusters_daily": regional_clusters_daily,
+    }
 
 
 def regional_data(

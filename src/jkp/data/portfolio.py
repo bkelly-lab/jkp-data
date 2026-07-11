@@ -22,6 +22,7 @@ __all__ = [  # noqa: F822 — lazy via __getattr__
     "_build_industry_daily_returns",
     "_build_industry_monthly_returns",
     "_build_hml_lms",
+    "_build_oi_factor_returns",
     "portfolios",
     "regional_data",
     "_build_regional_loop",
@@ -37,6 +38,7 @@ _LAZY_REEXPORTS = frozenset(
         "_build_industry_daily_returns",
         "_build_industry_monthly_returns",
         "_build_hml_lms",
+        "_build_oi_factor_returns",
         "portfolios",
         "regional_data",
         "_build_regional_loop",
@@ -82,6 +84,7 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
     # importing `jkp.data.portfolio` cheap (no eager duckdb/ibis pull).
     from .aux_functions import (
         _build_hml_lms,
+        _build_oi_factor_returns,
         _build_regional_loop,
         _stack_outputs,
         _write_filtered,
@@ -491,6 +494,66 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
             "date",
             end_date,
         )
+
+    # Overnight / intraday daily factor returns
+    if settings["daily_pf"]:
+        oi_components = [
+            ("overnight", "ret_overnight"),
+            ("intraday", "ret_intraday"),
+        ]
+        for component, daily_col in oi_components:
+            oi_result = _build_oi_factor_returns(
+                paths=paths,
+                component=component,
+                daily_ret_col=daily_col,
+                countries=countries,
+                chars=chars,
+                settings=settings,
+                nyse_size_cutoffs=nyse_size_cutoffs,
+                char_info=char_info,
+                cluster_labels=cluster_labels,
+                regions=regions,
+                market_daily=market_daily,
+                ret_cutoffs=ret_cutoffs,
+            )
+            if not oi_result:
+                continue
+
+            suffix = f"_daily_{component}"
+            oi_daily_outputs = [
+                (oi_result.get("pf_daily"), f"pfs{suffix}.parquet"),
+                (oi_result.get("hml_daily"), f"hml{suffix}.parquet"),
+                (oi_result.get("lms_daily"), f"lms{suffix}.parquet"),
+                (oi_result.get("cluster_daily"), f"clusters{suffix}.parquet"),
+            ]
+            for df, name in oi_daily_outputs:
+                if df is not None:
+                    _write_filtered(df, portfolios_dir / name, "date", end_date)
+
+            if oi_result.get("regional_daily") is not None:
+                _write_split_by_key(
+                    oi_result["regional_daily"],
+                    portfolios_dir / f"regional_factors{suffix}",
+                    "region",
+                    "date",
+                    end_date,
+                )
+            if oi_result.get("regional_clusters_daily") is not None:
+                _write_split_by_key(
+                    oi_result["regional_clusters_daily"],
+                    portfolios_dir / f"regional_clusters{suffix}",
+                    "region",
+                    "date",
+                    end_date,
+                )
+            if oi_result.get("lms_daily") is not None:
+                _write_split_by_key(
+                    oi_result["lms_daily"],
+                    portfolios_dir / f"country_factors{suffix}",
+                    "excntry",
+                    "date",
+                    end_date,
+                )
 
     # Convert to CSV if configured
     convert_outputs_to_csv(processed_dir=paths.processed_dir)
