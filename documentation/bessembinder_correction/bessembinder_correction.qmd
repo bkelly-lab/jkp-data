@@ -37,8 +37,8 @@ changes appearing outside the United States.
 
 The correction has two parts:
 
-1. **Rescaling decimal-shift errors** in Compustat prices.
-2. **Dropping unreliable observations** that cannot be safely repaired.
+1. Rescaling decimal-shift errors in Compustat prices.
+2. Dropping unreliable observations that cannot be safely repaired.
 
 Bessembinder et al. (2023) show that raw Compustat security prices sometimes
 contain decimal-shift errors. In these cases, a price is recorded with the
@@ -51,12 +51,12 @@ The first part of the correction detects these decimal-shift errors using
 their spike-and-reversal pattern: the price jumps sharply away from its
 neighboring observations and then reverts.
 
-* **Single-period errors:** an observation is flagged when its ratio to both
+* Single-period errors: an observation is flagged when its ratio to both
   the previous and next price is above 5, or below 1/5. Larger ratios
   identify larger decimal errors: thresholds above 50 or 500, and their
   low-side counterparts of 1/50 and 1/500, correspond to 100× and 1000×
   errors.
-* **Multi-period errors:** the same reversal logic is applied over wider
+* Multi-period errors: the same reversal logic is applied over wider
   windows. This catches runs of consecutive mis-scaled observations when the
   values inside the run are stable relative to the surrounding price series.
 
@@ -124,12 +124,12 @@ United States and the rest of the world. We run the pipeline until December
 
 Each count is a security-day observation:
 
-* **Total Current:** observations in the Compustat daily files before the
+* Total Current: observations in the Compustat daily files before the
   correction.
-* **Corrections:** decimal-shift errors that are rescaled in place. These
+* Corrections: decimal-shift errors that are rescaled in place. These
   observations are repaired, not removed.
-* **Removals:** observations dropped by the Section 8 filters.
-* **Total Post-Correction:** surviving observations after the correction, equal
+* Removals: observations dropped by the Section 8 filters.
+* Total Post-Correction: surviving observations after the correction, equal
   to Total Current minus Removals.
 
 ### United States
@@ -176,16 +176,15 @@ schemes: equal-weighted, value-weighted, and capped value-weighted.
 
 We compare two full pipeline runs:
 
-* a **baseline run**, with no Compustat correction applied;
-* a **corrected run**, with the Bessembinder et al. (2023) correction applied.
+* a baseline run, with no Compustat correction applied;
+* a corrected run, with the Bessembinder et al. (2023) correction applied.
 
 The two outputs are joined on month-end date, country, and characteristic:
 `(eom, excntry, characteristic)`. We exclude Zimbabwe (ZWE) and Venezuela
-(VEN), since their returns are dominated by hyperinflation-era distortions.
-
-The resulting overlap window runs from **January 1926 through December 2025**
-and covers **153 characteristics across 71 countries**, for a total of
-**2,696,548 country × characteristic × month observations**.
+(VEN), since their returns are dominated by hyperinflation-era distortions. We
+also keep only country–characteristic pairs with more than 12 overlapping
+monthly observations. The resulting overlap window runs from January 1926
+through December 2025 and covers 153 characteristics across 71 countries.
 
 ```{python}
 #| label: setup
