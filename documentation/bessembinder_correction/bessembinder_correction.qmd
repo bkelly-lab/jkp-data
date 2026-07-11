@@ -294,16 +294,28 @@ show(bc.moment_scatter(stats), top_pad=0.5)
 
 ## Conclusion
 
-The Bessembinder correction improves the Compustat daily security files by
-repairing decimal-shift errors and dropping unreliable observations. Most of
-the change comes from removals, especially among micro- and nano-cap stocks.
+The Bessembinder correction is primarily a filtering step: it removes far more
+observations than it rescales — roughly 72.7 million removals against 140
+thousand price corrections — and those removals fall overwhelmingly on nano- and
+micro-cap stocks, leaving mega- and large-caps almost untouched.
 
-The US factor series are essentially unchanged because they rely primarily on
-CRSP. Outside the United States, where Compustat is more central, the
-correction has a larger effect and removes genuine data errors.
+US long-short returns are essentially unchanged — the median country–characteristic
+correlation with the uncorrected series is 0.999 to 1.000 across all three
+weighting schemes — because the US series draw primarily on CRSP rather than
+Compustat.
 
-Overall, the correction improves the quality of the global database while
-leaving the US series effectively intact.
+Non-US markets rely on Compustat directly, so the corrections pass through to
+their factors. The value-weighted factors barely move (median correlation
+0.998), since the errors sit in the smallest stocks that carry little weight; the
+equal-weighted factors shift more (median 0.955), reflecting the cleanup of
+small-cap noise. About 95% of the 44.9 million non-US removals are nano- and
+micro-cap observations.
+
+Overall, the correction improves data quality while leaving the economic drivers
+of the factors intact. For portfolios dominated by larger firms, the effect is
+negligible. For strategies with greater exposure to small stocks, the correction
+mainly removes noise from erroneous Compustat observations rather than changing
+true return patterns. The result is a cleaner and more reliable factor database.
 
 ## References {#references}
 
