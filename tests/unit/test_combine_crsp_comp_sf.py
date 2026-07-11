@@ -57,46 +57,52 @@ def _make_crsp_msf(tmp: Path, n_permnos: int = 500) -> None:
     gvkeys = [f"{p % 100000:06d}" if _RNG.rand() > 0.3 else None for p in permno]
     iids = ["01" if _RNG.rand() > 0.1 else None for _ in range(n)]
 
-    df = pl.DataFrame(
-        {
-            "permno": permno,
-            "permco": [p + 10000 for p in permno],
-            "gvkey": gvkeys,
-            "iid": iids,
-            "exch_main": _RNG.choice([1, 2, 3], n).tolist(),
-            "bidask": _RNG.choice([0, 1], n).tolist(),
-            "shrcd": _RNG.choice([10, 11, 12, 14, 31, None], n).tolist(),
-            "exchcd": _RNG.choice([1, 2, 3, 4], n).tolist(),
-            "date": dates,
-            "cfacshr": _random_float_col(n, 0.02),
-            "shrout": _random_float_col(n, 0.02),
-            "me": _random_float_col(n),
-            "me_company": _random_float_col(n),
-            "prc": _random_float_col(n),
-            "prc_high": _random_float_col(n),
-            "prc_low": _random_float_col(n),
-            "dolvol": _random_float_col(n),
-            "vol": _random_float_col(n),
-            "ret": _random_float_col(n),
-            "ret_exc": _random_float_col(n),
-            "ret_intraday": [None] * n,
-            "ret_overnight": [None] * n,
-            "div_tot": _random_float_col(n, 0.8),
-        }
-    ).cast(
-        {
-            "permno": pl.Int64,
-            "permco": pl.Int64,
-            "gvkey": pl.Utf8,
-            "iid": pl.Utf8,
-            "exch_main": pl.Int64,
-            "bidask": pl.Int64,
-            "shrcd": pl.Int64,
-            "exchcd": pl.Int64,
-            "date": pl.Date,
-            "ret_intraday": pl.Float64,
-            "ret_overnight": pl.Float64,
-        }
+    df = (
+        pl.DataFrame(
+            {
+                "permno": permno,
+                "permco": [p + 10000 for p in permno],
+                "gvkey": gvkeys,
+                "iid": iids,
+                "exch_main": _RNG.choice([1, 2, 3], n).tolist(),
+                "bidask": _RNG.choice([0, 1], n).tolist(),
+                "common": _RNG.choice([0, 1], n).tolist(),
+                "primaryexch": _RNG.choice(["N", "A", "Q", None], n).tolist(),
+                "conditionaltype": _RNG.choice(["RW", "RW", "RW", None], n).tolist(),
+                "date": dates,
+                "cfacshr": _random_float_col(n, 0.02),
+                "shrout": _random_float_col(n, 0.02),
+                "me": _random_float_col(n),
+                "me_company": _random_float_col(n),
+                "prc": _random_float_col(n),
+                "prc_high": _random_float_col(n),
+                "prc_low": _random_float_col(n),
+                "dolvol": _random_float_col(n),
+                "vol": _random_float_col(n),
+                "ret": _random_float_col(n),
+                "ret_exc": _random_float_col(n),
+                "div_tot": _random_float_col(n, 0.8),
+            }
+        )
+        .cast(
+            {
+                "permno": pl.Int64,
+                "permco": pl.Int64,
+                "gvkey": pl.Utf8,
+                "iid": pl.Utf8,
+                "exch_main": pl.Int64,
+                "bidask": pl.Int64,
+                "common": pl.Int64,
+                "primaryexch": pl.Utf8,
+                "conditionaltype": pl.Utf8,
+                "date": pl.Date,
+            }
+        )
+        .with_columns(
+            crsp_nyse=((pl.col("primaryexch") == "N") & (pl.col("conditionaltype") == "RW")).cast(
+                pl.Int32
+            )
+        )
     )
     df.write_parquet(tmp / "crsp_msf.parquet")
 
@@ -165,8 +171,6 @@ def _make_comp_msf(
             "ret": _random_float_col(n),
             "ret_local": _random_float_col(n),
             "ret_exc": _random_float_col(n),
-            "ret_intraday": [None] * n,
-            "ret_overnight": [None] * n,
             "ret_lag_dif": ret_lag_dif,
             "div_tot": _random_float_col(n, 0.8),
             "div_cash": _random_float_col(n, 0.8),
@@ -185,8 +189,6 @@ def _make_comp_msf(
             "datadate": pl.Date,
             "eom": pl.Date,
             "ret_lag_dif": pl.Int64,
-            "ret_intraday": pl.Float64,
-            "ret_overnight": pl.Float64,
         }
     )
     df.write_parquet(tmp / "comp_msf.parquet")
@@ -205,7 +207,7 @@ def _make_crsp_dsf(tmp: Path, n_permnos: int = 200) -> None:
             "permno": permno,
             "exch_main": _RNG.choice([1, 2, 3], n).tolist(),
             "bidask": _RNG.choice([0, 1], n).tolist(),
-            "shrcd": _RNG.choice([10, 11, 12, 14, 31], n).tolist(),
+            "common": _RNG.choice([0, 1], n).tolist(),
             "date": dates,
             "cfacshr": _random_float_col(n, 0.02),
             "shrout": _random_float_col(n, 0.02),
@@ -225,7 +227,7 @@ def _make_crsp_dsf(tmp: Path, n_permnos: int = 200) -> None:
             "permno": pl.Int64,
             "exch_main": pl.Int64,
             "bidask": pl.Int64,
-            "shrcd": pl.Int64,
+            "common": pl.Int64,
             "date": pl.Date,
         }
     )
@@ -324,7 +326,7 @@ def _polars_combine_crsp_comp_sf(tmp: Path) -> tuple[pl.DataFrame, pl.DataFrame]
             bidask=pl.col("bidask").cast(pl.Int32),
             id=pl.col("permno"),
             excntry=pl.lit("USA"),
-            common=(pl.col("shrcd").is_in([10, 11, 12]).fill_null(bo_false())).cast(pl.Int32),
+            common=pl.col("common").cast(pl.Int32),
             primary_sec=pl.lit(1),
             comp_tpci=pl.lit(None).cast(pl.Utf8),
             comp_exchg=pl.lit(None).cast(pl.Int64),
@@ -338,11 +340,10 @@ def _polars_combine_crsp_comp_sf(tmp: Path) -> tuple[pl.DataFrame, pl.DataFrame]
             div_cash=fl_none(),
             div_spc=fl_none(),
             source_crsp=pl.lit(1),
+            crsp_nyse=pl.col("crsp_nyse").cast(pl.Int32),
         )
         .rename(
             {
-                "shrcd": "crsp_shrcd",
-                "exchcd": "crsp_exchcd",
                 "cfacshr": "adjfct",
                 "shrout": "shares",
             }
@@ -366,8 +367,9 @@ def _polars_combine_crsp_comp_sf(tmp: Path) -> tuple[pl.DataFrame, pl.DataFrame]
             permco=pl.lit(None).cast(pl.Int64),
             common=pl.when(pl.col("tpci") == "0").then(pl.lit(1)).otherwise(pl.lit(0)),
             bidask=pl.when(pl.col("prcstd") == 4).then(pl.lit(1)).otherwise(pl.lit(0)),
-            crsp_shrcd=fl_none(),
-            crsp_exchcd=fl_none(),
+            primaryexch=pl.lit(None).cast(pl.Utf8),
+            conditionaltype=pl.lit(None).cast(pl.Utf8),
+            crsp_nyse=pl.lit(0).cast(pl.Int32),
             me_company=pl.col("me"),
             source_crsp=pl.lit(0),
             ret_lag_dif=pl.col("ret_lag_dif").cast(pl.Int64),
@@ -396,8 +398,9 @@ def _polars_combine_crsp_comp_sf(tmp: Path) -> tuple[pl.DataFrame, pl.DataFrame]
         "common",
         "primary_sec",
         "bidask",
-        "crsp_shrcd",
-        "crsp_exchcd",
+        "primaryexch",
+        "conditionaltype",
+        "crsp_nyse",
         "comp_tpci",
         "comp_exchg",
         "curcd",
@@ -417,8 +420,6 @@ def _polars_combine_crsp_comp_sf(tmp: Path) -> tuple[pl.DataFrame, pl.DataFrame]
         "ret",
         "ret_local",
         "ret_exc",
-        "ret_intraday",
-        "ret_overnight",
         "ret_lag_dif",
         "div_tot",
         "div_cash",
@@ -433,13 +434,7 @@ def _polars_combine_crsp_comp_sf(tmp: Path) -> tuple[pl.DataFrame, pl.DataFrame]
     __msf_world = __msf_world.sort(["id", "eom"]).with_columns(
         ret_exc_lead1m=pl.when(pl.col("ret_lag_dif").shift(-1).over("id") != 1)
         .then(None)
-        .otherwise(pl.col("ret_exc").shift(-1).over("id")),
-        ret_intraday_lead1m=pl.when(pl.col("ret_lag_dif").shift(-1).over("id") != 1)
-        .then(None)
-        .otherwise(pl.col("ret_intraday").shift(-1).over("id")),
-        ret_overnight_lead1m=pl.when(pl.col("ret_lag_dif").shift(-1).over("id") != 1)
-        .then(None)
-        .otherwise(pl.col("ret_overnight").shift(-1).over("id")),
+        .otherwise(pl.col("ret_exc").shift(-1).over("id"))
     )
 
     obs_main = (
@@ -470,7 +465,7 @@ def _polars_combine_crsp_comp_sf(tmp: Path) -> tuple[pl.DataFrame, pl.DataFrame]
         .with_columns(
             id=pl.col("permno"),
             excntry=pl.lit("USA"),
-            common=(pl.col("shrcd").is_in([10, 11, 12]).fill_null(bo_false())).cast(pl.Int32),
+            common=pl.col("common").cast(pl.Int32),
             primary_sec=pl.lit(1),
             curcd=pl.lit("USD"),
             fx=pl.lit(1.0),
@@ -640,11 +635,11 @@ class TestCrspNormalization:
             permno AS id, permno, permco, gvkey, iid,
             'USA' AS excntry,
             exch_main::INT AS exch_main,
-            CASE WHEN shrcd IN (10, 11, 12) THEN 1 ELSE 0 END AS common,
+            common::INT AS common,
             1 AS primary_sec,
             bidask::INT AS bidask,
-            shrcd::DOUBLE AS crsp_shrcd,
-            exchcd::DOUBLE AS crsp_exchcd,
+            primaryexch,
+            conditionaltype,
             NULL::VARCHAR AS comp_tpci,
             NULL::BIGINT AS comp_exchg,
             'USD' AS curcd,
@@ -678,7 +673,7 @@ class TestCrspNormalization:
     def test_crsp_msf_common_flag(self, toy_dir: Path) -> None:
         raw = pl.read_parquet(toy_dir / "crsp_msf.parquet")
         df = _run_cte_on_parquet(toy_dir, self._CRSP_MSF_CTE)
-        expected = raw["shrcd"].is_in([10, 11, 12]).fill_null(False).cast(pl.Int32)
+        expected = raw["common"].cast(pl.Int32)
         assert (df["common"] == expected).all()
 
     def test_crsp_msf_eom_is_month_end(self, toy_dir: Path) -> None:
@@ -710,14 +705,11 @@ class TestCrspNormalization:
         assert df["comp_tpci"].is_null().all()
         assert df["comp_exchg"].is_null().all()
 
-    def test_crsp_msf_column_renames(self, toy_dir: Path) -> None:
+    def test_crsp_msf_ciz_field_passthrough(self, toy_dir: Path) -> None:
         raw = pl.read_parquet(toy_dir / "crsp_msf.parquet")
         df = _run_cte_on_parquet(toy_dir, self._CRSP_MSF_CTE)
-        np.testing.assert_allclose(
-            df["crsp_shrcd"].to_numpy(),
-            raw["shrcd"].cast(pl.Float64).to_numpy(),
-            equal_nan=True,
-        )
+        assert (df["primaryexch"] == raw["primaryexch"]).all()
+        assert (df["conditionaltype"] == raw["conditionaltype"]).all()
         np.testing.assert_allclose(
             df["adjfct"].to_numpy(),
             raw["cfacshr"].cast(pl.Float64).to_numpy(),
@@ -729,7 +721,7 @@ class TestCrspNormalization:
             SELECT
                 permno AS id, 'USA' AS excntry,
                 exch_main::INT AS exch_main,
-                CASE WHEN shrcd IN (10, 11, 12) THEN 1 ELSE 0 END AS common,
+                common::INT AS common,
                 1 AS primary_sec, bidask::INT AS bidask,
                 'USD' AS curcd, 1.0 AS fx,
                 date, last_day(date) AS eom,
@@ -898,8 +890,9 @@ class TestUnionAndLead:
             "common",
             "primary_sec",
             "bidask",
-            "crsp_shrcd",
-            "crsp_exchcd",
+            "primaryexch",
+            "conditionaltype",
+            "crsp_nyse",
             "comp_tpci",
             "comp_exchg",
             "curcd",
@@ -919,16 +912,12 @@ class TestUnionAndLead:
             "ret",
             "ret_local",
             "ret_exc",
-            "ret_intraday",
-            "ret_overnight",
             "ret_lag_dif",
             "div_tot",
             "div_cash",
             "div_spc",
             "source_crsp",
             "ret_exc_lead1m",
-            "ret_intraday_lead1m",
-            "ret_overnight_lead1m",
             "obs_main",
         }
         assert set(msf.columns) == expected
@@ -1153,8 +1142,6 @@ class TestDedupDeterminism:
             "ret": 0.01,
             "ret_local": 0.01,
             "ret_exc": 0.005,
-            "ret_intraday": None,
-            "ret_overnight": None,
             "ret_lag_dif": 1,
             "div_tot": None,
             "div_cash": None,
@@ -1172,8 +1159,6 @@ class TestDedupDeterminism:
                 "datadate": pl.Date,
                 "eom": pl.Date,
                 "ret_lag_dif": pl.Int64,
-                "ret_intraday": pl.Float64,
-                "ret_overnight": pl.Float64,
             }
         ).write_parquet(interim / "comp_msf.parquet")
         _make_crsp_msf(interim, n_permnos=0)
@@ -1214,8 +1199,8 @@ class TestDedupDeterminism:
             "ret_local": 0.01,
             "ret": 0.01,
             "ret_exc": 0.005,
-            "ret_intraday": 0.003,
-            "ret_overnight": 0.007,
+            "ret_intraday": None,
+            "ret_overnight": None,
             "ret_lag_dif": 1,
         }
         interim = _make_test_layout(tmp_path)
@@ -1409,8 +1394,10 @@ class TestEdgeCases:
                 "iid": [None, None],
                 "exch_main": [1, 1],
                 "bidask": [0, 0],
-                "shrcd": [10, 10],
-                "exchcd": [1, 1],
+                "common": [1, 1],
+                "primaryexch": ["N", "N"],
+                "conditionaltype": ["RW", "RW"],
+                "crsp_nyse": [1, 1],
                 "date": [date(2020, 2, 15), date(2019, 2, 15)],
                 "cfacshr": [1.0, 1.0],
                 "shrout": [100.0, 100.0],
@@ -1423,8 +1410,6 @@ class TestEdgeCases:
                 "vol": [100.0, 100.0],
                 "ret": [0.01, 0.01],
                 "ret_exc": [0.005, 0.005],
-                "ret_intraday": [None, None],
-                "ret_overnight": [None, None],
                 "div_tot": [None, None],
             }
         ).cast(
@@ -1433,11 +1418,11 @@ class TestEdgeCases:
                 "permco": pl.Int64,
                 "exch_main": pl.Int64,
                 "bidask": pl.Int64,
-                "shrcd": pl.Int64,
-                "exchcd": pl.Int64,
+                "common": pl.Int64,
+                "primaryexch": pl.Utf8,
+                "conditionaltype": pl.Utf8,
+                "crsp_nyse": pl.Int32,
                 "date": pl.Date,
-                "ret_intraday": pl.Float64,
-                "ret_overnight": pl.Float64,
             }
         )
         interim = _make_test_layout(tmp_path)
@@ -1482,8 +1467,6 @@ class TestEdgeCases:
                 "ret": [0.01] * n_dates,
                 "ret_local": [0.01] * n_dates,
                 "ret_exc": [0.005] * n_dates,
-                "ret_intraday": [None] * n_dates,
-                "ret_overnight": [None] * n_dates,
                 "ret_lag_dif": [2] * n_dates,  # All gaps!
                 "div_tot": [None] * n_dates,
                 "div_cash": [None] * n_dates,
@@ -1499,8 +1482,6 @@ class TestEdgeCases:
                 "exchg": pl.Int64,
                 "datadate": pl.Date,
                 "eom": pl.Date,
-                "ret_intraday": pl.Float64,
-                "ret_overnight": pl.Float64,
                 "ret_lag_dif": pl.Int64,
             }
         )

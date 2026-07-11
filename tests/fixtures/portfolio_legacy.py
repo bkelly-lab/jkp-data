@@ -80,7 +80,8 @@ def portfolios(
             "eom",
             "source_crsp",
             "comp_exchg",
-            "crsp_exchcd",
+            "primaryexch",
+            "conditionaltype",
             "size_grp",
             "ret_exc",
             "ret_exc_lead1m",
@@ -371,7 +372,8 @@ def portfolios(
                         "ret_exc_lead1m",
                         "me",
                         "me_cap",
-                        "crsp_exchcd",
+                        "primaryexch",
+                        "conditionaltype",
                         "comp_exchg",
                     ]
                 )
@@ -384,8 +386,12 @@ def portfolios(
             # Create 'bp_stock' column for NYSE criteria
             sub = sub.with_columns(
                 (
-                    ((pl.col("crsp_exchcd") == 1) & pl.col("comp_exchg").is_null())
-                    | ((pl.col("comp_exchg") == 11) & pl.col("crsp_exchcd").is_null())
+                    (
+                        (pl.col("primaryexch") == "N")
+                        & (pl.col("conditionaltype") == "RW")
+                        & pl.col("comp_exchg").is_null()
+                    )
+                    | ((pl.col("comp_exchg") == 11) & pl.col("primaryexch").is_null())
                 ).alias("bp_stock")
             )
 

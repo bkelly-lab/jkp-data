@@ -22,6 +22,7 @@ __all__ = [  # noqa: F822 — lazy via __getattr__
     "_build_industry_daily_returns",
     "_build_industry_monthly_returns",
     "_build_hml_lms",
+    "_build_oi_factor_returns",
     "portfolios",
     "regional_data",
     "_build_regional_loop",
@@ -37,6 +38,7 @@ _LAZY_REEXPORTS = frozenset(
         "_build_industry_daily_returns",
         "_build_industry_monthly_returns",
         "_build_hml_lms",
+        "_build_oi_factor_returns",
         "portfolios",
         "regional_data",
         "_build_regional_loop",
@@ -62,151 +64,6 @@ def __dir__() -> list[str]:
     return sorted(set(__all__) | standard_dunders)
 
 
-def _build_oi_factor_returns(
-    *,
-    paths: DataPaths,
-    countries: list[str],
-    chars: list[str],
-    settings: dict,
-    nyse_size_cutoffs: pl.DataFrame,
-    ret_cutoffs: pl.DataFrame,
-    ret_cutoffs_daily: pl.DataFrame | None,
-    char_info: pl.DataFrame,
-    cluster_labels: pl.DataFrame,
-    market_daily: pl.DataFrame | None,
-    regions: pl.DataFrame,
-    suffix: str,
-    daily_ret_col: str,
-) -> dict[str, pl.DataFrame | None]:
-    """Build daily-only factor portfolios for a single return component (overnight or intraday).
-
-    Uses ret_exc_lead1m for monthly sorting/filtering (standard universe),
-    but only produces daily portfolio returns using the specified daily_ret_col.
-
-    Returns a dict keyed by output name containing DataFrames for daily outputs,
-    or None when a frame is empty.
-    """
-    from .aux_functions import (
-        _build_hml_lms,
-        _build_regional_loop,
-        _stack_outputs,
-        portfolios,
-    )
-
-    portfolio_data: dict = {}
-    for ex in countries:
-        print(f"  {suffix} | {ex}: {countries.index(ex) + 1} out of {len(countries)}")
-        result = portfolios(
-            paths=paths,
-            excntry=ex,
-            chars=chars,
-            pfs=settings["pfs"],
-            bps=settings["bps"],
-            bp_min_n=settings["bp_min_n"],
-            nyse_size_cutoffs=nyse_size_cutoffs,
-            source=settings["source"],
-            wins_ret=settings["wins_ret"],
-            cmp_key=False,
-            signals=False,
-            daily_pf=True,
-            ind_pf=False,
-            ret_cutoffs=ret_cutoffs,
-            ret_cutoffs_daily=ret_cutoffs_daily,
-            monthly_ret_col="ret_exc_lead1m",
-            daily_ret_col=daily_ret_col,
-        )
-        portfolio_data[ex] = result
-
-    pf_daily = _stack_outputs(
-        portfolio_data, "pf_daily", ["excntry", "characteristic", "pf", "date"]
-    )
-
-    hml_daily, lms_daily = None, None
-    if pf_daily is not None and pf_daily.height > 0:
-        hml_daily, lms_daily = _build_hml_lms(
-            pf_daily, char_info, settings["pfs"], "date", include_signal=False
-        )
-
-    cluster_pfs_daily = None
-    if lms_daily is not None:
-        cluster_pfs_daily = (
-            lms_daily.join(cluster_labels, on="characteristic", how="left")
-            .group_by(["excntry", "cluster", "date"])
-            .agg(
-                [
-                    pl.len().alias("n_factors"),
-                    pl.col("ret_ew").mean().alias("ret_ew"),
-                    pl.col("ret_vw").mean().alias("ret_vw"),
-                    pl.col("ret_vw_cap").mean().alias("ret_vw_cap"),
-                ]
-            )
-        )
-
-    weighting = settings["regional_pfs"]["country_weights"]
-    months_min = settings["regional_pfs"]["months_min"]
-    stocks_min = settings["regional_pfs"]["stocks_min"]
-    lms_cols_daily = [
-        "region",
-        "characteristic",
-        "direction",
-        "date",
-        "n_countries",
-        "ret_ew",
-        "ret_vw",
-        "ret_vw_cap",
-        "mkt_vw_exc",
-    ]
-    cluster_cols_daily = [
-        "region",
-        "cluster",
-        "date",
-        "n_countries",
-        "ret_ew",
-        "ret_vw",
-        "ret_vw_cap",
-        "mkt_vw_exc",
-    ]
-
-    regional_pfs_daily = None
-    if lms_daily is not None:
-        regional_pfs_daily = _build_regional_loop(
-            data=lms_daily,
-            mkt=market_daily,
-            regions=regions,
-            date_col="date",
-            char_col="characteristic",
-            output_cols=lms_cols_daily,
-            weighting=weighting,
-            periods_min=months_min * 21,
-            stocks_min=stocks_min,
-        )
-
-    regional_clusters_daily = None
-    if cluster_pfs_daily is not None:
-        regional_clusters_daily = _build_regional_loop(
-            data=cluster_pfs_daily.rename({"n_factors": "n_stocks_min"}).with_columns(
-                pl.lit(None).cast(pl.Float64).alias("direction")
-            ),
-            mkt=market_daily,
-            regions=regions,
-            date_col="date",
-            char_col="cluster",
-            output_cols=cluster_cols_daily,
-            weighting=weighting,
-            periods_min=months_min * 21,
-            stocks_min=1,
-        )
-
-    return {
-        "pf_daily": pf_daily,
-        "hml_daily": hml_daily,
-        "lms_daily": lms_daily,
-        "cluster_pfs_daily": cluster_pfs_daily,
-        "regional_pfs_daily": regional_pfs_daily,
-        "regional_clusters_daily": regional_clusters_daily,
-    }
-
-
 def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
     """Run JKP portfolio generation.
 
@@ -227,6 +84,7 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
     # importing `jkp.data.portfolio` cheap (no eager duckdb/ibis pull).
     from .aux_functions import (
         _build_hml_lms,
+        _build_oi_factor_returns,
         _build_regional_loop,
         _stack_outputs,
         _write_filtered,
@@ -637,72 +495,61 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
             end_date,
         )
 
-    # -- Daily overnight and intraday factor returns --
+    # Overnight / intraday daily factor returns
     if settings["daily_pf"]:
-        _first_daily_file = (
-            paths.processed_dir
-            / "return_data"
-            / "daily_rets_by_country"
-            / f"{countries[0]}.parquet"
-        )
-        _daily_cols = set(pl.scan_parquet(_first_daily_file).collect_schema().names())
-        for suffix, d_col in [
+        oi_components = [
             ("overnight", "ret_overnight"),
             ("intraday", "ret_intraday"),
-        ]:
-            if d_col not in _daily_cols:
-                print(
-                    f"\nSkipping daily {suffix} factor returns ({d_col!r} not in daily data)",
-                    flush=True,
-                )
-                continue
-            print(f"\nBuilding daily {suffix} factor returns ...", flush=True)
-            oi = _build_oi_factor_returns(
+        ]
+        for component, daily_col in oi_components:
+            oi_result = _build_oi_factor_returns(
                 paths=paths,
+                component=component,
+                daily_ret_col=daily_col,
                 countries=countries,
                 chars=chars,
                 settings=settings,
                 nyse_size_cutoffs=nyse_size_cutoffs,
-                ret_cutoffs=ret_cutoffs,
-                ret_cutoffs_daily=ret_cutoffs_daily,
                 char_info=char_info,
                 cluster_labels=cluster_labels,
-                market_daily=market_daily,
                 regions=regions,
-                suffix=suffix,
-                daily_ret_col=d_col,
+                market_daily=market_daily,
+                ret_cutoffs=ret_cutoffs,
             )
+            if not oi_result:
+                continue
 
-            daily_oi = [
-                (oi["pf_daily"], f"pfs_daily_{suffix}.parquet"),
-                (oi["hml_daily"], f"hml_daily_{suffix}.parquet"),
-                (oi["lms_daily"], f"lms_daily_{suffix}.parquet"),
-                (oi["cluster_pfs_daily"], f"clusters_daily_{suffix}.parquet"),
+            suffix = f"_daily_{component}"
+            oi_daily_outputs = [
+                (oi_result.get("pf_daily"), f"pfs{suffix}.parquet"),
+                (oi_result.get("hml_daily"), f"hml{suffix}.parquet"),
+                (oi_result.get("lms_daily"), f"lms{suffix}.parquet"),
+                (oi_result.get("cluster_daily"), f"clusters{suffix}.parquet"),
             ]
-            for df, name in daily_oi:
+            for df, name in oi_daily_outputs:
                 if df is not None:
                     _write_filtered(df, portfolios_dir / name, "date", end_date)
 
-            if oi["regional_pfs_daily"] is not None:
+            if oi_result.get("regional_daily") is not None:
                 _write_split_by_key(
-                    oi["regional_pfs_daily"],
-                    portfolios_dir / f"regional_factors_daily_{suffix}",
+                    oi_result["regional_daily"],
+                    portfolios_dir / f"regional_factors{suffix}",
                     "region",
                     "date",
                     end_date,
                 )
-            if oi["regional_clusters_daily"] is not None:
+            if oi_result.get("regional_clusters_daily") is not None:
                 _write_split_by_key(
-                    oi["regional_clusters_daily"],
-                    portfolios_dir / f"regional_clusters_daily_{suffix}",
+                    oi_result["regional_clusters_daily"],
+                    portfolios_dir / f"regional_clusters{suffix}",
                     "region",
                     "date",
                     end_date,
                 )
-            if oi["lms_daily"] is not None:
+            if oi_result.get("lms_daily") is not None:
                 _write_split_by_key(
-                    oi["lms_daily"],
-                    portfolios_dir / f"country_factors_daily_{suffix}",
+                    oi_result["lms_daily"],
+                    portfolios_dir / f"country_factors{suffix}",
                     "excntry",
                     "date",
                     end_date,
