@@ -8789,9 +8789,7 @@ def _mp_stock_mispricing_scores(
         _mp_add_leg_score(
             mispricing_panel, MP_MGMT_PCT_COLS, "mispricing_mgmt", "_n_mgmt", min_count=min_fcts
         )
-        .pipe(
-            _mp_add_leg_score, MP_PERF_PCT_COLS, "mispricing_perf", "_n_perf", min_count=min_fcts
-        )
+        .pipe(_mp_add_leg_score, MP_PERF_PCT_COLS, "mispricing_perf", "_n_perf", min_count=min_fcts)
         .filter(col("mispricing_mgmt").is_not_null() | col("mispricing_perf").is_not_null())
         .sort(*sort_keys)
         .select(*select_cols, "mispricing_mgmt", "mispricing_perf")

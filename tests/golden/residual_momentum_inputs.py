@@ -295,7 +295,11 @@ def build_world_msf_input(seed: int = 42, empty: bool = False, bulk: bool = Fals
         noise = rng.normal(0.0, 0.02, last - first + 1)
         for j, i in enumerate(range(first, last + 1)):
             ret_exc = (
-                0.005 + 1.1 * f["mktrf"][i] + 0.3 * f["hml_ff"][i] - 0.2 * f["smb_ff3"][i] + noise[j]
+                0.005
+                + 1.1 * f["mktrf"][i]
+                + 0.3 * f["hml_ff"][i]
+                - 0.2 * f["smb_ff3"][i]
+                + noise[j]
             )
             rows.append(
                 {

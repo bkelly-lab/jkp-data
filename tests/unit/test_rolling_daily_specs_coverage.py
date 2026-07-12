@@ -46,9 +46,7 @@ def test_rolling_daily_specs_non_empty() -> None:
 def test_var_dispatches_in_process_window(sfx: str, var: str) -> None:
     """Every var in ROLLING_DAILY_SPECS must be a key in process_window `funcs`."""
     keys = _process_window_funcs_keys()
-    assert var in keys, (
-        f"ROLLING_DAILY_SPECS[{sfx}] var '{var}' has no handler in process_window"
-    )
+    assert var in keys, f"ROLLING_DAILY_SPECS[{sfx}] var '{var}' has no handler in process_window"
 
 
 @pytest.mark.parametrize(("sfx", "var"), SPEC_PAIRS)
@@ -66,4 +64,3 @@ def test_base_data_filter_exp_accepts_var(var: str) -> None:
     """base_data_filter_exp must return a Polars expression for every spec var."""
     expr = base_data_filter_exp(var)
     assert isinstance(expr, pl.Expr)
-
