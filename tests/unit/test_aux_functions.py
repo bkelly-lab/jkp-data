@@ -12,13 +12,21 @@ from pathlib import Path
 
 import polars as pl
 import pytest
+from polars.testing import assert_frame_equal
 
 from jkp.data.aux_functions import (
+    apply_group_filter,
     aug_msf_v2,
+    gen_aux_windows,
     gen_crsp_sf,
     merge_roll_apply_daily_results,
     prepare_daily,
+    process_window,
+    rvol,
+    turnover,
+    zero_trades,
 )
+from jkp.data.config import END_DATE
 
 
 def _write_lookup_tables(raw_tables: Path) -> None:
@@ -113,9 +121,21 @@ def test_gen_crsp_sf_exposes_ticker_after_senames_join(freq: str, test_paths) ->
 
     df = result.to_polars().sort("date")
 
-    assert {"permno", "permco", "date", "me", "ticker"}.issubset(df.columns), (
-        f"Missing expected columns from output: {df.columns}"
-    )
+    assert {
+        "permno",
+        "permco",
+        "date",
+        "me",
+        "ticker",
+        "common",
+        "primaryexch",
+        "conditionaltype",
+    }.issubset(df.columns), f"Missing expected columns from output: {df.columns}"
+
+    matched = df.filter(pl.col("date") == matched_date)
+    assert matched["common"][0] == 1
+    assert matched["primaryexch"][0] == "N"
+    assert matched["conditionaltype"][0] == "RW"
 
     ticker_by_date = {
         row["date"]: row["ticker"] for row in df.select(["date", "ticker"]).to_dicts()
@@ -278,3 +298,131 @@ def test_dsf1_unique_id_int_date(test_paths) -> None:
     dsf1 = pl.read_parquet(test_paths.interim_dir / "dsf1.parquet")
     dup_count = dsf1.select(["id_int", "date"]).is_duplicated().sum()
     assert dup_count == 0, f"dsf1 has {dup_count} duplicate (id_int, date) rows"
+
+
+class TestRollWindowEquivalence:
+    """The arithmetic window machinery must reproduce the legacy map-based output.
+
+    The legacy implementation (gen_consecutive_lists / build_groups /
+    group_mapping_dfs / gen_aux_maps and the join-based process_map_chunks)
+    was replaced by gen_aux_windows + process_window. Verbatim copies of the
+    legacy functions live here as the reference implementation.
+    """
+
+    @staticmethod
+    def _legacy_gen_consecutive_lists(input_list: list[int], k: int) -> list[list[int]]:
+        return [
+            input_list[i : i + k]
+            for i in range(0, len(input_list), k)
+            if len(input_list[i : i + k]) == k
+        ]
+
+    @classmethod
+    def _legacy_build_groups(cls, input_list: list[int], k: int) -> list[list[list[int]]]:
+        return [cls._legacy_gen_consecutive_lists(input_list[offset:], k) for offset in range(k)]
+
+    @classmethod
+    def _legacy_group_mapping_dfs(cls, input_list: list[int], k: int) -> list[dict]:
+        groups = cls._legacy_build_groups(input_list, k)
+        dfs = [
+            pl.DataFrame({"aux_date": group}).with_columns(
+                group_number=pl.cum_count("aux_date"),
+                new_date=pl.col("aux_date").list.max(),
+            )
+            for group in groups
+        ]
+        return [
+            {
+                "group_map": df.explode("aux_date")
+                .select([pl.col("aux_date").cast(pl.Int32), "group_number"])
+                .lazy(),
+                "date_map": df.select(["group_number", pl.col("new_date").alias("aux_date")])
+                .unique()
+                .sort(["group_number"])
+                .lazy(),
+            }
+            for df in dfs
+        ]
+
+    @classmethod
+    def _legacy_gen_aux_maps(cls, sfx: str | int) -> list[dict]:
+        parameter_mapping = {"_21d": 1, "_126d": 6, "_252d": 12, "_1260d": 60}
+        date_aux = END_DATE.month + END_DATE.year * 12
+        k = parameter_mapping[sfx] if sfx in parameter_mapping else int(sfx)
+        date_idx = list(range(23113 - k, date_aux + 1))
+        return cls._legacy_group_mapping_dfs(date_idx, k)
+
+    @staticmethod
+    def _legacy_process_map_chunks(base_data, mapping, stats, sfx, __min):
+        funcs = {"rvol": rvol, "zero_trades": zero_trades, "turnover": turnover}
+        df = base_data.join(mapping["group_map"], how="inner", on="aux_date").pipe(
+            apply_group_filter, stat=stats, min_obs=__min
+        )
+        df = df.pipe(funcs[stats], sfx=sfx, __min=__min)
+        return df.join(mapping["date_map"], how="left", on="group_number").drop("group_number")
+
+    @staticmethod
+    def _synthetic_base_data() -> pl.LazyFrame:
+        """Deterministic daily panel: months 23113-23152, ids with dense and
+        sparse observations (id 3 trips min_obs for k=1 but not k=3)."""
+        rows: dict[str, list] = {
+            "id_int": [],
+            "aux_date": [],
+            "ret_exc": [],
+            "tvol": [],
+            "shares": [],
+        }
+        for id_int, n_days in [(1, 8), (2, 8), (3, 2)]:
+            for month in range(23113, 23153):
+                for day in range(n_days):
+                    rows["id_int"].append(id_int)
+                    rows["aux_date"].append(month)
+                    rows["ret_exc"].append(((id_int * 7 + month * 3 + day * 5) % 11 - 5) / 100)
+                    rows["tvol"].append(float((id_int + month + day) % 4))
+                    rows["shares"].append(100.0 + id_int)
+        return pl.DataFrame(rows).with_columns(pl.col("aux_date").cast(pl.Int32)).lazy()
+
+    @pytest.mark.parametrize("sfx", ["_21d", "_126d", "_252d", "_1260d", 36, 60])
+    def test_gen_aux_windows_matches_legacy_maps(self, sfx) -> None:
+        """Arithmetic (aux_date -> window end) relation must equal the legacy maps."""
+        legacy = self._legacy_gen_aux_maps(sfx)
+        windows = gen_aux_windows(sfx)
+        assert len(legacy) == len(windows)
+        for mapping, (start, k, last_end) in zip(legacy, windows, strict=True):
+            rel_legacy = (
+                mapping["group_map"]
+                .join(mapping["date_map"].rename({"aux_date": "end_date"}), on="group_number")
+                .select(["aux_date", "end_date"])
+                .sort("aux_date")
+                .collect()
+            )
+            rel_new = pl.DataFrame({"aux_date": range(start, last_end + 1)}).with_columns(
+                end_date=start + ((pl.col("aux_date") - start) // k + 1) * k - 1
+            )
+            assert rel_legacy["aux_date"].to_list() == rel_new["aux_date"].to_list()
+            assert rel_legacy["end_date"].to_list() == rel_new["end_date"].to_list()
+
+    @pytest.mark.parametrize("stat", ["rvol", "zero_trades", "turnover"])
+    @pytest.mark.parametrize("sfx", ["_21d", 3])
+    def test_process_window_matches_legacy(self, stat, sfx) -> None:
+        """process_window output must equal the legacy join-based path."""
+        base = self._synthetic_base_data()
+        min_obs = 5
+        legacy = pl.concat(
+            [
+                self._legacy_process_map_chunks(base, mapping, stat, sfx, min_obs)
+                for mapping in self._legacy_gen_aux_maps(sfx)
+            ]
+        ).collect()
+        new = pl.concat(
+            [process_window(base, w, stat, sfx, min_obs) for w in gen_aux_windows(sfx)]
+        ).collect()
+        assert legacy.height > 0
+        sort_cols = ["id_int", "aux_date"]
+        assert_frame_equal(legacy.sort(sort_cols), new.select(legacy.columns).sort(sort_cols))
+
+    def test_process_window_aux_date_dtype(self) -> None:
+        """Output aux_date must stay Int64, matching the legacy __roll* schema."""
+        base = self._synthetic_base_data()
+        out = process_window(base, gen_aux_windows("_21d")[0], "rvol", "_21d", 5).collect()
+        assert out.schema["aux_date"] == pl.Int64

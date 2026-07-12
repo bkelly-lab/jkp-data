@@ -193,7 +193,7 @@ class TestRollingDailySpecs:
         assert isinstance(ROLLING_DAILY_SPECS, list) and ROLLING_DAILY_SPECS
 
     def test_suffixes_are_known(self):
-        """Every sfx must be in the set gen_aux_maps recognizes natively."""
+        """Every sfx must be in the set gen_aux_windows recognizes natively."""
         sfxs = [sfx for sfx, _, _ in ROLLING_DAILY_SPECS]
         unknown = set(sfxs) - self.KNOWN_SUFFIXES
         assert not unknown, f"Unknown suffixes: {sorted(unknown)}"

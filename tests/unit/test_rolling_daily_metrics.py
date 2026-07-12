@@ -439,6 +439,7 @@ class TestCapm:
                 "group_number": [10, 10, 10, 10],
                 "mktrf": [1.0, 2.0, 3.0, 4.0],
                 "ret_exc": [2.0, 4.0, 6.0, 8.0],
+                "aux_date": [date(2020, 1, d) for d in (1, 2, 3, 4)],
             }
         )
 
@@ -465,6 +466,7 @@ class TestCapm:
                 "group_number": [10, 10, 10, 10],
                 "mktrf": [2.0, 2.0, 2.0, 2.0],
                 "ret_exc": [1.0, 2.0, 3.0, 4.0],
+                "aux_date": [date(2020, 1, d) for d in (1, 2, 3, 4)],
             }
         )
         result = capm(df, "_21d", __min=15)
@@ -479,6 +481,7 @@ class TestCapm:
                 "group_number": [10, 10, 10, 10, 20, 20, 20, 20],
                 "mktrf": [1.0, 2.0, 3.0, 4.0, 1.0, 2.0, 3.0, 4.0],
                 "ret_exc": [2.0, 4.0, 6.0, 8.0, 1.0, 2.0, 3.0, 5.0],
+                "aux_date": [date(2020, 1, d) for d in (1, 2, 3, 4, 1, 2, 3, 4)],
             }
         )
         low_min = capm(df, "_21d", __min=1).sort(["id_int", "group_number"])
@@ -492,6 +495,7 @@ class TestCapm:
                 "group_number": pl.Int64,
                 "mktrf": pl.Float64,
                 "ret_exc": pl.Float64,
+                "aux_date": pl.Date,
             }
         )
         result = capm(df, "_21d", __min=15)

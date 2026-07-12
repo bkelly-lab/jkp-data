@@ -1,16 +1,23 @@
 from __future__ import annotations
 
+import contextlib
 import functools
 import operator
 import os
+import queue
 import re
 import shutil
+import sys
+import threading
 import time
-from collections.abc import Callable
+import warnings
+from collections.abc import Callable, Iterable
+from concurrent.futures import ThreadPoolExecutor, wait
+from dataclasses import dataclass
 from datetime import date
 from math import exp, sqrt
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, TypeVar
 
 if TYPE_CHECKING:
     from .paths import DataPaths
@@ -645,24 +652,13 @@ def gen_crsp_sf(paths: DataPaths, freq):
         & (issuertype_expr.isin(["ACOR", "CORP"]))
     )
 
-    shrcd_expr = ibis.cases(
-        (is_common_expr, 10),
-        else_=ibis.null(),
-    ).cast("int32")
-
     primaryexch_expr = sf.primaryexch
     conditionaltype_expr = sf.conditionaltype
 
     exch_main_expr = (primaryexch_expr.isin(["A", "N", "Q"]) & (conditionaltype_expr == "RW")).cast(
         "int32"
     )
-
-    exchcd_expr = ibis.cases(
-        ((primaryexch_expr == "N") & (conditionaltype_expr == "RW"), 1),
-        ((primaryexch_expr == "A") & (conditionaltype_expr == "RW"), 2),
-        ((primaryexch_expr == "Q") & (conditionaltype_expr == "RW"), 3),
-        else_=ibis.null(),
-    ).cast("int32")
+    crsp_nyse_expr = ((primaryexch_expr == "N") & (conditionaltype_expr == "RW")).cast("int32")
 
     result = full_join.mutate(
         date=date_expr,
@@ -677,9 +673,11 @@ def gen_crsp_sf(paths: DataPaths, freq):
         retx=retx_expr,
         cfacshr=cfacshr_expr,
         vol=vol_expr,
-        exchcd=exchcd_expr,
+        common=is_common_expr.cast("int32"),
+        primaryexch=primaryexch_expr,
+        conditionaltype=conditionaltype_expr,
         exch_main=exch_main_expr,
-        shrcd=shrcd_expr,
+        crsp_nyse=crsp_nyse_expr,
         gvkey=ccmxpf_lnkhist.gvkey,
     ).select(
         [
@@ -695,11 +693,13 @@ def gen_crsp_sf(paths: DataPaths, freq):
             "vol",
             "prc_high",
             "prc_low",
-            "exchcd",
+            "common",
+            "primaryexch",
+            "conditionaltype",
+            "crsp_nyse",
             "gvkey",
             "iid",
             "exch_main",
-            "shrcd",
             "me",
             "ticker",
         ]
@@ -734,6 +734,18 @@ def get_columns_attached(conn, db_alias, lib, table):
     return [c[0] for c in cols]
 
 
+def _date_where(date_column: str | None, start_date: date | None, end_date: date | None) -> str:
+    """Build an inclusive ``WHERE date_column BETWEEN ...`` clause (empty if no date column)."""
+    if not date_column:
+        return ""
+    conds = []
+    if start_date is not None:
+        conds.append(f"{date_column} >= '{start_date}'")
+    if end_date is not None:
+        conds.append(f"{date_column} <= '{end_date}'")
+    return ("WHERE " + " AND ".join(conds)) if conds else ""
+
+
 def download_wrds_table_attached(
     duckdb_conn,
     db_alias,
@@ -741,15 +753,19 @@ def download_wrds_table_attached(
     filename,
     date_column: str | None = None,
     end_date: date | None = None,
+    start_date: date | None = None,
 ):
-    """Download a WRDS table using an attached persistent connection."""
+    """Download a WRDS table (or an inclusive date-range slice) via an attached connection.
+
+    When ``start_date``/``end_date`` are given (and the table has a ``date_column``), only rows
+    with ``start_date <= date_column <= end_date`` are downloaded. ``start_date`` enables
+    date-range chunking of large tables across parallel workers.
+    """
     lib, table = table_name.split(".")
     cols = get_columns_attached(duckdb_conn, db_alias, lib, table)
     projection = build_projection(cols)
 
-    where_clause = ""
-    if date_column and end_date:
-        where_clause = f"WHERE {date_column} <= '{end_date}'"
+    where_clause = _date_where(date_column, start_date, end_date)
 
     duckdb_conn.execute(f"""
         COPY (
@@ -804,6 +820,467 @@ def download_wrds_table(
     """)
 
 
+# The raw-data download is the one place in this pipeline that runs an explicit Python thread pool.
+# Elsewhere we follow an "engine-level parallelism only" convention: let Polars/DuckDB parallelize
+# internally rather than hand-rolling threads in compute code. This is a deliberate, narrow exception
+# -- the parallelism here is N concurrent client connections to WRDS, which the query engine cannot
+# provide (it parallelizes computation, not independent network connections). It is NOT a precedent
+# for introducing thread pools into characteristic/compute code.
+#
+# WRDS enforces a per-role PostgreSQL CONNECTION LIMIT (currently 7 for our account; see
+# `SELECT rolconnlimit FROM pg_roles WHERE rolname = current_user`). Each parallel worker holds
+# exactly one client connection (verified: with `SET threads = 1` and these tables being views,
+# one ATTACH == one TCP socket to wrds-pgdata), so the pool is capped below the limit to leave a
+# slot of headroom for any other WRDS session under the same login.
+#
+# NOTE for debugging: WRDS fronts PostgreSQL with pgpool, so `pg_stat_activity` reports the
+# server-side backend pool (it showed ~21 backends for 6 workers) -- that is NOT the client
+# connection count. The number that matters for the role limit is the client connections, which
+# equal the worker count (confirmed via the process's own sockets, e.g. psutil/`ss`).
+WRDS_MAX_CONNECTIONS = 7
+
+# These daily security tables dominate the download (hundreds of millions of rows each). In
+# parallel mode they are split into row-balanced date-range chunks so a single giant table can't
+# bottleneck the worker pool; the chunks are concatenated back into one parquet afterward.
+SPLIT_TABLES = frozenset({"crsp.dsf_v2", "comp.secd", "comp.g_secd"})
+
+
+def _effective_download_workers(requested: int, n_tables: int) -> int:
+    """Clamp the requested worker count to a safe, useful range.
+
+    Never more workers than there are tables, and never more than WRDS allows concurrent
+    connections (minus one for headroom). A value of 1 (or less) means sequential download.
+    """
+    if requested <= 1:
+        return 1
+    return max(1, min(requested, n_tables, WRDS_MAX_CONNECTIONS - 1))
+
+
+@dataclass(frozen=True)
+class _DownloadTask:
+    """One unit of download work: a whole table, or one date-range chunk of a split table."""
+
+    table: str
+    out: str
+    date_column: str | None
+    start_date: date | None
+    end_date: date | None
+
+
+def _chunk_path(filename: str, i: int) -> str:
+    """Per-chunk parquet path, e.g. .../crsp_dsf_v2.parquet -> .../crsp_dsf_v2.part00.parquet."""
+    p = Path(filename)
+    return str(p.with_name(f"{p.stem}.part{i:02d}{p.suffix}"))
+
+
+def _attach_wrds(con: duckdb.DuckDBPyConnection, conninfo: str, password: str) -> None:
+    """ATTACH the WRDS Postgres database read-only on an existing DuckDB connection.
+
+    DuckDB's postgres extension embeds the full connection string (including the password) in
+    ATTACH error text, so on failure suppress the original exception and raise a generic,
+    password-free error. Errors that don't contain the password propagate unchanged.
+    """
+    try:
+        con.execute(f"ATTACH '{conninfo}' AS wrds (TYPE postgres, READ_ONLY)")
+    except Exception as e:
+        if password and password in str(e):
+            raise RuntimeError(
+                "Failed to attach WRDS connection. Check credentials and MFA approval."
+            ) from None
+        raise
+
+
+def _install_postgres_extension() -> None:
+    """Install the DuckDB postgres extension once, up front (idempotent).
+
+    Doing it in the main thread means the parallel workers only ``LOAD`` it (a per-connection,
+    no-download operation), which avoids a concurrent-INSTALL race across the pool writing the same
+    extension file, and surfaces a fetch failure as one clean error here rather than N worker
+    tracebacks.
+    """
+    with duckdb.connect(":memory:") as con:
+        con.execute("INSTALL postgres;")
+
+
+_MapT = TypeVar("_MapT")
+_MapR = TypeVar("_MapR")
+
+
+def _map_interruptible(
+    fn: Callable[[_MapT], _MapR], items: Iterable[_MapT], max_workers: int
+) -> list[_MapR]:
+    """Run ``[fn(item) for item in items]`` concurrently, staying responsive to Ctrl-C.
+
+    Like a ``ThreadPoolExecutor`` map, but a KeyboardInterrupt cancels not-yet-started work and
+    propagates promptly instead of blocking in the pool's ``shutdown(wait=True)``. In-flight calls
+    still finish (a running query/COPY can't be interrupted mid-call). Task exceptions and results
+    propagate in order, exactly like ``list(ex.map(fn, items))``.
+    """
+    ex = ThreadPoolExecutor(max_workers=max_workers)
+    try:
+        futures = [ex.submit(fn, item) for item in items]
+        pending = set(futures)
+        while pending:  # timed waits keep the main thread returning to Python so Ctrl-C can fire
+            _, pending = wait(pending, timeout=0.5)
+        return [f.result() for f in futures]
+    except KeyboardInterrupt:
+        print(
+            "\nInterrupted: stopping after in-flight work finishes...",
+            file=sys.stderr,
+            flush=True,
+        )
+        raise
+    finally:
+        ex.shutdown(wait=True, cancel_futures=True)
+
+
+def _year_histogram(
+    con: duckdb.DuckDBPyConnection,
+    db_alias: str,
+    lib: str,
+    table: str,
+    date_column: str,
+    end_date: date | None,
+) -> list[tuple[int, int]]:
+    """Server-side per-year row counts for a date-filtered table: [(year, n), ...] sorted by year."""
+    where = _date_where(date_column, None, end_date)
+    rows = con.execute(
+        f"SELECT CAST(EXTRACT(YEAR FROM {date_column}) AS INTEGER) AS yr, COUNT(*) AS n "  # noqa: S608
+        f"FROM {db_alias}.{lib}.{table} {where} GROUP BY yr ORDER BY yr"
+    ).fetchall()
+    return [(int(yr), int(n)) for yr, n in rows if yr is not None]
+
+
+def _balanced_year_chunks(
+    histogram: list[tuple[int, int]], n_chunks: int, end_date: date | None
+) -> list[tuple[date | None, date | None]]:
+    """Split a year histogram into <= n_chunks contiguous inclusive (start, end) date ranges
+    holding ~equal row counts.
+
+    The first range's start is None (unbounded below) and the last range's end is the overall
+    end_date; ranges are non-overlapping and together cover every counted row. Cuts fall on
+    year boundaries, so chunks are only as balanced as the per-year granularity allows.
+    """
+    hist = [(y, n) for y, n in histogram if n > 0]
+    if n_chunks <= 1 or len(hist) <= 1:
+        return [(None, end_date)]
+    total = sum(n for _, n in hist)
+    target = total / n_chunks
+    cut_years: list[int] = []
+    acc = 0
+    for i, (yr, n) in enumerate(hist):
+        acc += n
+        last_year = i == len(hist) - 1
+        if len(cut_years) < n_chunks - 1 and not last_year and acc >= (len(cut_years) + 1) * target:
+            cut_years.append(yr)
+    starts = [None, *[cy + 1 for cy in cut_years]]
+    ends = [date(cy, 12, 31) for cy in cut_years] + [end_date]
+    return [
+        (date(s, 1, 1) if s is not None else None, e) for s, e in zip(starts, ends, strict=True)
+    ]
+
+
+def _compute_histograms(
+    conninfo: str,
+    tables: list[str],
+    date_columns: dict[str, str],
+    end_date: date | None,
+    max_conns: int,
+    password: str,
+) -> dict[str, list[tuple[int, int]]]:
+    """Concurrently compute per-year row histograms for ``tables`` (each over its own connection).
+
+    Returns {table: [(year, n), ...]}. Runs up to ``max_conns`` queries at once so the up-front
+    boundary scan of the giant tables doesn't serialize and leave the connection pool idle.
+    """
+    if not tables:
+        return {}
+
+    def one(table: str) -> tuple[str, list[tuple[int, int]]]:
+        lib, tbl = table.split(".")
+        with duckdb.connect(":memory:") as con:
+            con.execute("SET threads TO 1")
+            con.execute("LOAD postgres;")  # extension installed once up front by the caller
+            _attach_wrds(con, conninfo, password)
+            try:
+                return table, _year_histogram(con, "wrds", lib, tbl, date_columns[table], end_date)
+            finally:
+                with contextlib.suppress(Exception):
+                    con.execute("DETACH wrds")
+
+    return dict(_map_interruptible(one, tables, min(len(tables), max_conns)))
+
+
+def _build_download_tasks(
+    table_names: list[str],
+    filenames: dict[str, str],
+    date_columns: dict[str, str],
+    end_date: date | None,
+    split_tables: frozenset[str],
+    n_chunks: int,
+    histograms: dict[str, list[tuple[int, int]]],
+) -> tuple[list[_DownloadTask], dict[str, list[str]]]:
+    """Expand the table list into download tasks, splitting ``split_tables`` into date chunks.
+
+    ``histograms`` maps a split table to its per-year row counts (see _compute_histograms).
+    Returns (tasks, concat_map), where concat_map maps a final parquet path to its ordered chunk
+    files (only for tables actually split into >1 chunk).
+    """
+    tasks: list[_DownloadTask] = []
+    concat_map: dict[str, list[str]] = {}
+    for table in table_names:
+        date_col = date_columns.get(table)
+        hist = histograms.get(table)
+        do_split = (
+            hist is not None
+            and n_chunks > 1
+            and table in split_tables
+            and date_col
+            and end_date is not None
+        )
+        if not do_split or hist is None:
+            tasks.append(_DownloadTask(table, filenames[table], date_col, None, end_date))
+            continue
+        ranges = _balanced_year_chunks(hist, n_chunks, end_date)
+        if len(ranges) <= 1:
+            start, end = ranges[0]
+            tasks.append(_DownloadTask(table, filenames[table], date_col, start, end))
+            continue
+        chunk_files = []
+        for i, (start, end) in enumerate(ranges):
+            cf = _chunk_path(filenames[table], i)
+            chunk_files.append(cf)
+            tasks.append(_DownloadTask(table, cf, date_col, start, end))
+        concat_map[filenames[table]] = chunk_files
+    return tasks, concat_map
+
+
+def _concat_chunks(final_file: str, chunk_files: list[str]) -> None:
+    """Concatenate ordered chunk parquets into one final parquet, then remove the chunks (local)."""
+    pl.scan_parquet(chunk_files).sink_parquet(final_file)
+    for f in chunk_files:
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(f)
+
+
+def _remove_chunk_parts(filename: str) -> None:
+    """Delete any existing chunk-part files for ``filename`` (see _chunk_path).
+
+    A prior interrupted run may have written chunk parts that were never concatenated — possibly
+    with a different worker count, hence different indices — so clear them all before writing fresh
+    ones. The final (non-part) file itself is left untouched.
+    """
+    p = Path(filename)
+    # Match exactly what _chunk_path writes (.part00..part99) rather than `part*`, which would also
+    # sweep an unrelated file like `<stem>.partial.parquet`.
+    for f in p.parent.glob(f"{p.stem}.part[0-9][0-9]{p.suffix}"):
+        with contextlib.suppress(FileNotFoundError):
+            f.unlink()
+
+
+def _attach_download_worker(
+    task_queue: queue.Queue[_DownloadTask],
+    conninfo: str,
+    password: str,
+    task_errors: list[str],
+    startup_errors: list[str],
+    errors_lock: threading.Lock,
+    stop_event: threading.Event,
+) -> None:
+    """One parallel worker: open a private ATTACH connection and drain the task queue.
+
+    Each task is a whole table or one date-range chunk. The worker holds exactly one WRDS
+    connection (``threads=1`` keeps DuckDB from opening extra connections for a parallel scan)
+    and reuses it. It stops pulling new tasks once ``stop_event`` is set (used to unwind on Ctrl-C).
+
+    Failures are recorded (password-redacted) instead of raised, so one bad task doesn't abandon
+    the rest. Worker-startup failures (LOAD/ATTACH) and download (task) failures are kept in separate
+    lists: because the task queue is shared, a worker that fails to start is not fatal as long as the
+    surviving workers still drain the queue, whereas a failed download leaves a table missing. The
+    caller decides what to raise (see _download_tables_parallel).
+    """
+    # `with duckdb.connect(...)` closes the connection on every exit path (return / exception).
+    with duckdb.connect(":memory:") as con:
+        try:
+            con.execute("SET threads TO 1")
+            con.execute("LOAD postgres;")  # extension installed once up front by the caller
+            _attach_wrds(con, conninfo, password)
+        except Exception as e:  # noqa: BLE001
+            # _attach_wrds already raises a password-free error, and LOAD/SET can't leak the
+            # password; warn now so the user knows the run is proceeding under-provisioned rather
+            # than silently losing a worker.
+            with errors_lock:
+                startup_errors.append(str(e))
+                print(
+                    f"Warning: a WRDS download worker failed to start ({e}); continuing with the "
+                    "remaining worker(s). Press Ctrl-C to cancel and re-run for full parallelism.",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            return
+        try:
+            while not stop_event.is_set():
+                try:
+                    task = task_queue.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    download_wrds_table_attached(
+                        con,
+                        "wrds",
+                        task.table,
+                        task.out,
+                        date_column=task.date_column,
+                        end_date=task.end_date,
+                        start_date=task.start_date,
+                    )
+                except Exception as e:  # noqa: BLE001
+                    # Redact only the credential, keeping the rest of the error for diagnostics.
+                    msg = str(e).replace(password, "***") if password else str(e)
+                    with errors_lock:
+                        task_errors.append(f"{task.table} ({Path(task.out).name}): {msg}")
+        finally:
+            with contextlib.suppress(Exception):
+                con.execute("DETACH wrds")
+
+
+def _download_tables_parallel(
+    table_names: list[str],
+    filenames: dict[str, str],
+    conninfo: str,
+    date_columns: dict[str, str],
+    end_date: date | None,
+    password: str,
+    workers: int,
+    split_tables: frozenset[str] = frozenset(),
+    n_chunks: int = 1,
+) -> None:
+    """Download all tables concurrently over ``workers`` private ATTACH connections.
+
+    Tables in ``split_tables`` are divided into ``n_chunks`` row-balanced date-range chunks
+    (boundaries computed up front over one short-lived connection) and concatenated afterward, so
+    a single giant table can't bottleneck the pool. Work is pulled from a shared queue (dynamic
+    load balancing). Raises a single aggregated ``RuntimeError`` if any task failed.
+    """
+    # Install the postgres extension once, in this thread, so the parallel workers (and histogram
+    # workers) only LOAD it -- no concurrent-INSTALL race, and a fetch failure surfaces here cleanly.
+    _install_postgres_extension()
+
+    # Up front: concurrently compute per-year row histograms for the split tables to derive chunk
+    # boundaries (the giant tables need a full COUNT scan; running them in parallel hides the cost).
+    split_present = [
+        t for t in table_names if t in split_tables and date_columns.get(t) and end_date is not None
+    ]
+    histograms = (
+        _compute_histograms(conninfo, split_present, date_columns, end_date, workers, password)
+        if split_present and n_chunks > 1
+        else {}
+    )
+    tasks, concat_map = _build_download_tasks(
+        table_names, filenames, date_columns, end_date, split_tables, n_chunks, histograms
+    )
+
+    # Clear any stale chunk parts left by a prior interrupted run before the workers write fresh
+    # ones, so leftover parts (e.g. from a run with a different worker count) can't linger
+    # un-concatenated alongside this run's output.
+    for table in table_names:
+        if table in split_tables:
+            _remove_chunk_parts(filenames[table])
+
+    task_queue: queue.Queue[_DownloadTask] = queue.Queue()
+    for task in tasks:
+        task_queue.put(task)
+    task_errors: list[str] = []
+    startup_errors: list[str] = []
+    errors_lock = threading.Lock()
+    stop_event = threading.Event()
+    threads = [
+        threading.Thread(
+            target=_attach_download_worker,
+            args=(
+                task_queue,
+                conninfo,
+                password,
+                task_errors,
+                startup_errors,
+                errors_lock,
+                stop_event,
+            ),
+            name=f"wrds-download-{i}",
+        )
+        for i in range(workers)
+    ]
+    for t in threads:
+        t.start()
+    # Join with a timeout so the main thread stays responsive to Ctrl-C (a plain join() would defer
+    # the KeyboardInterrupt until the whole download finished). On Ctrl-C, ask the workers to stop
+    # pulling new tasks; they finish the download already in flight and exit.
+    #
+    # We deliberately do NOT call DuckDB's con.interrupt() to abort an in-flight COPY mid-transfer:
+    # it would require sharing every worker's connection with this thread plus telling a user-cancel
+    # apart from a real failure, and its effect on a COPY blocked in the postgres extension's network
+    # read is unverified. Consequently a Ctrl-C takes effect only after the currently-downloading
+    # task(s) finish -- bounded by one chunk, not the entire remaining download.
+    try:
+        for t in threads:
+            while t.is_alive():
+                t.join(timeout=0.5)
+    except KeyboardInterrupt:
+        print(
+            "\nInterrupted: stopping after the in-flight download(s) finish...",
+            file=sys.stderr,
+            flush=True,
+        )
+        stop_event.set()
+        for t in threads:
+            t.join()
+        raise
+
+    # A download failure means a table is missing -> always fatal.
+    if task_errors:
+        raise RuntimeError(
+            f"{len(task_errors)} WRDS download task(s) failed:\n  "
+            + "\n  ".join(sorted(task_errors))
+        )
+    # If the queue never drained, every worker failed to start -> nothing was downloaded.
+    if not task_queue.empty():
+        raise RuntimeError(
+            f"all {workers} WRDS download worker(s) failed to start:\n  "
+            + "\n  ".join(sorted(startup_errors))
+        )
+    # Some workers failed to start, but the survivors completed every table -> note it, don't fail.
+    if startup_errors:
+        print(
+            f"Note: {len(startup_errors)} of {workers} WRDS download worker(s) failed to start; "
+            "the remaining worker(s) completed all tables.",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    # Concatenate each split table's chunks back into its single parquet. These are local
+    # (no WRDS connection) and independent, so run them concurrently. Failures are aggregated
+    # like the download phase rather than aborting on the first error; chunks left behind by a
+    # failed concat are cleaned up by the stale-part sweep on the next run.
+    if concat_map:
+        concat_errors: list[str] = []
+        concat_lock = threading.Lock()
+
+        def concat_one(item: tuple[str, list[str]]) -> None:
+            final_file, chunk_files = item
+            try:
+                _concat_chunks(final_file, chunk_files)
+            except Exception as e:  # noqa: BLE001
+                with concat_lock:
+                    concat_errors.append(f"{Path(final_file).name}: {e}")
+
+        _map_interruptible(concat_one, list(concat_map.items()), len(concat_map))
+        if concat_errors:
+            raise RuntimeError(
+                f"{len(concat_errors)} chunk concatenation(s) failed:\n  "
+                + "\n  ".join(sorted(concat_errors))
+            )
+
+
 @measure_time
 def download_raw_data_tables(
     paths: DataPaths,
@@ -811,6 +1288,7 @@ def download_raw_data_tables(
     password: str,
     end_date: date | None = None,
     persistent_connection: bool = False,
+    max_workers: int = 1,
 ) -> None:
     """
     Description:
@@ -820,16 +1298,28 @@ def download_raw_data_tables(
         1) Connect to WRDS; iterate through a fixed list of library.tables.
         2) For each table: download to raw_tables/lib_table.parquet, applying date filtering
            when end_date is provided and the table has a known date column.
-        3) If persistent_connection: ATTACH a single postgres connection and download all tables.
-           Otherwise: use postgres_scan() which creates a new connection per query.
+        3) If max_workers > 1: download tables concurrently over a pool of persistent ATTACH
+           connections (one per worker). Otherwise download sequentially over a single
+           connection, using ATTACH when persistent_connection is set or postgres_scan() if not.
         4) Disconnect.
 
     Args:
         username: WRDS username
         password: WRDS password
-        persistent_connection: If True, use a single persistent connection via ATTACH.
-            This reduces MFA prompts on systems with NAT IP rotation (e.g., Yale Bouchet).
-            If False (default), use postgres_scan() which creates a new connection per query.
+        persistent_connection: If True, use a single persistent connection via ATTACH. This
+            reduces MFA prompts on systems with NAT IP rotation (e.g., Yale Bouchet). If False
+            (default), use postgres_scan() which creates a new connection per query. This flag
+            takes precedence over max_workers: when set, the download stays sequential (one
+            connection) so the single-MFA-prompt guarantee is preserved.
+        max_workers: Number of concurrent download connections. The download is single-threaded
+            and transfer-bound, so the tables are otherwise pulled one at a time over a single
+            stream; running several in parallel cuts wall time substantially. Clamped to the WRDS
+            per-account connection limit (see WRDS_MAX_CONNECTIONS). Default 1 (sequential).
+            Ignored when persistent_connection is set. In parallel mode the giant daily tables
+            (SPLIT_TABLES) are additionally split into max_workers date-range chunks so one huge
+            table can't bottleneck the pool. NOTE: each worker opens its own connection, so on
+            NAT-rotated networks (e.g., Bouchet) parallel mode would trigger one MFA prompt per
+            worker at startup — which is exactly why persistent_connection forces sequential.
 
     Output:
         Parquet files under raw_tables/ (Compustat, CRSP, FF, etc.).
@@ -891,31 +1381,55 @@ def download_raw_data_tables(
         "ibes.actu_epsint": "anndats",
     }
 
-    wrds_session_data = gen_wrds_connection_info(username, password)
+    conninfo = gen_wrds_connection_info(username, password)
+    filenames = {
+        table: str(paths.raw_tables_dir / (table.replace(".", "_") + ".parquet"))
+        for table in table_names
+    }
+
+    workers = _effective_download_workers(max_workers, len(table_names))
+    if persistent_connection and workers > 1:
+        # --persistent-connection exists to hold ONE connection so NAT-rotated networks
+        # (e.g. Bouchet) get a single MFA prompt. Parallel workers each open their own
+        # connection (one MFA prompt apiece), defeating that, so the single-connection request
+        # wins and we download sequentially.
+        print(
+            "Note: --persistent-connection uses a single WRDS connection; "
+            f"ignoring max_workers={max_workers} and downloading sequentially.",
+            file=sys.stderr,
+            flush=True,
+        )
+        workers = 1
+    if workers > 1:
+        # Parallel: each worker holds its own persistent ATTACH connection and drains a queue.
+        # The giant daily tables (SPLIT_TABLES) are split into `workers` date-range chunks so one
+        # huge table doesn't bottleneck the pool, then concatenated back into one parquet.
+        _download_tables_parallel(
+            table_names,
+            filenames,
+            conninfo,
+            date_columns,
+            end_date,
+            password,
+            workers,
+            split_tables=SPLIT_TABLES,
+            n_chunks=workers,
+        )
+        return
+
     con = duckdb.connect(":memory:")
     con.execute("INSTALL postgres; LOAD postgres;")
 
     if persistent_connection:
         # Use ATTACH for a single persistent connection (reduces MFA on NAT-rotated networks).
-        # DuckDB's postgres extension includes the full connection string (with password)
-        # in error messages. If the connection fails, suppress the original exception to
-        # avoid leaking credentials in logs/tracebacks, and raise a generic error instead.
-        try:
-            con.execute(f"ATTACH '{wrds_session_data}' AS wrds (TYPE postgres, READ_ONLY)")
-        except Exception as e:
-            if password in str(e):
-                raise RuntimeError(
-                    "Failed to attach persistent WRDS connection. "
-                    "Check credentials and MFA approval."
-                ) from None
-            raise
+        _attach_wrds(con, conninfo, password)
         try:
             for table in table_names:
                 download_wrds_table_attached(
                     con,
                     "wrds",
                     table,
-                    str(paths.raw_tables_dir / (table.replace(".", "_") + ".parquet")),
+                    filenames[table],
                     date_column=date_columns.get(table),
                     end_date=end_date,
                 )
@@ -925,10 +1439,10 @@ def download_raw_data_tables(
         # Use postgres_scan() which creates a new connection per query (default)
         for table in table_names:
             download_wrds_table(
-                wrds_session_data,
+                conninfo,
                 con,
                 table,
-                str(paths.raw_tables_dir / (table.replace(".", "_") + ".parquet")),
+                filenames[table],
                 date_column=date_columns.get(table),
                 end_date=end_date,
             )
@@ -1135,21 +1649,21 @@ def compustat_fx(paths: DataPaths):
     return __fx1.collect()
 
 
-def adj_trd_vol_NASDAQ(datevar, col_to_adjust, exchg_var, exchg_val):
+def adj_trd_vol_NASDAQ(datevar, col_to_adjust, is_nasdaq_expr):
     """
     Description:
         Apply historic NASDAQ trade-volume adjustments (pre-decimalization reporting) to a volume column.
 
     Steps:
         1) Build date cutoffs: <2001-02-01, ≤2001-12-31, <2003-12-31.
-        2) If exchg_var == exchg_val (NASDAQ) and within windows, scale col_to_adjust by
+        2) If is_nasdaq_expr is true and within windows, scale col_to_adjust by
         1/2, 1/1.8, or 1/1.6 respectively; otherwise keep original.
         3) Return the adjusted expression aliased as the original column name.
 
     Output:
         Polars expression that yields adjusted trade volume for NASDAQ histories.
     """
-    c1 = col(exchg_var) == exchg_val
+    c1 = is_nasdaq_expr
     c2 = col(datevar) < pl.datetime(2001, 2, 1)
     c3 = col(datevar) <= pl.datetime(2001, 12, 31)
     c4 = col(datevar) < pl.datetime(2003, 12, 31)
@@ -1987,7 +2501,13 @@ def prepare_crsp_sf(paths: DataPaths, freq):
             ]
             + [col("vol").cast(pl.Int64)]
         )
-        .with_columns(adj_trd_vol_NASDAQ("date", "vol", "exchcd", 3))
+        .with_columns(
+            adj_trd_vol_NASDAQ(
+                "date",
+                "vol",
+                (pl.col("primaryexch") == "Q") & (pl.col("conditionaltype") == "RW"),
+            )
+        )
         .sort(["permno", "date"])
         .with_columns(
             dolvol=col("prc").abs() * col("vol"),
@@ -2165,11 +2685,12 @@ def combine_crsp_comp_sf(paths: DataPaths) -> None:
                     permno AS id, permno, permco, gvkey, iid,
                     'USA' AS excntry,
                     exch_main::INT AS exch_main,
-                    CASE WHEN shrcd IN (10, 11, 12) THEN 1 ELSE 0 END AS common,
+                    common::INT AS common,
                     1 AS primary_sec,
                     bidask::INT AS bidask,
-                    shrcd::DOUBLE AS crsp_shrcd,
-                    exchcd::DOUBLE AS crsp_exchcd,
+                    primaryexch,
+                    conditionaltype,
+                    crsp_nyse::INT AS crsp_nyse,
                     NULL::VARCHAR AS comp_tpci,
                     NULL::BIGINT AS comp_exchg,
                     'USD' AS curcd,
@@ -2208,8 +2729,9 @@ def combine_crsp_comp_sf(paths: DataPaths) -> None:
                     CASE WHEN tpci = '0' THEN 1 ELSE 0 END AS common,
                     primary_sec::INT AS primary_sec,
                     CASE WHEN prcstd = 4 THEN 1 ELSE 0 END AS bidask,
-                    NULL::DOUBLE AS crsp_shrcd,
-                    NULL::DOUBLE AS crsp_exchcd,
+                    NULL::VARCHAR AS primaryexch,
+                    NULL::VARCHAR AS conditionaltype,
+                    0 AS crsp_nyse,
                     tpci AS comp_tpci,
                     exchg::BIGINT AS comp_exchg,
                     curcdd AS curcd,
@@ -2267,7 +2789,7 @@ def combine_crsp_comp_sf(paths: DataPaths) -> None:
             COPY (
                 SELECT
                     id, permno, permco, gvkey, iid, excntry, exch_main, common,
-                    primary_sec, bidask, crsp_shrcd, crsp_exchcd, comp_tpci, comp_exchg,
+                    primary_sec, bidask, primaryexch, conditionaltype, crsp_nyse, comp_tpci, comp_exchg,
                     curcd, fx, date, eom, adjfct, shares, me, me_company, prc, prc_local,
                     prc_high, prc_low, dolvol, tvol, ret, ret_local, ret_exc, ret_lag_dif,
                     div_tot, div_cash, div_spc, source_crsp, ret_exc_lead1m, obs_main
@@ -2300,7 +2822,7 @@ def combine_crsp_comp_sf(paths: DataPaths) -> None:
                         permno AS id,
                         'USA' AS excntry,
                         exch_main::INT AS exch_main,
-                        CASE WHEN shrcd IN (10, 11, 12) THEN 1 ELSE 0 END AS common,
+                        common::INT AS common,
                         1 AS primary_sec,
                         bidask::INT AS bidask,
                         'USD' AS curcd,
@@ -2429,17 +2951,21 @@ def comp_hgics(paths: DataPaths, lib):
             "global": paths.interim_dir / "g_hgics.parquet",
         },
     }
-    data = pl.read_parquet(file_paths["raw data"][lib])  # .sort(['gvkey', 'indfrom'])
+    data = pl.scan_parquet(file_paths["raw data"][lib])  # .sort(['gvkey', 'indfrom'])
+    if data.limit(1).collect().is_empty():
+        warnings.warn(
+            f"comp_hgics: {lib} GICS input is empty "
+            f"({file_paths['raw data'][lib]}); "
+            "downstream comp_ind.parquet will have null GICS for all firms "
+            "unless the other side (national/global) provides coverage.",
+            stacklevel=2,
+        )
     data = data.with_columns(
         gics=pl.when(col("gics").is_null()).then(-999).otherwise(col("gics")),
         n=pl.len().over("gvkey"),
         n_aux=pl.cum_count("gvkey").over("gvkey"),
     )
-    indthru_date = (
-        pl.lit(data[["indfrom"]].max()[0, 0])
-        if data[["indfrom"]].max()[0, 0] > END_DATE
-        else pl.lit(END_DATE)
-    )
+    indthru_date = pl.max_horizontal(pl.col("indfrom").max(), pl.lit(END_DATE))
     c1 = col("n") == col("n_aux")
     c2 = col("indthru").is_null()
     data = (
@@ -2449,7 +2975,7 @@ def comp_hgics(paths: DataPaths, lib):
         .unique(subset=["gvkey", "date"])
         .sort(["gvkey", "date"])
     )
-    data.write_parquet(file_paths["output"][lib])
+    data.sink_parquet(file_paths["output"][lib])
 
 
 def hgics_join(paths: DataPaths):
@@ -2475,7 +3001,7 @@ def hgics_join(paths: DataPaths):
         .unique(["gvkey", "date"])
         .sort(["gvkey", "date"])
     )
-    gjoin.collect().write_parquet(paths.interim_dir / "comp_hgics.parquet")
+    gjoin.sink_parquet(paths.interim_dir / "comp_hgics.parquet")
 
 
 def comp_sic_naics(paths: DataPaths):
@@ -2579,7 +3105,7 @@ def comp_sic_naics(paths: DataPaths):
         .unique(["gvkey", "date"])
         .sort(["gvkey", "date"])
     )
-    comp.collect().write_parquet(paths.interim_dir / "comp_other.parquet")
+    comp.sink_parquet(paths.interim_dir / "comp_other.parquet")
     con.disconnect()
 
 
@@ -2587,78 +3113,54 @@ def comp_sic_naics(paths: DataPaths):
 def comp_industry(paths: DataPaths):
     """
     Description:
-        Merge daily GICS and SIC/NAICS into a single daily Compustat industry file,
-        filling gaps day-by-day to ensure continuity.
+        Merge daily GICS and SIC/NAICS into a single daily Compustat industry file with a
+        continuous daily date axis; days between observations carry null industry codes.
 
     Steps:
-        1) Run comp_sic_naics() and hgics_join(); load into DuckDB.
+        1) Run comp_sic_naics() and hgics_join(); scan both panels lazily.
         2) Full-outer-join on (gvkey,date); compute aux_date = next date − 1 day to detect gaps.
-        3) Build gap ranges via generate_series and fill from gap_dates; union with continuous rows.
-        4) Select distinct first by (gvkey,date); write comp_ind.parquet.
+        3) Emit interior gap days [date+1, aux_date] with null codes (only the gap-start day
+           carries values, matching the historical SQL gap-fill behaviour).
+        4) Concatenate joined rows with gap rows; sort; sink comp_ind.parquet.
 
     Output:
         Parquet comp_ind.parquet with {gvkey,date,gics,sic,naics} daily.
     """
     comp_sic_naics(paths)
     hgics_join(paths)
-    (paths.interim_dir / "aux_comp_ind.ddb").unlink(missing_ok=True)
-    con = ibis.duckdb.connect(str(paths.interim_dir / "aux_comp_ind.ddb"), threads=os.cpu_count())
-    con.create_table("comp_other", con.read_parquet(paths.interim_dir / "comp_other.parquet"))
-    con.create_table("comp_gics", con.read_parquet(paths.interim_dir / "comp_hgics.parquet"))
-    con.raw_sql("""
-                DROP TABLE IF EXISTS join_table;
-                CREATE TABLE join_table AS
-                SELECT          *,
-                                COALESCE( LEAD(date) OVER (PARTITION BY gvkey ORDER BY date) - INTERVAL '1 day', date )::DATE AS aux_date
-                FROM            comp_gics
-                FULL OUTER JOIN comp_other
-                USING           (gvkey, date);
-
-                DROP TABLE IF EXISTS gap_dates;
-                CREATE TABLE gap_dates AS
-                SELECT *
-                FROM join_table
-                WHERE date <> aux_date;
-
-                DROP TABLE IF EXISTS gaps;
-                CREATE TABLE gaps AS
-                WITH full_span AS (
-                SELECT
-                    j.gvkey, gs.gap_date::DATE AS date,
-                    FROM gap_dates as j
-                    CROSS JOIN LATERAL
-                    generate_series(j.date, j.aux_date, INTERVAL '1 day') AS gs(gap_date)
-                    ORDER BY gvkey, date
-                )
-                SELECT
-                fs.gvkey, fs.date, gd.gics, gd.sic, gd.naics
-                FROM full_span fs
-                LEFT JOIN gap_dates gd
-                ON gd.gvkey = fs.gvkey
-                AND gd.date  = fs.date
-                ORDER BY fs.gvkey, fs.date;
-
-                DROP TABLE IF EXISTS continuous;
-                CREATE TABLE continuous AS
-                SELECT *
-                FROM join_table
-                WHERE date = aux_date;
-
-                DROP TABLE IF EXISTS merged_data;
-                CREATE TABLE merged_data AS
-                SELECT gvkey, date, gics, sic, naics FROM continuous
-                UNION
-                SELECT gvkey, date, gics, sic, naics FROM gaps;
-
-                DROP TABLE IF EXISTS comp_industry;
-                CREATE TABLE comp_industry AS
-                SELECT DISTINCT ON (gvkey, date)
-                    *
-                FROM merged_data
-                ORDER BY (gvkey, date);
-    """)
-    con.table("comp_industry").to_parquet(paths.interim_dir / "comp_ind.parquet")
-    con.disconnect()
+    comp_gics = pl.scan_parquet(paths.interim_dir / "comp_hgics.parquet")
+    comp_other = pl.scan_parquet(paths.interim_dir / "comp_other.parquet")
+    joined = (
+        comp_gics.join(comp_other, on=["gvkey", "date"], how="full", coalesce=True)
+        # Null dates (from GICS records with null indfrom) were silently dropped by the
+        # historical SQL: both `WHERE date <> aux_date` and `WHERE date = aux_date`
+        # evaluate to NULL for them, excluding the rows from every output branch.
+        .filter(pl.col("date").is_not_null())
+        .sort(["gvkey", "date"])
+        .with_columns(
+            aux_date=pl.coalesce(
+                pl.col("date").shift(-1).over("gvkey") - pl.duration(days=1),
+                pl.col("date"),
+            )
+        )
+    )
+    schema = joined.collect_schema()
+    # Interior days of each gap get null industry codes: the historical SQL left-joined
+    # gap_dates on the exact date, so only the gap-start day (already present in the
+    # joined panel) carried values.
+    gap_rows = (
+        joined.filter(pl.col("date") != pl.col("aux_date"))
+        .select(
+            "gvkey",
+            pl.date_ranges(pl.col("date") + pl.duration(days=1), "aux_date").alias("date"),
+            *[pl.lit(None, dtype=schema[c]).alias(c) for c in ["gics", "sic", "naics"]],
+        )
+        .explode("date")
+    )
+    out = pl.concat([joined.select(["gvkey", "date", "gics", "sic", "naics"]), gap_rows]).sort(
+        ["gvkey", "date"]
+    )
+    out.sink_parquet(paths.interim_dir / "comp_ind.parquet")
 
 
 def _parse_siccodes_file(filename: str, label: str) -> pl.DataFrame:
@@ -2753,7 +3255,7 @@ def nyse_size_cutoffs(paths: DataPaths, data_path):
                 QUANTILE_DISC(me, 0.50)     AS nyse_p50,
                 QUANTILE_DISC(me, 0.80)     AS nyse_p80
             FROM self
-            WHERE  crsp_exchcd = 1
+            WHERE  crsp_nyse   = 1
                 AND obs_main   = 1
                 AND exch_main  = 1
                 AND primary_sec= 1
@@ -6518,10 +7020,7 @@ def sort_ff_style(char, min_stocks_bp, min_stocks_pf, date_col, data, sf):
     # print(f"Executing sort_ff_style for {char}", flush=True)
     c1 = (
         ((col("size_grp_l").is_in(["small", "large", "mega"])) & (col("excntry_l") != "USA"))
-        | (
-            ((col("crsp_exchcd_l") == 1) | (col("comp_exchg_l") == 11))
-            & (col("excntry_l") == "USA")
-        )
+        | (((col("crsp_nyse_l") == 1) | (col("comp_exchg_l") == 11)) & (col("excntry_l") == "USA"))
     ) & col(f"{char}_l").is_not_null()
     char_pf_exp = (
         pl.when(col(f"{char}_l") >= col("bp_p70"))
@@ -6664,9 +7163,8 @@ def market_beta(paths: DataPaths, output_path, data_path, factors_path, __n, __m
         Estimate rolling CAPM betas and idiosyncratic vol for each stock.
 
     Steps:
-        1) Prep data via prep_data_factor_regs (merged ap_factors_monthly for
-           mktrf + hml + smb_ff); load '__msf2' lazily.
-        2) Generate rolling-window mappings; run process_map_chunks(..., 'capm') per mapping.
+        1) Prep data via prep_data_factor_regs; load '__msf2' lazily.
+        2) Generate staggered window specs; run process_window(..., 'capm') per window.
         3) Map back to ids/dates; select beta_{__n}m and ivol_capm_{__n}m; sort.
 
     Output:
@@ -6674,9 +7172,8 @@ def market_beta(paths: DataPaths, output_path, data_path, factors_path, __n, __m
     """
     con = prep_data_factor_regs(paths, data_path, factors_path)
     base_data = con.table("__msf2").to_polars().lazy()
-    aux_maps = gen_aux_maps(__n)
     df = pl.concat(
-        [process_map_chunks(base_data, mapping, "capm", __n, __min) for mapping in aux_maps]
+        [process_window(base_data, w, "capm", __n, __min) for w in gen_aux_windows(__n)]
     ).collect()
     ids = con.table("__msf2").select(["id", "id_int"]).distinct().to_polars()
     dates = (
@@ -6713,8 +7210,7 @@ def residual_momentum(
         Compute residual momentum from FF3 regressions with rolling windows and skip/inclusion rules.
 
     Steps:
-        1) Prep '__msf2' (merged ap_factors_monthly for mktrf + hml + smb_ff);
-           build window mappings; run process_map_chunks(..., 'res_mom').
+        1) Prep '__msf2'; build window specs; run process_window(..., 'res_mom', __n, __min, incl, skip).
         2) Join back ids/dates and keep resff3_{incl}_{skip}; sort.
 
     Output:
@@ -6725,11 +7221,10 @@ def residual_momentum(
     """
     con = prep_data_factor_regs(paths, data_path, factors_path)
     base_data = con.table("__msf2").to_polars().lazy()
-    aux_maps = gen_aux_maps(__n)
     df = pl.concat(
         [
-            process_map_chunks(base_data, mapping, "res_mom", __n, __min, incl, skip)
-            for mapping in aux_maps
+            process_window(base_data, w, "res_mom", __n, __min, incl, skip)
+            for w in gen_aux_windows(__n)
         ]
     ).collect()
     ids = con.table("__msf2").select(["id", "id_int"]).distinct().to_polars()
@@ -10596,15 +11091,9 @@ def merge_roll_apply_daily_results(paths: DataPaths):
         'roll_apply_daily.parquet' with merged roll regression results.
     """
     date_idx = END_DATE.month + END_DATE.year * 12
-    df_dates = pl.DataFrame(
-        {
-            "aux_date": [i + 1 for i in range(23112, date_idx + 1)],
-            "eom": [f"{i // 12}-{i % 12 + 1}-1" for i in range(23112, date_idx + 1)],
-        }
-    )
-    df_dates = df_dates.with_columns(
-        col("eom").str.strptime(pl.Date, "%Y-%m-%d").dt.month_end().alias("eom"),
+    df_dates = pl.DataFrame({"aux_date": range(23113, date_idx + 2)}).with_columns(
         col("aux_date").cast(pl.Int64),
+        eom=pl.date((col("aux_date") - 1) // 12, (col("aux_date") - 1) % 12 + 1, 1).dt.month_end(),
     )
     df_id = pl.scan_parquet(paths.interim_dir / "id_int_key.parquet")
     file_paths = sorted(
@@ -10728,93 +11217,49 @@ def roll_apply_daily(paths: DataPaths, stats, sfx, __min):
         Run rolling daily-stat calculations over grouped date windows and save results.
 
     Steps:
-        1) Generate date-group mappings from sfx (e.g., _21d → k=1, _252d → k=12).
+        1) Generate staggered window specs from sfx (e.g., _21d → k=1, _252d → k=12).
         2) Prepare base daily data per stat.
-        3) Apply process_map_chunks for each mapping and concat results.
+        3) Apply process_window for each window spec and concat results.
         4) Write to '__roll{sfx}_{stats}.parquet'.
 
     Output:
-        Parquet with per-(id_int, group_number) rolling metrics for `stats`.
+        Parquet with per-(id_int, aux_date) rolling metrics for `stats`.
     """
     print(f"Processing {stats} - {sfx.replace('_', '')} - {__min}", flush=True)
-    aux_maps = gen_aux_maps(sfx)
     base_data = prepare_base_data(paths, stat=stats)
     results = pl.concat(
-        [process_map_chunks(base_data, mapping, stats, sfx, __min) for mapping in aux_maps]
+        [process_window(base_data, w, stats, sfx, __min) for w in gen_aux_windows(sfx)]
     )
     results.collect(engine="streaming").write_parquet(
         paths.interim_dir / f"__roll{sfx}_{stats}.parquet"
     )
 
 
-def gen_consecutive_lists(input_list, k):
+def gen_aux_windows(sfx: str | int) -> list[tuple[int, int, int]]:
     """
     Description:
-        Split a list into consecutive, non-overlapping sublists of length k.
+        Build k staggered window specs from suffix window length.
 
     Steps:
-        1) Slice input_list in steps of k.
-        2) Keep only full-length chunks.
+        1) Map suffix to k: {'_21d':1,'_126d':6,'_252d':12,'_1260d':60} or int(sfx).
+        2) For each offset in [0..k-1], compute the window start month and the
+           end of the last full k-month window that fits before the END_DATE
+           month index. Within an offset, month m belongs to
+           group_number = (m - start) // k, and the group's window ends at
+           start + (group_number + 1) * k - 1.
 
     Output:
-        List of k-length sublists.
+        List of k tuples (start, k, last_end), one per offset.
     """
-    return [
-        input_list[i : i + k]
-        for i in range(0, len(input_list), k)
-        if len(input_list[i : i + k]) == k
-    ]
-
-
-def build_groups(input_list, k):
-    """
-    Description:
-        Build k staggered groupings (offset windows) over a list.
-
-    Steps:
-        1) For each offset in [0..k-1], take consecutive k-sublists from input_list[offset:].
-        2) Aggregate into a list of group lists.
-
-    Output:
-        List of k lists, each containing k-length sublists.
-    """
-    return [gen_consecutive_lists(input_list[offset:], k) for offset in range(k)]
-
-
-def group_mapping_dfs(input_list, k):
-    """
-    Description:
-        Create mapping DataFrames linking aux_date to group_number, and group_number to new (max) aux_date.
-
-    Steps:
-        1) Build groups via build_groups(input_list, k).
-        2) For each group, create a DataFrame with aux_date arrays and group_number.
-        3) Return:
-        - group_map: exploded (aux_date, group_number)
-        - date_map : (group_number, aux_date=max group date)
-
-    Output:
-        List of dicts: {'group_map': LazyFrame, 'date_map': LazyFrame}.
-    """
-    groups = build_groups(input_list, k)
-    dfs = [
-        pl.DataFrame({"aux_date": group}).with_columns(
-            group_number=pl.cum_count("aux_date"), new_date=col("aux_date").list.max()
-        )
-        for group in groups
-    ]
-    return [
-        {
-            "group_map": df.explode("aux_date")
-            .select([col("aux_date").cast(pl.Int32), "group_number"])
-            .lazy(),
-            "date_map": df.select(["group_number", col("new_date").alias("aux_date")])
-            .unique()
-            .sort(["group_number"])
-            .lazy(),
-        }
-        for df in dfs
-    ]
+    parameter_mapping = {"_21d": 1, "_126d": 6, "_252d": 12, "_1260d": 60}
+    k = parameter_mapping[sfx] if sfx in parameter_mapping else int(sfx)
+    date_aux = END_DATE.month + END_DATE.year * 12
+    windows = []
+    for offset in range(k):
+        start = 23113 - k + offset
+        n_groups = (date_aux - start + 1) // k
+        windows.append((start, k, start + n_groups * k - 1))
+    return windows
 
 
 def base_data_filter_exp(stat):
@@ -10829,12 +11274,10 @@ def base_data_filter_exp(stat):
     Output:
         Polars expression usable in .filter().
     """
-    if stat == "zero_trades":
+    if stat in ("zero_trades", "turnover"):
         return col("tvol").is_not_null()
     elif stat == "dolvol":
         return col("dolvol_d").is_not_null()
-    elif stat == "turnover":
-        return col("tvol").is_not_null()
     elif stat == "mktcorr":
         # corr_data.parquet pre-filtered upstream in prepare_daily.
         return pl.lit(True)
@@ -10889,7 +11332,7 @@ def apply_group_filter(df, stat, min_obs):
     Output:
         Filtered LazyFrame for subsequent aggregation/regression.
     """
-    if stat == "turnover" or stat == "mktcorr":
+    if stat in ("turnover", "mktcorr"):
         pass
     elif stat == "dimsonbeta":
         df = df.with_columns(
@@ -10902,31 +11345,31 @@ def apply_group_filter(df, stat, min_obs):
             & (col("mktrf_ld1").is_not_null())
         )
     else:
-        if stat == "zero_trades":
-            filter_var = "tvol"
-        elif stat == "dolvol":
-            filter_var = "dolvol_d"
-        else:
-            filter_var = "ret_exc"
+        filter_var = {"zero_trades": "tvol", "dolvol": "dolvol_d"}.get(stat, "ret_exc")
         df = df.with_columns(n=pl.count(filter_var).over(["id_int", "group_number"])).filter(
             col("n") >= min_obs
         )
     return df
 
 
-def process_map_chunks(base_data, mapping, stats, sfx, __min, incl=None, skip=None):
+def process_window(
+    base_data, window: tuple[int, int, int], stats, sfx, __min, incl=None, skip=None
+):
     """
     Description:
-        Execute a rolling computation for a mapping: join groups, filter, compute stat, remap to end date.
+        Execute a rolling computation for one staggered window offset:
+        assign groups arithmetically, filter, compute stat, stamp end date.
 
     Steps:
-        1) Join base_data with mapping['group_map'] on aux_date.
+        1) Filter base_data to [start, last_end] and assign
+           group_number = (aux_date - start) // k.
         2) Apply apply_group_filter(stat, __min).
         3) Run the appropriate function from `funcs` dict (res_mom with incl/skip).
-        4) Join mapping['date_map'] to replace group_number by new aux_date.
+        4) Replace group_number by the window end month:
+           aux_date = start + (group_number + 1) * k - 1.
 
     Output:
-        LazyFrame of per-(id_int, group_number) results with remapped aux_date.
+        LazyFrame of per-(id_int, aux_date) results.
     """
     funcs = {
         "rvol": rvol,
@@ -10949,8 +11392,11 @@ def process_map_chunks(base_data, mapping, stats, sfx, __min, incl=None, skip=No
         "res_mom": res_mom,
     }
 
-    df = base_data.join(mapping["group_map"], how="inner", on="aux_date").pipe(
-        apply_group_filter, stat=stats, min_obs=__min
+    start, k, last_end = window
+    df = (
+        base_data.filter(pl.col("aux_date").is_between(start, last_end))
+        .with_columns(group_number=(pl.col("aux_date") - start) // k)
+        .pipe(apply_group_filter, stat=stats, min_obs=__min)
     )
 
     if stats == "res_mom":
@@ -10958,9 +11404,9 @@ def process_map_chunks(base_data, mapping, stats, sfx, __min, incl=None, skip=No
     else:
         df = df.pipe(funcs[stats], sfx=sfx, __min=__min)
 
-    df = df.join(mapping["date_map"], how="left", on="group_number").drop("group_number")
-
-    return df
+    return df.with_columns(
+        aux_date=(start + (pl.col("group_number") + 1) * k - 1).cast(pl.Int64)
+    ).drop("group_number")
 
 
 def res_mom(df, sfx, __min, incl, skip):
@@ -10983,7 +11429,12 @@ def res_mom(df, sfx, __min, incl, skip):
         .over(["id_int", "group_number"])
     )
     df = (
-        df.filter(col("hml").is_not_null() & col("smb_ff").is_not_null())
+        # Fix within-group row order before the OLS: base_data comes from a
+        # multithreaded DuckDB scan whose row order is nondeterministic, and the
+        # least-squares solve is float-order-sensitive, so an unsorted input
+        # yields byte-different residuals across runs.
+        df.sort(["id_int", "group_number", "aux_date"])
+        .filter(col("hml").is_not_null() & col("smb_ff").is_not_null())
         .with_columns(
             res=res_exp.alias("res"),
             max_date_gn=pl.max("aux_date").over("group_number"),
@@ -10998,30 +11449,6 @@ def res_mom(df, sfx, __min, incl, skip):
         .agg((col("res").mean() / col("res").std()).fill_nan(None).alias(f"resff3_{incl}_{skip}"))
     )
     return df
-
-
-def gen_aux_maps(sfx):
-    """
-    Description:
-        Build date-group maps from suffix window length.
-
-    Steps:
-        1) Map suffix to k: {'_21d':1,'_126d':6,'_252d':12,'_1260d':60} or int(sfx).
-        2) Build aux_date range from start index to END_DATE month index.
-        3) Create grouped mappings via group_mapping_dfs(date_idx, k).
-
-    Output:
-        List of {'group_map','date_map'} mappings.
-    """
-    parameter_mapping = {"_21d": 1, "_126d": 6, "_252d": 12, "_1260d": 60}
-    date_aux = END_DATE.month + END_DATE.year * 12
-    if sfx in parameter_mapping:
-        date_idx = list(range(23113 - parameter_mapping[sfx], date_aux + 1))
-        aux_maps = group_mapping_dfs(date_idx, parameter_mapping[sfx])
-    else:
-        date_idx = list(range(23113 - int(sfx), date_aux + 1))
-        aux_maps = group_mapping_dfs(date_idx, int(sfx))
-    return aux_maps
 
 
 def rvol(df, sfx, __min):
@@ -11127,13 +11554,21 @@ def capm(df, sfx, __min):
     Output:
         LazyFrame with f'beta{sfx}' and f'ivol_capm{sfx}'.
     """
-    df = df.group_by(["id_int", "group_number"]).agg(
-        [
-            (pl.cov("ret_exc", "mktrf") / pl.var("mktrf")).alias(f"beta{sfx}"),
-            (col("ret_exc") - col("mktrf") * (pl.cov("ret_exc", "mktrf") / pl.var("mktrf")))
-            .std()
-            .alias(f"ivol_capm{sfx}"),
-        ]
+    # Fix within-group row order before the reductions: base_data comes from a
+    # multithreaded DuckDB scan whose row order is nondeterministic, and cov/var/
+    # std are float-order-sensitive, so an unsorted input yields byte-different
+    # betas across runs.
+    df = (
+        df.sort(["id_int", "group_number", "aux_date"])
+        .group_by(["id_int", "group_number"])
+        .agg(
+            [
+                (pl.cov("ret_exc", "mktrf") / pl.var("mktrf")).alias(f"beta{sfx}"),
+                (col("ret_exc") - col("mktrf") * (pl.cov("ret_exc", "mktrf") / pl.var("mktrf")))
+                .std()
+                .alias(f"ivol_capm{sfx}"),
+            ]
+        )
     )
     return df
 
@@ -14441,7 +14876,7 @@ def portfolios(
             "eom",
             "source_crsp",
             "comp_exchg",
-            "crsp_exchcd",
+            "crsp_nyse",
             "size_grp",
             "ret_exc",
             "ret_exc_lead1m",
@@ -14453,13 +14888,20 @@ def portfolios(
         + ["excntry"]
     )
 
-    cast_exclude = {"id", "eom", "source_crsp", "size_grp", "excntry"}
+    cast_exclude = {
+        "id",
+        "eom",
+        "source_crsp",
+        "size_grp",
+        "excntry",
+        "crsp_nyse",
+    }
     cast_cols = [c for c in columns if c not in cast_exclude]
 
     if bps == "nyse":
         bp_stock_expr = (
-            ((pl.col("crsp_exchcd") == 1) & pl.col("comp_exchg").is_null())
-            | ((pl.col("comp_exchg") == 11) & pl.col("crsp_exchcd").is_null())
+            ((pl.col("crsp_nyse") == 1) & pl.col("comp_exchg").is_null())
+            | ((pl.col("comp_exchg") == 11) & (pl.col("crsp_nyse") != 1))
         ).alias("bp_stock")
     else:  # "non_mc"
         bp_stock_expr = pl.col("size_grp").is_in(["mega", "large", "small"]).alias("bp_stock")

@@ -2,40 +2,42 @@
 
 ``comp_industry`` merges the daily SIC/NAICS panel (``comp_other``) and the
 daily GICS panel (``comp_hgics``) into a single daily Compustat industry file.
-Its DuckDB SQL does the following, per ``gvkey``:
+It is implemented as a lazy Polars plan (Issue #195) that reproduces the
+semantics of the historical DuckDB SQL, per ``gvkey``:
 
-1. ``FULL OUTER JOIN`` ``comp_gics`` and ``comp_other`` on ``(gvkey, date)``.
-2. ``aux_date = LEAD(date) OVER (PARTITION BY gvkey ORDER BY date) - 1 day``,
-   with ``COALESCE(..., date)`` so the *last* row of each gvkey gets
-   ``aux_date = date``.
-3. Rows with ``date <> aux_date`` are "gap" anchors; ``generate_series(date,
-   aux_date)`` expands them into a contiguous daily axis. The expanded rows are
-   ``LEFT JOIN``-ed back to the anchors on ``(gvkey, date)``, so **only the
-   anchor date keeps its codes — the in-between days carry NULL codes** (the
-   axis is made continuous, but codes are intentionally not forward-filled).
+1. Full outer join of ``comp_gics`` and ``comp_other`` on ``(gvkey, date)``.
+2. ``aux_date`` = next date within the gvkey minus 1 day, falling back to
+   ``date`` itself so the *last* row of each gvkey gets ``aux_date = date``.
+3. Rows with ``date <> aux_date`` are "gap" anchors; the days in
+   ``[date + 1, aux_date]`` are emitted to make the daily axis contiguous, but
+   **only the anchor date keeps its codes — the in-between days carry NULL
+   codes** (codes are intentionally not forward-filled).
 4. Rows with ``date = aux_date`` (the terminal row of every gvkey, plus any
-   single-date gvkey) pass through unchanged via the ``continuous`` branch.
-5. ``continuous`` UNION ``gaps`` → ``SELECT DISTINCT ON (gvkey, date)`` ordered
-   by ``(gvkey, date)``.
+   single-date gvkey) pass through unchanged.
+5. Joined rows and gap rows are concatenated and sorted by ``(gvkey, date)``.
+
+Row-for-row equivalence with the pre-rewrite DuckDB SQL is guarded separately
+by ``tests/unit/test_comp_industry_legacy_equivalence.py``, which runs the
+legacy SQL verbatim against the same inputs.
 
 Coverage here, keyed to the behaviors Issue #155 calls out:
 
 - Gap-fill continuity, including multi-span chaining within one gvkey.
-- Per-gvkey isolation of the ``PARTITION BY`` window (one gvkey's gap range
-  must not bleed into another's rows on the same calendar date).
+- Per-gvkey isolation of the next-date window (one gvkey's gap range must not
+  bleed into another's rows on the same calendar date).
 - Full-outer-join shape when a date is present in only one source.
 - Same-(gvkey, date) coalesce: a date present in *both* sources collapses to a
   single row carrying GICS *and* SIC/NAICS.
-- ``COALESCE(LEAD..., date)`` terminal-row handling for single-date gvkeys
+- Terminal-row (``aux_date`` fallback) handling for single-date gvkeys
   (present in both sources, and present in only one source).
 - Terminal-row preservation for multi-date gvkeys.
 - Dedup to unique ``(gvkey, date)``.
 - Sort by ``(gvkey, date)``.
 - Output schema (column names + dtypes), to catch silent dtype drift.
-- Robust cleanup of the transient ``aux_comp_ind.ddb`` file.
+- A stale ``aux_comp_ind.ddb`` left behind by pre-rewrite runs is ignored.
 - A regression golden fixture locking the output bit-for-bit.
 
-To exercise only ``comp_industry``'s SQL we stub its two upstream sub-calls
+To exercise only ``comp_industry``'s merge logic we stub its two upstream sub-calls
 (``comp_sic_naics``, ``hgics_join``) to no-ops — see
 ``tests.golden.comp_industry_stubs`` — and write ``comp_other.parquet`` /
 ``comp_hgics.parquet`` directly.
@@ -452,17 +454,17 @@ class TestCompIndustry:
         assert_sorted_by_keys(result, "gvkey", "date")
 
     # ------------------------------------------------------------------
-    # Operational: transient DuckDB file
+    # Operational: stale legacy DuckDB file
     # ------------------------------------------------------------------
 
     def test_runs_despite_stale_aux_ddb(self) -> None:
-        """A stale ``aux_comp_ind.ddb`` from a prior run must not break the call.
+        """A stale ``aux_comp_ind.ddb`` from a pre-rewrite run must not break the call.
 
-        The guarantee in the code is the ``unlink(missing_ok=True)`` *before*
-        connecting: a leftover file is removed so a fresh DuckDB database is
-        created cleanly. We plant non-DuckDB bytes at that path and assert the
-        run still succeeds and produces correct output (which it cannot do if
-        the stale file poisoned the new connection).
+        The historical DuckDB implementation persisted its scratch database at
+        this path, so interim directories from older runs may still contain
+        one. The Polars rewrite never opens it: we plant non-DuckDB bytes at
+        that path and assert the run still succeeds, produces correct output,
+        and leaves the file untouched.
         """
         comp_other = _other_frame(["100000"], [date(2020, 1, 1)], [7372], [511210])
         comp_hgics = _gics_frame(["100000"], [date(2020, 1, 1)], [10101010])
@@ -475,17 +477,16 @@ class TestCompIndustry:
 
         result = pl.read_parquet(self.output_path)
         assert result.height == 1, (
-            f"Expected 1 output row after stale-ddb recovery, got {result.height}"
+            f"Expected 1 output row despite a stale ddb file, got {result.height}"
         )
         row = result.row(0, named=True)
         assert (row["sic"], row["naics"], row["gics"]) == (7372, 511210, 10101010), (
             f"Expected codes (7372, 511210, 10101010), "
             f"got {(row['sic'], row['naics'], row['gics'])}"
         )
-        # The stale bytes were replaced by a real DuckDB database.
-        assert self.ddb_path.exists(), "Expected aux_comp_ind.ddb to exist after a successful run"
-        assert self.ddb_path.read_bytes()[:23] != b"not a valid duckdb file", (
-            "Stale DuckDB file was not replaced by a valid database"
+        # The rewrite neither reads nor rewrites the legacy scratch database.
+        assert self.ddb_path.read_bytes() == b"not a valid duckdb file", (
+            "aux_comp_ind.ddb should be ignored by the Polars implementation"
         )
 
     # ------------------------------------------------------------------

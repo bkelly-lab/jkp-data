@@ -19,6 +19,9 @@ __Output folder__ (`other_output/`):
 
 __Impact__:
 - Adds international coverage and the DHS/Mispricing/FF5/momentum series across the factor outputs, and adds the 11 new factor sort variables above to the per-country and combined characteristics files. In the monthly/daily factor files the columns `smb_ff`, `inv`, `roe`, and `smb_hxz` are renamed/superseded (see above); consumers keying on those names must update.
+## 04-07-2026
+__Changes__:
+- Replaced `crsp_shrcd` and `crsp_exchcd` with `primaryexch` and `conditionaltype` in the characteristics output ([#205](https://github.com/bkelly-lab/jkp-data/pull/205))
 
 ## 27-04-2026
 __Changes__:

@@ -10,13 +10,13 @@ import polars as pl
 import pytest
 
 from jkp.data import aux_functions
-from jkp.data.aux_functions import base_data_filter_exp, gen_aux_maps, process_map_chunks
+from jkp.data.aux_functions import base_data_filter_exp, process_window
 from jkp.data.config import ROLLING_DAILY_SPECS
 
 
-def _process_map_chunks_funcs_keys() -> set[str]:
-    """Parse the `funcs` dict literal inside process_map_chunks via AST."""
-    source = inspect.getsource(process_map_chunks)
+def _process_window_funcs_keys() -> set[str]:
+    """Parse the `funcs` dict literal inside process_window via AST."""
+    source = inspect.getsource(process_window)
     tree = ast.parse(textwrap.dedent(source))
     for node in ast.walk(tree):
         if (
@@ -27,7 +27,7 @@ def _process_map_chunks_funcs_keys() -> set[str]:
             and isinstance(node.value, ast.Dict)
         ):
             return {k.value for k in node.value.keys if isinstance(k, ast.Constant)}
-    raise AssertionError("funcs dict not found in process_map_chunks source")
+    raise AssertionError("funcs dict not found in process_window source")
 
 
 SPEC_PAIRS = [(sfx, var) for sfx, _, vars_ in ROLLING_DAILY_SPECS for var in vars_]
@@ -43,18 +43,18 @@ def test_rolling_daily_specs_non_empty() -> None:
 
 
 @pytest.mark.parametrize(("sfx", "var"), SPEC_PAIRS)
-def test_var_dispatches_in_process_map_chunks(sfx: str, var: str) -> None:
-    """Every var in ROLLING_DAILY_SPECS must be a key in process_map_chunks `funcs`."""
-    keys = _process_map_chunks_funcs_keys()
+def test_var_dispatches_in_process_window(sfx: str, var: str) -> None:
+    """Every var in ROLLING_DAILY_SPECS must be a key in process_window `funcs`."""
+    keys = _process_window_funcs_keys()
     assert var in keys, (
-        f"ROLLING_DAILY_SPECS[{sfx}] var '{var}' has no handler in process_map_chunks"
+        f"ROLLING_DAILY_SPECS[{sfx}] var '{var}' has no handler in process_window"
     )
 
 
 @pytest.mark.parametrize(("sfx", "var"), SPEC_PAIRS)
 def test_var_handler_is_callable(sfx: str, var: str) -> None:
     """The dispatched handler resolves to a callable on aux_functions."""
-    keys = _process_map_chunks_funcs_keys()
+    keys = _process_window_funcs_keys()
     assert var in keys
     handler_name = {"mktvol": "mktrf_vol"}.get(var, var)
     handler = getattr(aux_functions, handler_name, None)
@@ -67,11 +67,3 @@ def test_base_data_filter_exp_accepts_var(var: str) -> None:
     expr = base_data_filter_exp(var)
     assert isinstance(expr, pl.Expr)
 
-
-@pytest.mark.parametrize("sfx", SPEC_SUFFIXES)
-def test_gen_aux_maps_supports_suffix(sfx: str) -> None:
-    """gen_aux_maps must build non-empty mappings for every spec suffix."""
-    maps = gen_aux_maps(sfx)
-    assert maps, f"gen_aux_maps({sfx!r}) returned empty"
-    for m in maps:
-        assert "group_map" in m and "date_map" in m
