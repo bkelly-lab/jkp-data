@@ -38,7 +38,7 @@ def _factor_df(rows: list[tuple[str, int, float | None]]) -> pl.DataFrame:
             "excntry": [r[0] for r in rows],
             "eom": [_eom(r[1]) for r in rows],
             "mktrf": [r[2] for r in rows],
-            "hml": [0.01] * len(rows),
+            "hml_ff": [0.01] * len(rows),
             "smb_ff3": [0.01] * len(rows),
         },
         schema=AP_FACTORS_MONTHLY_INPUT_SCHEMA,

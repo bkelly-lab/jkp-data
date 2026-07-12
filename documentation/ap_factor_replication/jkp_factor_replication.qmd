@@ -21,30 +21,8 @@ jupyter: python3
 
 
 
-## Overview
-
-This note documents our work on replicating the pricing factors from
-several prominent asset pricing models. We would like to thank the [WRDS team](https://wrds-www.wharton.upenn.edu/pages/wrds-research/applications/risk-factors-and-industry-benchmarks/fama-french-factors-ciz-format/),
-as well as Professors [Robert F. Stambaugh](https://fnce.wharton.upenn.edu/profile/stambaug/) and [Kenneth R. French](https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/data_library.html)
-for providing the data and/or code necessary to make this Python
-replication.
-
-The `ap_factors_monthly.parquet` output produced by `jkp build` contains
-country-level monthly returns for:
-
-- **FF3** (Fama–French 3): `smb_ff3`, `hml`
-- **FF5** (Fama–French 5): `smb_ff5`, `hml`, `rmw`, `cma`
-- **UMD** (FF momentum): `umd_ff`
-- **HXZ q-factors**: `me_hxz`, `ia_hxz`, `roe_hxz`
-- **MP (Stambaugh–Yuan mispricing)**: `smb_mispricing`,
-  `mispricing_mgmt`, `mispricing_perf`
-- **DHS (Daniel–Hirshleifer–Sun behavioral)**: `fin_dhs`, `pead_dhs`
-
-This document benchmarks the USA replications against the
-original / WRDS-distributed series stored in
-`factor_comparison/Reference_data/`.
-
-## Contents
+<details>
+<summary>**Contents**</summary>
 
 - [Data & method](#data-method)
 - [FF3 — Fama–French 3 factors](#ff3-famafrench-3-factors)
@@ -57,59 +35,52 @@ original / WRDS-distributed series stored in
 - [Conclusion](#conclusion)
 - [Appendix: Replication of daily data](#appendix-replication-of-daily-data)
 
+</details>
+
+## Introduction
+
+This note documents our Python replication of several prominent asset
+pricing factor models and their extension to the international markets in the
+JKP database. We thank the [WRDS team](https://wrds-www.wharton.upenn.edu/pages/wrds-research/applications/risk-factors-and-industry-benchmarks/fama-french-factors-ciz-format/),
+as well as Professors [Kenneth R. French](https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/data_library.html), [Robert F. Stambaugh](https://fnce.wharton.upenn.edu/profile/stambaug/), and [Lin Sun](https://sites.google.com/view/linsunhome),
+for providing the data and/or code that made this replication possible.
+
 ## Data & method
 
-This document benchmarks the **US** replications against the original /
-WRDS-distributed series. For the international panels, we have made
-discretionary choices in the construction of each factor that try to
-emulate the spirit of the original US procedure (e.g., NYSE-style size
-breakpoints replaced with country-specific breakpoints, accounting
-conventions adapted to each excntry's Compustat coverage, etc.).
+We assess the quality of our replication by comparing the US factors against
+the published reference series. For the international panels, no official
+reference data exist, so we make discretionary implementation choices that
+follow the spirit of the original US methodologies. Our implementation
+produces both the US and international factor return series, together with
+the underlying firm characteristics.
 
-Factor construction is implemented in `ap_factor_model_data` in
-[`src/jkp/data/aux_functions.py`](../../src/jkp/data/aux_functions.py),
-which unifies the per-model builders (FF3, FF5,
-UMD, HXZ q-factors, Stambaugh–Yuan mispricing) into the
-`ap_factors_monthly.parquet` and `ap_factors_daily.parquet` outputs
-under `data/interim/`.
+### Factors we replicate:
 
-Some drift from the published references is expected: Compustat is
-updated continuously, so accounting variables for older fiscal years
-get revised over time, which feeds into any sort that conditions on
-book equity, profitability, or investment. To reduce this vintage
-drift for the Stambaugh–Yuan factors, the official mispricing-factor
-replication package was run during the development of the Python code,
-so the JKP MP series and the reference series are constructed from
-roughly the same Compustat snapshot.
-
-### What the factors are
-
-- **FF3 (Fama–French 1992, 1993)** — `smb_ff3` is the size factor
-  (small-minus-big) from a 2×3 size × book-to-market sort; `hml` is
-  the value factor (high-minus-low book-to-market) from the same sort.
-- **FF5 (Fama–French 2015)** — built from a 2×3 size × {B/M,
-  profitability, investment} sort. `smb_ff5` is the redefined size
-  factor (averaged across the three sorts); `hml` is value; `rmw` is
-  robust-minus-weak operating profitability; `cma` is
-  conservative-minus-aggressive investment.
-- **UMD (Carhart 1997 / Fama–French momentum)** — `umd_ff` is the
-  momentum factor: winners-minus-losers based on prior 12-month return
-  skipping the most recent month, within size buckets.
-- **HXZ q-factors (Hou, Xue, and Zhang 2015)** — `me_hxz` (size),
-  `ia_hxz` (investment), `roe_hxz` (profitability), constructed from a
-  2×3×3 triple sort on size, investment-to-assets, and return on
-  equity.
-- **MP (Stambaugh and Yuan 2017)** — `mispricing_mgmt` and
-  `mispricing_perf` are long–short composite mispricing factors built
-  from 11 anomalies grouped into a "management" cluster and a
-  "performance" cluster; `smb_mispricing` is the size factor from the
-  same triple sort.
-- **DHS (Daniel, Hirshleifer, and Sun 2020)** — two behavioral factors.
-  `fin_dhs` (financing) is a long–short factor from the overlap of net
-  stock issuance and composite share issuance, on an annual June
-  rebalance; `pead_dhs` (post-earnings-announcement drift) is a
-  monthly-rebalanced factor on the cumulative abnormal return around
-  quarterly earnings announcements. Both are 2×5 size-conditional sorts.
+- **FF3** (Fama–French 1992, 1993, 2023) — SMB is the size factor (small minus big)
+  and HML is the value factor (high minus low book-to-market), both
+  constructed from a 2×3 size × book-to-market sort.
+- **FF5** (Fama–French 2015) — SMB is the redefined size factor (averaged
+  across 2×3 size × book-to-market, profitability, and investment sorts),
+  HML is the value factor, RMW is the profitability factor (robust minus
+  weak), and CMA is the investment factor (conservative minus aggressive).
+- **UMD** (Carhart 1997) — UMD is the momentum factor (up minus down),
+  constructed from prior 12-month returns excluding the most recent month
+  within size buckets.
+- **HXZ** q-factors (Hou, Xue, and Zhang 2015) — ME is the size factor, IA is
+  the investment factor, and ROE is the profitability factor, all
+  constructed from a 2×3×3 sort on size, investment-to-assets, and return
+  on equity.
+- **MP** (Stambaugh and Yuan 2017) — MGMT and PERF are long–short composite
+  mispricing factors constructed from 11 anomalies grouped into management
+  and performance clusters, while SMB is the size factor from the
+  corresponding 2×3 size-by-mispricing sorts.
+- **DHS** (Daniel, Hirshleifer, and Sun 2020) — FIN is the financing factor,
+  constructed from the overlap of net stock issuance and composite share
+  issuance, and PEAD is the post-earnings-announcement drift factor,
+  constructed from cumulative abnormal returns around quarterly earnings
+  announcements. Our implementation additionally produces daily FIN and
+  PEAD factors. Because the original code does not provide daily reference
+  series, these daily factors are not included in the Appendix.
 
 ```{python}
 #| label: setup
@@ -127,6 +98,7 @@ from plot_cumsum_usa import (
     full_sample_summary,
     load_jkp_usa,
     load_jkp_usa_daily,
+    model_axis_limits,
     single_panel_figure,
 )
 
@@ -143,9 +115,15 @@ def appendix_daily(name):
         display(HTML(df.to_pandas().to_html(index=False)))
 
 
+_model_limits = {}
+
+
 def factor_tab(name, factor):
     spec = specs[name]
-    fig = single_panel_figure(spec, factor, jkp)
+    if name not in _model_limits:
+        _model_limits[name] = model_axis_limits(spec, jkp)
+    xlim, ylim = _model_limits[name]
+    fig = single_panel_figure(spec, factor, jkp, xlim=xlim, ylim=ylim)
     display(fig)
     plt.close(fig)
 
@@ -168,24 +146,28 @@ def section_tables(name):
     display(HTML("\n".join(parts)))
 ```
 
-**Sample windows.**
+### Sample windows:
 
-- **FF3 and UMD — 1926 onwards.** We compare against the full published
-  FF3 and momentum series, which begin in 1926.
-- **FF5 — 1963 onwards.** The published FF5 series begins in July 1963,
-  reflecting the Compustat coverage required for the profitability and
-  investment factors.
-- **HXZ — January 1972 onwards.** We follow the Hou, Xue, and Zhang
+- **FF3 and UMD** — July 1926 onwards. We compare against the full
+  published FF3 and momentum series, which begin in July 1926.
+- **FF5** — July 1963 onwards. The published FF5 series begins in July
+  1963, reflecting the Compustat coverage required for the profitability
+  and investment factors.
+- **HXZ** — January 1972 onwards. We follow the Hou, Xue, and Zhang
   methodology and do not use the Hou et al. (2019) 1967–1972 backward
   extension. Compustat coverage in those years is thin. The US sample
   therefore starts in January 1972, as in the original paper.
-- **MP — 1963 to 2016.** The comparison spans the published
-  Stambaugh–Yuan series, which starts in January 1963 and ends in
-  December 2016.
-- **DHS — 1968 onwards (PEAD ~1971 onwards).** FIN begins in July 1968;
-  PEAD begins in October 1971, once quarterly earnings-announcement
-  coverage is dense enough. The comparison is against the original
-  Daniel–Hirshleifer–Sun SAS reference series.
+- **MP** — January 1963 to December 2016. The comparison spans the
+  published Stambaugh–Yuan series, which starts in January 1963 and ends
+  in December 2016.
+- **DHS** — July 1968 onwards (PEAD October 1971 onwards). FIN begins in
+  July 1968; PEAD begins in October 1971, once quarterly
+  earnings-announcement coverage is dense enough. The
+  Daniel–Hirshleifer–Sun reference series end in December 2024.
+
+These windows describe the reference series only. Our code produces the
+factor return series and characteristics through the most recent available
+date, even where the reference series was not extended that far.
 
 ## FF3 — Fama–French 3 factors
 
@@ -311,13 +293,6 @@ section_tables("MP")
 
 ## DHS — Daniel–Hirshleifer–Sun behavioral factors
 
-The reference here is the original Daniel–Hirshleifer–Sun SAS program
-(Lin Sun's code). That program produces monthly factors only, so we
-benchmark the monthly series below. Note that our port additionally
-produces daily FIN and PEAD factors (in `ap_factors_daily.parquet`),
-which the original code does not — there is no daily reference series to
-compare them against, so they are not shown here.
-
 ::: {.panel-tabset}
 
 ### FIN
@@ -340,6 +315,10 @@ section_tables("DHS")
 
 ## Reasons for divergence
 
+- **Compustat restatements.** Compustat is updated continuously, so
+  accounting variables for older fiscal years get revised over time,
+  which shifts any sort that conditions on accounting data.
+
 - **Differences in CRSP Legacy vs CRSP V2.** Historical fields
   — delisting returns, share codes, exchange codes — differ between
   the two CRSP products.
@@ -353,18 +332,19 @@ section_tables("DHS")
 Overall, the replicated JKP factor series closely track the published
 U.S. factors and are suitable for use as research substitutes. Beyond
 reproducing the U.S. factors, this project extends the methodology to
-the international sample, providing Fama–French, Hou–Xue–Zhang, and
-Stambaugh–Yuan style factors for countries where no comparable public
-benchmark is available. The entire construction process is open
-source and can be reproduced end-to-end from raw WRDS data.
+the international sample, providing factors for countries where no
+comparable public benchmark is available. The entire construction
+process is open source and can be reproduced end-to-end from raw WRDS
+data.
 
-**Note on downstream characteristics.** To improve consistency with
+Note on downstream characteristics. To improve consistency with
 the published factor series, we implemented several revisions to the
 factor construction methodology. As a result, these changes propagate
 to all factor-dependent characteristics and materially affect the
-values of `mispricing_mgmt`, `mispricing_perf`, `iskew_ff3_21d`,
-`resff3_12_1`, `resff3_6_1`, `ivol_ff3_21d`, `iskew_hxz4_21d`, and
-`ivol_hxz4_21d` throughout the sample.
+values of the factors and characteristics associated with
+`mispricing_mgmt`, `mispricing_perf`, `iskew_ff3_21d`, `resff3_12_1`,
+`resff3_6_1`, `ivol_ff3_21d`, `iskew_hxz4_21d`, and `ivol_hxz4_21d`
+throughout the sample.
 
 ## Appendix: Replication of daily data
 
@@ -415,3 +395,20 @@ appendix_daily("MP")
 </details>
 ```
 
+## References {#references}
+
+Carhart, M.M. (1997) 'On persistence in mutual fund performance', *The Journal of Finance*, 52(1), pp. 57–82. Available at: [https://doi.org/10.1111/j.1540-6261.1997.tb03808.x](https://doi.org/10.1111/j.1540-6261.1997.tb03808.x).
+
+Daniel, K., Hirshleifer, D. and Sun, L. (2020) 'Short- and long-horizon behavioral factors', *The Review of Financial Studies*, 33(4), pp. 1673–1736. Available at: [https://doi.org/10.1093/rfs/hhz069](https://doi.org/10.1093/rfs/hhz069).
+
+Fama, E.F. and French, K.R. (1993) 'Common risk factors in the returns on stocks and bonds', *Journal of Financial Economics*, 33(1), pp. 3–56. Available at: [https://doi.org/10.1016/0304-405X(93)90023-5](https://doi.org/10.1016/0304-405X(93)90023-5).
+
+Fama, E.F. and French, K.R. (2015) 'A five-factor asset pricing model', *Journal of Financial Economics*, 116(1), pp. 1–22. Available at: [https://doi.org/10.1016/j.jfineco.2014.10.010](https://doi.org/10.1016/j.jfineco.2014.10.010).
+
+Fama, E.F. and French, K.R. (2023) *Production of U.S. Rm-Rf, SMB, and HML in the Fama-French Data Library*. Chicago Booth Research Paper No. 23-22. Available at: [https://doi.org/10.2139/ssrn.4629613](https://doi.org/10.2139/ssrn.4629613).
+
+Hou, K., Xue, C. and Zhang, L. (2015) 'Digesting anomalies: An investment approach', *The Review of Financial Studies*, 28(3), pp. 650–705. Available at: [https://doi.org/10.1093/rfs/hhu068](https://doi.org/10.1093/rfs/hhu068).
+
+Jensen, T.I., Kelly, B. and Pedersen, L.H. (2023) 'Is there a replication crisis in finance?', *The Journal of Finance*, 78(5), pp. 2465–2518. Available at: [https://doi.org/10.1111/jofi.13249](https://doi.org/10.1111/jofi.13249).
+
+Stambaugh, R.F. and Yuan, Y. (2017) 'Mispricing factors', *The Review of Financial Studies*, 30(4), pp. 1270–1315. Available at: [https://doi.org/10.1093/rfs/hhw107](https://doi.org/10.1093/rfs/hhw107).

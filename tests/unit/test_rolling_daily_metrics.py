@@ -1696,7 +1696,7 @@ class TestPrepareDailyCorr:
                 "date": all_dates,
                 "mktrf": [0.005] * len(all_dates),
                 "smb_ff3": [0.001] * len(all_dates),
-                "hml": [0.001] * len(all_dates),
+                "hml_ff": [0.001] * len(all_dates),
                 "me_hxz": [0.001] * len(all_dates),
                 "ia_hxz": [0.001] * len(all_dates),
                 "roe_hxz": [0.001] * len(all_dates),

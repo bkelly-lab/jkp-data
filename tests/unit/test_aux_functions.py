@@ -285,7 +285,7 @@ def test_dsf1_unique_id_int_date(test_paths) -> None:
             "excntry": ["USA"] * 3,
             "date": [date(2020, 1, 2), date(2020, 1, 3), date(2020, 1, 6)],
             "mktrf": [0.001, 0.002, 0.003],
-            "hml": [0.0, 0.0, 0.0],
+            "hml_ff": [0.0, 0.0, 0.0],
             "smb_ff3": [0.0, 0.0, 0.0],
             "ia_hxz": [0.0, 0.0, 0.0],
             "roe_hxz": [0.0, 0.0, 0.0],

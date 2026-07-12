@@ -1361,10 +1361,10 @@ class TestFFComputeFactors:
     """Tests for ff_compute_factors()."""
 
     def test_output_columns(self):
-        """Output has excntry, date, smb_ff3, smb_ff5, hml, rmw, cma."""
+        """Output has excntry, date, smb_ff3, smb_ff5, hml_ff, rmw_ff, cma_ff."""
         ccm4 = _make_ccm4_full()
         result = ff_compute_factors(ccm4)
-        for col in ("excntry", "date", "smb_ff3", "smb_ff5", "hml", "rmw", "cma"):
+        for col in ("excntry", "date", "smb_ff3", "smb_ff5", "hml_ff", "rmw_ff", "cma_ff"):
             assert col in result.columns
 
     def test_hml_is_high_minus_low(self, tolerance):
@@ -1426,7 +1426,7 @@ class TestFFComputeFactors:
         result = ff_compute_factors(ccm4)
         # BM leg only: SH=0.30, BH=0.10, SL=0.01, BL=0.02 (each one stock, w=1)
         # HML = (SH+BH)/2 - (SL+BL)/2 = 0.20 - 0.015 = 0.185
-        np.testing.assert_allclose(result["hml"][0], 0.185, **tolerance.STANDARD)
+        np.testing.assert_allclose(result["hml_ff"][0], 0.185, **tolerance.STANDARD)
 
     def test_smb_ff3_vs_smb_ff5_differ(self):
         """smb_ff3 uses BM leg only; smb_ff5 averages BM/OP/INV legs."""
@@ -1466,7 +1466,7 @@ class TestFFComputeFactors:
         ccm4 = pl.DataFrame(data, schema=schema)
         result = ff_compute_factors(ccm4)
         # SH and BH are null → HML is null
-        assert result["hml"][0] is None
+        assert result["hml_ff"][0] is None
 
 
 # =============================================================================

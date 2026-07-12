@@ -1,6 +1,6 @@
 """Unit tests for ``residual_momentum`` (aux_functions).
 
-These assert SEMANTICS (min-obs gating, both horizon variants, the hml-null
+These assert SEMANTICS (min-obs gating, both horizon variants, the hml_ff-null
 branch, empty input, and a numpy OLS value oracle), not fixture bytes. Inputs
 are the shared synthetic builders in ``tests.golden.residual_momentum_inputs``.
 """
@@ -52,11 +52,11 @@ def _oracle_at(
         omitted: with <=4 stocks per eom in these fixtures, QUANTILE_DISC at
         0.001/0.999 resolves to the group min/max, so the clip is a no-op.
     Steps:
-        1) Slice ret_exc / mktrf / hml / smb_ff3 over the 36 months ending at the
+        1) Slice ret_exc / mktrf / hml_ff / smb_ff3 over the 36 months ending at the
            terminal (clamped to grid start) for (sid, country); drop any month
            with a null return or null factor (mirrors the prep mktrf gate and
-           res_mom's hml/smb-null filter).
-        2) OLS ``ret_exc ~ 1 + mktrf + hml + smb_ff3``; residuals = y - X@beta.
+           res_mom's hml_ff/smb-null filter).
+        2) OLS ``ret_exc ~ 1 + mktrf + hml_ff + smb_ff3``; residuals = y - X@beta.
         3) Average residuals over aux_date in (T-incl, T-skip]; divide by
            std(ddof=1).
     Output:
@@ -75,7 +75,7 @@ def _oracle_at(
         for e, m, h, s in zip(
             fc["eom"].to_list(),
             fc["mktrf"].to_list(),
-            fc["hml"].to_list(),
+            fc["hml_ff"].to_list(),
             fc["smb_ff3"].to_list(),
             strict=True,
         )
@@ -87,7 +87,7 @@ def _oracle_at(
         m, h, s = fac_by_eom.get(eom, (None, None, None))
         ret = ret_by_eom.get(eom)
         if ret is None or h is None or s is None or m is None:
-            continue  # mirrors res_mom dropping hml/smb-null rows and prep mktrf gate.
+            continue  # mirrors res_mom dropping hml_ff/smb-null rows and prep mktrf gate.
         ys.append(ret)
         xs.append([1.0, m, h, s])
         auxs.append(aux[i])
@@ -144,24 +144,24 @@ def _custom_frames(
     rng = np.random.default_rng(seed)
     n = len(grid)
     mkt = rng.normal(0.0, 0.04, n)
-    hml = rng.normal(0.0, 0.04, n)
+    hml_ff = rng.normal(0.0, 0.04, n)
     smb = rng.normal(0.0, 0.04, n)
     noise = rng.normal(0.0, 0.02, n)
 
     frows: list[dict] = []
     for i, eom in enumerate(grid):
-        m, h, s = float(mkt[i]), float(hml[i]), float(smb[i])
+        m, h, s = float(mkt[i]), float(hml_ff[i]), float(smb[i])
         if i == nuke_idx and nuke == "mktrf":
             m = None
-        if i == nuke_idx and nuke == "hml":
+        if i == nuke_idx and nuke == "hml_ff":
             h = None
         if i == nuke_idx and nuke == "smb":
             s = None
-        frows.append({"excntry": country, "eom": eom, "mktrf": m, "hml": h, "smb_ff3": s})
+        frows.append({"excntry": country, "eom": eom, "mktrf": m, "hml_ff": h, "smb_ff3": s})
 
     wrows: list[dict] = []
     for i in range(first, last + 1):
-        ret = 0.005 + 1.1 * mkt[i] + 0.3 * hml[i] - 0.2 * smb[i] + noise[i]
+        ret = 0.005 + 1.1 * mkt[i] + 0.3 * hml_ff[i] - 0.2 * smb[i] + noise[i]
         rexc: float | None = float(ret)
         rld = 1
         rloc = float(ret) + 1.0
@@ -256,7 +256,7 @@ def test_min_obs_boundary(test_paths) -> None:
 
 @pytest.mark.unit
 def test_hml_null_branch(test_paths) -> None:
-    """id=4 (CA, hml null at m20) still produces finite output; US id=1 is unaffected."""
+    """id=4 (CA, hml_ff null at m20) still produces finite output; US id=1 is unaffected."""
     out = _run(test_paths, 12, 1)
     ca = out.filter(pl.col("id") == 4)
     assert ca.height >= 1
@@ -316,7 +316,7 @@ def test_value_correctness_nonterminal(test_paths, tolerance) -> None:
 @pytest.mark.unit
 def test_value_correctness_ca_partition(test_paths, tolerance) -> None:
     """id=4 (CA) terminal value matches an oracle fit on CA factors with the m20
-    hml-null month dropped: proves per-country partition and that the null row is
+    hml_ff-null month dropped: proves per-country partition and that the null row is
     removed from the regression, not merely the averaging window."""
     out = _run(test_paths, 12, 1)
     terminal = month_grid()[_TERMINAL_IDX]
@@ -357,15 +357,15 @@ def test_min_obs_24_boundary_value(test_paths, tolerance) -> None:
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    "nuke", [None, "mktrf", "ret_exc", "ret_lag_dif", "ret_local", "hml", "smb"]
+    "nuke", [None, "mktrf", "ret_exc", "ret_lag_dif", "ret_local", "hml_ff", "smb"]
 )
 def test_single_month_removal_crosses_min_obs_boundary(test_paths, nuke: str | None) -> None:
     """Nuking one of the 24 chunk months via each drop mechanism pushes the stock
     to 23 obs -> absent; the clean baseline (nuke=None) is present exactly once.
 
     Covers: prep gates (mktrf-null join, ret_exc-null, ret_lag_dif!=1, ret_local==0),
-    the apply_group_filter ret_exc count gate, and res_mom's hml/smb-null filter +
-    internal n>=__min gate (hml/smb rows survive prep but are dropped in res_mom).
+    the apply_group_filter ret_exc count gate, and res_mom's hml_ff/smb-null filter +
+    internal n>=__min gate (hml_ff/smb rows survive prep but are dropped in res_mom).
     """
     world, fcts = _custom_frames(nuke=nuke)
     out = _run_frames(test_paths, 12, 1, world, fcts)

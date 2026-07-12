@@ -7111,7 +7111,7 @@ def prep_data_factor_regs(
     FROM read_parquet('{data_path_posix}');
 
     CREATE OR REPLACE VIEW fcts AS
-    SELECT excntry, eom, mktrf, hml, smb_ff3 AS smb_ff
+    SELECT excntry, eom, mktrf, hml_ff AS hml, smb_ff3 AS smb_ff
     FROM read_parquet('{factors_path_posix}');
 
     CREATE OR REPLACE TABLE __msf2 AS
@@ -7271,7 +7271,7 @@ def prepare_daily(paths: DataPaths, data_path, factors_path):
             "date",
             "mktrf",
             col("smb_ff3").alias("smb_ff"),
-            "hml",
+            col("hml_ff").alias("hml"),
             "me_hxz",
             "ia_hxz",
             "roe_hxz",
@@ -9886,6 +9886,9 @@ def gen_mispricing_data(
     min_obs_world: int = MP_MIN_OBS_PF_WORLD,
 ) -> None:
     """Stambaugh-Yuan 11-anomaly mispricing factor pipeline (incl. CHS DISTRESS), US + WORLD.
+
+    Reference: Stambaugh and Yuan (2017) 'Mispricing factors', Review of
+    Financial Studies 30(4), pp. 1270-1315.
 
     Ported from the MisprProject standalone. Always runs both branches;
     outputs concatenated with `excntry` column. Reads jkp's CIZ raws from
@@ -12996,11 +12999,11 @@ def ff_compute_factors(ccm4: pl.DataFrame, min_stocks_pf: int = FF_MIN_STOCKS_PF
         pl.col("date"),
         smb_ff3=smb_bm,
         smb_ff5=(smb_bm + smb_op + smb_inv) / 3,
-        hml=pl.mean_horizontal("SH", "BH", ignore_nulls=False)
+        hml_ff=pl.mean_horizontal("SH", "BH", ignore_nulls=False)
         - pl.mean_horizontal("SL", "BL", ignore_nulls=False),
-        rmw=pl.mean_horizontal("SR", "BR", ignore_nulls=False)
+        rmw_ff=pl.mean_horizontal("SR", "BR", ignore_nulls=False)
         - pl.mean_horizontal("SW", "BW", ignore_nulls=False),
-        cma=pl.mean_horizontal("SC", "BC", ignore_nulls=False)
+        cma_ff=pl.mean_horizontal("SC", "BC", ignore_nulls=False)
         - pl.mean_horizontal("SA", "BA", ignore_nulls=False),
     )
 
@@ -13341,6 +13344,15 @@ def gen_ff_data(
 ) -> None:
     """
     Description:
+        Reference: Fama and French (1993) 'Common risk factors in the returns
+        on stocks and bonds', Journal of Financial Economics 33(1), pp. 3-56;
+        Fama and French (2015) 'A five-factor asset pricing model', Journal of
+        Financial Economics 116(1), pp. 1-22. WRDS "Fama-French Factors
+        (CIZ Format)":
+        https://wrds-www.wharton.upenn.edu/login/?next=/pages/wrds-research/applications/risk-factors-and-industry-benchmarks/fama-french-factors-ciz-format/
+        Historical book equity from Ken French's data library:
+        https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/data_library.html#BookEquity
+
         Build FF3/FF5/UMD factor and characteristic files for all countries.
         US follows strict-FF methodology on the CIZ universe: raw CRSP CIZ
         tables + Compustat funda, CIZ universe filters, permco-level ME
@@ -13362,7 +13374,7 @@ def gen_ff_data(
 
     Output:
         - <monthly_factors_path>, <daily_factors_path>
-              [excntry, eom/date, smb_ff3, smb_ff5, hml, rmw, cma, umd_ff]
+              [excntry, eom/date, smb_ff3, smb_ff5, hml_ff, rmw_ff, cma_ff, umd_ff]
         - <chars_path>
               [eom, id, me_ff, beme_ff, op_ff, inv_ff, umd_ff]
               (excntry dropped: `id` is globally unique)
@@ -14472,6 +14484,9 @@ def gen_hxz_data(
 ) -> None:
     """
     Description:
+        Reference: Hou, Xue, and Zhang (2015) 'Digesting anomalies: An
+        investment approach', Review of Financial Studies 28(3), pp. 650-705.
+
         HXZ q-factor replication: triple 2×3×3 sort on size × I/A × Roe,
         building R_ME, R_IA, R_ROE at monthly + daily on CRSP CIZ
         msf_v2/dsf_v2 + Compustat funda/fundq. Permno-level (no permco
@@ -15484,9 +15499,8 @@ def load_dff_be(path: Path | None = None) -> pl.DataFrame:
     Description:
         Parse the Davis-Fama-French hand-collected Moody's book equity file
         into a long Polars DataFrame. Missing values (-99.990) become null.
-        Data as used in Davis, Fama and French (2000), extended with
-        non-industrial firms; distributed via Ken French's data library:
-        https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/data_library.html
+        Distributed via Ken French's data library:
+        https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/data_library.html#BookEquity
         The BE year range is derived from the file itself: the first BE
         column corresponds to min(First_Moody_Year), and the number of BE
         columns is the record field count minus the three id fields.
@@ -16687,7 +16701,12 @@ def gen_dhs_data(
     end_q: int = 2025,
 ) -> None:
     """Build the DHS FIN + PEAD factors (US + international) from the jkp data
-    directory (no downloads). Reads
+    directory (no downloads).
+
+    Reference: Daniel, Hirshleifer, and Sun (2020) 'Short- and long-horizon
+    behavioral factors', Review of Financial Studies 33(4), pp. 1673-1736.
+
+    Reads
     raw CRSP/Compustat from `paths.raw_tables_dir` and market_returns_daily from
     `paths.interim_dir`. [beg, end] bound the monthly/annual sample; [beg_q, end_q]
     the quarterly announcement sample (coverage starts ~1971).
