@@ -4,3 +4,7 @@
 !*.html
 !*_files/
 !*_files/**
+!plot_cumsum_usa.py
+!styles.scss
+!Reference_data/
+!Reference_data/**
