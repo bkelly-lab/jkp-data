@@ -19,7 +19,17 @@ execute:
 jupyter: python3
 ---
 
-
+<!--
+Reproduction note. This directory's .gitignore commits only *.qmd and *.html,
+so the supporting files needed to re-render are intentionally NOT in git:
+  - plot_cumsum_usa.py   (the plotting/loading module imported below)
+  - styles.scss          (referenced by the YAML `theme`)
+  - Reference_data/       (the benchmark reference series)
+Rendering also requires a completed pipeline build: the code reads
+../../data/interim/ap_factors_monthly.parquet and ap_factors_daily.parquet
+(produced by `jkp build`). A fresh clone therefore cannot re-render this
+document without those local files and a prior build.
+-->
 
 <details>
 <summary>**Contents**</summary>

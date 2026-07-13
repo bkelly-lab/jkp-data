@@ -14630,8 +14630,11 @@ def ap_factor_model_data(
           - per-stock chars keyed by (id, eom); `id` is globally unique so
             `excntry` is dropped by the per-model chars writers.
         mktrf is sourced from market_returns_*.parquet (mkt_vw_exc).
-        Input/output paths are passed in explicitly by the caller.
-        Extensible: append additional factor-model parquets to the input lists.
+        Unlike the gen_*_data stages this is a pure combinator: it takes explicit
+        Path lists rather than `paths: DataPaths` on purpose, so the set of models
+        to merge stays defined by the caller (the generators mapping in main.py),
+        not hard-coded here. Extensible: append more factor-model parquets to the
+        input lists.
 
     Steps:
         1) Monthly: scan mkt_monthly_path → (excntry, eom, mktrf); outer-join
@@ -15825,12 +15828,12 @@ def _dhs_row_chars(interim_dir: Path, beg: int, end: int) -> pl.DataFrame:
 
     me_lag5 = pl.col("me").shift(5).over("id")  # 5 June rows back (post-June-filter)
     me_ratio = (
-        pl.when((me_lag5 != 0) & (_mgap(5) == 60)).then(pl.col("me") / me_lag5).otherwise(None)
+        pl.when(_mgap(5) == 60).then(safe_div(pl.col("me"), me_lag5, "me_ratio")).otherwise(None)
     )
     adj_lag1 = pl.col("adj_shares").shift(1).over("id")  # 1 June row back (post-June-filter)
     ns_ratio = (
-        pl.when((adj_lag1 != 0) & (_mgap(1) == 12))
-        .then(pl.col("adj_shares") / adj_lag1)
+        pl.when(_mgap(1) == 12)
+        .then(safe_div(pl.col("adj_shares"), adj_lag1, "ns_ratio"))
         .otherwise(None)
     )
     june = (
@@ -15938,7 +15941,7 @@ def _dhs_issuance_chars(msf: pl.DataFrame, raw_dir: Path, beg: int, end: int) ->
     # NS = log(adjusted-shares ratio); div-by-zero or nonpositive ratio -> missing
     adj_csho = pl.col("csho") * pl.col("ajex")
     lag_adj = _lag(adj_csho)
-    ratio = pl.when(lag_adj != 0).then(adj_csho / lag_adj).otherwise(None)
+    ratio = safe_div(adj_csho, lag_adj, "ratio")
 
     # Book-equity waterfall; each component falls back through its alternatives.
     # preferred: redemption value, else liquidating value, else par
@@ -15990,7 +15993,7 @@ def _dhs_issuance_chars(msf: pl.DataFrame, raw_dir: Path, beg: int, end: int) ->
         .over("permno")
     )
     me_lag5 = pl.col("ME_June").shift(5).over("permno")
-    me_ratio = pl.when(me_lag5 != 0).then(pl.col("ME_June") / me_lag5).otherwise(None)
+    me_ratio = safe_div(pl.col("ME_June"), me_lag5, "me_ratio")
     ir = (
         msf.select("permno", "date", "cap", "ret")
         .sort(["permno", "date"])
