@@ -81,19 +81,15 @@ def generate_factor_models(paths: DataPaths, interim: Path) -> dict[str, tuple[P
 
 
 def combine_factor_models(
-    interim: Path, factor_outputs: dict[str, tuple[Path, Path, Path]]
+    paths: DataPaths, factor_outputs: dict[str, tuple[Path, Path, Path]]
 ) -> None:
     """Merge the per-model outputs into the combined AP factor-model data."""
     models = list(factor_outputs.values())
     ap_factor_model_data(
+        paths,
         monthly_factor_inputs=[monthly for monthly, _, _ in models],
         daily_factor_inputs=[daily for _, daily, _ in models],
         chars_inputs=[chars for _, _, chars in models],
-        mkt_monthly_path=interim / "market_returns.parquet",
-        mkt_daily_path=interim / "market_returns_daily.parquet",
-        out_monthly=interim / "ap_factors_monthly.parquet",
-        out_daily=interim / "ap_factors_daily.parquet",
-        out_chars=interim / "ap_factors_characteristics.parquet",
     )
 
 
@@ -185,7 +181,7 @@ def run_pipeline(
         interim / "world_data_prelim.parquet",
     )
     factor_outputs = generate_factor_models(paths, interim)
-    combine_factor_models(interim, factor_outputs)
+    combine_factor_models(paths, factor_outputs)
     firm_age(paths, interim / "world_msf.parquet")
     market_beta(
         paths,

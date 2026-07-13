@@ -14675,48 +14675,49 @@ def _ap_join_factor_inputs(
 
 @measure_time
 def ap_factor_model_data(
+    paths: DataPaths,
     monthly_factor_inputs: list[Path],
     daily_factor_inputs: list[Path],
     chars_inputs: list[Path],
-    mkt_monthly_path: Path,
-    mkt_daily_path: Path,
-    out_monthly: Path,
-    out_daily: Path,
-    out_chars: Path,
 ) -> None:
     """
     Description:
-        Unify factor-model outputs into 3 parquets:
-          - monthly factors keyed by (excntry, eom)
-          - daily   factors keyed by (excntry, date)
-          - per-stock chars keyed by (id, eom); `id` is globally unique so
-            `excntry` is dropped by the per-model chars writers.
-        mktrf is sourced from market_returns_*.parquet (mkt_vw_exc).
-        Unlike the gen_*_data stages this is a pure combinator: it takes explicit
-        Path lists rather than `paths: DataPaths` on purpose, so the set of models
-        to merge stays defined by the caller (the generators mapping in main.py),
-        not hard-coded here. Extensible: append more factor-model parquets to the
-        input lists.
+        Unify factor-model outputs into 3 parquets under paths.interim_dir:
+          - ap_factors_monthly.parquet         keyed by (excntry, eom)
+          - ap_factors_daily.parquet           keyed by (excntry, date)
+          - ap_factors_characteristics.parquet keyed by (id, eom); `id` is
+            globally unique so `excntry` is dropped by the per-model chars writers.
+        mktrf is sourced from market_returns_*.parquet (mkt_vw_exc). The fixed I/O
+        paths (market_returns_*, ap_factors_*) are derived from paths.interim_dir;
+        only the per-model input lists are caller-supplied, so the set of models to
+        merge stays defined by the caller (main.py's generators mapping), not
+        hard-coded here. Extensible: append more factor-model parquets to the lists.
 
     Steps:
-        1) Monthly: scan mkt_monthly_path → (excntry, eom, mktrf); outer-join
+        1) Monthly: scan market_returns.parquet → (excntry, eom, mktrf); outer-join
            each monthly factor parquet on (excntry, eom); sink.
-        2) Daily:   same with date key, mkt_daily_path.
+        2) Daily:   same with date key, market_returns_daily.parquet.
         3) Chars:   outer-join each chars parquet on (id, eom); sink.
 
     Output:
-        - <out_monthly>: [excntry, eom, mktrf] + union of columns from each
-                          factor parquet in monthly_factor_inputs.
-        - <out_daily>:   [excntry, date, mktrf] + union of daily_factor_inputs.
-        - <out_chars>:   [id, eom]              + union of chars_inputs.
+        - ap_factors_monthly.parquet: [excntry, eom, mktrf] + union of columns from
+                                       each factor parquet in monthly_factor_inputs.
+        - ap_factors_daily.parquet:   [excntry, date, mktrf] + union of daily_factor_inputs.
+        - ap_factors_characteristics.parquet: [id, eom]      + union of chars_inputs.
     """
-
-    _ap_join_factor_inputs(mkt_monthly_path, monthly_factor_inputs, "eom").sink_parquet(out_monthly)
-    _ap_join_factor_inputs(mkt_daily_path, daily_factor_inputs, "date").sink_parquet(out_daily)
+    interim = paths.interim_dir
+    _ap_join_factor_inputs(
+        interim / "market_returns.parquet", monthly_factor_inputs, "eom"
+    ).sink_parquet(interim / "ap_factors_monthly.parquet")
+    _ap_join_factor_inputs(
+        interim / "market_returns_daily.parquet", daily_factor_inputs, "date"
+    ).sink_parquet(interim / "ap_factors_daily.parquet")
 
     chars_frames = [pl.scan_parquet(p) for p in chars_inputs]
     _ap_check_no_collisions(chars_frames, ["id", "eom"])
-    _ap_outer_join_all(chars_frames, ["id", "eom"]).sink_parquet(out_chars)
+    _ap_outer_join_all(chars_frames, ["id", "eom"]).sink_parquet(
+        interim / "ap_factors_characteristics.parquet"
+    )
 
 
 def add_ecdf(
