@@ -15802,7 +15802,8 @@ def _dhs_row_chars(interim_dir: Path, beg: int, end: int) -> pl.DataFrame:
     """ROW (ex-US) annual FIN characteristics from jkp's world_data, in the US
     annual_chars schema [id, datadate, YEAR, lagBE, NS, IR] (excntry flows in later
     via the id join to the ROW panel). Computed at each June(t) per id:
-        NS = log(adj_shares_June(t) / adj_shares_June(t-1)), adj_shares=shares*adjfct
+        NS = log(1 + chcsho_12m) = log(adj_shares_June(t) / adj_shares_June(t-1))
+             (reuses jkp's chcsho_12m 12-month share-change characteristic)
         IR = log(me_June(t) / me_June(t-5)) - log(60-month gross cumret)  (DHS 5-yr)
         lagBE = be_me_June(t-1)  (lagged positive-book-equity guard; be_me>0 <=> BE>0;
                                   fin_factor keeps >=0)
@@ -15830,19 +15831,18 @@ def _dhs_row_chars(interim_dir: Path, beg: int, end: int) -> pl.DataFrame:
     me_ratio = (
         pl.when(_mgap(5) == 60).then(safe_div(pl.col("me"), me_lag5, "me_ratio")).otherwise(None)
     )
-    adj_lag1 = pl.col("adj_shares").shift(1).over("id")  # 1 June row back (post-June-filter)
-    ns_ratio = (
-        pl.when(_mgap(1) == 12)
-        .then(safe_div(pl.col("adj_shares"), adj_lag1, "ns_ratio"))
-        .otherwise(None)
-    )
+    # NS reuses jkp's chcsho_12m characteristic (trailing-12m share change, arithmetic
+    # ratio-1 of the same shares*adjfct) instead of recomputing the June-over-June ratio:
+    # NS = log(adj_shares(t)/adj_shares(t-12)) = log(1 + chcsho_12m), sampled at the June
+    # formation. Value-exact vs the prior direct computation on ROW (both use the same
+    # Compustat-Global shares*adjfct); chcsho_12m carries its own 12-month/count guard.
+    ns_expr = pl.when((1 + pl.col("chcsho_12m")) > 0).then((1 + pl.col("chcsho_12m")).log())
     june = (
         pl.scan_parquet(interim_dir / "world_data_prelim.parquet")
         .filter((pl.col("excntry") != US_EXCNTRY) & pl.col("eom").dt.year().is_between(beg, end))
-        .select("id", "eom", "me", "ret", "shares", "adjfct", "be_me")
+        .select("id", "eom", "me", "ret", "be_me", "chcsho_12m")
         .sort(["id", "eom"])
         .with_columns(
-            adj_shares=pl.col("shares") * pl.col("adjfct"),
             # 60-month cumret: 60 valid rows AND the window spans exactly 60
             # contiguous calendar months (window-start eom is 59 months back)
             log_cumret=pl.when((n_valid == 60) & (_mgap(59) == 59))
@@ -15851,7 +15851,7 @@ def _dhs_row_chars(interim_dir: Path, beg: int, end: int) -> pl.DataFrame:
         )
         .filter(pl.col("eom").dt.month() == 6)
         .with_columns(
-            NS=pl.when(ns_ratio > 0).then(ns_ratio.log()).otherwise(None),
+            NS=ns_expr.otherwise(None),
             IR=pl.when(me_ratio > 0).then(me_ratio.log()).otherwise(None) - pl.col("log_cumret"),
             lagBE=pl.col("be_me").shift(1).over("id"),  # prior-June be_me (book/market)
             YEAR=pl.col("eom").dt.year().cast(pl.Int32),
