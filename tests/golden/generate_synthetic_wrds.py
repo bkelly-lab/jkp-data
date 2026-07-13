@@ -990,6 +990,84 @@ def _write(df: pl.DataFrame, name: str) -> None:
     )
 
 
+def gen_acc_std_ann(funda: pl.DataFrame, g_funda: pl.DataFrame) -> pl.DataFrame:
+    """Synthesize jkp's standardized annual accounting panel (``acc_std_ann``).
+
+    The ROW FF/HXZ loaders read book equity (be_x), operating-profit numerator
+    (ope_x), assets (at_x -> asset growth) and net income (ni_x) from this panel
+    via ``_jkp_annual_acc``. The real builder (``standardized_accounting_data``)
+    pulls ~40 Compustat vars this synthetic fixture doesn't carry, so instead we
+    reproduce the panel's *shape and the four fields the loaders consume*:
+
+      * monthly-expanded grid per (gvkey, curcd) from the firm's first to last
+        fiscal report (so the loader's ``at_x.shift(12)`` sees the prior-year
+        report exactly 12 rows back);
+      * ``source`` and the ``_x`` fields populated only on report months (Dec),
+        null on the fill months in between — matching production, where
+        ``_jkp_annual_acc`` filters ``source.is_not_null()``;
+      * ``_x`` fields computed with jkp's standardization identities.
+    """
+    raw_cols = [
+        "seq",
+        "ceq",
+        "pstk",
+        "pstkrv",
+        "pstkl",
+        "txditc",
+        "txdb",
+        "itcb",
+        "at",
+        "lt",
+        "sale",
+        "revt",
+        "cogs",
+        "xsga",
+        "xopr",
+        "xint",
+        "ebitda",
+        "oibdp",
+        "ib",
+    ]
+
+    def _report_rows(df: pl.DataFrame, source: str) -> pl.DataFrame:
+        missing = [c for c in raw_cols if c not in df.columns]
+        df = df.with_columns([pl.lit(None, dtype=pl.Float64).alias(c) for c in missing])
+        pstk_x = pl.coalesce("pstkrv", "pstkl", "pstk")
+        txditc_x = pl.coalesce("txditc", pl.col("txdb") + pl.col("itcb"))
+        seq_x = pl.coalesce("seq", pl.col("ceq") + pstk_x, pl.col("at") - pl.col("lt"))
+        be_x = seq_x + pl.coalesce(txditc_x, pl.lit(0.0)) - pl.coalesce(pstk_x, pl.lit(0.0))
+        opex_x = pl.coalesce("xopr", pl.col("cogs") + pl.col("xsga"))
+        ebitda_x = pl.coalesce("ebitda", "oibdp", pl.coalesce("sale", "revt") - opex_x)
+        return df.select(
+            "gvkey",
+            "datadate",
+            "curcd",
+            source=pl.lit(source),
+            be_x=pl.when(be_x > 0).then(be_x).otherwise(None),
+            ope_x=ebitda_x - pl.col("xint"),
+            at_x=pl.col("at"),
+            ni_x=pl.col("ib"),
+        )
+
+    reports = pl.concat(
+        [_report_rows(funda, "NA"), _report_rows(g_funda, "GLOBAL")], how="vertical_relaxed"
+    ).unique(["gvkey", "datadate"], keep="first")
+
+    # Monthly grid per gvkey (first->last report), month-ends; report rows land on Dec.
+    grid = (
+        reports.group_by("gvkey")
+        .agg(
+            lo=pl.col("datadate").min(), hi=pl.col("datadate").max(), curcd=pl.col("curcd").first()
+        )
+        .with_columns(datadate=pl.date_ranges("lo", "hi", interval="1mo"))
+        .explode("datadate")
+        .select("gvkey", "curcd", "datadate")
+    )
+    return grid.join(reports.drop("curcd"), on=["gvkey", "datadate"], how="left").sort(
+        ["gvkey", "curcd", "datadate"]
+    )
+
+
 def main() -> None:
     global OUT_DIR
     ap = argparse.ArgumentParser(description=__doc__)
@@ -1024,13 +1102,15 @@ def main() -> None:
     _write(gen_crsp_a_indexes_acti(rng), "crsp_a_indexes_acti.parquet")
 
     print("Generating comp_funda...")
-    _write(gen_comp_funda(reg, rng), "comp_funda.parquet")
+    funda = gen_comp_funda(reg, rng)
+    _write(funda, "comp_funda.parquet")
 
     print("Generating comp_fundq...")
     _write(gen_comp_fundq(reg, rng), "comp_fundq.parquet")
 
     print("Generating comp_g_funda...")
-    _write(gen_comp_g_funda(reg, rng), "comp_g_funda.parquet")
+    g_funda = gen_comp_g_funda(reg, rng)
+    _write(g_funda, "comp_g_funda.parquet")
 
     print("Generating comp_g_fundq...")
     _write(gen_comp_g_fundq(reg, rng), "comp_g_fundq.parquet")
@@ -1057,6 +1137,9 @@ def main() -> None:
 
     print("Generating __fx1...")
     _write(gen_fx1(rng), "__fx1.parquet")
+
+    print("Generating acc_std_ann (jkp standardized accounting)...")
+    _write(gen_acc_std_ann(funda, g_funda), "acc_std_ann.parquet")
 
     total = sum((OUT_DIR / f).stat().st_size for f in OUT_DIR.iterdir() if f.is_file())
     print(f"\nTotal: {total / 1e6:.1f} MB across {len(list(OUT_DIR.iterdir()))} files")
