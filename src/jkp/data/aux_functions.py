@@ -14602,7 +14602,9 @@ def _ap_join_factor_inputs(
 ) -> pl.LazyFrame:
     """Market mktrf (mkt_vw_exc) outer-joined with each factor parquet on
     (excntry, `date_key`)."""
-    mkt = pl.scan_parquet(mkt_path).select(["excntry", date_key, col("mkt_vw_exc").alias("mktrf")])
+    mkt = pl.scan_parquet(mkt_path).select(
+        ["excntry", date_key, pl.col("mkt_vw_exc").alias("mktrf")]
+    )
     frames = [mkt, *(pl.scan_parquet(p) for p in factor_inputs)]
     key = ["excntry", date_key]
     _ap_check_no_collisions(frames, key)
@@ -15547,8 +15549,14 @@ def load_dff_be(path: Path | None = None) -> pl.DataFrame:
 
 
 def _dhs_wd_idx(col: pl.Expr) -> pl.Expr:
-    # Weekday index (anchor 1960-01-04 = Monday): Mon-Fri step by 1, Sat/Sun
-    # collapse onto the prior Friday. Weekdays between two dates = index difference.
+    """Weekday (business-day) index for a date column, so a difference of two
+    indices counts the trading days between them for the ABR event window.
+
+    Anchor 1960-01-04 (a Monday) has index 0; each weekday steps by 1 and Sat/Sun
+    collapse onto the prior Friday (both share that Friday's index). For calendar
+    offset n days: full weeks contribute 5 each, and the within-week remainder is
+    capped at 4 (Fri) so weekend days don't advance the count.
+    """
     n = (col - pl.date(1960, 1, 4)).dt.total_days()
     weeks = n // 7
     return weeks * 5 + pl.min_horizontal(n - weeks * 7, pl.lit(4))
@@ -15753,7 +15761,7 @@ def _dhs_load_row_panel(interim_dir: Path, beg: int, end: int) -> pl.DataFrame:
         pl.col("month") - pl.col("month").shift(1).over("id")
     )
     return (
-        pl.scan_parquet(interim_dir / "world_data.parquet")
+        pl.scan_parquet(interim_dir / "world_data_prelim.parquet")
         .filter(_dhs_row_universe() & pl.col("eom").dt.year().is_between(beg, end))
         .join(sic, on=["id", "eom"], how="left")
         .with_columns(year=pl.col("eom").dt.year(), month=pl.col("eom").dt.month())
@@ -15826,7 +15834,7 @@ def _dhs_row_chars(interim_dir: Path, beg: int, end: int) -> pl.DataFrame:
         .otherwise(None)
     )
     june = (
-        pl.scan_parquet(interim_dir / "world_data.parquet")
+        pl.scan_parquet(interim_dir / "world_data_prelim.parquet")
         .filter((pl.col("excntry") != US_EXCNTRY) & pl.col("eom").dt.year().is_between(beg, end))
         .select("id", "eom", "me", "ret", "shares", "adjfct", "be_me")
         .sort(["id", "eom"])
@@ -16125,7 +16133,7 @@ def _dhs_ibes_announcements(raw_dir: Path, interim_dir: Path, beg: int, end: int
     )
     # gvkey -> world id (primary security in the ROW universe), one id per gvkey
     gv_id = (
-        pl.scan_parquet(interim_dir / "world_data.parquet")
+        pl.scan_parquet(interim_dir / "world_data_prelim.parquet")
         .filter(_dhs_row_universe())
         .select(pl.col("gvkey").cast(pl.Utf8), pl.col("id").cast(pl.Int64))
         .unique()
@@ -16325,9 +16333,9 @@ def _dhs_nyse_size_median(
         .collect()  # ff_country_breakpoints takes an eager frame
     )
     panel = us
-    if (interim_dir / "world_data.parquet").exists():
+    if (interim_dir / "world_data_prelim.parquet").exists():
         row = (
-            pl.scan_parquet(interim_dir / "world_data.parquet")
+            pl.scan_parquet(interim_dir / "world_data_prelim.parquet")
             .filter(_dhs_row_universe())
             .select(
                 pl.col("eom").alias("date"),
@@ -16730,13 +16738,18 @@ def gen_dhs_data(
     msf = _dhs_load_msf(raw_dir, beg, end).collect()
     monthly_panel = _dhs_monthly_panel(msf, beg, end)
     annual_chars = _dhs_issuance_chars(msf, raw_dir, beg, end)
-    # FIN goes international: append the ROW panel + chars when world_data is present
-    # (US byte-identity holds — per-country breakpoints/size/VW keep US self-contained)
-    row = (interim_dir / "world_data.parquet").exists()
+    # FIN goes international: append the ROW panel + chars when the ROW inputs are present.
+    # Read world_data_prelim (not the final world_data.parquet): gen_dhs_data runs inside
+    # generate_factor_models, before merge_qmj_to_world_data writes world_data.parquet, so
+    # the final file does not yet exist here. The prelim carries every column the ROW path
+    # needs and the downstream QMJ merge never touches them (same pattern as
+    # gen_mispricing_data / _mp_world_load_world_data). US byte-identity still holds —
+    # per-country breakpoints/size/VW keep the US self-contained.
+    row = (interim_dir / "world_data_prelim.parquet").exists()
     if row:
         # require every ROW input up front so a run can't write partial outputs
         # (monthly with ROW, then crash before the daily leg)
-        needed = ["world_data.parquet", "world_msf.parquet"] + (
+        needed = ["world_data_prelim.parquet", "world_msf.parquet"] + (
             ["world_dsf.parquet"] if "daily" in freqs else []
         )
         missing = [f for f in needed if not (interim_dir / f).exists()]
