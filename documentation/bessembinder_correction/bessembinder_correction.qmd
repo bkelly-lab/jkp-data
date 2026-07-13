@@ -77,7 +77,7 @@ These observations are dropped rather than repaired, so this step can also
 change the underlying stock universe.
 
 As an additional safeguard, we exclude daily returns greater than 1,000%
-(`ret` < 10). Any return exceeding this threshold after the Bessembinder
+(`ret` > 10). Any return exceeding this threshold after the Bessembinder
 correction is treated as a residual data error that could not be reliably
 repaired and is set to missing before entering the factor construction pipeline.
 
