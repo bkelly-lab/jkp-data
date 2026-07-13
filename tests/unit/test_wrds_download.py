@@ -61,6 +61,17 @@ class TestGenWrdsConnectionInfo:
         assert "password=testpass" in result
         assert "sslmode=require" in result
 
+    def test_password_omitted_when_none(self):
+        """With password=None the password= field is omitted so libpq reads
+        ~/.pgpass / $PGPASSFILE."""
+        from jkp.data.aux_functions import gen_wrds_connection_info
+
+        result = gen_wrds_connection_info("testuser", None)
+
+        assert "user=testuser" in result
+        assert "password=" not in result
+        assert "sslmode=require" in result
+
 
 class TestDownloadRawDataTablesBranching:
     """Tests for download_raw_data_tables() branching logic.

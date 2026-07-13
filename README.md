@@ -34,13 +34,15 @@ If you do not have a WRDS subscription, you can still access pre-computed factor
      Note: If you need to change your password or credentials, run `jkp connect --reset` and then `jkp connect`
 
    - **Credential precedence.** When the pipeline needs WRDS credentials, it
-     resolves them from environment variables, then the system keyring, then an
-     opt-in file-backed keyring. Run `jkp connect --help` for the full
-     precedence order and the `JKP_ALLOW_PLAINTEXT_KEYRING` opt-in details.
+     resolves them from the `WRDS_USERNAME`/`WRDS_PASSWORD` environment
+     variables, then the system keyring, then a libpq password file
+     (`$PGPASSFILE`, else `~/.pgpass`). Run `jkp connect --help` for details.
 
-   On a Slurm/HPC compute node, run `jkp connect` once on the login node
-   under `JKP_ALLOW_PLAINTEXT_KEYRING=1` to populate the file keyring, then
-   set the same variable in the batch script before invoking `jkp build`.
+   On a Slurm/HPC compute node, run `jkp connect` once on the login node — it
+   has no system keyring but does have a terminal, so it writes `~/.pgpass`
+   (mode 600). Because `$HOME` is shared with the compute nodes, the batch job
+   reads it via libpq with no further setup; you do not run `jkp connect`
+   inside the job.
 
 3. **Run the script**
 

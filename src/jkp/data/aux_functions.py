@@ -34,6 +34,7 @@ from .compustat_correction import (
 from .config import COLLECT_CHUNK_SIZE, CORRECTION_SPILL_COMPRESSION, END_DATE, MAIN_FILTERS
 from .output_writer import write_dataframe
 from .paths import DataPaths
+from .wrds_credentials import WRDS_DB, WRDS_HOST, WRDS_PORT
 
 
 def fl_none():
@@ -674,12 +675,22 @@ def gen_crsp_sf(paths: DataPaths, freq):
     return result
 
 
-def gen_wrds_connection_info(user, password):
-    return (
-        f"host=wrds-pgdata.wharton.upenn.edu "
-        f"port=9737 dbname=wrds "
-        f"user={user} password={password} sslmode=require"
-    )
+def gen_wrds_connection_info(user, password: str | None = None) -> str:
+    """Build a libpq conninfo for WRDS.
+
+    When ``password`` is ``None`` the ``password=`` field is omitted, so libpq
+    authenticates from ``$PGPASSFILE`` / ``~/.pgpass`` instead.
+    """
+    parts = [
+        f"host={WRDS_HOST}",
+        f"port={WRDS_PORT}",
+        f"dbname={WRDS_DB}",
+        f"user={user}",
+    ]
+    if password is not None:
+        parts.append(f"password={password}")
+    parts.append("sslmode=require")
+    return " ".join(parts)
 
 
 def get_columns(conn, conninfo, lib, table):
@@ -840,7 +851,7 @@ def _chunk_path(filename: str, i: int) -> str:
     return str(p.with_name(f"{p.stem}.part{i:02d}{p.suffix}"))
 
 
-def _attach_wrds(con: duckdb.DuckDBPyConnection, conninfo: str, password: str) -> None:
+def _attach_wrds(con: duckdb.DuckDBPyConnection, conninfo: str, password: str | None) -> None:
     """ATTACH the WRDS Postgres database read-only on an existing DuckDB connection.
 
     DuckDB's postgres extension embeds the full connection string (including the password) in
@@ -953,7 +964,7 @@ def _compute_histograms(
     date_columns: dict[str, str],
     end_date: date | None,
     max_conns: int,
-    password: str,
+    password: str | None,
 ) -> dict[str, list[tuple[int, int]]]:
     """Concurrently compute per-year row histograms for ``tables`` (each over its own connection).
 
@@ -1048,7 +1059,7 @@ def _remove_chunk_parts(filename: str) -> None:
 def _attach_download_worker(
     task_queue: queue.Queue[_DownloadTask],
     conninfo: str,
-    password: str,
+    password: str | None,
     task_errors: list[str],
     startup_errors: list[str],
     errors_lock: threading.Lock,
@@ -1117,7 +1128,7 @@ def _download_tables_parallel(
     conninfo: str,
     date_columns: dict[str, str],
     end_date: date | None,
-    password: str,
+    password: str | None,
     workers: int,
     split_tables: frozenset[str] = frozenset(),
     n_chunks: int = 1,
@@ -1252,7 +1263,7 @@ def _download_tables_parallel(
 def download_raw_data_tables(
     paths: DataPaths,
     username: str,
-    password: str,
+    password: str | None,
     end_date: date | None = None,
     persistent_connection: bool = False,
     max_workers: int = 1,
