@@ -27,7 +27,7 @@ this directory (see .gitignore):
   - Reference_data/       (the benchmark reference series)
 The only thing NOT in git is the pipeline build output: the code reads
 data/interim/ap_factors_monthly.parquet and ap_factors_daily.parquet (produced
-by `jkp build`, WRDS-derived so it can't be committed). Given a local build a
+by `jkp build`). Given a local build a
 fresh clone can re-render this document with no other external files.
 -->
 
