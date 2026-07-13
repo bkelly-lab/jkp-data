@@ -1650,6 +1650,8 @@ def gen_comp_dsf(
         3) Register SECD, G_SECD, firm-shares, and FX in DuckDB.
         4) Create __comp_dsf_global from G_SECD: local prices, highs/lows (if prcstd≠5),
         shares traded, shares outstanding, local return index (ri_local), dividend currencies.
+        The total-return factor trfd is null for securities that never pay a dividend;
+        substitute trfd=1 for those (price return = total return) so their returns survive.
         5) Create __comp_dsf_na from SECD with same fields; infer cshoc from firm-shares when missing.
         6) Adjust NASDAQ (exchg=14) cshtrd by historical factors (2001 windows).
         7) FULL OUTER JOIN NA and Global records; LEFT JOIN daily FX for trading and dividend currencies.
@@ -1747,7 +1749,8 @@ def gen_comp_dsf(
         END AS prc_low_lcl,
         -- trfd is null for never-dividend securities; substitute 1 only when the
         -- security never pays a dividend (no dividends => price return = total
-        -- return), leaving genuine gaps for payers null.
+        -- return), leaving genuine gaps for payers null. Per WRDS guidance:
+        -- https://wrds-www.wharton.upenn.edu/pages/support/support-articles/compustat/global/computing-returns/
         cshtrd, (prccd / qunit) / ajexdi * COALESCE(trfd,
             CASE WHEN NOT BOOL_OR(
                      COALESCE(div, 0) > 0 OR COALESCE(divd, 0) > 0 OR COALESCE(divsp, 0) > 0
@@ -1777,9 +1780,10 @@ def gen_comp_dsf(
         END AS DECIMAL(28, 8)) AS cshtrd,
         COALESCE(a.cshoc / 1e6, b.csho_fund * b.ajex_fund / a.ajexdi) AS cshoc,
         -- trfd (total return factor) is missing for securities that never pay
-        -- a dividend; per Compustat guidance, replace the missing factor with 1
+        -- a dividend; per WRDS guidance, replace the missing factor with 1
         -- (no dividends => price return = total return). Only do so when the
         -- security never pays a dividend; leave genuine gaps for payers null.
+        -- https://wrds-www.wharton.upenn.edu/pages/support/support-articles/compustat/global/computing-returns/
         (a.prccd / a.ajexdi * COALESCE(a.trfd,
             CASE WHEN NOT BOOL_OR(
                      COALESCE(a.div, 0) > 0 OR COALESCE(a.divd, 0) > 0 OR COALESCE(a.divsp, 0) > 0
