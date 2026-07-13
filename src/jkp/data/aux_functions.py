@@ -12612,7 +12612,10 @@ def _jkp_annual_acc(interim_dir: Path) -> pl.DataFrame:
     acc_std_ann is monthly-expanded with the _x fields populated only on report months
     (source not null); at_gr1 is computed on the full monthly grid (count = cum rows per
     gvkey/curcd, guard count>12 & at_x_-12>0), then only real fiscal rows are kept, so every
-    value sits at the fiscal-year-end datadate. Keyed (gvkey, datadate); curcd_x is the ccy.
+    value sits at the fiscal-year-end datadate. Keyed (gvkey, datadate).
+
+    acc_std_ann is built with convert_to_usd=1 (main.py), so be_x/ope_x/at_x/ni_x are already
+    USD-denominated (curcd == "USD" for every row); no further FX conversion is applied.
     """
     return (
         pl.scan_parquet(interim_dir / "acc_std_ann.parquet")
@@ -12626,7 +12629,7 @@ def _jkp_annual_acc(interim_dir: Path) -> pl.DataFrame:
             .otherwise(None)
         )
         .filter(pl.col("source").is_not_null())
-        .select("gvkey", "datadate", "be_x", "ope_x", "at_gr1", "ni_x", curcd_x=pl.col("curcd"))
+        .select("gvkey", "datadate", "be_x", "ope_x", "at_gr1", "ni_x")
         .collect()
     )
 
@@ -12635,29 +12638,29 @@ def ff_load_world_compustat(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
     """
     Description:
         Worldwide Compustat BE/OP/INV for the ROW FF path: unions comp.funda (NA)
-        and comp.g_funda (Global). JKP BE formula (no FASB-109 gate, no BE<0 cut);
-        FF OP/INV formulas. BE converted local→USD via comp_exrt_dly.
+        and comp.g_funda (Global) to establish the fiscal-record universe, then takes
+        the characteristics themselves from jkp's standardized panel.
     Steps:
         1) Load NA (INDL/STD/D/C) and Global (INDL-or-FS/HIST_STD/I/C,
-           INDL-over-FS dedup); compute BE/OP/INV per each schema.
-        2) Dedup by (gvkey, datadate) preferring NA, then by (gvkey, year)
-           preferring NA then latest datadate.
-        3) As-of join FX (local→USD) at datadate per curcd; multiply BE.
+           INDL-over-FS dedup) for the (gvkey, datadate, year) fiscal universe.
+        2) Full-join jkp acc_std_ann; dedup by (gvkey, year) preferring funda-sourced
+           rows then latest datadate.
     Output:
         Eager [gvkey, datadate, year, be, op, inv, count] (BE in USD, OP/INV unitless).
 
     Book equity, operating profitability, and investment are all sourced from jkp's
-    standardized panel rather than the raw-funda formulas: be = be_x (local ccy, nulled
-    when BE<=0), op = jkp ope_x / be_x (full ope_be), inv = jkp at_gr1 (at_x growth). So
-    HML/RMW share one jkp book-equity definition and CMA uses jkp asset growth. All three
-    are read/computed at the fiscal-year-end datadate, so the June(t)/Dec(t-1) timing in
-    _ff_build_freq is unchanged. USA is unaffected (this loader feeds only ROW).
+    standardized panel rather than the raw-funda formulas: be = be_x (nulled when BE<=0),
+    op = jkp ope_x / be_x (full ope_be), inv = jkp at_gr1 (at_x growth). So HML/RMW share
+    one jkp book-equity definition and CMA uses jkp asset growth. acc_std_ann is already
+    USD-denominated (built with convert_to_usd=1), so be = be_x directly with no FX step.
+    All three are read/computed at the fiscal-year-end datadate, so the June(t)/Dec(t-1)
+    timing in _ff_build_freq is unchanged. USA is unaffected (this loader feeds only ROW).
     """
     na = _ff_na_be_op_inv(_ff_load_funda_na(raw_dir)).select(
-        "gvkey", "datadate", "year", "curcd", _src=pl.lit(0)
+        "gvkey", "datadate", "year", _src=pl.lit(0)
     )
     gl = _ff_global_be_op_inv(_ff_load_funda_global(raw_dir)).select(
-        "gvkey", "datadate", "year", "curcd", _src=pl.lit(1)
+        "gvkey", "datadate", "year", _src=pl.lit(1)
     )
     ff_side = (
         pl.concat([na, gl], how="vertical_relaxed")
@@ -12669,7 +12672,6 @@ def ff_load_world_compustat(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
     combined = (
         ff_side.join(acc, on=["gvkey", "datadate"], how="full", coalesce=True)
         .with_columns(
-            curcd=pl.coalesce("curcd", "curcd_x"),
             year=pl.coalesce("year", pl.col("datadate").dt.year()),
             _src=pl.coalesce("_src", pl.lit(2)),  # acc-only rows least preferred in dedup
         )
@@ -12683,23 +12685,11 @@ def ff_load_world_compustat(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
         .sort(["gvkey", "year", "_src", "datadate"], descending=[False, False, False, True])
         .unique(subset=["gvkey", "year"], keep="first")
         .rename({"at_gr1": "inv"})
-        .drop("_src", "curcd_x", "ope_x")
-    )
-    fx = (
-        pl.scan_parquet(interim_dir / "raw_data_dfs" / "__fx1.parquet")
-        .select(curcd=pl.col("curcdd"), datadate=pl.col("datadate"), fx=pl.col("fx"))
-        .sort(["curcd", "datadate"])
-        .collect()
-        .set_sorted("datadate")
+        .drop("_src", "ope_x")
     )
     return (
-        combined.sort(["curcd", "datadate"])
-        .join_asof(fx, by="curcd", on="datadate", strategy="backward", check_sortedness=False)
-        .with_columns(
-            be=pl.when(pl.col("curcd") == "USD")
-            .then(pl.col("be_x"))
-            .otherwise(pl.col("be_x") * pl.col("fx"))
-        )
+        # be_x is already USD (acc_std_ann built convert_to_usd=1), so no FX conversion.
+        combined.rename({"be_x": "be"})
         .filter(
             pl.col("be").is_not_null() | pl.col("op").is_not_null() | pl.col("inv").is_not_null()
         )
@@ -13923,8 +13913,10 @@ def hxz_load_compustat_row(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
     the two would rank annual-ROE firms ~4x too high in one cross-sectional sort. Hence ROW
     stays annual; the US keeps its quarterly ROE.
 
-    Output: Eager [gvkey, datadate, year, be_a, roe_a, inv]. be_a (= be_x) in local
-    currency (used only for eligibility gate be_a > 0 and the ROE lag).
+    Output: Eager [gvkey, datadate, year, be_a, roe_a, inv]. be_a (= be_x) is USD
+    (acc_std_ann built convert_to_usd=1); it is only used for the eligibility gate
+    be_a > 0 (sign, FX-invariant) and as the roe_a denominator (a same-currency ratio),
+    so no FX conversion is needed.
     """
     base_floats = ["pstk", "seq", "ceq", "lt", "txditc", "txdb", "at", "ib"]
     na_floats = base_floats + ["pstkrv", "pstkl", "itcb"]
