@@ -12603,6 +12603,34 @@ def _ff_load_funda_global(raw_dir: Path) -> pl.LazyFrame:
     )
 
 
+def _jkp_annual_acc(interim_dir: Path) -> pl.DataFrame:
+    """jkp standardized annual accounting at the fiscal-report rows, for the ROW FF/HXZ
+    loaders: book equity (be_x, nulled when <=0), operating-profit numerator (ope_x), asset
+    growth (at_gr1 = at_x/at_x.shift(12)-1, replicated exactly from create_acc_chars), and
+    net income (ni_x, the ROW HXZ ROE numerator).
+
+    acc_std_ann is monthly-expanded with the _x fields populated only on report months
+    (source not null); at_gr1 is computed on the full monthly grid (count = cum rows per
+    gvkey/curcd, guard count>12 & at_x_-12>0), then only real fiscal rows are kept, so every
+    value sits at the fiscal-year-end datadate. Keyed (gvkey, datadate); curcd_x is the ccy.
+    """
+    return (
+        pl.scan_parquet(interim_dir / "acc_std_ann.parquet")
+        .sort(["gvkey", "curcd", "datadate"])
+        .with_columns(_cnt=pl.col("gvkey").cum_count().over(["gvkey", "curcd"]))
+        .with_columns(
+            at_gr1=pl.when(
+                (pl.col("_cnt") > 12) & (pl.col("at_x").shift(12).over(["gvkey", "curcd"]) > 0)
+            )
+            .then(pl.col("at_x") / pl.col("at_x").shift(12).over(["gvkey", "curcd"]) - 1)
+            .otherwise(None)
+        )
+        .filter(pl.col("source").is_not_null())
+        .select("gvkey", "datadate", "be_x", "ope_x", "at_gr1", "ni_x", curcd_x=pl.col("curcd"))
+        .collect()
+    )
+
+
 def ff_load_world_compustat(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
     """
     Description:
@@ -12617,23 +12645,45 @@ def ff_load_world_compustat(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
         3) As-of join FX (local→USD) at datadate per curcd; multiply BE.
     Output:
         Eager [gvkey, datadate, year, be, op, inv, count] (BE in USD, OP/INV unitless).
+
+    Book equity, operating profitability, and investment are all sourced from jkp's
+    standardized panel rather than the raw-funda formulas: be = be_x (local ccy, nulled
+    when BE<=0), op = jkp ope_x / be_x (full ope_be), inv = jkp at_gr1 (at_x growth). So
+    HML/RMW share one jkp book-equity definition and CMA uses jkp asset growth. All three
+    are read/computed at the fiscal-year-end datadate, so the June(t)/Dec(t-1) timing in
+    _ff_build_freq is unchanged. USA is unaffected (this loader feeds only ROW).
     """
     na = _ff_na_be_op_inv(_ff_load_funda_na(raw_dir)).select(
-        "gvkey", "datadate", "year", "be_local", "op", "inv", "curcd", _src=pl.lit(0)
+        "gvkey", "datadate", "year", "curcd", _src=pl.lit(0)
     )
     gl = _ff_global_be_op_inv(_ff_load_funda_global(raw_dir)).select(
-        "gvkey", "datadate", "year", "be_local", "op", "inv", "curcd", _src=pl.lit(1)
+        "gvkey", "datadate", "year", "curcd", _src=pl.lit(1)
     )
-    combined = (
+    ff_side = (
         pl.concat([na, gl], how="vertical_relaxed")
         .sort(["gvkey", "datadate", "_src"])
         .unique(subset=["gvkey", "datadate"], keep="first")
-        # A gvkey in both NA and Global yields two (gvkey, year) rows; collapse to
-        # one (prefer NA, then latest datadate) so the June join can't fan out.
+        .collect()
+    )
+    acc = _jkp_annual_acc(interim_dir)
+    combined = (
+        ff_side.join(acc, on=["gvkey", "datadate"], how="full", coalesce=True)
+        .with_columns(
+            curcd=pl.coalesce("curcd", "curcd_x"),
+            year=pl.coalesce("year", pl.col("datadate").dt.year()),
+            _src=pl.coalesce("_src", pl.lit(2)),  # acc-only rows least preferred in dedup
+        )
+        .with_columns(
+            op=pl.when((pl.col("be_x") > 0) & pl.col("ope_x").is_not_null())
+            .then(safe_div(pl.col("ope_x"), pl.col("be_x"), "op"))
+            .otherwise(None)
+        )
+        # one fiscal record per (gvkey, year): prefer funda-sourced rows, then latest
+        # datadate, so the June join can't fan out.
         .sort(["gvkey", "year", "_src", "datadate"], descending=[False, False, False, True])
         .unique(subset=["gvkey", "year"], keep="first")
-        .drop("_src")
-        .collect()
+        .rename({"at_gr1": "inv"})
+        .drop("_src", "curcd_x", "ope_x")
     )
     fx = (
         pl.scan_parquet(interim_dir / "raw_data_dfs" / "__fx1.parquet")
@@ -12647,8 +12697,8 @@ def ff_load_world_compustat(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
         .join_asof(fx, by="curcd", on="datadate", strategy="backward", check_sortedness=False)
         .with_columns(
             be=pl.when(pl.col("curcd") == "USD")
-            .then(pl.col("be_local"))
-            .otherwise(pl.col("be_local") * pl.col("fx"))
+            .then(pl.col("be_x"))
+            .otherwise(pl.col("be_x") * pl.col("fx"))
         )
         .filter(
             pl.col("be").is_not_null() | pl.col("op").is_not_null() | pl.col("inv").is_not_null()
@@ -13856,14 +13906,25 @@ def _hxz_global_be_inv(lf: pl.LazyFrame) -> pl.LazyFrame:
     )
 
 
-def hxz_load_compustat_row(raw_dir: Path) -> pl.DataFrame:
+def hxz_load_compustat_row(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
     """Annual Compustat for ROW HXZ: unions comp_funda (NA) and comp_g_funda (Global).
 
-    Dedup by (gvkey, datadate) preferring NA. JKP BE chain; I/A = Δat / at_lag (1y FY gap).
-    Annual ROE: roe_a = ib / be_a_lag1 (ratio is unitless, no FX needed).
+    Dedup by (gvkey, datadate) preferring NA. Book equity (be_a), operating I/A (inv), and
+    ROE (numerator and denominator) all come from jkp's standardized panel: be_a = be_x,
+    inv = at_gr1, roe_a = ni_x / be_x_lag1 (prior-year be_x via shift(1); ratio unitless, no
+    FX). Values sit at the fiscal-year-end datadate, preserving the formation-year stamp.
 
-    Output: Eager [gvkey, datadate, year, be_a, inv, roe_a]. be_a in local currency
-    (used only for eligibility gate be_a > 0).
+    ROE is deliberately ANNUAL here (ni_x / be_x_lag1), unlike the US quarterly construction
+    (_hxz_us_roe_monthly: IBQ / BEQ_lag1, RDQ-gated, refreshed monthly). Quarterly Compustat
+    Global coverage is too thin to carry ROW: jkp's quarterly niq_be covers only ~56% of ROW
+    firm-months vs ~77% for the annual ROE, so a pure-quarterly ROW ROE would drop ~21pp of
+    the ROE leg. A quarterly/annual fallback is also invalid on its own — a single-quarter
+    ROE is ~1/4 the magnitude of the annual one (ROW medians 0.015 vs 0.064), so coalescing
+    the two would rank annual-ROE firms ~4x too high in one cross-sectional sort. Hence ROW
+    stays annual; the US keeps its quarterly ROE.
+
+    Output: Eager [gvkey, datadate, year, be_a, roe_a, inv]. be_a (= be_x) in local
+    currency (used only for eligibility gate be_a > 0 and the ROE lag).
     """
     base_floats = ["pstk", "seq", "ceq", "lt", "txditc", "txdb", "at", "ib"]
     na_floats = base_floats + ["pstkrv", "pstkl", "itcb"]
@@ -13920,14 +13981,23 @@ def hxz_load_compustat_row(raw_dir: Path) -> pl.DataFrame:
         .drop("_src", "_be_null")
         .sort(["gvkey", "datadate"])
     )
-    be_a_lag1 = pl.col("be_a").shift(1).over("gvkey")
+    # be_a (book equity), I/A, and the ROE numerator (ni_x) all come from jkp's standardized
+    # panel; the funda be_a/inv/ib are kept only for the dedup tie-break above, then dropped.
+    # ROE keeps its ni_x(t)/be(t-1) lag via shift(1) on the (gvkey, year)-deduped,
+    # datadate-sorted frame.
+    acc = _jkp_annual_acc(interim_dir).select("gvkey", "datadate", "be_x", "at_gr1", "ni_x").lazy()
+    be_x_lag1 = pl.col("be_x").shift(1).over("gvkey")
     return (
-        combined.with_columns(
-            roe_a=pl.when(pl.col("ib").is_not_null() & (be_a_lag1 > 0))
-            .then(pl.col("ib") / be_a_lag1)
+        combined.drop("be_a", "inv", "ib")
+        .join(acc, on=["gvkey", "datadate"], how="left")
+        .sort(["gvkey", "datadate"])
+        .with_columns(
+            roe_a=pl.when(pl.col("ni_x").is_not_null() & (be_x_lag1 > 0))
+            .then(pl.col("ni_x") / be_x_lag1)
             .otherwise(None),
         )
-        .drop("ib")
+        .drop("ni_x")
+        .rename({"be_x": "be_a", "at_gr1": "inv"})
         .collect()
     )
 
@@ -14525,7 +14595,7 @@ def gen_hxz_data(
             funda_us,
         )
     )
-    funda_row = hxz_load_compustat_row(raw_dir)
+    funda_row = hxz_load_compustat_row(raw_dir, interim_dir)
 
     # 3. Compute characteristics at formation date
     size_ia_form, roe_m = hxz_compute_chars(panel_m_raw, funda_us, fundq_us, funda_row, raw_dir)
