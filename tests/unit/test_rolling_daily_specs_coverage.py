@@ -31,7 +31,6 @@ def _process_window_funcs_keys() -> set[str]:
 
 
 SPEC_PAIRS = [(sfx, var) for sfx, _, vars_ in ROLLING_DAILY_SPECS for var in vars_]
-SPEC_SUFFIXES = [sfx for sfx, _, _ in ROLLING_DAILY_SPECS]
 
 
 def test_rolling_daily_specs_non_empty() -> None:

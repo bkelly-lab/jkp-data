@@ -4,7 +4,8 @@ ff_load_compustat_us.
 
 DFF (2000) collected Moody's BE for NYSE firms absent from Compustat; the
 splice unions the permno-keyed DFF rows with the CCM-linked Compustat rows,
-Compustat-first on any (permno, year) collision. DFF be(t) is publicly
+DFF-first on any (permno, year) collision (be = coalesce(dff, comp); the
+sources agree where both exist). DFF be(t) is publicly
 available by June 30 of year t and pairs with Dec(t-1) ME, so the unioned
 row carries year = t - 1 (the June-frame join uses cyp1 = year + 1).
 """

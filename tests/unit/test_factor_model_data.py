@@ -12,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from jkp.data import main
+from jkp.data.paths import DataPaths
 
 PREFIXES = ["ff", "hxz", "mp", "dhs"]
 GENERATOR_NAMES = {
@@ -59,7 +60,7 @@ def test_combine_factor_models_feeds_ap_in_order(monkeypatch, tmp_path):
     monkeypatch.setattr(main, "ap_factor_model_data", lambda *a, **kw: ap_kwargs.update(kw))
 
     factor_outputs = {prefix: main.factor_paths(tmp_path, prefix) for prefix in PREFIXES}
-    main.combine_factor_models(tmp_path, factor_outputs)
+    main.combine_factor_models(DataPaths(base_dir=tmp_path), factor_outputs)
 
     assert ap_kwargs["monthly_factor_inputs"] == [factor_outputs[p][0] for p in PREFIXES]
     assert ap_kwargs["daily_factor_inputs"] == [factor_outputs[p][1] for p in PREFIXES]
