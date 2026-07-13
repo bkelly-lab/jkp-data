@@ -478,13 +478,16 @@ def get_wrds_credentials() -> Credentials:
     env_user = os.environ.get(ENV_USERNAME)
     env_pw = os.environ.get(ENV_PASSWORD)
     if env_user and env_pw:
-        _log_source(f"the {ENV_USERNAME}/{ENV_PASSWORD} environment variables")
+        # Literal env-var names in the log message (not the ENV_* constants) so no
+        # "password"-named identifier flows into a logging sink — the value is
+        # never logged, only the source label.
+        _log_source("the WRDS_USERNAME/WRDS_PASSWORD environment variables")
         return Credentials(env_user.strip(), env_pw)
 
     username = _resolve_username(env_user)
 
     if env_pw:
-        _log_source(f"the {ENV_PASSWORD} environment variable")
+        _log_source("the WRDS_PASSWORD environment variable")
         return Credentials(username, env_pw)
 
     keyring_pw = _keyring_get(username)
