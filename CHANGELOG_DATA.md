@@ -25,6 +25,7 @@ __Impact__:
 - World Stambaugh-Yuan DISTRESS inputs are now FX-converted to USD with consistent units.
 - `me_ff`/`me_hxz` characteristics for US stocks are now in USD millions (previously USD thousands).
 - US mispricing factor history is no longer truncated by late thin months.
+- DHS ROW FIN: the book-equity guard now uses JKP's standardized `be_x` for the prior fiscal year (joined by gvkey) instead of the prior-June `be_me` ratio, matching the US BE-level construction. Guard availability rises from 68.0% to 74.3% of ROW June firm-observations; `fin_dhs` gains 43 country-months and ROW FIN values shift from the broader eligible pool (US and PEAD unaffected).
 - HXZ fixes: US ROE uses year-month announcement gating; US universe keeps stocks with security-info window gaps (null `siccd`).
 ## 04-07-2026
 __Changes__:
