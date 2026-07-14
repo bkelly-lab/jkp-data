@@ -93,10 +93,6 @@ returns are kept rather than discarded.
 
 ### Modifications for Scale
 
-To make the algorithm computationally feasible on a global daily dataset, we
-modify only the multi-period detection step that identifies runs of
-consecutively mis-scaled prices.
-
 Bessembinder et al. (2023) apply the correction to monthly data, searching over
 all asymmetric combinations of up to three periods backward and three periods
 forward. Because we apply the correction to daily data, the number of
