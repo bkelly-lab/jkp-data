@@ -97,6 +97,85 @@ def test_legacy_username_file_migrates_to_state_dir(monkeypatch, _isolate_creden
 
 
 @pytest.mark.unit
+def test_empty_cached_username_treated_as_missing(_isolate_credential_state):
+    """An empty state file (e.g. from a past mistake) must not be returned as the
+    username — it is treated as missing so resolution doesn't silently use ''."""
+    mod = _isolate_credential_state
+    mod.LAST_USER_FILE.parent.mkdir(parents=True, exist_ok=True)
+    mod.LAST_USER_FILE.write_text("")  # empty cache
+
+    with pytest.raises(RuntimeError, match="No WRDS username"):
+        mod._resolve_username()  # non-interactive (fixture) -> raises, not ''
+
+
+@pytest.mark.unit
+def test_empty_legacy_username_file_treated_as_missing(_isolate_credential_state):
+    """An empty ~/.wrds_user must not migrate into the state file as '' — the
+    legacy path needs the same empty guard as the cache path."""
+    mod = _isolate_credential_state
+    mod._LEGACY_USER_FILE.write_text("   \n")  # whitespace only
+
+    with pytest.raises(RuntimeError, match="No WRDS username"):
+        mod._resolve_username()  # non-interactive (fixture) -> raises, not ''
+    assert not mod.LAST_USER_FILE.exists(), "empty legacy username must not be cached"
+
+
+@pytest.mark.unit
+def test_empty_prompt_input_is_rejected_and_not_cached(monkeypatch, _isolate_credential_state):
+    """Hitting Enter at the username prompt must be rejected, not cached as ''."""
+    mod = _isolate_credential_state
+    monkeypatch.setattr(mod, "_interactive", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda *a, **kw: "")
+
+    with pytest.raises(RuntimeError, match="[Ee]mpty username"):
+        mod._resolve_username()
+    assert not mod.LAST_USER_FILE.exists(), "empty username must not be cached"
+
+
+@pytest.mark.unit
+def test_whitespace_env_username_treated_as_missing(monkeypatch, _isolate_credential_state):
+    """WRDS_USERNAME='   ' must be stripped before the truthiness check, not
+    accepted as username='' — so the env fast-path is skipped and, with no state
+    file and no terminal, resolution raises rather than proceeding with user=''."""
+    mod = _isolate_credential_state
+    monkeypatch.setenv("WRDS_USERNAME", "   ")
+    monkeypatch.setenv("WRDS_PASSWORD", "pw")
+
+    with pytest.raises(RuntimeError, match="No WRDS username"):
+        mod.get_wrds_credentials()
+
+
+@pytest.mark.unit
+def test_empty_prompt_password_is_rejected(monkeypatch, _isolate_credential_state):
+    """Hitting Enter at the password prompt must be rejected, not stored as a junk
+    empty ~/.pgpass line that later 'resolves' while auth silently fails."""
+    mod = _isolate_credential_state
+    monkeypatch.setattr("getpass.getpass", lambda *a, **kw: "")
+
+    with pytest.raises(RuntimeError, match="[Ee]mpty password"):
+        mod._prompt_and_store("testuser")
+    assert not mod._pgpass_path().exists() or "testuser" not in mod._pgpass_path().read_text()
+
+
+@pytest.mark.unit
+def test_prompt_and_store_persists_username_for_reset(monkeypatch, _isolate_credential_state):
+    """A credential provisioned for an env-provided WRDS_USERNAME (which the
+    resolver does not persist) must still cache the username, so `jkp connect
+    --reset` can revoke it rather than leaving an orphaned ~/.pgpass line."""
+    mod = _isolate_credential_state
+    monkeypatch.setattr("getpass.getpass", lambda *a, **kw: "typed-secret")
+
+    mod._prompt_and_store("env-user")  # no keyring in tests -> written to ~/.pgpass
+
+    assert mod.LAST_USER_FILE.read_text().strip() == "env-user"  # cached for reset
+    pgpass = mod._pgpass_path()
+    assert "env-user" in pgpass.read_text()
+    # ...and reset can now find + remove it
+    mod.reset_credentials(full_reset=True)
+    assert not pgpass.exists() or "env-user" not in pgpass.read_text()
+
+
+@pytest.mark.unit
 def test_password_from_keyring(monkeypatch, _isolate_credential_state):
     mod = _isolate_credential_state
     mod.LAST_USER_FILE.parent.mkdir(parents=True, exist_ok=True)

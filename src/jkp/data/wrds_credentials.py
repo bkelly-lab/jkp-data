@@ -425,18 +425,23 @@ def _migrate_legacy_keyring(username: str) -> None:
 
 
 def _resolve_username(env_user: str | None = None) -> str:
-    if env_user:
+    if env_user and env_user.strip():  # ignore a whitespace-only WRDS_USERNAME
         return env_user.strip()
     if LAST_USER_FILE.exists():
-        return LAST_USER_FILE.read_text().strip()
+        cached = LAST_USER_FILE.read_text().strip()
+        if cached:  # treat an empty cache as missing rather than user ''
+            return cached
     if _LEGACY_USER_FILE.exists():  # migrate ~/.wrds_user -> state dir
         username = _LEGACY_USER_FILE.read_text().strip()
-        _persist_username(username)
-        with contextlib.suppress(OSError):
-            _LEGACY_USER_FILE.unlink()
-        return username
+        if username:  # an empty legacy file is treated as missing, not cached as ''
+            _persist_username(username)
+            with contextlib.suppress(OSError):
+                _LEGACY_USER_FILE.unlink()
+            return username
     if _interactive():
         username = input(f"Username for {SERVICE_NAME}: ").strip()
+        if not username:  # don't cache an empty username entered by mistake
+            raise RuntimeError(f"Empty username entered for {SERVICE_NAME}.")
         _persist_username(username)
         return username
     raise RuntimeError(
@@ -448,6 +453,15 @@ def _resolve_username(env_user: str | None = None) -> str:
 def _prompt_and_store(username: str) -> Credentials:
     """Interactively obtain a password and persist it to the best available store."""
     password = getpass.getpass(f"Password or token for {username} at {SERVICE_NAME}: ")
+    if not password:
+        # An empty password would be stored as a junk ``…:username:`` pgpass line
+        # that later "resolves" while auth silently fails — reject it, mirroring
+        # the empty-username guard.
+        raise RuntimeError(f"Empty password entered for {username}; nothing stored.")
+    # Cache the username alongside the stored password, so a credential provisioned
+    # for an env-provided WRDS_USERNAME (which _resolve_username does not persist)
+    # is still revocable via `jkp connect --reset` rather than orphaned.
+    _persist_username(username)
     if _keyring_set(username, password):
         print(
             f"Stored WRDS password for '{username}' in the system keyring.",
@@ -485,14 +499,16 @@ def get_wrds_credentials() -> Credentials:
       4. If nothing is found and a terminal is available, prompt and store;
          otherwise raise with actionable guidance.
     """
-    env_user = os.environ.get(ENV_USERNAME)
+    # Strip before the truthiness check so WRDS_USERNAME="   " is treated as
+    # unset rather than accepted as username="".
+    env_user = (os.environ.get(ENV_USERNAME) or "").strip() or None
     env_pw = os.environ.get(ENV_PASSWORD)
     if env_user and env_pw:
         # Literal env-var names in the log message (not the ENV_* constants) so no
         # "password"-named identifier flows into a logging sink — the value is
         # never logged, only the source label.
         _log_source("the WRDS_USERNAME/WRDS_PASSWORD environment variables")
-        return Credentials(env_user.strip(), env_pw)
+        return Credentials(env_user, env_pw)  # env_user already stripped/non-empty
 
     username = _resolve_username(env_user)
 
