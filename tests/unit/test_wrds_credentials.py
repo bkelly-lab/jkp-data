@@ -117,6 +117,38 @@ def test_password_from_keyring(monkeypatch, _isolate_credential_state):
 
 
 @pytest.mark.unit
+def test_locked_keyring_warns_and_falls_through(monkeypatch, _isolate_credential_state, capsys):
+    """A present-but-locked keyring (KeyringError, not NoKeyringError) must warn
+    and fall through to ~/.pgpass rather than crash resolution."""
+    mod = _isolate_credential_state
+    mod.LAST_USER_FILE.parent.mkdir(parents=True, exist_ok=True)
+    mod.LAST_USER_FILE.write_text("testuser")
+    monkeypatch.setattr(mod.keyring, "get_password", _raises(mod.keyring.errors.KeyringLocked))
+    _write_pgpass(mod, "wrds-pgdata.wharton.upenn.edu:9737:wrds:testuser:secret\n")
+
+    creds = mod.get_wrds_credentials()
+
+    assert creds.password is None  # served from ~/.pgpass
+    assert "keyring is present but unusable" in capsys.readouterr().err
+
+
+@pytest.mark.unit
+def test_prompt_stores_to_pgpass_when_keyring_locked(monkeypatch, _isolate_credential_state):
+    """The *store* side of a locked keyring: if set_password raises a KeyringError
+    (not NoKeyringError), _prompt_and_store must fall through to ~/.pgpass rather
+    than crash — the write-side mirror of the locked-keyring read fallback."""
+    mod = _isolate_credential_state
+    monkeypatch.setattr(mod.keyring, "set_password", _raises(mod.keyring.errors.KeyringLocked))
+    monkeypatch.setattr("getpass.getpass", lambda *a, **kw: "typed-secret")
+
+    creds = mod._prompt_and_store("testuser")
+
+    assert creds.username == "testuser"
+    assert creds.password is None  # written to ~/.pgpass, not returned
+    assert "wrds-pgdata.wharton.upenn.edu:9737:wrds:testuser:" in mod._pgpass_path().read_text()
+
+
+@pytest.mark.unit
 def test_password_from_pgpass_returns_none_password(monkeypatch, _isolate_credential_state):
     """A matching ~/.pgpass entry → Credentials.password is None (libpq reads it)."""
     mod = _isolate_credential_state

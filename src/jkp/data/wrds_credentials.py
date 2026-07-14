@@ -112,15 +112,26 @@ def _keyring_get(username: str) -> str | None:
     try:
         return keyring.get_password(SERVICE_NAME, username)
     except keyring.errors.NoKeyringError:
+        return None  # no backend at all — the normal headless case
+    except keyring.errors.KeyringError as exc:
+        # Backend present but unusable (a locked SecretService/KWallet on headless
+        # SSH, or an init failure). Warn so a genuinely-stored-but-locked password
+        # isn't silently ignored, then fall through to the other sources.
+        print(
+            f"Warning: the system keyring is present but unusable ({exc}); "
+            "falling back to other credential sources.",
+            file=sys.stderr,
+            flush=True,
+        )
         return None
 
 
 def _keyring_set(username: str, password: str) -> bool:
-    """Store the password in the system keyring; return False if none is available."""
+    """Store the password in the system keyring; return False if it is unusable."""
     try:
         keyring.set_password(SERVICE_NAME, username, password)
         return True
-    except keyring.errors.NoKeyringError:
+    except keyring.errors.KeyringError:
         return False
 
 
