@@ -15941,7 +15941,9 @@ def _dhs_row_chars(interim_dir: Path, beg: int, end: int) -> pl.DataFrame:
         .with_columns(
             NS=ns_expr.otherwise(None),
             IR=pl.when(me_ratio > 0).then(me_ratio.log()).otherwise(None) - pl.col("log_cumret"),
-            lagBE=pl.col("be_me").shift(1).over("id"),  # prior-June be_me (book/market)
+            # prior-June be_me, calendar-guarded like the NS/IR lags: a missing
+            # June(t-1) row must yield null, not the be_me from years earlier
+            lagBE=pl.when(_mgap(1) == 12).then(pl.col("be_me").shift(1).over("id")).otherwise(None),
             YEAR=pl.col("eom").dt.year().cast(pl.Int32),
             datadate=pl.col("eom"),
         )
