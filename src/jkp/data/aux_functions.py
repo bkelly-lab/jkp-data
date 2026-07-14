@@ -16413,13 +16413,13 @@ def _dhs_nyse_size_median(
     """Per-(excntry) size median P50, via jkp's ff_country_breakpoints (US branch =
     NYSE exchcd_us==1; ROW branch = size_grp ∈ {small,large,mega}; me>0; per-country
     min-stocks gate, USA exempt). US pool = ff_load_crsp_panel (CIZ, permco ME,
-    DFF-2000); ROW pool = world_data (when present). US me is /1000 at INPUT so its
-    P50 is byte-identical to before AND in the same $MM unit as US CRSPSIZE; ROW me
-    is left in world units, matching ROW CRSPSIZE. Output: [excntry, eom, P50].
+    DFF-2000), whose me is already USD millions — the same unit as US CRSPSIZE
+    (mthcap/1000); ROW pool = world_data (when present), in world units matching
+    ROW CRSPSIZE. Output: [excntry, eom, P50].
     """
     us = (
         ff_load_crsp_panel(raw_dir, "monthly")
-        .select("date", (pl.col("me") / 1000).alias("me"), pl.col("exchcd").alias("exchcd_us"))
+        .select("date", "me", pl.col("exchcd").alias("exchcd_us"))
         .with_columns(excntry=pl.lit("USA"), size_grp=pl.lit(None, dtype=pl.String))
         .collect()  # ff_country_breakpoints takes an eager frame
     )
