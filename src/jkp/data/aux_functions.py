@@ -15893,8 +15893,9 @@ def _dhs_row_chars(interim_dir: Path, beg: int, end: int) -> pl.DataFrame:
         NS = log(1 + chcsho_12m) = log(adj_shares_June(t) / adj_shares_June(t-1))
              (reuses jkp's chcsho_12m 12-month share-change characteristic)
         IR = log(me_June(t) / me_June(t-5)) - log(60-month gross cumret)  (DHS 5-yr)
-        lagBE = be_me_June(t-1)  (lagged positive-book-equity guard; be_me>0 <=> BE>0;
-                                  fin_factor keeps >=0)
+        lagBE = be_x for the fiscal year ending in calendar YEAR-1 (JKP standardized
+                USD book equity, positive-only, joined by gvkey; the same prior-
+                fiscal-year BE-level guard as the US branch)
     IR's 60-month sum needs the full monthly series, so it is computed before the
     June filter; the 5-yr / 1-yr / prior-June lags are positional shifts over the
     June rows (after the filter). YEAR-relabel keeps the validated fin_factor
@@ -15928,7 +15929,7 @@ def _dhs_row_chars(interim_dir: Path, beg: int, end: int) -> pl.DataFrame:
     june = (
         pl.scan_parquet(interim_dir / "world_data_prelim.parquet")
         .filter((pl.col("excntry") != US_EXCNTRY) & pl.col("eom").dt.year().is_between(beg, end))
-        .select("id", "eom", "me", "ret", "be_me", "chcsho_12m")
+        .select("id", "gvkey", "eom", "me", "ret", "chcsho_12m")
         .sort(["id", "eom"])
         .with_columns(
             # 60-month cumret: 60 valid rows AND the window spans exactly 60
@@ -15941,24 +15942,43 @@ def _dhs_row_chars(interim_dir: Path, beg: int, end: int) -> pl.DataFrame:
         .with_columns(
             NS=ns_expr.otherwise(None),
             IR=pl.when(me_ratio > 0).then(me_ratio.log()).otherwise(None) - pl.col("log_cumret"),
-            # prior-June be_me, calendar-guarded like the NS/IR lags: a missing
-            # June(t-1) row must yield null, not the be_me from years earlier
-            lagBE=pl.when(_mgap(1) == 12).then(pl.col("be_me").shift(1).over("id")).otherwise(None),
             YEAR=pl.col("eom").dt.year().cast(pl.Int32),
             datadate=pl.col("eom"),
         )
-        .select("id", "datadate", "YEAR", "lagBE", "NS", "IR")
+        .select("id", "gvkey", "datadate", "YEAR", "NS", "IR")
+        .collect()
+    )
+    # lagBE = JKP standardized USD book equity (be_x, positive-only by
+    # construction) for the fiscal year ending in calendar YEAR-1, joined by
+    # gvkey after the YEAR relabel below — the same BE-level-of-prior-fiscal-
+    # year guard the US branch uses (its lagBE is BE(YEAR-1) on each row's
+    # YEAR), instead of a prior-June be_me ratio proxy. The statement is
+    # always public by the rebalance: datadate <= Dec(YEAR-1) and JKP's
+    # 4-month lag put it out by Apr(YEAR) < June(YEAR+1) (NS) / June(YEAR) (IR).
+    be_fy = (
+        pl.scan_parquet(interim_dir / "acc_std_ann.parquet")
+        .select("gvkey", "datadate", "be_x")
+        .filter(pl.col("gvkey").is_not_null() & pl.col("be_x").is_not_null())
+        .with_columns(fy=pl.col("datadate").dt.year().cast(pl.Int32))
+        .sort(["gvkey", "fy", "datadate", "be_x"])
+        .unique(subset=["gvkey", "fy"], keep="last", maintain_order=True)
+        .select("gvkey", "fy", pl.col("be_x").alias("lagBE"))
         .collect()
     )
     # split so fin_factor's offsets land both on the June(t) rebalance:
     #   IR-row at YEAR=t   (IR filter YEAR==cyear),  NS-row at YEAR=t-1 (NS filter YEAR+1==cyear)
-    ir_rows = june.select("id", "datadate", "YEAR", "lagBE", "IR").with_columns(
+    ir_rows = june.select("id", "gvkey", "datadate", "YEAR", "IR").with_columns(
         NS=pl.lit(None, pl.Float64)
     )
     ns_rows = june.select(
-        "id", "datadate", (pl.col("YEAR") - 1).alias("YEAR"), "lagBE", "NS"
+        "id", "gvkey", "datadate", (pl.col("YEAR") - 1).alias("YEAR"), "NS"
     ).with_columns(IR=pl.lit(None, pl.Float64))
-    return pl.concat([ir_rows, ns_rows], how="diagonal_relaxed")
+    return (
+        pl.concat([ir_rows, ns_rows], how="diagonal_relaxed")
+        .with_columns(_fy=pl.col("YEAR") - 1)
+        .join(be_fy, left_on=["gvkey", "_fy"], right_on=["gvkey", "fy"], how="left")
+        .drop("_fy", "gvkey")
+    )
 
 
 def _dhs_ccm_link(comp: pl.LazyFrame, endfyr_col: str, raw_dir: Path) -> pl.LazyFrame:
