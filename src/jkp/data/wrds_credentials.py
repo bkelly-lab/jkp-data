@@ -86,15 +86,30 @@ def _persist_username(username: str) -> None:
     LAST_USER_FILE.write_text(username)
 
 
-def _atomic_write(path: Path, text: str, mode: int = 0o600) -> None:
-    """Write ``text`` to ``path`` atomically with restrictive permissions."""
+def _atomic_write(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` atomically, with 0600 permissions."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent))
     try:
         if hasattr(os, "fchmod"):
-            os.fchmod(fd, mode)
+            # Enforce 0600 explicitly rather than relying on mkstemp's default:
+            # this file may hold a plaintext password, so the mode must be
+            # guaranteed even if that default ever changes.
+            os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w") as fh:
             fh.write(text)
+        if path.is_symlink():
+            # os.replace swaps the symlink itself for the new regular file, so its
+            # original target is left untouched — and, for ~/.pgpass, may still
+            # hold the old WRDS entry (e.g. in a dotfiles copy). We don't write
+            # through the link (that would push a secret into a tracked tree), but
+            # we warn so the detachment isn't silent.
+            print(
+                f"Note: {path} is a symlink; replacing it with a regular file. Its "
+                "original target is now detached and may still contain the old entry.",
+                file=sys.stderr,
+                flush=True,
+            )
         os.replace(tmp, path)
     except BaseException:
         with contextlib.suppress(OSError):

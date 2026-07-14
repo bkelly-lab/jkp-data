@@ -956,6 +956,28 @@ def test_migration_defers_to_wildcard_pgpass_entry(monkeypatch, _isolate_credent
     assert not cp.has_section("WRDS")
 
 
+@pytest.mark.unit
+def test_atomic_write_warns_when_replacing_symlink(_isolate_credential_state, capsys, tmp_path):
+    """Writing through a symlinked path replaces the link with a regular file and
+    leaves the original target untouched — warn so the detachment (and any secret
+    left in the target, e.g. a dotfiles copy) isn't silent."""
+    mod = _isolate_credential_state
+    target = tmp_path / "real_pgpass"
+    target.write_text("orig\n")
+    link = tmp_path / "link_pgpass"
+    try:
+        link.symlink_to(target)
+    except (OSError, NotImplementedError):  # e.g. Windows without privilege
+        pytest.skip("symlinks not supported in this environment")
+
+    mod._atomic_write(link, "new\n")
+
+    assert not link.is_symlink()  # the link was replaced by a regular file
+    assert link.read_text() == "new\n"
+    assert target.read_text() == "orig\n"  # the original target is untouched
+    assert "symlink" in capsys.readouterr().err
+
+
 def _write_real_keyring(mod, entries):
     """Write a keyring_pass.cfg the way keyrings.alt does — values on tab-indented
     continuation lines with a leading newline, via configparser — so the parsing
