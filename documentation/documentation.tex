@@ -1957,7 +1957,7 @@ $\\
     \href{https://wrds-www.wharton.upenn.edu/data-dictionary/form_metadata/crsp_a_stock_msf_identifyinginformation/permco/}{PERMCO} and date\\
     
     Trading Volume & tvol\mbox{*} & We use 
-    \href{https://wrds-www.wharton.upenn.edu/data-dictionary/form_metadata/crsp_a_stock_msf_timeseriesinformation/vol/}{VOL} \\
+    \href{https://wrds-www.wharton.upenn.edu/data-dictionary/form_metadata/crsp_a_stock_msf_timeseriesinformation/vol/}{VOL}. For NASDAQ regular-way issues (\texttt{primaryexch}=Q and \texttt{conditionaltype}=RW), we apply the Gao--Ritter (2010) dealer-volume adjustment: divide by 2 before 2001-02-01, by 1.8 through 2001-12-31, and by 1.6 through 2003-12-31 (inclusive); thereafter leave volume unchanged. \\
     
     Dollar Volume & dolvol\mbox{*} & We use 
     TVOL\mbox{*}$\times$PRC\mbox{*}\\
@@ -2001,7 +2001,7 @@ $\\
     Company Market Equity & me\_company\mbox{*} & We use ME\mbox{*} \\
     
     Trading Volume & tvol\mbox{*} & We use 
-    \href{https://wrds-www.wharton.upenn.edu/data-dictionary/form_metadata/comp_na_daily_all_secd_dataitems/CSHTRD/}{CSHTRD}\\
+    \href{https://wrds-www.wharton.upenn.edu/data-dictionary/form_metadata/comp_na_daily_all_secd_dataitems/CSHTRD/}{CSHTRD}. For NASDAQ (\texttt{exchg}=14), we apply the same Gao--Ritter (2010) dealer-volume schedule as for CRSP: $/2$ before 2001-02-01, $/1.8$ through 2001-12-31, and $/1.6$ through 2003-12-31 (inclusive). \\
     
     Dollar Volume & dolvol\mbox{*} & We use 
     TVOL\mbox{*}$\times$PRC\mbox{*}\\
