@@ -137,13 +137,20 @@ def connect(
     """
     from .wrds_credentials import get_wrds_credentials, reset_credentials
 
-    if reset:
-        reset_credentials(full_reset=True)
-        typer.echo("Credentials reset.")
-        return
+    try:
+        if reset:
+            reset_credentials(full_reset=True)
+            typer.echo("Credentials reset.")
+            return
 
-    creds = get_wrds_credentials()
-    typer.echo(f"Connected as: {creds.username}")
+        creds = get_wrds_credentials()
+        typer.echo(f"Connected as: {creds.username}")
+    except RuntimeError as exc:
+        # Credential resolution raises RuntimeError for anticipated, actionable
+        # conditions (no/empty username, an unreadable ~/.pgpass). Surface the
+        # message and exit non-zero rather than dumping a traceback.
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from exc
 
 
 if __name__ == "__main__":

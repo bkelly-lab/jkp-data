@@ -265,7 +265,15 @@ def _write_pgpass(username: str, password: str) -> Path:
     out: list[str] = []
     replaced = False
     if path.exists():
-        for raw in path.read_text().splitlines():
+        try:
+            existing = path.read_text().splitlines()
+        except OSError as exc:
+            # e.g. a root-owned ~/.pgpass from an old sudo — surface an actionable
+            # message rather than a raw error after the user typed their password.
+            raise RuntimeError(
+                f"Cannot read existing {path} ({exc}); fix its permissions and retry."
+            ) from exc
+        for raw in existing:
             if _is_wrds_line(_split_pgpass(raw.strip()), username):
                 if not replaced:
                     out.append(new_line)
@@ -284,9 +292,15 @@ def _remove_pgpass_entry(username: str) -> bool:
     path = _pgpass_path()
     if not path.exists():
         return False
+    try:
+        lines = path.read_text().splitlines()
+    except OSError as exc:
+        raise RuntimeError(
+            f"Cannot read existing {path} ({exc}); fix its permissions and retry."
+        ) from exc
     out: list[str] = []
     removed = False
-    for raw in path.read_text().splitlines():
+    for raw in lines:
         if _is_wrds_line(_split_pgpass(raw.strip()), username):
             removed = True
         else:
@@ -530,9 +544,15 @@ def get_wrds_credentials() -> Credentials:
     # It no-ops unless a legacy keyring_pass.cfg with a [WRDS] entry exists. A
     # migration I/O failure must not abort resolution: env / existing ~/.pgpass /
     # an interactive prompt may still provide credentials.
+    #
+    # Note: if the keyring was merely *locked* (not absent), we reached here
+    # without consulting it, so migrating the legacy plaintext copy could activate
+    # a password the user has since rotated in the keyring. That's inherent to
+    # falling through a locked keyring; `jkp connect --reset` clears the legacy
+    # copy, and the ~/.pgpass entry (if any) is preferred over the legacy value.
     try:
         _migrate_legacy_keyring(username)
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, RuntimeError) as exc:
         print(
             f"Warning: could not migrate the legacy WRDS credential ({exc}); "
             "continuing without it.",
@@ -556,27 +576,29 @@ def reset_credentials(full_reset: bool = False) -> None:
     With ``full_reset``, removes the password from both the system keyring and
     jkp's ``~/.pgpass`` line (leaving any other ``.pgpass`` entries intact).
     """
+    # Read the username but do NOT delete the cache files yet (see the unlink at
+    # the end). Treat an empty/whitespace cache as missing, so we don't reset
+    # user '' and don't consume the legacy ~/.wrds_user unread.
     username: str | None = None
     for user_file in (LAST_USER_FILE, _LEGACY_USER_FILE):
-        if user_file.exists():
-            if username is None:
-                username = user_file.read_text().strip()
-            user_file.unlink()
+        if user_file.exists() and username is None:
+            username = user_file.read_text().strip() or None
 
     if username is None:
         print("No stored username found — nothing to reset.")
         return
-    print(f"Removed stored username '{username}'")
 
     if full_reset:
         removed_keyring = _keyring_delete(username)
-        removed_pgpass = _remove_pgpass_entry(username)
-        # Also drop any legacy plaintext-keyring [WRDS] section: otherwise the
-        # next resolution would migrate the just-revoked password back into
-        # ~/.pgpass, undoing the reset.
+        # Drop any legacy plaintext-keyring [WRDS] section before removing the
+        # ~/.pgpass line (otherwise the next resolution would migrate the
+        # just-revoked password back into ~/.pgpass). Cleanup never raises, so
+        # doing it first means a failure removing an unreadable ~/.pgpass can't
+        # skip it and leave a plaintext copy behind on a security-motivated reset.
         _cleanup_legacy_keyring_section()
         if removed_keyring:
             print(f"Deleted password for '{username}' from the system keyring")
+        removed_pgpass = _remove_pgpass_entry(username)
         if removed_pgpass:
             print(f"Removed WRDS entry for '{username}' from {_pgpass_path()}")
         # Only claim nothing was found when the keyring answer was definitive
@@ -584,6 +606,14 @@ def reset_credentials(full_reset: bool = False) -> None:
         # may survive, so a "nothing found" line here would contradict it.
         if removed_keyring is False and not removed_pgpass:
             print(f"No stored password found for '{username}'")
+
+    # Remove the username cache last: if a password removal above raised (e.g. an
+    # unreadable ~/.pgpass), the cache survives so a retry can still find the
+    # username and finish the reset instead of orphaning the stored password.
+    for user_file in (LAST_USER_FILE, _LEGACY_USER_FILE):
+        with contextlib.suppress(FileNotFoundError):
+            user_file.unlink()
+    print(f"Removed stored username '{username}'")
 
 
 if __name__ == "__main__":

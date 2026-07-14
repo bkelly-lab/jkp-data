@@ -440,6 +440,88 @@ def test_reset_warns_when_keyring_unreachable(monkeypatch, _isolate_credential_s
 
 
 @pytest.mark.unit
+def test_reset_clears_legacy_even_when_pgpass_removal_fails(monkeypatch, _isolate_credential_state):
+    """A failure removing the ~/.pgpass line must not skip the legacy-section
+    cleanup: reset revokes what it can (keyring + legacy plaintext copy) before
+    surfacing the error, so no plaintext copy is left behind on a security reset."""
+    mod = _isolate_credential_state
+    mod.LAST_USER_FILE.parent.mkdir(parents=True, exist_ok=True)
+    mod.LAST_USER_FILE.write_text("testuser")
+    mod._LEGACY_KEYRING_FILE.write_text("[WRDS]\ntestuser = eA==\n")
+
+    def _boom(*a, **kw):
+        raise RuntimeError("Cannot read ~/.pgpass; fix its permissions and retry.")
+
+    monkeypatch.setattr(mod, "_remove_pgpass_entry", _boom)
+
+    with pytest.raises(RuntimeError, match="[Cc]annot read"):
+        mod.reset_credentials(full_reset=True)
+    # the legacy plaintext [WRDS] section was cleared before the pgpass failure
+    # (its file held only that section, so cleanup removes the file entirely)
+    assert not mod._LEGACY_KEYRING_FILE.exists()
+
+
+@pytest.mark.unit
+def test_reset_keeps_username_cache_when_pgpass_removal_fails(
+    monkeypatch, _isolate_credential_state
+):
+    """If removing the ~/.pgpass line fails, the username cache must survive so a
+    retry can find the username and finish the reset rather than orphaning the
+    stored password (the cache is deleted last, after the password removals)."""
+    mod = _isolate_credential_state
+    mod.LAST_USER_FILE.parent.mkdir(parents=True, exist_ok=True)
+    mod.LAST_USER_FILE.write_text("testuser")
+
+    def _boom(*a, **kw):
+        raise RuntimeError("Cannot read ~/.pgpass; fix its permissions and retry.")
+
+    monkeypatch.setattr(mod, "_remove_pgpass_entry", _boom)
+
+    with pytest.raises(RuntimeError, match="[Cc]annot read"):
+        mod.reset_credentials(full_reset=True)
+    assert mod.LAST_USER_FILE.read_text() == "testuser"  # cache intact for the retry
+
+
+@pytest.mark.unit
+def test_reset_empty_username_cache_falls_through_to_legacy(_isolate_credential_state, capsys):
+    """An empty/whitespace username cache must be treated as missing — reset uses
+    the legacy ~/.wrds_user rather than resetting user '' and consuming the legacy
+    file unread."""
+    mod = _isolate_credential_state
+    mod.LAST_USER_FILE.parent.mkdir(parents=True, exist_ok=True)
+    mod.LAST_USER_FILE.write_text("   ")  # empty/whitespace cache
+    mod._LEGACY_USER_FILE.write_text("legacy-user")
+
+    mod.reset_credentials(full_reset=False)
+
+    out = capsys.readouterr().out
+    assert "legacy-user" in out  # legacy used as the username, not skipped or user ''
+    assert not mod.LAST_USER_FILE.exists() and not mod._LEGACY_USER_FILE.exists()
+
+
+@pytest.mark.unit
+def test_migration_pgpass_write_error_is_caught(monkeypatch, _isolate_credential_state, capsys):
+    """If migrating the legacy keyring to ~/.pgpass fails with a RuntimeError from
+    _write_pgpass (e.g. an unreadable pgpass), resolution must warn and continue,
+    not crash — pins the RuntimeError arm of the migration wrapper."""
+    mod = _isolate_credential_state
+    mod.LAST_USER_FILE.parent.mkdir(parents=True, exist_ok=True)
+    mod.LAST_USER_FILE.write_text("testuser")
+    _write_real_keyring(mod, {"testuser": "legacy-pw"})  # a migratable legacy entry
+
+    def _boom(*a, **kw):
+        raise RuntimeError("Cannot read existing ~/.pgpass; fix its permissions and retry.")
+
+    monkeypatch.setattr(mod, "_write_pgpass", _boom)
+
+    # migration fails inside get_wrds_credentials; the wrapper must catch it, warn,
+    # and let resolution continue to the no-credentials path rather than crashing.
+    with pytest.raises(RuntimeError, match="No WRDS password"):
+        mod.get_wrds_credentials()
+    assert "could not migrate" in capsys.readouterr().err
+
+
+@pytest.mark.unit
 def test_migration_handles_real_keyring_on_disk_format(monkeypatch, _isolate_credential_state):
     """keyrings.alt writes the value on a tab-indented continuation line with a
     leading newline; the migration must decode that real format, not just a
@@ -600,6 +682,45 @@ def test_write_pgpass_rejects_newline_password(_isolate_credential_state):
     mod = _isolate_credential_state
     with pytest.raises(ValueError, match="newline"):
         mod._write_pgpass("testuser", "line1\nwildcard:injected")
+
+
+@pytest.mark.unit
+def test_write_pgpass_unreadable_file_gives_actionable_error(_isolate_credential_state):
+    """If ~/.pgpass exists but can't be read (e.g. root-owned from an old sudo),
+    _write_pgpass raises an actionable error instead of a raw PermissionError
+    after the user has already typed their password."""
+    import os
+    import sys
+
+    if sys.platform.startswith("win") or os.geteuid() == 0:
+        pytest.skip("permission semantics require a non-root POSIX user")
+    mod = _isolate_credential_state
+    path = _write_pgpass(mod, "otherhost:5432:db:bob:pw\n")
+    path.chmod(0o000)
+    try:
+        with pytest.raises(RuntimeError, match="[Cc]annot read"):
+            mod._write_pgpass("testuser", "newpw")
+    finally:
+        path.chmod(0o600)  # restore so tmp cleanup can remove it
+
+
+@pytest.mark.unit
+def test_remove_pgpass_unreadable_file_gives_actionable_error(_isolate_credential_state):
+    """`jkp connect --reset` against an unreadable ~/.pgpass must also raise an
+    actionable error, not a raw PermissionError — the same guard as the write path."""
+    import os
+    import sys
+
+    if sys.platform.startswith("win") or os.geteuid() == 0:
+        pytest.skip("permission semantics require a non-root POSIX user")
+    mod = _isolate_credential_state
+    path = _write_pgpass(mod, "otherhost:5432:db:bob:pw\n")
+    path.chmod(0o000)
+    try:
+        with pytest.raises(RuntimeError, match="[Cc]annot read"):
+            mod._remove_pgpass_entry("testuser")
+    finally:
+        path.chmod(0o600)  # restore so tmp cleanup can remove it
 
 
 @pytest.mark.unit
