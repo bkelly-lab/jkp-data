@@ -1643,7 +1643,7 @@ def gen_comp_dsf(
 
     Steps:
         1) Materialize daily FX to fx_data.parquet.
-        2) **NEW**: If apply_correction, repair decimal-shift errors in the raw data.
+        2) If apply_correction, repair decimal-shift errors in the raw data.
         3) Register SECD, G_SECD, firm-shares, and FX in DuckDB.
         4) Create __comp_dsf_global from G_SECD: local prices, highs/lows (if prcstd≠5),
         shares traded, shares outstanding, local return index (ri_local), dividend currencies.
@@ -1654,7 +1654,7 @@ def gen_comp_dsf(
         7) FULL OUTER JOIN NA and Global records; LEFT JOIN daily FX for trading and dividend currencies.
         8) Compute USD variables: prc, prc_high, prc_low, market cap (me), USD turnover (dolvol),
         USD return index (ri), dividends (split into total/cash/special); derive month-end eom.
-        9) **NEW**: If apply_correction, drop unreliable observations from the USD data.
+        9) If apply_correction, drop unreliable observations from the USD data.
         10) Drop intermediates and write __comp_dsf.parquet.
 
     Args:
