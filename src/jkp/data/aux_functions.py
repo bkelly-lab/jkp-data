@@ -16034,12 +16034,13 @@ def _dhs_issuance_chars(msf: pl.DataFrame, raw_dir: Path, beg: int, end: int) ->
     # Book-equity waterfall; each component falls back through its alternatives.
     # preferred: redemption value, else liquidating value, else par
     preferred = pl.coalesce("pstkrv", "pstkl", "pstk")
-    # shareholders' equity: SEQ, else CEQ + preferred par, else AT - LT
+    # shareholders' equity: SEQ, else CEQ + preferred par (missing par -> 0,
+    # so CEQ-only firms don't fall out of the ladder), else AT - LT
     shareholders_equity = (
         pl.when(pl.col("seq").is_not_null())
         .then(pl.col("seq"))
         .when(pl.col("ceq").is_not_null())
-        .then(pl.col("ceq") + pl.col("pstk"))
+        .then(pl.col("ceq") + pl.col("pstk").fill_null(0.0))
         .otherwise(pl.col("at") - pl.col("lt"))
     )
     # deferred taxes: TXDITC, else TXDB+ITCB (missing addend -> the other alone; both missing -> missing)
