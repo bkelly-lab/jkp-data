@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import contextlib
 import functools
-import logging
 import operator
 import os
 import queue
@@ -35,8 +34,6 @@ from .compustat_correction import (
 from .config import COLLECT_CHUNK_SIZE, CORRECTION_SPILL_COMPRESSION, END_DATE, MAIN_FILTERS
 from .output_writer import write_dataframe
 from .paths import DataPaths
-
-logger = logging.getLogger(__name__)
 
 
 def fl_none():
