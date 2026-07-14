@@ -1676,9 +1676,8 @@ def gen_comp_dsf(
     if apply_correction:
         # Load and correct Global data (no ADRRC). spill_dir selects the
         # memory-bounded array path; spill files are removed after each sink.
-        df_global = pl.scan_parquet(paths.raw_tables_dir / "comp_g_secd.parquet")
-        df_global = correct_decimal_errors(
-            df_global,
+        df_global = pl.scan_parquet(paths.raw_tables_dir / "comp_g_secd.parquet").pipe(
+            correct_decimal_errors,
             group_cols=["gvkey", "iid"],
             sort_col="datadate",
             has_adrrc=False,
@@ -1694,9 +1693,8 @@ def gen_comp_dsf(
             spill.unlink()
 
         # Load and correct NA data (has ADRRC for ADRs)
-        df_na = pl.scan_parquet(paths.raw_tables_dir / "comp_secd.parquet")
-        df_na = correct_decimal_errors(
-            df_na,
+        df_na = pl.scan_parquet(paths.raw_tables_dir / "comp_secd.parquet").pipe(
+            correct_decimal_errors,
             group_cols=["gvkey", "iid"],
             sort_col="datadate",
             has_adrrc=True,
