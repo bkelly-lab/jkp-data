@@ -543,6 +543,10 @@ def reset_credentials(full_reset: bool = False) -> None:
     if full_reset:
         removed_keyring = _keyring_delete(username)
         removed_pgpass = _remove_pgpass_entry(username)
+        # Also drop any legacy plaintext-keyring [WRDS] section: otherwise the
+        # next resolution would migrate the just-revoked password back into
+        # ~/.pgpass, undoing the reset.
+        _cleanup_legacy_keyring_section()
         if removed_keyring:
             print(f"Deleted password for '{username}' from the system keyring")
         if removed_pgpass:

@@ -300,6 +300,34 @@ def test_reset_no_username_is_handled(_isolate_credential_state, capsys):
     assert "nothing to reset" in capsys.readouterr().out
 
 
+@pytest.mark.unit
+def test_reset_clears_legacy_keyring_section(monkeypatch, _isolate_credential_state):
+    """full_reset must remove a lingering legacy [WRDS] section, so the next
+    resolution cannot migrate the just-revoked password back into ~/.pgpass —
+    while preserving any other tool's section."""
+    import base64
+    import configparser
+
+    mod = _isolate_credential_state
+    mod.LAST_USER_FILE.parent.mkdir(parents=True, exist_ok=True)
+    mod.LAST_USER_FILE.write_text("testuser")
+    cp = configparser.RawConfigParser()
+    cp.add_section("WRDS")
+    cp.set("WRDS", "testuser", "\n" + base64.encodebytes(b"revoked").decode())
+    cp.add_section("other")
+    cp.set("other", "bob", "\n" + base64.encodebytes(b"x").decode())
+    with mod._LEGACY_KEYRING_FILE.open("w") as fh:
+        cp.write(fh)
+    monkeypatch.setattr(mod.keyring, "delete_password", lambda *a, **kw: None)
+
+    mod.reset_credentials(full_reset=True)
+
+    check = configparser.RawConfigParser()
+    check.read(mod._LEGACY_KEYRING_FILE)
+    assert not check.has_section("WRDS"), "revoked legacy section must be removed"
+    assert check.has_section("other"), "other tools' section must survive"
+
+
 # --------------------------------------------------------------------------- #
 # Migration — real on-disk format, escaped keys, fallback, I/O isolation
 # --------------------------------------------------------------------------- #
