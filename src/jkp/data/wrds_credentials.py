@@ -25,7 +25,6 @@ The username cache moves from ``~/.wrds_user`` to a per-OS state directory.
 
 from __future__ import annotations
 
-import argparse
 import base64
 import binascii
 import configparser
@@ -614,19 +613,3 @@ def reset_credentials(full_reset: bool = False) -> None:
         with contextlib.suppress(FileNotFoundError):
             user_file.unlink()
     print(f"Removed stored username '{username}'")
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Manage stored WRDS credentials.")
-    parser.add_argument(
-        "--reset",
-        action="store_true",
-        help="Remove stored username and password (keyring and ~/.pgpass entry).",
-    )
-    args = parser.parse_args()
-
-    if args.reset:
-        reset_credentials(full_reset=True)
-    else:
-        creds = get_wrds_credentials()
-        print(f"Using credentials for '{creds.username}'")
