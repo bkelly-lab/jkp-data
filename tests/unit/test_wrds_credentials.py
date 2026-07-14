@@ -41,9 +41,6 @@ def _isolate_credential_state(monkeypatch, tmp_path):
     return mod
 
 
-# --------------------------------------------------------------------------- #
-# Environment variables
-# --------------------------------------------------------------------------- #
 @pytest.mark.unit
 def test_env_vars_take_precedence(monkeypatch, _isolate_credential_state):
     """Both env vars set → use them without touching the keyring."""
@@ -74,9 +71,6 @@ def test_env_username_alone_used_with_keyring_password(monkeypatch, _isolate_cre
     assert creds.password == "kr-pw"
 
 
-# --------------------------------------------------------------------------- #
-# Username resolution
-# --------------------------------------------------------------------------- #
 @pytest.mark.unit
 def test_username_from_state_file(monkeypatch, _isolate_credential_state):
     mod = _isolate_credential_state
@@ -102,9 +96,6 @@ def test_legacy_username_file_migrates_to_state_dir(monkeypatch, _isolate_creden
     assert not mod._LEGACY_USER_FILE.exists(), "legacy username file should be removed"
 
 
-# --------------------------------------------------------------------------- #
-# Password sources
-# --------------------------------------------------------------------------- #
 @pytest.mark.unit
 def test_password_from_keyring(monkeypatch, _isolate_credential_state):
     mod = _isolate_credential_state
@@ -196,9 +187,6 @@ def test_no_credentials_non_interactive_raises_guidance(monkeypatch, _isolate_cr
     assert ".pgpass" in msg
 
 
-# --------------------------------------------------------------------------- #
-# .pgpass writing (append/replace, never clobber other entries)
-# --------------------------------------------------------------------------- #
 @pytest.mark.unit
 def test_write_pgpass_preserves_other_entries(_isolate_credential_state):
     mod = _isolate_credential_state
@@ -248,9 +236,6 @@ def test_pgpass_escapes_special_characters(_isolate_credential_state):
     assert mod._pgpass_has_entry("testuser") is True
 
 
-# --------------------------------------------------------------------------- #
-# Legacy plaintext-keyring migration
-# --------------------------------------------------------------------------- #
 @pytest.mark.unit
 def test_legacy_keyring_migrates_to_pgpass_and_removes_only_our_section(
     monkeypatch, _isolate_credential_state
@@ -299,9 +284,6 @@ def test_legacy_keyring_file_removed_when_only_our_section(monkeypatch, _isolate
     assert not mod._LEGACY_KEYRING_FILE.exists(), "empty keyring file should be removed"
 
 
-# --------------------------------------------------------------------------- #
-# reset_credentials
-# --------------------------------------------------------------------------- #
 @pytest.mark.unit
 def test_reset_removes_username_keyring_and_pgpass(monkeypatch, _isolate_credential_state, capsys):
     mod = _isolate_credential_state
@@ -378,9 +360,6 @@ def test_reset_warns_when_keyring_unreachable(monkeypatch, _isolate_credential_s
     assert "No stored password found" not in captured.out + captured.err
 
 
-# --------------------------------------------------------------------------- #
-# Migration — real on-disk format, escaped keys, fallback, I/O isolation
-# --------------------------------------------------------------------------- #
 @pytest.mark.unit
 def test_migration_handles_real_keyring_on_disk_format(monkeypatch, _isolate_credential_state):
     """keyrings.alt writes the value on a tab-indented continuation line with a
@@ -529,9 +508,6 @@ def test_escape_keyring_option_format(_isolate_credential_state, username, expec
     assert _isolate_credential_state._escape_keyring_option(username) == expected
 
 
-# --------------------------------------------------------------------------- #
-# .pgpass wildcard matching + preservation of foreign lines/comments/blanks
-# --------------------------------------------------------------------------- #
 @pytest.mark.unit
 @pytest.mark.parametrize(
     "line",
@@ -590,9 +566,6 @@ def test_pgpass_escapes_special_username(_isolate_credential_state):
     assert mod._pgpass_has_entry("we:ird\\name") is True
 
 
-# --------------------------------------------------------------------------- #
-# Interactive prompt-and-store (keyring vs .pgpass fallback)
-# --------------------------------------------------------------------------- #
 @pytest.mark.unit
 def test_prompt_and_store_uses_keyring_when_available(monkeypatch, _isolate_credential_state):
     mod = _isolate_credential_state
@@ -752,9 +725,6 @@ def test_migration_defers_to_wildcard_pgpass_entry(monkeypatch, _isolate_credent
     assert not cp.has_section("WRDS")
 
 
-# --------------------------------------------------------------------------- #
-# helpers
-# --------------------------------------------------------------------------- #
 def _write_real_keyring(mod, entries):
     """Write a keyring_pass.cfg the way keyrings.alt does — values on tab-indented
     continuation lines with a leading newline, via configparser — so the parsing

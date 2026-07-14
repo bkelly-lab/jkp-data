@@ -72,9 +72,6 @@ class Credentials:
     password: str | None  # None => authenticate via ~/.pgpass (omit password=)
 
 
-# --------------------------------------------------------------------------- #
-# Small helpers
-# --------------------------------------------------------------------------- #
 def _interactive() -> bool:
     return sys.stdin.isatty()
 
@@ -105,9 +102,6 @@ def _atomic_write(path: Path, text: str, mode: int = 0o600) -> None:
         raise
 
 
-# --------------------------------------------------------------------------- #
-# System keyring (encrypted OS store only; no file-backed fallback)
-# --------------------------------------------------------------------------- #
 def _keyring_get(username: str) -> str | None:
     try:
         return keyring.get_password(SERVICE_NAME, username)
@@ -158,9 +152,6 @@ def _keyring_delete(username: str) -> bool | None:
         return None
 
 
-# --------------------------------------------------------------------------- #
-# libpq password file (~/.pgpass / $PGPASSFILE)
-# --------------------------------------------------------------------------- #
 def _pgpass_path() -> Path:
     """The file libpq reads: $PGPASSFILE if set, else the per-OS default."""
     env = os.environ.get(ENV_PGPASSFILE)
@@ -304,9 +295,6 @@ def _remove_pgpass_entry(username: str) -> bool:
     return True
 
 
-# --------------------------------------------------------------------------- #
-# One-time migration off the legacy plaintext keyring
-# --------------------------------------------------------------------------- #
 def _escape_keyring_option(username: str) -> str:
     """Reproduce keyrings.alt's option-key escaping for a username.
 
@@ -436,9 +424,6 @@ def _migrate_legacy_keyring(username: str) -> None:
     )
 
 
-# --------------------------------------------------------------------------- #
-# Username / password resolution
-# --------------------------------------------------------------------------- #
 def _resolve_username(env_user: str | None = None) -> str:
     if env_user:
         return env_user.strip()
