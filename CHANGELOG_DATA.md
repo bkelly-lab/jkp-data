@@ -26,6 +26,7 @@ __Impact__:
 - `me_ff`/`me_hxz` characteristics for US stocks are now in USD millions (previously USD thousands).
 - US mispricing factor history is no longer truncated by late thin months.
 - DHS ROW FIN: the book-equity guard now uses JKP's standardized `be_x` for the prior fiscal year (joined by gvkey) instead of the prior-June `be_me` ratio, matching the US BE-level construction. Guard availability rises from 68.0% to 74.3% of ROW June firm-observations; `fin_dhs` gains 43 country-months and ROW FIN values shift from the broader eligible pool (US and PEAD unaffected).
+- World mispricing MOMENTUM, COMPOSITE_ISSUE, and STOCK_ISSUE now come from the JKP characteristics they duplicate (`ret_12_1`, `-eqnpo_12m`, `log(1+chcsho_12m)`, verified value-identical where both defined). JKP's endpoint guards widen coverage where the old zero-missing window gates rejected firms: ROW `mispricing_mgmt`/`mispricing_perf` gain 67 country-months and values shift from the re-ranked pools (corr 0.9999 / 0.94 vs the previous construction; US unaffected).
 - HXZ fixes: US ROE uses year-month announcement gating; US universe keeps stocks with security-info window gaps (null `siccd`).
 ## 04-07-2026
 __Changes__:
