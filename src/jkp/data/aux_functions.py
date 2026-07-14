@@ -28,11 +28,11 @@ import polars_ols  # noqa: F401 - required for least_squares method on polars ex
 from ibis import _
 from polars import col
 
-from .bessembinder import (
-    apply_bessembinder_section6,
-    apply_bessembinder_section8,
+from .compustat_correction import (
+    correct_decimal_errors,
+    drop_unreliable_observations,
 )
-from .config import BESS_SPILL_COMPRESSION, COLLECT_CHUNK_SIZE, END_DATE, MAIN_FILTERS
+from .config import COLLECT_CHUNK_SIZE, CORRECTION_SPILL_COMPRESSION, END_DATE, MAIN_FILTERS
 from .output_writer import write_dataframe
 from .paths import DataPaths
 
@@ -1635,8 +1635,8 @@ def adj_trd_vol_NASDAQ(datevar, col_to_adjust, is_nasdaq_expr):
 
 def gen_comp_dsf(
     paths: DataPaths,
-    apply_bessembinder: bool = True,
-    correction_method: str = "bessembinder",
+    apply_correction: bool = True,
+    correction_method: str = "multiplier",
     variation_threshold: float = 1.3,
 ):
     """
@@ -1646,7 +1646,7 @@ def gen_comp_dsf(
 
     Steps:
         1) Materialize daily FX to fx_data.parquet.
-        2) **NEW**: If apply_bessembinder, apply Section 6 decimal corrections to raw data.
+        2) **NEW**: If apply_correction, repair decimal-shift errors in the raw data.
         3) Register SECD, G_SECD, firm-shares, and FX in DuckDB.
         4) Create __comp_dsf_global from G_SECD: local prices, highs/lows (if prcstd≠5),
         shares traded, shares outstanding, local return index (ri_local), dividend currencies.
@@ -1657,13 +1657,14 @@ def gen_comp_dsf(
         7) FULL OUTER JOIN NA and Global records; LEFT JOIN daily FX for trading and dividend currencies.
         8) Compute USD variables: prc, prc_high, prc_low, market cap (me), USD turnover (dolvol),
         USD return index (ri), dividends (split into total/cash/special); derive month-end eom.
-        9) **NEW**: If apply_bessembinder, apply Section 8 filters to USD data.
+        9) **NEW**: If apply_correction, drop unreliable observations from the USD data.
         10) Drop intermediates and write __comp_dsf.parquet.
 
     Args:
-        apply_bessembinder: Whether to apply Bessembinder et al. (2023) data corrections.
-            Default True. Set False to reproduce original behavior.
-        correction_method: Section 6 correction method ('bessembinder' fixed multipliers
+        apply_correction: Whether to apply the Compustat return corrections
+            (Bessembinder et al. 2023). Default True. Set False to reproduce
+            original behavior.
+        correction_method: decimal-correction method ('multiplier' fixed multipliers
             or 'interpolation' geometric mean of clean endpoints).
 
     Output:
@@ -1674,12 +1675,12 @@ def gen_comp_dsf(
     # Prepare FX data
     compustat_fx(paths).write_parquet(paths.interim_dir / "fx_data.parquet")
 
-    # Section 6: Apply decimal corrections to raw data (local currency)
-    if apply_bessembinder:
+    # Repair decimal-shift errors in the raw data (local currency)
+    if apply_correction:
         # Load and correct Global data (no ADRRC). spill_dir selects the
         # memory-bounded array path; spill files are removed after each sink.
         df_global = pl.scan_parquet(paths.raw_tables_dir / "comp_g_secd.parquet")
-        df_global = apply_bessembinder_section6(
+        df_global = correct_decimal_errors(
             df_global,
             group_cols=["gvkey", "iid"],
             sort_col="datadate",
@@ -1690,14 +1691,14 @@ def gen_comp_dsf(
         )
         df_global.sink_parquet(
             paths.interim_dir / "__comp_g_secd_corrected.parquet",
-            compression=BESS_SPILL_COMPRESSION,
+            compression=CORRECTION_SPILL_COMPRESSION,
         )
-        for spill in paths.interim_dir.glob("__bess_*.parquet"):
+        for spill in paths.interim_dir.glob("__corr_*.parquet"):
             spill.unlink()
 
         # Load and correct NA data (has ADRRC for ADRs)
         df_na = pl.scan_parquet(paths.raw_tables_dir / "comp_secd.parquet")
-        df_na = apply_bessembinder_section6(
+        df_na = correct_decimal_errors(
             df_na,
             group_cols=["gvkey", "iid"],
             sort_col="datadate",
@@ -1707,9 +1708,10 @@ def gen_comp_dsf(
             variation_threshold=variation_threshold,
         )
         df_na.sink_parquet(
-            paths.interim_dir / "__comp_secd_corrected.parquet", compression=BESS_SPILL_COMPRESSION
+            paths.interim_dir / "__comp_secd_corrected.parquet",
+            compression=CORRECTION_SPILL_COMPRESSION,
         )
-        for spill in paths.interim_dir.glob("__bess_*.parquet"):
+        for spill in paths.interim_dir.glob("__corr_*.parquet"):
             spill.unlink()
 
         # Use corrected files
@@ -1825,17 +1827,17 @@ def gen_comp_dsf(
 
     """)
 
-    # Section 8: Apply filters to USD-converted data
-    if apply_bessembinder:
+    # Drop unreliable observations from the USD-converted data
+    if apply_correction:
         # One streaming pass: DuckDB executes the whole view pipeline, joins
         # the exchange-country mapping (needed for country-specific filters),
-        # external-sorts by the Section 8 group/sort keys, and writes the
-        # spill file directly — no pre-filter round-trip, and the slim path
-        # skips its own sort (presorted=True).
+        # external-sorts by the filter group/sort keys, and writes the spill
+        # file directly — no pre-filter round-trip, and the slim path skips its
+        # own sort (presorted=True).
         comp_exchanges(paths).select(["exchg", "excntry"]).write_parquet(
-            paths.interim_dir / "__bess_exchanges.parquet"
+            paths.interim_dir / "__corr_exchanges.parquet"
         )
-        sorted_path = paths.interim_dir / "__bess_s8_sorted.parquet"
+        sorted_path = paths.interim_dir / "__corr_filter_sorted.parquet"
         # insertion-order preservation is irrelevant under an explicit ORDER BY
         # and only inflates the external sort's memory; temp_directory
         # guarantees the sort can spill (the slim path verifies the resulting
@@ -1848,14 +1850,14 @@ def gen_comp_dsf(
         COPY (
             SELECT t.*, e.excntry
             FROM __comp_dsf3 AS t
-            LEFT JOIN read_parquet('{(paths.interim_dir / "__bess_exchanges.parquet").as_posix()}') AS e
+            LEFT JOIN read_parquet('{(paths.interim_dir / "__corr_exchanges.parquet").as_posix()}') AS e
                 USING (exchg)
             ORDER BY gvkey NULLS FIRST, iid NULLS FIRST, datadate NULLS FIRST
         ) TO '{sorted_path.as_posix()}' (FORMAT PARQUET);
         """)
         con.disconnect()
 
-        df = apply_bessembinder_section8(
+        df = drop_unreliable_observations(
             pl.scan_parquet(sorted_path),
             group_cols=["gvkey", "iid"],
             sort_col="datadate",
@@ -1867,7 +1869,7 @@ def gen_comp_dsf(
         df.sink_parquet(paths.interim_dir / "__comp_dsf.parquet")
 
         # Clean up temp files
-        for f in paths.interim_dir.glob("__bess_*.parquet"):
+        for f in paths.interim_dir.glob("__corr_*.parquet"):
             f.unlink()
 
     else:
@@ -1878,7 +1880,7 @@ def gen_comp_dsf(
         con.disconnect()
 
     # Clean up corrected temp files if they exist
-    if apply_bessembinder:
+    if apply_correction:
         for f in ["__comp_g_secd_corrected.parquet", "__comp_secd_corrected.parquet"]:
             (paths.interim_dir / f).unlink(missing_ok=True)
 
@@ -2390,7 +2392,7 @@ def gen_returns_df(paths: DataPaths, freq):
         )
         .with_columns(
             # null inf/nan and implausible returns > 1000% (ret <= 10 filter):
-            # a return this large after the Bessembinder correction is a likely
+            # a return this large after the price correction is a likely
             # uncorrected data error rather than a real price move.
             ret_local=pl.when(
                 col("ret_local").is_infinite() | col("ret_local").is_nan() | (col("ret_local") > 10)

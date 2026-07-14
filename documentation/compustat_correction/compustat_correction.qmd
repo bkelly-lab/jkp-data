@@ -1,5 +1,5 @@
 ---
-title: "The Bessembinder Correction: Fixing Observations in Compustat Global Data"
+title: "Correcting Price Errors in Compustat Global Data"
 author: "JKP data team"
 date: today
 format:
@@ -77,7 +77,7 @@ These observations are dropped rather than repaired, so this step can also
 change the underlying stock universe.
 
 As an additional safeguard, we exclude daily returns greater than 1,000%
-(`ret` > 10). Any return exceeding this threshold after the Bessembinder
+(`ret` > 10). Any return exceeding this threshold after the price
 correction is treated as a residual data error that could not be reliably
 repaired and is set to missing before entering the factor construction pipeline.
 
@@ -128,7 +128,7 @@ Each count is a security-day observation:
   correction.
 * Corrections: decimal-shift errors that are rescaled in place. These
   observations are repaired, not removed.
-* Removals: observations dropped by the Section 8 filters.
+* Removals: unreliable observations dropped by the correction's data filters.
 * Total Post-Correction: surviving observations after the correction, equal
   to Total Current minus Removals.
 
@@ -193,7 +193,7 @@ sys.path.insert(0, os.path.abspath("."))
 
 import matplotlib.pyplot as plt
 from IPython.display import HTML, Markdown, display
-import bess_compare as bc
+import correction_compare as bc
 
 
 import base64, io
@@ -293,7 +293,7 @@ show(bc.moment_scatter(stats), top_pad=0.5)
 
 ## Conclusion
 
-The Bessembinder correction is primarily a filtering step: it removes far more
+The correction is primarily a filtering step: it removes far more
 observations than it rescales — roughly 72.7 million removals against 140
 thousand price corrections — and those removals fall overwhelmingly on nano- and
 micro-cap stocks, leaving mega- and large-caps almost untouched.

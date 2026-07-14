@@ -235,23 +235,23 @@ PORTFOLIO_SETTINGS = {
     "ind_pf": True,
 }
 
-# Bessembinder et al. (2023) data corrections
+# Compustat return corrections (Bessembinder et al. 2023 Data Appendix)
 
-# Compression for the scratch spill files written during the Section 6/8 array
+# Compression for the scratch spill files written during the correction array
 # passes; read once then deleted, so favor encode speed over size.
-BESS_SPILL_COMPRESSION = "lz4"
+CORRECTION_SPILL_COMPRESSION = "lz4"
 
-# Valid Section 6 correction methods. The floor variants gate the price
+# Valid decimal-correction methods. The floor variants gate the price
 # correction to the divide direction on >=$1 prices (handoff recommendation).
-BESS_SECTION6_METHODS = ("bessembinder", "interpolation", "floor", "floor_interp")
+DECIMAL_CORRECTION_METHODS = ("multiplier", "interpolation", "floor", "floor_interp")
 
 # Default multi-period detection windows (trading days), covering common error
 # durations 1 day to ~1 month; ~10x fewer iterations than an exhaustive search.
-BESS_DEFAULT_WINDOWS = [1, 2, 3, 5, 10, 21]
+DECIMAL_DETECTION_WINDOWS = [1, 2, 3, 5, 10, 21]
 
-# Filter 8c: countries with a $0.001 minimum-price threshold instead of $0.01.
-BESS_LOW_PRICE_COUNTRIES = ["BRA", "IDN", "NGA", "TUR"]
+# Countries with a $0.001 minimum-price threshold instead of $0.01.
+LOW_PRICE_COUNTRIES = ["BRA", "IDN", "NGA", "TUR"]
 
-# Filter 8d: drop the first observation after a calendar gap wider than this
-# many trading days (~11 months; converted to calendar days at 365/252).
-BESS_SECTION8_GAP_TRADING_DAYS = 231
+# Drop the first observation after a calendar gap wider than this many trading
+# days (~11 months; converted to calendar days at 365/252).
+FILTER_GAP_TRADING_DAYS = 231

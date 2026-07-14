@@ -1,9 +1,9 @@
-"""Compare baseline (main) vs Bessembinder-corrected HML factor returns.
+"""Compare baseline (main) vs corrected HML factor returns.
 
 Both inputs are the ``hml.parquet`` output of ``jkp portfolio`` from two runs:
 
-- ``hml_main.parquet``          -- baseline, no Bessembinder correction
-- ``hml_bessembinder.parquet``  -- with the Bessembinder price-error correction
+- ``hml_main.parquet``       -- baseline, no correction
+- ``hml_corrected.parquet``  -- with the price-error correction
 
 Each file holds the long-short (high-minus-low) portfolio return for *every*
 characteristic, per country and month:
@@ -16,7 +16,7 @@ compute the correlation and the annualized mean / volatility / Sharpe of each
 side. Figures are rendered live by the companion ``.qmd``.
 
 Exposes:
-- load_pair()       -> merged frame with ret_*_main / ret_*_bess
+- load_pair()       -> merged frame with ret_*_main / ret_*_corr
 - by_cntry_char()   -> per (country x characteristic): n, corr_*, mean_*, std_*
 - corr_hist(scope)  -> correlation histograms (all / us / exus)
 - moment_scatter()  -> 3x3 annualized mean/vol/Sharpe scatter grid vs y=x
@@ -43,11 +43,11 @@ WEIGHT_LABELS = {
 # Point these at your own baseline / corrected runs to regenerate.
 DATA_DIR = Path(__file__).resolve().parent / "data"
 MAIN_PATH = DATA_DIR / "hml_main.parquet"
-BESS_PATH = DATA_DIR / "hml_bessembinder.parquet"
+CORRECTED_PATH = DATA_DIR / "hml_corrected.parquet"
 # Precomputed per-country x characteristic stats (correlations + moments).
 # This is the only file the report needs; the two hml_*.parquet raw runs above
 # are optional and kept untracked. Regenerate with rebuild_stats().
-STATS_PATH = DATA_DIR / "bess_factor_stats.parquet"
+STATS_PATH = DATA_DIR / "correction_factor_stats.parquet"
 
 # Filters (match the validation notebook): drop thin panels and two countries
 # whose returns are dominated by hyperinflation-era noise.
@@ -66,19 +66,19 @@ ANN_MEAN = 12.0
 ANN_STD = np.sqrt(12.0)
 
 
-def load_pair(main_path: Path = MAIN_PATH, bess_path: Path = BESS_PATH) -> pl.DataFrame:
+def load_pair(main_path: Path = MAIN_PATH, corrected_path: Path = CORRECTED_PATH) -> pl.DataFrame:
     """Inner-join the two runs on (eom, excntry, characteristic)."""
     main = (
         pl.scan_parquet(main_path)
         .select(KEYS + RET_COLS)
         .rename({c: f"{c}_main" for c in RET_COLS})
     )
-    bess = (
-        pl.scan_parquet(bess_path)
+    corrected = (
+        pl.scan_parquet(corrected_path)
         .select(KEYS + RET_COLS)
-        .rename({c: f"{c}_bess" for c in RET_COLS})
+        .rename({c: f"{c}_corr" for c in RET_COLS})
     )
-    return main.join(bess, on=KEYS, how="inner").collect()
+    return main.join(corrected, on=KEYS, how="inner").collect()
 
 
 def by_cntry_char(
@@ -91,13 +91,13 @@ def by_cntry_char(
     if merged is None:
         merged = load_pair()
     agg = [pl.len().alias("n")]
-    agg += [pl.corr(f"{c}_main", f"{c}_bess").alias(f"corr_{c}") for c in RET_COLS]
+    agg += [pl.corr(f"{c}_main", f"{c}_corr").alias(f"corr_{c}") for c in RET_COLS]
     for c in RET_COLS:
         agg += [
             pl.mean(f"{c}_main").alias(f"mean_{c}_main"),
-            pl.mean(f"{c}_bess").alias(f"mean_{c}_bess"),
+            pl.mean(f"{c}_corr").alias(f"mean_{c}_corr"),
             pl.std(f"{c}_main").alias(f"std_{c}_main"),
-            pl.std(f"{c}_bess").alias(f"std_{c}_bess"),
+            pl.std(f"{c}_corr").alias(f"std_{c}_corr"),
         ]
     return (
         merged.lazy()
@@ -131,7 +131,7 @@ def _scope(df: pl.DataFrame, scope: str) -> pl.DataFrame:
 
 
 def corr_hist(df: pl.DataFrame | None = None, scope: str = "all", bins: int | None = None):
-    """Histogram of main-vs-bess correlations, one panel per weighting.
+    """Histogram of main-vs-corrected correlations, one panel per weighting.
 
     scope: 'all' | 'us' | 'exus'. US is zoomed to [0.95, 1] with fine bins.
     """
@@ -181,7 +181,7 @@ def corr_hist(df: pl.DataFrame | None = None, scope: str = "all", bins: int | No
 
 def corr_stats(df: pl.DataFrame | None = None, scope: str = "us") -> pl.DataFrame:
     """For one sample ('us' or 'exus'): pair count plus the five-number summary
-    (Min, Q1, Q2/median, Q3, Max) of the main-vs-bess correlation, per weighting."""
+    (Min, Q1, Q2/median, Q3, Max) of the main-vs-corrected correlation, per weighting."""
     if df is None:
         df = by_cntry_char()
     d = _scope(df, scope)
@@ -287,8 +287,8 @@ def moment_scatter(df: pl.DataFrame | None = None):
         )
         for j, (m, label) in enumerate(metrics):
             ax = axes[j]
-            xb, yb = _moment_xy(exus, m, c, "main"), _moment_xy(exus, m, c, "bess")
-            xr, yr = _moment_xy(us, m, c, "main"), _moment_xy(us, m, c, "bess")
+            xb, yb = _moment_xy(exus, m, c, "main"), _moment_xy(exus, m, c, "corr")
+            xr, yr = _moment_xy(us, m, c, "main"), _moment_xy(us, m, c, "corr")
             ax.scatter(xb, yb, s=8, color=BLUE, alpha=0.4, edgecolor="none", label="World ex-US")
             ax.scatter(xr, yr, s=8, color=RED, alpha=0.6, edgecolor="none", label="US")
             lo, hi = limits[m]
@@ -308,7 +308,7 @@ def moment_scatter(df: pl.DataFrame | None = None):
 
 
 def summary_table(df: pl.DataFrame | None = None) -> pl.DataFrame:
-    """Median main-vs-bess correlation by sample (All / USA / Ex-USA) and weighting."""
+    """Median main-vs-corrected correlation by sample (All / USA / Ex-USA) and weighting."""
     if df is None:
         df = by_cntry_char()
     rows = []
