@@ -96,7 +96,7 @@ def _atomic_write(path: Path, text: str) -> None:
             # this file may hold a plaintext password, so the mode must be
             # guaranteed even if that default ever changes.
             os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "w") as fh:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(text)
         if path.is_symlink():
             # os.replace swaps the symlink itself for the new regular file, so its
@@ -233,7 +233,8 @@ def _pgpass_scan(username: str, *, check_perms: bool = True) -> tuple[bool, bool
     manage it). A wildcard sitting above an exact line therefore yields
     ``(True, False)``. With ``check_perms`` (the default), a too-open file counts
     as no entry (libpq ignores it); pass ``check_perms=False`` to ask only whether
-    an entry exists. Returns ``(False, False)`` if the file is missing or unreadable.
+    an entry exists. Returns ``(False, False)`` if the file is missing, unreadable,
+    or not valid UTF-8 (jkp reads it as UTF-8 and warns in that last case).
     """
     path = _pgpass_path()
     try:
@@ -247,7 +248,22 @@ def _pgpass_scan(username: str, *, check_perms: bool = True) -> tuple[bool, bool
                 flush=True,
             )
             return False, False
-        lines = path.read_text().splitlines()
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except UnicodeDecodeError:
+        # jkp reads the file as UTF-8 — a deliberate choice, since libpq itself is
+        # byte-oriented and mandates no encoding. A file another tool wrote in a
+        # different encoding isn't "invalid"; jkp just can't read it here, so
+        # ignore it (with a warning) rather than crash the whole resolution.
+        # Use the literal env-var name here, not the ENV_PASSWORD constant: CodeQL's
+        # clear-text-logging check is name-based, so a "password"-named identifier
+        # flowing into this stderr sink is a false positive (cf. get_wrds_credentials).
+        print(
+            f"Warning: jkp reads {path} as UTF-8, but it is not valid UTF-8, so jkp "
+            "cannot use it. Set WRDS_PASSWORD or use the system keyring.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return False, False
     except OSError:
         return False, False
     matched = has_exact = False
@@ -282,6 +298,30 @@ def _pgpass_has_entry(username: str, *, check_perms: bool = True) -> bool:
     return _pgpass_scan(username, check_perms=check_perms)[0]
 
 
+def _read_pgpass_lines(path: Path) -> list[str]:
+    """Read an existing pgpass file's lines for a read-modify-write, raising an
+    actionable ``RuntimeError`` rather than a raw traceback when it can't be read.
+
+    jkp reads the file as UTF-8 — a deliberate choice, since libpq itself is
+    byte-oriented and mandates no ``.pgpass`` encoding. A file another tool wrote
+    in a different encoding isn't "invalid"; jkp simply can't edit it in place, so
+    say so and point at the alternatives instead of clobbering it.
+    """
+    try:
+        return path.read_text(encoding="utf-8").splitlines()
+    except UnicodeDecodeError as exc:
+        raise RuntimeError(
+            f"jkp reads {path} as UTF-8, but it is not valid UTF-8 ({exc}); "
+            "re-save it as UTF-8, or use WRDS_PASSWORD or the system keyring."  # literal, not ENV_PASSWORD
+        ) from exc
+    except OSError as exc:
+        # e.g. a root-owned ~/.pgpass from an old sudo — surface an actionable
+        # message rather than a raw error after the user typed their password.
+        raise RuntimeError(
+            f"Cannot read existing {path} ({exc}); fix its permissions and retry."
+        ) from exc
+
+
 def _write_pgpass(username: str, password: str) -> Path:
     """Append or replace jkp's WRDS line, leaving every other entry untouched."""
     if "\n" in password or "\r" in password:
@@ -293,14 +333,7 @@ def _write_pgpass(username: str, password: str) -> Path:
     out: list[str] = []
     replaced = False
     if path.exists():
-        try:
-            existing = path.read_text().splitlines()
-        except OSError as exc:
-            # e.g. a root-owned ~/.pgpass from an old sudo — surface an actionable
-            # message rather than a raw error after the user typed their password.
-            raise RuntimeError(
-                f"Cannot read existing {path} ({exc}); fix its permissions and retry."
-            ) from exc
+        existing = _read_pgpass_lines(path)
         for raw in existing:
             if _is_wrds_line(_split_pgpass(raw.strip()), username):
                 if not replaced:
@@ -320,12 +353,7 @@ def _remove_pgpass_entry(username: str) -> bool:
     path = _pgpass_path()
     if not path.exists():
         return False
-    try:
-        lines = path.read_text().splitlines()
-    except OSError as exc:
-        raise RuntimeError(
-            f"Cannot read existing {path} ({exc}); fix its permissions and retry."
-        ) from exc
+    lines = _read_pgpass_lines(path)
     out: list[str] = []
     removed = False
     for raw in lines:

@@ -705,6 +705,43 @@ def test_remove_pgpass_unreadable_file_gives_actionable_error(_isolate_credentia
 
 
 @pytest.mark.unit
+def test_pgpass_not_utf8_is_ignored_with_warning(_isolate_credential_state, capsys):
+    """A non-UTF-8 ~/.pgpass (jkp reads it as UTF-8, but libpq is byte-oriented so
+    such a file is possible) is skipped with a warning during resolution, not a
+    crash."""
+    mod = _isolate_credential_state
+    path = mod._pgpass_path()
+    path.write_bytes(b"wrds-pgdata.wharton.upenn.edu:9737:wrds:testuser:p\xe9ss\n")
+    if not sys.platform.startswith("win"):
+        path.chmod(0o600)  # pass the perms gate so the read (not perms) is exercised
+
+    assert mod._pgpass_scan("testuser") == (False, False)
+    assert "not valid UTF-8" in capsys.readouterr().err
+
+
+@pytest.mark.unit
+def test_write_pgpass_not_utf8_gives_actionable_error(_isolate_credential_state):
+    """`jkp connect` against a non-UTF-8 ~/.pgpass raises an actionable error
+    rather than clobbering a file it can't read."""
+    mod = _isolate_credential_state
+    mod._pgpass_path().write_bytes(b"otherhost:5432:db:bob:p\xe9ss\n")
+
+    with pytest.raises(RuntimeError, match="not valid UTF-8"):
+        mod._write_pgpass("testuser", "newpw")
+
+
+@pytest.mark.unit
+def test_remove_pgpass_not_utf8_gives_actionable_error(_isolate_credential_state):
+    """`jkp connect --reset` against a non-UTF-8 ~/.pgpass likewise raises an
+    actionable error, not a raw UnicodeDecodeError."""
+    mod = _isolate_credential_state
+    mod._pgpass_path().write_bytes(b"otherhost:5432:db:bob:p\xe9ss\n")
+
+    with pytest.raises(RuntimeError, match="not valid UTF-8"):
+        mod._remove_pgpass_entry("testuser")
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("username", "expected"),
     [
