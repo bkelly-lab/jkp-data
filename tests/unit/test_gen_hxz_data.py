@@ -253,8 +253,9 @@ class TestHxzAttachSiccd:
         result = hxz_attach_siccd(df, raw_dir, "obs_date").collect()
         assert result["is_fin"][0] is True
 
-    def test_date_outside_window_drops_row(self, tmp_path):
-        """When obs_date is before secinfostartdt, the filter drops the row entirely."""
+    def test_date_outside_window_keeps_row_with_null_siccd(self, tmp_path):
+        """When obs_date is before secinfostartdt (no covering window), the
+        panel row is kept with null siccd/is_fin rather than being dropped."""
         raw_dir = self._write_sec_hist(
             tmp_path,
             [
@@ -268,9 +269,9 @@ class TestHxzAttachSiccd:
         )
         df = pl.DataFrame({"permno": [1], "obs_date": [date(2005, 6, 30)]}).lazy()
         result = hxz_attach_siccd(df, raw_dir, "obs_date").collect()
-        # The join+filter drops all rows (no secinfostartdt.is_null() row and
-        # the range condition fails) → empty output
-        assert len(result) == 0
+        assert len(result) == 1
+        assert result["siccd"][0] is None
+        assert result["is_fin"][0] is None
 
     def test_overlapping_windows_picks_latest_start(self, tmp_path):
         """Tie-break: most recent secinfostartdt wins when two windows overlap."""
@@ -1771,7 +1772,8 @@ class TestHxzClassifyPortfolios:
         # June formation year 2020 → port_year=2020; Jul..Dec 2020 port_year=2020 (month<7 → year-1; month>=7 → year)
         # Jul: month=7 ≥ 7 → port_year=2020; Dec: month=12 ≥ 7 → port_year=2020
         # This is correct; Jun formation year = 2020
-        assert jul_row["sizeport"][0] is not None or dec_row["sizeport"][0] is not None
+        assert jul_row["sizeport"][0] is not None
+        assert dec_row["sizeport"][0] is not None
 
     def test_roe_attached_monthly(self):
         """ROE port from roe_m is joined on (excntry, id, date)."""

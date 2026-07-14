@@ -74,12 +74,12 @@ mpl.rcParams.update(
 REF_COLOR = "#1a1818"
 JKP_COLOR = "red"
 
-REPO = Path(__file__).resolve().parents[1]
+REPO = Path(__file__).resolve().parents[2]
 JKP_PATH = REPO / "data" / "interim" / "ap_factors_monthly.parquet"
 # Reference series live next to this module (committed), so a fresh clone resolves
 # them without the local factor_comparison/ symlink.
 REF_DIR = Path(__file__).resolve().parent / "Reference_data"
-OUT_DIR = REPO / "factor_comparison"
+OUT_DIR = Path(__file__).resolve().parents[1] / "factor_comparison"
 
 DateFmt = Literal["yyyymm", "year_month"]
 
@@ -270,12 +270,16 @@ def load_ref(spec: ModelSpec) -> pl.DataFrame:
 
 
 def _merge(spec: ModelSpec, jkp: pl.DataFrame) -> pl.DataFrame:
+    # Note: intentionally no whole-frame drop_nulls() here — a model's factors
+    # can have different reference coverage windows (e.g. DHS PEAD starts later
+    # than FIN), and dropping jointly would clip every factor to the shortest
+    # one. Consumers select their own (jkp_col, ref_col) pair and drop_nulls on
+    # just that pair.
     ref = load_ref(spec)
     ref_renamed = ref.rename({rcol: f"__ref_{display}" for display, _, rcol in spec.panels})
     j_sel = jkp.select(["eom", *[jcol for _, jcol, _ in spec.panels]])
     return (
         j_sel.join(ref_renamed, on="eom", how="inner")
-        .drop_nulls()
         .filter(pl.col("eom") >= spec.start)
         .sort("eom")
     )
@@ -506,12 +510,12 @@ def load_ref_daily(spec: ModelSpec) -> pl.DataFrame:
 
 
 def _merge_daily(spec: ModelSpec, jkp_d: pl.DataFrame) -> pl.DataFrame:
+    # See _merge: no whole-frame drop_nulls, per-factor coverage can differ.
     ref = load_ref_daily(spec)
     ref_renamed = ref.rename({rcol: f"__ref_{display}" for display, _, rcol in spec.panels})
     j_sel = jkp_d.select(["date", *[jcol for _, jcol, _ in spec.panels]])
     return (
         j_sel.join(ref_renamed, on="date", how="inner")
-        .drop_nulls()
         .filter(pl.col("date") >= spec.start)
         .sort("date")
     )
@@ -579,6 +583,7 @@ def date_window_note(spec: ModelSpec, jkp: pl.DataFrame | None = None) -> str:
 
 
 def main() -> None:
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
     jkp = load_jkp_usa()
     for spec in MODELS:
         fig, stats = make_figure(spec, jkp)

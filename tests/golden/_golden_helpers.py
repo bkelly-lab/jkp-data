@@ -158,8 +158,8 @@ def compare_factor_parquet(
         return [
             f"{actual.name}: column mismatch (only in actual: {only_a}, only in golden: {only_g})"
         ]
-    if a.height == 0:
-        return []
+    if g.height == 0:
+        return [f"{golden.name}: golden has 0 rows — cannot vacuously pass, regenerate the golden"]
 
     keys = [k for k in key_cols if k in a.columns]
     if keys:

@@ -31,6 +31,7 @@ OUTPUTS = {
 }
 
 
+@pytest.mark.regression
 def test_gen_hxz_data_golden(test_paths: DataPaths, request: pytest.FixtureRequest) -> None:
     stage_synthetic_slices(test_paths)
     with cwd(test_paths.interim_dir):

@@ -796,7 +796,20 @@ def gen_world_msf(
         pl.col("source_crsp").cast(pl.Int8),
     )
     row_df = row_df.sort(["id", "eom"]).with_columns(me_lag1=pl.col("me").shift(1).over("id"))
-    return pl.concat([us, row_df], how="diagonal_relaxed")
+    prev_eom = pl.col("eom").shift(1).over("id")
+    # ret_lag_dif mirrors the production world_msf column (calendar months since
+    # the prior observation; null on the first row) — ff_load_world_panel nulls
+    # gap-spanning returns off it.
+    return (
+        pl.concat([us, row_df], how="diagonal_relaxed")
+        .sort(["id", "eom"])
+        .with_columns(
+            ret_lag_dif=(
+                (pl.col("eom").dt.year() - prev_eom.dt.year()) * 12
+                + (pl.col("eom").dt.month() - prev_eom.dt.month())
+            ).cast(pl.Int64)
+        )
+    )
 
 
 def gen_world_dsf(
@@ -867,7 +880,11 @@ def gen_world_dsf(
         pl.col("obs_main").cast(pl.Int8),
         pl.col("exch_main").cast(pl.Int8),
     )
-    return row_df
+    # ret_lag_dif mirrors production world_dsf (days since the prior
+    # observation per id; null on the first row).
+    return row_df.sort(["id", "date"]).with_columns(
+        ret_lag_dif=(pl.col("date") - pl.col("date").shift(1).over("id")).dt.total_days()
+    )
 
 
 def gen_world_data(

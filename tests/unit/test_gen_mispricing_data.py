@@ -125,7 +125,7 @@ def _make_port_ret(
 
 
 class TestMpTruncateThin:
-    """Tests for _mp_truncate_thin: drop rows whose eom <= max(bad_eom)."""
+    """Tests for _mp_truncate_thin: drop only the thin months themselves."""
 
     def test_no_thin_groups_returns_unchanged(self):
         """All groups have freq >= min_n — nothing dropped."""
@@ -135,22 +135,22 @@ class TestMpTruncateThin:
         assert result.height == 3
 
     def test_thin_early_rows_removed(self):
-        """Rows at eom <= max(bad_eom) are dropped."""
+        """A thin leading month is dropped."""
         eoms = [_eom(2000, 1), _eom(2000, 2), _eom(2000, 3)]
         df = pl.DataFrame({"eom": eoms, "vwret": [0.01, 0.02, 0.03], "_freq_": [5, 15, 20]})
         result = _mp_truncate_thin(df, by="eom", freq_col="_freq_", min_n=10)
-        # bad eom = 2000-01; rows with eom > 2000-01 kept
+        # thin eom = 2000-01; later months kept
         assert result.height == 2
         assert result["eom"].min() == _eom(2000, 2)
 
     def test_thin_multiple_bad_eoms(self):
-        """When multiple eoms have freq < min_n, drop all eoms up to the latest bad one."""
+        """Every month with freq < min_n is dropped."""
         eoms = [_eom(2000, 1), _eom(2000, 2), _eom(2000, 3), _eom(2000, 4)]
         df = pl.DataFrame(
             {"eom": eoms, "vwret": [0.01, 0.02, 0.03, 0.04], "_freq_": [5, 3, 20, 20]}
         )
         result = _mp_truncate_thin(df, by="eom", freq_col="_freq_", min_n=10)
-        # max bad eom = 2000-02; keep eom > 2000-02
+        # thin eoms = 2000-01, 2000-02; later months kept
         assert result.height == 2
         assert result["eom"].min() == _eom(2000, 3)
 
@@ -168,6 +168,30 @@ class TestMpTruncateThin:
         result = _mp_truncate_thin(df)
         assert result.height == 1
         assert result["eom"][0] == _eom(2000, 2)
+
+    def test_late_thin_month_drops_only_itself(self):
+        """A thin month late in the sample must not truncate the history
+        before it — only the thin month is removed."""
+        eoms = [_eom(2000, m) for m in range(1, 6)]
+        df = pl.DataFrame(
+            {"eom": eoms, "vwret": [0.01, 0.02, 0.03, 0.04, 0.05], "_freq_": [15, 12, 20, 4, 18]}
+        )
+        result = _mp_truncate_thin(df, by="eom", freq_col="_freq_", min_n=10)
+        assert result.height == 4
+        assert _eom(2000, 4) not in result["eom"].to_list()
+        assert result["eom"].min() == _eom(2000, 1)
+
+    def test_thin_month_with_multiple_buckets_drops_whole_month(self):
+        """One sub-min_n bucket poisons every bucket row of that month."""
+        df = pl.DataFrame(
+            {
+                "eom": [_eom(2000, 1), _eom(2000, 1), _eom(2000, 2), _eom(2000, 2)],
+                "vwret": [0.01, 0.02, 0.03, 0.04],
+                "_freq_": [15, 4, 20, 18],
+            }
+        )
+        result = _mp_truncate_thin(df, by="eom", freq_col="_freq_", min_n=10)
+        assert result["eom"].to_list() == [_eom(2000, 2), _eom(2000, 2)]
 
 
 # ===========================================================================
@@ -935,28 +959,50 @@ class TestRollingCalendarSum:
 class TestMomentumFormula:
     """Tests for momentum: exp(sum log(1+ret) for lags 2..12) - 1."""
 
+    def _momentum_via_production(self, r: float) -> float:
+        """Run 11 months of constant return r through the actual
+        _mp_rolling_calendar_sum + exp(sum)-1 pipeline used by momentum."""
+        eoms = [_eom(2020, m) for m in range(1, 14)]
+        df = pl.DataFrame({"permno": [1] * 13, "eom": eoms, "log_1p_ret": [math.log(1 + r)] * 13})
+        roll = _mp_rolling_calendar_sum(df, "log_1p_ret", lag_min=2, lag_max=12, n_required=11)
+        total_log = roll.filter(pl.col("eom") == _eom(2020, 13))["r"][0]
+        return math.exp(total_log) - 1
+
     def test_momentum_compounded_return(self, tolerance):
         """With 11 identical monthly returns r, momentum = (1+r)^11 - 1."""
         r = 0.01
-        expected = (1 + r) ** 11 - 1
-        # Simulate 11 log returns summed
-        total_log = 11 * math.log(1 + r)
-        computed = math.exp(total_log) - 1
+        computed = self._momentum_via_production(r)
+        expected = 1.01**11 - 1  # independently hand-computed literal
         np.testing.assert_allclose(computed, expected, **tolerance.TIGHT)
 
     def test_momentum_negative_returns(self, tolerance):
         """Negative returns produce negative momentum."""
         r = -0.02
-        expected = (1 + r) ** 11 - 1
-        total_log = 11 * math.log(1 + r)
-        computed = math.exp(total_log) - 1
+        computed = self._momentum_via_production(r)
+        expected = 0.98**11 - 1  # independently hand-computed literal
         np.testing.assert_allclose(computed, expected, **tolerance.TIGHT)
 
     def test_momentum_requires_11_months(self):
-        """Only 10 non-null months → momentum is None (n_required=11)."""
-        # This is enforced by _mp_rolling_calendar_sum with n_required=11
-        # Simulate: _cnt < 11 → result = None
-        assert 10 < 11  # fewer than required
+        """Only 10 non-null months in the t-2..t-12 window → momentum sum is
+        None; 11 months → non-null (n_required=11)."""
+        eoms = [_eom(2020, m) for m in range(1, 14)]
+        # Target row is month 13; window is months 1..11 (lag 2..12).
+        # Null out one month inside the window -> only 10 non-null there.
+        log_rets = [math.log(1.01)] * 13
+        log_rets[4] = None  # month 5, inside the window
+        df_10 = pl.DataFrame({"permno": [1] * 13, "eom": eoms, "log_1p_ret": log_rets})
+        roll_10 = _mp_rolling_calendar_sum(
+            df_10, "log_1p_ret", lag_min=2, lag_max=12, n_required=11
+        )
+        r_10 = roll_10.filter(pl.col("eom") == _eom(2020, 13))["r"][0]
+        assert r_10 is None
+
+        df_11 = pl.DataFrame({"permno": [1] * 13, "eom": eoms, "log_1p_ret": [math.log(1.01)] * 13})
+        roll_11 = _mp_rolling_calendar_sum(
+            df_11, "log_1p_ret", lag_min=2, lag_max=12, n_required=11
+        )
+        r_11 = roll_11.filter(pl.col("eom") == _eom(2020, 13))["r"][0]
+        assert r_11 is not None
 
 
 # ===========================================================================
@@ -968,12 +1014,18 @@ class TestCompositeIssueFormula:
     """Tests for composite_issue: log(me/me_lag12) - sum_log_ret_12."""
 
     def test_composite_issue_known_values(self, tolerance):
-        """log(me/me_lag12) - cum_log_ret_12 computed directly."""
-        me = 110.0
-        me_lag12 = 100.0
-        cum_log_ret_12 = 0.08  # simulated 12-month cumulative log return
-        expected = math.log(me / me_lag12) - cum_log_ret_12
-        computed = math.log(110.0 / 100.0) - 0.08
+        """composite_issue = log(me/me_lag12) - cum_log_ret_12, where
+        cum_log_ret_12 comes from the same _mp_rolling_calendar_sum helper
+        the production code uses (lag_min=0, lag_max=11, n_required=12)."""
+        r = 0.08
+        eoms = [_eom(2020, m) for m in range(1, 13)]
+        df = pl.DataFrame({"permno": [1] * 12, "eom": eoms, "log_1p_ret": [r / 12] * 12})
+        cumret = _mp_rolling_calendar_sum(df, "log_1p_ret", lag_min=0, lag_max=11, n_required=12)
+        cum_log_ret_12 = cumret.filter(pl.col("eom") == _eom(2020, 12))["r"][0]
+
+        me, me_lag12 = 110.0, 100.0
+        computed = math.log(me / me_lag12) - cum_log_ret_12
+        expected = math.log(1.10) - 0.08  # independently hand-computed literal
         np.testing.assert_allclose(computed, expected, **tolerance.TIGHT)
 
     def test_composite_issue_zero_me_lag(self):
@@ -1074,16 +1126,6 @@ class TestMpDistressMarketInputs:
 
     def test_price_clips_at_15(self):
         """Absolute PRC > 15 is clipped to 15 before log."""
-        pl.DataFrame(
-            {
-                "permno": [1],
-                "eom": [_eom(2000, 2)],
-                "PRC": [100.0],  # will be clipped to 15
-                "RET": [0.05],
-                "me": [1000.0],
-            }
-        )
-        pl.DataFrame({"eom": [_eom(2000, 2)], "totval": [50000.0], "sprtrn": [0.01]})
         # Build a two-row frame (first row is the lag needed to compute lag_PRICE)
         m3_full = pl.DataFrame(
             {
@@ -1104,8 +1146,8 @@ class TestMpDistressMarketInputs:
         result = _mp_distress_market_inputs(m3_full, msp_full)
         # lag_PRICE is from row 1 (eom=2000-01), where prc=min(|100|, 15)=15 → log(15)
         price_row2 = result.filter(pl.col("eom") == _eom(2000, 2))["PRICE"]
-        if len(price_row2) > 0:
-            np.testing.assert_allclose(price_row2[0], math.log(15.0), rtol=1e-6)
+        assert len(price_row2) > 0
+        np.testing.assert_allclose(price_row2[0], math.log(15.0), rtol=1e-6)
 
     def test_output_columns(self):
         """Output must have exactly: eom, permno, ME, PRICE, EXRET, RSIZE."""
@@ -1292,16 +1334,18 @@ class TestMpDistressNimtaavg:
             assert row is None
 
     def test_nimtaavg_geometric_weights(self, tolerance):
-        """NIMTAAVG = scale_n * (n0 + n3*R + n6*R^2 + n9*R^3) where scale_n normalizes."""
+        """NIMTAAVG = scale_n * (n0 + n3*R + n6*R^2 + n9*R^3); verify against
+        the production _mp_distress_nimtaavg helper with constant NIMTA
+        (all four lags equal, so the weighted sum collapses to a known literal)."""
         R = self._R
         scale_n = (1 - R**3) / (1 - R**12)
-        # Use constant NIMTA across all quarters → NIMTAAVG should equal NIMTA itself
-        # Because sum = nimta * (1 + R + R^2 + R^3) and scale_n = (1-R^3)/(1-R^12)
-        # The actual normalized value ≠ raw NIMTA; just check the weighting structure
         nimta = 0.02
-        expected = scale_n * nimta * (1 + R + R**2 + R**3)
-        # Compute the same via formula
-        computed = scale_n * (nimta + nimta * R + nimta * R**2 + nimta * R**3)
+        dist3 = self._make_dist3_consecutive(13).with_columns(NIMTA=pl.lit(nimta))
+        result, _ = _mp_distress_nimtaavg(dist3)
+        row = result.filter((pl.col("permno") == 0) & (pl.col("eom") == _eom(2000, 13)))
+        assert row.height == 1
+        computed = row["NIMTAAVG"][0]
+        expected = scale_n * nimta * (1 + R + R**2 + R**3)  # independently hand-computed
         np.testing.assert_allclose(computed, expected, **tolerance.TIGHT)
 
     def test_floor_eom_returned(self):
@@ -1349,14 +1393,21 @@ class TestMpDistressExretavg:
         assert "EXRETAVG" in result.columns
 
     def test_exretavg_scale_formula(self, tolerance):
-        """EXRETAVG scale_e = (1-R)/(1-R^12)."""
+        """EXRETAVG = scale_e * sum(R^i * exret_{t-i} for i=0..11); verify
+        against the production _mp_distress_exretavg helper with constant
+        EXRET (the fixture's EXRET is already constant at 0.01)."""
         R = self._R
         scale_e = (1 - R) / (1 - R**12)
-        # For constant EXRET=e, EXRETAVG = scale_e * e * sum(R^i for i=0..11)
         e = 0.01
+        dist3 = self._make_dist3(15)
+        floor_eom = _eom(1999, 1)
+        result = _mp_distress_exretavg(dist3, floor_eom)
+        last_eom = _eom(2000, 15)
+        row = result.filter(pl.col("eom") == last_eom)
+        assert row.height == 1
+        computed = row["EXRETAVG"][0]
         geom_sum = sum(R**i for i in range(12))
-        expected = scale_e * e * geom_sum
-        computed = scale_e * sum(e * R**i for i in range(12))
+        expected = scale_e * e * geom_sum  # independently hand-computed literal
         np.testing.assert_allclose(computed, expected, **tolerance.TIGHT)
 
     def test_exretavg_requires_12_consecutive(self):
@@ -1407,18 +1458,20 @@ class TestMpDistressSigma:
         result = _mp_distress_sigma(daily)
         # Check the last eom (2000-04) which looks back at months 1-3
         row4 = result.filter(pl.col("eom") == _eom(2000, 4))
-        if row4.height > 0:
-            expected_sigma = math.sqrt(252.0 / 60 * (60 * 0.0001))
-            np.testing.assert_allclose(row4["SIGMA"][0], expected_sigma, **tolerance.STANDARD)
+        assert row4.height == 1
+        expected_sigma = math.sqrt(252.0 / 60 * (60 * 0.0001))
+        np.testing.assert_allclose(row4["SIGMA"][0], expected_sigma, **tolerance.STANDARD)
 
     def test_sigma_null_when_no_prior_obs(self):
-        """When there are no prior 3-month daily obs, SIGMA should be None (or filled from mean)."""
+        """When there are no prior 3-month daily obs, SIGMA is None: sum_total
+        is 0 obs for the single stock, and there's no other stock's SIGMA to
+        fall back on for the cross-sectional mean."""
         # Only one month of data → no prior 3-month window
         daily = self._make_daily(n_months=1)
         result = _mp_distress_sigma(daily)
-        # Month 1 has no lookback months → sum_total=None or 0 → SIGMA might be None or filled
-        # Just check it doesn't crash and the column exists
-        assert "SIGMA" in result.columns
+        row = result.filter(pl.col("eom") == _eom(2000, 1))
+        assert row.height == 1
+        assert row["SIGMA"][0] is None
 
 
 # ===========================================================================
@@ -1430,53 +1483,60 @@ class TestMpDistressFinalScore:
     """Tests for _mp_distress_final_score: CHS logit using MP_DISTRESS_BETAS."""
 
     def _make_dist4_sigma(self):
-        """Create minimal dist4 and sigma frames."""
+        """Create minimal dist4 and sigma frames. TLMTA/CASHMTA/MB differ between
+        t-1 and t because _mp_distress_final_score scores those three off the
+        *lagged* (t-1) value while NIMTAAVG/EXRETAVG/RSIZE/PRICE/SIGMA use the
+        current (t) value — divergent rows catch a dropped or reversed lag."""
         eom = _eom(2001, 6)
         eom_prev = _eom(2001, 5)
         dist4 = pl.DataFrame(
             {
                 "permno": [1, 1],
                 "eom": [eom_prev, eom],
-                "NIMTAAVG": [0.02, 0.02],
-                "TLMTA": [0.3, 0.3],
-                "EXRETAVG": [-0.01, -0.01],
-                "RSIZE": [-3.0, -3.0],
-                "CASHMTA": [0.05, 0.05],
-                "MB": [1.5, 1.5],
-                "PRICE": [2.5, 2.5],
+                "NIMTAAVG": [0.01, 0.02],
+                "TLMTA": [0.3, 0.5],
+                "EXRETAVG": [-0.02, -0.01],
+                "RSIZE": [-4.0, -3.0],
+                "CASHMTA": [0.03, 0.05],
+                "MB": [1.0, 1.5],
+                "PRICE": [2.0, 2.5],
             }
         )
-        sigma = pl.DataFrame({"permno": [1, 1], "eom": [eom_prev, eom], "SIGMA": [0.3, 0.3]})
+        sigma = pl.DataFrame({"permno": [1, 1], "eom": [eom_prev, eom], "SIGMA": [0.4, 0.3]})
         return dist4, sigma
 
     def test_final_score_uses_correct_betas(self, tolerance):
-        """Distress score = intercept + NIMTAAVG*b1 + TLMTA*b2 + ... matches manual calc."""
+        """Distress score at eom t = intercept + NIMTAAVG_t*b1 + TLMTA_{t-1}*b2
+        + EXRETAVG_t*b3 + SIGMA_t*b4 + RSIZE_t*b5 + CASHMTA_{t-1}*b6
+        + MB_{t-1}*b7 + PRICE_t*b8. The t-1 row is dropped (its own lags are
+        null), so only the t row survives filtering."""
         b = MP_DISTRESS_BETAS
         nimtaavg = 0.02
-        tlmta = 0.3
+        lag_tlmta = 0.3
         exretavg = -0.01
         sigma = 0.3
         rsize = -3.0
-        cashmta = 0.05
-        mb = 1.5
+        lag_cashmta = 0.03
+        lag_mb = 1.0
         price = 2.5
 
         expected = (
             b["intercept"]
             + b["NIMTAAVG"] * nimtaavg
-            + b["TLMTA"] * tlmta
+            + b["TLMTA"] * lag_tlmta
             + b["EXRETAVG"] * exretavg
             + b["SIGMA"] * sigma
             + b["RSIZE"] * rsize
-            + b["CASHMTA"] * cashmta
-            + b["MB"] * mb
+            + b["CASHMTA"] * lag_cashmta
+            + b["MB"] * lag_mb
             + b["PRICE"] * price
         )
 
         dist4, sigma_df = self._make_dist4_sigma()
         result = _mp_distress_final_score(dist4, sigma_df)
-        if result.height > 0:
-            np.testing.assert_allclose(result["distress"][0], expected, **tolerance.STANDARD)
+        assert result.height == 1
+        assert result["eom"][0] == _eom(2001, 6)
+        np.testing.assert_allclose(result["distress"][0], expected, **tolerance.STANDARD)
 
     def test_final_score_output_columns(self):
         """Output must contain eom, permno, distress."""
@@ -1503,9 +1563,10 @@ class TestMpDistressFinalScore:
         )
         sigma_df = pl.DataFrame({"permno": [1, 1], "eom": [eom_prev, eom], "SIGMA": [0.3, 0.3]})
         result = _mp_distress_final_score(dist4, sigma_df)
-        # First row has null NIMTAAVG → filtered out after winsorization+filter
-        permnos = result["permno"].to_list()
-        assert 1 in permnos  # at least one row survives
+        # First row has null NIMTAAVG → filtered out after winsorization+filter;
+        # only the second (t) row survives.
+        assert result.height == 1
+        assert result["eom"][0] == eom
 
 
 # ===========================================================================

@@ -3,7 +3,7 @@ This change log keeps track of changes to the underlying data set. In brackets, 
 
 This repository ports the original SAS pipeline ([ReplicationCrisis](https://github.com/bkelly-lab/ReplicationCrisis)) to Python using Polars. Entries up to and including 05-03-2025 are from the original change log.
 
-## 10-07-2026
+## 10-07-2026 ([#171](https://github.com/bkelly-lab/jkp-data/pull/171))
 This entry covers the factor-model work on the `factors_rep` branch, which rebuilds the asset-pricing factor outputs on pure CRSP CIZ v2 (`msf_v2`/`dsf_v2`) and extends them to four models with international (per-country) coverage: Fama-French (FF3/FF5 + momentum), Hou-Xue-Zhang (q-factor), Mispricing (Stambaugh-Yuan), and the new DHS (Daniel-Hirshleifer-Sun) behavioral factors.
 
 __Changes__:
@@ -21,6 +21,12 @@ __Output folder__ (`other_output/`):
 __Impact__:
 - Adds international coverage and the DHS/Mispricing/FF5/momentum series across the factor outputs, and adds the 11 new factor sort variables above to the per-country and combined characteristics files. In the monthly/daily factor files the columns `smb_ff`, `hml`, `inv`, `roe`, and `smb_hxz` are renamed/superseded (see above); consumers keying on those names must update.
 - As a result, these changes propagate to all factor-dependent characteristics and materially affect the values of the factors and characteristics associated with `mispricing_mgmt`, `mispricing_perf`, `iskew_ff3_21d`, `resff3_12_1`, `resff3_6_1`, `ivol_ff3_21d`, `iskew_hxz4_21d`, and `ivol_hxz4_21d` throughout the sample.
+- Non-US `beta_dimson_21d` changes: `mkt_lead_lag` now excludes null-`mktrf` rows introduced by the `ap_factors_daily` full join. ROW FF/HXZ factor legs now exclude gap-spanning returns (`ret_lag_dif` screen) and null out stale ME weights after listing gaps.
+- World Stambaugh-Yuan DISTRESS inputs are now FX-converted to USD with consistent units.
+- `me_ff`/`me_hxz` characteristics for US stocks are now in USD millions (previously USD thousands).
+- US mispricing factor history is no longer truncated by late thin months.
+- DHS fixes: US book equity falls through to AT-LT when CEQ is present but PSTK is missing; ROW lagBE is now calendar-guarded.
+- HXZ fixes: US ROE uses year-month announcement gating; US universe keeps stocks with security-info window gaps (null `siccd`).
 ## 04-07-2026
 __Changes__:
 - Replaced `crsp_shrcd` and `crsp_exchcd` with `primaryexch` and `conditionaltype` in the characteristics output ([#205](https://github.com/bkelly-lab/jkp-data/pull/205))

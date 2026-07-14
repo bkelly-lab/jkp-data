@@ -642,8 +642,8 @@ class TestFFPrepareCharsLeftJoin:
         chars = self._run_us()
         row = chars.filter(pl.col("id") == 1)
         assert row["count"][0] == 3
-        # beme = 1000 x be($M) / dec_me($K) = 1000 x 0.05 / 100
-        assert abs(row["beme"][0] - 0.5) < 1e-12
+        # beme = be($M) / dec_me($M) = 0.05 / 100 (both in USD millions)
+        assert abs(row["beme"][0] - 0.0005) < 1e-12
 
     def test_us_no_dec_me_stock_kept_op_inv_sortable(self):
         """US stock without Dec(t-1) ME keeps comp op/inv (French's OP/INV
@@ -690,7 +690,7 @@ class TestFFPrepareCharsLeftJoin:
             schema_overrides={"year": pl.Int32},
         )
         _, data_chars = _ff_row_finish_prepare(
-            _ff_row_rets_weights_lazy(panel.lazy()).collect(), comp
+            _ff_row_rets_weights_lazy(panel.lazy(), "monthly").collect(), comp
         )
         # id 3 (no Dec ME) dropped by the inner dec_me join; id 2 (no comp)
         # kept by the left comp join.
@@ -1148,8 +1148,8 @@ class TestFFVwLeg:
         panel = _make_panel_bm(rows)
         result = _vw_leg_bm(panel)
         gbr_rows = result.filter(pl.col("excntry") == "GBR")
-        if len(gbr_rows) > 0:
-            assert gbr_rows["SH"][0] is None
+        assert len(gbr_rows) > 0
+        assert gbr_rows["SH"][0] is None
 
     def test_row_at_min_stocks_not_nulled(self):
         """ROW bucket with n == FF_MIN_STOCKS_PF passes through."""
@@ -1428,13 +1428,78 @@ class TestFFComputeFactors:
         # HML = (SH+BH)/2 - (SL+BL)/2 = 0.20 - 0.015 = 0.185
         np.testing.assert_allclose(result["hml_ff"][0], 0.185, **tolerance.STANDARD)
 
-    def test_smb_ff3_vs_smb_ff5_differ(self):
-        """smb_ff3 uses BM leg only; smb_ff5 averages BM/OP/INV legs."""
-        ccm4 = _make_ccm4_full()
+    def test_smb_ff3_vs_smb_ff5_differ(self, tolerance):
+        """smb_ff3 uses BM leg only; smb_ff5 averages BM/OP/INV legs. Build a
+        panel where BM-eligible stocks (positivebeme=1, nonmiss_op=nonmiss_inv=0)
+        are disjoint from OP/INV-eligible stocks (positivebeme=0), with
+        different size spreads per leg, so the two SMBs are not just present
+        but numerically distinct."""
+        d = date(2020, 7, 31)
+        schema = {
+            "excntry": pl.Utf8,
+            "id": pl.Int64,
+            "date": pl.Date,
+            "ret": pl.Float64,
+            "w": pl.Float64,
+            "me": pl.Float64,
+            "sizeport": pl.Utf8,
+            "btmport": pl.Utf8,
+            "positivebeme": pl.Int64,
+            "opport": pl.Utf8,
+            "nonmiss_op": pl.Int64,
+            "invport": pl.Utf8,
+            "nonmiss_inv": pl.Int64,
+        }
+        rows = [
+            # BM-only stocks: one per (size, btm) bucket; excluded from OP/INV legs.
+            ("S", "L", 0.10, 1, "W", 0, "C", 0),
+            ("S", "M", 0.05, 1, "W", 0, "C", 0),
+            ("S", "H", 0.02, 1, "W", 0, "C", 0),
+            ("B", "L", 0.01, 1, "W", 0, "C", 0),
+            ("B", "M", 0.01, 1, "W", 0, "C", 0),
+            ("B", "H", 0.01, 1, "W", 0, "C", 0),
+            # OP-only stocks: one per (size, op) bucket; excluded from BM/INV legs.
+            ("S", "L", 0.01, 0, "W", 1, "C", 0),
+            ("S", "L", 0.01, 0, "N", 1, "C", 0),
+            ("S", "L", 0.01, 0, "R", 1, "C", 0),
+            ("B", "L", 0.01, 0, "W", 1, "C", 0),
+            ("B", "L", 0.01, 0, "N", 1, "C", 0),
+            ("B", "L", 0.01, 0, "R", 1, "C", 0),
+            # INV-only stocks: one per (size, inv) bucket; excluded from BM/OP legs.
+            ("S", "L", 0.01, 0, "W", 0, "C", 1),
+            ("S", "L", 0.01, 0, "W", 0, "N", 1),
+            ("S", "L", 0.01, 0, "W", 0, "A", 1),
+            ("B", "L", 0.20, 0, "W", 0, "C", 1),
+            ("B", "L", 0.20, 0, "W", 0, "N", 1),
+            ("B", "L", 0.20, 0, "W", 0, "A", 1),
+        ]
+        data: dict[str, list] = {k: [] for k in schema}
+        for i, r in enumerate(rows):
+            data["excntry"].append(US_EXCNTRY)
+            data["id"].append(i)
+            data["date"].append(d)
+            data["sizeport"].append(r[0])
+            data["btmport"].append(r[1])
+            data["ret"].append(r[2])
+            data["positivebeme"].append(r[3])
+            data["opport"].append(r[4])
+            data["nonmiss_op"].append(r[5])
+            data["invport"].append(r[6])
+            data["nonmiss_inv"].append(r[7])
+            data["w"].append(1.0)
+            data["me"].append(1.0)
+        ccm4 = pl.DataFrame(data, schema=schema)
         result = ff_compute_factors(ccm4)
-        # They will generally differ unless OP/INV size legs happen to equal BM
         assert "smb_ff3" in result.columns
         assert "smb_ff5" in result.columns
+        smb_bm = (0.10 + 0.05 + 0.02) / 3 - (0.01 + 0.01 + 0.01) / 3
+        smb_op = (0.01 + 0.01 + 0.01) / 3 - (0.01 + 0.01 + 0.01) / 3
+        smb_inv = (0.01 + 0.01 + 0.01) / 3 - (0.20 + 0.20 + 0.20) / 3
+        np.testing.assert_allclose(result["smb_ff3"][0], smb_bm, **tolerance.STANDARD)
+        np.testing.assert_allclose(
+            result["smb_ff5"][0], (smb_bm + smb_op + smb_inv) / 3, **tolerance.STANDARD
+        )
+        assert abs(result["smb_ff3"][0] - result["smb_ff5"][0]) > 1e-6
 
     def test_null_propagation_when_bucket_missing(self):
         """When a required bucket is absent, factor is null (no ignore_nulls)."""
@@ -1602,10 +1667,10 @@ class TestFFMomSignalMonthly:
         lf = panel.lazy()
         result = _ff_mom_signal_monthly(lf).collect()
         non_null = result.filter(pl.col("mom_2_12").is_not_null())
-        if len(non_null) > 0:
-            # 11 months compounded: lags 2 through 12 = 11 months
-            expected = (1.02**11) - 1
-            np.testing.assert_allclose(non_null["mom_2_12"][0], expected, **tolerance.STANDARD)
+        assert len(non_null) > 0
+        # 11 months compounded: lags 2 through 12 = 11 months
+        expected = (1.02**11) - 1
+        np.testing.assert_allclose(non_null["mom_2_12"][0], expected, **tolerance.STANDARD)
 
     def test_multi_stock_independent(self):
         """Two stocks compute signals independently."""
@@ -1616,9 +1681,9 @@ class TestFFMomSignalMonthly:
         result = _ff_mom_signal_monthly(lf).collect()
         s1 = result.filter(pl.col("id") == 1).filter(pl.col("mom_2_12").is_not_null())
         s2 = result.filter(pl.col("id") == 2).filter(pl.col("mom_2_12").is_not_null())
-        if len(s1) > 0 and len(s2) > 0:
-            # Stock 2 has higher momentum
-            assert s2["mom_2_12"][0] > s1["mom_2_12"][0]
+        assert len(s1) > 0 and len(s2) > 0
+        # Stock 2 has higher momentum
+        assert s2["mom_2_12"][0] > s1["mom_2_12"][0]
 
 
 # =============================================================================
@@ -1771,9 +1836,9 @@ class TestFFMomSignalDaily:
         result = _ff_mom_signal_daily(lf).collect()
         usa = result.filter((pl.col("excntry") == "USA") & pl.col("mom_2_12").is_not_null())
         gbr = result.filter((pl.col("excntry") == "GBR") & pl.col("mom_2_12").is_not_null())
-        if len(usa) > 0 and len(gbr) > 0:
-            # GBR has higher per-day return → higher momentum
-            assert gbr["mom_2_12"].mean() > usa["mom_2_12"].mean()
+        assert len(usa) > 0 and len(gbr) > 0
+        # GBR has higher per-day return → higher momentum
+        assert gbr["mom_2_12"].mean() > usa["mom_2_12"].mean()
 
 
 # =============================================================================

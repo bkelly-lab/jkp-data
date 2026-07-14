@@ -36,6 +36,7 @@ OUTPUTS = {
 }
 
 
+@pytest.mark.regression
 @pytest.mark.skipif(
     platform.machine() not in ("x86_64", "AMD64"),
     reason="golden pinned to x86-64 (CI/cluster); libm ULP flips a rank-boundary bucket here",
