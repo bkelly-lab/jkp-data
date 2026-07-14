@@ -499,6 +499,12 @@ def gen_raw_data_dfs(paths: DataPaths):
     collect_and_write(
         ff_factors_monthly, paths.interim_dir / "raw_data_dfs" / "ff_factors_monthly.parquet"
     )
+    ff_daily_raw = paths.raw_tables_dir / "ff_factors_daily.parquet"
+    if ff_daily_raw.exists():
+        ff_factors_daily = pl.scan_parquet(ff_daily_raw).select(["date", "mktrf"])
+        collect_and_write(
+            ff_factors_daily, paths.interim_dir / "raw_data_dfs" / "ff_factors_daily.parquet"
+        )
     comp_r_ex_codes = pl.scan_parquet(paths.raw_tables_dir / "comp_r_ex_codes.parquet").select(
         ["exchgdesc", "exchgcd"]
     )
@@ -1290,6 +1296,7 @@ def download_raw_data_tables(
     table_names = [
         "comp.exrt_dly",
         "ff.factors_monthly",
+        "ff.factors_daily",
         "comp.g_security",
         "comp.security",
         "comp.r_ex_codes",
@@ -1328,6 +1335,7 @@ def download_raw_data_tables(
         "comp.fundq": "datadate",
         "comp.g_funda": "datadate",
         "comp.g_fundq": "datadate",
+        "ff.factors_daily": "date",
     }
 
     conninfo = gen_wrds_connection_info(username, password)
@@ -1601,10 +1609,12 @@ def compustat_fx(paths: DataPaths):
 def adj_trd_vol_NASDAQ(datevar, col_to_adjust, is_nasdaq_expr):
     """
     Description:
-        Apply historic NASDAQ trade-volume adjustments (pre-decimalization reporting) to a volume column.
+        Apply Gao–Ritter (2010) NASDAQ dealer-volume adjustments to a volume column.
 
     Steps:
-        1) Build date cutoffs: <2001-02-01, ≤2001-12-31, <2003-12-31.
+        1) Build date cutoffs: <2001-02-01, ≤2001-12-31, ≤2003-12-31
+        (inclusive end on 2003-12-31 so that day is adjusted, matching the
+        intended Gao–Ritter coverage).
         2) If is_nasdaq_expr is true and within windows, scale col_to_adjust by
         1/2, 1/1.8, or 1/1.6 respectively; otherwise keep original.
         3) Return the adjusted expression aliased as the original column name.
@@ -1615,7 +1625,7 @@ def adj_trd_vol_NASDAQ(datevar, col_to_adjust, is_nasdaq_expr):
     c1 = is_nasdaq_expr
     c2 = col(datevar) < pl.datetime(2001, 2, 1)
     c3 = col(datevar) <= pl.datetime(2001, 12, 31)
-    c4 = col(datevar) < pl.datetime(2003, 12, 31)
+    c4 = col(datevar) <= pl.datetime(2003, 12, 31)
     adj_trd_vol = (
         pl.when(c1 & c2)
         .then(col(col_to_adjust) / 2)
@@ -1626,6 +1636,72 @@ def adj_trd_vol_NASDAQ(datevar, col_to_adjust, is_nasdaq_expr):
         .otherwise(col(col_to_adjust))
     ).alias(col_to_adjust)
     return adj_trd_vol
+
+
+def zero_obs_gate_ok() -> pl.Expr:
+    """
+    Description:
+        Predicate for stock-days that pass the zero-return quality screen.
+
+    Steps:
+        1) CRSP-sourced rows (source_crsp == 1) always pass: the ≥10 zero-return
+        screen targets Compustat Global data quality and wrongly drops CRSP
+        stock-months with spurious zero-return days (especially 1973–1982).
+        2) Compustat rows pass only when zero_obs < 10.
+
+    Output:
+        Boolean Polars expression usable in .filter().
+    """
+    return (col("source_crsp") == 1) | (col("zero_obs") < 10)
+
+
+def coalesce_usa_mktrf_with_ff_daily(paths: DataPaths, fcts: pl.LazyFrame) -> pl.LazyFrame:
+    """
+    Description:
+        Fill missing USA market excess returns from Ken French daily factors when available.
+
+    Steps:
+        1) Look for ff_factors_daily under raw_tables or interim/raw_data_dfs.
+        2) If missing, return fcts unchanged.
+        3) Left-join FF mktrf on date for USA rows and coalesce into gaps.
+
+    Output:
+        LazyFrame with the same schema as fcts, denser USA mktrf when FF is present.
+    """
+    candidates = (
+        paths.raw_tables_dir / "ff_factors_daily.parquet",
+        paths.interim_dir / "raw_data_dfs" / "ff_factors_daily.parquet",
+    )
+    ff_path = next((p for p in candidates if p.exists()), None)
+    if ff_path is None:
+        return fcts
+
+    schema_names = pl.scan_parquet(ff_path).collect_schema().names()
+    mktrf_col = "mktrf" if "mktrf" in schema_names else "Mkt-RF"
+    date_col = "date" if "date" in schema_names else "Date"
+    ff = (
+        pl.scan_parquet(ff_path)
+        .select(
+            pl.col(date_col).cast(pl.Date).alias("date"),
+            pl.col(mktrf_col).cast(pl.Float64).alias("mktrf_ff"),
+        )
+        .unique(subset=["date"])
+    )
+
+    # Prefer self-built mktrf; fill USA gaps from FF. Densify the USA calendar with
+    # FF-only dates so CRSP stock days are not dropped on thin self-built gaps.
+    # WRDS ff.* factors are decimals (same convention as monthly rf used elsewhere).
+    non_usa = fcts.filter(col("excntry") != "USA")
+    usa = (
+        fcts.filter(col("excntry") == "USA")
+        .join(ff, how="full", on="date", coalesce=True)
+        .with_columns(
+            excntry=pl.coalesce([col("excntry"), pl.lit("USA")]),
+            mktrf=pl.coalesce([col("mktrf"), col("mktrf_ff")]),
+        )
+        .drop("mktrf_ff")
+    )
+    return pl.concat([non_usa, usa], how="diagonal_relaxed")
 
 
 def gen_comp_dsf(paths: DataPaths):
@@ -1697,7 +1773,7 @@ def gen_comp_dsf(paths: DataPaths):
         CASE
             WHEN datadate <  DATE '2001-02-01' THEN cshtrd / 2
             WHEN datadate <= DATE '2001-12-31' THEN cshtrd / 1.8
-            WHEN datadate <  DATE '2003-12-31' THEN cshtrd / 1.6
+            WHEN datadate <= DATE '2003-12-31' THEN cshtrd / 1.6
             ELSE cshtrd
         END
     WHERE exchg = 14;
@@ -1868,7 +1944,7 @@ def gen_secm_data(paths: DataPaths):
             CASE
             WHEN a.exchg = 14 AND a.datadate <  DATE '2001-02-01' THEN a.cshtrm/2
             WHEN a.exchg = 14 AND a.datadate <= DATE '2001-12-31' THEN a.cshtrm/1.8
-            WHEN a.exchg = 14 AND a.datadate <  DATE '2003-12-31' THEN a.cshtrm/1.6
+            WHEN a.exchg = 14 AND a.datadate <= DATE '2003-12-31' THEN a.cshtrm/1.6
             ELSE a.cshtrm
             END AS cshtrm,
             CASE WHEN a.curcdm    = 'USD' THEN 1 ELSE c.fx END AS fx,
@@ -7331,17 +7407,21 @@ def prepare_daily(paths: DataPaths, data_path, fcts_path):
         Build daily dataset: align returns with factors, shrink dtypes, and create helpers.
 
     Steps:
-        1) Join daily stock data with daily factors; filter rows with mktrf.
+        1) Join daily stock data with daily factors; fill USA mktrf gaps from Ken French
+        daily factors when available; keep stock days even when mktrf remains null
+        (market-dependent stats filter on mktrf downstream).
         2) Create zero_obs flags per (id,eom); cap returns to lag ≤14 days; compute prc_adj.
+        Carry source_crsp so the zero-return gate can be source-conditional.
         3) Write dsf1.parquet and id_int_key.parquet.
         4) Build market lead/lag series per day and write mkt_lead_lag.parquet.
-        5) Build 3-day rolling sums for stock and market excess returns; filter to non-null sums and zero_obs<10; write corr_data.parquet.
+        5) Build 3-day rolling sums for stock and market excess returns; filter to non-null
+        sums and Compustat-only zero_obs<10; write corr_data.parquet.
 
     Output:
         Parquets: dsf1.parquet, id_int_key.parquet, mkt_lead_lag.parquet, corr_data.parquet.
     """
     data = pl.scan_parquet(data_path)
-    fcts = pl.scan_parquet(fcts_path)
+    fcts = coalesce_usa_mktrf_with_ff_daily(paths, pl.scan_parquet(fcts_path))
     dsf1 = (
         data.select(
             [
@@ -7358,10 +7438,10 @@ def prepare_daily(paths: DataPaths, data_path, fcts_path):
                 "tvol",
                 "ret_lag_dif",
                 "ret_local",
+                "source_crsp",
             ]
         )
         .join(fcts, how="left", on=["excntry", "date"])
-        .filter(col("mktrf").is_not_null())
         .with_columns(
             zero_obs=pl.when(col("ret_local") == 0).then(1).otherwise(0),
             id_int=pl.col("id").rank(method="min").cast(pl.Int64),
@@ -7388,6 +7468,7 @@ def prepare_daily(paths: DataPaths, data_path, fcts_path):
 
     mkt_lead_lag = (
         fcts.select(["excntry", "date", "mktrf", col("date").dt.month_end().alias("eom")])
+        .filter(col("mktrf").is_not_null())
         .sort(["excntry", "date"])
         .with_columns(
             mktrf_ld1=col("mktrf").shift(-1).over(["excntry", "eom"]),
@@ -7400,7 +7481,7 @@ def prepare_daily(paths: DataPaths, data_path, fcts_path):
 
     corr_data = (
         pl.scan_parquet(paths.interim_dir / "dsf1.parquet")
-        .select(["ret_exc", "id_int", "date", "mktrf", "eom", "zero_obs"])
+        .select(["ret_exc", "id_int", "date", "mktrf", "eom", "zero_obs", "source_crsp"])
         .sort(["id_int", "date"])
         .with_columns(
             ret_exc_3l=(col("ret_exc") + col("ret_exc").shift(1) + col("ret_exc").shift(2)).over(
@@ -7411,9 +7492,7 @@ def prepare_daily(paths: DataPaths, data_path, fcts_path):
             ),
         )
         .filter(
-            col("ret_exc_3l").is_not_null()
-            & col("mkt_exc_3l").is_not_null()
-            & (col("zero_obs") < 10)
+            col("ret_exc_3l").is_not_null() & col("mkt_exc_3l").is_not_null() & zero_obs_gate_ok()
         )
         .select(["id_int", "eom", "ret_exc_3l", "mkt_exc_3l"])
         .select(pl.all().shrink_dtype())
@@ -8765,7 +8844,9 @@ def base_data_filter_exp(stat):
 
     Steps:
         1) Choose required non-null columns by stat.
-        2) For return-based stats, also require zero_obs < 10.
+        2) For return-based stats, require zero_obs < 10 only for Compustat rows
+        (source_crsp == 0); CRSP rows skip that quality screen.
+        3) Market-dependent stats additionally require non-null mktrf.
 
     Output:
         Polars expression usable in .filter().
@@ -8778,7 +8859,20 @@ def base_data_filter_exp(stat):
         # corr_data.parquet pre-filtered upstream in prepare_daily.
         return pl.lit(True)
     else:
-        return (col("ret_exc").is_not_null()) & (col("zero_obs") < 10)
+        market_stats = {
+            "capm",
+            "downbeta",
+            "mktrf_vol",
+            "capm_ext",
+            "ff3",
+            "hxz4",
+            "dimsonbeta",
+            "mktvol",
+        }
+        ret_ok = col("ret_exc").is_not_null() & zero_obs_gate_ok()
+        if stat in market_stats:
+            return ret_ok & col("mktrf").is_not_null()
+        return ret_ok
 
 
 def prepare_base_data(paths: DataPaths, stat):

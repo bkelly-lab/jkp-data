@@ -273,6 +273,7 @@ def test_dsf1_unique_id_int_date(test_paths) -> None:
                     "tvol": 100.0,
                     "ret_lag_dif": 1,
                     "ret_local": 0.01,
+                    "source_crsp": 1,
                 }
             )
     world_dsf_path = test_paths.interim_dir / "world_dsf.parquet"

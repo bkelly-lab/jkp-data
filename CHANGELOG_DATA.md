@@ -3,6 +3,11 @@ This change log keeps track of changes to the underlying data set. In brackets, 
 
 This repository ports the original SAS pipeline ([ReplicationCrisis](https://github.com/bkelly-lab/ReplicationCrisis)) to Python using Polars. Entries up to and including 05-03-2025 are from the original change log.
 
+## 13-07-2026
+__Changes__:
+- Raised US coverage of daily return-based characteristics by (i) applying the ≥10 zero-return-day screen only to Compustat-sourced rows, and (ii) no longer dropping stock-days when the country market return is missing while filling USA `mktrf` gaps from Ken French daily factors when available
+- Fixed Gao–Ritter (2010) NASDAQ volume adjustment so 2003-12-31 is included in the `/1.6` window, and documented the adjustment
+
 ## 04-07-2026
 __Changes__:
 - Replaced `crsp_shrcd` and `crsp_exchcd` with `primaryexch` and `conditionaltype` in the characteristics output ([#205](https://github.com/bkelly-lab/jkp-data/pull/205))

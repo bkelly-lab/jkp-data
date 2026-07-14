@@ -1637,7 +1637,7 @@ class TestPrepareDailyCorr:
         dates = [date(2020, 1, d) for d in range(2, 7)]
         eom = date(2020, 1, 31)
 
-        def make_rows(stock_id, ret_exc_vals, ret_local_vals):
+        def make_rows(stock_id, ret_exc_vals, ret_local_vals, source_crsp=1):
             n = len(dates)
             return {
                 "excntry": ["USA"] * n,
@@ -1653,6 +1653,7 @@ class TestPrepareDailyCorr:
                 "tvol": [100.0] * n,
                 "ret_lag_dif": [1] * n,
                 "ret_local": ret_local_vals,
+                "source_crsp": [source_crsp] * n,
             }
 
         df_a = pl.DataFrame(
@@ -1662,8 +1663,8 @@ class TestPrepareDailyCorr:
         df_b = pl.DataFrame(
             make_rows("B", [None, 0.02, 0.03, 0.04, 0.05], [None, 0.02, 0.03, 0.04, 0.05])
         )
-        # id "C": ret_local=0 every day → zero_obs=5 per eom (< 10 so NOT filtered by zero_obs)
-        #   Actually make zero_obs >= 10 by using 10 rows for id "C" spanning two eoms
+        # id "C": Compustat (source_crsp=0), ret_local=0 every day → zero_obs=10 → filtered.
+        # CRSP rows with the same pattern must NOT be filtered (tested separately).
         dates_c = [date(2020, 1, d) for d in range(2, 12)]  # 10 days
         eom_c_vals = [date(2020, 1, 31)] * 10
         df_c = pl.DataFrame(
@@ -1680,7 +1681,8 @@ class TestPrepareDailyCorr:
                 "shares": [1000.0] * 10,
                 "tvol": [0.0] * 10,
                 "ret_lag_dif": [1] * 10,
-                "ret_local": [0.0] * 10,  # all zero → zero_obs=10 → filtered
+                "ret_local": [0.0] * 10,  # all zero → zero_obs=10 → filtered (Compustat)
+                "source_crsp": [0] * 10,
             }
         )
 
