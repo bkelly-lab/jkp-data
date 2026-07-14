@@ -74,7 +74,6 @@ Static reference data (`data/cluster_labels.csv`, `data/country_classification.x
 - **`pl.col()`, not bare `col()`.** Use `pl.col(...)` in new code. Existing code uses `from polars import col` with bare `col(...)`, but the standard Polars convention is the namespaced form.
 - **Ruff:** Used for linting and formatting — abide by all rules specified in `pyproject.toml`
 - **Python target:** See `requires-python` and `target-version` in `pyproject.toml`
-- **No decorative comment banners.** Do not add dashed section-separator comments (e.g. `# --------- #`) inside `src/jkp/data/`; rely on function docstrings for structure.
 
 ## Development Guidelines
 
@@ -105,7 +104,6 @@ Output:
 - Add type annotations to new functions (parameters and return types), even though older code in `aux_functions.py` lacks them
 
 **Testing:**
-- **Use test-driven development (TDD).** Write the failing test first, watch it fail, then write the minimum code to make it pass. Commit the test alongside the code it covers.
 - New functions should have corresponding unit tests in `tests/unit/`; see [tests/README.md](tests/README.md) for detailed patterns, conventions, fixture usage, and numerical tolerance guidance
 
 **DRY / reuse:**
