@@ -9,6 +9,9 @@ one-time migration off the legacy plaintext keyring.
 from __future__ import annotations
 
 import base64
+import configparser
+import os
+import sys
 
 import pytest
 
@@ -236,8 +239,6 @@ def test_password_from_pgpass_returns_none_password(monkeypatch, _isolate_creden
 @pytest.mark.unit
 def test_pgpass_ignored_when_permissions_too_open(monkeypatch, _isolate_credential_state):
     """libpq ignores a group/world-readable .pgpass; so must our detection."""
-    import sys
-
     if sys.platform.startswith("win"):
         pytest.skip("permission check is Unix-only")
     mod = _isolate_credential_state
@@ -294,8 +295,6 @@ def test_write_pgpass_replaces_our_line_in_place(_isolate_credential_state):
 
 @pytest.mark.unit
 def test_write_pgpass_is_mode_600(_isolate_credential_state):
-    import sys
-
     if sys.platform.startswith("win"):
         pytest.skip("permission check is Unix-only")
     mod = _isolate_credential_state
@@ -340,8 +339,6 @@ def test_legacy_keyring_migrates_to_pgpass_and_removes_only_our_section(
     assert "wrds-pgdata.wharton.upenn.edu:9737:wrds:testuser:legacy-secret" in (
         mod._pgpass_path().read_text()
     )
-
-    import configparser
 
     cp = configparser.RawConfigParser()
     cp.read(mod._LEGACY_KEYRING_FILE, encoding="utf-8")
@@ -398,9 +395,6 @@ def test_reset_clears_legacy_keyring_section(monkeypatch, _isolate_credential_st
     """full_reset must remove a lingering legacy [WRDS] section, so the next
     resolution cannot migrate the just-revoked password back into ~/.pgpass —
     while preserving any other tool's section."""
-    import base64
-    import configparser
-
     mod = _isolate_credential_state
     mod.LAST_USER_FILE.parent.mkdir(parents=True, exist_ok=True)
     mod.LAST_USER_FILE.write_text("testuser")
@@ -567,8 +561,6 @@ def test_migration_ignores_entry_under_mismatched_key(monkeypatch, _isolate_cred
     is NOT migrated — only jkp's own exact-key entry is (which is everything jkp
     ever wrote). The mismatched section is left untouched, not migrated under the
     wrong username."""
-    import configparser
-
     mod = _isolate_credential_state
     mod.LAST_USER_FILE.parent.mkdir(parents=True, exist_ok=True)
     mod.LAST_USER_FILE.write_text("resolved-user")
@@ -642,8 +634,6 @@ def test_migration_preserves_existing_pgpass_entry(monkeypatch, _isolate_credent
     assert "testuser:CURRENT_PW" in contents, "current pgpass password must be preserved"
     assert "STALE_PW" not in contents, "stale legacy password must not overwrite it"
 
-    import configparser
-
     cp = configparser.RawConfigParser()
     cp.read(mod._LEGACY_KEYRING_FILE)
     assert not cp.has_section("WRDS"), "superseded legacy section should still be cleaned up"
@@ -654,9 +644,6 @@ def test_migration_does_not_overwrite_loose_perm_pgpass(_isolate_credential_stat
     """Even a 0644 ~/.pgpass holds the user's *current* WRDS line; migration must
     not overwrite it with the legacy value just because libpq would ignore the
     loose-permission file."""
-    import configparser
-    import sys
-
     if sys.platform.startswith("win"):
         pytest.skip("permission check is Unix-only")
     mod = _isolate_credential_state
@@ -689,9 +676,6 @@ def test_write_pgpass_unreadable_file_gives_actionable_error(_isolate_credential
     """If ~/.pgpass exists but can't be read (e.g. root-owned from an old sudo),
     _write_pgpass raises an actionable error instead of a raw PermissionError
     after the user has already typed their password."""
-    import os
-    import sys
-
     if sys.platform.startswith("win") or os.geteuid() == 0:
         pytest.skip("permission semantics require a non-root POSIX user")
     mod = _isolate_credential_state
@@ -708,9 +692,6 @@ def test_write_pgpass_unreadable_file_gives_actionable_error(_isolate_credential
 def test_remove_pgpass_unreadable_file_gives_actionable_error(_isolate_credential_state):
     """`jkp connect --reset` against an unreadable ~/.pgpass must also raise an
     actionable error, not a raw PermissionError — the same guard as the write path."""
-    import os
-    import sys
-
     if sys.platform.startswith("win") or os.geteuid() == 0:
         pytest.skip("permission semantics require a non-root POSIX user")
     mod = _isolate_credential_state
@@ -874,9 +855,6 @@ def test_keyring_password_cleans_up_lingering_legacy_section(
 ):
     """When the system keyring supplies the password, a lingering legacy [WRDS]
     section is cleaned up — but other tools' sections are preserved."""
-    import base64
-    import configparser
-
     mod = _isolate_credential_state
     mod.LAST_USER_FILE.parent.mkdir(parents=True, exist_ok=True)
     mod.LAST_USER_FILE.write_text("testuser")
@@ -937,8 +915,6 @@ def test_migration_defers_to_wildcard_pgpass_entry(monkeypatch, _isolate_credent
     """A catch-all ~/.pgpass entry already covers WRDS (libpq wildcard semantics),
     so migration preserves the user's file and drops the superseded legacy section
     rather than overwriting. Documents this intentional trade-off."""
-    import configparser
-
     mod = _isolate_credential_state
     mod.LAST_USER_FILE.parent.mkdir(parents=True, exist_ok=True)
     mod.LAST_USER_FILE.write_text("testuser")
@@ -1001,8 +977,6 @@ def _write_real_keyring(mod, entries):
     continuation lines with a leading newline, via configparser — so the parsing
     test reflects what actually lands on users' disks. ``entries`` maps the
     (already keyrings.alt-escaped) option key to the plaintext password."""
-    import configparser
-
     cp = configparser.RawConfigParser()
     cp.add_section(mod.SERVICE_NAME)
     for key, password in entries.items():
@@ -1021,7 +995,7 @@ def _raises(exc):
 def _write_pgpass(mod, content):
     path = mod._pgpass_path()
     path.write_text(content)
-    if not __import__("sys").platform.startswith("win"):
+    if not sys.platform.startswith("win"):
         path.chmod(0o600)
     return path
 
