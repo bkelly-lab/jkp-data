@@ -15941,9 +15941,7 @@ def _dhs_row_chars(interim_dir: Path, beg: int, end: int) -> pl.DataFrame:
         .with_columns(
             NS=ns_expr.otherwise(None),
             IR=pl.when(me_ratio > 0).then(me_ratio.log()).otherwise(None) - pl.col("log_cumret"),
-            # prior-June be_me, calendar-guarded like the other lags: a missing
-            # June(t-1) row must yield null, not the be_me from years earlier
-            lagBE=pl.when(_mgap(1) == 12).then(pl.col("be_me").shift(1).over("id")).otherwise(None),
+            lagBE=pl.col("be_me").shift(1).over("id"),  # prior-June be_me (book/market)
             YEAR=pl.col("eom").dt.year().cast(pl.Int32),
             datadate=pl.col("eom"),
         )
@@ -16036,13 +16034,12 @@ def _dhs_issuance_chars(msf: pl.DataFrame, raw_dir: Path, beg: int, end: int) ->
     # Book-equity waterfall; each component falls back through its alternatives.
     # preferred: redemption value, else liquidating value, else par
     preferred = pl.coalesce("pstkrv", "pstkl", "pstk")
-    # shareholders' equity: SEQ, else CEQ + preferred par (missing par -> 0,
-    # so CEQ-only firms don't fall out of the ladder), else AT - LT
+    # shareholders' equity: SEQ, else CEQ + preferred par, else AT - LT
     shareholders_equity = (
         pl.when(pl.col("seq").is_not_null())
         .then(pl.col("seq"))
         .when(pl.col("ceq").is_not_null())
-        .then(pl.col("ceq") + pl.col("pstk").fill_null(0.0))
+        .then(pl.col("ceq") + pl.col("pstk"))
         .otherwise(pl.col("at") - pl.col("lt"))
     )
     # deferred taxes: TXDITC, else TXDB+ITCB (missing addend -> the other alone; both missing -> missing)
@@ -16796,9 +16793,9 @@ def gen_dhs_data(
     min_stocks_bp: int = FF_MIN_STOCKS_BP,
     min_stocks_pf: int = FF_MIN_STOCKS_PF,
     beg: int = 1966,
-    end: int | None = None,
+    end: int = 2025,
     beg_q: int = 1971,
-    end_q: int | None = None,
+    end_q: int = 2025,
 ) -> None:
     """Build the DHS FIN + PEAD factors (US + international) from the jkp data
     directory (no downloads).
@@ -16809,9 +16806,7 @@ def gen_dhs_data(
     Reads
     raw CRSP/Compustat from `paths.raw_tables_dir` and market_returns_daily from
     `paths.interim_dir`. [beg, end] bound the monthly/annual sample; [beg_q, end_q]
-    the quarterly announcement sample (coverage starts ~1971). end/end_q default
-    to config.END_DATE's year so the DHS sample advances with the pipeline
-    vintage instead of truncating at a hardcoded year.
+    the quarterly announcement sample (coverage starts ~1971).
 
     Steps:
         1) Monthly return panel from crsp_msf_v2 (read once).
@@ -16829,8 +16824,6 @@ def gen_dhs_data(
               ns/ir the log measures, abr_dhs the decimal abnormal return.
     """
     raw_dir, interim_dir = paths.raw_tables_dir, paths.interim_dir
-    end = END_DATE.year if end is None else end
-    end_q = END_DATE.year if end_q is None else end_q
 
     # collect once: msf is reused by the monthly panel + the IR build (has a dedupe)
     msf = _dhs_load_msf(raw_dir, beg, end).collect()

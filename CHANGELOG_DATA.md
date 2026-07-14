@@ -25,7 +25,6 @@ __Impact__:
 - World Stambaugh-Yuan DISTRESS inputs are now FX-converted to USD with consistent units.
 - `me_ff`/`me_hxz` characteristics for US stocks are now in USD millions (previously USD thousands).
 - US mispricing factor history is no longer truncated by late thin months.
-- DHS fixes: US book equity falls through to AT-LT when CEQ is present but PSTK is missing; ROW lagBE is now calendar-guarded.
 - HXZ fixes: US ROE uses year-month announcement gating; US universe keeps stocks with security-info window gaps (null `siccd`).
 ## 04-07-2026
 __Changes__:
