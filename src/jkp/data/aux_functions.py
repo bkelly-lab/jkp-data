@@ -675,6 +675,28 @@ def gen_crsp_sf(paths: DataPaths, freq):
     return result
 
 
+def _pg_escape_value(value: str) -> str:
+    """libpq-escape a conninfo value (user or password) for a single-quoted field.
+
+    libpq accepts single-quoted values with backslash-escaped ``\\`` and ``'``,
+    so quoting lets a value hold spaces or special characters without breaking the
+    conninfo. For the password this is also the form that appears in any error text
+    echoing the connection string, so the credential-masking checks reuse it rather
+    than matching the raw password.
+    """
+    return value.replace("\\", "\\\\").replace("'", "\\'")
+
+
+def _sql_literal(value: str) -> str:
+    """Escape a string for embedding inside a single-quoted DuckDB SQL literal.
+
+    The conninfo is interpolated into ``ATTACH '...'`` / ``postgres_scan('...')``
+    SQL, so any single quote it contains (e.g. around a libpq-quoted password)
+    must be doubled or it terminates the SQL string literal.
+    """
+    return value.replace("'", "''")
+
+
 def gen_wrds_connection_info(user, password: str | None = None) -> str:
     """Build a libpq conninfo for WRDS.
 
@@ -685,18 +707,49 @@ def gen_wrds_connection_info(user, password: str | None = None) -> str:
         f"host={WRDS_HOST}",
         f"port={WRDS_PORT}",
         f"dbname={WRDS_DB}",
-        f"user={user}",
+        # Quote the username too: a space or quote in it would otherwise break
+        # libpq's conninfo parsing exactly as an unquoted password would.
+        f"user='{_pg_escape_value(user)}'",
     ]
     if password is not None:
-        parts.append(f"password={password}")
+        # Single-quote and escape so a password containing spaces or special
+        # characters can't break the conninfo (or split the value, which would
+        # defeat the password-masking check in _attach_wrds). The conninfo is
+        # itself embedded in a single-quoted SQL literal at each use site, so
+        # callers must additionally pass it through _sql_literal.
+        parts.append(f"password='{_pg_escape_value(password)}'")
     parts.append("sslmode=require")
     return " ".join(parts)
+
+
+def _password_forms(password: str) -> tuple[str, str, str]:
+    """The forms the password can take on its way into an error message: raw, the
+    libpq-escaped conninfo form (echoed by a connection IOException), and the
+    SQL-escaped-then-libpq-escaped form (echoed from the raw statement text by a
+    parser error). Ordered most-escaped first so redaction replaces the longest
+    match before its shorter substrings."""
+    escaped = _pg_escape_value(password)
+    return (_sql_literal(escaped), escaped, password)
+
+
+def _password_in_error(text: str, password: str) -> bool:
+    """True if the password appears in ``text`` in any of the forms it can take in
+    an error message (see :func:`_password_forms`)."""
+    return any(form in text for form in _password_forms(password))
+
+
+def _redact_password(text: str, password: str) -> str:
+    """Replace the password with ``***`` in every form it can take in an error
+    message (see :func:`_password_forms`)."""
+    for form in _password_forms(password):
+        text = text.replace(form, "***")
+    return text
 
 
 def get_columns(conn, conninfo, lib, table):
     cols = conn.execute(f"""
         SELECT *
-        FROM postgres_scan('{conninfo}', '{lib}', '{table}')
+        FROM postgres_scan('{_sql_literal(conninfo)}', '{lib}', '{table}')
         LIMIT 0
     """).description
     return [c[0] for c in cols]
@@ -791,7 +844,7 @@ def download_wrds_table(
     duckdb_conn.execute(f"""
         COPY (
           SELECT {projection}
-          FROM postgres_scan('{conninfo}', '{lib}', '{table}')
+          FROM postgres_scan('{_sql_literal(conninfo)}', '{lib}', '{table}')
           {where_clause}
         )
         TO '{filename}' (FORMAT PARQUET);
@@ -859,9 +912,9 @@ def _attach_wrds(con: duckdb.DuckDBPyConnection, conninfo: str, password: str | 
     password-free error. Errors that don't contain the password propagate unchanged.
     """
     try:
-        con.execute(f"ATTACH '{conninfo}' AS wrds (TYPE postgres, READ_ONLY)")
+        con.execute(f"ATTACH '{_sql_literal(conninfo)}' AS wrds (TYPE postgres, READ_ONLY)")
     except Exception as e:
-        if password and password in str(e):
+        if password and _password_in_error(str(e), password):
             raise RuntimeError(
                 "Failed to attach WRDS connection. Check credentials and MFA approval."
             ) from None
@@ -1114,7 +1167,7 @@ def _attach_download_worker(
                     )
                 except Exception as e:  # noqa: BLE001
                     # Redact only the credential, keeping the rest of the error for diagnostics.
-                    msg = str(e).replace(password, "***") if password else str(e)
+                    msg = _redact_password(str(e), password) if password else str(e)
                     with errors_lock:
                         task_errors.append(f"{task.table} ({Path(task.out).name}): {msg}")
         finally:
