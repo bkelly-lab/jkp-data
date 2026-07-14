@@ -209,8 +209,13 @@ def _is_wrds_line(fields: list[str], username: str) -> bool:
     )
 
 
-def _pgpass_has_entry(username: str) -> bool:
-    """True if libpq would find a usable WRDS password for ``username``.
+def _pgpass_has_entry(username: str, *, check_perms: bool = True) -> bool:
+    """True if a WRDS entry for ``username`` exists in the pgpass file.
+
+    With ``check_perms`` (the default), the file must also be usable by libpq —
+    a too-open file is treated as no entry. Pass ``check_perms=False`` to ask
+    only whether an entry *exists* (e.g. to avoid overwriting a user's current
+    line just because its permissions are loose).
 
     Returns False (rather than raising) if the file cannot be read — an
     unreadable ~/.pgpass is, for libpq's purposes, no usable entry.
@@ -219,7 +224,7 @@ def _pgpass_has_entry(username: str) -> bool:
     try:
         if not path.exists():
             return False
-        if _perms_too_open(path):
+        if check_perms and _perms_too_open(path):
             print(
                 f"Warning: {path} has permissions looser than 0600; libpq ignores it. "
                 f"Run: chmod 600 {path}",
@@ -371,7 +376,7 @@ def _migrate_legacy_keyring(username: str) -> None:
     # If ~/.pgpass already resolves for this user, that is their current
     # credential — never clobber it with the (possibly stale) legacy value.
     # Just drop the now-superseded legacy [WRDS] section.
-    if _pgpass_has_entry(username):
+    if _pgpass_has_entry(username, check_perms=False):
         _drop_legacy_keyring_section(cp, path)
         print(
             "Removed a superseded WRDS entry from the legacy plaintext keyring; "

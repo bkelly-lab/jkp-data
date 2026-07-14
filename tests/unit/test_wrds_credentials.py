@@ -564,6 +564,33 @@ def test_migration_preserves_existing_pgpass_entry(monkeypatch, _isolate_credent
 
 
 @pytest.mark.unit
+def test_migration_does_not_overwrite_loose_perm_pgpass(_isolate_credential_state):
+    """Even a 0644 ~/.pgpass holds the user's *current* WRDS line; migration must
+    not overwrite it with the legacy value just because libpq would ignore the
+    loose-permission file."""
+    import configparser
+    import sys
+
+    if sys.platform.startswith("win"):
+        pytest.skip("permission check is Unix-only")
+    mod = _isolate_credential_state
+    mod.LAST_USER_FILE.parent.mkdir(parents=True, exist_ok=True)
+    mod.LAST_USER_FILE.write_text("testuser")
+    path = _write_pgpass(mod, "wrds-pgdata.wharton.upenn.edu:9737:wrds:testuser:CURRENT_PW\n")
+    path.chmod(0o644)  # loose perms: libpq would ignore it, but it's still the user's entry
+    _write_real_keyring(mod, {"testuser": "STALE_PW"})
+
+    mod._migrate_legacy_keyring("testuser")
+
+    contents = mod._pgpass_path().read_text()
+    assert "CURRENT_PW" in contents, "the user's current entry must be preserved"
+    assert "STALE_PW" not in contents, "legacy value must not overwrite it"
+    cp = configparser.RawConfigParser()
+    cp.read(mod._LEGACY_KEYRING_FILE)
+    assert not cp.has_section("WRDS"), "superseded legacy section should be dropped"
+
+
+@pytest.mark.unit
 def test_write_pgpass_rejects_newline_password(_isolate_credential_state):
     """A newline in the password would inject a spurious .pgpass line; reject it."""
     mod = _isolate_credential_state
