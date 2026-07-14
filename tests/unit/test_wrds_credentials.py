@@ -360,6 +360,24 @@ def test_reset_clears_legacy_keyring_section(monkeypatch, _isolate_credential_st
     assert check.has_section("other"), "other tools' section must survive"
 
 
+@pytest.mark.unit
+def test_reset_warns_when_keyring_unreachable(monkeypatch, _isolate_credential_state, capsys):
+    """A locked/unreachable keyring during --reset must warn that an entry may
+    survive, rather than silently reporting a clean success."""
+    mod = _isolate_credential_state
+    mod.LAST_USER_FILE.parent.mkdir(parents=True, exist_ok=True)
+    mod.LAST_USER_FILE.write_text("testuser")
+    monkeypatch.setattr(mod.keyring, "delete_password", _raises(mod.keyring.errors.KeyringLocked))
+
+    mod.reset_credentials(full_reset=True)
+
+    captured = capsys.readouterr()
+    assert "a stored entry may still exist" in captured.err
+    # ...and the run must not also claim nothing was found (that would contradict
+    # the warning): the keyring answer here is "unknown", not "definitively empty".
+    assert "No stored password found" not in captured.out + captured.err
+
+
 # --------------------------------------------------------------------------- #
 # Migration — real on-disk format, escaped keys, fallback, I/O isolation
 # --------------------------------------------------------------------------- #

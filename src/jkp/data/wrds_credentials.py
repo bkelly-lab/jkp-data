@@ -135,13 +135,27 @@ def _keyring_set(username: str, password: str) -> bool:
         return False
 
 
-def _keyring_delete(username: str) -> bool:
-    """Delete the keyring entry; return False if absent or no backend."""
+def _keyring_delete(username: str) -> bool | None:
+    """Delete the keyring entry.
+
+    Returns True if one was removed, False when there is definitively nothing to
+    delete (no entry, or no keyring backend at all — in both cases nothing
+    survives), and None when the backend is present but unreachable (locked): the
+    entry may still exist, so we warn and let the caller avoid claiming a clean
+    success it can't guarantee.
+    """
     try:
         keyring.delete_password(SERVICE_NAME, username)
         return True
     except (keyring.errors.NoKeyringError, keyring.errors.PasswordDeleteError):
-        return False
+        return False  # no keyring, or nothing to delete
+    except keyring.errors.KeyringError as exc:
+        print(
+            f"Warning: could not reach the system keyring ({exc}); a stored entry may still exist.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return None
 
 
 # --------------------------------------------------------------------------- #
@@ -562,7 +576,10 @@ def reset_credentials(full_reset: bool = False) -> None:
             print(f"Deleted password for '{username}' from the system keyring")
         if removed_pgpass:
             print(f"Removed WRDS entry for '{username}' from {_pgpass_path()}")
-        if not (removed_keyring or removed_pgpass):
+        # Only claim nothing was found when the keyring answer was definitive
+        # (False, not None): an unreachable backend already warned that an entry
+        # may survive, so a "nothing found" line here would contradict it.
+        if removed_keyring is False and not removed_pgpass:
             print(f"No stored password found for '{username}'")
 
 
