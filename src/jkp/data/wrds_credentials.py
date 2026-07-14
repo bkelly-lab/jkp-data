@@ -387,19 +387,15 @@ def _migrate_legacy_keyring(username: str) -> None:
         )
         return
 
-    value = None
+    # Only migrate jkp's own exact-key entry. Since jkp always stored the entry
+    # via keyring.set_password (the same escaping _escape_keyring_option
+    # reproduces), the exact-key lookup covers everything jkp ever wrote; a
+    # fallback for a mismatched key would only serve a hypothetical rename and
+    # risks migrating another user's password under the resolved username.
     option = _escape_keyring_option(username)
-    if cp.has_option(SERVICE_NAME, option):
-        value = cp.get(SERVICE_NAME, option)
-    else:
-        items = cp.items(SERVICE_NAME)
-        if len(items) == 1:
-            # Exactly one stored user: take it even if the key doesn't match the
-            # resolved username. jkp only ever stored the current user's entry,
-            # so this rescues a renamed/re-escaped username. Risk if the file
-            # somehow holds one *other* user's entry: its password migrates under
-            # the resolved username and auth fails (recoverable via `jkp connect`).
-            value = items[0][1]
+    if not cp.has_option(SERVICE_NAME, option):
+        return
+    value = cp.get(SERVICE_NAME, option)
     if not value:
         return
     try:

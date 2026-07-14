@@ -480,21 +480,25 @@ def test_migration_matches_escaped_username_key(monkeypatch, _isolate_credential
 
 
 @pytest.mark.unit
-def test_migration_single_entry_fallback(monkeypatch, _isolate_credential_state):
-    """When the resolved username doesn't match the stored key but exactly one
-    WRDS entry exists, migrate it under the resolved username."""
+def test_migration_ignores_entry_under_mismatched_key(monkeypatch, _isolate_credential_state):
+    """A legacy entry stored under a key that doesn't match the resolved username
+    is NOT migrated — only jkp's own exact-key entry is (which is everything jkp
+    ever wrote). The mismatched section is left untouched, not migrated under the
+    wrong username."""
+    import configparser
+
     mod = _isolate_credential_state
     mod.LAST_USER_FILE.parent.mkdir(parents=True, exist_ok=True)
     mod.LAST_USER_FILE.write_text("resolved-user")
     _write_real_keyring(mod, {"testuser": "the-secret"})  # key != resolved username
     monkeypatch.setattr(mod.keyring, "get_password", _raises(mod.keyring.errors.NoKeyringError))
 
-    creds = mod.get_wrds_credentials()
+    mod._migrate_legacy_keyring("resolved-user")
 
-    assert creds.password is None
-    assert "wrds-pgdata.wharton.upenn.edu:9737:wrds:resolved-user:the-secret" in (
-        mod._pgpass_path().read_text()
-    )
+    assert not mod._pgpass_has_entry("resolved-user", check_perms=False), "must not migrate"
+    cp = configparser.RawConfigParser()
+    cp.read(mod._LEGACY_KEYRING_FILE)
+    assert cp.has_section("WRDS"), "mismatched section is left untouched"
 
 
 @pytest.mark.unit
