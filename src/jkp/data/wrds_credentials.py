@@ -11,9 +11,10 @@ connection string omits ``password=`` and libpq reads the file itself
 stderr on every run so it is always clear which one was used.
 
 On a headless node with no system keyring daemon, provision credentials by
-running ``jkp connect`` on a login node (it writes ``~/.pgpass``), by exporting
-``WRDS_USERNAME``/``WRDS_PASSWORD``, or by creating ``~/.pgpass`` directly — it
-is the standard Postgres/WRDS mechanism and any tool can populate it.
+running ``jkp connect`` on a login node (it stores both the username and the
+``~/.pgpass`` line) or by exporting ``WRDS_USERNAME``/``WRDS_PASSWORD``. A
+hand-created ``~/.pgpass`` supplies only the password, so it must be paired with
+``WRDS_USERNAME`` — resolution never reads the username out of the file.
 
 Migration (one-time, automatic, non-interactive): a legacy plaintext-keyring
 entry (``~/.local/share/python_keyring/keyring_pass.cfg``, written by the removed

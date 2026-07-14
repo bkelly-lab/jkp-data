@@ -41,9 +41,7 @@ source .venv/bin/activate
 # separate copy. Point PGPASSFILE at a non-default location if you prefer.
 #
 # Fully non-interactive alternative (no login-node terminal): export
-# WRDS_USERNAME / WRDS_PASSWORD, or create ~/.pgpass yourself (chmod 600):
-#
-#     wrds-pgdata.wharton.upenn.edu:9737:wrds:<user>:<password>
+# WRDS_USERNAME / WRDS_PASSWORD.
 
 # Create char data
 # Set PERSISTENT_WRDS_CONNECTION=1 to use a single WRDS connection (reduces MFA on NAT-rotated networks)
