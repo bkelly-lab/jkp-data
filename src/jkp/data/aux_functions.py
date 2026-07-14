@@ -16793,9 +16793,9 @@ def gen_dhs_data(
     min_stocks_bp: int = FF_MIN_STOCKS_BP,
     min_stocks_pf: int = FF_MIN_STOCKS_PF,
     beg: int = 1966,
-    end: int = 2025,
+    end: int | None = None,
     beg_q: int = 1971,
-    end_q: int = 2025,
+    end_q: int | None = None,
 ) -> None:
     """Build the DHS FIN + PEAD factors (US + international) from the jkp data
     directory (no downloads).
@@ -16806,7 +16806,9 @@ def gen_dhs_data(
     Reads
     raw CRSP/Compustat from `paths.raw_tables_dir` and market_returns_daily from
     `paths.interim_dir`. [beg, end] bound the monthly/annual sample; [beg_q, end_q]
-    the quarterly announcement sample (coverage starts ~1971).
+    the quarterly announcement sample (coverage starts ~1971). end/end_q default
+    to config.END_DATE's year so the DHS sample advances with the pipeline
+    vintage instead of truncating at a hardcoded year.
 
     Steps:
         1) Monthly return panel from crsp_msf_v2 (read once).
@@ -16824,6 +16826,8 @@ def gen_dhs_data(
               ns/ir the log measures, abr_dhs the decimal abnormal return.
     """
     raw_dir, interim_dir = paths.raw_tables_dir, paths.interim_dir
+    end = END_DATE.year if end is None else end
+    end_q = END_DATE.year if end_q is None else end_q
 
     # collect once: msf is reused by the monthly panel + the IR build (has a dedupe)
     msf = _dhs_load_msf(raw_dir, beg, end).collect()
