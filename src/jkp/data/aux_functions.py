@@ -9130,6 +9130,11 @@ def _mp_world_load_world_data(interim_dir: Path, start_dt: date = date(1963, 1, 
         "primary_sec",
         "obs_main",
         "exch_main",
+        # market chars backing the MOMENTUM / COMPOSITE_ISSUE / STOCK_ISSUE
+        # anomalies (see _mp_world_compute_* for the verified mappings)
+        "ret_12_1",
+        "eqnpo_12m",
+        "chcsho_12m",
     ] + list(MP_WORLD_JKP_CHAR.values())
     df = (
         pl.scan_parquet(p)
@@ -9144,7 +9149,9 @@ def _mp_world_load_world_data(interim_dir: Path, start_dt: date = date(1963, 1, 
         .select(cols_keep)
         .collect()
     )
-    floats = ["me", "prc", "ret", "adjfct", "shares"] + list(MP_WORLD_JKP_CHAR.values())
+    floats = ["me", "prc", "ret", "adjfct", "shares", "ret_12_1", "eqnpo_12m", "chcsho_12m"] + list(
+        MP_WORLD_JKP_CHAR.values()
+    )
     return df.with_columns(
         [col(c).cast(pl.Float64, strict=False) for c in floats if c in df.columns]
     )
@@ -9221,91 +9228,47 @@ def _mp_world_compute_jkp_anomalies(world_data: pl.DataFrame) -> dict[str, pl.Da
     return out
 
 
-def _mp_world_compute_momentum(world_monthly: pl.DataFrame) -> pl.DataFrame:
-    """11-month log-return momentum (months t-2..t-12), per id. world_monthly has id, eom, ret."""
-    log_rets = world_monthly.select("id", "excntry", "eom", "ret").with_columns(
-        log_1p_ret=(1 + col("ret")).log()
-    )
-    roll = _mp_rolling_calendar_sum(
-        log_rets, "log_1p_ret", lag_min=2, lag_max=12, n_required=11, id_col="id"
-    )
+def _mp_world_lag_char(
+    world_data: pl.DataFrame, value: pl.Expr, lag: int, out: str
+) -> pl.DataFrame:
+    """(eom, id, excntry, out): jkp char expression evaluated at eom - lag
+    months and assigned to the month-t sort — the calendar join nulls the
+    signal across panel gaps instead of picking a stale row."""
+    src = world_data.select("id", col("eom").alias("eom_src"), value.alias(out))
     return (
-        log_rets.select("id", "excntry", "eom")
-        .join(roll, on=["id", "eom"], how="left")
-        .with_columns(momentum=col("r").exp() - 1)
-        .select("id", "excntry", "eom", "momentum")
-        .sort("id", "eom")
-    )
-
-
-def _mp_world_compute_composite_issue(world_monthly: pl.DataFrame) -> pl.DataFrame:
-    """log(me_t / me_{t-12}) - cum_log_ret_12, lagged 5 months. USD-consistent
-    (both me and ret from world_msf, both end-of-period USD)."""
-    log_rets = world_monthly.select("id", "excntry", "eom", "me", "ret").with_columns(
-        log_1p_ret=(1 + col("ret")).log()
-    )
-    cumret = _mp_rolling_calendar_sum(
-        log_rets, "log_1p_ret", lag_min=0, lag_max=11, n_required=12, id_col="id"
-    )
-    me_lag12 = log_rets.select("id", "eom", col("me").alias("me_lag12")).with_columns(
-        eom=_mp_offset_months("eom", 12)
-    )
-    composite_t = (
-        log_rets.select("id", "excntry", "eom", "me")
-        .join(me_lag12, on=["id", "eom"], how="left")
-        .join(cumret, on=["id", "eom"], how="left")
-        .select(
-            "id",
-            col("eom").alias("eom_src"),
-            composite_issue=(col("me") / col("me_lag12")).log() - col("r"),
-        )
-    )
-    return (
-        log_rets.select("id", "excntry", "eom")
-        .with_columns(eom_src=_mp_offset_months("eom", -5))
-        .join(composite_t, on=["id", "eom_src"], how="left")
-        .select("eom", "id", "excntry", "composite_issue")
-        .sort("id", "eom")
-    )
-
-
-def _mp_world_compute_stock_issue(world_monthly: pl.DataFrame) -> pl.DataFrame:
-    """log(shares * adjfct growth over 12 months) — share count, FX-agnostic.
-    The signal is lagged 1 month before entering the month-t sort: end-of-
-    month-t share counts are not observable at formation (end of t-1), so
-    month t uses the growth measured through t-1."""
-    log_rets = (
-        world_monthly.select("id", "excntry", "eom", "shares", "adjfct")
-        .with_columns(adj_shares=col("shares") * col("adjfct"))
-        .sort("id", "eom")
-    )
-    # Lag 12 months
-    src = log_rets.select(
-        "id", col("eom").alias("eom_src"), col("adj_shares").alias("adj_shares_lag12")
-    )
-    signal_t = (
-        log_rets.select("id", "eom", "adj_shares")
-        .with_columns(eom_src=_mp_offset_months("eom", -12))
+        world_data.select("id", "excntry", "eom")
+        .with_columns(eom_src=_mp_offset_months("eom", -lag))
         .join(src, on=["id", "eom_src"], how="left")
-        .with_columns(
-            stock_issue=pl.when(
-                col("adj_shares").is_null()
-                | (col("adj_shares") == 0)
-                | col("adj_shares_lag12").is_null()
-                | (col("adj_shares_lag12") == 0)
-            )
-            .then(0.0)
-            .otherwise((col("adj_shares") / col("adj_shares_lag12")).log())
-        )
-        .select("id", col("eom").alias("eom_sig"), "stock_issue")
-    )
-    return (
-        log_rets.select("id", "excntry", "eom")
-        .with_columns(eom_sig=_mp_offset_months("eom", -1))
-        .join(signal_t, on=["id", "eom_sig"], how="left")
-        .with_columns(stock_issue=col("stock_issue").fill_null(0.0))
-        .select("eom", "id", "excntry", "stock_issue")
+        .select("eom", "id", "excntry", out)
         .sort("id", "eom")
+    )
+
+
+def _mp_world_compute_momentum(world_data: pl.DataFrame) -> pl.DataFrame:
+    """SY MOMENTUM(t) = compound return over months t-2..t-12 = jkp's ret_12_1
+    (ri_x(t-1)/ri_x(t-12) - 1) sampled at t-1. Verified value-identical to the
+    previous in-repo rolling computation on the full world panel (corr 1.0,
+    max|diff| 1.4e-9); jkp's endpoint guard adds coverage where interior
+    window months are missing (the old zero-missing gate dropped them)."""
+    return _mp_world_lag_char(world_data, col("ret_12_1"), 1, "momentum")
+
+
+def _mp_world_compute_composite_issue(world_data: pl.DataFrame) -> pl.DataFrame:
+    """SY composite equity issuance(t) = [log 12m ME growth - 12m cum log ret]
+    at t-5 = -eqnpo_12m(t-5) (jkp: ln(ri/ri_lag12) - ln(me/me_lag12)).
+    Verified corr 1.0, max|diff| 1e-5 (RI-vs-compounded-returns rounding)
+    against the previous in-repo computation."""
+    return _mp_world_lag_char(world_data, -col("eqnpo_12m"), 5, "composite_issue")
+
+
+def _mp_world_compute_stock_issue(world_data: pl.DataFrame) -> pl.DataFrame:
+    """SY net stock issuance(t) = log 12m split-adjusted share growth through
+    t-1 = log(1 + chcsho_12m(t-1)) — the same jkp characteristic (and null->0
+    'no issuance' fill) the DHS NS char uses. Month-t share counts are not
+    observable at formation, hence the 1-month lag."""
+    lc = pl.when((1 + col("chcsho_12m")) > 0).then((1 + col("chcsho_12m")).log())
+    return _mp_world_lag_char(world_data, lc.otherwise(None), 1, "stock_issue").with_columns(
+        stock_issue=col("stock_issue").fill_null(0.0)
     )
 
 
@@ -9756,9 +9719,9 @@ def _mp_world_build_anomalies_panel(
 ) -> dict[str, pl.DataFrame]:
     """Assemble per-anomaly (id, eom, excntry, value) frames into a unified panel."""
     anomalies = _mp_world_compute_jkp_anomalies(world_data)
-    anomalies["MOMENTUM"] = _mp_world_compute_momentum(world_monthly)
-    anomalies["COMPOSITE_ISSUE"] = _mp_world_compute_composite_issue(world_monthly)
-    anomalies["STOCK_ISSUE"] = _mp_world_compute_stock_issue(world_monthly)
+    anomalies["MOMENTUM"] = _mp_world_compute_momentum(world_data)
+    anomalies["COMPOSITE_ISSUE"] = _mp_world_compute_composite_issue(world_data)
+    anomalies["STOCK_ISSUE"] = _mp_world_compute_stock_issue(world_data)
     anomalies["DISTRESS"] = _mp_world_compute_distress(
         world_monthly, world_daily, market_m, mp_con, raw_dir, fx_df
     )

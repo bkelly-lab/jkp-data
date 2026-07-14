@@ -896,53 +896,80 @@ def gen_world_data(
     random values so anomalies / mispricing scores compute.
     """
     n = world_msf.height
-    return world_msf.with_columns(
-        adjfct=pl.lit(1.0),
-        shares=pl.col("me") / pl.col("prc"),
-        beme=pl.Series("beme", rng.uniform(0.1, 3.0, size=n)),
-        dolvol=pl.col("me") * 0.01,
-        mom=pl.Series("mom", rng.normal(0.0, 0.2, size=n)),
-        mscore=pl.Series("mscore", rng.normal(-2.5, 1.0, size=n)),
-        roe=pl.Series("roe", rng.normal(0.05, 0.1, size=n)),
-        rsup=pl.Series("rsup", rng.normal(0.0, 0.02, size=n)),
-        issue=pl.Series("issue", rng.normal(0.0, 0.1, size=n)),
-        oaccruals_at=pl.Series("oaccruals_at", rng.normal(0.0, 0.05, size=n)),
-        at_gr1=pl.Series("at_gr1", rng.normal(0.05, 0.2, size=n)),
-        gp_at=pl.Series("gp_at", rng.uniform(0.0, 0.6, size=n)),
-        ppeinv_gr1a=pl.Series("ppeinv_gr1a", rng.normal(0.05, 0.15, size=n)),
-        noa_at=pl.Series("noa_at", rng.uniform(0.0, 1.5, size=n)),
-        o_score=pl.Series("o_score", rng.normal(-1.0, 1.5, size=n)),
-        niq_at=pl.Series("niq_at", rng.normal(0.01, 0.02, size=n)),
-    ).select(
-        "id",
-        "permno",
-        "gvkey",
-        "excntry",
-        "eom",
-        "me",
-        "prc",
-        "ret",
-        "adjfct",
-        "shares",
-        "common",
-        "primary_sec",
-        "obs_main",
-        "exch_main",
-        "size_grp",
-        "beme",
-        "dolvol",
-        "issue",
-        "mom",
-        "mscore",
-        "roe",
-        "rsup",
-        "oaccruals_at",
-        "at_gr1",
-        "gp_at",
-        "ppeinv_gr1a",
-        "noa_at",
-        "o_score",
-        "niq_at",
+    # Market chars backing the world mispricing MOMENTUM / COMPOSITE_ISSUE /
+    # STOCK_ISSUE anomalies (and DHS NS), derived from the panel itself the
+    # same way the production pipeline defines them: ri = cumulated returns,
+    # ret_12_1 = ri(t-1)/ri(t-12) - 1, eqnpo_12m = ln(ri ratio) - ln(me ratio),
+    # chcsho_12m = 12m split-adjusted share growth - 1.
+    world_msf = world_msf.sort(["id", "eom"]).with_columns(
+        _ri=(1 + pl.col("ret").fill_null(0.0)).cum_prod().over("id")
+    )
+    ri_1, ri_12 = pl.col("_ri").shift(1).over("id"), pl.col("_ri").shift(12).over("id")
+    me_12 = pl.col("me").shift(12).over("id")
+    return (
+        world_msf.with_columns(
+            adjfct=pl.lit(1.0),
+            shares=pl.col("me") / pl.col("prc"),
+            ret_12_1=ri_1 / ri_12 - 1,
+            eqnpo_12m=pl.when((pl.col("me") > 0) & (me_12 > 0) & (ri_12 > 0))
+            .then((pl.col("_ri") / ri_12).log() - (pl.col("me") / me_12).log())
+            .otherwise(None),
+            beme=pl.Series("beme", rng.uniform(0.1, 3.0, size=n)),
+            dolvol=pl.col("me") * 0.01,
+            mom=pl.Series("mom", rng.normal(0.0, 0.2, size=n)),
+            mscore=pl.Series("mscore", rng.normal(-2.5, 1.0, size=n)),
+            roe=pl.Series("roe", rng.normal(0.05, 0.1, size=n)),
+            rsup=pl.Series("rsup", rng.normal(0.0, 0.02, size=n)),
+            issue=pl.Series("issue", rng.normal(0.0, 0.1, size=n)),
+            oaccruals_at=pl.Series("oaccruals_at", rng.normal(0.0, 0.05, size=n)),
+            at_gr1=pl.Series("at_gr1", rng.normal(0.05, 0.2, size=n)),
+            gp_at=pl.Series("gp_at", rng.uniform(0.0, 0.6, size=n)),
+            ppeinv_gr1a=pl.Series("ppeinv_gr1a", rng.normal(0.05, 0.15, size=n)),
+            noa_at=pl.Series("noa_at", rng.uniform(0.0, 1.5, size=n)),
+            o_score=pl.Series("o_score", rng.normal(-1.0, 1.5, size=n)),
+            niq_at=pl.Series("niq_at", rng.normal(0.01, 0.02, size=n)),
+        )
+        .with_columns(
+            # shares*adjfct is constant per id in the synthetic panel, so the 12m
+            # share change is 0 once 12 months of history exist (null before)
+            chcsho_12m=(pl.col("shares") * pl.col("adjfct"))
+            / (pl.col("shares") * pl.col("adjfct")).shift(12).over("id")
+            - 1,
+        )
+        .select(
+            "id",
+            "permno",
+            "gvkey",
+            "excntry",
+            "eom",
+            "me",
+            "prc",
+            "ret",
+            "adjfct",
+            "shares",
+            "common",
+            "primary_sec",
+            "obs_main",
+            "exch_main",
+            "size_grp",
+            "beme",
+            "dolvol",
+            "issue",
+            "mom",
+            "mscore",
+            "roe",
+            "rsup",
+            "oaccruals_at",
+            "at_gr1",
+            "gp_at",
+            "ppeinv_gr1a",
+            "noa_at",
+            "o_score",
+            "niq_at",
+            "ret_12_1",
+            "eqnpo_12m",
+            "chcsho_12m",
+        )
     )
 
 
