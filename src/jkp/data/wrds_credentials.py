@@ -360,21 +360,30 @@ def _drop_legacy_keyring_section(cp: configparser.RawConfigParser, path: Path) -
             path.unlink()
 
 
+def _load_legacy_cfg() -> configparser.RawConfigParser | None:
+    """Load the legacy plaintext-keyring file if it exists and has a ``[WRDS]``
+    section; return None otherwise (missing, unreadable, unparseable, or no
+    section). Never raises."""
+    path = _LEGACY_KEYRING_FILE
+    if not path.exists():
+        return None
+    cp = configparser.RawConfigParser()
+    try:
+        cp.read(path, encoding="utf-8")
+    except (configparser.Error, UnicodeDecodeError, OSError):
+        return None
+    return cp if cp.has_section(SERVICE_NAME) else None
+
+
 def _cleanup_legacy_keyring_section() -> None:
     """Best-effort removal of a lingering ``[WRDS]`` section from the legacy
     plaintext keyring — used when the password now comes from another source (env
-    or system keyring) so the obsolete plaintext copy does not linger on disk.
-    Never raises."""
-    path = _LEGACY_KEYRING_FILE
-    if not path.exists():
+    or system keyring) so the obsolete plaintext copy does not linger. Never raises."""
+    cp = _load_legacy_cfg()
+    if cp is None:
         return
-    try:
-        cp = configparser.RawConfigParser()
-        cp.read(path, encoding="utf-8")
-        if cp.has_section(SERVICE_NAME):
-            _drop_legacy_keyring_section(cp, path)
-    except (configparser.Error, UnicodeDecodeError, OSError):
-        pass
+    with contextlib.suppress(OSError):
+        _drop_legacy_keyring_section(cp, _LEGACY_KEYRING_FILE)
 
 
 def _migrate_legacy_keyring(username: str) -> None:
@@ -388,19 +397,12 @@ def _migrate_legacy_keyring(username: str) -> None:
     An existing ~/.pgpass entry for the user is their current credential and is
     never overwritten; in that case we only drop the superseded legacy section.
     """
+    cp = _load_legacy_cfg()
+    if cp is None:
+        # No file, no [WRDS] section, or unparseable/unreadable: nothing to
+        # migrate — let normal resolution (env / ~/.pgpass / prompt) proceed.
+        return
     path = _LEGACY_KEYRING_FILE
-    if not path.exists():
-        return
-    cp = configparser.RawConfigParser()
-    try:
-        cp.read(path, encoding="utf-8")
-    except (configparser.Error, UnicodeDecodeError):
-        # A corrupt or non-UTF8 legacy file is not migratable; skip it and let
-        # normal resolution (env / ~/.pgpass / prompt) proceed. (An OSError on
-        # read propagates to the best-effort wrapper in get_wrds_credentials.)
-        return
-    if not cp.has_section(SERVICE_NAME):
-        return
 
     # If ~/.pgpass already resolves for this user, that is their current
     # credential — never clobber it with the (possibly stale) legacy value.

@@ -978,6 +978,24 @@ def test_atomic_write_warns_when_replacing_symlink(_isolate_credential_state, ca
     assert "symlink" in capsys.readouterr().err
 
 
+@pytest.mark.unit
+def test_load_legacy_cfg(_isolate_credential_state):
+    """_load_legacy_cfg returns a parser only when the file exists and has a
+    [WRDS] section; None for missing / no-section / unparseable, never raising."""
+    mod = _isolate_credential_state
+    assert mod._load_legacy_cfg() is None  # missing file
+
+    mod._LEGACY_KEYRING_FILE.write_text("[other]\nx = y\n")
+    assert mod._load_legacy_cfg() is None  # no [WRDS] section
+
+    _write_real_keyring(mod, {"testuser": "pw"})
+    cp = mod._load_legacy_cfg()
+    assert cp is not None and cp.has_section("WRDS")
+
+    mod._LEGACY_KEYRING_FILE.write_bytes(b"[WRDS]\nx = \xff\xfe\n")
+    assert mod._load_legacy_cfg() is None  # non-UTF8 -> None, not a raise
+
+
 def _write_real_keyring(mod, entries):
     """Write a keyring_pass.cfg the way keyrings.alt does — values on tab-indented
     continuation lines with a leading newline, via configparser — so the parsing
