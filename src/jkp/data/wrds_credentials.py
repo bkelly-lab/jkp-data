@@ -224,21 +224,21 @@ def _is_wrds_line(fields: list[str], username: str) -> bool:
     )
 
 
-def _pgpass_has_entry(username: str, *, check_perms: bool = True) -> bool:
-    """True if a WRDS entry for ``username`` exists in the pgpass file.
+def _pgpass_scan(username: str, *, check_perms: bool = True) -> tuple[bool, bool]:
+    """Scan the pgpass file for WRDS entries, returning ``(matched, has_exact)``.
 
-    With ``check_perms`` (the default), the file must also be usable by libpq —
-    a too-open file is treated as no entry. Pass ``check_perms=False`` to ask
-    only whether an entry *exists* (e.g. to avoid overwriting a user's current
-    line just because its permissions are loose).
-
-    Returns False (rather than raising) if the file cannot be read — an
-    unreadable ~/.pgpass is, for libpq's purposes, no usable entry.
+    ``matched`` is whether libpq would find a usable WRDS password (via an exact
+    line or a wildcard); ``has_exact`` is whether the *first* matching line — the
+    one libpq actually uses — is jkp's own exact entry (so `jkp connect` can
+    manage it). A wildcard sitting above an exact line therefore yields
+    ``(True, False)``. With ``check_perms`` (the default), a too-open file counts
+    as no entry (libpq ignores it); pass ``check_perms=False`` to ask only whether
+    an entry exists. Returns ``(False, False)`` if the file is missing or unreadable.
     """
     path = _pgpass_path()
     try:
         if not path.exists():
-            return False
+            return False, False
         if check_perms and _perms_too_open(path):
             print(
                 f"Warning: {path} has permissions looser than 0600; libpq ignores it. "
@@ -246,10 +246,11 @@ def _pgpass_has_entry(username: str, *, check_perms: bool = True) -> bool:
                 file=sys.stderr,
                 flush=True,
             )
-            return False
+            return False, False
         lines = path.read_text().splitlines()
     except OSError:
-        return False
+        return False, False
+    matched = has_exact = False
     for raw in lines:
         stripped = raw.strip()
         if not stripped or stripped.startswith("#"):
@@ -264,8 +265,21 @@ def _pgpass_has_entry(username: str, *, check_perms: bool = True) -> bool:
             and db in ("*", WRDS_DB)
             and user in ("*", username)
         ):
-            return True
-    return False
+            # libpq uses the FIRST matching line, so only that one decides whether
+            # the effective credential is jkp's exact entry or a wildcard. A
+            # wildcard sitting above jkp's exact line wins, and jkp cannot manage
+            # it — exactly the case the wildcard warning needs to catch.
+            matched = True
+            has_exact = _is_wrds_line(fields, username)
+            break
+    return matched, has_exact
+
+
+def _pgpass_has_entry(username: str, *, check_perms: bool = True) -> bool:
+    """True if libpq would find a usable WRDS password for ``username`` (exact or
+    wildcard). Pass ``check_perms=False`` to ask only whether an entry exists,
+    ignoring whether the file's permissions would make libpq skip it."""
+    return _pgpass_scan(username, check_perms=check_perms)[0]
 
 
 def _write_pgpass(username: str, password: str) -> Path:
@@ -576,8 +590,16 @@ def get_wrds_credentials() -> Credentials:
             flush=True,
         )
 
-    if _pgpass_has_entry(username):
+    matched, has_exact = _pgpass_scan(username)
+    if matched:
         _log_source(f"{_pgpass_path()} (libpq password file)")
+        if not has_exact:
+            print(
+                f"Warning: WRDS is served by a catch-all entry in {_pgpass_path()}, "
+                "not a WRDS-specific line, so `jkp connect` cannot set or change it.",
+                file=sys.stderr,
+                flush=True,
+            )
         return Credentials(username, None)
 
     if _interactive():

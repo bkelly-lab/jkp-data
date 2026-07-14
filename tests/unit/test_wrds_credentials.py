@@ -972,6 +972,73 @@ def test_load_legacy_cfg(_isolate_credential_state):
     assert mod._load_legacy_cfg() is None  # non-UTF8 -> None, not a raise
 
 
+@pytest.mark.unit
+def test_wildcard_only_pgpass_warns(monkeypatch, _isolate_credential_state, capsys):
+    """When WRDS is served only by a catch-all wildcard .pgpass line (no exact
+    entry), warn — jkp can't set/change such an entry via `jkp connect`."""
+    mod = _isolate_credential_state
+    mod.LAST_USER_FILE.parent.mkdir(parents=True, exist_ok=True)
+    mod.LAST_USER_FILE.write_text("testuser")
+    monkeypatch.setattr(mod.keyring, "get_password", _raises(mod.keyring.errors.NoKeyringError))
+    _write_pgpass(mod, "*:*:*:*:wildpw\n")
+
+    creds = mod.get_wrds_credentials()
+
+    assert creds.password is None  # served via the wildcard
+    assert "catch-all" in capsys.readouterr().err
+
+
+@pytest.mark.unit
+def test_exact_pgpass_entry_does_not_warn(monkeypatch, _isolate_credential_state, capsys):
+    """An exact WRDS entry serves without the wildcard warning."""
+    mod = _isolate_credential_state
+    mod.LAST_USER_FILE.parent.mkdir(parents=True, exist_ok=True)
+    mod.LAST_USER_FILE.write_text("testuser")
+    monkeypatch.setattr(mod.keyring, "get_password", _raises(mod.keyring.errors.NoKeyringError))
+    _write_pgpass(mod, "wrds-pgdata.wharton.upenn.edu:9737:wrds:testuser:pw\n")
+
+    mod.get_wrds_credentials()
+
+    assert "catch-all" not in capsys.readouterr().err
+
+
+@pytest.mark.unit
+def test_wildcard_above_exact_still_warns(monkeypatch, _isolate_credential_state, capsys):
+    """libpq is first-match: a wildcard line *above* jkp's exact entry is what
+    actually serves WRDS, so `jkp connect` still can't manage it — warn even
+    though an exact line also exists lower down."""
+    mod = _isolate_credential_state
+    mod.LAST_USER_FILE.parent.mkdir(parents=True, exist_ok=True)
+    mod.LAST_USER_FILE.write_text("testuser")
+    monkeypatch.setattr(mod.keyring, "get_password", _raises(mod.keyring.errors.NoKeyringError))
+    _write_pgpass(
+        mod,
+        "*:*:*:*:wildpw\nwrds-pgdata.wharton.upenn.edu:9737:wrds:testuser:pw\n",
+    )
+
+    mod.get_wrds_credentials()
+
+    assert "catch-all" in capsys.readouterr().err
+
+
+@pytest.mark.unit
+def test_exact_above_wildcard_does_not_warn(monkeypatch, _isolate_credential_state, capsys):
+    """When jkp's exact entry comes first, it is the effective credential, so no
+    wildcard warning fires even though a catch-all line follows it."""
+    mod = _isolate_credential_state
+    mod.LAST_USER_FILE.parent.mkdir(parents=True, exist_ok=True)
+    mod.LAST_USER_FILE.write_text("testuser")
+    monkeypatch.setattr(mod.keyring, "get_password", _raises(mod.keyring.errors.NoKeyringError))
+    _write_pgpass(
+        mod,
+        "wrds-pgdata.wharton.upenn.edu:9737:wrds:testuser:pw\n*:*:*:*:wildpw\n",
+    )
+
+    mod.get_wrds_credentials()
+
+    assert "catch-all" not in capsys.readouterr().err
+
+
 def _write_real_keyring(mod, entries):
     """Write a keyring_pass.cfg the way keyrings.alt does — values on tab-indented
     continuation lines with a leading newline, via configparser — so the parsing
