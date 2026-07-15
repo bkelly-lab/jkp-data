@@ -6784,7 +6784,7 @@ def market_chars_monthly(paths: DataPaths, data_path, market_ret_path, local_cur
     div_range = [1, 3, 6, 12]  # [1,3,6,12,24,36]
     div_spc_range = [1, 12]
     chcsho_lags = [1, 3, 6, 12]
-    eqnpo_lags = [1, 3, 6, 12]
+    eqnpo_lags = [1, 3, 6, 12, 60]
     mom_rev_lags = [
         [0, 1],
         [0, 2],
@@ -15855,34 +15855,17 @@ def _dhs_row_chars(interim_dir: Path, beg: int, end: int) -> pl.DataFrame:
     via the id join to the ROW panel). Computed at each June(t) per id:
         NS = log(1 + chcsho_12m) = log(adj_shares_June(t) / adj_shares_June(t-1))
              (reuses jkp's chcsho_12m 12-month share-change characteristic)
-        IR = log(me_June(t) / me_June(t-5)) - log(60-month gross cumret)  (DHS 5-yr)
+        IR = -eqnpo_60m = log(me_June(t) / me_June(t-5)) - log(60-month gross cumret)
+             (reuses jkp's eqnpo_60m 60-month equity-net-payout characteristic;
+             its endpoint-only ri/me guards give a coverage superset of the prior
+             in-repo 60-of-60 contiguous-window computation)
         lagBE = be_x for the fiscal year ending in calendar YEAR-1 (JKP standardized
                 USD book equity, positive-only, joined by gvkey; the same prior-
                 fiscal-year BE-level guard as the US branch)
-    IR's 60-month sum needs the full monthly series, so it is computed before the
-    June filter; the 5-yr / 1-yr / prior-June lags are positional shifts over the
-    June rows (after the filter). YEAR-relabel keeps the validated fin_factor
-    offsets untouched: IR belongs to the June(t) rebalance (cyear=t, YEAR==cyear)
-    so YEAR=t; NS uses YEAR+1==cyear so it is emitted at YEAR=t-1. [beg, end] clip
-    the eom year, matching the US msf window (60-mo warm-up applies as for the US)."""
-    log1p = pl.when((1 + pl.col("ret")) > 0).then((1 + pl.col("ret")).log()).otherwise(None)
-    n_valid = (
-        log1p.is_not_null().cast(pl.Int32).rolling_sum(window_size=60, min_samples=60).over("id")
-    )
-
-    # world_data has ~1% per-id month gaps, so positional lags are CALENDAR-guarded: a
-    # char is kept only if the prior row sits at the exact offset (12mo NS / 60mo IR),
-    # else nulled. _mgap = calendar months between eom and its `n`-rows-prior eom.
-    def _mgap(n: int) -> pl.Expr:
-        e = pl.col("eom").shift(n).over("id")
-        return (pl.col("eom").dt.year() - e.dt.year()) * 12 + (
-            pl.col("eom").dt.month() - e.dt.month()
-        )
-
-    me_lag5 = pl.col("me").shift(5).over("id")  # 5 June rows back (post-June-filter)
-    me_ratio = (
-        pl.when(_mgap(5) == 60).then(safe_div(pl.col("me"), me_lag5, "me_ratio")).otherwise(None)
-    )
+    YEAR-relabel keeps the validated fin_factor offsets untouched: IR belongs to
+    the June(t) rebalance (cyear=t, YEAR==cyear) so YEAR=t; NS uses YEAR+1==cyear
+    so it is emitted at YEAR=t-1. [beg, end] clip the eom year, matching the US
+    msf window."""
     # NS reuses jkp's chcsho_12m characteristic (trailing-12m share change, arithmetic
     # ratio-1 of the same shares*adjfct) instead of recomputing the June-over-June ratio:
     # NS = log(adj_shares(t)/adj_shares(t-12)) = log(1 + chcsho_12m), sampled at the June
@@ -15891,20 +15874,15 @@ def _dhs_row_chars(interim_dir: Path, beg: int, end: int) -> pl.DataFrame:
     ns_expr = pl.when((1 + pl.col("chcsho_12m")) > 0).then((1 + pl.col("chcsho_12m")).log())
     june = (
         pl.scan_parquet(interim_dir / "world_data_prelim.parquet")
-        .filter((pl.col("excntry") != US_EXCNTRY) & pl.col("eom").dt.year().is_between(beg, end))
-        .select("id", "gvkey", "eom", "me", "ret", "chcsho_12m")
-        .sort(["id", "eom"])
-        .with_columns(
-            # 60-month cumret: 60 valid rows AND the window spans exactly 60
-            # contiguous calendar months (window-start eom is 59 months back)
-            log_cumret=pl.when((n_valid == 60) & (_mgap(59) == 59))
-            .then(log1p.rolling_sum(window_size=60, min_samples=60).over("id"))
-            .otherwise(None),
+        .filter(
+            (pl.col("excntry") != US_EXCNTRY)
+            & pl.col("eom").dt.year().is_between(beg, end)
+            & (pl.col("eom").dt.month() == 6)
         )
-        .filter(pl.col("eom").dt.month() == 6)
+        .select("id", "gvkey", "eom", "chcsho_12m", "eqnpo_60m")
         .with_columns(
             NS=ns_expr.otherwise(None),
-            IR=pl.when(me_ratio > 0).then(me_ratio.log()).otherwise(None) - pl.col("log_cumret"),
+            IR=-pl.col("eqnpo_60m"),
             YEAR=pl.col("eom").dt.year().cast(pl.Int32),
             datadate=pl.col("eom"),
         )

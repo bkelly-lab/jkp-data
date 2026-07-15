@@ -899,13 +899,15 @@ def gen_world_data(
     # Market chars backing the world mispricing MOMENTUM / COMPOSITE_ISSUE /
     # STOCK_ISSUE anomalies (and DHS NS), derived from the panel itself the
     # same way the production pipeline defines them: ri = cumulated returns,
-    # ret_12_1 = ri(t-1)/ri(t-12) - 1, eqnpo_12m = ln(ri ratio) - ln(me ratio),
+    # ret_12_1 = ri(t-1)/ri(t-12) - 1, eqnpo_12m = ln(ri ratio) - ln(me ratio)
+    # (eqnpo_60m the same at the 60m horizon, backing DHS ROW IR),
     # chcsho_12m = 12m split-adjusted share growth - 1.
     world_msf = world_msf.sort(["id", "eom"]).with_columns(
         _ri=(1 + pl.col("ret").fill_null(0.0)).cum_prod().over("id")
     )
     ri_1, ri_12 = pl.col("_ri").shift(1).over("id"), pl.col("_ri").shift(12).over("id")
     me_12 = pl.col("me").shift(12).over("id")
+    ri_60, me_60 = pl.col("_ri").shift(60).over("id"), pl.col("me").shift(60).over("id")
     return (
         world_msf.with_columns(
             adjfct=pl.lit(1.0),
@@ -913,6 +915,9 @@ def gen_world_data(
             ret_12_1=ri_1 / ri_12 - 1,
             eqnpo_12m=pl.when((pl.col("me") > 0) & (me_12 > 0) & (ri_12 > 0))
             .then((pl.col("_ri") / ri_12).log() - (pl.col("me") / me_12).log())
+            .otherwise(None),
+            eqnpo_60m=pl.when((pl.col("me") > 0) & (me_60 > 0) & (ri_60 > 0))
+            .then((pl.col("_ri") / ri_60).log() - (pl.col("me") / me_60).log())
             .otherwise(None),
             beme=pl.Series("beme", rng.uniform(0.1, 3.0, size=n)),
             dolvol=pl.col("me") * 0.01,
@@ -968,6 +973,7 @@ def gen_world_data(
             "niq_at",
             "ret_12_1",
             "eqnpo_12m",
+            "eqnpo_60m",
             "chcsho_12m",
         )
     )
