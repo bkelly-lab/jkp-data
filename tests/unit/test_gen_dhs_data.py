@@ -15,7 +15,7 @@ from datetime import date
 import polars as pl
 import pytest
 
-from jkp.data.aux_functions import _dhs_row_chars
+from jkp.data.aux_functions import _dhs_ibes_announcements, _dhs_row_chars
 from jkp.data.config import US_EXCNTRY
 
 
@@ -99,3 +99,71 @@ class TestDhsRowChars:
         assert out.filter(pl.col("id") == 20).height == 0
         null_row = out.filter((pl.col("id") == 30) & (pl.col("YEAR") == 2001))
         assert null_row["IR"].null_count() == null_row.height
+
+
+@pytest.fixture
+def ibes_dirs(tmp_path):
+    """raw + interim dirs with toy comp_g_security / ibes_actu_epsint / prelim."""
+    raw = tmp_path / "raw"
+    interim = tmp_path / "interim"
+    raw.mkdir()
+    interim.mkdir()
+    pl.DataFrame(
+        {"ibtic": ["T1", "T2", "T3"], "gvkey": ["001000", "002000", "003000"]}
+    ).write_parquet(raw / "comp_g_security.parquet")
+    pl.DataFrame(
+        {
+            "ticker": ["T1", "T1", "T2", "T2", "T3", "T3"],
+            "usfirm": [0, 0, 0, 0, 1, 0],
+            "measure": ["EPS"] * 6,
+            # T1: SAN row must be admitted; T2: QTR+SAN same pends dedupe to the
+            # earliest anndats; T3: usfirm==1 and ANN both excluded.
+            "pdicity": ["QTR", "SAN", "QTR", "SAN", "QTR", "ANN"],
+            "anndats": [
+                date(2010, 5, 3),
+                date(2010, 8, 16),
+                date(2010, 7, 30),
+                date(2010, 7, 20),
+                date(2010, 5, 1),
+                date(2010, 5, 1),
+            ],
+            "pends": [
+                date(2010, 3, 31),
+                date(2010, 6, 30),
+                date(2010, 6, 30),
+                date(2010, 6, 30),
+                date(2010, 3, 31),
+                date(2010, 3, 31),
+            ],
+        }
+    ).write_parquet(raw / "ibes_actu_epsint.parquet")
+    pl.DataFrame(
+        {
+            "id": [310001000, 320002000, 330003000],
+            "gvkey": ["001000", "002000", "003000"],
+            "excntry": ["GBR", "GBR", "GBR"],
+            "eom": [date(2010, 6, 30)] * 3,
+            "common": [1, 1, 1],
+            "primary_sec": [1, 1, 1],
+            "obs_main": [1, 1, 1],
+            "exch_main": [1, 1, 1],
+            "me": [100.0, 200.0, 300.0],
+        }
+    ).write_parquet(interim / "world_data_prelim.parquet")
+    return raw, interim
+
+
+class TestDhsIbesAnnouncements:
+    def test_san_admitted_qtr_san_deduped_ann_usfirm_excluded(self, ibes_dirs):
+        raw, interim = ibes_dirs
+        out = _dhs_ibes_announcements(raw, interim, 2000, 2020)
+        # T1: both its QTR and SAN announcements survive (distinct period-ends)
+        t1 = out.filter(pl.col("id") == 310001000).sort("datadate")
+        assert t1.height == 2
+        assert t1["rdq"].to_list() == [date(2010, 5, 3), date(2010, 8, 16)]
+        # T2: QTR and SAN share pends -> one row with the EARLIEST anndats (the SAN one)
+        t2 = out.filter(pl.col("id") == 320002000)
+        assert t2.height == 1
+        assert t2["rdq"][0] == date(2010, 7, 20)
+        # T3: usfirm==1 (QTR) and ANN rows are both excluded
+        assert out.filter(pl.col("id") == 330003000).height == 0

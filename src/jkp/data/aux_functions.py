@@ -16379,14 +16379,18 @@ def _dhs_align_abr(panel_rows: pl.DataFrame, abr: pl.DataFrame) -> pl.DataFrame:
 
 
 def _dhs_ibes_announcements(raw_dir: Path, interim_dir: Path, beg: int, end: int) -> pl.DataFrame:
-    """IBES international quarterly EPS announcement dates bridged to the world `id`.
+    """IBES international EPS announcement dates bridged to the world `id`.
     Compustat g_fundq has no rdq ex-US, so ibes.actu_epsint (usfirm=0, measure EPS,
-    QTR periodicity) supplies anndats (announcement date, the ex-US RDQ) and pends
-    (fiscal period end). The IBES ticker is linked to gvkey via the Compustat-global
-    security master's ibtic (the vendor-maintained IBES link), then to the world id
-    of the gvkey's primary security. Bridges are deduped one-to-one (deterministic
-    sort + keep-first). One (id, period-end) row keeps the EARLIEST anndats. Returns
-    [id, datadate (=pends), rdq (=anndats)]."""
+    QTR or SAN periodicity) supplies anndats (announcement date, the ex-US RDQ) and
+    pends (fiscal period end). SAN (semiannual) is admitted because semiannual-
+    reporting markets (UK, much of Europe) carry their interim announcements under
+    SAN — QTR-only starves their PEAD pools below the min-stocks gate. The IBES
+    ticker is linked to gvkey via the Compustat-global security master's ibtic (the
+    vendor-maintained IBES link), then to the world id of the gvkey's primary
+    security. Bridges are deduped one-to-one (deterministic sort + keep-first). One
+    (id, period-end) row keeps the EARLIEST anndats, which also collapses a period
+    reported under both periodicities. Returns [id, datadate (=pends), rdq
+    (=anndats)]."""
     # ibtic (IBES ticker) -> gvkey, one gvkey per ticker
     ibtic_gv = (
         pl.scan_parquet(raw_dir / "comp_g_security.parquet")
@@ -16410,7 +16414,7 @@ def _dhs_ibes_announcements(raw_dir: Path, interim_dir: Path, beg: int, end: int
         .filter(
             (pl.col("usfirm") == 0)
             & (pl.col("measure") == "EPS")
-            & (pl.col("pdicity") == "QTR")
+            & pl.col("pdicity").is_in(["QTR", "SAN"])
             & pl.col("ticker").is_not_null()
             & pl.col("anndats").is_not_null()
             & pl.col("pends").is_not_null()
