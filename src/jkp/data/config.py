@@ -234,3 +234,24 @@ PORTFOLIO_SETTINGS = {
     "daily_pf": True,
     "ind_pf": True,
 }
+
+# Compustat return corrections (Bessembinder et al. 2023 Data Appendix)
+
+# Compression for the scratch spill files written during the correction array
+# passes; read once then deleted, so favor encode speed over size.
+CORRECTION_SPILL_COMPRESSION = "lz4"
+
+# Valid decimal-correction methods. The floor variants gate the price
+# correction to the divide direction on >=$1 prices (handoff recommendation).
+DECIMAL_CORRECTION_METHODS = ("multiplier", "interpolation", "floor", "floor_interp")
+
+# Default multi-period detection windows (trading days), covering common error
+# durations 1 day to ~1 month; ~10x fewer iterations than an exhaustive search.
+DECIMAL_DETECTION_WINDOWS = [1, 2, 3, 5, 10, 21]
+
+# Countries with a $0.001 minimum-price threshold instead of $0.01.
+LOW_PRICE_COUNTRIES = ["BRA", "IDN", "NGA", "TUR"]
+
+# Drop the first observation after a calendar gap wider than this many trading
+# days (~11 months; converted to calendar days at 365/252).
+FILTER_GAP_TRADING_DAYS = 231

@@ -3,6 +3,13 @@ This change log keeps track of changes to the underlying data set. In brackets, 
 
 This repository ports the original SAS pipeline ([ReplicationCrisis](https://github.com/bkelly-lab/ReplicationCrisis)) to Python using Polars. Entries up to and including 05-03-2025 are from the original change log.
 
+## 10-07-2026
+__Changes__:
+- Applied an adapted version of the Bessembinder, Chen, Choi, and Wei (2023) data corrections to the Compustat daily security files (North America and Global). Decimal-shift price errors are detected and rescaled (single- and multi-period spike-and-reversal); observations that cannot be reliably repaired are dropped (low trading volume, zero AJEXDI, sub-threshold price or market equity, long data gaps, implausible shares-outstanding and market-equity jumps, return/market-equity mismatches, and initial-observation ratio errors). The multi-period search is adapted for daily data (symmetric windows over a priority set of 1, 2, 3, 5, 10, and 21 trading days). For more details, please look at the [release notes](documentation/compustat_correction/compustat_correction.html)
+- Recovered returns for never-dividend securities by substituting `trfd = 1` in `gen_comp_dsf` when a security never pays a dividend, so its price return equals its total return instead of being dropped as a missing total-return factor
+- Added a post-correction return screen: Compustat returns above 1000% (`ret` > 10) that survive the price correction are set to null in `gen_returns_df` as residual, unrepairable data errors
+- The impact concentrates outside the United States; US factor series are largely unchanged because US observations are sourced primarily from CRSP rather than Compustat
+
 ## 04-07-2026
 __Changes__:
 - Replaced `crsp_shrcd` and `crsp_exchcd` with `primaryexch` and `conditionaltype` in the characteristics output ([#205](https://github.com/bkelly-lab/jkp-data/pull/205))
