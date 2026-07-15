@@ -219,6 +219,8 @@ def _make_crsp_dsf(tmp: Path, n_permnos: int = 200) -> None:
             "prc_low": _random_float_col(n),
             "ret": _random_float_col(n),
             "ret_exc": _random_float_col(n),
+            "ret_intraday": _random_float_col(n, 0.15),
+            "ret_overnight": _random_float_col(n, 0.15),
         }
     ).cast(
         {
@@ -273,6 +275,8 @@ def _make_comp_dsf(tmp: Path, n_gvkeys: int = 200) -> None:
             "ret_local": _random_float_col(n),
             "ret": _random_float_col(n),
             "ret_exc": _random_float_col(n),
+            "ret_intraday": _random_float_col(n, 0.15),
+            "ret_overnight": _random_float_col(n, 0.15),
             "ret_lag_dif": ret_lag_dif,
         }
     ).cast(
@@ -517,6 +521,8 @@ def _polars_combine_crsp_comp_sf(tmp: Path) -> tuple[pl.DataFrame, pl.DataFrame]
         "ret_local",
         "ret",
         "ret_exc",
+        "ret_intraday",
+        "ret_overnight",
         "ret_lag_dif",
         "source_crsp",
     ]
@@ -940,6 +946,8 @@ class TestUnionAndLead:
             "ret_local",
             "ret",
             "ret_exc",
+            "ret_intraday",
+            "ret_overnight",
             "ret_lag_dif",
             "source_crsp",
             "obs_main",
@@ -1191,6 +1199,8 @@ class TestDedupDeterminism:
             "ret_local": 0.01,
             "ret": 0.01,
             "ret_exc": 0.005,
+            "ret_intraday": 0.008,
+            "ret_overnight": 0.002,
             "ret_lag_dif": 1,
         }
         interim = _make_test_layout(tmp_path)

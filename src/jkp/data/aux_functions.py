@@ -567,6 +567,8 @@ def gen_crsp_sf(paths: DataPaths, freq):
         cfacshr_expr = sf.mthcumfacshr
         askhi_expr = sf.mthaskhi
         bidlo_expr = sf.mthbidlo
+        open_expr = None
+        close_expr = None
     else:  # freq == "d", validated above
         date_expr = sf.dlycaldt.cast("date")
         prc_expr = sf.dlyprc
@@ -577,6 +579,8 @@ def gen_crsp_sf(paths: DataPaths, freq):
         cfacshr_expr = sf.dlycumfacshr
         askhi_expr = sf.dlyhigh
         bidlo_expr = sf.dlylow
+        open_expr = sf.dlyopen
+        close_expr = sf.dlyclose
 
     sf_senames_join = sf.join(
         senames,
@@ -628,6 +632,17 @@ def gen_crsp_sf(paths: DataPaths, freq):
     )
     crsp_nyse_expr = ((primaryexch_expr == "N") & (conditionaltype_expr == "RW")).cast("int32")
 
+    prc_open_mutate = (
+        ibis.cases(((prc_expr > 0) & (open_expr > 0), open_expr), else_=ibis.null())
+        if open_expr is not None
+        else ibis.null()
+    )
+    prc_close_mutate = (
+        ibis.cases(((prc_expr > 0) & (close_expr > 0), close_expr), else_=ibis.null())
+        if close_expr is not None
+        else ibis.null()
+    )
+
     result = full_join.mutate(
         date=date_expr,
         bidask=bidask_expr,
@@ -636,6 +651,8 @@ def gen_crsp_sf(paths: DataPaths, freq):
         me=(prc_expr * (sf.shrout / 1000)),
         prc_high=ibis.cases(((prc_expr > 0) & (askhi_expr > 0), askhi_expr), else_=ibis.null()),
         prc_low=ibis.cases(((prc_expr > 0) & (bidlo_expr > 0), bidlo_expr), else_=ibis.null()),
+        prc_open=prc_open_mutate,
+        prc_close=prc_close_mutate,
         iid=ccmxpf_lnkhist.liid,
         ret=ret_expr,
         retx=retx_expr,
@@ -654,6 +671,8 @@ def gen_crsp_sf(paths: DataPaths, freq):
             "date",
             "bidask",
             "prc",
+            "prc_open",
+            "prc_close",
             "shrout",
             "ret",
             "retx",
@@ -1808,6 +1827,10 @@ def gen_comp_dsf(
             WHEN prcstd != 5 THEN prcld / qunit
             ELSE NULL
         END AS prc_low_lcl,
+        CASE
+            WHEN prcod IS NOT NULL AND prcod > 0 THEN prcod / qunit
+            ELSE NULL
+        END AS prc_open_lcl,
         -- trfd is null for never-dividend securities; substitute 1 only when the
         -- security never pays a dividend (no dividends => price return = total
         -- return), leaving genuine gaps for payers null. Per WRDS guidance:
@@ -1831,6 +1854,10 @@ def gen_comp_dsf(
             WHEN a.prcstd != 5 THEN a.prcld
             ELSE NULL
         END AS prc_low_lcl,
+        CASE
+            WHEN a.prcod IS NOT NULL AND a.prcod > 0 THEN a.prcod
+            ELSE NULL
+        END AS prc_open_lcl,
         -- cast back to the column type: the original UPDATE assigned the
         -- divided value in place, implicitly rounding to DECIMAL(28,8)
         CAST(CASE
@@ -1858,7 +1885,7 @@ def gen_comp_dsf(
     SELECT *
     FROM __comp_dsf_na
     FULL OUTER JOIN __comp_dsf_global
-    USING (gvkey, iid, datadate, tpci, exchg, prcstd, curcdd, prc_local, ajexdi, prc_high_lcl, prc_low_lcl, cshtrd, cshoc, ri_local, curcddv, div, divd, divsp);
+    USING (gvkey, iid, datadate, tpci, exchg, prcstd, curcdd, prc_local, ajexdi, prc_high_lcl, prc_low_lcl, prc_open_lcl, cshtrd, cshoc, ri_local, curcddv, div, divd, divsp);
 
     CREATE VIEW __comp_dsf2 AS
     SELECT a.*, b.fx AS fx, c.fx AS fx_div
@@ -1870,10 +1897,11 @@ def gen_comp_dsf(
 
     CREATE VIEW __comp_dsf3 AS
     SELECT
-        * EXCLUDE (div, divd, divsp, fx_div, curcddv, prc_high_lcl, prc_low_lcl),
+        * EXCLUDE (div, divd, divsp, fx_div, curcddv, prc_high_lcl, prc_low_lcl, prc_open_lcl),
         prc_local    * fx AS prc,
         prc_high_lcl * fx AS prc_high,
         prc_low_lcl  * fx AS prc_low,
+        prc_open_lcl * fx AS prc_open,
         (prc_local   * fx) * cshoc AS me,
         cshtrd       * (prc_local * fx) AS dolvol,
         ri_local     * fx AS ri,
@@ -2570,7 +2598,8 @@ def process_comp_sf1(paths: DataPaths, freq):
         1) If monthly, run gen_comp_msf() to ensure comp_msf/parquets exist.
         2) Compute __returns → gen_delist_df → gen_temporary_sf.
         3) Add RF/exchange metadata; write __comp_sf2.parquet.
-        4) Call add_primary_sec(...) to add primary_sec and write final comp_{freq}sf.parquet.
+        4) For daily, compute LPS (2019) overnight/intraday return decomposition.
+        5) Call add_primary_sec(...) to add primary_sec and write final comp_{freq}sf.parquet.
 
     Output:
         comp_msf.parquet or comp_dsf.parquet with enriched fields (ret_exc, primary_sec, etc.).
@@ -2582,6 +2611,18 @@ def process_comp_sf1(paths: DataPaths, freq):
     __delist = gen_delist_df(paths, __returns)
     __comp_sf2 = gen_temporary_sf(paths, freq, __returns, __delist)
     __comp_sf2 = add_rf_and_exchange_data_to_temporary_sf(paths, freq, __comp_sf2)
+
+    if freq == "d" and "prc_open" in __comp_sf2.columns:
+        __comp_sf2 = __comp_sf2.with_columns(
+            ret_intraday=pl.when((col("prc_open") > 0) & (col("prc") > 0))
+            .then(col("prc") / col("prc_open") - 1)
+            .otherwise(fl_none()),
+        ).with_columns(
+            ret_overnight=pl.when(col("ret_intraday").is_not_null() & col("ret").is_not_null())
+            .then((1 + col("ret")) / (1 + col("ret_intraday")) - 1)
+            .otherwise(fl_none()),
+        )
+
     __comp_sf2.write_parquet(paths.interim_dir / "__comp_sf2.parquet")
     del __comp_sf2
     add_primary_sec(
@@ -2655,7 +2696,16 @@ def prepare_crsp_sf(paths: DataPaths, freq):
         .with_columns(
             [
                 col(var).cast(pl.Float64)
-                for var in ["prc", "cfacshr", "ret", "retx", "prc_high", "prc_low"]
+                for var in [
+                    "prc",
+                    "cfacshr",
+                    "ret",
+                    "retx",
+                    "prc_high",
+                    "prc_low",
+                    "prc_open",
+                    "prc_close",
+                ]
             ]
             + [col("vol").cast(pl.Int64)]
         )
@@ -2764,6 +2814,20 @@ def prepare_crsp_sf(paths: DataPaths, freq):
         .join(ff_factors_monthly, how="left", on="merge_aux")
         .with_columns(ret_exc=ret_exc_exp, me_company=me_company_exp)
     )
+
+    # LPS (2019) overnight/intraday return decomposition (daily only).
+    # prc_close is the actual closing trade price (dlyclose), distinct from
+    # prc (dlyprc) which may be a bid-ask midpoint.
+    if freq == "d":
+        __crsp_sf = __crsp_sf.with_columns(
+            ret_intraday=pl.when((col("prc_close") > 0) & (col("prc_open") > 0))
+            .then(col("prc_close") / col("prc_open") - 1)
+            .otherwise(fl_none()),
+        ).with_columns(
+            ret_overnight=pl.when(col("ret_intraday").is_not_null() & col("ret").is_not_null())
+            .then((1 + col("ret")) / (1 + col("ret_intraday")) - 1)
+            .otherwise(fl_none()),
+        )
 
     if freq == "m":
         __crsp_sf = __crsp_sf.with_columns(
@@ -2994,6 +3058,7 @@ def combine_crsp_comp_sf(paths: DataPaths) -> None:
                         prc, prc_high, prc_low,
                         ret AS ret_local,
                         ret, ret_exc,
+                        ret_intraday, ret_overnight,
                         1::BIGINT AS ret_lag_dif,
                         1 AS source_crsp
                     FROM read_parquet('{crsp_dsf_path}')
@@ -3022,6 +3087,7 @@ def combine_crsp_comp_sf(paths: DataPaths) -> None:
                         cshtrd AS tvol,
                         prc, prc_high, prc_low,
                         ret_local, ret, ret_exc,
+                        ret_intraday, ret_overnight,
                         ret_lag_dif::BIGINT AS ret_lag_dif,
                         0 AS source_crsp
                     FROM read_parquet('{comp_dsf_path}')
@@ -3044,7 +3110,8 @@ def combine_crsp_comp_sf(paths: DataPaths) -> None:
                 SELECT
                     id, excntry, exch_main, common, primary_sec, bidask, curcd, fx,
                     date, eom, adjfct, shares, me, dolvol, tvol, prc, prc_high, prc_low,
-                    ret_local, ret, ret_exc, ret_lag_dif, source_crsp, obs_main
+                    ret_local, ret, ret_exc, ret_intraday, ret_overnight,
+                    ret_lag_dif, source_crsp, obs_main
                 FROM ranked
                 WHERE _rn = 1
                 ORDER BY id, date
@@ -3053,6 +3120,60 @@ def combine_crsp_comp_sf(paths: DataPaths) -> None:
     finally:
         con.close()
         (paths.interim_dir / "aux_combine_sf.ddb").unlink(missing_ok=True)
+
+
+@measure_time
+def compound_overnight_intraday(paths: DataPaths) -> None:
+    """
+    Description:
+        Compound daily overnight/intraday returns to monthly and join onto
+        world_msf.  This implements the monthly aggregation of the LPS (2019)
+        decomposition: ret_intraday_m = prod(1 + ret_intraday_d) - 1 and
+        ret_overnight_m = prod(1 + ret_overnight_d) - 1.  Also computes
+        one-month-ahead leads (ret_intraday_lead1m, ret_overnight_lead1m)
+        mirroring the ret_exc_lead1m logic.
+
+    Steps:
+        1) Read world_dsf.parquet with ret_intraday and ret_overnight.
+        2) For each (id, eom) group, compound daily returns to monthly.
+        3) Left-join onto world_msf (__msf_world.parquet).
+        4) Compute lead columns gated by ret_lag_dif == 1.
+        5) Overwrite __msf_world.parquet.
+
+    Output:
+        Overwrites __msf_world.parquet with ret_intraday, ret_overnight,
+        ret_intraday_lead1m, and ret_overnight_lead1m columns added.
+    """
+    msf_path = paths.interim_dir / "__msf_world.parquet"
+
+    monthly_oi = (
+        pl.scan_parquet(paths.interim_dir / "world_dsf.parquet")
+        .select(["id", "eom", "ret_intraday", "ret_overnight"])
+        .group_by(["id", "eom"])
+        .agg(
+            ret_intraday=pl.when(col("ret_intraday").is_null().any())
+            .then(fl_none())
+            .otherwise((col("ret_intraday") + 1).product() - 1),
+            ret_overnight=pl.when(col("ret_overnight").is_null().any())
+            .then(fl_none())
+            .otherwise((col("ret_overnight") + 1).product() - 1),
+        )
+    )
+
+    msf = (
+        pl.scan_parquet(msf_path)
+        .join(monthly_oi, on=["id", "eom"], how="left")
+        .sort(["id", "eom"])
+        .with_columns(
+            ret_intraday_lead1m=pl.when(col("ret_lag_dif").shift(-1).over("id") == 1)
+            .then(col("ret_intraday").shift(-1).over("id"))
+            .otherwise(fl_none()),
+            ret_overnight_lead1m=pl.when(col("ret_lag_dif").shift(-1).over("id") == 1)
+            .then(col("ret_overnight").shift(-1).over("id"))
+            .otherwise(fl_none()),
+        )
+    )
+    msf.collect().write_parquet(msf_path)
 
 
 @measure_time
@@ -8672,7 +8793,19 @@ def save_daily_ret(paths: DataPaths):
     """
     data = (
         pl.scan_parquet(paths.interim_dir / "world_dsf_output.parquet")
-        .select(["excntry", "id", "date", "me", "ret", "ret_exc", "ret_exc_wins"])
+        .select(
+            [
+                "excntry",
+                "id",
+                "date",
+                "me",
+                "ret",
+                "ret_exc",
+                "ret_exc_wins",
+                "ret_intraday",
+                "ret_overnight",
+            ]
+        )
         .with_columns(
             excntry=pl.when(col("excntry").is_null())
             .then(pl.lit("null_country"))
@@ -8772,7 +8905,19 @@ def save_monthly_ret(paths: DataPaths):
         Parquet file with monthly returns by country/security.
     """
     data = pl.scan_parquet(paths.interim_dir / "world_msf_output.parquet").select(
-        ["excntry", "id", "source_crsp", "eom", "me", "ret_exc", "ret", "ret_local", "ret_exc_wins"]
+        [
+            "excntry",
+            "id",
+            "source_crsp",
+            "eom",
+            "me",
+            "ret_exc",
+            "ret",
+            "ret_local",
+            "ret_exc_wins",
+            "ret_intraday",
+            "ret_overnight",
+        ]
     )
     data.select(pl.all().shrink_dtype()).collect().write_parquet(
         paths.processed_dir / "return_data" / "world_ret_monthly.parquet"
