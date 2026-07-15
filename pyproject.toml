@@ -30,6 +30,7 @@ dependencies = [
     "ibis-framework[duckdb,postgres]>=12.0",
     "keyring>=25.6.0",
     "keyrings-alt>=5.0.2",
+    "numba>=0.61",
     "numpy>=1.26.4",
     "polars>=1.40",
     "polars-ds>=0.11.2",
