@@ -61,6 +61,10 @@ desktop.ini
 *.txt~
 *~
 
+# Checked-in data files that the blanket *.txt rule above would otherwise hide
+!src/jkp/data/resources/*.txt
+!tests/structure/pipeline_structure.txt
+
 # macOS clutter
 .DS_Store
 
