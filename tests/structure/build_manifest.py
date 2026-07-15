@@ -27,6 +27,7 @@ Output:
 from __future__ import annotations
 
 import ast
+import functools
 import subprocess
 import sys
 from pathlib import Path
@@ -37,12 +38,6 @@ PKG_DIR = "src/jkp/data"
 
 # Entry points. Nothing outside these can pull a module into the pipeline.
 ROOT_MODULES = frozenset({"cli", "main", "portfolio", "__init__"})
-
-# Extensions that are code or code-adjacent config. Everything else tracked is an
-# artifact whose deletion the `file` section is meant to catch.
-CODE_SUFFIXES = frozenset(
-    {".py", ".yml", ".yaml", ".toml", ".lock", ".cff", ".typed", ".gitignore"}
-)
 
 
 def tracked_files(repo_root: Path) -> list[str]:
@@ -65,8 +60,42 @@ def tracked_files(repo_root: Path) -> list[str]:
     return sorted(line for line in out.splitlines() if line)
 
 
+@functools.cache
 def _parse(repo_root: Path, rel_path: str) -> ast.Module:
+    """Parse a tracked module. Cached: aux_functions.py alone is >10k lines and
+    several sections read it."""
     return ast.parse((repo_root / rel_path).read_text(encoding="utf-8"), filename=rel_path)
+
+
+def _qualified_defs(tree: ast.Module) -> list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]]:
+    """
+    Description:
+        List every function definition with its dotted scope path.
+    Steps:
+        1) Descend every child node, tracking enclosing class and function names.
+    Output:
+        List of (dotted_name, node). Nesting is part of the name — two helpers
+        called `_inner` in different parents stay distinct, so neither can be
+        deleted behind the other under build_manifest's de-duplication.
+
+        Descent passes through non-scoping nodes (if/try/for/with) rather than
+        only class and function bodies: aux_functions.concat_one is defined
+        inside an `if` block, and stopping at scopes would drop it silently.
+    """
+    found: list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]] = []
+
+    def walk(node: ast.AST, prefix: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.ClassDef):
+                walk(child, f"{prefix}{child.name}.")
+            elif isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef):
+                found.append((f"{prefix}{child.name}", child))
+                walk(child, f"{prefix}{child.name}.")
+            else:
+                walk(child, prefix)
+
+    walk(tree, "")
+    return found
 
 
 def _module_name(rel_path: str) -> str:
@@ -76,22 +105,22 @@ def _module_name(rel_path: str) -> str:
 def function_lines(repo_root: Path, paths: list[str]) -> list[str]:
     """
     Description:
-        Emit an `fn` line per top-level def under src/jkp/data/, with signature.
+        Emit an `fn` line per function under src/jkp/data/, with signature.
     Steps:
-        1) Walk each module's AST for function definitions.
+        1) Collect each module's defs with their dotted scope path.
         2) Render the argument list via ast.unparse.
     Output:
-        List of "fn <module>.<name>(<signature>)" lines. Signatures are included
-        so that dropping a parameter — as PR #247 did to gen_comp_dsf — shows up.
+        List of "fn <module>.<scope>.<name>(<signature>)" lines, covering methods
+        and nested helpers as well as top-level defs. Signatures are included so
+        that dropping a parameter — as PR #247 did to gen_comp_dsf — shows up.
     """
     lines = []
     for rel in paths:
         if not (rel.startswith(f"{PKG_DIR}/") and rel.endswith(".py")):
             continue
         mod = _module_name(rel)
-        for node in ast.walk(_parse(repo_root, rel)):
-            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-                lines.append(f"fn {mod}.{node.name}({ast.unparse(node.args)})")
+        for dotted, node in _qualified_defs(_parse(repo_root, rel)):
+            lines.append(f"fn {mod}.{dotted}({ast.unparse(node.args)})")
     return lines
 
 
@@ -112,8 +141,15 @@ def import_edges(repo_root: Path, paths: list[str]) -> list[str]:
             continue
         mod = _module_name(rel)
         for node in ast.walk(_parse(repo_root, rel)):
-            if isinstance(node, ast.ImportFrom) and node.level > 0 and node.module:
+            if not (isinstance(node, ast.ImportFrom) and node.level > 0):
+                continue
+            if node.module:
                 lines.append(f"imp {mod} -> {node.module.split('.')[0]}")
+            else:
+                # `from . import aux_functions` (portfolio.py:52) carries the
+                # module in the alias, not in node.module.
+                for alias in node.names:
+                    lines.append(f"imp {mod} -> {alias.name.split('.')[0]}")
     return lines
 
 
@@ -153,22 +189,22 @@ def stage_lines(repo_root: Path) -> list[str]:
         2) Record each top-level expression-statement call, numbered.
     Output:
         List of "stage <nnn> <name>" lines. The index pins order, so a stage
-        being dropped or resequenced is visible.
+        being dropped or resequenced is visible. Calls are sorted by source line:
+        ast.walk is breadth-first, which would bury a call nested in a loop —
+        roll_apply_daily runs mid-pipeline — behind every top-level statement.
     """
     tree = _parse(repo_root, f"{PKG_DIR}/main.py")
-    lines = []
+    hits: list[tuple[int, str]] = []
     for node in ast.walk(tree):
         if not (isinstance(node, ast.FunctionDef) and node.name == "run_pipeline"):
             continue
-        idx = 0
         for stmt in ast.walk(node):
             if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
                 func = stmt.value.func
                 name = getattr(func, "id", None) or getattr(func, "attr", None)
                 if name:
-                    lines.append(f"stage {idx:03d} {name}")
-                    idx += 1
-    return lines
+                    hits.append((stmt.lineno, name))
+    return [f"stage {idx:03d} {name}" for idx, (_, name) in enumerate(sorted(hits))]
 
 
 def dispatch_lines(repo_root: Path) -> list[str]:
@@ -176,29 +212,43 @@ def dispatch_lines(repo_root: Path) -> list[str]:
     Description:
         Emit a `dispatch` line per entry of the indirect-dispatch tables.
     Steps:
-        1) Find process_window's `funcs` dict in aux_functions.py.
-        2) Find generate_factor_models' generators dict in main.py.
+        1) Locate the named function, raising if it has moved or been renamed.
+        2) Read the named dict assigned inside it.
     Output:
-        List of "dispatch <table> <key> -> <function>" lines. These dicts are the
-        real wiring for rolling stats and factor models; a name reached only
-        through them is invisible to a plain call-graph read.
+        List of "dispatch <fn>.<var> <key> -> <target>" lines. process_window's
+        funcs dict is the real wiring for rolling stats — a handler reached only
+        through it is invisible to a plain call-graph read.
+
+        A missing target raises rather than emitting nothing: a dispatch spec
+        that silently no-ops advertises coverage it does not provide.
     """
     lines = []
-    specs = [
-        (f"{PKG_DIR}/aux_functions.py", "process_window", "process_window.funcs"),
-        (f"{PKG_DIR}/main.py", "generate_factor_models", "generate_factor_models"),
-    ]
-    for rel, fn_name, label in specs:
+    specs = [(f"{PKG_DIR}/aux_functions.py", "process_window", "funcs")]
+    for rel, fn_name, var_name in specs:
         tree = _parse(repo_root, rel)
-        for node in ast.walk(tree):
-            if not (isinstance(node, ast.FunctionDef) and node.name == fn_name):
-                continue
-            for dct in ast.walk(node):
-                if not isinstance(dct, ast.Dict):
-                    continue
-                for key, val in zip(dct.keys, dct.values, strict=True):
-                    if isinstance(key, ast.Constant) and isinstance(val, ast.Name):
-                        lines.append(f"dispatch {label} {key.value} -> {val.id}")
+        fn = next(
+            (n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == fn_name),
+            None,
+        )
+        if fn is None:
+            raise LookupError(f"{rel}: dispatch target {fn_name}() not found — update the spec")
+
+        dct = next(
+            (
+                n.value
+                for n in ast.walk(fn)
+                if isinstance(n, ast.Assign)
+                and isinstance(n.value, ast.Dict)
+                and any(getattr(t, "id", None) == var_name for t in n.targets)
+            ),
+            None,
+        )
+        if dct is None:
+            raise LookupError(f"{rel}: {fn_name}() has no dict named {var_name!r}")
+
+        for key, val in zip(dct.keys, dct.values, strict=True):
+            if isinstance(key, ast.Constant) and isinstance(val, ast.Name):
+                lines.append(f"dispatch {fn_name}.{var_name} {key.value} -> {val.id}")
     return lines
 
 
@@ -209,35 +259,48 @@ def test_lines(repo_root: Path, paths: list[str]) -> list[str]:
     Steps:
         1) Walk each tests/*.py module for defs named test_*.
     Output:
-        List of "test <name>" lines. This is what catches a test being deleted
-        alongside the code it guards — the PR #247 test_nulls_return_above_10x
-        case, which no test suite can catch on its own.
+        List of "test <path>::<scope>::<name>" lines, in pytest node-id form.
+        This is what catches a test being deleted alongside the code it guards —
+        the PR #247 test_nulls_return_above_10x case, which no test suite can
+        catch on its own.
+
+        The path and class qualify the name because test names are not unique:
+        34 definitions share a name with another, two of them within a single
+        file. A bare name would let build_manifest's de-duplication collapse
+        them, so deleting one would leave the manifest byte-identical.
     """
     lines = []
     for rel in paths:
         if not (rel.startswith("tests/") and rel.endswith(".py")):
             continue
-        for node in ast.walk(_parse(repo_root, rel)):
-            if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
-                lines.append(f"test {node.name}")
+        for dotted, _ in _qualified_defs(_parse(repo_root, rel)):
+            if dotted.rsplit(".", 1)[-1].startswith("test_"):
+                lines.append(f"test {rel}::{dotted.replace('.', '::')}")
     return lines
 
 
 def artifact_lines(paths: list[str]) -> list[str]:
     """
     Description:
-        Emit a `file` line per tracked non-code artifact.
+        Emit a `file` line per tracked file.
     Steps:
-        1) Filter tracked paths to those without a code suffix.
-        2) Skip the manifest itself, which would never reach a fixed point.
+        1) Take every tracked path except the manifest itself.
     Output:
-        List of "file <path>" lines. Names only, no content hash: the goal is to
-        catch a drop, not to police edits, and hashing would fire on every doc
-        re-render. Covers the golden fixtures, which stage_synthetic_slices skips
-        silently when absent.
+        List of "file <path>" lines. Every tracked file is listed, rather than
+        only those failing a suffix blocklist: a blocklist left tracked .py
+        outside src/jkp/data/ and tests/ (scripts/, documentation/) covered by no
+        section at all, and silently deletable. Listing everything means a file
+        cannot fall between sections. The overlap with `fn`/`test` lines for
+        Python files is deliberate — they pin contents, this pins existence.
+
+        Names only, no content hash: the goal is catching a drop, not policing
+        edits, and hashing would fire on every doc re-render. Covers the golden
+        fixtures, which stage_synthetic_slices skips silently when absent.
+
+        The manifest excludes itself: listing it could never reach a fixed point.
     """
     manifest = MANIFEST_PATH.as_posix()
-    return [f"file {p}" for p in paths if Path(p).suffix not in CODE_SUFFIXES and p != manifest]
+    return [f"file {p}" for p in paths if p != manifest]
 
 
 def changelog_lines(repo_root: Path) -> list[str]:
