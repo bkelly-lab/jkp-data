@@ -8,7 +8,6 @@ import pytest
 from jkp.data.aux_functions import (
     adj_trd_vol_NASDAQ,
     base_data_filter_exp,
-    coalesce_usa_mktrf_with_ff_daily,
     prepare_daily,
     zero_obs_gate_ok,
 )
@@ -54,7 +53,9 @@ class TestBaseDataFilter:
         out = df.filter(base_data_filter_exp("rvol"))
         assert out.height == 0
 
-    def test_capm_requires_mktrf(self):
+    def test_return_stat_keeps_row_regardless_of_mktrf(self):
+        # mktrf-null rows are dropped upstream in prepare_daily, so base_data_filter_exp
+        # no longer re-checks mktrf for any stat.
         df = pl.DataFrame(
             {
                 "ret_exc": [0.01, 0.02],
@@ -63,21 +64,8 @@ class TestBaseDataFilter:
                 "zero_obs": [0, 0],
             }
         )
-        out = df.filter(base_data_filter_exp("capm"))
-        assert out.height == 1
-        assert out["mktrf"][0] == pytest.approx(0.001)
-
-    def test_rvol_keeps_null_mktrf(self):
-        df = pl.DataFrame(
-            {
-                "ret_exc": [0.01],
-                "mktrf": [None],
-                "source_crsp": [1],
-                "zero_obs": [0],
-            }
-        )
-        out = df.filter(base_data_filter_exp("rvol"))
-        assert out.height == 1
+        assert df.filter(base_data_filter_exp("capm")).height == 2
+        assert df.filter(base_data_filter_exp("rvol")).height == 2
 
 
 class TestGaoRitterBoundary:
@@ -114,7 +102,7 @@ class TestPrepareDailyCoverage:
         pl.DataFrame(fcts_rows).write_parquet(fcts_path)
         return dsf_path, fcts_path
 
-    def test_keeps_stock_day_when_mktrf_null(self, test_paths: DataPaths):
+    def test_drops_stock_day_when_mktrf_null(self, test_paths: DataPaths):
         rows = [
             {
                 "excntry": "USA",
@@ -133,7 +121,7 @@ class TestPrepareDailyCoverage:
                 "source_crsp": 1,
             }
         ]
-        # Factor file deliberately missing that date.
+        # Factor file deliberately missing that date, so the stock-day has no mktrf.
         fcts_rows = [
             {
                 "excntry": "USA",
@@ -149,8 +137,7 @@ class TestPrepareDailyCoverage:
         dsf_path, fcts_path = self._write_inputs(test_paths, rows, fcts_rows)
         prepare_daily(test_paths, dsf_path, fcts_path)
         dsf1 = pl.read_parquet(test_paths.interim_dir / "dsf1.parquet")
-        assert dsf1.height == 1
-        assert dsf1["mktrf"][0] is None
+        assert dsf1.height == 0
 
     def test_crsp_zero_month_kept_in_corr_data(self, test_paths: DataPaths):
         dates = [date(2020, 1, d) for d in range(2, 12)]  # 10 days, all zeros
@@ -191,19 +178,3 @@ class TestPrepareDailyCoverage:
         corr = pl.read_parquet(test_paths.interim_dir / "corr_data.parquet")
         # 10 days → 8 non-null 3-day sums for a contiguous series.
         assert corr.height == 8
-
-    def test_ff_daily_fills_usa_mktrf_gap(self, test_paths: DataPaths):
-        (test_paths.raw_tables_dir).mkdir(parents=True, exist_ok=True)
-        pl.DataFrame({"date": [date(2020, 1, 2)], "mktrf": [0.012]}).write_parquet(
-            test_paths.raw_tables_dir / "ff_factors_daily.parquet"
-        )
-        fcts = pl.LazyFrame(
-            {
-                "excntry": ["USA"],
-                "date": [date(2020, 1, 2)],
-                "mktrf": [None],
-                "hml": [0.0],
-            }
-        )
-        filled = coalesce_usa_mktrf_with_ff_daily(test_paths, fcts).collect()
-        assert filled["mktrf"][0] == pytest.approx(0.012)
