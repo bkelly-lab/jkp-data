@@ -1,0 +1,319 @@
+---
+title: "Correcting Price Errors in Compustat Global Data"
+author: "JKP data team"
+date: today
+format:
+  html:
+    toc: false
+    toc-depth: 3
+    code-fold: false
+    embed-resources: true
+    page-layout: full
+    theme: [cosmo, styles.scss]
+    fig-width: 8
+    fig-height: 4
+    fig-dpi: 150
+    tbl-cap-location: bottom
+execute:
+  echo: false
+  warning: false
+jupyter: python3
+---
+
+## Overview
+
+To improve the database, we apply the data correction from
+Bessembinder et al. (2023). The correction is applied to the
+Compustat daily security files and removes erroneous price observations
+before returns are calculated.
+
+Since the correction is applied to Compustat, it can affect factors across
+the full database. The United States is affected much less, however, because
+the US series rely primarily on CRSP. In practice, the US long-short factors
+are almost unchanged relative to the current database, with the bulk of the
+changes appearing outside the United States.
+
+## Background: What the Correction Does
+
+The correction has two parts:
+
+1. Rescaling decimal-shift errors in Compustat prices.
+2. Dropping unreliable observations that cannot be safely repaired.
+
+Bessembinder et al. (2023) show that raw Compustat security prices sometimes
+contain decimal-shift errors. In these cases, a price is recorded with the
+decimal point in the wrong place, so its level is off by a factor of 10, 100,
+or 1000 for one or more consecutive periods before returning to the correct
+scale. Because returns are computed from adjacent prices, one mis-scaled
+price creates two large, artificial returns that roughly offset each other.
+
+The first part of the correction detects these decimal-shift errors using
+their spike-and-reversal pattern: the price jumps sharply away from its
+neighboring observations and then reverts.
+
+* Single-period errors: an observation is flagged when its ratio to both
+  the previous and next price is above 5, or below 1/5. Larger ratios
+  identify larger decimal errors: thresholds above 50 or 500, and their
+  low-side counterparts of 1/50 and 1/500, correspond to 100× and 1000×
+  errors.
+* Multi-period errors: the same reversal logic is applied over wider
+  windows. This catches runs of consecutive mis-scaled observations when the
+  values inside the run are stable relative to the surrounding price series.
+
+Flagged decimal-shift errors are rescaled rather than discarded. The affected
+observation is divided or multiplied by the detected factor — 10, 100, or
+1000 — so the price and the adjacent returns are repaired directly.
+
+The second part of the correction removes problematic observations outright.
+These include:
+
+* exact-zero prices;
+* implausible jumps in shares outstanding;
+* implausible jumps in market equity;
+* implausible prices relative to market equity;
+* problematic first or last observations in a security's time series.
+
+These observations are dropped rather than repaired, so this step can also
+change the underlying stock universe.
+
+As an additional safeguard, we exclude daily returns greater than 1,000%
+(`ret` > 10). Any return exceeding this threshold after the price
+correction is treated as a residual data error that could not be reliably
+repaired and is set to missing before entering the factor construction pipeline.
+
+Separately, we recover returns for securities that never pay a dividend. Their
+total-return factor (`trfd`) is missing in Compustat, which would otherwise drop
+their returns. Wharton Research Data Services (no date) notes that "for those
+companies that never pay any dividends, the variable TRFD can appear to be
+missing throughout history, users can replace the missing value with value 1 in
+order to avoid unintentionally causing the calculated return series to be
+missing." Following this guidance, we substitute `trfd` = 1 for these securities
+— whose price return equals total return in the absence of dividends — so their
+returns are kept rather than discarded.
+
+### Modifications for Scale
+
+Bessembinder et al. (2023) apply the correction to monthly data, searching over
+all asymmetric combinations of up to three periods backward and three periods
+forward. Because we apply the correction to daily data, the number of
+observations increases by several orders of magnitude, making the original
+search computationally impractical. We therefore introduce two simplifications.
+
+First, we replace the asymmetric search with symmetric windows. Rather than
+evaluating every backward/forward combination, we compare each day's price with
+the prices n trading days before and after for a given window length n. Second,
+instead of searching every possible window length, we evaluate a priority set of
+horizons—1, 2, 3, 5, 10, and 21 trading days—covering intervals from one day to
+approximately one trading month. These horizons capture the vast majority of
+multi-period scaling errors while substantially reducing computation.
+
+All other aspects of the procedure—including the single-period detection
+algorithm, the rescaling factors, and the observation removal criteria—are
+identical to those of Bessembinder et al. (2023).
+
+## Scope of the change
+
+The tables below show how the Compustat daily universe changes in the latest
+full pipeline run, split by JKP size group and reported separately for the
+United States and the rest of the world. We run the pipeline until December
+2025.
+
+Each count is a security-day observation:
+
+* Total Current: observations in the Compustat daily files before the
+  correction.
+* Corrections: decimal-shift errors that are rescaled in place. These
+  observations are repaired, not removed.
+* Removals: unreliable observations dropped by the correction's data filters.
+* Total Post-Correction: surviving observations after the correction, equal
+  to Total Current minus Removals.
+
+### United States
+
+|                       |       TOTAL |      MEGA |      LARGE |      SMALL |      MICRO |       NANO | UNCLASSIFIED |
+| --------------------- | ----------: | --------: | ---------: | ---------: | ---------: | ---------: | -----------: |
+| Total Current         | 129,799,940 | 9,046,916 | 11,876,257 | 18,200,954 | 41,441,052 | 43,407,719 |    5,827,042 |
+| Corrections           |     130,689 |        82 |         50 |        167 |      1,349 |    123,469 |        5,572 |
+| Removals              |  27,862,424 |   152,900 |    223,937 |    522,989 |  2,623,871 | 23,297,277 |    1,041,450 |
+| Total Post-Correction | 101,937,516 | 8,894,016 | 11,652,320 | 17,677,965 | 38,817,181 | 20,110,442 |    4,785,592 |
+
+### World ex-US
+
+|                       |       TOTAL |       MEGA |      LARGE |      SMALL |       MICRO |       NANO | UNCLASSIFIED |
+| --------------------- | ----------: | ---------: | ---------: | ---------: | ----------: | ---------: | -----------: |
+| Total Current         | 328,310,834 | 12,265,017 | 26,805,567 | 53,916,378 | 113,827,459 | 104,460,568 |   17,035,845 |
+| Corrections           |       9,764 |        101 |         61 |        135 |         617 |       7,859 |          991 |
+| Removals              |  44,881,965 |    104,699 |    302,973 |  1,017,353 |   6,589,972 |  36,120,208 |      746,760 |
+| Total Post-Correction | 283,428,869 | 12,160,318 | 26,502,594 | 52,899,025 | 107,237,487 |  68,340,360 |   16,289,085 |
+
+Region is assigned from the raw pre-correction daily files. As a result,
+essentially every observation can be attributed to either the United States or
+the rest of the world; the omitted residual with no mappable exchange is
+negligible, at less than 0.1%.
+
+The main takeaway is that the correction is mostly a filtering step, not a
+rescaling step. Across both regions, there are 72.7 million removals compared
+with only 140 thousand rescaled observations. The removals are heavily
+concentrated among the smallest stocks: nano- and micro-cap observations
+account for most of the dropped observations, while mega- and large-cap
+observations are barely affected.
+
+For the United States, this does not translate into a large change in the
+factor series, because US factors draw primarily on CRSP rather than Compustat.
+As a result, even though many US Compustat observations are removed, the impact
+on the US factor returns is small.
+
+## Factor-Level Impact
+
+We evaluate the correction using the `hml.parquet` output from the JKP
+portfolio pipeline. This file contains the long-short, or high-minus-low,
+return for each characteristic by country and month, under three weighting
+schemes: equal-weighted, value-weighted, and capped value-weighted.
+
+We compare two full pipeline runs:
+
+* a baseline run, with no Compustat correction applied;
+* a corrected run, with the correction applied.
+
+The two outputs are joined on month-end date, country, and characteristic:
+`(eom, excntry, characteristic)`. We exclude Zimbabwe (ZWE) and Venezuela
+(VEN), since their returns are dominated by hyperinflation-era distortions. We
+also keep only country–characteristic pairs with more than 12 overlapping
+monthly observations. The resulting overlap window runs from January 1926
+through December 2025 and covers 153 characteristics across 71 countries.
+
+```{python}
+#| label: setup
+import sys, os
+sys.path.insert(0, os.path.abspath("."))
+
+import matplotlib.pyplot as plt
+from IPython.display import HTML, Markdown, display
+import correction_compare as bc
+
+
+import base64, io
+from matplotlib.transforms import Bbox
+
+
+def show(fig, top_pad=0.18, bottom_pad=0.18):
+    """Embed a figure at its exact rendered size.
+
+    The inline backend crops with bbox_inches='tight', which trims a different
+    left margin per figure (US y-labels '140' vs WxUS '6000'), shifting the axes
+    box between tabs. Saving with the standard bbox keeps every figure the same
+    pixel size with axes at a fixed fraction, so tabs don't move. We only pad the
+    saved region vertically (left/right stay fixed, so tabs stay aligned) so a
+    legend or x-label sitting just past the canvas edge is not clipped."""
+    w, h = fig.get_size_inches()
+    buf = io.BytesIO()
+    fig.savefig(
+        buf,
+        format="png",
+        dpi=150,
+        bbox_inches=Bbox.from_extents(0, -bottom_pad, w, h + top_pad),
+    )
+    plt.close(fig)
+    b64 = base64.b64encode(buf.getvalue()).decode()
+    display(HTML(f'<img src="data:image/png;base64,{b64}" style="width:100%">'))
+
+
+stats = bc.load_stats()
+```
+
+### Correlation with the Baseline
+
+For each country × characteristic pair, we compute the time-series correlation
+between the baseline and corrected long-short returns. A correlation of 1 means
+the factor is unchanged by the correction. Lower correlations identify
+country-characteristic pairs where the correction moved the return series.
+
+We now show histograms of the distribution of correlations.
+
+::: {.panel-tabset}
+
+#### United States
+
+```{python}
+#| out-width: 100%
+show(bc.corr_hist(stats, scope="us"))
+```
+
+```{python}
+display(HTML(bc.corr_stats(stats, scope="us").to_pandas().to_html(index=False)))
+```
+
+#### World ex-US
+
+```{python}
+#| out-width: 100%
+show(bc.corr_hist(stats, scope="exus"))
+```
+
+```{python}
+display(HTML(bc.corr_stats(stats, scope="exus").to_pandas().to_html(index=False)))
+```
+
+:::
+
+The US results confirm that the correction has almost no effect on the United
+States. Across all three weighting schemes, the correlations are essentially 1.
+This is expected, since US factors rely primarily on CRSP rather than Compustat.
+
+For World ex-US, the median correlation sits slightly below 1. This is where the
+correction matters more, because the affected markets rely more directly on
+Compustat daily security data.
+
+### Annualized Moments
+
+The scatter grid below compares the annualized mean, volatility, and Sharpe
+ratio of each country × characteristic factor. The baseline value is on the
+x-axis and the corrected value is on the y-axis. The dashed 45-degree line marks
+exact agreement between the two runs.
+
+Rows correspond to the three weighting schemes, while columns correspond to the
+three moments. US points are shown in red and World ex-US points in blue.
+
+Points on the diagonal are effectively unchanged by the correction. Departures
+from the line show where the correction altered a factor's return or risk
+profile. The US points remain tightly clustered around the diagonal, while the
+World ex-US points show the genuine impact of correcting the Compustat-sourced
+markets.
+
+```{python}
+#| fig-width: 12
+#| fig-height: 10.6
+#| out-width: 100%
+show(bc.moment_scatter(stats), top_pad=0.5)
+```
+
+## Conclusion
+
+The correction is primarily a filtering step: it removes far more
+observations than it rescales — roughly 72.7 million removals against 140
+thousand price corrections — and those removals fall overwhelmingly on nano- and
+micro-cap stocks, leaving mega- and large-caps almost untouched.
+
+US long-short returns are essentially unchanged — the median country–characteristic
+correlation with the uncorrected series is 0.999 to 1.000 across all three
+weighting schemes — because the US series draw primarily on CRSP rather than
+Compustat.
+
+Non-US markets rely on Compustat directly, so the corrections pass through to
+their factors. The value-weighted factors barely move (median correlation
+0.998), since the errors sit in the smallest stocks that carry little weight; the
+equal-weighted factors shift more (median 0.955), reflecting the cleanup of
+small-cap noise. About 95% of the 44.9 million non-US removals are nano- and
+micro-cap observations.
+
+Overall, the correction improves data quality while leaving the economic drivers
+of the factors intact. For portfolios dominated by larger firms, the effect is
+negligible. For strategies with greater exposure to small stocks, the correction
+mainly removes noise from erroneous Compustat observations rather than changing
+true return patterns. The result is a cleaner and more reliable factor database.
+
+## References {#references}
+
+Bessembinder, H., Chen, T.-F., Choi, G. and Wei, K.C.J. (2023) 'Long-Term Shareholder Returns: Evidence from 64,000 Global Stocks', *Financial Analysts Journal*, 79(3). Available at: [https://doi.org/10.1080/0015198X.2023.2188870](https://doi.org/10.1080/0015198X.2023.2188870).
+
+Wharton Research Data Services (no date) *Computing Returns*. Available at: [https://wrds-www.wharton.upenn.edu/pages/support/support-articles/compustat/global/computing-returns/](https://wrds-www.wharton.upenn.edu/pages/support/support-articles/compustat/global/computing-returns/) (Accessed: 10 July 2026).

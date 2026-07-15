@@ -30,8 +30,13 @@ import polars_ols  # noqa: F401 - required for least_squares method on polars ex
 from ibis import _
 from polars import col
 
+from .compustat_correction import (
+    correct_decimal_errors,
+    drop_unreliable_observations,
+)
 from .config import (
     COLLECT_CHUNK_SIZE,
+    CORRECTION_SPILL_COMPRESSION,
     END_DATE,
     FF_CCM_BACKDATE_FROM,
     FF_CCM_BACKDATE_MAX_YEARS,
@@ -67,6 +72,7 @@ from .config import (
 )
 from .output_writer import write_dataframe
 from .paths import DataPaths, get_dff_be_path
+from .wrds_credentials import WRDS_DB, WRDS_HOST, WRDS_PORT
 
 
 def fl_none():
@@ -707,18 +713,81 @@ def gen_crsp_sf(paths: DataPaths, freq):
     return result
 
 
-def gen_wrds_connection_info(user, password):
-    return (
-        f"host=wrds-pgdata.wharton.upenn.edu "
-        f"port=9737 dbname=wrds "
-        f"user={user} password={password} sslmode=require"
-    )
+def _pg_escape_value(value: str) -> str:
+    """libpq-escape a conninfo value (user or password) for a single-quoted field.
+
+    libpq accepts single-quoted values with backslash-escaped ``\\`` and ``'``,
+    so quoting lets a value hold spaces or special characters without breaking the
+    conninfo. For the password this is also the form that appears in any error text
+    echoing the connection string, so the credential-masking checks reuse it rather
+    than matching the raw password.
+    """
+    return value.replace("\\", "\\\\").replace("'", "\\'")
+
+
+def _sql_literal(value: str) -> str:
+    """Escape a string for embedding inside a single-quoted DuckDB SQL literal.
+
+    The conninfo is interpolated into ``ATTACH '...'`` / ``postgres_scan('...')``
+    SQL, so any single quote it contains (e.g. around a libpq-quoted password)
+    must be doubled or it terminates the SQL string literal.
+    """
+    return value.replace("'", "''")
+
+
+def gen_wrds_connection_info(user, password: str | None = None) -> str:
+    """Build a libpq conninfo for WRDS.
+
+    When ``password`` is ``None`` the ``password=`` field is omitted, so libpq
+    authenticates from ``$PGPASSFILE`` / ``~/.pgpass`` instead.
+    """
+    parts = [
+        f"host={WRDS_HOST}",
+        f"port={WRDS_PORT}",
+        f"dbname={WRDS_DB}",
+        # Quote the username too: a space or quote in it would otherwise break
+        # libpq's conninfo parsing exactly as an unquoted password would.
+        f"user='{_pg_escape_value(user)}'",
+    ]
+    if password is not None:
+        # Single-quote and escape so a password containing spaces or special
+        # characters can't break the conninfo (or split the value, which would
+        # defeat the password-masking check in _attach_wrds). The conninfo is
+        # itself embedded in a single-quoted SQL literal at each use site, so
+        # callers must additionally pass it through _sql_literal.
+        parts.append(f"password='{_pg_escape_value(password)}'")
+    parts.append("sslmode=require")
+    return " ".join(parts)
+
+
+def _password_forms(password: str) -> tuple[str, str, str]:
+    """The forms the password can take on its way into an error message: raw, the
+    libpq-escaped conninfo form (echoed by a connection IOException), and the
+    SQL-escaped-then-libpq-escaped form (echoed from the raw statement text by a
+    parser error). Ordered most-escaped first so redaction replaces the longest
+    match before its shorter substrings."""
+    escaped = _pg_escape_value(password)
+    return (_sql_literal(escaped), escaped, password)
+
+
+def _password_in_error(text: str, password: str) -> bool:
+    """True if the password appears in ``text`` in any of the forms it can take in
+    an error message (see :func:`_password_forms`)."""
+    return any(form in text for form in _password_forms(password))
+
+
+def _redact_password(text: str, password: str) -> str:
+    """Replace the password with ``***`` in every form it can take in an error
+    message (see :func:`_password_forms`)."""
+    for form in _password_forms(password):
+        text = text.replace(form, "***")
+    return text
 
 
 def get_columns(conn, conninfo, lib, table):
     cols = conn.execute(f"""
         SELECT *
-        FROM postgres_scan('{conninfo}', '{lib}', '{table}')
+        FROM postgres_scan('{_sql_literal(conninfo)}', '{lib}', '{table}')
         LIMIT 0
     """).description
     return [c[0] for c in cols]
@@ -813,7 +882,7 @@ def download_wrds_table(
     duckdb_conn.execute(f"""
         COPY (
           SELECT {projection}
-          FROM postgres_scan('{conninfo}', '{lib}', '{table}')
+          FROM postgres_scan('{_sql_literal(conninfo)}', '{lib}', '{table}')
           {where_clause}
         )
         TO '{filename}' (FORMAT PARQUET);
@@ -873,7 +942,7 @@ def _chunk_path(filename: str, i: int) -> str:
     return str(p.with_name(f"{p.stem}.part{i:02d}{p.suffix}"))
 
 
-def _attach_wrds(con: duckdb.DuckDBPyConnection, conninfo: str, password: str) -> None:
+def _attach_wrds(con: duckdb.DuckDBPyConnection, conninfo: str, password: str | None) -> None:
     """ATTACH the WRDS Postgres database read-only on an existing DuckDB connection.
 
     DuckDB's postgres extension embeds the full connection string (including the password) in
@@ -881,9 +950,9 @@ def _attach_wrds(con: duckdb.DuckDBPyConnection, conninfo: str, password: str) -
     password-free error. Errors that don't contain the password propagate unchanged.
     """
     try:
-        con.execute(f"ATTACH '{conninfo}' AS wrds (TYPE postgres, READ_ONLY)")
+        con.execute(f"ATTACH '{_sql_literal(conninfo)}' AS wrds (TYPE postgres, READ_ONLY)")
     except Exception as e:
-        if password and password in str(e):
+        if password and _password_in_error(str(e), password):
             raise RuntimeError(
                 "Failed to attach WRDS connection. Check credentials and MFA approval."
             ) from None
@@ -986,7 +1055,7 @@ def _compute_histograms(
     date_columns: dict[str, str],
     end_date: date | None,
     max_conns: int,
-    password: str,
+    password: str | None,
 ) -> dict[str, list[tuple[int, int]]]:
     """Concurrently compute per-year row histograms for ``tables`` (each over its own connection).
 
@@ -1081,7 +1150,7 @@ def _remove_chunk_parts(filename: str) -> None:
 def _attach_download_worker(
     task_queue: queue.Queue[_DownloadTask],
     conninfo: str,
-    password: str,
+    password: str | None,
     task_errors: list[str],
     startup_errors: list[str],
     errors_lock: threading.Lock,
@@ -1136,7 +1205,7 @@ def _attach_download_worker(
                     )
                 except Exception as e:  # noqa: BLE001
                     # Redact only the credential, keeping the rest of the error for diagnostics.
-                    msg = str(e).replace(password, "***") if password else str(e)
+                    msg = _redact_password(str(e), password) if password else str(e)
                     with errors_lock:
                         task_errors.append(f"{task.table} ({Path(task.out).name}): {msg}")
         finally:
@@ -1150,7 +1219,7 @@ def _download_tables_parallel(
     conninfo: str,
     date_columns: dict[str, str],
     end_date: date | None,
-    password: str,
+    password: str | None,
     workers: int,
     split_tables: frozenset[str] = frozenset(),
     n_chunks: int = 1,
@@ -1285,7 +1354,7 @@ def _download_tables_parallel(
 def download_raw_data_tables(
     paths: DataPaths,
     username: str,
-    password: str,
+    password: str | None,
     end_date: date | None = None,
     persistent_connection: bool = False,
     max_workers: int = 1,
@@ -1447,7 +1516,6 @@ def download_raw_data_tables(
     con.close()
 
 
-@measure_time
 def aug_msf_v2(paths: DataPaths):
     """
     Description:
@@ -1509,7 +1577,6 @@ def aug_msf_v2(paths: DataPaths):
     msf_aug.to_parquet(paths.interim_dir / "raw_data_dfs" / "crsp_msf_v2_aug.parquet")
 
 
-@measure_time
 def build_mcti(paths: DataPaths):
     """
     Description:
@@ -1676,39 +1743,110 @@ def adj_trd_vol_NASDAQ(datevar, col_to_adjust, is_nasdaq_expr):
     return adj_trd_vol
 
 
-def gen_comp_dsf(paths: DataPaths):
+def gen_comp_dsf(
+    paths: DataPaths,
+    apply_correction: bool = True,
+    correction_method: str = "multiplier",
+    variation_threshold: float = 1.3,
+):
     """
     Description:
         Build daily Compustat security data (SECD + G_SECD), convert to USD, and compute
         prices/returns/volumes/dividends; store as __comp_dsf.parquet.
 
     Steps:
-        1) Materialize daily FX to fx_data.parquet; register SECD, G_SECD, firm-shares, and FX in DuckDB.
-        2) Create __comp_dsf_global from G_SECD: local prices, highs/lows (if prcstd≠5),
+        1) Materialize daily FX to fx_data.parquet.
+        2) If apply_correction, repair decimal-shift errors in the raw data.
+        3) Register SECD, G_SECD, firm-shares, and FX in DuckDB.
+        4) Create __comp_dsf_global from G_SECD: local prices, highs/lows (if prcstd≠5),
         shares traded, shares outstanding, local return index (ri_local), dividend currencies.
-        3) Create __comp_dsf_na from SECD with same fields; infer cshoc from firm-shares when missing.
-        4) Adjust NASDAQ (exchg=14) cshtrd by historical factors (2001 windows).
-        5) FULL OUTER JOIN NA and Global records; LEFT JOIN daily FX for trading and dividend currencies.
-        6) Compute USD variables: prc, prc_high, prc_low, market cap (me), USD turnover (dolvol),
+        The total-return factor trfd is null for securities that never pay a dividend;
+        substitute trfd=1 for those (price return = total return) so their returns survive.
+        5) Create __comp_dsf_na from SECD with same fields; infer cshoc from firm-shares when missing.
+        6) Adjust NASDAQ (exchg=14) cshtrd by historical factors (2001 windows).
+        7) FULL OUTER JOIN NA and Global records; LEFT JOIN daily FX for trading and dividend currencies.
+        8) Compute USD variables: prc, prc_high, prc_low, market cap (me), USD turnover (dolvol),
         USD return index (ri), dividends (split into total/cash/special); derive month-end eom.
-        7) Drop intermediates and write __comp_dsf.parquet.
+        9) If apply_correction, drop unreliable observations from the USD data.
+        10) Drop intermediates and write __comp_dsf.parquet.
+
+    Args:
+        apply_correction: Whether to apply the Compustat return corrections
+            (Bessembinder et al. 2023). Default True. Set False to reproduce
+            original behavior.
+        correction_method: decimal-correction method ('multiplier' fixed multipliers
+            or 'interpolation' geometric mean of clean endpoints).
 
     Output:
         Parquet: __comp_dsf.parquet (daily Compustat security observations in USD).
     """
     (paths.interim_dir / "aux_comp_dsf.ddb").unlink(missing_ok=True)
+
+    # Prepare FX data
+    compustat_fx(paths).write_parquet(paths.interim_dir / "fx_data.parquet")
+
+    # Repair decimal-shift errors in the raw data (local currency)
+    if apply_correction:
+        # Load and correct Global data (no ADRRC). spill_dir selects the
+        # memory-bounded array path; spill files are removed after each sink.
+        df_global = pl.scan_parquet(paths.raw_tables_dir / "comp_g_secd.parquet").pipe(
+            correct_decimal_errors,
+            group_cols=["gvkey", "iid"],
+            sort_col="datadate",
+            has_adrrc=False,
+            correction_method=correction_method,
+            spill_dir=paths.interim_dir,
+            variation_threshold=variation_threshold,
+        )
+        df_global.sink_parquet(
+            paths.interim_dir / "__comp_g_secd_corrected.parquet",
+            compression=CORRECTION_SPILL_COMPRESSION,
+        )
+        for spill in paths.interim_dir.glob("__corr_*.parquet"):
+            spill.unlink()
+
+        # Load and correct NA data (has ADRRC for ADRs)
+        df_na = pl.scan_parquet(paths.raw_tables_dir / "comp_secd.parquet").pipe(
+            correct_decimal_errors,
+            group_cols=["gvkey", "iid"],
+            sort_col="datadate",
+            has_adrrc=True,
+            correction_method=correction_method,
+            spill_dir=paths.interim_dir,
+            variation_threshold=variation_threshold,
+        )
+        df_na.sink_parquet(
+            paths.interim_dir / "__comp_secd_corrected.parquet",
+            compression=CORRECTION_SPILL_COMPRESSION,
+        )
+        for spill in paths.interim_dir.glob("__corr_*.parquet"):
+            spill.unlink()
+
+        # Use corrected files
+        g_secd_path = paths.interim_dir / "__comp_g_secd_corrected.parquet"
+        secd_path = paths.interim_dir / "__comp_secd_corrected.parquet"
+    else:
+        # Use original files
+        g_secd_path = paths.raw_tables_dir / "comp_g_secd.parquet"
+        secd_path = paths.raw_tables_dir / "comp_secd.parquet"
+
+    # Original SQL processing
+    # Views, not tables: the whole merge/FX/USD pipeline streams in a single
+    # pass at the final COPY instead of materializing five intermediate
+    # tables to the .ddb file. The NASDAQ cshtrd UPDATE is folded into the
+    # __comp_dsf_na view as an equivalent CASE expression.
     con = ibis.duckdb.connect(str(paths.interim_dir / "aux_comp_dsf.ddb"), threads=os.cpu_count())
 
-    compustat_fx(paths).write_parquet(paths.interim_dir / "fx_data.parquet")
-    con.create_table("comp_g_secd", con.read_parquet(paths.raw_tables_dir / "comp_g_secd.parquet"))
-    con.create_table(
-        "__firm_shares2", con.read_parquet(paths.interim_dir / "__firm_shares2.parquet")
-    )
-    con.create_table("comp_secd", con.read_parquet(paths.raw_tables_dir / "comp_secd.parquet"))
-    con.create_table("fx", con.read_parquet(paths.interim_dir / "fx_data.parquet"))
+    con.raw_sql(f"""
+    CREATE VIEW comp_g_secd AS SELECT * FROM read_parquet('{g_secd_path.as_posix()}');
+    CREATE VIEW comp_secd AS SELECT * FROM read_parquet('{secd_path.as_posix()}');
+    CREATE VIEW __firm_shares2 AS
+        SELECT * FROM read_parquet('{(paths.interim_dir / "__firm_shares2.parquet").as_posix()}');
+    CREATE VIEW fx AS SELECT * FROM read_parquet('{(paths.interim_dir / "fx_data.parquet").as_posix()}');
+    """)
 
     con.raw_sql("""
-    CREATE TABLE __comp_dsf_global AS
+    CREATE VIEW __comp_dsf_global AS
     SELECT
         gvkey, iid, datadate, tpci, exchg, prcstd, curcdd, prccd / qunit AS prc_local, ajexdi, cshoc / 1e6 AS cshoc,
         CASE
@@ -1719,11 +1857,19 @@ def gen_comp_dsf(paths: DataPaths):
             WHEN prcstd != 5 THEN prcld / qunit
             ELSE NULL
         END AS prc_low_lcl,
-        cshtrd, (prccd / qunit) / ajexdi * trfd AS ri_local,
+        -- trfd is null for never-dividend securities; substitute 1 only when the
+        -- security never pays a dividend (no dividends => price return = total
+        -- return), leaving genuine gaps for payers null. Per WRDS guidance:
+        -- https://wrds-www.wharton.upenn.edu/pages/support/support-articles/compustat/global/computing-returns/
+        cshtrd, (prccd / qunit) / ajexdi * COALESCE(trfd,
+            CASE WHEN NOT BOOL_OR(
+                     COALESCE(div, 0) > 0 OR COALESCE(divd, 0) > 0 OR COALESCE(divsp, 0) > 0
+                 ) OVER (PARTITION BY gvkey, iid)
+                 THEN 1 ELSE NULL END) AS ri_local,
         curcddv, div, divd, divsp
     FROM comp_g_secd;
 
-    CREATE TABLE __comp_dsf_na AS
+    CREATE VIEW __comp_dsf_na AS
     SELECT
         a.gvkey, a.iid, a.datadate, a.tpci, a.exchg, a.prcstd, a.curcdd, a.prccd AS prc_local, a.ajexdi,
         CASE
@@ -1734,29 +1880,36 @@ def gen_comp_dsf(paths: DataPaths):
             WHEN a.prcstd != 5 THEN a.prcld
             ELSE NULL
         END AS prc_low_lcl,
-        a.cshtrd, COALESCE(a.cshoc / 1e6, b.csho_fund * b.ajex_fund / a.ajexdi) AS cshoc,
-        (a.prccd / a.ajexdi * a.trfd) AS ri_local, a.curcddv, a.div, a.divd, a.divsp
+        -- cast back to the column type: the original UPDATE assigned the
+        -- divided value in place, implicitly rounding to DECIMAL(28,8)
+        CAST(CASE
+            WHEN a.exchg = 14 AND a.datadate <  DATE '2001-02-01' THEN a.cshtrd / 2
+            WHEN a.exchg = 14 AND a.datadate <= DATE '2001-12-31' THEN a.cshtrd / 1.8
+            WHEN a.exchg = 14 AND a.datadate <  DATE '2003-12-31' THEN a.cshtrd / 1.6
+            ELSE a.cshtrd
+        END AS DECIMAL(28, 8)) AS cshtrd,
+        COALESCE(a.cshoc / 1e6, b.csho_fund * b.ajex_fund / a.ajexdi) AS cshoc,
+        -- trfd (total return factor) is missing for securities that never pay
+        -- a dividend; per WRDS guidance, replace the missing factor with 1
+        -- (no dividends => price return = total return). Only do so when the
+        -- security never pays a dividend; leave genuine gaps for payers null.
+        -- https://wrds-www.wharton.upenn.edu/pages/support/support-articles/compustat/global/computing-returns/
+        (a.prccd / a.ajexdi * COALESCE(a.trfd,
+            CASE WHEN NOT BOOL_OR(
+                     COALESCE(a.div, 0) > 0 OR COALESCE(a.divd, 0) > 0 OR COALESCE(a.divsp, 0) > 0
+                 ) OVER (PARTITION BY a.gvkey, a.iid)
+                 THEN 1 ELSE NULL END)) AS ri_local, a.curcddv, a.div, a.divd, a.divsp
     FROM comp_secd AS a
     LEFT JOIN __firm_shares2 AS b
     ON a.gvkey = b.gvkey AND a.datadate = b.ddate;
 
-    UPDATE __comp_dsf_na
-    SET cshtrd =
-        CASE
-            WHEN datadate <  DATE '2001-02-01' THEN cshtrd / 2
-            WHEN datadate <= DATE '2001-12-31' THEN cshtrd / 1.8
-            WHEN datadate <  DATE '2003-12-31' THEN cshtrd / 1.6
-            ELSE cshtrd
-        END
-    WHERE exchg = 14;
-
-    CREATE TABLE __comp_dsf1 AS
+    CREATE VIEW __comp_dsf1 AS
     SELECT *
     FROM __comp_dsf_na
     FULL OUTER JOIN __comp_dsf_global
     USING (gvkey, iid, datadate, tpci, exchg, prcstd, curcdd, prc_local, ajexdi, prc_high_lcl, prc_low_lcl, cshtrd, cshoc, ri_local, curcddv, div, divd, divsp);
 
-    CREATE TABLE __comp_dsf2 AS
+    CREATE VIEW __comp_dsf2 AS
     SELECT a.*, b.fx AS fx, c.fx AS fx_div
     FROM __comp_dsf1 AS a
     LEFT JOIN fx AS b
@@ -1764,9 +1917,9 @@ def gen_comp_dsf(paths: DataPaths):
     LEFT JOIN fx AS c
         ON a.curcddv = c.curcdd AND a.datadate = c.datadate;
 
-    CREATE TABLE __comp_dsf3 AS
+    CREATE VIEW __comp_dsf3 AS
     SELECT
-        *,
+        * EXCLUDE (div, divd, divsp, fx_div, curcddv, prc_high_lcl, prc_low_lcl),
         prc_local    * fx AS prc,
         prc_high_lcl * fx AS prc_high,
         prc_low_lcl  * fx AS prc_low,
@@ -1781,11 +1934,63 @@ def gen_comp_dsf(paths: DataPaths):
     FROM __comp_dsf2;
 
     """)
-    t = con.table("__comp_dsf3").drop(
-        ["div", "divd", "divsp", "fx_div", "curcddv", "prc_high_lcl", "prc_low_lcl"]
-    )
-    t.to_parquet(paths.interim_dir / "__comp_dsf.parquet")
-    con.disconnect()
+
+    # Drop unreliable observations from the USD-converted data
+    if apply_correction:
+        # One streaming pass: DuckDB executes the whole view pipeline, joins
+        # the exchange-country mapping (needed for country-specific filters),
+        # external-sorts by the filter group/sort keys, and writes the spill
+        # file directly — no pre-filter round-trip, and the slim path skips its
+        # own sort (presorted=True).
+        comp_exchanges(paths).select(["exchg", "excntry"]).write_parquet(
+            paths.interim_dir / "__corr_exchanges.parquet"
+        )
+        sorted_path = paths.interim_dir / "__corr_filter_sorted.parquet"
+        # insertion-order preservation is irrelevant under an explicit ORDER BY
+        # and only inflates the external sort's memory; temp_directory
+        # guarantees the sort can spill (the slim path verifies the resulting
+        # order before trusting it)
+        con.raw_sql(f"""
+        SET preserve_insertion_order = false;
+        SET temp_directory = '{(paths.interim_dir / "__duckdb_tmp").as_posix()}';
+        """)
+        con.raw_sql(f"""
+        COPY (
+            SELECT t.*, e.excntry
+            FROM __comp_dsf3 AS t
+            LEFT JOIN read_parquet('{(paths.interim_dir / "__corr_exchanges.parquet").as_posix()}') AS e
+                USING (exchg)
+            ORDER BY gvkey NULLS FIRST, iid NULLS FIRST, datadate NULLS FIRST
+        ) TO '{sorted_path.as_posix()}' (FORMAT PARQUET);
+        """)
+        con.disconnect()
+
+        df = drop_unreliable_observations(
+            pl.scan_parquet(sorted_path),
+            group_cols=["gvkey", "iid"],
+            sort_col="datadate",
+            country_col="excntry",
+            spill_dir=paths.interim_dir,
+            presorted_path=sorted_path,
+        )
+
+        df.sink_parquet(paths.interim_dir / "__comp_dsf.parquet")
+
+        # Clean up temp files
+        for f in paths.interim_dir.glob("__corr_*.parquet"):
+            f.unlink()
+
+    else:
+        con.raw_sql(f"""
+        COPY (SELECT * FROM __comp_dsf3)
+        TO '{(paths.interim_dir / "__comp_dsf.parquet").as_posix()}' (FORMAT PARQUET);
+        """)
+        con.disconnect()
+
+    # Clean up corrected temp files if they exist
+    if apply_correction:
+        for f in ["__comp_g_secd_corrected.parquet", "__comp_secd_corrected.parquet"]:
+            (paths.interim_dir / f).unlink(missing_ok=True)
 
 
 def gen_secd_data(paths: DataPaths):
@@ -2294,10 +2499,15 @@ def gen_returns_df(paths: DataPaths, freq):
             .otherwise(col("ret_local"))
         )
         .with_columns(
-            ret_local=pl.when(col("ret_local").is_infinite() | col("ret_local").is_nan())
+            # null inf/nan and implausible returns > 1000% (ret <= 10 filter):
+            # a return this large after the price correction is a likely
+            # uncorrected data error rather than a real price move.
+            ret_local=pl.when(
+                col("ret_local").is_infinite() | col("ret_local").is_nan() | (col("ret_local") > 10)
+            )
             .then(None)
             .otherwise(col("ret_local")),
-            ret=pl.when(col("ret").is_infinite() | col("ret").is_nan())
+            ret=pl.when(col("ret").is_infinite() | col("ret").is_nan() | (col("ret") > 10))
             .then(None)
             .otherwise(col("ret")),
         )

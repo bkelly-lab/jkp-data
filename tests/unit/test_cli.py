@@ -50,6 +50,21 @@ class TestCliHelp:
         assert result.exit_code == 0
         assert "--reset" in _strip_ansi(result.output)
 
+    def test_connect_surfaces_actionable_error_cleanly(self):
+        """An actionable RuntimeError (e.g. an unreadable ~/.pgpass) must exit 1
+        with the message shown, not propagate as a traceback."""
+
+        def _boom(*a, **kw):
+            raise RuntimeError("Cannot read ~/.pgpass; fix its permissions and retry.")
+
+        with patch("jkp.data.wrds_credentials.reset_credentials", _boom):
+            result = runner.invoke(app, ["connect", "--reset"])
+
+        assert result.exit_code == 1
+        # handled as a clean exit, not a leaked RuntimeError traceback
+        assert not isinstance(result.exception, RuntimeError)
+        assert "Cannot read" in _strip_ansi(result.output)
+
 
 @pytest.mark.unit
 class TestVersionFlag:
