@@ -10393,4 +10393,3 @@ def _write_split_by_key(
             continue
         filtered = df.filter((pl.col(date_col) <= end_date) & (pl.col(key_col) == key))
         write_dataframe(filtered, folder_path / f"{key}.parquet")
-        
