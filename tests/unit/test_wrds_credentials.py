@@ -640,6 +640,45 @@ def test_migration_preserves_existing_pgpass_entry(monkeypatch, _isolate_credent
 
 
 @pytest.mark.unit
+def test_migration_preserves_other_users_legacy_entries(_isolate_credential_state):
+    """The legacy [WRDS] section can hold one option per WRDS username; migrating
+    one user must remove only that user's option, never destroy another user's
+    never-migrated password."""
+    mod = _isolate_credential_state
+    mod.LAST_USER_FILE.parent.mkdir(parents=True, exist_ok=True)
+    mod.LAST_USER_FILE.write_text("usera")
+    _write_real_keyring(mod, {"usera": "pw-a", "userb": "pw-b"})
+
+    creds = mod.get_wrds_credentials()  # migrates usera to ~/.pgpass
+
+    assert creds.username == "usera"
+    assert "wrds-pgdata.wharton.upenn.edu:9737:wrds:usera:pw-a" in mod._pgpass_path().read_text()
+    cp = configparser.RawConfigParser()
+    cp.read(mod._LEGACY_KEYRING_FILE)
+    assert not cp.has_option("WRDS", "usera"), "migrated user's entry removed"
+    assert cp.has_option("WRDS", "userb"), "other user's legacy entry must survive"
+
+
+@pytest.mark.unit
+def test_migration_precheck_does_not_touch_other_users(_isolate_credential_state, capsys):
+    """When ~/.pgpass already serves usera and the legacy section holds only userb,
+    the pre-check must not delete userb's entry, nor falsely announce that something
+    was superseded (usera's pgpass entry supersedes nothing in the legacy store)."""
+    mod = _isolate_credential_state
+    mod.LAST_USER_FILE.parent.mkdir(parents=True, exist_ok=True)
+    mod.LAST_USER_FILE.write_text("usera")
+    _write_pgpass(mod, "wrds-pgdata.wharton.upenn.edu:9737:wrds:usera:pw-a\n")
+    _write_real_keyring(mod, {"userb": "pw-b"})  # legacy holds only the other user
+
+    mod.get_wrds_credentials()  # resolves usera via pgpass; the migration pre-check runs
+
+    cp = configparser.RawConfigParser()
+    cp.read(mod._LEGACY_KEYRING_FILE)
+    assert cp.has_option("WRDS", "userb"), "another user's entry must not be destroyed"
+    assert "superseded" not in capsys.readouterr().err  # nothing was actually superseded
+
+
+@pytest.mark.unit
 def test_migration_does_not_overwrite_loose_perm_pgpass(_isolate_credential_state):
     """Even a 0644 ~/.pgpass holds the user's *current* WRDS line; migration must
     not overwrite it with the legacy value just because libpq would ignore the

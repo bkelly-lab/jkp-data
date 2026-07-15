@@ -389,10 +389,23 @@ def _escape_keyring_option(username: str) -> str:
     )
 
 
-def _drop_legacy_keyring_section(cp: configparser.RawConfigParser, path: Path) -> None:
-    """Remove only jkp's ``[WRDS]`` section, preserving any other tools' sections;
-    delete the file if ours was the last section."""
-    cp.remove_section(SERVICE_NAME)
+def _drop_legacy_keyring_option(
+    cp: configparser.RawConfigParser, path: Path, username: str
+) -> bool:
+    """Remove only ``username``'s entry from jkp's ``[WRDS]`` section, preserving
+    any other usernames' entries in it. Drop the ``[WRDS]`` section — and delete
+    the file if that leaves no other tools' sections — only once that was its last
+    entry. Returns True if an entry was actually removed.
+
+    (The whole ``[WRDS]`` section can hold one option per WRDS username, so removing
+    the section wholesale would destroy other users' never-migrated passwords.)
+    """
+    option = _escape_keyring_option(username)
+    if not cp.has_option(SERVICE_NAME, option):
+        return False
+    cp.remove_option(SERVICE_NAME, option)
+    if not cp.options(SERVICE_NAME):
+        cp.remove_section(SERVICE_NAME)
     if cp.sections():
         buf = io.StringIO()
         cp.write(buf)
@@ -400,6 +413,7 @@ def _drop_legacy_keyring_section(cp: configparser.RawConfigParser, path: Path) -
     else:
         with contextlib.suppress(OSError):
             path.unlink()
+    return True
 
 
 def _load_legacy_cfg() -> configparser.RawConfigParser | None:
@@ -417,27 +431,30 @@ def _load_legacy_cfg() -> configparser.RawConfigParser | None:
     return cp if cp.has_section(SERVICE_NAME) else None
 
 
-def _cleanup_legacy_keyring_section() -> None:
-    """Best-effort removal of a lingering ``[WRDS]`` section from the legacy
-    plaintext keyring — used when the password now comes from another source (env
-    or system keyring) so the obsolete plaintext copy does not linger. Never raises."""
+def _cleanup_legacy_keyring_section(username: str) -> None:
+    """Best-effort removal of ``username``'s lingering entry from the legacy
+    plaintext keyring's ``[WRDS]`` section — used when the password now comes from
+    another source (env or system keyring) so the obsolete plaintext copy does not
+    linger. Other usernames' entries are preserved. Never raises."""
     cp = _load_legacy_cfg()
     if cp is None:
         return
     with contextlib.suppress(OSError):
-        _drop_legacy_keyring_section(cp, _LEGACY_KEYRING_FILE)
+        _drop_legacy_keyring_option(cp, _LEGACY_KEYRING_FILE, username)
 
 
 def _migrate_legacy_keyring(username: str) -> None:
     """Move jkp's legacy plaintext-keyring entry to ~/.pgpass, non-interactively.
 
     ``keyring_pass.cfg`` is the shared keyrings.alt store; its values are plain
-    ``base64(password)`` (PlaintextKeyring does no encryption). We read only the
-    ``[WRDS]`` section, write the equivalent ~/.pgpass line, and delete only that
-    section — never the file, which may hold other tools' credentials.
+    ``base64(password)`` (PlaintextKeyring does no encryption). We read only this
+    user's option in the ``[WRDS]`` section, write the equivalent ~/.pgpass line,
+    and delete only that option — never other usernames' entries or the file
+    itself, which may hold other tools' credentials.
 
     An existing ~/.pgpass entry for the user is their current credential and is
-    never overwritten; in that case we only drop the superseded legacy section.
+    never overwritten; in that case we only drop this user's superseded legacy
+    entry.
     """
     cp = _load_legacy_cfg()
     if cp is None:
@@ -448,15 +465,16 @@ def _migrate_legacy_keyring(username: str) -> None:
 
     # If ~/.pgpass already resolves for this user, that is their current
     # credential — never clobber it with the (possibly stale) legacy value.
-    # Just drop the now-superseded legacy [WRDS] section.
+    # Just drop this user's now-superseded legacy entry (only announce it if there
+    # actually was one — another user's entry may be all that remains).
     if _pgpass_has_entry(username, check_perms=False):
-        _drop_legacy_keyring_section(cp, path)
-        print(
-            "Removed a superseded WRDS entry from the legacy plaintext keyring; "
-            "kept your existing ~/.pgpass entry.",
-            file=sys.stderr,
-            flush=True,
-        )
+        if _drop_legacy_keyring_option(cp, path, username):
+            print(
+                "Removed a superseded WRDS entry from the legacy plaintext keyring; "
+                "kept your existing ~/.pgpass entry.",
+                file=sys.stderr,
+                flush=True,
+            )
         return
 
     # Only migrate jkp's own exact-key entry. Since jkp always stored the entry
@@ -480,9 +498,9 @@ def _migrate_legacy_keyring(username: str) -> None:
     except ValueError as exc:
         # The legacy password can't be stored in ~/.pgpass (e.g. it contains a
         # newline) — it's unusable, and libpq could never authenticate with it.
-        # Drop the dead section so we don't decode-and-fail on every future run,
-        # and let resolution surface a clean "no credentials" path instead.
-        _drop_legacy_keyring_section(cp, path)
+        # Drop this user's dead entry so we don't decode-and-fail on every future
+        # run, and let resolution surface a clean "no credentials" path instead.
+        _drop_legacy_keyring_option(cp, path, username)
         print(
             f"Discarded an unusable legacy WRDS credential ({exc}); "
             "run `jkp connect` to re-provision.",
@@ -490,7 +508,7 @@ def _migrate_legacy_keyring(username: str) -> None:
             flush=True,
         )
         return
-    _drop_legacy_keyring_section(cp, path)
+    _drop_legacy_keyring_option(cp, path, username)
     print(
         f"Migrated WRDS credential from the legacy plaintext keyring to {pgpass}.",
         file=sys.stderr,
@@ -593,7 +611,7 @@ def get_wrds_credentials() -> Credentials:
     keyring_pw = _keyring_get(username)
     if keyring_pw:
         # The keyring supersedes any legacy plaintext copy; clean it up.
-        _cleanup_legacy_keyring_section()
+        _cleanup_legacy_keyring_section(username)
         _log_source("the system keyring")
         return Credentials(username, keyring_pw)
 
@@ -661,7 +679,7 @@ def reset_credentials(full_reset: bool = False) -> None:
         # just-revoked password back into ~/.pgpass). Cleanup never raises, so
         # doing it first means a failure removing an unreadable ~/.pgpass can't
         # skip it and leave a plaintext copy behind on a security-motivated reset.
-        _cleanup_legacy_keyring_section()
+        _cleanup_legacy_keyring_section(username)
         if removed_keyring:
             print(f"Deleted password for '{username}' from the system keyring")
         removed_pgpass = _remove_pgpass_entry(username)
