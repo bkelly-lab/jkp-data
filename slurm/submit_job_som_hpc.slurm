@@ -30,17 +30,18 @@ export NUMEXPR_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 # Activate the project's virtual environment so the jkp CLI is on PATH
 source .venv/bin/activate
 
-# WRDS credentials. Compute nodes don't have a system keyring daemon, so the
-# pipeline needs an alternate source. The default below opts in to the
-# file-backed keyring (a mode-600 file under ~/.local/share/python_keyring/);
-# populate it once on the login node by running:
+# WRDS credentials. Compute nodes have no system keyring daemon, so provision
+# credentials ONCE on a login node (which has an interactive terminal) BEFORE
+# submitting this job -- $HOME is shared with the compute nodes, so the batch
+# job sees the file:
 #
-#     JKP_ALLOW_PLAINTEXT_KEYRING=1 jkp connect
+#     jkp connect          # prompts, writes ~/.pgpass (mode 600)
 #
-# Alternative (for shared service accounts or container deployments): unset
-# JKP_ALLOW_PLAINTEXT_KEYRING and export WRDS_USERNAME / WRDS_PASSWORD instead,
-# e.g. by sourcing a mode-600 ~/.wrds_secrets file with `export WRDS_USERNAME=...`.
-export JKP_ALLOW_PLAINTEXT_KEYRING=1
+# The pipeline reads the password from ~/.pgpass via libpq; jkp never stores a
+# separate copy. Point PGPASSFILE at a non-default location if you prefer.
+#
+# Fully non-interactive alternative (no login-node terminal): export
+# WRDS_USERNAME / WRDS_PASSWORD.
 
 # Create char data
 # Set PERSISTENT_WRDS_CONNECTION=1 to use a single WRDS connection (reduces MFA on NAT-rotated networks)
