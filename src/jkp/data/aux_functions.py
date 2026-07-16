@@ -27,7 +27,11 @@ import polars_ols  # noqa: F401 - required for least_squares method on polars ex
 from ibis import _
 from polars import col
 
-from .config import COLLECT_CHUNK_SIZE, END_DATE, MAIN_FILTERS
+from .compustat_correction import (
+    correct_decimal_errors,
+    drop_unreliable_observations,
+)
+from .config import COLLECT_CHUNK_SIZE, CORRECTION_SPILL_COMPRESSION, END_DATE, MAIN_FILTERS
 from .output_writer import write_dataframe
 from .paths import DataPaths
 from .wrds_credentials import WRDS_DB, WRDS_HOST, WRDS_PORT
@@ -1463,7 +1467,6 @@ def download_raw_data_tables(
     con.close()
 
 
-@measure_time
 def aug_msf_v2(paths: DataPaths):
     """
     Description:
@@ -1525,7 +1528,6 @@ def aug_msf_v2(paths: DataPaths):
     msf_aug.to_parquet(paths.interim_dir / "raw_data_dfs" / "crsp_msf_v2_aug.parquet")
 
 
-@measure_time
 def build_mcti(paths: DataPaths):
     """
     Description:
@@ -1665,12 +1667,10 @@ def compustat_fx(paths: DataPaths):
 def adj_trd_vol_NASDAQ(datevar, col_to_adjust, is_nasdaq_expr):
     """
     Description:
-        Apply Gao–Ritter (2010) NASDAQ dealer-volume adjustments to a volume column.
+        Apply historic NASDAQ trade-volume adjustments (pre-decimalization reporting) to a volume column.
 
     Steps:
-        1) Build date cutoffs: <2001-02-01, ≤2001-12-31, ≤2003-12-31
-        (inclusive end on 2003-12-31 so that day is adjusted, matching the
-        intended Gao–Ritter coverage).
+        1) Build date cutoffs: <2001-02-01, ≤2001-12-31, <2003-12-31.
         2) If is_nasdaq_expr is true and within windows, scale col_to_adjust by
         1/2, 1/1.8, or 1/1.6 respectively; otherwise keep original.
         3) Return the adjusted expression aliased as the original column name.
@@ -1681,7 +1681,7 @@ def adj_trd_vol_NASDAQ(datevar, col_to_adjust, is_nasdaq_expr):
     c1 = is_nasdaq_expr
     c2 = col(datevar) < pl.datetime(2001, 2, 1)
     c3 = col(datevar) <= pl.datetime(2001, 12, 31)
-    c4 = col(datevar) <= pl.datetime(2003, 12, 31)
+    c4 = col(datevar) < pl.datetime(2003, 12, 31)
     adj_trd_vol = (
         pl.when(c1 & c2)
         .then(col(col_to_adjust) / 2)
@@ -1694,56 +1694,110 @@ def adj_trd_vol_NASDAQ(datevar, col_to_adjust, is_nasdaq_expr):
     return adj_trd_vol
 
 
-def zero_obs_gate_ok() -> pl.Expr:
-    """
-    Description:
-        Predicate for stock-days that pass the zero-return quality screen.
-
-    Steps:
-        1) CRSP-sourced rows (source_crsp == 1) always pass: the ≥10 zero-return
-        screen targets Compustat Global data quality and wrongly drops CRSP
-        stock-months with spurious zero-return days (especially 1973–1982).
-        2) Compustat rows pass only when zero_obs < 10.
-
-    Output:
-        Boolean Polars expression usable in .filter().
-    """
-    return (col("source_crsp") == 1) | (col("zero_obs") < 10)
-
-
-def gen_comp_dsf(paths: DataPaths):
+def gen_comp_dsf(
+    paths: DataPaths,
+    apply_correction: bool = True,
+    correction_method: str = "multiplier",
+    variation_threshold: float = 1.3,
+):
     """
     Description:
         Build daily Compustat security data (SECD + G_SECD), convert to USD, and compute
         prices/returns/volumes/dividends; store as __comp_dsf.parquet.
 
     Steps:
-        1) Materialize daily FX to fx_data.parquet; register SECD, G_SECD, firm-shares, and FX in DuckDB.
-        2) Create __comp_dsf_global from G_SECD: local prices, highs/lows (if prcstd≠5),
+        1) Materialize daily FX to fx_data.parquet.
+        2) If apply_correction, repair decimal-shift errors in the raw data.
+        3) Register SECD, G_SECD, firm-shares, and FX in DuckDB.
+        4) Create __comp_dsf_global from G_SECD: local prices, highs/lows (if prcstd≠5),
         shares traded, shares outstanding, local return index (ri_local), dividend currencies.
-        3) Create __comp_dsf_na from SECD with same fields; infer cshoc from firm-shares when missing.
-        4) Adjust NASDAQ (exchg=14) cshtrd by historical factors (2001 windows).
-        5) FULL OUTER JOIN NA and Global records; LEFT JOIN daily FX for trading and dividend currencies.
-        6) Compute USD variables: prc, prc_high, prc_low, market cap (me), USD turnover (dolvol),
+        The total-return factor trfd is null for securities that never pay a dividend;
+        substitute trfd=1 for those (price return = total return) so their returns survive.
+        5) Create __comp_dsf_na from SECD with same fields; infer cshoc from firm-shares when missing.
+        6) Adjust NASDAQ (exchg=14) cshtrd by historical factors (2001 windows).
+        7) FULL OUTER JOIN NA and Global records; LEFT JOIN daily FX for trading and dividend currencies.
+        8) Compute USD variables: prc, prc_high, prc_low, market cap (me), USD turnover (dolvol),
         USD return index (ri), dividends (split into total/cash/special); derive month-end eom.
-        7) Drop intermediates and write __comp_dsf.parquet.
+        9) If apply_correction, drop unreliable observations from the USD data.
+        10) Drop intermediates and write __comp_dsf.parquet.
+
+    Args:
+        apply_correction: Whether to apply the Compustat return corrections
+            (Bessembinder et al. 2023). Default True. Set False to reproduce
+            original behavior.
+        correction_method: decimal-correction method ('multiplier' fixed multipliers
+            or 'interpolation' geometric mean of clean endpoints).
 
     Output:
         Parquet: __comp_dsf.parquet (daily Compustat security observations in USD).
     """
     (paths.interim_dir / "aux_comp_dsf.ddb").unlink(missing_ok=True)
+
+    # Prepare FX data
+    compustat_fx(paths).write_parquet(paths.interim_dir / "fx_data.parquet")
+
+    # Repair decimal-shift errors in the raw data (local currency)
+    if apply_correction:
+        # Load and correct Global data (no ADRRC). spill_dir selects the
+        # memory-bounded array path; spill files are removed after each sink.
+        df_global = pl.scan_parquet(paths.raw_tables_dir / "comp_g_secd.parquet").pipe(
+            correct_decimal_errors,
+            group_cols=["gvkey", "iid"],
+            sort_col="datadate",
+            has_adrrc=False,
+            correction_method=correction_method,
+            spill_dir=paths.interim_dir,
+            variation_threshold=variation_threshold,
+        )
+        df_global.sink_parquet(
+            paths.interim_dir / "__comp_g_secd_corrected.parquet",
+            compression=CORRECTION_SPILL_COMPRESSION,
+        )
+        for spill in paths.interim_dir.glob("__corr_*.parquet"):
+            spill.unlink()
+
+        # Load and correct NA data (has ADRRC for ADRs)
+        df_na = pl.scan_parquet(paths.raw_tables_dir / "comp_secd.parquet").pipe(
+            correct_decimal_errors,
+            group_cols=["gvkey", "iid"],
+            sort_col="datadate",
+            has_adrrc=True,
+            correction_method=correction_method,
+            spill_dir=paths.interim_dir,
+            variation_threshold=variation_threshold,
+        )
+        df_na.sink_parquet(
+            paths.interim_dir / "__comp_secd_corrected.parquet",
+            compression=CORRECTION_SPILL_COMPRESSION,
+        )
+        for spill in paths.interim_dir.glob("__corr_*.parquet"):
+            spill.unlink()
+
+        # Use corrected files
+        g_secd_path = paths.interim_dir / "__comp_g_secd_corrected.parquet"
+        secd_path = paths.interim_dir / "__comp_secd_corrected.parquet"
+    else:
+        # Use original files
+        g_secd_path = paths.raw_tables_dir / "comp_g_secd.parquet"
+        secd_path = paths.raw_tables_dir / "comp_secd.parquet"
+
+    # Original SQL processing
+    # Views, not tables: the whole merge/FX/USD pipeline streams in a single
+    # pass at the final COPY instead of materializing five intermediate
+    # tables to the .ddb file. The NASDAQ cshtrd UPDATE is folded into the
+    # __comp_dsf_na view as an equivalent CASE expression.
     con = ibis.duckdb.connect(str(paths.interim_dir / "aux_comp_dsf.ddb"), threads=os.cpu_count())
 
-    compustat_fx(paths).write_parquet(paths.interim_dir / "fx_data.parquet")
-    con.create_table("comp_g_secd", con.read_parquet(paths.raw_tables_dir / "comp_g_secd.parquet"))
-    con.create_table(
-        "__firm_shares2", con.read_parquet(paths.interim_dir / "__firm_shares2.parquet")
-    )
-    con.create_table("comp_secd", con.read_parquet(paths.raw_tables_dir / "comp_secd.parquet"))
-    con.create_table("fx", con.read_parquet(paths.interim_dir / "fx_data.parquet"))
+    con.raw_sql(f"""
+    CREATE VIEW comp_g_secd AS SELECT * FROM read_parquet('{g_secd_path.as_posix()}');
+    CREATE VIEW comp_secd AS SELECT * FROM read_parquet('{secd_path.as_posix()}');
+    CREATE VIEW __firm_shares2 AS
+        SELECT * FROM read_parquet('{(paths.interim_dir / "__firm_shares2.parquet").as_posix()}');
+    CREATE VIEW fx AS SELECT * FROM read_parquet('{(paths.interim_dir / "fx_data.parquet").as_posix()}');
+    """)
 
     con.raw_sql("""
-    CREATE TABLE __comp_dsf_global AS
+    CREATE VIEW __comp_dsf_global AS
     SELECT
         gvkey, iid, datadate, tpci, exchg, prcstd, curcdd, prccd / qunit AS prc_local, ajexdi, cshoc / 1e6 AS cshoc,
         CASE
@@ -1754,11 +1808,19 @@ def gen_comp_dsf(paths: DataPaths):
             WHEN prcstd != 5 THEN prcld / qunit
             ELSE NULL
         END AS prc_low_lcl,
-        cshtrd, (prccd / qunit) / ajexdi * trfd AS ri_local,
+        -- trfd is null for never-dividend securities; substitute 1 only when the
+        -- security never pays a dividend (no dividends => price return = total
+        -- return), leaving genuine gaps for payers null. Per WRDS guidance:
+        -- https://wrds-www.wharton.upenn.edu/pages/support/support-articles/compustat/global/computing-returns/
+        cshtrd, (prccd / qunit) / ajexdi * COALESCE(trfd,
+            CASE WHEN NOT BOOL_OR(
+                     COALESCE(div, 0) > 0 OR COALESCE(divd, 0) > 0 OR COALESCE(divsp, 0) > 0
+                 ) OVER (PARTITION BY gvkey, iid)
+                 THEN 1 ELSE NULL END) AS ri_local,
         curcddv, div, divd, divsp
     FROM comp_g_secd;
 
-    CREATE TABLE __comp_dsf_na AS
+    CREATE VIEW __comp_dsf_na AS
     SELECT
         a.gvkey, a.iid, a.datadate, a.tpci, a.exchg, a.prcstd, a.curcdd, a.prccd AS prc_local, a.ajexdi,
         CASE
@@ -1769,29 +1831,36 @@ def gen_comp_dsf(paths: DataPaths):
             WHEN a.prcstd != 5 THEN a.prcld
             ELSE NULL
         END AS prc_low_lcl,
-        a.cshtrd, COALESCE(a.cshoc / 1e6, b.csho_fund * b.ajex_fund / a.ajexdi) AS cshoc,
-        (a.prccd / a.ajexdi * a.trfd) AS ri_local, a.curcddv, a.div, a.divd, a.divsp
+        -- cast back to the column type: the original UPDATE assigned the
+        -- divided value in place, implicitly rounding to DECIMAL(28,8)
+        CAST(CASE
+            WHEN a.exchg = 14 AND a.datadate <  DATE '2001-02-01' THEN a.cshtrd / 2
+            WHEN a.exchg = 14 AND a.datadate <= DATE '2001-12-31' THEN a.cshtrd / 1.8
+            WHEN a.exchg = 14 AND a.datadate <  DATE '2003-12-31' THEN a.cshtrd / 1.6
+            ELSE a.cshtrd
+        END AS DECIMAL(28, 8)) AS cshtrd,
+        COALESCE(a.cshoc / 1e6, b.csho_fund * b.ajex_fund / a.ajexdi) AS cshoc,
+        -- trfd (total return factor) is missing for securities that never pay
+        -- a dividend; per WRDS guidance, replace the missing factor with 1
+        -- (no dividends => price return = total return). Only do so when the
+        -- security never pays a dividend; leave genuine gaps for payers null.
+        -- https://wrds-www.wharton.upenn.edu/pages/support/support-articles/compustat/global/computing-returns/
+        (a.prccd / a.ajexdi * COALESCE(a.trfd,
+            CASE WHEN NOT BOOL_OR(
+                     COALESCE(a.div, 0) > 0 OR COALESCE(a.divd, 0) > 0 OR COALESCE(a.divsp, 0) > 0
+                 ) OVER (PARTITION BY a.gvkey, a.iid)
+                 THEN 1 ELSE NULL END)) AS ri_local, a.curcddv, a.div, a.divd, a.divsp
     FROM comp_secd AS a
     LEFT JOIN __firm_shares2 AS b
     ON a.gvkey = b.gvkey AND a.datadate = b.ddate;
 
-    UPDATE __comp_dsf_na
-    SET cshtrd =
-        CASE
-            WHEN datadate <  DATE '2001-02-01' THEN cshtrd / 2
-            WHEN datadate <= DATE '2001-12-31' THEN cshtrd / 1.8
-            WHEN datadate <= DATE '2003-12-31' THEN cshtrd / 1.6
-            ELSE cshtrd
-        END
-    WHERE exchg = 14;
-
-    CREATE TABLE __comp_dsf1 AS
+    CREATE VIEW __comp_dsf1 AS
     SELECT *
     FROM __comp_dsf_na
     FULL OUTER JOIN __comp_dsf_global
     USING (gvkey, iid, datadate, tpci, exchg, prcstd, curcdd, prc_local, ajexdi, prc_high_lcl, prc_low_lcl, cshtrd, cshoc, ri_local, curcddv, div, divd, divsp);
 
-    CREATE TABLE __comp_dsf2 AS
+    CREATE VIEW __comp_dsf2 AS
     SELECT a.*, b.fx AS fx, c.fx AS fx_div
     FROM __comp_dsf1 AS a
     LEFT JOIN fx AS b
@@ -1799,9 +1868,9 @@ def gen_comp_dsf(paths: DataPaths):
     LEFT JOIN fx AS c
         ON a.curcddv = c.curcdd AND a.datadate = c.datadate;
 
-    CREATE TABLE __comp_dsf3 AS
+    CREATE VIEW __comp_dsf3 AS
     SELECT
-        *,
+        * EXCLUDE (div, divd, divsp, fx_div, curcddv, prc_high_lcl, prc_low_lcl),
         prc_local    * fx AS prc,
         prc_high_lcl * fx AS prc_high,
         prc_low_lcl  * fx AS prc_low,
@@ -1816,11 +1885,63 @@ def gen_comp_dsf(paths: DataPaths):
     FROM __comp_dsf2;
 
     """)
-    t = con.table("__comp_dsf3").drop(
-        ["div", "divd", "divsp", "fx_div", "curcddv", "prc_high_lcl", "prc_low_lcl"]
-    )
-    t.to_parquet(paths.interim_dir / "__comp_dsf.parquet")
-    con.disconnect()
+
+    # Drop unreliable observations from the USD-converted data
+    if apply_correction:
+        # One streaming pass: DuckDB executes the whole view pipeline, joins
+        # the exchange-country mapping (needed for country-specific filters),
+        # external-sorts by the filter group/sort keys, and writes the spill
+        # file directly — no pre-filter round-trip, and the slim path skips its
+        # own sort (presorted=True).
+        comp_exchanges(paths).select(["exchg", "excntry"]).write_parquet(
+            paths.interim_dir / "__corr_exchanges.parquet"
+        )
+        sorted_path = paths.interim_dir / "__corr_filter_sorted.parquet"
+        # insertion-order preservation is irrelevant under an explicit ORDER BY
+        # and only inflates the external sort's memory; temp_directory
+        # guarantees the sort can spill (the slim path verifies the resulting
+        # order before trusting it)
+        con.raw_sql(f"""
+        SET preserve_insertion_order = false;
+        SET temp_directory = '{(paths.interim_dir / "__duckdb_tmp").as_posix()}';
+        """)
+        con.raw_sql(f"""
+        COPY (
+            SELECT t.*, e.excntry
+            FROM __comp_dsf3 AS t
+            LEFT JOIN read_parquet('{(paths.interim_dir / "__corr_exchanges.parquet").as_posix()}') AS e
+                USING (exchg)
+            ORDER BY gvkey NULLS FIRST, iid NULLS FIRST, datadate NULLS FIRST
+        ) TO '{sorted_path.as_posix()}' (FORMAT PARQUET);
+        """)
+        con.disconnect()
+
+        df = drop_unreliable_observations(
+            pl.scan_parquet(sorted_path),
+            group_cols=["gvkey", "iid"],
+            sort_col="datadate",
+            country_col="excntry",
+            spill_dir=paths.interim_dir,
+            presorted_path=sorted_path,
+        )
+
+        df.sink_parquet(paths.interim_dir / "__comp_dsf.parquet")
+
+        # Clean up temp files
+        for f in paths.interim_dir.glob("__corr_*.parquet"):
+            f.unlink()
+
+    else:
+        con.raw_sql(f"""
+        COPY (SELECT * FROM __comp_dsf3)
+        TO '{(paths.interim_dir / "__comp_dsf.parquet").as_posix()}' (FORMAT PARQUET);
+        """)
+        con.disconnect()
+
+    # Clean up corrected temp files if they exist
+    if apply_correction:
+        for f in ["__comp_g_secd_corrected.parquet", "__comp_secd_corrected.parquet"]:
+            (paths.interim_dir / f).unlink(missing_ok=True)
 
 
 def gen_secd_data(paths: DataPaths):
@@ -1951,7 +2072,7 @@ def gen_secm_data(paths: DataPaths):
             CASE
             WHEN a.exchg = 14 AND a.datadate <  DATE '2001-02-01' THEN a.cshtrm/2
             WHEN a.exchg = 14 AND a.datadate <= DATE '2001-12-31' THEN a.cshtrm/1.8
-            WHEN a.exchg = 14 AND a.datadate <= DATE '2003-12-31' THEN a.cshtrm/1.6
+            WHEN a.exchg = 14 AND a.datadate <  DATE '2003-12-31' THEN a.cshtrm/1.6
             ELSE a.cshtrm
             END AS cshtrm,
             CASE WHEN a.curcdm    = 'USD' THEN 1 ELSE c.fx END AS fx,
@@ -2329,10 +2450,15 @@ def gen_returns_df(paths: DataPaths, freq):
             .otherwise(col("ret_local"))
         )
         .with_columns(
-            ret_local=pl.when(col("ret_local").is_infinite() | col("ret_local").is_nan())
+            # null inf/nan and implausible returns > 1000% (ret <= 10 filter):
+            # a return this large after the price correction is a likely
+            # uncorrected data error rather than a real price move.
+            ret_local=pl.when(
+                col("ret_local").is_infinite() | col("ret_local").is_nan() | (col("ret_local") > 10)
+            )
             .then(None)
             .otherwise(col("ret_local")),
-            ret=pl.when(col("ret").is_infinite() | col("ret").is_nan())
+            ret=pl.when(col("ret").is_infinite() | col("ret").is_nan() | (col("ret") > 10))
             .then(None)
             .otherwise(col("ret")),
         )
@@ -7414,14 +7540,11 @@ def prepare_daily(paths: DataPaths, data_path, fcts_path):
         Build daily dataset: align returns with factors, shrink dtypes, and create helpers.
 
     Steps:
-        1) Join daily stock data with daily factors and drop stock days without a country
-        market return (mktrf null).
+        1) Join daily stock data with daily factors; filter rows with mktrf.
         2) Create zero_obs flags per (id,eom); cap returns to lag ≤14 days; compute prc_adj.
-        Carry source_crsp so the zero-return gate can be source-conditional.
         3) Write dsf1.parquet and id_int_key.parquet.
         4) Build market lead/lag series per day and write mkt_lead_lag.parquet.
-        5) Build 3-day rolling sums for stock and market excess returns; filter to non-null
-        sums and Compustat-only zero_obs<10; write corr_data.parquet.
+        5) Build 3-day rolling sums for stock and market excess returns; filter to non-null sums and zero_obs<10; write corr_data.parquet.
 
     Output:
         Parquets: dsf1.parquet, id_int_key.parquet, mkt_lead_lag.parquet, corr_data.parquet.
@@ -7444,7 +7567,6 @@ def prepare_daily(paths: DataPaths, data_path, fcts_path):
                 "tvol",
                 "ret_lag_dif",
                 "ret_local",
-                "source_crsp",
             ]
         )
         .join(fcts, how="left", on=["excntry", "date"])
@@ -7475,7 +7597,6 @@ def prepare_daily(paths: DataPaths, data_path, fcts_path):
 
     mkt_lead_lag = (
         fcts.select(["excntry", "date", "mktrf", col("date").dt.month_end().alias("eom")])
-        .filter(col("mktrf").is_not_null())
         .sort(["excntry", "date"])
         .with_columns(
             mktrf_ld1=col("mktrf").shift(-1).over(["excntry", "eom"]),
@@ -7488,7 +7609,7 @@ def prepare_daily(paths: DataPaths, data_path, fcts_path):
 
     corr_data = (
         pl.scan_parquet(paths.interim_dir / "dsf1.parquet")
-        .select(["ret_exc", "id_int", "date", "mktrf", "eom", "zero_obs", "source_crsp"])
+        .select(["ret_exc", "id_int", "date", "mktrf", "eom", "zero_obs"])
         .sort(["id_int", "date"])
         .with_columns(
             ret_exc_3l=(col("ret_exc") + col("ret_exc").shift(1) + col("ret_exc").shift(2)).over(
@@ -7499,7 +7620,9 @@ def prepare_daily(paths: DataPaths, data_path, fcts_path):
             ),
         )
         .filter(
-            col("ret_exc_3l").is_not_null() & col("mkt_exc_3l").is_not_null() & zero_obs_gate_ok()
+            col("ret_exc_3l").is_not_null()
+            & col("mkt_exc_3l").is_not_null()
+            & (col("zero_obs") < 10)
         )
         .select(["id_int", "eom", "ret_exc_3l", "mkt_exc_3l"])
         .select(pl.all().shrink_dtype())
@@ -8851,8 +8974,7 @@ def base_data_filter_exp(stat):
 
     Steps:
         1) Choose required non-null columns by stat.
-        2) For return-based stats, require zero_obs < 10 only for Compustat rows
-        (source_crsp == 0); CRSP rows skip that quality screen.
+        2) For return-based stats, also require zero_obs < 10.
 
     Output:
         Polars expression usable in .filter().
@@ -8865,7 +8987,7 @@ def base_data_filter_exp(stat):
         # corr_data.parquet pre-filtered upstream in prepare_daily.
         return pl.lit(True)
     else:
-        return col("ret_exc").is_not_null() & zero_obs_gate_ok()
+        return (col("ret_exc").is_not_null()) & (col("zero_obs") < 10)
 
 
 def prepare_base_data(paths: DataPaths, stat):
@@ -8962,6 +9084,7 @@ def process_window(
         "capm": capm,
         "ami": ami,
         "downbeta": downbeta,
+        "mktrf_vol": mktrf_vol,
         "capm_ext": capm_ext,
         "ff3": ff3,
         "hxz4": hxz4,
