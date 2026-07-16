@@ -244,7 +244,7 @@ def test_output_unique_and_sorted(test_paths: DataPaths) -> None:
 
 
 # Cutoffs in adj_trd_vol_NASDAQ: <2001-02-01 -> /2; <=2001-12-31 -> /1.8;
-# <=2003-12-31 -> /1.6; else unchanged (2003-12-31 inclusive per Gao–Ritter).
+# <=2003-12-31 -> /1.6; else unchanged. 2003-12-31 itself is adjusted (/1.6).
 @pytest.mark.parametrize(
     ("d", "divisor"),
     [
@@ -252,14 +252,15 @@ def test_output_unique_and_sorted(test_paths: DataPaths) -> None:
         (date(2001, 2, 1), 1.8),  # first day of the /1.8 window
         (date(2001, 12, 31), 1.8),  # last day of the /1.8 window
         (date(2002, 1, 1), 1.6),  # first day of the /1.6 window
-        (date(2003, 12, 30), 1.6),  # near end of the /1.6 window
+        (date(2003, 12, 30), 1.6),  # inside the /1.6 window
         (date(2003, 12, 31), 1.6),  # inclusive end of the /1.6 window
+        (date(2004, 1, 1), 1.0),  # first day after -> unchanged
         (date(2004, 6, 15), 1.0),  # well after -> unchanged
     ],
 )
 def test_nasdaq_volume_window_boundaries(test_paths: DataPaths, d: date, divisor: float) -> None:
     """Each NASDAQ (Q/RW) volume divisor applies on the exact boundary days;
-    2003-12-31 is included in the /1.6 window."""
+    2003-12-31 is included in the /1.6 window (Gao–Ritter inclusive end date)."""
     df = _run(test_paths, "d", [_nasdaq_row(1, 1, d, 3600)])
     assert _val(df, 1, d, "vol") == pytest.approx(3600.0 / divisor)
 
