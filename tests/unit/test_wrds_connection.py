@@ -220,3 +220,30 @@ class TestVerifyWrdsConnection:
         msg = str(exc_info.value)
         assert password not in msg
         assert "credentials" in msg.lower()
+
+    def test_pgpass_auth_failure_wrapped_as_runtime_error(self, monkeypatch):
+        """With password=None (the ~/.pgpass auth path) _attach_wrds re-raises the
+        raw DuckDB exception; verify_wrds_connection must still wrap it in a
+        RuntimeError so `jkp connect` exits cleanly instead of dumping a traceback."""
+        from jkp.data import wrds_connection as mod
+
+        class FakeConnection:
+            def execute(self, sql, *args):
+                if "ATTACH" in sql:
+                    # A non-RuntimeError, mirroring the raw duckdb IOException that
+                    # escapes _attach_wrds when there is no password to detect/redact.
+                    raise OSError("IO Error: connection to WRDS refused")
+                return None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc_info):
+                return False
+
+        monkeypatch.setattr(mod.duckdb, "connect", lambda *a, **kw: FakeConnection())
+
+        with pytest.raises(RuntimeError) as exc_info:
+            mod.verify_wrds_connection("testuser", None, connect_timeout=1)
+
+        assert "credentials" in str(exc_info.value).lower()

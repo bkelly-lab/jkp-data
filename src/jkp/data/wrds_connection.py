@@ -136,7 +136,18 @@ def verify_wrds_connection(
     """
     conninfo = gen_wrds_connection_info(username, password, connect_timeout=connect_timeout)
     _install_postgres_extension()
-    with duckdb.connect(":memory:") as con:
-        con.execute("LOAD postgres;")
-        _attach_wrds(con, conninfo, password)
-        con.execute("SELECT 1 FROM wrds.information_schema.schemata LIMIT 1")
+    try:
+        with duckdb.connect(":memory:") as con:
+            con.execute("LOAD postgres;")
+            _attach_wrds(con, conninfo, password)
+            con.execute("SELECT 1 FROM wrds.information_schema.schemata LIMIT 1")
+    except RuntimeError:
+        # _attach_wrds already raises a friendly, password-free RuntimeError when
+        # the failure text embeds the password; pass it through unchanged.
+        raise
+    except Exception as e:
+        # Any other failure (e.g. a ~/.pgpass auth path where password is None, so
+        # _attach_wrds re-raises the raw DuckDB exception, or a LOAD/query error).
+        # Surface one actionable, password-free message so callers that only handle
+        # RuntimeError (e.g. `jkp connect`) exit cleanly instead of dumping a traceback.
+        raise RuntimeError("Failed to connect to WRDS. Check credentials and MFA approval.") from e
