@@ -1623,8 +1623,9 @@ class TestDimsonbeta:
 class TestPrepareDailyCorr:
     """Regression tests for the corr_data.parquet written by prepare_daily().
 
-    Verifies that the filter removing null 3l-sums and zero_obs>=10 rows
+    Verifies that the filter removing null 3l-sums and Compustat zero_obs>=10 rows
     is present in prepare_daily, guaranteeing null-free corr_data.parquet output.
+    CRSP rows with high zero_obs are kept (source-conditional gate).
     """
 
     def test_corr_data_null_free_and_zero_obs_filtered(self, test_paths):
@@ -1633,15 +1634,16 @@ class TestPrepareDailyCorr:
 
         # id "A": 5 consecutive days, all ret_exc non-null → all rows survive.
         # id "B": day1 ret_exc null → 3l-sums on days 1-3 null → those days filtered.
-        # id "C": zero_obs=10 every day → whole id filtered.
+        # id "C": Compustat, zero_obs=10 → whole id filtered.
         dates = [date(2020, 1, d) for d in range(2, 7)]
         eom = date(2020, 1, 31)
 
-        def make_rows(stock_id, ret_exc_vals, ret_local_vals):
+        def make_rows(stock_id, ret_exc_vals, ret_local_vals, source_crsp=1):
             n = len(dates)
             return {
                 "excntry": ["USA"] * n,
                 "id": [stock_id] * n,
+                "source_crsp": [source_crsp] * n,
                 "date": dates,
                 "eom": [eom] * n,
                 "prc": [10.0] * n,
@@ -1662,14 +1664,14 @@ class TestPrepareDailyCorr:
         df_b = pl.DataFrame(
             make_rows("B", [None, 0.02, 0.03, 0.04, 0.05], [None, 0.02, 0.03, 0.04, 0.05])
         )
-        # id "C": ret_local=0 every day → zero_obs=5 per eom (< 10 so NOT filtered by zero_obs)
-        #   Actually make zero_obs >= 10 by using 10 rows for id "C" spanning two eoms
+        # id "C": Compustat with all-zero ret_local → zero_obs=10 → filtered
         dates_c = [date(2020, 1, d) for d in range(2, 12)]  # 10 days
         eom_c_vals = [date(2020, 1, 31)] * 10
         df_c = pl.DataFrame(
             {
                 "excntry": ["USA"] * 10,
                 "id": ["C"] * 10,
+                "source_crsp": [0] * 10,
                 "date": dates_c,
                 "eom": eom_c_vals,
                 "prc": [10.0] * 10,
@@ -1680,7 +1682,7 @@ class TestPrepareDailyCorr:
                 "shares": [1000.0] * 10,
                 "tvol": [0.0] * 10,
                 "ret_lag_dif": [1] * 10,
-                "ret_local": [0.0] * 10,  # all zero → zero_obs=10 → filtered
+                "ret_local": [0.0] * 10,  # all zero → zero_obs=10 → Compustat filtered
             }
         )
 
@@ -1716,10 +1718,104 @@ class TestPrepareDailyCorr:
         # zero_obs column must not be present (it is dropped in select)
         assert "zero_obs" not in corr.columns, "zero_obs column should not be in corr_data"
 
-        # id "C" (zero_obs=10) must not appear — its id_int should be absent
-        # We know id "C" maps to some id_int; all rows from it should be gone.
-        # Simpler: row count should equal surviving rows from A and B only.
+        # id "C" (Compustat, zero_obs=10) must not appear.
         # id A: 5 rows, 3l non-null from row index 2 onwards → 3 rows survive.
         # id B: 5 rows, first ret_exc null → 3l null on rows 0-2 → rows 3,4 survive → 2 rows.
-        # id C: all filtered by zero_obs=10 → 0 rows.
+        # id C: all filtered by zero_obs gate → 0 rows.
         assert len(corr) == 5, f"Expected 5 rows (3 from A + 2 from B), got {len(corr)}"
+
+    def test_corr_data_keeps_crsp_high_zero_obs(self, test_paths):
+        """CRSP months with all-zero ret_local still appear in corr_data."""
+        from jkp.data.aux_functions import prepare_daily
+
+        dates = [date(2020, 1, d) for d in range(2, 12)]  # 10 days → zero_obs=10
+        eom = date(2020, 1, 31)
+        dsf = pl.DataFrame(
+            {
+                "excntry": ["USA"] * 10,
+                "id": ["CRSP"] * 10,
+                "source_crsp": [1] * 10,
+                "date": dates,
+                "eom": [eom] * 10,
+                "prc": [10.0] * 10,
+                "adjfct": [1.0] * 10,
+                "ret": [0.0] * 10,
+                "ret_exc": [0.0] * 10,
+                "dolvol": [0.0] * 10,
+                "shares": [1000.0] * 10,
+                "tvol": [0.0] * 10,
+                "ret_lag_dif": [1] * 10,
+                "ret_local": [0.0] * 10,
+            }
+        )
+        dsf_path = test_paths.interim_dir / "dsf.parquet"
+        dsf.write_parquet(dsf_path)
+
+        fcts = pl.DataFrame(
+            {
+                "excntry": ["USA"] * 10,
+                "date": dates,
+                "mktrf": [0.005] * 10,
+                "smb_ff3": [0.001] * 10,
+                "hml_ff": [0.001] * 10,
+                "me_hxz": [0.001] * 10,
+                "ia_hxz": [0.001] * 10,
+                "roe_hxz": [0.001] * 10,
+            }
+        )
+        fcts_path = test_paths.interim_dir / "fcts.parquet"
+        fcts.write_parquet(fcts_path)
+
+        prepare_daily(test_paths, dsf_path, fcts_path)
+        corr = pl.read_parquet(test_paths.interim_dir / "corr_data.parquet")
+        # 10 days; 3l non-null from index 2 onwards → 8 rows
+        assert len(corr) == 8, f"Expected 8 CRSP corr rows, got {len(corr)}"
+
+    def test_prepare_daily_drops_null_mktrf_stock_days(self, test_paths):
+        """Stock days whose date has no mktrf are absent from dsf1."""
+        from jkp.data.aux_functions import prepare_daily
+
+        dsf = pl.DataFrame(
+            {
+                "excntry": ["USA", "USA"],
+                "id": ["A", "A"],
+                "source_crsp": [1, 1],
+                "date": [date(2020, 1, 2), date(2020, 1, 3)],
+                "eom": [date(2020, 1, 31), date(2020, 1, 31)],
+                "prc": [10.0, 10.0],
+                "adjfct": [1.0, 1.0],
+                "ret": [0.01, 0.01],
+                "ret_exc": [0.005, 0.005],
+                "dolvol": [1e6, 1e6],
+                "shares": [1000.0, 1000.0],
+                "tvol": [100.0, 100.0],
+                "ret_lag_dif": [1, 1],
+                "ret_local": [0.01, 0.01],
+            }
+        )
+        dsf_path = test_paths.interim_dir / "dsf.parquet"
+        dsf.write_parquet(dsf_path)
+
+        # Only 2020-01-02 has a factor row
+        fcts = pl.DataFrame(
+            {
+                "excntry": ["USA"],
+                "date": [date(2020, 1, 2)],
+                "mktrf": [0.005],
+                "smb_ff3": [0.001],
+                "hml_ff": [0.001],
+                "me_hxz": [0.001],
+                "ia_hxz": [0.001],
+                "roe_hxz": [0.001],
+            }
+        )
+        fcts_path = test_paths.interim_dir / "fcts.parquet"
+        fcts.write_parquet(fcts_path)
+
+        prepare_daily(test_paths, dsf_path, fcts_path)
+        dsf1 = pl.read_parquet(test_paths.interim_dir / "dsf1.parquet")
+        assert dsf1["date"].to_list() == [date(2020, 1, 2)]
+
+        mkt = pl.read_parquet(test_paths.interim_dir / "mkt_lead_lag.parquet")
+        assert mkt["mktrf"].null_count() == 0
+        assert len(mkt) == 1

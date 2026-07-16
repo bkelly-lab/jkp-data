@@ -3,6 +3,11 @@ This change log keeps track of changes to the underlying data set. In brackets, 
 
 This repository ports the original SAS pipeline ([ReplicationCrisis](https://github.com/bkelly-lab/ReplicationCrisis)) to Python using Polars. Entries up to and including 05-03-2025 are from the original change log.
 
+## 15-07-2026
+__Changes__:
+- Applied the daily `zero_obs < 10` quality screen only to Compustat-sourced rows; CRSP stock-months with many zero-return days are no longer dropped from daily return-based characteristics and market correlation inputs
+- Made the Gao–Ritter NASDAQ dealer-volume `/1.6` window inclusive of 2003-12-31 (CRSP Polars helper and Compustat SECD/SECM SQL), matching the documented schedule
+
 ## 10-07-2026 ([#171](https://github.com/bkelly-lab/jkp-data/pull/171))
 This entry covers the factor-model work on the `factors_rep` branch, which rebuilds the asset-pricing factor outputs on pure CRSP CIZ v2 (`msf_v2`/`dsf_v2`) and extends them to four models with international (per-country) coverage: Fama-French (FF3/FF5 + momentum), Hou-Xue-Zhang (q-factor), Mispricing (Stambaugh-Yuan), and the new DHS (Daniel-Hirshleifer-Sun) behavioral factors.
 

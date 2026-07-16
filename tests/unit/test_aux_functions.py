@@ -262,6 +262,7 @@ def test_dsf1_unique_id_int_date(test_paths) -> None:
                 {
                     "excntry": "USA",
                     "id": id_val,
+                    "source_crsp": 1,
                     "date": d,
                     "eom": date(2020, 1, 31),
                     "prc": 100.0,
