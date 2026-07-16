@@ -7533,7 +7533,6 @@ def residual_momentum(paths: DataPaths, output_path, data_path, fcts_path, __n, 
     con.disconnect()
 
 
-@measure_time
 def zero_obs_gate_ok() -> pl.Expr:
     """
     Description:
@@ -7549,6 +7548,7 @@ def zero_obs_gate_ok() -> pl.Expr:
     return (pl.col("source_crsp") == 1) | (pl.col("zero_obs") < 10)
 
 
+@measure_time
 def prepare_daily(paths: DataPaths, data_path, fcts_path):
     """
     Description:
