@@ -107,7 +107,7 @@ Output:
 - New functions should have corresponding unit tests in `tests/unit/`; see [tests/README.md](tests/README.md) for detailed patterns, conventions, fixture usage, and numerical tolerance guidance
 
 **DRY / reuse:**
-- Check `aux_functions.py` for existing helpers before writing new ones (especially `safe_div`, `fl_none`, `bo_false`)
+- Check `aux_functions.py` for existing helpers before writing new ones (especially `safe_div`, `fl_none`)
 - Don't duplicate characteristic calculations that already exist
 
 ## Testing

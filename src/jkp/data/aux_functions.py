@@ -79,10 +79,6 @@ def fl_none():
     return pl.lit(None).cast(pl.Float64)
 
 
-def bo_false():
-    return pl.lit(False).cast(pl.Boolean)
-
-
 def measure_time(func):
     """
     Description:
@@ -199,25 +195,6 @@ def sic_naics_aux(filename):
     return df
 
 
-def load_age_aux(filename, filter_monthend=False):
-    """
-    Description:
-        Load gvkey–datadate pairs from a parquet; optionally filter to month-end rows.
-
-    Steps:
-        1) Scan parquet lazily.
-        2) If filter_monthend, keep rows with monthend == 1.
-        3) Select gvkey, datadate.
-
-    Output:
-        LazyFrame of (gvkey, datadate).
-    """
-    df = pl.scan_parquet(filename)
-    if filter_monthend:
-        df = df.filter(col("monthend") == 1)
-    return df.select(["gvkey", "datadate"])
-
-
 def comp_hgics_aux(filename):
     """
     Description:
@@ -292,28 +269,6 @@ def header_aux(comp_path, gcomp_path, output_path):
     g_comp = con.read_parquet(gcomp_path).select(["gvkey", "prirow", "priusa", "prican"])
     comp.union(g_comp).distinct(on="gvkey", keep="first").to_parquet(output_path)
     con.disconnect()
-
-
-def prihist_aux(filename, alias_itemvalue):
-    """
-    Description:
-        Build a unified Compustat header table combining NA and Global sources (one row per gvkey).
-
-    Steps:
-        1) Read NA and Global header parquets into Ibis.
-        2) Select gvkey, prirow, priusa, prican from each.
-        3) Union tables and take the first occurrence per gvkey.
-        4) Write to `output_path` and close connection.
-
-    Output:
-        Parquet header file with unique gvkey rows.
-    """
-    df = (
-        pl.scan_parquet(filename)
-        .filter(col("item") == alias_itemvalue.upper())
-        .select(["gvkey", col("itemvalue").alias(alias_itemvalue), "effdate", "thrudate"])
-    )
-    return df
 
 
 def gen_firmshares(paths: DataPaths):
@@ -7185,102 +7140,6 @@ def firm_age(paths: DataPaths, data_path):
     con.raw_sql(sql_query)
     con.table("age3").to_parquet(paths.interim_dir / "firm_age.parquet")
     con.disconnect()
-
-
-def char_pf_rets():
-    """
-    Description:
-        Helper expressions for Fama–French-style factor composites.
-
-    Steps:
-        1) lms = average(high) − average(low) across size buckets.
-        2) smb = average(smalls) − average(bigs) across char terciles.
-
-    Output:
-        List of Polars expressions: [lms, smb].
-    """
-    lms = (
-        (col("small_high") + col("big_high")) / 2 - (col("small_low") + col("big_low")) / 2
-    ).alias("lms")
-    smb = (
-        (col("small_high") + col("small_mid") + col("small_low")) / 3
-        - (col("big_high") + col("big_mid") + col("big_low")) / 3
-    ).alias("smb")
-    return [lms, smb]
-
-
-def sort_ff_style(char, min_stocks_bp, min_stocks_pf, date_col, data, sf):
-    """
-    Description:
-        FF-style triple-sort by size and a characteristic within country-month, then compute portfolio returns.
-
-    Steps:
-        1) Filter eligible stocks (US vs ex-US rules) with available {char}_l.
-        2) Compute country breakpoints (30/70) for {char}_l; assign char_pf ∈ {low,mid,high}.
-        3) Form size×char portfolios with ME weights; require min stocks.
-        4) Join with returns; aggregate to value-weighted ret_exc per (excntry, size_pf, char_pf, date).
-        5) Pivot to columns and derive lms/smb composites.
-
-    Output:
-        Tidy DataFrame with per-country portfolio returns and composites for the characteristic.
-    """
-    # print(f"Executing sort_ff_style for {char}", flush=True)
-    c1 = (
-        ((col("size_grp_l").is_in(["small", "large", "mega"])) & (col("excntry_l") != "USA"))
-        | (((col("crsp_nyse_l") == 1) | (col("comp_exchg_l") == 11)) & (col("excntry_l") == "USA"))
-    ) & col(f"{char}_l").is_not_null()
-    char_pf_exp = (
-        pl.when(col(f"{char}_l") >= col("bp_p70"))
-        .then(pl.lit("high"))
-        .when(col(f"{char}_l") >= col("bp_p30"))
-        .then(pl.lit("mid"))
-        .otherwise(pl.lit("low"))
-    ).alias("char_pf")
-    bp_stocks = data.filter(c1).sql(f"""
-                SELECT
-                    eom,
-                    excntry_l,
-                    COUNT(*) AS n,
-                    QUANTILE_DISC({char}_l, 0.3) AS bp_p30,
-                    QUANTILE_DISC({char}_l, 0.7) AS bp_p70
-                FROM self
-                GROUP BY excntry_l, eom
-                ORDER BY excntry_l, eom
-            """)
-    data = (
-        data.join(bp_stocks, how="left", on=["excntry_l", "eom"])
-        .filter(
-            (col("n") >= min_stocks_bp) & (col(f"{char}_l").is_not_null()) & (col("size_pf") != "")
-        )
-        .select(
-            ["excntry_l", "id", "eom", "size_pf", "me_l", "be_me_l", char_pf_exp]
-        )  # This select doesn't impact performance but it helps in debugging
-        .group_by(["excntry_l", "size_pf", "char_pf", "eom"])
-        .agg(id=col("id"), w=col("me_l") / pl.sum("me_l"), n=pl.len())
-        .filter(col("n") >= min_stocks_pf)
-        .drop("n")
-        .explode(["id", "w"])
-    )
-    returns = sf.join(
-        data,
-        how="inner",
-        left_on=["id", "eom", "excntry"],
-        right_on=["id", "eom", "excntry_l"],
-    )
-    returns = (
-        returns.with_columns(ret_exc=col("ret_exc") * col("w"))
-        .group_by(["excntry", "size_pf", "char_pf", date_col])
-        .agg(ret_exc=pl.sum("ret_exc"))
-        .with_columns(
-            characteristic=pl.lit(char),
-            combined_pf=(col("size_pf") + "_" + col("char_pf")),
-        )
-        .collect()
-        .pivot(values="ret_exc", index=["excntry", date_col], on="combined_pf")
-        .select(["excntry", date_col, *char_pf_rets()])
-        .sort(["excntry", date_col])
-    )
-    return returns
 
 
 def prep_data_factor_regs(

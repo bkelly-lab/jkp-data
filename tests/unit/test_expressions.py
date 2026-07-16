@@ -15,7 +15,7 @@ from __future__ import annotations
 import numpy as np
 import polars as pl
 
-from jkp.data.aux_functions import bo_false, fl_none, safe_div, sub_sas, sum_sas
+from jkp.data.aux_functions import fl_none, safe_div, sub_sas, sum_sas
 
 # safe_div modes:
 #   1 = protect zero denominator (den != 0)
@@ -67,29 +67,6 @@ class TestFlNone:
 
         assert result["null1"].dtype == pl.Float64, f"Expected Float64, got {result['null1'].dtype}"
         assert result["null2"].dtype == pl.Float64, f"Expected Float64, got {result['null2'].dtype}"
-
-
-class TestBoFalse:
-    """Tests for bo_false() - false boolean literal expression."""
-
-    def test_bo_false_returns_false(self):
-        """bo_false() should create a False Boolean literal."""
-        df = pl.DataFrame({"x": [1, 2, 3]})
-        result = df.select(bo_false().alias("false_col"))
-
-        assert result["false_col"].dtype == pl.Boolean, (
-            f"Expected Boolean dtype, got {result['false_col'].dtype}"
-        )
-        assert (~result["false_col"]).all(), (
-            f"Expected all False values, got {result['false_col'].to_list()}"
-        )
-
-    def test_bo_false_in_filter(self):
-        """bo_false() should work in filter expressions."""
-        df = pl.DataFrame({"x": [1, 2, 3]})
-        result = df.filter(bo_false())
-
-        assert len(result) == 0, f"Expected 0 rows after filtering by False, got {len(result)}"
 
 
 class TestSumSas:
