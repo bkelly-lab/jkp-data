@@ -123,7 +123,7 @@ def _install_postgres_extension() -> None:
 
 
 def verify_wrds_connection(
-    username: str, password: str | None, *, connect_timeout: int = 10
+    username: str, password: str | None, *, connect_timeout: int = 25
 ) -> None:
     """Open a real WRDS connection and confirm it is queryable.
 
@@ -131,8 +131,8 @@ def verify_wrds_connection(
     it. The ATTACH authenticates eagerly (opening the libpq connection triggers the
     WRDS Duo MFA push), so a successful return means credentials, connectivity, and
     MFA all succeeded. Raises :class:`RuntimeError` with a password-free message on
-    any failure. ``connect_timeout`` bounds how long libpq waits on an unreachable
-    host before failing.
+    any failure. ``connect_timeout`` bounds how long libpq waits before failing —
+    it must leave the user time to approve the Duo MFA push, so it defaults to 25s.
     """
     conninfo = gen_wrds_connection_info(username, password, connect_timeout=connect_timeout)
     _install_postgres_extension()
