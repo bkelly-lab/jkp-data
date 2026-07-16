@@ -153,11 +153,13 @@ def connect(
 
         verify_wrds_connection(creds.username, creds.password)
         typer.echo(f"Connected as: {creds.username}")
-    except RuntimeError as exc:
-        # Credential resolution and connection verification raise RuntimeError
-        # for anticipated, actionable conditions (no/empty username, an
-        # unreadable ~/.pgpass, a failed WRDS attach). Surface the message and
-        # exit non-zero rather than dumping a traceback.
+    except (RuntimeError, ValueError, OSError) as exc:
+        # Anticipated, actionable failures from credential resolution and connection
+        # verification: RuntimeError (no/empty username, unreadable ~/.pgpass, a failed
+        # WRDS attach), ValueError (e.g. a password containing a newline), and OSError
+        # (e.g. an unwritable state dir when persisting the username / writing ~/.pgpass).
+        # Their messages are password-free; surface the message and exit non-zero rather
+        # than dumping a traceback.
         typer.echo(str(exc), err=True)
         raise typer.Exit(1) from exc
 

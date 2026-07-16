@@ -73,3 +73,24 @@ class TestConnectVerification:
         assert result.exit_code != 0
         combined = _strip_ansi(result.output) + _strip_ansi(result.stderr)
         assert password not in combined
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            ValueError("WRDS password contains a newline"),
+            OSError("[Errno 30] Read-only file system: state dir"),
+        ],
+    )
+    @patch("jkp.data.wrds_credentials.get_wrds_credentials")
+    def test_credential_resolution_errors_exit_cleanly_without_traceback(self, mock_get_creds, exc):
+        """Credential resolution can raise ValueError (e.g. a newline password) or
+        OSError (e.g. an unwritable state dir) — the command must surface the message
+        and exit non-zero, not dump a raw traceback."""
+        mock_get_creds.side_effect = exc
+
+        result = runner.invoke(app, ["connect"])
+
+        assert result.exit_code != 0
+        assert str(exc) in _strip_ansi(result.stderr)
+        assert not isinstance(result.exception, (ValueError, OSError))
+        assert "Traceback" not in result.stderr
