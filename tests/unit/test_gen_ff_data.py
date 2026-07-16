@@ -45,6 +45,7 @@ from jkp.data.aux_functions import (
     ff_compute_factors,
     ff_compute_umd_factor,
     ff_country_breakpoints,
+    ff_load_world_panel,
 )
 from jkp.data.config import (
     FF_MIN_STOCKS_BP,
@@ -594,8 +595,8 @@ class TestFFPrepareCharsLeftJoin:
     (_ff_us_finish_prepare / _ff_row_finish_prepare): they widen the US
     size-median pool with null accounting fields, while
     comp-matched rows are unchanged and recoverable via count.is_not_null().
-    US-only, stocks without Dec(t-1) ME also stay (null dec_me/beme, sortable
-    on OP/INV); ROW keeps the inner dec_me join."""
+    In both branches, stocks without Dec(t-1) ME also stay (null dec_me/beme,
+    sortable on OP/INV)."""
 
     @staticmethod
     def _run_us():
@@ -664,8 +665,9 @@ class TestFFPrepareCharsLeftJoin:
         kept = chars.filter(pl.col("count").is_not_null() & pl.col("dec_me").is_not_null())
         assert kept["id"].to_list() == [1]
 
-    def test_row_keeps_inner_dec_me_join(self):
-        """ROW stock without Dec(t-1) ME stays excluded (JKP convention)."""
+    def test_row_no_dec_me_stock_kept_op_inv_sortable(self):
+        """ROW stock without Dec(t-1) ME survives with null dec_me/beme and
+        keeps comp op/inv (US parity)."""
         panel = pl.DataFrame(
             {
                 "excntry": ["GBR"] * 5,
@@ -692,9 +694,47 @@ class TestFFPrepareCharsLeftJoin:
         _, data_chars = _ff_row_finish_prepare(
             _ff_row_rets_weights_lazy(panel.lazy(), "monthly").collect(), comp
         )
-        # id 3 (no Dec ME) dropped by the inner dec_me join; id 2 (no comp)
-        # kept by the left comp join.
-        assert sorted(data_chars["id"].to_list()) == [1, 2]
+        # id 2 (no comp) kept by the left comp join; id 3 (no Dec ME) kept by
+        # the left dec_me join with null dec_me/beme but comp op/inv intact.
+        assert sorted(data_chars["id"].to_list()) == [1, 2, 3]
+        row = data_chars.filter(pl.col("id") == 3)
+        assert row["dec_me"][0] is None
+        assert row["beme"][0] is None
+        assert row["op"][0] == 0.3
+        assert row["inv"][0] == 0.15
+        assert row["me"][0] == 300.0
+
+
+# =============================================================================
+# TestFFLoadWorldPanel
+# =============================================================================
+
+
+class TestFFLoadWorldPanel:
+    """Universe filter of the ROW panel loader."""
+
+    def test_gvkey_null_stock_stays_in_monthly_panel(self, tmp_path):
+        """A stock without a Compustat link (null gvkey) passes the universe
+        filter (US parity: it stays in size pools, VW legs and momentum)."""
+        pl.DataFrame(
+            {
+                "excntry": ["GBR", "GBR"],
+                "id": [1, 2],
+                "gvkey": ["g1", None],
+                "eom": [date(2020, 6, 30)] * 2,
+                "ret": [0.01, 0.02],
+                "ret_lag_dif": [1, 1],
+                "me": [100.0, 200.0],
+                "size_grp": ["large", "large"],
+                "common": [1, 1],
+                "obs_main": [1, 1],
+                "primary_sec": [1, 1],
+                "exch_main": [1, 1],
+            }
+        ).write_parquet(tmp_path / "world_msf.parquet")
+        panel = ff_load_world_panel(tmp_path, "monthly").collect()
+        assert sorted(panel["id"].to_list()) == [1, 2]
+        assert panel.filter(pl.col("id") == 2)["gvkey"][0] is None
 
 
 # =============================================================================

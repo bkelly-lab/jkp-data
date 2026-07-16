@@ -12394,7 +12394,8 @@ def _ff_row_finish_prepare(
     comp = ff_load_world_compustat output; joins on gvkey. Daily input is
     downsampled to month-end for formation only — the returned panel keeps
     the original frequency. beme = be / dec_me (both already in $M); the
-    dec_me join is inner (JKP convention).
+    dec_me join is left (US parity — June stocks lacking Dec(t-1) ME keep
+    null beme and stay sortable on OP/INV).
     Output schema: see _ff_us_finish_prepare.
     """
 
@@ -12417,8 +12418,11 @@ def _ff_row_finish_prepare(
         .filter(pl.col("me") > 0)
         .select("excntry", "id", june_year=pl.col("_y") + 1, dec_me=pl.col("me"))
     )
+    # Left joins keep June stocks lacking accounting or Dec(t-1) ME (null beme),
+    # matching the US branch: the sort gates still drop them from B/M, but stocks
+    # missing only Dec ME stay sortable on OP/INV (which need June ME, not Dec ME).
     data_chars = (
-        june_only.join(dec_me, on=["excntry", "id", "june_year"], how="inner")
+        june_only.join(dec_me, on=["excntry", "id", "june_year"], how="left")
         .join(
             comp.select("gvkey", "be", "op", "inv", "count", "datadate", cyp1=pl.col("year") + 1),
             left_on=["gvkey", "june_year"],
@@ -12731,7 +12735,10 @@ def ff_load_world_compustat(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
 
 def ff_load_world_panel(interim_dir: Path, freq: str) -> pl.LazyFrame:
     """Scan world_{m|d}sf.parquet for ROW FF computation; drop USA + apply
-    universe (common/obs_main/primary_sec/exch_main/me/gvkey-not-null).
+    universe (common/obs_main/primary_sec/exch_main/me). gvkey may be null
+    (US parity — unlinked stocks stay in size pools, VW legs and momentum;
+    they never match the gvkey-keyed accounting join, so they simply drop
+    out of the B/M, OP and INV sorts).
 
     Daily world_dsf lacks gvkey + size_grp (added only at monthly upstream
     steps), so join those from world_msf on (id, eom). Returns a LazyFrame —
@@ -12753,7 +12760,7 @@ def ff_load_world_panel(interim_dir: Path, freq: str) -> pl.LazyFrame:
         gap_ret = pl.when(pl.col("ret_lag_dif") == 1).then(pl.col("ret")).otherwise(None)
         return (
             pl.scan_parquet(interim_dir / "world_msf.parquet")
-            .filter(base_filter & pl.col("gvkey").is_not_null())
+            .filter(base_filter)
             .select(
                 "excntry",
                 "id",
@@ -12764,8 +12771,17 @@ def ff_load_world_panel(interim_dir: Path, freq: str) -> pl.LazyFrame:
                 "size_grp",
             )
         )
-    msf_keys = pl.scan_parquet(interim_dir / "world_msf.parquet").select(
-        "id", "eom", "gvkey", "size_grp"
+    # world_msf can carry duplicate share-class records per security-month
+    # (see hxz_load_panel_row); dedup so the daily key join cannot fan out.
+    # Deterministic tie-break prefers a linked (non-null gvkey) record.
+    msf_keys = (
+        pl.scan_parquet(interim_dir / "world_msf.parquet")
+        .select("id", "eom", "gvkey", "size_grp")
+        .sort(
+            ["id", "eom", pl.col("gvkey").is_null(), "gvkey", "size_grp"],
+            nulls_last=True,
+        )
+        .unique(subset=["id", "eom"], keep="first", maintain_order=True)
     )
     gap_ret = pl.when(pl.col("ret_lag_dif") <= 5).then(pl.col("ret")).otherwise(None)
     return (
@@ -12773,7 +12789,6 @@ def ff_load_world_panel(interim_dir: Path, freq: str) -> pl.LazyFrame:
         .filter(base_filter)
         .select("excntry", "id", "eom", pl.col("date"), gap_ret.alias("ret"), "me")
         .join(msf_keys, on=["id", "eom"], how="inner")
-        .filter(pl.col("gvkey").is_not_null())
         .select("excntry", "id", "gvkey", "date", "ret", "me", "size_grp")
     )
 
@@ -13402,7 +13417,7 @@ def _ff_build_freq(
 
     # count is non-null iff the June stock had a Compustat/DFF row; with the dec_me
     # condition this reproduces the pre-left-join chars row set (extra rows only widen
-    # the US size-median / OP-INV pool).
+    # the US size-median pool and the OP/INV pools).
     chars = ff_build_characteristics(
         panel,
         data_chars.filter(pl.col("count").is_not_null() & pl.col("dec_me").is_not_null()),
@@ -14050,7 +14065,9 @@ def hxz_load_panel_row(interim_dir: Path, freq: Literal["monthly", "daily"]) -> 
 
     Output: Eager [excntry, id, gvkey, date, ret, me, size_grp, naics, sic, is_fin].
     """
-    panel = ff_load_world_panel(interim_dir, freq).collect()
+    # HXZ keeps the gvkey-linked universe (JKP convention); the FF path drops
+    # the screen for US parity, so re-apply it here.
+    panel = ff_load_world_panel(interim_dir, freq).filter(pl.col("gvkey").is_not_null()).collect()
     # Dedup (id, eom): world_msf can carry duplicate share-class records per
     # security-month; without unique() the join multiplies rows non-deterministically
     # under the parallel scan. Tie-break: non-null naics, then larger (more specific) sic.
@@ -16207,9 +16224,15 @@ def _dhs_align_abr(panel_rows: pl.DataFrame, abr: pl.DataFrame) -> pl.DataFrame:
     id-month: the later RDQ is ordered FIRST, so its
     lagAbr is null across the month gap and it drops; the earlier-RDQ row survives
     carrying the later Abr as lagAbr, and the forward-fill feeds the earlier quarter's
-    DATADATE into the 6-month staleness test. `panel_rows` must carry [excntry, eom,
+    DATADATE into the staleness test. `panel_rows` must carry [excntry, eom,
     id, primaryexch, lagCRSPSIZE, siccd, size_grp, year, month, CRSPDATE, ret]; `abr`
-    is [id, DATADATE, RDQ, Abr, eom]. Per-firm ops partition on the globally-unique id."""
+    is [id, DATADATE, RDQ, Abr, eom] plus an optional Boolean `san` (semiannual
+    periodicity; treated as False when absent or null). The staleness gate keeps a
+    period-end-to-CRSP-month gap of up to 9 months for SAN announcements (semiannual
+    cycles run 7-9 months to the next announcement) and 6 otherwise. Per-firm ops
+    partition on the globally-unique id."""
+    if "san" not in abr.columns:
+        abr = abr.with_columns(san=pl.lit(False))
     filled_datadate = pl.col("DATADATE").forward_fill().over("id")
     mreportbreak = 12 * (pl.col("year") - pl.col("year").shift(1).over("id")) + (
         pl.col("month") - pl.col("month").shift(1).over("id")
@@ -16217,15 +16240,19 @@ def _dhs_align_abr(panel_rows: pl.DataFrame, abr: pl.DataFrame) -> pl.DataFrame:
     return (
         panel_rows.join(abr, on=["id", "eom"], how="left")
         .sort(["id", "CRSPDATE", "RDQ", "DATADATE"], descending=[False, False, True, True])
-        # fill DATADATE/RDQ, then the fiscal-quarter->CRSP-month gap off the FILLED DATADATE
+        # fill DATADATE/RDQ/san, then the fiscal-period->CRSP-month gap off the FILLED DATADATE
         .with_columns(
             DATADATE=filled_datadate,
             RDQ=pl.col("RDQ").forward_fill().over("id"),
+            san=pl.col("san").forward_fill().over("id").fill_null(False),
             gap_crsp_fqtr=(pl.col("CRSPDATE").dt.year() - filled_datadate.dt.year()) * 12
             + (pl.col("CRSPDATE").dt.month() - filled_datadate.dt.month()),
         )
-        # keep rows within 6 months; rows with a missing gap are also kept
-        .filter(pl.col("gap_crsp_fqtr").is_null() | (pl.col("gap_crsp_fqtr") <= 6))
+        # keep rows within the periodicity gate; rows with a missing gap are also kept
+        .filter(
+            pl.col("gap_crsp_fqtr").is_null()
+            | (pl.col("gap_crsp_fqtr") <= pl.when(pl.col("san")).then(9).otherwise(6))
+        )
         # Abr fill runs AFTER the gap filter (on the surviving rows)
         .with_columns(Abr=pl.col("Abr").forward_fill().over("id"))
         .sort(["id", "eom", "RDQ", "DATADATE"], descending=[False, False, True, True])
@@ -16234,25 +16261,33 @@ def _dhs_align_abr(panel_rows: pl.DataFrame, abr: pl.DataFrame) -> pl.DataFrame:
         )
         # drop financials (SIC 6000-6999, missing siccd KEPT) AND require non-null lagAbr
         .filter(_dhs_non_financial() & pl.col("lagAbr").is_not_null())
+        .drop("san")  # gate-only column; output schema unchanged
     )
 
 
 def _dhs_ibes_announcements(raw_dir: Path, interim_dir: Path, beg: int, end: int) -> pl.DataFrame:
-    """IBES international EPS announcement dates bridged to the world `id`.
-    Compustat g_fundq has no rdq ex-US, so ibes.actu_epsint (usfirm=0, measure EPS,
-    QTR or SAN periodicity) supplies anndats (announcement date, the ex-US RDQ) and
-    pends (fiscal period end). SAN (semiannual) is admitted because semiannual-
-    reporting markets (UK, much of Europe) carry their interim announcements under
-    SAN — QTR-only starves their PEAD pools below the min-stocks gate. The IBES
-    ticker is linked to gvkey via the Compustat-global security master's ibtic (the
-    vendor-maintained IBES link), then to the world id of the gvkey's primary
-    security. Bridges are deduped one-to-one (deterministic sort + keep-first). One
-    (id, period-end) row keeps the EARLIEST anndats, which also collapses a period
-    reported under both periodicities. Returns [id, datadate (=pends), rdq
-    (=anndats)]."""
-    # ibtic (IBES ticker) -> gvkey, one gvkey per ticker
+    """IBES international announcement dates bridged to the world `id`.
+    Compustat g_fundq has no rdq ex-US, so ibes.actu_epsint (usfirm=0, QTR or SAN
+    periodicity, any measure — only anndats is needed and e.g. REITs report FFO)
+    supplies anndats (announcement date, the ex-US RDQ) and pends (fiscal period
+    end). SAN (semiannual) is admitted because semiannual-reporting markets (UK,
+    much of Europe) carry their interim announcements under SAN — QTR-only starves
+    their PEAD pools below the min-stocks gate. The IBES ticker is linked to gvkey
+    via the ibtic column (the vendor-maintained IBES link) of BOTH Compustat
+    security masters (global and North America — cross-listed ROW firms can sit in
+    either), then to the world id of the gvkey's primary security. Bridges are
+    deduped one-to-one (deterministic sort + keep-first). One (id, period-end) row
+    keeps the EARLIEST anndats (QTR wins a same-day tie), which also collapses a
+    period reported under both periodicities or multiple measures. Returns [id,
+    datadate (=pends), rdq (=anndats), san (kept row has SAN periodicity)]."""
+    # ibtic (IBES ticker) -> gvkey, one gvkey per ticker; both security masters
     ibtic_gv = (
-        pl.scan_parquet(raw_dir / "comp_g_security.parquet")
+        pl.concat(
+            [
+                pl.scan_parquet(raw_dir / "comp_g_security.parquet").select("ibtic", "gvkey"),
+                pl.scan_parquet(raw_dir / "comp_security.parquet").select("ibtic", "gvkey"),
+            ]
+        )
         .filter(pl.col("ibtic").is_not_null() & pl.col("gvkey").is_not_null())
         .select(pl.col("ibtic").alias("ticker"), pl.col("gvkey").cast(pl.Utf8))
         .unique()
@@ -16272,7 +16307,6 @@ def _dhs_ibes_announcements(raw_dir: Path, interim_dir: Path, beg: int, end: int
         pl.scan_parquet(raw_dir / "ibes_actu_epsint.parquet")
         .filter(
             (pl.col("usfirm") == 0)
-            & (pl.col("measure") == "EPS")
             & pl.col("pdicity").is_in(["QTR", "SAN"])
             & pl.col("ticker").is_not_null()
             & pl.col("anndats").is_not_null()
@@ -16282,13 +16316,14 @@ def _dhs_ibes_announcements(raw_dir: Path, interim_dir: Path, beg: int, end: int
             "ticker",
             pl.col("anndats").cast(pl.Date).alias("rdq"),
             pl.col("pends").cast(pl.Date).alias("datadate"),
+            (pl.col("pdicity") == "SAN").alias("san"),
         )
         .filter(pl.col("rdq").dt.year().is_between(beg, end))
         .join(ibtic_gv, on="ticker", how="inner")
         .join(gv_id, on="gvkey", how="inner")
-        .select("id", "datadate", "rdq")
-        # earliest announcement per (id, period-end)
-        .sort(["id", "datadate", "rdq"])
+        .select("id", "datadate", "rdq", "san")
+        # earliest announcement per (id, period-end); QTR (san=False) wins a tie
+        .sort(["id", "datadate", "rdq", "san"])
         .unique(subset=["id", "datadate"], keep="first", maintain_order=True)
         .collect()
     )
@@ -16306,7 +16341,9 @@ def _dhs_row_announcement_returns(
     announcement date is IBES anndats (bridged to the world id via ibtic->gvkey);
     Abr is the [anndats-2, anndats+1] weekday CAR of world_dsf daily returns net of
     the per-country market_returns_daily benchmark, aligned to the ROW monthly panel
-    exactly like the US path."""
+    exactly like the US path — except that the announcement's `san` flag rides along
+    so the staleness gate in _dhs_align_abr widens to 9 months for semiannual
+    reporters."""
     row_panel = monthly_panel.filter(pl.col("excntry") != US_EXCNTRY)
     # ROW daily returns net of the per-country market benchmark: [id, date, ret, mkt]
     daily = (
@@ -16316,7 +16353,13 @@ def _dhs_row_announcement_returns(
         .select("id", "date", "ret", "mkt")
     )
     ann = _dhs_ibes_announcements(raw_dir, interim_dir, beg, end)
-    abr = _dhs_abr_window(ann, daily)
+    # re-attach the periodicity flag: ann is unique per (id, datadate), so the join
+    # is one-to-one on the window output's (id, DATADATE)
+    abr = _dhs_abr_window(ann, daily).join(
+        ann.select("id", pl.col("datadate").alias("DATADATE"), "san"),
+        on=["id", "DATADATE"],
+        how="left",
+    )
     return _dhs_align_abr(
         row_panel.select(
             "excntry",
