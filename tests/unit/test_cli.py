@@ -165,13 +165,15 @@ class TestPortfolioCommand:
 class TestConnectCommand:
     """Test the connect command routes to wrds_credentials correctly."""
 
+    @patch("jkp.data.wrds_connection.verify_wrds_connection")
     @patch("jkp.data.wrds_credentials.get_wrds_credentials")
-    def test_connect_shows_username(self, mock_get_creds):
+    def test_connect_shows_username(self, mock_get_creds, mock_verify):
         mock_get_creds.return_value = MagicMock(username="testuser")
         result = runner.invoke(app, ["connect"])
         assert result.exit_code == 0
         assert "testuser" in result.output
         mock_get_creds.assert_called_once()
+        mock_verify.assert_called_once()
 
     @patch("jkp.data.wrds_credentials.reset_credentials")
     def test_connect_reset(self, mock_reset):

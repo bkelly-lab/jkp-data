@@ -116,7 +116,11 @@ def connect(
         help="Reset stored WRDS credentials.",
     ),
 ) -> None:
-    """Test or configure the WRDS connection.
+    """Verify the WRDS connection, or configure/reset stored credentials.
+
+    Opens a real WRDS connection (attaches the database read-only and runs a
+    trivial query), so a successful run confirms credentials, connectivity,
+    and MFA all actually work. This triggers a WRDS Duo MFA push on every run.
 
     Credential precedence (highest first):
 
@@ -144,11 +148,16 @@ def connect(
             return
 
         creds = get_wrds_credentials()
+
+        from .wrds_connection import verify_wrds_connection
+
+        verify_wrds_connection(creds.username, creds.password)
         typer.echo(f"Connected as: {creds.username}")
     except RuntimeError as exc:
-        # Credential resolution raises RuntimeError for anticipated, actionable
-        # conditions (no/empty username, an unreadable ~/.pgpass). Surface the
-        # message and exit non-zero rather than dumping a traceback.
+        # Credential resolution and connection verification raise RuntimeError
+        # for anticipated, actionable conditions (no/empty username, an
+        # unreadable ~/.pgpass, a failed WRDS attach). Surface the message and
+        # exit non-zero rather than dumping a traceback.
         typer.echo(str(exc), err=True)
         raise typer.Exit(1) from exc
 
