@@ -121,27 +121,36 @@ def connect(
     Credential precedence (highest first):
 
       1. WRDS_USERNAME and WRDS_PASSWORD environment variables. Useful for
-         containers and shared service accounts.
+         containers, CI, and shared service accounts.
       2. The system keyring (Keychain on macOS, Secret Service on Linux desktop,
-         Credential Vault on Windows). Default for interactive sessions.
-      3. The file-backed keyring (keyrings.alt.file.PlaintextKeyring), which
-         stores the password in a mode-600 file under
-         ~/.local/share/python_keyring/. Selected only when
-         JKP_ALLOW_PLAINTEXT_KEYRING is set to exactly "1" ("true", "yes", etc.
-         are treated as not set); appropriate for headless environments (HPC
-         compute nodes, minimal Docker images) where no system keyring daemon
-         is available. A warning is emitted on first use (once per process) so
-         the backend change is never silent.
+         Credential Vault on Windows). Default for interactive desktop sessions.
+      3. A libpq password file: $PGPASSFILE, else ~/.pgpass
+         (%APPDATA%\\postgresql\\pgpass.conf on Windows). The standard
+         Postgres/WRDS mechanism, ideal for headless HPC nodes — jkp omits the
+         password from the connection string and libpq reads the file.
+
+    Running `jkp connect` stores the password in the system keyring where one is
+    available. On a headless login node (no keyring, but an interactive
+    terminal) it writes ~/.pgpass (mode 600) instead; because $HOME is shared
+    with the compute nodes, batch jobs then read it without any further setup.
+    The selected source is printed to stderr on every run.
     """
     from .wrds_credentials import get_wrds_credentials, reset_credentials
 
-    if reset:
-        reset_credentials(full_reset=True)
-        typer.echo("Credentials reset.")
-        return
+    try:
+        if reset:
+            reset_credentials(full_reset=True)
+            typer.echo("Credentials reset.")
+            return
 
-    creds = get_wrds_credentials()
-    typer.echo(f"Connected as: {creds.username}")
+        creds = get_wrds_credentials()
+        typer.echo(f"Connected as: {creds.username}")
+    except RuntimeError as exc:
+        # Credential resolution raises RuntimeError for anticipated, actionable
+        # conditions (no/empty username, an unreadable ~/.pgpass). Surface the
+        # message and exit non-zero rather than dumping a traceback.
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from exc
 
 
 if __name__ == "__main__":
