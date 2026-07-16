@@ -135,8 +135,11 @@ def verify_wrds_connection(
     it must leave the user time to approve the Duo MFA push, so it defaults to 25s.
     """
     conninfo = gen_wrds_connection_info(username, password, connect_timeout=connect_timeout)
-    _install_postgres_extension()
     try:
+        # Inside the try: INSTALL can itself fail (e.g. no network to DuckDB's
+        # extension repo, plausible on the headless HPC nodes this targets), and
+        # that must be wrapped too, not left to escape as a raw traceback.
+        _install_postgres_extension()
         with duckdb.connect(":memory:") as con:
             con.execute("LOAD postgres;")
             _attach_wrds(con, conninfo, password)
@@ -146,8 +149,11 @@ def verify_wrds_connection(
         # the failure text embeds the password; pass it through unchanged.
         raise
     except Exception as e:
-        # Any other failure (e.g. a ~/.pgpass auth path where password is None, so
-        # _attach_wrds re-raises the raw DuckDB exception, or a LOAD/query error).
-        # Surface one actionable, password-free message so callers that only handle
-        # RuntimeError (e.g. `jkp connect`) exit cleanly instead of dumping a traceback.
-        raise RuntimeError("Failed to connect to WRDS. Check credentials and MFA approval.") from e
+        # Any other failure (a failed INSTALL/LOAD, or the ~/.pgpass auth path where
+        # password is None and _attach_wrds re-raises the raw DuckDB exception, or a
+        # query error). Surface one actionable, password-free message so callers that
+        # only handle RuntimeError (e.g. `jkp connect`) exit cleanly instead of a
+        # traceback.
+        raise RuntimeError(
+            "Failed to connect to WRDS. Check your network, credentials, and MFA approval."
+        ) from e

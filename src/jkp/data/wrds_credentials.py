@@ -43,7 +43,7 @@ import keyring.errors
 import platformdirs
 from keyring.util.platform_ import data_root as _keyring_data_root
 
-# WRDS Postgres endpoint. Shared with aux_functions.gen_wrds_connection_info so
+# WRDS Postgres endpoint. Shared with wrds_connection.gen_wrds_connection_info so
 # the conninfo host/port/db and the ~/.pgpass match key can never drift apart.
 WRDS_HOST = "wrds-pgdata.wharton.upenn.edu"
 WRDS_PORT = "9737"

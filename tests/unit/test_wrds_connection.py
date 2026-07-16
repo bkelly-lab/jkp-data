@@ -247,3 +247,19 @@ class TestVerifyWrdsConnection:
             mod.verify_wrds_connection("testuser", None, connect_timeout=1)
 
         assert "credentials" in str(exc_info.value).lower()
+
+    def test_install_extension_failure_wrapped_as_runtime_error(self, monkeypatch):
+        """A failed INSTALL postgres (e.g. no network to the extension repo on a
+        headless HPC node) must be wrapped in a RuntimeError, not escape as a raw
+        traceback — it runs before the ATTACH but is still inside the guarded path."""
+        from jkp.data import wrds_connection as mod
+
+        def boom():
+            raise OSError("HTTP Error: failed to download extension 'postgres'")
+
+        monkeypatch.setattr(mod, "_install_postgres_extension", boom)
+
+        with pytest.raises(RuntimeError) as exc_info:
+            mod.verify_wrds_connection("testuser", "pw", connect_timeout=1)  # noqa: S106
+
+        assert "wrds" in str(exc_info.value).lower()
