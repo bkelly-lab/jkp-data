@@ -8,10 +8,8 @@ import pytest
 from jkp.data.aux_functions import (
     adj_trd_vol_NASDAQ,
     base_data_filter_exp,
-    prepare_daily,
     zero_obs_gate_ok,
 )
-from jkp.data.paths import DataPaths
 
 
 class TestZeroObsGate:
