@@ -189,6 +189,38 @@ class TestGenWrdsConnectionInfo:
 class TestVerifyWrdsConnection:
     """Tests for verify_wrds_connection() — the CLI-facing connectivity check."""
 
+    def test_success_runs_attach_and_probe_with_default_timeout(self, monkeypatch):
+        """On the success path verify must actually ATTACH *and* run the
+        information_schema probe (the step that confirms the DB is queryable, not
+        just attached), and the default 25s connect_timeout must reach the conninfo.
+        Without this, dropping the probe or the timeout default is silently uncaught."""
+        from jkp.data import wrds_connection as mod
+
+        recorded: list[str] = []
+
+        class RecordingConnection:
+            def execute(self, sql, *args):
+                recorded.append(sql)
+                return None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc_info):
+                return False
+
+        monkeypatch.setattr(mod.duckdb, "connect", lambda *a, **kw: RecordingConnection())
+
+        # No explicit connect_timeout → exercises the 25s default.
+        result = mod.verify_wrds_connection("testuser", "pw")  # noqa: S106
+
+        assert result is None
+        joined = " ".join(recorded)
+        attach = next(s for s in recorded if "ATTACH" in s)
+        assert "wrds" in attach
+        assert "connect_timeout=25" in attach  # default flows into the conninfo
+        assert "information_schema" in joined  # the queryable-confirmation probe ran
+
     def test_raises_password_free_runtime_error_on_attach_failure(self, monkeypatch):
         """A failed ATTACH (e.g. bad credentials) must surface as a RuntimeError
         whose message never contains the password, even though the underlying

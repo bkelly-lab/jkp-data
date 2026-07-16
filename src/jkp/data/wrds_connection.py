@@ -148,12 +148,14 @@ def verify_wrds_connection(
         # _attach_wrds already raises a friendly, password-free RuntimeError when
         # the failure text embeds the password; pass it through unchanged.
         raise
-    except Exception as e:
+    except Exception:
         # Any other failure (a failed INSTALL/LOAD, or the ~/.pgpass auth path where
         # password is None and _attach_wrds re-raises the raw DuckDB exception, or a
         # query error). Surface one actionable, password-free message so callers that
         # only handle RuntimeError (e.g. `jkp connect`) exit cleanly instead of a
-        # traceback.
+        # traceback. Use `from None`, not `from e`: the raw DuckDB error can embed the
+        # conninfo/password, and chaining it as __cause__ would carry the secret on the
+        # exception object even though this message is clean.
         raise RuntimeError(
             "Failed to connect to WRDS. Check your network, credentials, and MFA approval."
-        ) from e
+        ) from None
