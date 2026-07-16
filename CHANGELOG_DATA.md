@@ -3,6 +3,11 @@ This change log keeps track of changes to the underlying data set. In brackets, 
 
 This repository ports the original SAS pipeline ([ReplicationCrisis](https://github.com/bkelly-lab/ReplicationCrisis)) to Python using Polars. Entries up to and including 05-03-2025 are from the original change log.
 
+## 15-07-2026
+__Changes__:
+- Applied the daily `zero_obs < 10` quality screen only to Compustat-sourced rows; CRSP stock-months with many zero-return days are no longer dropped from daily return-based characteristics and market correlation inputs
+- Made the Gao–Ritter NASDAQ dealer-volume `/1.6` window inclusive of 2003-12-31 (CRSP Polars helper and Compustat SECD/SECM SQL), matching the documented schedule
+
 ## 10-07-2026
 __Changes__:
 - Applied an adapted version of the Bessembinder, Chen, Choi, and Wei (2023) data corrections to the Compustat daily security files (North America and Global). Decimal-shift price errors are detected and rescaled (single- and multi-period spike-and-reversal); observations that cannot be reliably repaired are dropped (low trading volume, zero AJEXDI, sub-threshold price or market equity, long data gaps, implausible shares-outstanding and market-equity jumps, return/market-equity mismatches, and initial-observation ratio errors). The multi-period search is adapted for daily data (symmetric windows over a priority set of 1, 2, 3, 5, 10, and 21 trading days). For more details, please look at the [release notes](documentation/compustat_correction/compustat_correction.html)
