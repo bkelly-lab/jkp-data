@@ -71,6 +71,15 @@ class Credentials:
     username: str
     password: str | None  # None => authenticate via ~/.pgpass (omit password=)
 
+    def __repr__(self) -> str:
+        # Mask the password so tools that render frame locals via repr() (pretty
+        # tracebacks, pytest --showlocals, debuggers) cannot leak the secret. The
+        # None vs non-None distinction is preserved because password=None marks
+        # ~/.pgpass authentication, which is useful to see when debugging. The
+        # username is intentionally not masked (the CLI already prints it).
+        pw = "***" if self.password is not None else None
+        return f"Credentials(username={self.username!r}, password={pw!r})"
+
 
 def _interactive() -> bool:
     return sys.stdin.isatty()

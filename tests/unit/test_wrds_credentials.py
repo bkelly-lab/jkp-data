@@ -1147,3 +1147,56 @@ def _write_pgpass_append(mod, content):
     path = mod._pgpass_path()
     with path.open("a") as fh:
         fh.write(content)
+
+
+@pytest.mark.unit
+def test_repr_masks_password() -> None:
+    """repr() shows the username but replaces a real password with a mask, so a
+    tool that renders frame locals (pretty tracebacks, --showlocals) cannot leak
+    the secret."""
+    from jkp.data.wrds_credentials import Credentials
+
+    password = "super-secret-value"  # noqa: S105
+    creds = Credentials("some-user", password)
+    text = repr(creds)
+    assert "some-user" in text
+    assert "***" in text
+    assert password not in text
+
+
+@pytest.mark.unit
+def test_repr_preserves_none_password() -> None:
+    """password=None (the ~/.pgpass authentication path) stays distinguishable in
+    the repr, since that visibility is useful when debugging."""
+    from jkp.data.wrds_credentials import Credentials
+
+    creds = Credentials("pgpass-user", None)
+    text = repr(creds)
+    assert "pgpass-user" in text
+    assert "password=None" in text
+    assert "***" not in text
+
+
+@pytest.mark.unit
+def test_repr_masks_empty_password() -> None:
+    """An empty-string password is still masked, not rendered as its real value,
+    and is not confused with the None (pgpass) case."""
+    from jkp.data.wrds_credentials import Credentials
+
+    creds = Credentials("empty-user", "")  # noqa: S106
+    text = repr(creds)
+    assert "***" in text
+    assert "password=''" not in text
+    assert "password=None" not in text
+
+
+@pytest.mark.unit
+def test_str_is_password_free() -> None:
+    """str() falls through to __repr__, so it is likewise free of the secret."""
+    from jkp.data.wrds_credentials import Credentials
+
+    password = "another-secret-value"  # noqa: S105
+    creds = Credentials("str-user", password)
+    text = str(creds)
+    assert password not in text
+    assert "***" in text
