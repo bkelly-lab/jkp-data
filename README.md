@@ -55,6 +55,8 @@ If you do not have a WRDS subscription, you can still access pre-computed factor
      sbatch slurm/submit_job_som_hpc.slurm
      ```
      to create the factor returns, stock returns, and firm characteristics.
+     The script writes to `data/` by default. To use a different output directory, pass
+     it as an argument: `sbatch slurm/submit_job_som_hpc.slurm /path/to/output`.
      Note that the batch script passes `--force` to `jkp build`, so it overwrites an
      existing output directory without prompting (an interactive `jkp build` asks first).
 

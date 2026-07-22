@@ -22,6 +22,13 @@ echo "SLURM_NODES are ${SLURM_NODELIST}"
 echo '-------------------------------'
 echo
 
+# Output directory for the pipeline, taken from the first script argument.
+# Relative paths resolve against the submit directory. Defaults to "data":
+#
+#     sbatch slurm/submit_job_som_hpc.slurm /path/to/output
+#
+OUTPUT_DIR="${1:-data}"
+
 # (Optional) Make threaded libs respect Slurm CPU allocation
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 export MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK}
@@ -48,10 +55,10 @@ source .venv/bin/activate
 # Use --force because a batch job has no TTY to answer the interactive overwrite prompt, and
 # resubmitting the job implies intent to regenerate the data.
 if [ "${PERSISTENT_WRDS_CONNECTION:-0}" = "1" ]; then
-    jkp build data --force --persistent-connection
+    jkp build "${OUTPUT_DIR}" --force --persistent-connection
 else
-    jkp build data --force
+    jkp build "${OUTPUT_DIR}" --force
 fi
 
 # Create portfolio data
-jkp portfolio data
+jkp portfolio "${OUTPUT_DIR}"
