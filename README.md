@@ -92,6 +92,9 @@ Please see the release notes (`documentation/release_notes.html`) for a descript
 
   # Slurm job (set environment variable)
   sbatch --export=ALL,PERSISTENT_WRDS_CONNECTION=1 slurm/submit_job_som_hpc.slurm
+
+  # Slurm job with a custom output directory
+  sbatch --export=ALL,PERSISTENT_WRDS_CONNECTION=1 slurm/submit_job_som_hpc.slurm /path/to/output
   ```
   This reduces MFA prompts from ~26 (one per table) to just 1 (at connection time).
 
