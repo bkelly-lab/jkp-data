@@ -192,65 +192,143 @@ class TestPolarsComputation:
 
 
 class TestMonthlyCompounding:
-    """Verify compounding daily returns to monthly."""
+    """Test compound_overnight_intraday by calling the real function."""
 
-    def test_compound_two_days(self) -> None:
-        """Compounding two daily returns: prod(1 + r_d) - 1."""
-        r1 = 0.02
-        r2 = 0.03
-        expected = (1 + r1) * (1 + r2) - 1
+    @staticmethod
+    def _setup_and_run(
+        test_paths,
+        dsf_rows: list[dict],
+        msf_rows: list[dict],
+    ) -> pl.DataFrame:
+        """Write input parquets, run compound_overnight_intraday, return result."""
+        from jkp.data.aux_functions import compound_overnight_intraday
 
-        df = pl.DataFrame(
-            {
-                "id": [1, 1],
-                "eom": [date(2020, 1, 31), date(2020, 1, 31)],
-                "ret_intraday": [r1, r2],
-                "ret_overnight": [0.01, 0.015],
-            }
-        )
-        result = df.group_by(["id", "eom"]).agg(
-            ret_intraday=((pl.col("ret_intraday") + 1).product() - 1),
-            ret_overnight=((pl.col("ret_overnight") + 1).product() - 1),
-        )
-        assert result["ret_intraday"][0] == pytest.approx(expected)
-        expected_on = (1 + 0.01) * (1 + 0.015) - 1
-        assert result["ret_overnight"][0] == pytest.approx(expected_on)
+        dsf_schema = {
+            "id": pl.Int64,
+            "eom": pl.Date,
+            "ret_intraday": pl.Float64,
+            "ret_overnight": pl.Float64,
+        }
+        msf_schema = {
+            "id": pl.Int64,
+            "eom": pl.Date,
+            "ret_lag_dif": pl.Int64,
+        }
 
-    def test_compound_with_nulls(self) -> None:
-        """Null daily returns propagate through the product as null."""
-        df = pl.DataFrame(
-            {
-                "id": [1, 1, 1],
-                "eom": [date(2020, 1, 31)] * 3,
-                "ret_intraday": [0.02, None, 0.03],
-                "ret_overnight": [0.01, 0.015, None],
-            }
+        pl.DataFrame(dsf_rows, schema=dsf_schema).write_parquet(
+            test_paths.interim_dir / "world_dsf.parquet"
         )
-        result = df.group_by(["id", "eom"]).agg(
-            ret_intraday=pl.when(pl.col("ret_intraday").is_null().any())
-            .then(None)
-            .otherwise((pl.col("ret_intraday") + 1).product() - 1),
-            ret_overnight=pl.when(pl.col("ret_overnight").is_null().any())
-            .then(None)
-            .otherwise((pl.col("ret_overnight") + 1).product() - 1),
+        pl.DataFrame(msf_rows, schema=msf_schema).write_parquet(
+            test_paths.interim_dir / "__msf_world.parquet"
         )
-        assert result["ret_intraday"][0] is None
-        assert result["ret_overnight"][0] is None
+        compound_overnight_intraday(test_paths)
+        return pl.read_parquet(test_paths.interim_dir / "__msf_world.parquet")
 
-    def test_monthly_identity_from_daily(self) -> None:
-        """Compounded monthly identity: prod(1+r_intra)*prod(1+r_over) == prod(1+r)."""
-        daily_intra = [0.01, 0.02, -0.005, 0.015]
-        daily_over = [0.005, -0.01, 0.008, 0.003]
-        daily_ret = [
-            (1 + ri) * (1 + ro) - 1 for ri, ro in zip(daily_intra, daily_over, strict=True)
+    def test_normal_compounding(self, test_paths) -> None:
+        """All-valid daily returns compound to prod(1 + r_d) - 1."""
+        dsf = [
+            {"id": 1, "eom": date(2020, 1, 31), "ret_intraday": 0.02, "ret_overnight": 0.01},
+            {"id": 1, "eom": date(2020, 1, 31), "ret_intraday": 0.03, "ret_overnight": -0.005},
+            {"id": 1, "eom": date(2020, 1, 31), "ret_intraday": -0.01, "ret_overnight": 0.015},
+        ]
+        msf = [{"id": 1, "eom": date(2020, 1, 31), "ret_lag_dif": 1}]
+
+        result = self._setup_and_run(test_paths, dsf, msf)
+        row = result.filter(pl.col("id") == 1).row(0, named=True)
+
+        expected_intra = (1.02) * (1.03) * (0.99) - 1
+        expected_over = (1.01) * (0.995) * (1.015) - 1
+        assert row["ret_intraday"] == pytest.approx(expected_intra)
+        assert row["ret_overnight"] == pytest.approx(expected_over)
+
+    def test_null_intraday_propagates(self, test_paths) -> None:
+        """A single null ret_intraday day nullifies the monthly intraday,
+        but ret_overnight (all valid) still compounds normally."""
+        dsf = [
+            {"id": 1, "eom": date(2020, 1, 31), "ret_intraday": 0.01, "ret_overnight": 0.005},
+            {"id": 1, "eom": date(2020, 1, 31), "ret_intraday": None, "ret_overnight": 0.01},
+            {"id": 1, "eom": date(2020, 1, 31), "ret_intraday": 0.02, "ret_overnight": 0.003},
+        ]
+        msf = [{"id": 1, "eom": date(2020, 1, 31), "ret_lag_dif": 1}]
+
+        result = self._setup_and_run(test_paths, dsf, msf)
+        row = result.row(0, named=True)
+
+        assert row["ret_intraday"] is None
+        expected_over = (1.005) * (1.01) * (1.003) - 1
+        assert row["ret_overnight"] == pytest.approx(expected_over)
+
+    def test_null_overnight_propagates(self, test_paths) -> None:
+        """A single null ret_overnight day nullifies the monthly overnight,
+        but ret_intraday (all valid) still compounds normally."""
+        dsf = [
+            {"id": 1, "eom": date(2020, 1, 31), "ret_intraday": 0.05, "ret_overnight": None},
+            {"id": 1, "eom": date(2020, 1, 31), "ret_intraday": -0.02, "ret_overnight": 0.01},
+        ]
+        msf = [{"id": 1, "eom": date(2020, 1, 31), "ret_lag_dif": 1}]
+
+        result = self._setup_and_run(test_paths, dsf, msf)
+        row = result.row(0, named=True)
+
+        expected_intra = (1.05) * (0.98) - 1
+        assert row["ret_intraday"] == pytest.approx(expected_intra)
+        assert row["ret_overnight"] is None
+
+    def test_lead_columns_consecutive_months(self, test_paths) -> None:
+        """Lead columns are populated when the next month has ret_lag_dif == 1."""
+        dsf = [
+            {"id": 1, "eom": date(2020, 1, 31), "ret_intraday": 0.04, "ret_overnight": 0.02},
+            {"id": 1, "eom": date(2020, 2, 29), "ret_intraday": 0.01, "ret_overnight": 0.03},
+        ]
+        msf = [
+            {"id": 1, "eom": date(2020, 1, 31), "ret_lag_dif": 1},
+            {"id": 1, "eom": date(2020, 2, 29), "ret_lag_dif": 1},
         ]
 
-        monthly_intra = np.prod([1 + r for r in daily_intra]) - 1
-        monthly_over = np.prod([1 + r for r in daily_over]) - 1
-        monthly_ret = np.prod([1 + r for r in daily_ret]) - 1
+        result = self._setup_and_run(test_paths, dsf, msf).sort(["id", "eom"])
+        jan = result.filter(pl.col("eom") == date(2020, 1, 31)).row(0, named=True)
+        feb = result.filter(pl.col("eom") == date(2020, 2, 29)).row(0, named=True)
 
-        product = (1 + monthly_intra) * (1 + monthly_over)
-        np.testing.assert_allclose(product, 1 + monthly_ret, **ToleranceSpec.STANDARD)
+        # Jan lead should equal Feb's compounded values (single-day months here)
+        assert jan["ret_intraday_lead1m"] == pytest.approx(0.01)
+        assert jan["ret_overnight_lead1m"] == pytest.approx(0.03)
+        # Feb has no successor → leads are null
+        assert feb["ret_intraday_lead1m"] is None
+        assert feb["ret_overnight_lead1m"] is None
+
+    def test_lead_columns_non_consecutive(self, test_paths) -> None:
+        """Lead columns are null when the next month has ret_lag_dif != 1."""
+        dsf = [
+            {"id": 1, "eom": date(2020, 1, 31), "ret_intraday": 0.04, "ret_overnight": 0.02},
+            {"id": 1, "eom": date(2020, 3, 31), "ret_intraday": 0.01, "ret_overnight": 0.03},
+        ]
+        msf = [
+            {"id": 1, "eom": date(2020, 1, 31), "ret_lag_dif": 1},
+            {"id": 1, "eom": date(2020, 3, 31), "ret_lag_dif": 2},
+        ]
+
+        result = self._setup_and_run(test_paths, dsf, msf).sort(["id", "eom"])
+        jan = result.filter(pl.col("eom") == date(2020, 1, 31)).row(0, named=True)
+
+        # Gap month → leads are null even though Mar data exists
+        assert jan["ret_intraday_lead1m"] is None
+        assert jan["ret_overnight_lead1m"] is None
+
+    def test_msf_id_not_in_dsf_gets_nulls(self, test_paths) -> None:
+        """An id present in msf but absent from dsf gets null return columns."""
+        dsf = [
+            {"id": 1, "eom": date(2020, 1, 31), "ret_intraday": 0.02, "ret_overnight": 0.01},
+        ]
+        msf = [
+            {"id": 1, "eom": date(2020, 1, 31), "ret_lag_dif": 1},
+            {"id": 99, "eom": date(2020, 1, 31), "ret_lag_dif": 1},
+        ]
+
+        result = self._setup_and_run(test_paths, dsf, msf)
+        missing = result.filter(pl.col("id") == 99).row(0, named=True)
+
+        assert missing["ret_intraday"] is None
+        assert missing["ret_overnight"] is None
 
 
 # ---------------------------------------------------------------------------
