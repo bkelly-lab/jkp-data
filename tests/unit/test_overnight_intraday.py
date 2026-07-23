@@ -4,7 +4,7 @@ Tests cover:
 - Daily return formulas (ret_intraday, ret_overnight)
 - Return identity: (1 + ret_intraday)(1 + ret_overnight) == (1 + ret)
 - Null handling: missing open/close prices yield null components
-- Monthly compounding from daily components
+- Monthly compounding via compound_overnight_intraday
 - Column propagation through prepare_crsp_sf (daily and monthly)
 """
 
@@ -78,112 +78,6 @@ class TestReturnFormulas:
         assert ret_intraday < 0
         product = (1 + ret_intraday) * (1 + ret_overnight)
         np.testing.assert_allclose(product, 1 + ret, **ToleranceSpec.TIGHT)
-
-
-# ---------------------------------------------------------------------------
-# Polars expression tests (vectorized computation)
-# ---------------------------------------------------------------------------
-
-
-class TestPolarsComputation:
-    """Verify the Polars expression logic matches LPS formulas."""
-
-    @staticmethod
-    def _compute_returns(df: pl.DataFrame) -> pl.DataFrame:
-        """Apply the same Polars logic used in prepare_crsp_sf."""
-        return df.with_columns(
-            ret_intraday=pl.when((pl.col("prc_close") > 0) & (pl.col("prc_open") > 0))
-            .then(pl.col("prc_close") / pl.col("prc_open") - 1)
-            .otherwise(None),
-        ).with_columns(
-            ret_overnight=pl.when(
-                pl.col("ret_intraday").is_not_null() & pl.col("ret").is_not_null()
-            )
-            .then((1 + pl.col("ret")) / (1 + pl.col("ret_intraday")) - 1)
-            .otherwise(None),
-        )
-
-    def test_vectorized_identity(self) -> None:
-        """Identity holds row-wise across a vectorized Polars computation."""
-        df = pl.DataFrame(
-            {
-                "prc_close": [110.0, 95.0, 200.0, 50.0],
-                "prc_open": [105.0, 100.0, 180.0, 55.0],
-                "ret": [0.10, -0.08, 0.15, -0.05],
-            }
-        )
-        result = self._compute_returns(df)
-        product = (1 + result["ret_intraday"]) * (1 + result["ret_overnight"])
-        expected = 1 + result["ret"]
-        np.testing.assert_allclose(product.to_numpy(), expected.to_numpy(), **ToleranceSpec.TIGHT)
-
-    def test_null_open_price(self) -> None:
-        """When prc_open is null, both ret_intraday and ret_overnight are null."""
-        df = pl.DataFrame(
-            {
-                "prc_close": [110.0],
-                "prc_open": [None],
-                "ret": [0.10],
-            },
-            schema={"prc_close": pl.Float64, "prc_open": pl.Float64, "ret": pl.Float64},
-        )
-        result = self._compute_returns(df)
-        assert result["ret_intraday"][0] is None
-        assert result["ret_overnight"][0] is None
-
-    def test_null_close_price(self) -> None:
-        """When prc_close is null, both components are null."""
-        df = pl.DataFrame(
-            {
-                "prc_close": [None],
-                "prc_open": [105.0],
-                "ret": [0.10],
-            },
-            schema={"prc_close": pl.Float64, "prc_open": pl.Float64, "ret": pl.Float64},
-        )
-        result = self._compute_returns(df)
-        assert result["ret_intraday"][0] is None
-        assert result["ret_overnight"][0] is None
-
-    def test_null_ret(self) -> None:
-        """When ret is null, ret_intraday is computed but ret_overnight is null."""
-        df = pl.DataFrame(
-            {
-                "prc_close": [110.0],
-                "prc_open": [105.0],
-                "ret": [None],
-            },
-            schema={"prc_close": pl.Float64, "prc_open": pl.Float64, "ret": pl.Float64},
-        )
-        result = self._compute_returns(df)
-        assert result["ret_intraday"][0] is not None
-        assert result["ret_overnight"][0] is None
-
-    def test_zero_open_price(self) -> None:
-        """prc_open == 0 is treated as missing (guard: prc_open > 0)."""
-        df = pl.DataFrame(
-            {
-                "prc_close": [110.0],
-                "prc_open": [0.0],
-                "ret": [0.10],
-            }
-        )
-        result = self._compute_returns(df)
-        assert result["ret_intraday"][0] is None
-        assert result["ret_overnight"][0] is None
-
-    def test_negative_open_price(self) -> None:
-        """Negative prc_open is treated as missing."""
-        df = pl.DataFrame(
-            {
-                "prc_close": [110.0],
-                "prc_open": [-5.0],
-                "ret": [0.10],
-            }
-        )
-        result = self._compute_returns(df)
-        assert result["ret_intraday"][0] is None
-        assert result["ret_overnight"][0] is None
 
 
 # ---------------------------------------------------------------------------
@@ -389,64 +283,37 @@ class TestPrepareCrspSfIntegration:
         assert "ret_overnight" in df.columns
 
     def test_daily_return_identity(self, test_paths) -> None:
-        """Daily ret_intraday * ret_overnight == ret (within tolerance)."""
+        """(1 + ret_intraday) * (1 + ret_overnight) == (1 + ret) across rows."""
         from tests.golden.prepare_crsp_sf_inputs import _crsp_row
 
+        cases = [
+            (1, date(2020, 1, 6), 110.0, 105.0, 0.10),
+            (2, date(2020, 1, 7), 95.0, 100.0, -0.08),
+            (3, date(2020, 1, 8), 200.0, 180.0, 0.15),
+            (4, date(2020, 1, 9), 50.0, 55.0, -0.05),
+        ]
         rows = [
             _crsp_row(
-                1,
-                1,
-                date(2020, 1, 6),
-                110.0,
+                permno,
+                permno,
+                d,
+                prc_close,
                 1.0,
-                0.10,
-                0.10,
+                ret,
+                ret,
                 100,
                 50.0,
                 nasdaq=False,
-                prc_open=105.0,
-                prc_close=110.0,
+                prc_open=prc_open,
+                prc_close=prc_close,
             )
+            for permno, d, prc_close, prc_open, ret in cases
         ]
         df = self._run(test_paths, "d", rows)
-        ri = df["ret_intraday"][0]
-        ro = df["ret_overnight"][0]
-        ret = df["ret"][0]
-        np.testing.assert_allclose((1 + ri) * (1 + ro), 1 + ret, **ToleranceSpec.TIGHT)
-
-    def test_daily_null_when_no_open(self, test_paths) -> None:
-        """When prc_open is null, ret_intraday and ret_overnight are null."""
-        from tests.golden.prepare_crsp_sf_inputs import _crsp_row
-
-        rows = [
-            _crsp_row(
-                1,
-                1,
-                date(2020, 1, 6),
-                110.0,
-                1.0,
-                0.10,
-                0.10,
-                100,
-                50.0,
-                nasdaq=False,
-                prc_open=None,
-                prc_close=110.0,
-            )
-        ]
-        df = self._run(test_paths, "d", rows)
-        assert df["ret_intraday"][0] is None
-        assert df["ret_overnight"][0] is None
-
-    def test_monthly_no_return_columns(self, test_paths) -> None:
-        """Monthly output does not contain ret_intraday/ret_overnight
-        (they are compounded from daily in a separate step)."""
-        from tests.golden.prepare_crsp_sf_inputs import _crsp_row
-
-        rows = [_crsp_row(1, 1, date(2020, 1, 31), 110.0, 1.0, 0.10, 0.10, 100, 50.0, nasdaq=False)]
-        df = self._run(test_paths, "m", rows)
-        assert "ret_intraday" not in df.columns
-        assert "ret_overnight" not in df.columns
+        product = (1 + df["ret_intraday"]) * (1 + df["ret_overnight"])
+        np.testing.assert_allclose(
+            product.to_numpy(), (1 + df["ret"]).to_numpy(), **ToleranceSpec.TIGHT
+        )
 
     def test_daily_intraday_formula(self, test_paths) -> None:
         """ret_intraday = prc_close / prc_open - 1 (uses dlyclose, not dlyprc)."""
@@ -473,3 +340,133 @@ class TestPrepareCrspSfIntegration:
         df = self._run(test_paths, "d", rows)
         expected = prc_close / prc_open - 1
         assert df["ret_intraday"][0] == pytest.approx(expected)
+
+    def test_daily_null_when_no_open(self, test_paths) -> None:
+        """When prc_open is null, ret_intraday and ret_overnight are null."""
+        from tests.golden.prepare_crsp_sf_inputs import _crsp_row
+
+        rows = [
+            _crsp_row(
+                1,
+                1,
+                date(2020, 1, 6),
+                110.0,
+                1.0,
+                0.10,
+                0.10,
+                100,
+                50.0,
+                nasdaq=False,
+                prc_open=None,
+                prc_close=110.0,
+            )
+        ]
+        df = self._run(test_paths, "d", rows)
+        assert df["ret_intraday"][0] is None
+        assert df["ret_overnight"][0] is None
+
+    def test_daily_null_when_no_close(self, test_paths) -> None:
+        """When prc_close is null, both components are null."""
+        from tests.golden.prepare_crsp_sf_inputs import _crsp_row
+
+        rows = [
+            _crsp_row(
+                1,
+                1,
+                date(2020, 1, 6),
+                110.0,
+                1.0,
+                0.10,
+                0.10,
+                100,
+                50.0,
+                nasdaq=False,
+                prc_open=105.0,
+                prc_close=None,
+            )
+        ]
+        df = self._run(test_paths, "d", rows)
+        assert df["ret_intraday"][0] is None
+        assert df["ret_overnight"][0] is None
+
+    def test_daily_null_ret(self, test_paths) -> None:
+        """When ret is null, ret_intraday is computed but ret_overnight is null."""
+        from tests.golden.prepare_crsp_sf_inputs import _crsp_row
+
+        rows = [
+            _crsp_row(
+                1,
+                1,
+                date(2020, 1, 6),
+                110.0,
+                1.0,
+                None,
+                None,
+                100,
+                50.0,
+                nasdaq=False,
+                prc_open=105.0,
+                prc_close=110.0,
+            )
+        ]
+        df = self._run(test_paths, "d", rows)
+        assert df["ret_intraday"][0] == pytest.approx(110.0 / 105.0 - 1)
+        assert df["ret_overnight"][0] is None
+
+    def test_daily_zero_open_price(self, test_paths) -> None:
+        """prc_open == 0 is treated as missing (guard: prc_open > 0)."""
+        from tests.golden.prepare_crsp_sf_inputs import _crsp_row
+
+        rows = [
+            _crsp_row(
+                1,
+                1,
+                date(2020, 1, 6),
+                110.0,
+                1.0,
+                0.10,
+                0.10,
+                100,
+                50.0,
+                nasdaq=False,
+                prc_open=0.0,
+                prc_close=110.0,
+            )
+        ]
+        df = self._run(test_paths, "d", rows)
+        assert df["ret_intraday"][0] is None
+        assert df["ret_overnight"][0] is None
+
+    def test_daily_negative_open_price(self, test_paths) -> None:
+        """Negative prc_open is treated as missing."""
+        from tests.golden.prepare_crsp_sf_inputs import _crsp_row
+
+        rows = [
+            _crsp_row(
+                1,
+                1,
+                date(2020, 1, 6),
+                110.0,
+                1.0,
+                0.10,
+                0.10,
+                100,
+                50.0,
+                nasdaq=False,
+                prc_open=-5.0,
+                prc_close=110.0,
+            )
+        ]
+        df = self._run(test_paths, "d", rows)
+        assert df["ret_intraday"][0] is None
+        assert df["ret_overnight"][0] is None
+
+    def test_monthly_no_return_columns(self, test_paths) -> None:
+        """Monthly output does not contain ret_intraday/ret_overnight
+        (they are compounded from daily in a separate step)."""
+        from tests.golden.prepare_crsp_sf_inputs import _crsp_row
+
+        rows = [_crsp_row(1, 1, date(2020, 1, 31), 110.0, 1.0, 0.10, 0.10, 100, 50.0, nasdaq=False)]
+        df = self._run(test_paths, "m", rows)
+        assert "ret_intraday" not in df.columns
+        assert "ret_overnight" not in df.columns
