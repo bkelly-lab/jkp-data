@@ -1,8 +1,9 @@
 """Unit tests for LPS (2019) overnight/intraday return decomposition.
 
 Tests cover:
-- Daily return formulas (ret_intraday, ret_overnight)
+- Daily return formulas (ret_intraday, ret_overnight) in USD and local currency
 - Return identity: (1 + ret_intraday)(1 + ret_overnight) == (1 + ret)
+- Local identity: (1 + ret_intraday_local)(1 + ret_overnight_local) == (1 + ret_local)
 - Null handling: missing open/close prices yield null components
 - Monthly compounding via compound_overnight_intraday
 - Column propagation through prepare_crsp_sf (daily and monthly)
@@ -79,6 +80,76 @@ class TestReturnFormulas:
         product = (1 + ret_intraday) * (1 + ret_overnight)
         np.testing.assert_allclose(product, 1 + ret, **ToleranceSpec.TIGHT)
 
+    def test_local_overnight_formula(self) -> None:
+        """ret_overnight_local = (1 + ret_local) / (1 + ret_intraday) - 1."""
+        prc_close = 110.0
+        prc_open = 105.0
+        ret_local = 0.06
+
+        ret_intraday = prc_close / prc_open - 1
+        ret_overnight_local = (1 + ret_local) / (1 + ret_intraday) - 1
+
+        expected = (1.06) / (1 + ret_intraday) - 1
+        assert ret_overnight_local == pytest.approx(expected)
+
+    def test_local_identity_holds(self) -> None:
+        """(1 + ret_intraday_local) * (1 + ret_overnight_local) == (1 + ret_local)."""
+        prc_close = 110.0
+        prc_open = 105.0
+        ret_local = 0.06
+
+        ret_intraday_local = prc_close / prc_open - 1
+        ret_overnight_local = (1 + ret_local) / (1 + ret_intraday_local) - 1
+
+        product = (1 + ret_intraday_local) * (1 + ret_overnight_local)
+        np.testing.assert_allclose(product, 1 + ret_local, **ToleranceSpec.TIGHT)
+
+    @pytest.mark.parametrize(
+        ("prc_close", "prc_open", "ret", "ret_local"),
+        [
+            (100.0, 100.0, 0.02, 0.0),
+            (50.0, 55.0, -0.05, -0.03),
+            (200.0, 180.0, 0.15, 0.12),
+            (10.0, 9.5, 0.08, 0.05),
+        ],
+    )
+    def test_local_identity_parametrized(
+        self, prc_close: float, prc_open: float, ret: float, ret_local: float
+    ) -> None:
+        """Both USD and local identities hold for varied price/return combos."""
+        ret_intraday = prc_close / prc_open - 1
+        ret_overnight = (1 + ret) / (1 + ret_intraday) - 1
+        ret_overnight_local = (1 + ret_local) / (1 + ret_intraday) - 1
+
+        np.testing.assert_allclose(
+            (1 + ret_intraday) * (1 + ret_overnight), 1 + ret, **ToleranceSpec.TIGHT
+        )
+        np.testing.assert_allclose(
+            (1 + ret_intraday) * (1 + ret_overnight_local),
+            1 + ret_local,
+            **ToleranceSpec.TIGHT,
+        )
+
+    def test_fx_move_lands_in_overnight_not_local(self) -> None:
+        """Japanese stock flat in JPY, yen drops 2%: ret_intraday=0,
+        ret_overnight=-2%, ret_overnight_local=0."""
+        prc_open_lcl = 1000.0
+        prc_close_lcl = 1000.0
+        fx_yesterday = 0.0100
+        fx_today = 0.0098
+
+        ret_local = 0.0
+        ret = (prc_close_lcl * fx_today) / (prc_open_lcl * fx_yesterday) - 1
+        ret_intraday = prc_close_lcl / prc_open_lcl - 1
+
+        assert ret_intraday == pytest.approx(0.0)
+
+        ret_overnight = (1 + ret) / (1 + ret_intraday) - 1
+        ret_overnight_local = (1 + ret_local) / (1 + ret_intraday) - 1
+
+        np.testing.assert_allclose(ret_overnight, ret, atol=1e-14)
+        assert ret_overnight_local == pytest.approx(0.0)
+
 
 # ---------------------------------------------------------------------------
 # Monthly compounding tests
@@ -102,12 +173,18 @@ class TestMonthlyCompounding:
             "eom": pl.Date,
             "ret_intraday": pl.Float64,
             "ret_overnight": pl.Float64,
+            "ret_intraday_local": pl.Float64,
+            "ret_overnight_local": pl.Float64,
         }
         msf_schema = {
             "id": pl.Int64,
             "eom": pl.Date,
             "ret_lag_dif": pl.Int64,
         }
+
+        for row in dsf_rows:
+            row.setdefault("ret_intraday_local", row.get("ret_intraday"))
+            row.setdefault("ret_overnight_local", row.get("ret_overnight"))
 
         pl.DataFrame(dsf_rows, schema=dsf_schema).write_parquet(
             test_paths.interim_dir / "world_dsf.parquet"
@@ -134,6 +211,8 @@ class TestMonthlyCompounding:
         expected_over = (1.01) * (0.995) * (1.015) - 1
         assert row["ret_intraday"] == pytest.approx(expected_intra)
         assert row["ret_overnight"] == pytest.approx(expected_over)
+        assert row["ret_intraday_local"] == pytest.approx(expected_intra)
+        assert row["ret_overnight_local"] == pytest.approx(expected_over)
 
     def test_null_intraday_propagates(self, test_paths) -> None:
         """A single null ret_intraday day nullifies the monthly intraday,
@@ -149,8 +228,10 @@ class TestMonthlyCompounding:
         row = result.row(0, named=True)
 
         assert row["ret_intraday"] is None
+        assert row["ret_intraday_local"] is None
         expected_over = (1.005) * (1.01) * (1.003) - 1
         assert row["ret_overnight"] == pytest.approx(expected_over)
+        assert row["ret_overnight_local"] == pytest.approx(expected_over)
 
     def test_null_overnight_propagates(self, test_paths) -> None:
         """A single null ret_overnight day nullifies the monthly overnight,
@@ -166,7 +247,9 @@ class TestMonthlyCompounding:
 
         expected_intra = (1.05) * (0.98) - 1
         assert row["ret_intraday"] == pytest.approx(expected_intra)
+        assert row["ret_intraday_local"] == pytest.approx(expected_intra)
         assert row["ret_overnight"] is None
+        assert row["ret_overnight_local"] is None
 
     def test_lead_columns_consecutive_months(self, test_paths) -> None:
         """Lead columns are populated when the next month has ret_lag_dif == 1."""
@@ -186,9 +269,13 @@ class TestMonthlyCompounding:
         # Jan lead should equal Feb's compounded values (single-day months here)
         assert jan["ret_intraday_lead1m"] == pytest.approx(0.01)
         assert jan["ret_overnight_lead1m"] == pytest.approx(0.03)
+        assert jan["ret_intraday_local_lead1m"] == pytest.approx(0.01)
+        assert jan["ret_overnight_local_lead1m"] == pytest.approx(0.03)
         # Feb has no successor → leads are null
         assert feb["ret_intraday_lead1m"] is None
         assert feb["ret_overnight_lead1m"] is None
+        assert feb["ret_intraday_local_lead1m"] is None
+        assert feb["ret_overnight_local_lead1m"] is None
 
     def test_lead_columns_non_consecutive(self, test_paths) -> None:
         """Lead columns are null when the next month has ret_lag_dif != 1."""
@@ -207,6 +294,8 @@ class TestMonthlyCompounding:
         # Gap month → leads are null even though Mar data exists
         assert jan["ret_intraday_lead1m"] is None
         assert jan["ret_overnight_lead1m"] is None
+        assert jan["ret_intraday_local_lead1m"] is None
+        assert jan["ret_overnight_local_lead1m"] is None
 
     def test_msf_id_not_in_dsf_gets_nulls(self, test_paths) -> None:
         """An id present in msf but absent from dsf gets null return columns."""
@@ -223,6 +312,38 @@ class TestMonthlyCompounding:
 
         assert missing["ret_intraday"] is None
         assert missing["ret_overnight"] is None
+        assert missing["ret_intraday_local"] is None
+        assert missing["ret_overnight_local"] is None
+
+    def test_local_compounding_differs_from_usd(self, test_paths) -> None:
+        """When ret_overnight_local differs from ret_overnight, monthly values differ."""
+        dsf = [
+            {
+                "id": 1,
+                "eom": date(2020, 1, 31),
+                "ret_intraday": 0.02,
+                "ret_overnight": 0.03,
+                "ret_intraday_local": 0.02,
+                "ret_overnight_local": 0.01,
+            },
+            {
+                "id": 1,
+                "eom": date(2020, 1, 31),
+                "ret_intraday": 0.01,
+                "ret_overnight": -0.01,
+                "ret_intraday_local": 0.01,
+                "ret_overnight_local": 0.005,
+            },
+        ]
+        msf = [{"id": 1, "eom": date(2020, 1, 31), "ret_lag_dif": 1}]
+
+        result = self._setup_and_run(test_paths, dsf, msf)
+        row = result.row(0, named=True)
+
+        assert row["ret_overnight"] == pytest.approx((1.03) * (0.99) - 1)
+        assert row["ret_overnight_local"] == pytest.approx((1.01) * (1.005) - 1)
+        assert row["ret_intraday"] == pytest.approx((1.02) * (1.01) - 1)
+        assert row["ret_intraday_local"] == pytest.approx((1.02) * (1.01) - 1)
 
 
 # ---------------------------------------------------------------------------
@@ -231,7 +352,8 @@ class TestMonthlyCompounding:
 
 
 class TestPrepareCrspSfIntegration:
-    """Test that prepare_crsp_sf produces ret_intraday/ret_overnight."""
+    """Test that prepare_crsp_sf produces ret_intraday/ret_overnight
+    and their local-currency counterparts."""
 
     @staticmethod
     def _run(
@@ -259,7 +381,7 @@ class TestPrepareCrspSfIntegration:
         return pl.read_parquet(paths.interim_dir / f"crsp_{freq}sf.parquet")
 
     def test_daily_has_return_columns(self, test_paths) -> None:
-        """Daily output includes ret_intraday and ret_overnight columns."""
+        """Daily output includes all four O/I columns."""
         from tests.golden.prepare_crsp_sf_inputs import _crsp_row
 
         rows = [
@@ -281,9 +403,12 @@ class TestPrepareCrspSfIntegration:
         df = self._run(test_paths, "d", rows)
         assert "ret_intraday" in df.columns
         assert "ret_overnight" in df.columns
+        assert "ret_intraday_local" in df.columns
+        assert "ret_overnight_local" in df.columns
 
     def test_daily_return_identity(self, test_paths) -> None:
-        """(1 + ret_intraday) * (1 + ret_overnight) == (1 + ret) across rows."""
+        """(1 + ret_intraday) * (1 + ret_overnight) == (1 + ret) across rows.
+        For CRSP, local variants equal USD variants."""
         from tests.golden.prepare_crsp_sf_inputs import _crsp_row
 
         cases = [
@@ -313,6 +438,17 @@ class TestPrepareCrspSfIntegration:
         product = (1 + df["ret_intraday"]) * (1 + df["ret_overnight"])
         np.testing.assert_allclose(
             product.to_numpy(), (1 + df["ret"]).to_numpy(), **ToleranceSpec.TIGHT
+        )
+        # For CRSP (USD only), local columns equal USD columns
+        np.testing.assert_allclose(
+            df["ret_intraday_local"].to_numpy(),
+            df["ret_intraday"].to_numpy(),
+            **ToleranceSpec.TIGHT,
+        )
+        np.testing.assert_allclose(
+            df["ret_overnight_local"].to_numpy(),
+            df["ret_overnight"].to_numpy(),
+            **ToleranceSpec.TIGHT,
         )
 
     def test_daily_intraday_formula(self, test_paths) -> None:
@@ -364,6 +500,8 @@ class TestPrepareCrspSfIntegration:
         df = self._run(test_paths, "d", rows)
         assert df["ret_intraday"][0] is None
         assert df["ret_overnight"][0] is None
+        assert df["ret_intraday_local"][0] is None
+        assert df["ret_overnight_local"][0] is None
 
     def test_daily_null_when_no_close(self, test_paths) -> None:
         """When prc_close is null, both components are null."""
@@ -388,6 +526,8 @@ class TestPrepareCrspSfIntegration:
         df = self._run(test_paths, "d", rows)
         assert df["ret_intraday"][0] is None
         assert df["ret_overnight"][0] is None
+        assert df["ret_intraday_local"][0] is None
+        assert df["ret_overnight_local"][0] is None
 
     def test_daily_null_ret(self, test_paths) -> None:
         """When ret is null, ret_intraday is computed but ret_overnight is null."""
@@ -412,6 +552,8 @@ class TestPrepareCrspSfIntegration:
         df = self._run(test_paths, "d", rows)
         assert df["ret_intraday"][0] == pytest.approx(110.0 / 105.0 - 1)
         assert df["ret_overnight"][0] is None
+        assert df["ret_intraday_local"][0] == pytest.approx(110.0 / 105.0 - 1)
+        assert df["ret_overnight_local"][0] is None
 
     def test_daily_zero_open_price(self, test_paths) -> None:
         """prc_open == 0 is treated as missing (guard: prc_open > 0)."""
@@ -436,6 +578,8 @@ class TestPrepareCrspSfIntegration:
         df = self._run(test_paths, "d", rows)
         assert df["ret_intraday"][0] is None
         assert df["ret_overnight"][0] is None
+        assert df["ret_intraday_local"][0] is None
+        assert df["ret_overnight_local"][0] is None
 
     def test_daily_negative_open_price(self, test_paths) -> None:
         """Negative prc_open is treated as missing."""
@@ -460,6 +604,8 @@ class TestPrepareCrspSfIntegration:
         df = self._run(test_paths, "d", rows)
         assert df["ret_intraday"][0] is None
         assert df["ret_overnight"][0] is None
+        assert df["ret_intraday_local"][0] is None
+        assert df["ret_overnight_local"][0] is None
 
     def test_monthly_no_return_columns(self, test_paths) -> None:
         """Monthly output does not contain ret_intraday/ret_overnight
@@ -470,3 +616,5 @@ class TestPrepareCrspSfIntegration:
         df = self._run(test_paths, "m", rows)
         assert "ret_intraday" not in df.columns
         assert "ret_overnight" not in df.columns
+        assert "ret_intraday_local" not in df.columns
+        assert "ret_overnight_local" not in df.columns
