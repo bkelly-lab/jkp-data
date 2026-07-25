@@ -2613,14 +2613,25 @@ def process_comp_sf1(paths: DataPaths, freq):
     __comp_sf2 = add_rf_and_exchange_data_to_temporary_sf(paths, freq, __comp_sf2)
 
     if freq == "d" and "prc_open" in __comp_sf2.columns:
-        __comp_sf2 = __comp_sf2.with_columns(
-            ret_intraday=pl.when((col("prc_open") > 0) & (col("prc") > 0))
-            .then(col("prc") / col("prc_open") - 1)
-            .otherwise(fl_none()),
-        ).with_columns(
-            ret_overnight=pl.when(col("ret_intraday").is_not_null() & col("ret").is_not_null())
-            .then((1 + col("ret")) / (1 + col("ret_intraday")) - 1)
-            .otherwise(fl_none()),
+        __comp_sf2 = (
+            __comp_sf2.with_columns(
+                ret_intraday=pl.when((col("prc_open") > 0) & (col("prc") > 0))
+                .then(col("prc") / col("prc_open") - 1)
+                .otherwise(fl_none()),
+            )
+            .with_columns(
+                ret_overnight=pl.when(col("ret_intraday").is_not_null() & col("ret").is_not_null())
+                .then((1 + col("ret")) / (1 + col("ret_intraday")) - 1)
+                .otherwise(fl_none()),
+                ret_intraday_local=col("ret_intraday"),
+            )
+            .with_columns(
+                ret_overnight_local=pl.when(
+                    col("ret_intraday_local").is_not_null() & col("ret_local").is_not_null()
+                )
+                .then((1 + col("ret_local")) / (1 + col("ret_intraday_local")) - 1)
+                .otherwise(fl_none()),
+            )
         )
 
     __comp_sf2.write_parquet(paths.interim_dir / "__comp_sf2.parquet")
@@ -2819,14 +2830,25 @@ def prepare_crsp_sf(paths: DataPaths, freq):
     # prc_close is the actual closing trade price (dlyclose), distinct from
     # prc (dlyprc) which may be a bid-ask midpoint.
     if freq == "d":
-        __crsp_sf = __crsp_sf.with_columns(
-            ret_intraday=pl.when((col("prc_close") > 0) & (col("prc_open") > 0))
-            .then(col("prc_close") / col("prc_open") - 1)
-            .otherwise(fl_none()),
-        ).with_columns(
-            ret_overnight=pl.when(col("ret_intraday").is_not_null() & col("ret").is_not_null())
-            .then((1 + col("ret")) / (1 + col("ret_intraday")) - 1)
-            .otherwise(fl_none()),
+        __crsp_sf = (
+            __crsp_sf.with_columns(
+                ret_intraday=pl.when((col("prc_close") > 0) & (col("prc_open") > 0))
+                .then(col("prc_close") / col("prc_open") - 1)
+                .otherwise(fl_none()),
+            )
+            .with_columns(
+                ret_overnight=pl.when(col("ret_intraday").is_not_null() & col("ret").is_not_null())
+                .then((1 + col("ret")) / (1 + col("ret_intraday")) - 1)
+                .otherwise(fl_none()),
+                ret_intraday_local=col("ret_intraday"),
+            )
+            .with_columns(
+                ret_overnight_local=pl.when(
+                    col("ret_intraday_local").is_not_null() & col("ret").is_not_null()
+                )
+                .then((1 + col("ret")) / (1 + col("ret_intraday_local")) - 1)
+                .otherwise(fl_none()),
+            )
         )
 
     if freq == "m":
@@ -3059,6 +3081,7 @@ def combine_crsp_comp_sf(paths: DataPaths) -> None:
                         ret AS ret_local,
                         ret, ret_exc,
                         ret_intraday, ret_overnight,
+                        ret_intraday_local, ret_overnight_local,
                         1::BIGINT AS ret_lag_dif,
                         1 AS source_crsp
                     FROM read_parquet('{crsp_dsf_path}')
@@ -3088,6 +3111,7 @@ def combine_crsp_comp_sf(paths: DataPaths) -> None:
                         prc, prc_high, prc_low,
                         ret_local, ret, ret_exc,
                         ret_intraday, ret_overnight,
+                        ret_intraday_local, ret_overnight_local,
                         ret_lag_dif::BIGINT AS ret_lag_dif,
                         0 AS source_crsp
                     FROM read_parquet('{comp_dsf_path}')
@@ -3111,6 +3135,7 @@ def combine_crsp_comp_sf(paths: DataPaths) -> None:
                     id, excntry, exch_main, common, primary_sec, bidask, curcd, fx,
                     date, eom, adjfct, shares, me, dolvol, tvol, prc, prc_high, prc_low,
                     ret_local, ret, ret_exc, ret_intraday, ret_overnight,
+                    ret_intraday_local, ret_overnight_local,
                     ret_lag_dif, source_crsp, obs_main
                 FROM ranked
                 WHERE _rn = 1
@@ -3126,15 +3151,16 @@ def combine_crsp_comp_sf(paths: DataPaths) -> None:
 def compound_overnight_intraday(paths: DataPaths) -> None:
     """
     Description:
-        Compound daily overnight/intraday returns to monthly and join onto
-        world_msf.  This implements the monthly aggregation of the LPS (2019)
-        decomposition: ret_intraday_m = prod(1 + ret_intraday_d) - 1 and
-        ret_overnight_m = prod(1 + ret_overnight_d) - 1.  Also computes
-        one-month-ahead leads (ret_intraday_lead1m, ret_overnight_lead1m)
-        mirroring the ret_exc_lead1m logic.
+        Compound daily overnight/intraday returns (USD and local) to monthly
+        and join onto world_msf.  This implements the monthly aggregation of
+        the LPS (2019) decomposition: ret_X_m = prod(1 + ret_X_d) - 1 for
+        X in {intraday, overnight, intraday_local, overnight_local}.  Also
+        computes one-month-ahead leads (_lead1m) mirroring the ret_exc_lead1m
+        logic.
 
     Steps:
-        1) Read world_dsf.parquet with ret_intraday and ret_overnight.
+        1) Read world_dsf.parquet with ret_intraday, ret_overnight,
+           ret_intraday_local, and ret_overnight_local.
         2) For each (id, eom) group, compound daily returns to monthly.
         3) Left-join onto world_msf (__msf_world.parquet).
         4) Compute lead columns gated by ret_lag_dif == 1.
@@ -3142,21 +3168,29 @@ def compound_overnight_intraday(paths: DataPaths) -> None:
 
     Output:
         Overwrites __msf_world.parquet with ret_intraday, ret_overnight,
-        ret_intraday_lead1m, and ret_overnight_lead1m columns added.
+        ret_intraday_local, ret_overnight_local, and their _lead1m variants.
     """
     msf_path = paths.interim_dir / "__msf_world.parquet"
 
+    oi_cols = [
+        "ret_intraday",
+        "ret_overnight",
+        "ret_intraday_local",
+        "ret_overnight_local",
+    ]
+
     monthly_oi = (
         pl.scan_parquet(paths.interim_dir / "world_dsf.parquet")
-        .select(["id", "eom", "ret_intraday", "ret_overnight"])
+        .select(["id", "eom"] + oi_cols)
         .group_by(["id", "eom"])
         .agg(
-            ret_intraday=pl.when(col("ret_intraday").is_null().any())
-            .then(fl_none())
-            .otherwise((col("ret_intraday") + 1).product() - 1),
-            ret_overnight=pl.when(col("ret_overnight").is_null().any())
-            .then(fl_none())
-            .otherwise((col("ret_overnight") + 1).product() - 1),
+            [
+                pl.when(col(c).is_null().any())
+                .then(fl_none())
+                .otherwise((col(c) + 1).product() - 1)
+                .alias(c)
+                for c in oi_cols
+            ]
         )
     )
 
@@ -3165,12 +3199,13 @@ def compound_overnight_intraday(paths: DataPaths) -> None:
         .join(monthly_oi, on=["id", "eom"], how="left")
         .sort(["id", "eom"])
         .with_columns(
-            ret_intraday_lead1m=pl.when(col("ret_lag_dif").shift(-1).over("id") == 1)
-            .then(col("ret_intraday").shift(-1).over("id"))
-            .otherwise(fl_none()),
-            ret_overnight_lead1m=pl.when(col("ret_lag_dif").shift(-1).over("id") == 1)
-            .then(col("ret_overnight").shift(-1).over("id"))
-            .otherwise(fl_none()),
+            [
+                pl.when(col("ret_lag_dif").shift(-1).over("id") == 1)
+                .then(col(c).shift(-1).over("id"))
+                .otherwise(fl_none())
+                .alias(f"{c}_lead1m")
+                for c in oi_cols
+            ]
         )
     )
     msf.collect().write_parquet(msf_path)
@@ -8804,6 +8839,8 @@ def save_daily_ret(paths: DataPaths):
                 "ret_exc_wins",
                 "ret_intraday",
                 "ret_overnight",
+                "ret_intraday_local",
+                "ret_overnight_local",
             ]
         )
         .with_columns(
@@ -8917,6 +8954,12 @@ def save_monthly_ret(paths: DataPaths):
             "ret_exc_wins",
             "ret_intraday",
             "ret_overnight",
+            "ret_intraday_local",
+            "ret_overnight_local",
+            "ret_intraday_lead1m",
+            "ret_overnight_lead1m",
+            "ret_intraday_local_lead1m",
+            "ret_overnight_local_lead1m",
         ]
     )
     data.select(pl.all().shrink_dtype()).collect().write_parquet(
@@ -9958,6 +10001,7 @@ def portfolios(
     ind_pf=True,  # Should industry portfolio returns be estimated
     ret_cutoffs=None,  # Data frame for monthly winsorization. Neccesary when wins_ret=T
     ret_cutoffs_daily=None,  # Data frame for daily winsorization. Neccesary when wins_ret=T and daily_pf=T
+    daily_ret_col: str = "ret_exc",  # Daily return column to aggregate into portfolios
 ):
     if source is None:
         source = ["CRSP", "COMPUSTAT"]
@@ -10034,7 +10078,7 @@ def portfolios(
     if daily_pf:
         daily_lazy = (
             pl.scan_parquet(daily_file_path)
-            .select(["id", "date", "ret_exc"])
+            .select(["id", "date", pl.col(daily_ret_col).alias("ret_exc")])
             .with_columns((pl.col("date").dt.month_start().dt.offset_by("-1d")).alias("eom_lag1"))
             .with_columns(pl.col("ret_exc").cast(pl.Float64))
         )
@@ -10062,8 +10106,9 @@ def portfolios(
             .drop(["source_crsp", "p001", "p999"])
         )
 
-        # Daily winsorization
-        if daily_pf:
+        # Daily winsorization (only for standard ret_exc; O/I component
+        # returns are not excess returns and use different distributions).
+        if daily_pf and daily_ret_col == "ret_exc":
             daily_lazy = (
                 daily_lazy.with_columns(pl.col("date").dt.month_end().alias("eom"))
                 .join(
