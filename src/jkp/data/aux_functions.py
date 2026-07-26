@@ -1689,7 +1689,7 @@ def adj_trd_vol_NASDAQ(datevar, col_to_adjust, is_nasdaq_expr):
         Apply historic NASDAQ trade-volume adjustments (pre-decimalization reporting) to a volume column.
 
     Steps:
-        1) Build date cutoffs: <2001-02-01, ≤2001-12-31, <2003-12-31.
+        1) Build date cutoffs: <2001-02-01, ≤2001-12-31, ≤2003-12-31.
         2) If is_nasdaq_expr is true and within windows, scale col_to_adjust by
         1/2, 1/1.8, or 1/1.6 respectively; otherwise keep original.
         3) Return the adjusted expression aliased as the original column name.
@@ -1700,7 +1700,7 @@ def adj_trd_vol_NASDAQ(datevar, col_to_adjust, is_nasdaq_expr):
     c1 = is_nasdaq_expr
     c2 = col(datevar) < pl.datetime(2001, 2, 1)
     c3 = col(datevar) <= pl.datetime(2001, 12, 31)
-    c4 = col(datevar) < pl.datetime(2003, 12, 31)
+    c4 = col(datevar) <= pl.datetime(2003, 12, 31)
     adj_trd_vol = (
         pl.when(c1 & c2)
         .then(col(col_to_adjust) / 2)
@@ -1863,7 +1863,7 @@ def gen_comp_dsf(
         CAST(CASE
             WHEN a.exchg = 14 AND a.datadate <  DATE '2001-02-01' THEN a.cshtrd / 2
             WHEN a.exchg = 14 AND a.datadate <= DATE '2001-12-31' THEN a.cshtrd / 1.8
-            WHEN a.exchg = 14 AND a.datadate <  DATE '2003-12-31' THEN a.cshtrd / 1.6
+            WHEN a.exchg = 14 AND a.datadate <= DATE '2003-12-31' THEN a.cshtrd / 1.6
             ELSE a.cshtrd
         END AS DECIMAL(28, 8)) AS cshtrd,
         COALESCE(a.cshoc / 1e6, b.csho_fund * b.ajex_fund / a.ajexdi) AS cshoc,
@@ -2100,7 +2100,7 @@ def gen_secm_data(paths: DataPaths):
             CASE
             WHEN a.exchg = 14 AND a.datadate <  DATE '2001-02-01' THEN a.cshtrm/2
             WHEN a.exchg = 14 AND a.datadate <= DATE '2001-12-31' THEN a.cshtrm/1.8
-            WHEN a.exchg = 14 AND a.datadate <  DATE '2003-12-31' THEN a.cshtrm/1.6
+            WHEN a.exchg = 14 AND a.datadate <= DATE '2003-12-31' THEN a.cshtrm/1.6
             ELSE a.cshtrm
             END AS cshtrm,
             CASE WHEN a.curcdm    = 'USD' THEN 1 ELSE c.fx END AS fx,
@@ -7715,6 +7715,21 @@ def residual_momentum(paths: DataPaths, output_path, data_path, fcts_path, __n, 
     con.disconnect()
 
 
+def zero_obs_gate_ok() -> pl.Expr:
+    """
+    Description:
+        Source-conditional quality screen for months with many zero local-return days.
+
+    Steps:
+        1) CRSP-sourced rows (source_crsp == 1) always pass.
+        2) Compustat rows pass only when zero_obs < 10.
+
+    Output:
+        Boolean Polars expression usable in .filter().
+    """
+    return (pl.col("source_crsp") == 1) | (pl.col("zero_obs") < 10)
+
+
 @measure_time
 def prepare_daily(paths: DataPaths, data_path, fcts_path):
     """
@@ -7725,8 +7740,9 @@ def prepare_daily(paths: DataPaths, data_path, fcts_path):
         1) Join daily stock data with daily factors; filter rows with mktrf.
         2) Create zero_obs flags per (id,eom); cap returns to lag ≤14 days; compute prc_adj.
         3) Write dsf1.parquet and id_int_key.parquet.
-        4) Build market lead/lag series per day and write mkt_lead_lag.parquet.
-        5) Build 3-day rolling sums for stock and market excess returns; filter to non-null sums and zero_obs<10; write corr_data.parquet.
+        4) Build market lead/lag series per day (dropping null mktrf) and write mkt_lead_lag.parquet.
+        5) Build 3-day rolling sums for stock and market excess returns; filter to non-null
+           sums and zero_obs_gate_ok(); write corr_data.parquet.
 
     Output:
         Parquets: dsf1.parquet, id_int_key.parquet, mkt_lead_lag.parquet, corr_data.parquet.
@@ -7738,6 +7754,7 @@ def prepare_daily(paths: DataPaths, data_path, fcts_path):
             [
                 "excntry",
                 "id",
+                "source_crsp",
                 "date",
                 "eom",
                 "prc",
@@ -7779,6 +7796,7 @@ def prepare_daily(paths: DataPaths, data_path, fcts_path):
 
     mkt_lead_lag = (
         fcts.select(["excntry", "date", "mktrf", col("date").dt.month_end().alias("eom")])
+        .filter(col("mktrf").is_not_null())
         .sort(["excntry", "date"])
         .with_columns(
             mktrf_ld1=col("mktrf").shift(-1).over(["excntry", "eom"]),
@@ -7791,7 +7809,7 @@ def prepare_daily(paths: DataPaths, data_path, fcts_path):
 
     corr_data = (
         pl.scan_parquet(paths.interim_dir / "dsf1.parquet")
-        .select(["ret_exc", "id_int", "date", "mktrf", "eom", "zero_obs"])
+        .select(["ret_exc", "id_int", "date", "mktrf", "eom", "zero_obs", "source_crsp"])
         .sort(["id_int", "date"])
         .with_columns(
             ret_exc_3l=(col("ret_exc") + col("ret_exc").shift(1) + col("ret_exc").shift(2)).over(
@@ -7802,9 +7820,7 @@ def prepare_daily(paths: DataPaths, data_path, fcts_path):
             ),
         )
         .filter(
-            col("ret_exc_3l").is_not_null()
-            & col("mkt_exc_3l").is_not_null()
-            & (col("zero_obs") < 10)
+            col("ret_exc_3l").is_not_null() & col("mkt_exc_3l").is_not_null() & zero_obs_gate_ok()
         )
         .select(["id_int", "eom", "ret_exc_3l", "mkt_exc_3l"])
         .select(pl.all().shrink_dtype())
@@ -9188,7 +9204,7 @@ def base_data_filter_exp(stat):
 
     Steps:
         1) Choose required non-null columns by stat.
-        2) For return-based stats, also require zero_obs < 10.
+        2) For return-based stats, require non-null ret_exc and zero_obs_gate_ok().
 
     Output:
         Polars expression usable in .filter().
@@ -9201,7 +9217,7 @@ def base_data_filter_exp(stat):
         # corr_data.parquet pre-filtered upstream in prepare_daily.
         return pl.lit(True)
     else:
-        return (col("ret_exc").is_not_null()) & (col("zero_obs") < 10)
+        return col("ret_exc").is_not_null() & zero_obs_gate_ok()
 
 
 def prepare_base_data(paths: DataPaths, stat):

@@ -45,10 +45,12 @@ source .venv/bin/activate
 
 # Create char data
 # Set PERSISTENT_WRDS_CONNECTION=1 to use a single WRDS connection (reduces MFA on NAT-rotated networks)
+# Use --force because a batch job has no TTY to answer the interactive overwrite prompt, and
+# resubmitting the job implies intent to regenerate the data.
 if [ "${PERSISTENT_WRDS_CONNECTION:-0}" = "1" ]; then
-    jkp build data --persistent-connection
+    jkp build data --force --persistent-connection
 else
-    jkp build data
+    jkp build data --force
 fi
 
 # Create portfolio data
