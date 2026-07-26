@@ -3,6 +3,15 @@ This change log keeps track of changes to the underlying data set. In brackets, 
 
 This repository ports the original SAS pipeline ([ReplicationCrisis](https://github.com/bkelly-lab/ReplicationCrisis)) to Python using Polars. Entries up to and including 05-03-2025 are from the original change log.
 
+## 23-07-2026
+__Changes__:
+- Added local-currency overnight/intraday return columns (`ret_intraday_local`, `ret_overnight_local`) alongside the existing USD versions, following the Lou, Polk, and Skouras (2019) decomposition:
+  - `ret_intraday = P_close / P_open − 1`
+  - `ret_overnight = (1 + ret) / (1 + ret_intraday) − 1`
+  - `ret_intraday_local = ret_intraday` (FX cancels in the open/close ratio)
+  - `ret_overnight_local = (1 + ret_local) / (1 + ret_intraday_local) − 1`
+  so that `(1 + ret_intraday)(1 + ret_overnight) = (1 + ret)` and `(1 + ret_intraday_local)(1 + ret_overnight_local) = (1 + ret_local)`. The overnight residual against `ret_local` instead of `ret` means daily FX moves no longer appear in `ret_overnight_local`. New columns are propagated through monthly compounding (`ret_intraday_local`, `ret_overnight_local`), one-month-ahead leads (`ret_intraday_local_lead1m`, `ret_overnight_local_lead1m`), daily country files, monthly returns, and daily factor portfolios. Also added the previously missing `_lead1m` columns for the USD variants to the monthly returns output.
+
 ## 10-07-2026
 __Changes__:
 - Applied an adapted version of the Bessembinder, Chen, Choi, and Wei (2023) data corrections to the Compustat daily security files (North America and Global). Decimal-shift price errors are detected and rescaled (single- and multi-period spike-and-reversal); observations that cannot be reliably repaired are dropped (low trading volume, zero AJEXDI, sub-threshold price or market equity, long data gaps, implausible shares-outstanding and market-equity jumps, return/market-equity mismatches, and initial-observation ratio errors). The multi-period search is adapted for daily data (symmetric windows over a priority set of 1, 2, 3, 5, 10, and 21 trading days). For more details, please look at the [release notes](documentation/compustat_correction/compustat_correction.html)

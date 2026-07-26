@@ -2592,17 +2592,30 @@ def process_comp_sf1(paths: DataPaths, freq):
     """
     Description:
         Full pipeline to build Compustat monthly or daily security files with returns,
-        excess returns, exchange flags, and primary_sec indicator.
+        excess returns, exchange flags, and primary_sec indicator.  For daily
+        frequency, also computes the Lou, Polk, and Skouras (2019) overnight /
+        intraday decomposition in both USD and local currency:
+
+            ret_intraday       = prc / prc_open - 1
+            ret_overnight      = (1 + ret) / (1 + ret_intraday) - 1
+            ret_intraday_local = ret_intraday   # FX cancels in open/close ratio
+            ret_overnight_local = (1 + ret_local) / (1 + ret_intraday_local) - 1
+
+        so that (1 + ret_intraday)(1 + ret_overnight) = (1 + ret) and
+        (1 + ret_intraday_local)(1 + ret_overnight_local) = (1 + ret_local).
 
     Steps:
         1) If monthly, run gen_comp_msf() to ensure comp_msf/parquets exist.
         2) Compute __returns → gen_delist_df → gen_temporary_sf.
         3) Add RF/exchange metadata; write __comp_sf2.parquet.
-        4) For daily, compute LPS (2019) overnight/intraday return decomposition.
+        4) For daily, compute LPS (2019) overnight/intraday return decomposition
+           (USD and local) when prc_open is available.
         5) Call add_primary_sec(...) to add primary_sec and write final comp_{freq}sf.parquet.
 
     Output:
-        comp_msf.parquet or comp_dsf.parquet with enriched fields (ret_exc, primary_sec, etc.).
+        comp_msf.parquet or comp_dsf.parquet with enriched fields (ret_exc,
+        primary_sec, and for daily: ret_intraday, ret_overnight,
+        ret_intraday_local, ret_overnight_local).
     """
     # Eager mode is faster here
     if freq == "m":
@@ -2684,7 +2697,18 @@ def prepare_crsp_sf(paths: DataPaths, freq):
         Clean and finalize the CRSP security-file panel (monthly or daily) produced by gen_crsp_sf.
         This step adds trading-volume diagnostics, dividend totals, delisting-return adjustments,
         excess returns (over T-bill / RF), and company-level market equity, using the CIZ delist
-        fields (DelReasonType/DelActionType/DelPaymentType/DelStatusType).
+        fields (DelReasonType/DelActionType/DelPaymentType/DelStatusType).  For daily frequency,
+        also computes the Lou, Polk, and Skouras (2019) overnight / intraday decomposition in both
+        USD and local currency.  The intraday leg uses prc_close (dlyclose, the actual closing
+        trade) rather than prc (dlyprc, which may be a bid–ask midpoint):
+
+            ret_intraday       = prc_close / prc_open - 1
+            ret_overnight      = (1 + ret) / (1 + ret_intraday) - 1
+            ret_intraday_local = ret_intraday   # FX cancels; for CRSP, ret_local == ret
+            ret_overnight_local = (1 + ret) / (1 + ret_intraday_local) - 1
+
+        so that (1 + ret_intraday)(1 + ret_overnight) = (1 + ret).  For CRSP (USD),
+        ret_overnight_local equals ret_overnight because ret_local equals ret.
 
     Steps:
         1) Read raw_data_dfs/__crsp_sf_{freq}.parquet; cast key numeric columns; apply NASDAQ volume adjustment.
@@ -2692,11 +2716,13 @@ def prepare_crsp_sf(paths: DataPaths, freq):
         3) Join CRSP delists (crsp_{freq}sedelist); impute missing delret = −0.30 for “bad delist” buckets defined by CIZ codes;
            set ret=0 when ret is missing but delret exists; compound ret with delret.
         4) Join risk-free proxies (CRSP T-bill and FF RF) and compute excess return ret_exc; compute company ME by summing ME across permnos within permco-date.
-        5) If monthly, rescale vol and dolvol for unit alignment.
-        6) Drop helper columns, deduplicate by (permno, date), sort, and write crsp_{freq}sf.parquet.
+        5) If daily, compute LPS (2019) overnight/intraday returns (USD and local).
+        6) If monthly, rescale vol and dolvol for unit alignment.
+        7) Drop helper columns, deduplicate by (permno, date), sort, and write crsp_{freq}sf.parquet.
 
     Output:
-        Writes crsp_msf.parquet (freq="m") or crsp_dsf.parquet (freq="d") with cleaned returns and ret_exc.
+        Writes crsp_msf.parquet (freq="m") or crsp_dsf.parquet (freq="d") with cleaned returns,
+        ret_exc, and for daily: ret_intraday, ret_overnight, ret_intraday_local, ret_overnight_local.
     """
     assert freq in ("m", "d")
 
