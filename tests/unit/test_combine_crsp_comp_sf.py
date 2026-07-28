@@ -8,11 +8,9 @@ toy datasets.
 
 from __future__ import annotations
 
-import os
 from datetime import date, timedelta
 from pathlib import Path
 
-import duckdb
 import numpy as np
 import polars as pl
 import pytest
@@ -219,6 +217,10 @@ def _make_crsp_dsf(tmp: Path, n_permnos: int = 200) -> None:
             "prc_low": _random_float_col(n),
             "ret": _random_float_col(n),
             "ret_exc": _random_float_col(n),
+            "ret_intraday": _random_float_col(n, 0.15),
+            "ret_overnight": _random_float_col(n, 0.15),
+            "ret_intraday_local": _random_float_col(n, 0.15),
+            "ret_overnight_local": _random_float_col(n, 0.15),
         }
     ).cast(
         {
@@ -273,6 +275,10 @@ def _make_comp_dsf(tmp: Path, n_gvkeys: int = 200) -> None:
             "ret_local": _random_float_col(n),
             "ret": _random_float_col(n),
             "ret_exc": _random_float_col(n),
+            "ret_intraday": _random_float_col(n, 0.15),
+            "ret_overnight": _random_float_col(n, 0.15),
+            "ret_intraday_local": _random_float_col(n, 0.15),
+            "ret_overnight_local": _random_float_col(n, 0.15),
             "ret_lag_dif": ret_lag_dif,
         }
     ).cast(
@@ -517,6 +523,10 @@ def _polars_combine_crsp_comp_sf(tmp: Path) -> tuple[pl.DataFrame, pl.DataFrame]
         "ret_local",
         "ret",
         "ret_exc",
+        "ret_intraday",
+        "ret_overnight",
+        "ret_intraday_local",
+        "ret_overnight_local",
         "ret_lag_dif",
         "source_crsp",
     ]
@@ -598,142 +608,117 @@ def polars_output(toy_dir: Path) -> tuple[pl.DataFrame, pl.DataFrame]:
     return _polars_combine_crsp_comp_sf(toy_dir)
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _run_cte_on_parquet(tmp: Path, sql: str) -> pl.DataFrame:
-    """Execute a SQL query reading parquet files from tmp and return as Polars DF."""
-    orig = os.getcwd()
-    os.chdir(str(tmp))
-    try:
-        con = duckdb.connect()
-        result = con.execute(sql).pl()
-        con.close()
-    finally:
-        os.chdir(orig)
-    return result
-
-
 # =========================================================================
 # Test Class 1: CRSP Normalization
 # =========================================================================
 
 
 class TestCrspNormalization:
-    """Validate the CRSP normalization CTEs in isolation."""
+    """Validate CRSP normalization in combine_crsp_comp_sf output."""
 
-    _CRSP_MSF_CTE = """
-        SELECT
-            permno AS id, permno, permco, gvkey, iid,
-            'USA' AS excntry,
-            exch_main::INT AS exch_main,
-            common::INT AS common,
-            1 AS primary_sec,
-            bidask::INT AS bidask,
-            primaryexch,
-            conditionaltype,
-            NULL::VARCHAR AS comp_tpci,
-            NULL::BIGINT AS comp_exchg,
-            'USD' AS curcd,
-            1.0 AS fx,
-            date,
-            last_day(date) AS eom,
-            cfacshr AS adjfct, shrout AS shares,
-            me, me_company, prc,
-            prc AS prc_local,
-            prc_high, prc_low, dolvol,
-            vol AS tvol,
-            ret,
-            ret AS ret_local,
-            ret_exc,
-            1::BIGINT AS ret_lag_dif,
-            div_tot,
-            NULL::DOUBLE AS div_cash,
-            NULL::DOUBLE AS div_spc,
-            1 AS source_crsp
-        FROM read_parquet('crsp_msf.parquet')
-    """
+    @staticmethod
+    def _crsp_msf(duckdb_output: tuple[pl.DataFrame, pl.DataFrame]) -> pl.DataFrame:
+        msf, _ = duckdb_output
+        return msf.filter(pl.col("source_crsp") == 1)
 
-    def test_crsp_msf_id_equals_permno(self, toy_dir: Path) -> None:
-        df = _run_cte_on_parquet(toy_dir, self._CRSP_MSF_CTE)
-        assert (df["id"] == df["permno"]).all()
+    def test_crsp_msf_id_equals_permno(
+        self, duckdb_output: tuple[pl.DataFrame, pl.DataFrame]
+    ) -> None:
+        crsp = self._crsp_msf(duckdb_output)
+        assert (crsp["id"] == crsp["permno"]).all()
 
-    def test_crsp_msf_excntry_is_usa(self, toy_dir: Path) -> None:
-        df = _run_cte_on_parquet(toy_dir, self._CRSP_MSF_CTE)
-        assert (df["excntry"] == "USA").all()
+    def test_crsp_msf_excntry_is_usa(
+        self, duckdb_output: tuple[pl.DataFrame, pl.DataFrame]
+    ) -> None:
+        crsp = self._crsp_msf(duckdb_output)
+        assert (crsp["excntry"] == "USA").all()
 
-    def test_crsp_msf_common_flag(self, toy_dir: Path) -> None:
+    def test_crsp_msf_common_flag(
+        self, toy_dir: Path, duckdb_output: tuple[pl.DataFrame, pl.DataFrame]
+    ) -> None:
+        crsp = self._crsp_msf(duckdb_output)
         raw = pl.read_parquet(toy_dir / "crsp_msf.parquet")
-        df = _run_cte_on_parquet(toy_dir, self._CRSP_MSF_CTE)
-        expected = raw["common"].cast(pl.Int32)
-        assert (df["common"] == expected).all()
+        joined = crsp.join(
+            raw.select(["permno", "date", pl.col("common").cast(pl.Int32).alias("raw_common")]),
+            on=["permno", "date"],
+            how="inner",
+        )
+        assert joined.height > 0
+        assert (joined["common"] == joined["raw_common"]).all()
 
-    def test_crsp_msf_eom_is_month_end(self, toy_dir: Path) -> None:
-        df = _run_cte_on_parquet(toy_dir, self._CRSP_MSF_CTE)
-        assert (df["eom"] == df["date"].dt.month_end()).all()
+    def test_crsp_msf_eom_is_month_end(
+        self, duckdb_output: tuple[pl.DataFrame, pl.DataFrame]
+    ) -> None:
+        crsp = self._crsp_msf(duckdb_output)
+        assert (crsp["eom"] == crsp["date"].dt.month_end()).all()
 
-    def test_crsp_msf_constants(self, toy_dir: Path) -> None:
-        df = _run_cte_on_parquet(toy_dir, self._CRSP_MSF_CTE)
-        assert (df["curcd"] == "USD").all()
-        assert (df["fx"] == 1.0).all()
-        assert (df["ret_lag_dif"] == 1).all()
-        assert (df["source_crsp"] == 1).all()
-        assert (df["primary_sec"] == 1).all()
+    def test_crsp_msf_constants(self, duckdb_output: tuple[pl.DataFrame, pl.DataFrame]) -> None:
+        crsp = self._crsp_msf(duckdb_output)
+        assert (crsp["curcd"] == "USD").all()
+        assert (crsp["fx"] == 1.0).all()
+        assert (crsp["ret_lag_dif"] == 1).all()
+        assert (crsp["source_crsp"] == 1).all()
+        assert (crsp["primary_sec"] == 1).all()
 
-    def test_crsp_msf_prc_local_equals_prc(self, toy_dir: Path) -> None:
-        df = _run_cte_on_parquet(toy_dir, self._CRSP_MSF_CTE)
-        mask = df["prc"].is_not_null()
-        assert (df.filter(mask)["prc_local"] == df.filter(mask)["prc"]).all()
+    def test_crsp_msf_prc_local_equals_prc(
+        self, duckdb_output: tuple[pl.DataFrame, pl.DataFrame]
+    ) -> None:
+        crsp = self._crsp_msf(duckdb_output)
+        mask = crsp["prc"].is_not_null()
+        assert (crsp.filter(mask)["prc_local"] == crsp.filter(mask)["prc"]).all()
 
-    def test_crsp_msf_ret_local_equals_ret(self, toy_dir: Path) -> None:
-        df = _run_cte_on_parquet(toy_dir, self._CRSP_MSF_CTE)
-        mask = df["ret"].is_not_null()
-        assert (df.filter(mask)["ret_local"] == df.filter(mask)["ret"]).all()
+    def test_crsp_msf_ret_local_equals_ret(
+        self, duckdb_output: tuple[pl.DataFrame, pl.DataFrame]
+    ) -> None:
+        crsp = self._crsp_msf(duckdb_output)
+        mask = crsp["ret"].is_not_null()
+        assert (crsp.filter(mask)["ret_local"] == crsp.filter(mask)["ret"]).all()
 
-    def test_crsp_msf_null_columns(self, toy_dir: Path) -> None:
-        df = _run_cte_on_parquet(toy_dir, self._CRSP_MSF_CTE)
-        assert df["div_cash"].is_null().all()
-        assert df["div_spc"].is_null().all()
-        assert df["comp_tpci"].is_null().all()
-        assert df["comp_exchg"].is_null().all()
+    def test_crsp_msf_null_columns(self, duckdb_output: tuple[pl.DataFrame, pl.DataFrame]) -> None:
+        crsp = self._crsp_msf(duckdb_output)
+        assert crsp["div_cash"].is_null().all()
+        assert crsp["div_spc"].is_null().all()
+        assert crsp["comp_tpci"].is_null().all()
+        assert crsp["comp_exchg"].is_null().all()
 
-    def test_crsp_msf_ciz_field_passthrough(self, toy_dir: Path) -> None:
+    def test_crsp_msf_ciz_field_passthrough(
+        self, toy_dir: Path, duckdb_output: tuple[pl.DataFrame, pl.DataFrame]
+    ) -> None:
+        crsp = self._crsp_msf(duckdb_output)
         raw = pl.read_parquet(toy_dir / "crsp_msf.parquet")
-        df = _run_cte_on_parquet(toy_dir, self._CRSP_MSF_CTE)
-        assert (df["primaryexch"] == raw["primaryexch"]).all()
-        assert (df["conditionaltype"] == raw["conditionaltype"]).all()
+        joined = crsp.join(
+            raw.select(
+                [
+                    "permno",
+                    "date",
+                    pl.col("primaryexch").alias("raw_primaryexch"),
+                    pl.col("conditionaltype").alias("raw_conditionaltype"),
+                    pl.col("cfacshr").alias("raw_cfacshr"),
+                ]
+            ),
+            on=["permno", "date"],
+            how="inner",
+        )
+        assert joined.height > 0
+        assert (joined["primaryexch"] == joined["raw_primaryexch"]).all()
+        assert (joined["conditionaltype"] == joined["raw_conditionaltype"]).all()
         np.testing.assert_allclose(
-            df["adjfct"].to_numpy(),
-            raw["cfacshr"].cast(pl.Float64).to_numpy(),
+            joined["adjfct"].to_numpy(),
+            joined["raw_cfacshr"].cast(pl.Float64).to_numpy(),
             equal_nan=True,
         )
 
-    def test_crsp_dsf_normalization(self, toy_dir: Path) -> None:
-        sql = """
-            SELECT
-                permno AS id, 'USA' AS excntry,
-                exch_main::INT AS exch_main,
-                common::INT AS common,
-                1 AS primary_sec, bidask::INT AS bidask,
-                'USD' AS curcd, 1.0 AS fx,
-                date, last_day(date) AS eom,
-                cfacshr AS adjfct, shrout AS shares,
-                me, dolvol, vol AS tvol,
-                prc, prc_high, prc_low,
-                ret AS ret_local, ret, ret_exc,
-                1::BIGINT AS ret_lag_dif,
-                1 AS source_crsp
-            FROM read_parquet('crsp_dsf.parquet')
-        """
-        df = _run_cte_on_parquet(toy_dir, sql)
+    def test_crsp_dsf_normalization(
+        self, toy_dir: Path, duckdb_output: tuple[pl.DataFrame, pl.DataFrame]
+    ) -> None:
+        _, dsf = duckdb_output
+        crsp_dsf = dsf.filter(pl.col("source_crsp") == 1)
         raw = pl.read_parquet(toy_dir / "crsp_dsf.parquet")
-        assert (df["id"] == raw["permno"].cast(df["id"].dtype)).all()
-        assert (df["excntry"] == "USA").all()
-        assert (df["source_crsp"] == 1).all()
-        assert df.shape[0] > 0
-        assert len(df.columns) == 23
+        assert crsp_dsf.height > 0
+        assert (crsp_dsf["excntry"] == "USA").all()
+        assert (crsp_dsf["source_crsp"] == 1).all()
+        # CRSP daily ids should match raw permnos
+        assert set(crsp_dsf["id"].unique().to_list()) == set(raw["permno"].unique().to_list())
 
 
 # =========================================================================
@@ -742,57 +727,44 @@ class TestCrspNormalization:
 
 
 class TestCompNormalization:
-    """Validate the Compustat normalization CTEs."""
+    """Validate Compustat normalization in combine_crsp_comp_sf output."""
 
-    _COMP_MSF_CTE = """
-        SELECT
-            CAST(
-                CASE
-                    WHEN iid LIKE '%W%' THEN '3' || gvkey || SUBSTRING(iid, 1, 2)
-                    WHEN iid LIKE '%C%' THEN '2' || gvkey || SUBSTRING(iid, 1, 2)
-                    ELSE '1' || gvkey || SUBSTRING(iid, 1, 2)
-                END AS BIGINT
-            ) AS id,
-            gvkey, iid,
-            NULL::BIGINT AS permno,
-            NULL::BIGINT AS permco,
-            excntry,
-            exch_main::INT AS exch_main,
-            CASE WHEN tpci = '0' THEN 1 ELSE 0 END AS common,
-            primary_sec::INT AS primary_sec,
-            CASE WHEN prcstd = 4 THEN 1 ELSE 0 END AS bidask,
-            tpci AS comp_tpci,
-            exchg::BIGINT AS comp_exchg,
-            curcdd AS curcd,
-            0 AS source_crsp
-        FROM read_parquet('comp_msf.parquet')
-    """
+    @staticmethod
+    def _comp_msf(duckdb_output: tuple[pl.DataFrame, pl.DataFrame]) -> pl.DataFrame:
+        msf, _ = duckdb_output
+        return msf.filter(pl.col("source_crsp") == 0)
 
-    def test_comp_msf_id_prefix_common(self, toy_dir: Path) -> None:
-        df = _run_cte_on_parquet(toy_dir, self._COMP_MSF_CTE)
-        common = df.filter(~pl.col("iid").str.contains("W") & ~pl.col("iid").str.contains("C"))
+    def test_comp_msf_id_prefix_common(
+        self, duckdb_output: tuple[pl.DataFrame, pl.DataFrame]
+    ) -> None:
+        comp = self._comp_msf(duckdb_output)
+        common = comp.filter(~pl.col("iid").str.contains("W") & ~pl.col("iid").str.contains("C"))
         if common.height > 0:
             id_strs = common["id"].cast(pl.Utf8)
             assert (id_strs.str.starts_with("1")).all()
 
-    def test_comp_msf_id_prefix_adr(self, toy_dir: Path) -> None:
-        df = _run_cte_on_parquet(toy_dir, self._COMP_MSF_CTE)
-        adr = df.filter(pl.col("iid").str.contains("C") & ~pl.col("iid").str.contains("W"))
+    def test_comp_msf_id_prefix_adr(self, duckdb_output: tuple[pl.DataFrame, pl.DataFrame]) -> None:
+        comp = self._comp_msf(duckdb_output)
+        adr = comp.filter(pl.col("iid").str.contains("C") & ~pl.col("iid").str.contains("W"))
         if adr.height > 0:
             id_strs = adr["id"].cast(pl.Utf8)
             assert (id_strs.str.starts_with("2")).all()
 
-    def test_comp_msf_id_prefix_when_issued(self, toy_dir: Path) -> None:
-        df = _run_cte_on_parquet(toy_dir, self._COMP_MSF_CTE)
-        wi = df.filter(pl.col("iid").str.contains("W"))
+    def test_comp_msf_id_prefix_when_issued(
+        self, duckdb_output: tuple[pl.DataFrame, pl.DataFrame]
+    ) -> None:
+        comp = self._comp_msf(duckdb_output)
+        wi = comp.filter(pl.col("iid").str.contains("W"))
         if wi.height > 0:
             id_strs = wi["id"].cast(pl.Utf8)
             assert (id_strs.str.starts_with("3")).all()
 
-    def test_comp_msf_id_construction(self, toy_dir: Path) -> None:
+    def test_comp_msf_id_construction(
+        self, duckdb_output: tuple[pl.DataFrame, pl.DataFrame]
+    ) -> None:
         """Verify id = int(prefix + gvkey + iid[0:2])."""
-        df = _run_cte_on_parquet(toy_dir, self._COMP_MSF_CTE)
-        sample = df.head(100)
+        comp = self._comp_msf(duckdb_output)
+        sample = comp.head(100)
         for row in sample.iter_rows(named=True):
             iid = row["iid"]
             gvkey = row["gvkey"]
@@ -800,46 +772,79 @@ class TestCompNormalization:
             expected = int(prefix + gvkey + iid[:2])
             assert row["id"] == expected, f"id mismatch: {row['id']} != {expected}"
 
-    def test_comp_msf_common_flag(self, toy_dir: Path) -> None:
+    def test_comp_msf_common_flag(
+        self, toy_dir: Path, duckdb_output: tuple[pl.DataFrame, pl.DataFrame]
+    ) -> None:
+        comp = self._comp_msf(duckdb_output)
         raw = pl.read_parquet(toy_dir / "comp_msf.parquet")
-        df = _run_cte_on_parquet(toy_dir, self._COMP_MSF_CTE)
-        expected = (raw["tpci"] == "0").cast(pl.Int32)
-        assert (df["common"] == expected).all()
+        joined = comp.join(
+            raw.select(["gvkey", "iid", pl.col("datadate").alias("date"), "tpci"]),
+            on=["gvkey", "iid", "date"],
+            how="inner",
+        )
+        assert joined.height > 0
+        expected = (joined["tpci"] == "0").cast(pl.Int32)
+        assert (joined["common"] == expected).all()
 
-    def test_comp_msf_bidask_flag(self, toy_dir: Path) -> None:
+    def test_comp_msf_bidask_flag(
+        self, toy_dir: Path, duckdb_output: tuple[pl.DataFrame, pl.DataFrame]
+    ) -> None:
+        comp = self._comp_msf(duckdb_output)
         raw = pl.read_parquet(toy_dir / "comp_msf.parquet")
-        df = _run_cte_on_parquet(toy_dir, self._COMP_MSF_CTE)
-        expected = (raw["prcstd"] == 4).cast(pl.Int32)
-        assert (df["bidask"] == expected).all()
+        joined = comp.join(
+            raw.select(["gvkey", "iid", pl.col("datadate").alias("date"), "prcstd"]),
+            on=["gvkey", "iid", "date"],
+            how="inner",
+        )
+        assert joined.height > 0
+        expected = (joined["prcstd"] == 4).cast(pl.Int32)
+        assert (joined["bidask"] == expected).all()
 
-    def test_comp_msf_null_columns(self, toy_dir: Path) -> None:
-        df = _run_cte_on_parquet(toy_dir, self._COMP_MSF_CTE)
-        assert df["permno"].is_null().all()
-        assert df["permco"].is_null().all()
+    def test_comp_msf_null_columns(self, duckdb_output: tuple[pl.DataFrame, pl.DataFrame]) -> None:
+        comp = self._comp_msf(duckdb_output)
+        assert comp["permno"].is_null().all()
+        assert comp["permco"].is_null().all()
 
-    def test_comp_msf_source_crsp_is_zero(self, toy_dir: Path) -> None:
-        df = _run_cte_on_parquet(toy_dir, self._COMP_MSF_CTE)
-        assert (df["source_crsp"] == 0).all()
+    def test_comp_msf_source_crsp_is_zero(
+        self, duckdb_output: tuple[pl.DataFrame, pl.DataFrame]
+    ) -> None:
+        comp = self._comp_msf(duckdb_output)
+        assert (comp["source_crsp"] == 0).all()
 
-    def test_comp_dsf_eom_computed(self, toy_dir: Path) -> None:
-        sql = """
-            SELECT datadate, last_day(datadate) AS eom
-            FROM read_parquet('comp_dsf.parquet')
-        """
-        df = _run_cte_on_parquet(toy_dir, sql)
-        expected = df["datadate"].dt.month_end()
-        assert (df["eom"] == expected).all()
+    def test_comp_dsf_eom_computed(self, duckdb_output: tuple[pl.DataFrame, pl.DataFrame]) -> None:
+        _, dsf = duckdb_output
+        comp_dsf = dsf.filter(pl.col("source_crsp") == 0)
+        if comp_dsf.height > 0:
+            assert (comp_dsf["eom"] == comp_dsf["date"].dt.month_end()).all()
 
-    def test_comp_dsf_tvol_from_cshtrd(self, toy_dir: Path) -> None:
-        sql = """
-            SELECT CAST(cshtrd AS DOUBLE) AS tvol
-            FROM read_parquet('comp_dsf.parquet')
-        """
+    def test_comp_dsf_tvol_from_cshtrd(
+        self, toy_dir: Path, duckdb_output: tuple[pl.DataFrame, pl.DataFrame]
+    ) -> None:
+        _, dsf = duckdb_output
+        comp_dsf = dsf.filter(pl.col("source_crsp") == 0)
+        if comp_dsf.height == 0:
+            return
         raw = pl.read_parquet(toy_dir / "comp_dsf.parquet")
-        df = _run_cte_on_parquet(toy_dir, sql)
+        # Construct expected id from raw to join with real output
+        raw_keyed = raw.with_columns(
+            id=pl.when(pl.col("iid").str.contains("W"))
+            .then(pl.lit("3") + pl.col("gvkey") + pl.col("iid").str.slice(0, 2))
+            .when(pl.col("iid").str.contains("C"))
+            .then(pl.lit("2") + pl.col("gvkey") + pl.col("iid").str.slice(0, 2))
+            .otherwise(pl.lit("1") + pl.col("gvkey") + pl.col("iid").str.slice(0, 2))
+            .cast(pl.Int64)
+        ).select(
+            [
+                "id",
+                pl.col("datadate").alias("date"),
+                pl.col("cshtrd").cast(pl.Float64).alias("raw_tvol"),
+            ]
+        )
+        joined = comp_dsf.join(raw_keyed, on=["id", "date"], how="inner")
+        assert joined.height > 0
         np.testing.assert_allclose(
-            df["tvol"].to_numpy(),
-            raw["cshtrd"].cast(pl.Float64).to_numpy(),
+            joined["tvol"].to_numpy(),
+            joined["raw_tvol"].to_numpy(),
             equal_nan=True,
         )
 
@@ -940,6 +945,10 @@ class TestUnionAndLead:
             "ret_local",
             "ret",
             "ret_exc",
+            "ret_intraday",
+            "ret_overnight",
+            "ret_intraday_local",
+            "ret_overnight_local",
             "ret_lag_dif",
             "source_crsp",
             "obs_main",
@@ -1191,6 +1200,10 @@ class TestDedupDeterminism:
             "ret_local": 0.01,
             "ret": 0.01,
             "ret_exc": 0.005,
+            "ret_intraday": 0.008,
+            "ret_overnight": 0.002,
+            "ret_intraday_local": 0.008,
+            "ret_overnight_local": 0.002,
             "ret_lag_dif": 1,
         }
         interim = _make_test_layout(tmp_path)

@@ -123,6 +123,8 @@ Jensen is at Yale School of Management; \url{www.tijensen.com}. Kelly is at AQR 
 \textbf{Date} & \textbf{Changes} \\
 \hline
 \endhead
+07-23-2026 & \textbullet~Added overnight/intraday return columns (\texttt{ret\_intraday}, \texttt{ret\_overnight}, \texttt{ret\_intraday\_local}, \texttt{ret\_overnight\_local}) and their \texttt{\_lead1m} variants, following Lou, Polk, and Skouras (2019): \texttt{ret\_intraday} $= P_{\mathrm{close}}/P_{\mathrm{open}}-1$, \texttt{ret\_overnight} $=(1+\texttt{ret})/(1+\texttt{ret\_intraday})-1$, \texttt{ret\_intraday\_local} $=\texttt{ret\_intraday}$ (FX cancels), and \texttt{ret\_overnight\_local} $=(1+\texttt{ret\_local})/(1+\texttt{ret\_intraday\_local})-1$. Also added previously missing \texttt{\_lead1m} columns for the USD overnight/intraday variants to the monthly returns output. \\
+& \textbullet~Affected output files: \texttt{return\_data/world\_dsf.parquet}, \texttt{return\_data/world\_ret\_monthly.parquet}, \texttt{return\_data/daily\_rets\_by\_country/}, daily overnight/intraday factor portfolios under \texttt{portfolios/}. \\
 07-15-2026 & \textbullet~Made the daily $\geq$10 zero-return-day screen source-conditional. Previously a stock-month with at least ten zero-return days was excluded from all daily return-based rolling statistics. This screen was intended for Compustat Global data quality, but it also removed CRSP stock-months with spurious zero-return days (especially 1973--1982), lowering US coverage of daily return-based characteristics. The screen now applies only to Compustat-sourced rows; CRSP-sourced rows are exempt. \\
 \hline
 04-03-2026 & \textbullet~Added \texttt{ret\_exc\_wins} column to \texttt{world\_dsf}, \texttt{world\_msf}, and \texttt{world\_data}. This is a pre-winsorized excess return clipped at the 0.1\%/99.9\% percentiles per period using cutoffs from \texttt{return\_cutoffs.parquet} / \texttt{return\_cutoffs\_daily.parquet}. CRSP returns are left unchanged; only Compustat returns are winsorized. \\
@@ -1899,6 +1901,42 @@ $\\
 	\item COMP.G\_SECURITY
 \end{itemize}
 
+```latex
+\noindent\textbf{Overnight and Intraday Returns}
+
+Following \citet{LouPolkSkouras2019}, we decompose daily close-to-close returns into overnight and intraday components in both U.S. dollars and local currency:
+\begin{align*}
+    \texttt{ret\_intraday}
+        &= \frac{P_{\mathrm{close}}}{P_{\mathrm{open}}} - 1, \\
+    \texttt{ret\_overnight}
+        &= \frac{1 + \texttt{ret}}
+                {1 + \texttt{ret\_intraday}} - 1, \\
+    \texttt{ret\_intraday\_local}
+        &= \texttt{ret\_intraday}, \\
+    \texttt{ret\_overnight\_local}
+        &= \frac{1 + \texttt{ret\_local}}
+                {1 + \texttt{ret\_intraday\_local}} - 1.
+\end{align*}
+By construction,
+\begin{align*}
+    \bigl(1 + \texttt{ret\_intraday}\bigr)
+    \bigl(1 + \texttt{ret\_overnight}\bigr)
+        &= 1 + \texttt{ret}, \\
+    \bigl(1 + \texttt{ret\_intraday\_local}\bigr)
+    \bigl(1 + \texttt{ret\_overnight\_local}\bigr)
+        &= 1 + \texttt{ret\_local}.
+\end{align*}
+
+The intraday open-to-close price ratio is invariant to the currency of denomination because the exchange-rate conversion cancels between the opening and closing prices. Consequently, \texttt{ret\_intraday\_local} equals \texttt{ret\_intraday}. By contrast, computing the local-currency overnight return as the residual relative to \texttt{ret\_local}, rather than \texttt{ret}, excludes daily exchange-rate movements from \texttt{ret\_overnight\_local}. For CRSP securities, the intraday component is calculated using the actual closing transaction price, \texttt{dlyclose}, rather than \texttt{dlyprc}, which may represent a bid--ask midpoint.
+
+Monthly overnight and intraday returns are obtained by compounding the corresponding daily returns:
+\[
+    r_{\mathrm{month}}
+        = \prod_{d \in \mathrm{month}} \left(1 + r_d\right) - 1.
+\]
+```
+
+
 \noindent\textbf{Market Variables}
 
 %The abbreviation is used to refer to the market variable. 
@@ -1977,6 +2015,14 @@ $\\
 
     Excess Return Winsorized & ret\_exc\_wins\mbox{*} & Equal to ret\_exc\mbox{*}; CRSP returns are not winsorized. \\
 
+    Intraday Return & ret\_intraday\mbox{*} & Daily open-to-close return: $P_{\mathrm{close}}/P_{\mathrm{open}}-1$, using the actual closing trade (\texttt{dlyclose}) rather than \texttt{dlyprc}. Missing when open or close price is non-positive. \\
+
+    Overnight Return & ret\_overnight\mbox{*} & Daily close-to-open residual: $(1+\mathrm{RET}\mbox{*})/(1+\mathrm{ret\_intraday}\mbox{*})-1$, so that $(1+\mathrm{ret\_intraday}\mbox{*})(1+\mathrm{ret\_overnight}\mbox{*})=(1+\mathrm{RET}\mbox{*})$. \\
+
+    Intraday Return (Local) & ret\_intraday\_local\mbox{*} & Equal to ret\_intraday\mbox{*}; FX cancels in the open/close ratio. For CRSP, ret\_local\mbox{*} equals RET\mbox{*}. \\
+
+    Overnight Return (Local) & ret\_overnight\_local\mbox{*} & Equal to ret\_overnight\mbox{*} for CRSP, since ret\_local\mbox{*} equals RET\mbox{*}. \\
+
     Time Since Most Recent Return & ret\_lag\_dif\mbox{*} & We automatically set this to 1 \\
     
     Cumulative Return & ri\mbox{*} & This is the cumulative return estimated from RET\mbox{*}\\
@@ -2023,6 +2069,14 @@ $\\
     Excess Return t+1 & ret\_exc\_lead1m\mbox{*} &  Excess return (ret\_exc\mbox{*}) in month t+1 \\
 
     Excess Return Winsorized & ret\_exc\_wins\mbox{*} & ret\_exc\mbox{*} clipped to the [0.1\%, 99.9\%] percentiles of ret\_exc\mbox{*} for the same period. Cutoffs are precomputed in \texttt{return\_cutoffs.parquet} (monthly) and \texttt{return\_cutoffs\_daily.parquet} (daily) from filtered stocks (\texttt{common=1}, \texttt{obs\_main=1}, \texttt{exch\_main=1}, \texttt{primary\_sec=1}, \texttt{excntry$\neq$ZWE}). \\
+
+    Intraday Return & ret\_intraday\mbox{*} & Daily open-to-close return: PRC\mbox{*}/PRC\_OPEN$-1$. Missing when open or close price is non-positive. \\
+
+    Overnight Return & ret\_overnight\mbox{*} & Daily close-to-open residual: $(1+\mathrm{RET}\mbox{*})/(1+\mathrm{ret\_intraday}\mbox{*})-1$, so that $(1+\mathrm{ret\_intraday}\mbox{*})(1+\mathrm{ret\_overnight}\mbox{*})=(1+\mathrm{RET}\mbox{*})$. \\
+
+    Intraday Return (Local) & ret\_intraday\_local\mbox{*} & Equal to ret\_intraday\mbox{*}; FX cancels in the open/close ratio. \\
+
+    Overnight Return (Local) & ret\_overnight\_local\mbox{*} & Residual against local return: $(1+\mathrm{ret\_local}\mbox{*})/(1+\mathrm{ret\_intraday\_local}\mbox{*})-1$, so that $(1+\mathrm{ret\_intraday\_local}\mbox{*})(1+\mathrm{ret\_overnight\_local}\mbox{*})=(1+\mathrm{ret\_local}\mbox{*})$. Daily FX moves enter the overnight leg only. \\
 
     Time Since Most Recent Return  & ret\_lag\_dif\mbox{*} & We estimate the number of days since the previous return. If the returns are monthly rather than daily, then the time is in months\\
  
