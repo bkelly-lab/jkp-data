@@ -8567,6 +8567,12 @@ def finish_daily_chars(paths: DataPaths, output_path):
         betabab_1260d=col("corr_1260d") * col("rvol_252d") / col("__mktvol_252d"),
         rmax5_rvol_21d=col("rmax5_21d") / col("rvol_252d"),
     ).drop("__mktvol_252d")
+
+    float_cols = [name for name, dtype in daily_chars.collect_schema().items() if dtype.is_float()]
+    daily_chars = daily_chars.with_columns(
+        pl.when(pl.col(c).is_finite()).then(pl.col(c)).otherwise(None).alias(c) for c in float_cols
+    )
+
     daily_chars.collect().write_parquet(output_path)
 
 
@@ -9386,6 +9392,17 @@ def res_mom(df, sfx, __min, incl, skip):
     return df
 
 
+def _guard_constant(input_col: str, stat_expr: pl.Expr) -> pl.Expr:
+    """Null the stat when the input series is constant within a group_by group.
+
+    Uses min() != max() — two cheap aggregations that piggyback on the
+    existing group_by, exact for bit-identical values (the dead-stock case).
+    """
+    return (
+        pl.when(pl.col(input_col).min() != pl.col(input_col).max()).then(stat_expr).otherwise(None)
+    )
+
+
 def rvol(df, sfx, __min):
     """
     Description:
@@ -9399,7 +9416,7 @@ def rvol(df, sfx, __min):
         LazyFrame with f'rvol{sfx}'.
     """
     df = df.group_by(["id_int", "group_number"]).agg(
-        col("ret_exc").cast(pl.Float64).std().alias(f"rvol{sfx}")
+        _guard_constant("ret_exc", col("ret_exc").cast(pl.Float64).std()).alias(f"rvol{sfx}")
     )
     return df
 
@@ -9418,8 +9435,8 @@ def rmax(df, sfx, __min):
     """
     df = df.group_by(["id_int", "group_number"]).agg(
         [
-            col("ret").top_k(5).mean().alias(f"rmax5{sfx}"),
-            col("ret").max().alias(f"rmax1{sfx}"),
+            _guard_constant("ret", col("ret").top_k(5).mean()).alias(f"rmax5{sfx}"),
+            _guard_constant("ret", col("ret").max()).alias(f"rmax1{sfx}"),
         ]
     )
     return df
@@ -9438,7 +9455,7 @@ def skew(df, sfx, __min):
         LazyFrame with f'rskew{sfx}'.
     """
     df = df.group_by(["id_int", "group_number"]).agg(
-        col("ret_exc").skew(bias=False).alias(f"rskew{sfx}")
+        col("ret_exc").skew(bias=False).fill_nan(None).alias(f"rskew{sfx}")
     )
     return df
 
@@ -9465,9 +9482,10 @@ def prc_to_high(df, sfx, __min):
         df.group_by(["id_int", "group_number"])
         .agg(
             [
-                (col("prc_adj").sort_by("date").last() / col("prc_adj").max()).alias(
-                    f"prc_highprc{sfx}"
-                ),
+                _guard_constant(
+                    "prc_adj",
+                    col("prc_adj").sort_by("date").last() / col("prc_adj").max(),
+                ).alias(f"prc_highprc{sfx}"),
                 pl.count("prc_adj").alias("n"),
             ]
         )
@@ -9499,9 +9517,13 @@ def capm(df, sfx, __min):
         .agg(
             [
                 (pl.cov("ret_exc", "mktrf") / pl.var("mktrf")).alias(f"beta{sfx}"),
-                (col("ret_exc") - col("mktrf") * (pl.cov("ret_exc", "mktrf") / pl.var("mktrf")))
-                .std()
-                .alias(f"ivol_capm{sfx}"),
+                _guard_constant(
+                    "ret_exc",
+                    (
+                        col("ret_exc")
+                        - col("mktrf") * (pl.cov("ret_exc", "mktrf") / pl.var("mktrf"))
+                    ).std(),
+                ).alias(f"ivol_capm{sfx}"),
             ]
         )
     )
@@ -9526,7 +9548,7 @@ def ami(df, sfx, __min):
         df.group_by(["id_int", "group_number"])
         .agg(
             [
-                (col("ret").abs() / aux_1 * 1e6).mean().alias(f"ami{sfx}"),
+                (col("ret").abs() / aux_1 * 1e6).mean().fill_nan(None).alias(f"ami{sfx}"),
                 pl.count("dolvol_d").alias("n"),
             ]
         )
@@ -9603,9 +9625,13 @@ def capm_ext(df, sfx, __min):
     df = df.group_by(["id_int", "group_number"]).agg(
         [
             beta_col.cast(pl.Float64).alias(f"beta{sfx}"),
-            residual_col.std().alias(f"ivol_capm{sfx}"),
-            residual_col.skew(bias=False).alias(f"iskew_capm{sfx}"),
-            (exp_coskew1 / exp_coskew2).alias(f"coskew{sfx}"),
+            _guard_constant("ret_exc", residual_col.std()).alias(f"ivol_capm{sfx}"),
+            _guard_constant("ret_exc", residual_col.skew(bias=False))
+            .fill_nan(None)
+            .alias(f"iskew_capm{sfx}"),
+            _guard_constant("ret_exc", exp_coskew1 / exp_coskew2)
+            .fill_nan(None)
+            .alias(f"coskew{sfx}"),
         ]
     )
     return df
@@ -9630,8 +9656,10 @@ def ff3(df, sfx, __min):
         df.filter(col("smb_ff").is_not_null() & col("hml").is_not_null())
         .group_by(["id_int", "group_number"])
         .agg(
-            res_exp.std(ddof=3).alias(f"ivol_ff3{sfx}"),
-            res_exp.skew(bias=False).alias(f"iskew_ff3{sfx}"),
+            _guard_constant("ret_exc", res_exp.std(ddof=3)).alias(f"ivol_ff3{sfx}"),
+            _guard_constant("ret_exc", res_exp.skew(bias=False))
+            .fill_nan(None)
+            .alias(f"iskew_ff3{sfx}"),
         )
     )
     return df
@@ -9658,8 +9686,10 @@ def hxz4(df, sfx, __min):
         )
         .group_by(["id_int", "group_number"])
         .agg(
-            res_exp.std(ddof=4).alias(f"ivol_hxz4{sfx}"),
-            res_exp.skew(bias=False).alias(f"iskew_hxz4{sfx}"),
+            _guard_constant("ret_exc", res_exp.std(ddof=4)).alias(f"ivol_hxz4{sfx}"),
+            _guard_constant("ret_exc", res_exp.skew(bias=False))
+            .fill_nan(None)
+            .alias(f"iskew_hxz4{sfx}"),
         )
     )
     return df
@@ -9726,6 +9756,7 @@ def dolvol(df, sfx, __min):
             pl.when(col("dolvol_d").mean() != 0)
             .then(col("dolvol_d").std() / col("dolvol_d").mean())
             .otherwise(fl_none())
+            .fill_nan(None)
             .alias(f"dolvol_var{sfx}"),
         ]
     )
@@ -9757,6 +9788,7 @@ def turnover(df, sfx, __min):
             pl.when(col(f"turnover{sfx}") != 0)
             .then(col("turnover_std") / col(f"turnover{sfx}"))
             .otherwise(fl_none())
+            .fill_nan(None)
             .alias(f"turnover_var{sfx}"),
         )
         .filter(col("n") >= __min)
@@ -9781,7 +9813,7 @@ def mktcorr(df, sfx, __min):
         df.group_by(["id_int", "group_number"])
         .agg(
             pl.len().alias("n"),
-            pl.corr("ret_exc_3l", "mkt_exc_3l").alias(f"corr{sfx}"),
+            pl.corr("ret_exc_3l", "mkt_exc_3l").fill_nan(None).alias(f"corr{sfx}"),
         )
         .filter(col("n") >= __min)
         .drop("n")
