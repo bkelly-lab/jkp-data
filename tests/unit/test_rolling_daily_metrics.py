@@ -74,7 +74,7 @@ class TestRvol:
             {
                 "id_int": [1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2],
                 "group_number": [10, 10, 10, 20, 20, 20, 10, 10, 10, 20, 20, 20],
-                "ret_exc": [1.0, 2.0, 3.0, 2.0, 4.0, 4.0, 3.0, 3.0, 3.0, -1.0, 0.0, 1.0],
+                "ret_exc": [1.0, 2.0, 3.0, 2.0, 4.0, 4.0, 3.0, 3.0, 3.1, -1.0, 0.0, 1.0],
             }
         )
 
@@ -88,11 +88,12 @@ class TestRvol:
         # Polars std() is sample std (ddof=1), so:
         # (1,10): std([1,2,3]) = 1.0
         # (1,20): std([2,4,4]) = sqrt(4/3)
-        # (2,10): std([3,3,3]) = 0.0
+        # (2,10): std([3.0,3.0,3.1]) ≈ 0.0577 (non-constant, so not nulled)
         # (2,20): std([-1,0,1]) = 1.0
+        expected = [1.0, np.sqrt(4.0 / 3.0), np.std([3.0, 3.0, 3.1], ddof=1), 1.0]
         np.testing.assert_allclose(
             result["rvol_21d"].to_list(),
-            [1.0, np.sqrt(4.0 / 3.0), 0.0, 1.0],
+            expected,
             **tolerance.STANDARD,
             err_msg=f"Unexpected rvol values: {result['rvol_21d'].to_list()}",
         )

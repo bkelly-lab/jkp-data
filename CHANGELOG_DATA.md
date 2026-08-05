@@ -3,6 +3,11 @@ This change log keeps track of changes to the underlying data set. In brackets, 
 
 This repository ports the original SAS pipeline ([ReplicationCrisis](https://github.com/bkelly-lab/ReplicationCrisis)) to Python using Polars. Entries up to and including 05-03-2025 are from the original change log.
 
+## 05-08-2026
+__Changes__:
+- Nulled rolling daily characteristics computed over constant (non-varying) return/price windows; affected columns include `rvol_*`, `ivol_capm_*`, `ivol_ff3_*`, `ivol_hxz4_*`, `rmax*`, `rskew_*`, `iskew_*`, `coskew_*`, `corr_*`, and `prc_highprc_*` ([#256](https://github.com/bkelly-lab/jkp-data/pull/256))
+- Added non-finite (NaN/inf) backstop scrub in `finish_daily_chars` to prevent degenerate values from reaching portfolio construction
+
 ## 23-07-2026
 __Changes__:
 - Added local-currency overnight/intraday return columns (`ret_intraday_local`, `ret_overnight_local`) alongside the existing USD versions, following the Lou, Polk, and Skouras (2019) decomposition:
