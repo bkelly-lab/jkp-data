@@ -56,6 +56,7 @@ SCHEMA_CRSP_SF: dict[str, pl.DataType] = {
     "vol": pl.Int64,
     "prc_high": pl.Float64,
     "prc_low": pl.Float64,
+    "del_flag": pl.Utf8,
     "common": pl.Int32,
     "primaryexch": pl.Utf8,
     "conditionaltype": pl.Utf8,
@@ -94,6 +95,7 @@ def _crsp_row(
     me: float | None,
     *,
     nasdaq: bool,
+    del_flag: str | None = None,
     prc_open: float | None = None,
     prc_close: float | None = None,
 ) -> dict[str, object]:
@@ -114,6 +116,7 @@ def _crsp_row(
         "vol": vol,
         "prc_high": prc + 1.0,
         "prc_low": prc - 1.0,
+        "del_flag": del_flag,
         "common": 1,
         "primaryexch": "Q" if nasdaq else "N",
         "conditionaltype": "RW",
@@ -248,16 +251,60 @@ def build_crsp_sf_input(freq: str) -> pl.DataFrame:
                 10003, 103, date(2005, 3, 31), 15.0, 0.0, 0.02, 0.02, 300, 50.0, nasdaq=False
             ),
             _crsp_row(
-                10003, 103, date(2005, 4, 29), 16.0, 1.0, 0.04, 0.03, 310, 52.0, nasdaq=False
+                10003,
+                103,
+                date(2005, 4, 29),
+                16.0,
+                1.0,
+                0.04,
+                0.03,
+                310,
+                52.0,
+                nasdaq=False,
+                del_flag="M",
             ),
             # 10004 permco 104: c3 (reason BKPY) delret imputation.
-            _crsp_row(10004, 104, date(2006, 5, 31), 8.0, 1.0, 0.05, 0.05, 200, 30.0, nasdaq=False),
+            _crsp_row(
+                10004,
+                104,
+                date(2006, 5, 31),
+                8.0,
+                1.0,
+                0.05,
+                0.05,
+                200,
+                30.0,
+                nasdaq=False,
+                del_flag="M",
+            ),
             # 10005 permco 105: delret present, non-bad codes -> kept as-is.
             _crsp_row(
-                10005, 105, date(2007, 6, 29), 12.0, 1.0, 0.03, 0.03, 250, 40.0, nasdaq=False
+                10005,
+                105,
+                date(2007, 6, 29),
+                12.0,
+                1.0,
+                0.03,
+                0.03,
+                250,
+                40.0,
+                nasdaq=False,
+                del_flag="M",
             ),
             # 10006 permco 106: ret null + delret present -> c7 backfill.
-            _crsp_row(10006, 106, date(2008, 7, 31), 5.0, 1.0, None, None, 150, 20.0, nasdaq=False),
+            _crsp_row(
+                10006,
+                106,
+                date(2008, 7, 31),
+                5.0,
+                1.0,
+                None,
+                None,
+                150,
+                20.0,
+                nasdaq=False,
+                del_flag="M",
+            ),
             # 10007 permco 107: rf-only month, then neither-rf-nor-t30ret + me null.
             _crsp_row(10007, 107, date(2009, 8, 31), 7.0, 1.0, 0.02, 0.02, 100, 25.0, nasdaq=False),
             _crsp_row(10007, 107, date(2009, 9, 30), 8.0, 1.0, 0.01, 0.01, 110, None, nasdaq=False),
@@ -276,9 +323,21 @@ def build_crsp_sf_input(freq: str) -> pl.DataFrame:
             ),
             # 20002 permco 200 NYSE, same day as 20001 d3 -> me_company daily sum.
             _crsp_row(20002, 200, date(2000, 1, 5), 20.0, 1.0, 0.02, 0.02, 500, 80.0, nasdaq=False),
-            # 20003 permco 203: delist only on the exact day 2000-01-07 (c2).
+            # 20003 permco 203: delist only on the exact day 2000-01-07.
             _crsp_row(20003, 203, date(2000, 1, 6), 15.0, 1.0, 0.03, 0.03, 300, 50.0, nasdaq=False),
-            _crsp_row(20003, 203, date(2000, 1, 7), 15.0, 1.0, 0.04, 0.04, 310, 52.0, nasdaq=False),
+            _crsp_row(
+                20003,
+                203,
+                date(2000, 1, 7),
+                15.0,
+                1.0,
+                0.04,
+                0.04,
+                310,
+                52.0,
+                nasdaq=False,
+                del_flag="Y",
+            ),
             # 20004 permco 204: t30ret present -> ret_exc = ret - t30ret/21.
             _crsp_row(20004, 204, date(2000, 1, 4), 9.0, 1.0, 0.05, 0.05, 90, 60.0, nasdaq=False),
         ]
