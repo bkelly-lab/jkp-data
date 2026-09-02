@@ -124,25 +124,37 @@ def test_div_tot(test_paths: DataPaths) -> None:
 def test_bad_delist_imputes_minus_030(
     test_paths: DataPaths, reason: str, action: str, status: str, payment: str
 ) -> None:
-    """Null delret in a c2/c3 bucket is imputed to -0.30 then compounded."""
-    rows = [_crsp_row(1, 1, date(2001, 1, 31), 10.0, 1.0, 0.04, 0.04, 100, 1.0, nasdaq=False)]
+    """Null delret in a c2/c3 bucket with M flag is imputed to -0.30 then compounded."""
+    rows = [
+        _crsp_row(
+            1, 1, date(2001, 1, 31), 10.0, 1.0, 0.04, 0.04, 100, 1.0, nasdaq=False, del_flag="M"
+        )
+    ]
     dels = [_del_row(1, date(2001, 1, 15), None, action, status, reason, payment)]
     df = _run(test_paths, "m", rows, dels)
     assert _val(df, 1, date(2001, 1, 31), "ret") == pytest.approx((0.04 + 1) * (1 - 0.3) - 1)
 
 
 def test_non_bad_null_delist_not_imputed(test_paths: DataPaths) -> None:
-    """A delist with null delret but non-bad codes is NOT imputed; ret is
-    compounded with delret coalesced to 0 (i.e. unchanged)."""
-    rows = [_crsp_row(1, 1, date(2001, 1, 31), 10.0, 1.0, 0.04, 0.04, 100, 1.0, nasdaq=False)]
+    """A delist with null delret but non-bad codes under M flag is NOT imputed;
+    delret stays null, coalesces to 0, so ret is unchanged."""
+    rows = [
+        _crsp_row(
+            1, 1, date(2001, 1, 31), 10.0, 1.0, 0.04, 0.04, 100, 1.0, nasdaq=False, del_flag="M"
+        )
+    ]
     dels = [_del_row(1, date(2001, 1, 15), None, "MERG", None, None, None)]
     df = _run(test_paths, "m", rows, dels)
     assert _val(df, 1, date(2001, 1, 31), "ret") == pytest.approx(0.04)
 
 
 def test_ret_backfill_when_missing(test_paths: DataPaths) -> None:
-    """ret null + delret present -> ret set to 0 then compounded to equal delret."""
-    rows = [_crsp_row(1, 1, date(2001, 1, 31), 10.0, 1.0, None, None, 100, 1.0, nasdaq=False)]
+    """ret null + delret present under M flag -> ret set to 0 then compounded."""
+    rows = [
+        _crsp_row(
+            1, 1, date(2001, 1, 31), 10.0, 1.0, None, None, 100, 1.0, nasdaq=False, del_flag="M"
+        )
+    ]
     dels = [_del_row(1, date(2001, 1, 15), -0.2, None, None, None, None)]
     df = _run(test_paths, "m", rows, dels)
     assert _val(df, 1, date(2001, 1, 31), "ret") == pytest.approx(-0.2)
@@ -193,16 +205,18 @@ def test_me_company(test_paths: DataPaths) -> None:
     assert _val(df, 4, d, "me_company") is None
 
 
-def test_daily_delist_exact_date_join(test_paths: DataPaths) -> None:
-    """Daily delist applies only on the exact day date==delistingdt."""
+def test_daily_delist_no_compound(test_paths: DataPaths) -> None:
+    """Daily delisting returns are never compounded; DlyRet is used as-is."""
     rows = [
         _crsp_row(1, 1, date(2000, 1, 6), 10.0, 1.0, 0.03, 0.03, 100, 1.0, nasdaq=False),
-        _crsp_row(1, 1, date(2000, 1, 7), 10.0, 1.0, 0.04, 0.04, 100, 1.0, nasdaq=False),
+        _crsp_row(
+            1, 1, date(2000, 1, 7), 10.0, 1.0, 0.04, 0.04, 100, 1.0, nasdaq=False, del_flag="Y"
+        ),
     ]
     dels = [_del_row(1, date(2000, 1, 7), None, "GDR", "VCL", "UNAV", "PRCF")]
     df = _run(test_paths, "d", rows, dels)
-    assert _val(df, 1, date(2000, 1, 6), "ret") == pytest.approx(0.03)  # unaffected
-    assert _val(df, 1, date(2000, 1, 7), "ret") == pytest.approx((0.04 + 1) * (1 - 0.3) - 1)
+    assert _val(df, 1, date(2000, 1, 6), "ret") == pytest.approx(0.03)
+    assert _val(df, 1, date(2000, 1, 7), "ret") == pytest.approx(0.04)
 
 
 @pytest.mark.parametrize("freq", ["m", "d"])
@@ -215,7 +229,7 @@ def test_both_freq_filename_and_columns(test_paths: DataPaths, freq: str) -> Non
     cols = pl.read_parquet(out).columns
     for extra in ("dolvol", "div_tot", "ret_exc", "me_company"):
         assert extra in cols
-    for dropped in ("delret", "rf", "t30ret", "merge_aux", "delistingdt"):
+    for dropped in ("delret", "del_flag", "rf", "t30ret", "merge_aux", "delistingdt"):
         assert dropped not in cols
 
 
@@ -311,39 +325,40 @@ C3_REASONS = [
 
 @pytest.mark.parametrize("reason", C3_REASONS)
 def test_c3_every_reason_code_imputes(test_paths: DataPaths, reason: str) -> None:
-    """Every reason in the c3 is_in list (with GDR/VCL/PRCF, null delret) imputes
-    delret=-0.30 and compounds it into ret."""
+    """Every reason in the c3 is_in list (with GDR/VCL/PRCF, null delret, M flag)
+    imputes delret=-0.30 and compounds it into ret."""
     d = date(2001, 1, 31)
-    rows = [_crsp_row(1, 1, d, 10.0, 1.0, 0.02, 0.02, 100, 1.0, nasdaq=False)]
+    rows = [_crsp_row(1, 1, d, 10.0, 1.0, 0.02, 0.02, 100, 1.0, nasdaq=False, del_flag="M")]
     dels = [_del_row(1, date(2001, 1, 15), None, "GDR", "VCL", reason, "PRCF")]
     df = _run(test_paths, "m", rows, dels)
     assert _val(df, 1, d, "ret") == pytest.approx((0.02 + 1) * (1 - 0.3) - 1)
 
 
 def test_c2_near_miss_not_imputed(test_paths: DataPaths) -> None:
-    """UNAV with one c2 field wrong (status != VCL) is neither c2 nor c3, so the
-    null delret is not imputed and ret is unchanged."""
+    """UNAV with one c2 field wrong (status != VCL) under M flag is neither c2
+    nor c3, so null delret is not imputed and ret is unchanged."""
     d = date(2001, 1, 31)
-    rows = [_crsp_row(1, 1, d, 10.0, 1.0, 0.02, 0.02, 100, 1.0, nasdaq=False)]
+    rows = [_crsp_row(1, 1, d, 10.0, 1.0, 0.02, 0.02, 100, 1.0, nasdaq=False, del_flag="M")]
     dels = [_del_row(1, date(2001, 1, 15), None, "GDR", "ACT", "UNAV", "PRCF")]
     df = _run(test_paths, "m", rows, dels)
     assert _val(df, 1, d, "ret") == pytest.approx(0.02)
 
 
 def test_c3_near_miss_wrong_action_not_imputed(test_paths: DataPaths) -> None:
-    """A c3 reason (BKPY) with a non-GDR action fails c3 and is not imputed."""
+    """A c3 reason (BKPY) with a non-GDR action under M flag fails c3 and is
+    not imputed."""
     d = date(2001, 1, 31)
-    rows = [_crsp_row(1, 1, d, 10.0, 1.0, 0.02, 0.02, 100, 1.0, nasdaq=False)]
+    rows = [_crsp_row(1, 1, d, 10.0, 1.0, 0.02, 0.02, 100, 1.0, nasdaq=False, del_flag="M")]
     dels = [_del_row(1, date(2001, 1, 15), None, "MERG", "VCL", "BKPY", "PRCF")]
     df = _run(test_paths, "m", rows, dels)
     assert _val(df, 1, d, "ret") == pytest.approx(0.02)
 
 
 def test_present_delret_in_bad_bucket_not_overwritten(test_paths: DataPaths) -> None:
-    """c4 gates on delret being null (c1); a non-null delret in a c2 bucket is
-    kept and compounded, never replaced by -0.30."""
+    """c4 gates on delret being null (c1); a non-null delret in a c2 bucket with
+    M flag is kept and compounded, never replaced by -0.30."""
     d = date(2001, 1, 31)
-    rows = [_crsp_row(1, 1, d, 10.0, 1.0, 0.02, 0.02, 100, 1.0, nasdaq=False)]
+    rows = [_crsp_row(1, 1, d, 10.0, 1.0, 0.02, 0.02, 100, 1.0, nasdaq=False, del_flag="M")]
     dels = [_del_row(1, date(2001, 1, 15), 0.1, "GDR", "VCL", "UNAV", "PRCF")]
     df = _run(test_paths, "m", rows, dels)
     assert _val(df, 1, d, "ret") == pytest.approx((0.02 + 1) * (0.1 + 1) - 1)
@@ -411,6 +426,7 @@ def test_output_dtypes(test_paths: DataPaths) -> None:
         assert df.schema[c] == pl.Float64
     for dropped in (
         "delret",
+        "del_flag",
         "delreasontype",
         "delactiontype",
         "delpaymenttype",
@@ -426,3 +442,73 @@ def test_empty_daily_input_yields_typed_empty(test_paths: DataPaths) -> None:
     assert df.height == 0
     for c in ("permno", "date", "vol", "dolvol", "div_tot", "ret_exc", "me_company"):
         assert c in df.columns
+
+
+# --- CIZ flag-conditional delisting (Xia 2026, SSRN 7243220) ----------------
+
+
+@pytest.mark.parametrize("flag", ["A", "P", "V"])
+def test_monthly_flag_APV_no_double_count(test_paths: DataPaths, flag: str) -> None:
+    """A/P/V flags indicate DelRet is already in MthRet; ret stays as-is even
+    when a non-null delret is present from stkdelists."""
+    d = date(2001, 1, 31)
+    rows = [_crsp_row(1, 1, d, 10.0, 1.0, -0.40, -0.40, 100, 1.0, nasdaq=False, del_flag=flag)]
+    dels = [_del_row(1, date(2001, 1, 15), -0.50, "GDR", "VCL", "UNAV", "PRCF")]
+    df = _run(test_paths, "m", rows, dels)
+    assert _val(df, 1, d, "ret") == pytest.approx(-0.40)
+
+
+def test_monthly_flag_G_uses_mthret_only(test_paths: DataPaths) -> None:
+    """G flag (contemporaneous timing): ret stays MthRet, no compounding."""
+    d = date(2001, 1, 31)
+    rows = [_crsp_row(1, 1, d, 10.0, 1.0, -0.10, -0.10, 100, 1.0, nasdaq=False, del_flag="G")]
+    dels = [_del_row(1, date(2001, 1, 15), -0.50, "GDR", "VCL", "UNAV", "PRCF")]
+    df = _run(test_paths, "m", rows, dels)
+    assert _val(df, 1, d, "ret") == pytest.approx(-0.10)
+
+
+def test_monthly_flag_N_no_adjustment(test_paths: DataPaths) -> None:
+    """N flag (no delisting adjustment): ret stays MthRet."""
+    d = date(2001, 1, 31)
+    rows = [_crsp_row(1, 1, d, 10.0, 1.0, 0.05, 0.05, 100, 1.0, nasdaq=False, del_flag="N")]
+    dels = [_del_row(1, date(2001, 1, 15), -0.30, None, None, None, None)]
+    df = _run(test_paths, "m", rows, dels)
+    assert _val(df, 1, d, "ret") == pytest.approx(0.05)
+
+
+def test_monthly_flag_M_preserves_imputation(test_paths: DataPaths) -> None:
+    """M flag (unobserved payoff): existing imputation + compounding is
+    preserved, matching pre-fix behavior for this flag."""
+    d = date(2001, 1, 31)
+    rows = [_crsp_row(1, 1, d, 10.0, 1.0, 0.02, 0.02, 100, 1.0, nasdaq=False, del_flag="M")]
+    dels = [_del_row(1, date(2001, 1, 15), None, "GDR", "VCL", "UNAV", "PRCF")]
+    df = _run(test_paths, "m", rows, dels)
+    assert _val(df, 1, d, "ret") == pytest.approx((0.02 + 1) * (1 - 0.3) - 1)
+
+
+def test_monthly_null_flag_no_compound(test_paths: DataPaths) -> None:
+    """Null del_flag (no delisting event in the stock file) means no
+    compounding even when a sedelist row happens to join."""
+    d = date(2001, 1, 31)
+    rows = [_crsp_row(1, 1, d, 10.0, 1.0, 0.04, 0.04, 100, 1.0, nasdaq=False)]
+    dels = [_del_row(1, date(2001, 1, 15), -0.50, "GDR", "VCL", "UNAV", "PRCF")]
+    df = _run(test_paths, "m", rows, dels)
+    assert _val(df, 1, d, "ret") == pytest.approx(0.04)
+
+
+def test_daily_dlydelflg_Y_no_compound(test_paths: DataPaths) -> None:
+    """DlyDelFlg=Y: delisting return already in DlyRet; no compounding."""
+    d = date(2000, 1, 7)
+    rows = [_crsp_row(1, 1, d, 10.0, 1.0, -0.40, -0.40, 100, 1.0, nasdaq=False, del_flag="Y")]
+    dels = [_del_row(1, d, -0.50, "GDR", "VCL", "UNAV", "PRCF")]
+    df = _run(test_paths, "d", rows, dels)
+    assert _val(df, 1, d, "ret") == pytest.approx(-0.40)
+
+
+def test_daily_dlydelflg_N_no_compound(test_paths: DataPaths) -> None:
+    """DlyDelFlg=N: ordinary return in DlyRet; no compounding."""
+    d = date(2000, 1, 7)
+    rows = [_crsp_row(1, 1, d, 10.0, 1.0, 0.02, 0.02, 100, 1.0, nasdaq=False, del_flag="N")]
+    dels = [_del_row(1, d, -0.30, None, None, None, None)]
+    df = _run(test_paths, "d", rows, dels)
+    assert _val(df, 1, d, "ret") == pytest.approx(0.02)

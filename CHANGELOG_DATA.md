@@ -3,6 +3,9 @@ This change log keeps track of changes to the underlying data set. In brackets, 
 
 This repository ports the original SAS pipeline ([ReplicationCrisis](https://github.com/bkelly-lab/ReplicationCrisis)) to Python using Polars. Entries up to and including 05-03-2025 are from the original change log.
 
+## 02-09-2026
+__Changes__:
+- Fixed double-counting of CRSP CIZ delisting returns. Under the CIZ flat-file format, `MthRet`/`DlyRet` may already include the delisting payoff depending on `MthDelFlg`/`DlyDelFlg`. The pipeline now propagates these flags (`del_flag`) and gates imputation, backfill, and compounding of `DelRet` from `crsp.stkdelists` on `del_flag == "M"` (monthly) only. Daily returns are never compounded with `DelRet`. Flags A/P/V/G/N (monthly) and Y/N (daily) already reflect or exclude the payoff in the stock-file return. See Xia (2026, SSRN 7243220) for background.
 ## 30-07-2026
 __Changes__:
 - Added daily overnight/intraday factor portfolios in both USD and local currency under `portfolios/`, parallel to the standard excess-return daily factors. Sorting and breakpoints use the usual `ret_exc_lead1m` characteristic sorts; only the daily return leg changes. For each component in `{overnight, intraday, overnight_local, intraday_local}` (using `ret_overnight`, `ret_intraday`, `ret_overnight_local`, `ret_intraday_local` respectively), the pipeline writes `pfs_{component}.parquet`, `hml_{component}.parquet`, `lms_{component}.parquet`, `clusters_{component}.parquet`, plus `regional_factors_{component}/`, `regional_clusters_{component}/`, and `country_factors_{component}/`. O/I portfolio returns are not excess returns (no risk-free subtraction). Winsorization of the daily return leg applies only to the standard `ret_exc` path; O/I legs are aggregated as-is. Industry and characteristics-managed portfolios are not rebuilt for O/I components. Monthly O/I factor portfolios are not produced.

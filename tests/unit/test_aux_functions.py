@@ -79,6 +79,7 @@ def _write_sf_fixture(raw_tables: Path, freq: str) -> tuple[date, date]:
                 "mthretx": [0.09, 0.01],
                 "mthvol": [1000, 1100],
                 "mthcumfacshr": [1.0, 1.0],
+                "mthdelflg": [None, None],
                 "mthaskhi": [10.5, 11.5],
                 "mthbidlo": [9.5, 10.5],
             }
@@ -101,6 +102,7 @@ def _write_sf_fixture(raw_tables: Path, freq: str) -> tuple[date, date]:
             "dlyretx": [0.009, 0.018],
             "dlyvol": [200, 300],
             "dlycumfacshr": [1.0, 1.0],
+            "dlydelflg": [None, None],
             "dlyhigh": [20.5, 21.5],
             "dlylow": [19.5, 20.5],
             "dlyopen": [19.8, 20.8],
