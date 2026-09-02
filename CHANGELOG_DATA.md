@@ -6,6 +6,9 @@ This repository ports the original SAS pipeline ([ReplicationCrisis](https://git
 ## 02-09-2026
 __Changes__:
 - Fixed double-counting of CRSP CIZ delisting returns. Under the CIZ flat-file format, `MthRet`/`DlyRet` may already include the delisting payoff depending on `MthDelFlg`/`DlyDelFlg`. The pipeline now propagates these flags (`del_flag`) and gates imputation, backfill, and compounding of `DelRet` from `crsp.stkdelists` on `del_flag == "M"` (monthly) only. Daily returns are never compounded with `DelRet`. Flags A/P/V/G/N (monthly) and Y/N (daily) already reflect or exclude the payoff in the stock-file return. See Xia (2026, SSRN 7243220) for background.
+## 30-07-2026
+__Changes__:
+- Added daily overnight/intraday factor portfolios in both USD and local currency under `portfolios/`, parallel to the standard excess-return daily factors. Sorting and breakpoints use the usual `ret_exc_lead1m` characteristic sorts; only the daily return leg changes. For each component in `{overnight, intraday, overnight_local, intraday_local}` (using `ret_overnight`, `ret_intraday`, `ret_overnight_local`, `ret_intraday_local` respectively), the pipeline writes `pfs_{component}.parquet`, `hml_{component}.parquet`, `lms_{component}.parquet`, `clusters_{component}.parquet`, plus `regional_factors_{component}/`, `regional_clusters_{component}/`, and `country_factors_{component}/`. O/I portfolio returns are not excess returns (no risk-free subtraction). Winsorization of the daily return leg applies only to the standard `ret_exc` path; O/I legs are aggregated as-is. Industry and characteristics-managed portfolios are not rebuilt for O/I components. Monthly O/I factor portfolios are not produced.
 
 ## 23-07-2026
 __Changes__:
@@ -15,6 +18,7 @@ __Changes__:
   - `ret_intraday_local = ret_intraday` (FX cancels in the open/close ratio)
   - `ret_overnight_local = (1 + ret_local) / (1 + ret_intraday_local) − 1`
   so that `(1 + ret_intraday)(1 + ret_overnight) = (1 + ret)` and `(1 + ret_intraday_local)(1 + ret_overnight_local) = (1 + ret_local)`. The overnight residual against `ret_local` instead of `ret` means daily FX moves no longer appear in `ret_overnight_local`. New columns are propagated through monthly compounding (`ret_intraday_local`, `ret_overnight_local`), one-month-ahead leads (`ret_intraday_local_lead1m`, `ret_overnight_local_lead1m`), daily country files, monthly returns, and daily factor portfolios. Also added the previously missing `_lead1m` columns for the USD variants to the monthly returns output.
+
 ## 15-07-2026
 __Changes__:
 - Applied the daily `zero_obs < 10` quality screen only to Compustat-sourced rows; CRSP stock-months with many zero-return days are no longer dropped from daily return-based characteristics and market correlation inputs
