@@ -3,6 +3,10 @@ This change log keeps track of changes to the underlying data set. In brackets, 
 
 This repository ports the original SAS pipeline ([ReplicationCrisis](https://github.com/bkelly-lab/ReplicationCrisis)) to Python using Polars. Entries up to and including 05-03-2025 are from the original change log.
 
+## 02-09-2026
+__Changes__:
+- Fixed double-counting of CRSP CIZ delisting returns. Under the CIZ flat-file format, `MthRet`/`DlyRet` may already include the delisting payoff depending on `MthDelFlg`/`DlyDelFlg`. The pipeline now propagates these flags (`del_flag`) and gates imputation, backfill, and compounding of `DelRet` from `crsp.stkdelists` on `del_flag == "M"` (monthly) only. Daily returns are never compounded with `DelRet`. Flags A/P/V/G/N (monthly) and Y/N (daily) already reflect or exclude the payoff in the stock-file return. See Xia (2026, SSRN 7243220) for background.
+
 ## 23-07-2026
 __Changes__:
 - Added local-currency overnight/intraday return columns (`ret_intraday_local`, `ret_overnight_local`) alongside the existing USD versions, following the Lou, Polk, and Skouras (2019) decomposition:
