@@ -185,3 +185,15 @@ class TestConnectCommand:
         result = runner.invoke(app, ["connect", "-r"])
         assert result.exit_code == 0
         mock_reset.assert_called_once_with(full_reset=True)
+
+
+@pytest.mark.unit
+class TestCliAppConfig:
+    """Guard the app-level configuration that hardens credential handling."""
+
+    def test_pretty_exceptions_show_locals_disabled(self) -> None:
+        """Frame locals must never be rendered in tracebacks: a WRDS Credentials
+        object bound in a command frame would otherwise be exposed to Typer's
+        pretty exception handler. This pins the setting so a future refactor of
+        the Typer(...) constructor cannot silently drop it."""
+        assert app.pretty_exceptions_show_locals is False
