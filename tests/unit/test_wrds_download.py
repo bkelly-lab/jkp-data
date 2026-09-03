@@ -45,159 +45,6 @@ class TestBuildProjection:
         assert "TRY_CAST(sich AS BIGINT) AS sich" in result
 
 
-class TestGenWrdsConnectionInfo:
-    """Tests for gen_wrds_connection_info() function."""
-
-    def test_connection_string_format(self):
-        """Connection string should have correct format."""
-        from jkp.data.aux_functions import gen_wrds_connection_info
-
-        result = gen_wrds_connection_info("testuser", "testpass")
-
-        assert "host=wrds-pgdata.wharton.upenn.edu" in result
-        assert "port=9737" in result
-        assert "dbname=wrds" in result
-        assert "user='testuser'" in result
-        assert "password='testpass'" in result
-        assert "sslmode=require" in result
-
-    def test_password_with_special_characters_is_quoted_and_escaped(self):
-        """A password containing spaces/quotes/backslashes must be single-quoted
-        with libpq escaping so it can't break the conninfo."""
-        from jkp.data.aux_functions import gen_wrds_connection_info
-
-        result = gen_wrds_connection_info("testuser", "p ss'w\\rd")
-
-        # spaces stay inside the quotes; ' and \ are backslash-escaped
-        assert "password='p ss\\'w\\\\rd'" in result
-        assert "sslmode=require" in result
-
-    def test_username_with_special_characters_is_quoted_and_escaped(self):
-        """A username with a space or quote must be single-quoted and escaped too,
-        or it breaks libpq's conninfo parsing just as an unquoted password would."""
-        from jkp.data.aux_functions import gen_wrds_connection_info
-
-        result = gen_wrds_connection_info("od d'user", None)
-
-        assert "user='od d\\'user'" in result
-
-    def test_password_omitted_when_none(self):
-        """With password=None the password= field is omitted so libpq reads
-        ~/.pgpass / $PGPASSFILE."""
-        from jkp.data.aux_functions import gen_wrds_connection_info
-
-        result = gen_wrds_connection_info("testuser", None)
-
-        assert "user='testuser'" in result
-        assert "password=" not in result
-        assert "sslmode=require" in result
-
-    def test_sql_literal_escapes_conninfo_for_embedding(self):
-        """_sql_literal must escape the conninfo so it embeds in single-quoted
-        ATTACH/postgres_scan SQL without a quoted password terminating the literal.
-        Proven at the parse layer — no postgres extension or network — so it runs
-        unconditionally in CI, unlike the ATTACH integration check below."""
-        duckdb = pytest.importorskip("duckdb")
-        from jkp.data.aux_functions import _sql_literal, gen_wrds_connection_info
-
-        conninfo = gen_wrds_connection_info("testuser", "p ss'w\\d")
-        con = duckdb.connect()
-
-        # Escaped: the whole conninfo parses as one string literal and round-trips.
-        assert con.execute(f"SELECT '{_sql_literal(conninfo)}'").fetchone()[0] == conninfo
-        # Unescaped: the raw quote terminates the literal early -> ParserException.
-        with pytest.raises(Exception) as excinfo:
-            con.execute(f"SELECT '{conninfo}'")
-        assert "Parser" in type(excinfo.value).__name__
-
-    def test_conninfo_embeds_in_sql_without_parse_error(self):
-        """Integration check (needs the DuckDB postgres extension): a real ATTACH
-        with the escaped conninfo must fail at the *connection* stage, not with a
-        ParserException — proving the SQL literal held together AND libpq accepted
-        the quoted conninfo. Also pins the password's echo format for the masking
-        in _attach_wrds."""
-        duckdb = pytest.importorskip("duckdb")
-        from jkp.data.aux_functions import _sql_literal, gen_wrds_connection_info
-
-        con = duckdb.connect()
-        try:
-            con.execute("INSTALL postgres; LOAD postgres")
-        except Exception:  # pragma: no cover - environment without the extension
-            pytest.skip("duckdb postgres extension unavailable")
-
-        # A password with a space, a single quote, and a backslash — the exact
-        # class the libpq quoting targets. Point at a dead local endpoint so the
-        # ATTACH fails to *connect* rather than hanging on a real socket.
-        conninfo = (
-            gen_wrds_connection_info("testuser", "p ss'w\\d")
-            .replace("host=wrds-pgdata.wharton.upenn.edu", "host=127.0.0.1")
-            .replace("port=9737", "port=9")
-            .replace("sslmode=require", "sslmode=disable")
-            # cap any hang if something ever happens to listen on :9
-            + " connect_timeout=2"
-        )
-        # Guard the neutering: if the WRDS host/port constants ever change, the
-        # .replace() calls above would silently no-op and this test would dial the
-        # real WRDS endpoint. Assert the substitutions actually took effect.
-        assert "host=127.0.0.1" in conninfo and "port=9 " in conninfo
-        assert "wrds-pgdata.wharton.upenn.edu" not in conninfo
-
-        from jkp.data.aux_functions import _password_in_error
-
-        with pytest.raises(Exception) as excinfo:
-            con.execute(f"ATTACH '{_sql_literal(conninfo)}' AS wrds (TYPE postgres, READ_ONLY)")
-        err = str(excinfo.value)
-        # A ParserException would mean the SQL literal was broken by the password's
-        # quote (the SQL-escaping half of the fix).
-        assert "Parser" not in type(excinfo.value).__name__, err
-        # Reaching the connection stage proves libpq accepted the quoted conninfo
-        # (the libpq-escaping half): a regression from \' to ''-style escaping would
-        # fail here as a conninfo-syntax error even though the parse test still passes.
-        assert "connect" in err.lower(), err
-        # And DuckDB really echoes the password in the libpq-escaped form the masking
-        # matches — pinned against a real error, not a synthesized one, so a DuckDB
-        # echo-format change can't silently regress _attach_wrds's redaction.
-        assert _password_in_error(err, "p ss'w\\d")
-
-    def test_password_masking_matches_libpq_escaped_form(self):
-        """DuckDB echoes the connection string with the password in libpq-escaped
-        form, so the masking must match that form — a raw ``password in text``
-        check misses every special-character password."""
-        from jkp.data.aux_functions import (
-            _password_in_error,
-            _pg_escape_value,
-            _redact_password,
-        )
-
-        pw = "ab'cd\\e"
-        err = f"IO Error: Unable to connect at password='{_pg_escape_value(pw)}' sslmode=disable"
-
-        assert pw not in err  # the raw password does not appear verbatim
-        assert _password_in_error(err, pw)
-        redacted = _redact_password(err, pw)
-        assert "***" in redacted
-        assert _pg_escape_value(pw) not in redacted
-
-    def test_password_masking_matches_sql_doubled_form(self):
-        """A parser error echoes the *raw statement text*, where the password is
-        SQL-escaped over the libpq-escaped form. Masking must match that composed
-        form too — neither the raw nor the plain libpq-escaped form appears."""
-        from jkp.data.aux_functions import (
-            _password_in_error,
-            _pg_escape_value,
-            _redact_password,
-            _sql_literal,
-        )
-
-        pw = "ab'cd\\e"
-        composed = _sql_literal(_pg_escape_value(pw))
-        err = f"Parser Error: syntax error near ...{composed}... in statement"
-
-        assert pw not in err and _pg_escape_value(pw) not in err  # only the composed form
-        assert _password_in_error(err, pw)
-        assert composed not in _redact_password(err, pw)
-
-
 class TestDownloadRawDataTablesBranching:
     """Tests for download_raw_data_tables() branching logic.
 
@@ -372,23 +219,36 @@ class TestEffectiveDownloadWorkers:
         assert _effective_download_workers(4, 25) == 4
 
 
+@pytest.fixture
+def mock_duckdb_multi():
+    """Patch duckdb so each connect() returns a distinct mock connection.
+
+    Each mock's __enter__ returns itself, mirroring a real DuckDB connection used as a
+    context manager (``with duckdb.connect() as con`` binds con to the connection), so the
+    worker's ATTACH/DETACH calls are recorded on the same mock and __exit__ closes it.
+
+    Module-scoped rather than nested in one test class: every test that reaches the
+    download path needs the dual patch below, and hand-rolled single-module patches
+    silently fall through to a real INSTALL.
+    """
+    # Patch duckdb in both modules that open connections on the download path:
+    # the per-worker ATTACH connections live in aux_functions, while the one
+    # up-front INSTALL connection is opened by wrds_connection._install_postgres_extension.
+    # Pointing both names at the same mock keeps a single ordered connect() sequence
+    # (install consumes conns[0], workers consume conns[1:]).
+    with (
+        patch("jkp.data.aux_functions.duckdb") as mock,
+        patch("jkp.data.wrds_connection.duckdb", mock),
+    ):
+        conns = [MagicMock(name=f"conn{i}") for i in range(32)]
+        for c in conns:
+            c.__enter__.return_value = c
+        mock.connect.side_effect = conns
+        yield mock, conns
+
+
 class TestParallelDownload:
     """Tests for the parallel (max_workers > 1) download path."""
-
-    @pytest.fixture
-    def mock_duckdb_multi(self):
-        """Patch duckdb so each connect() returns a distinct mock connection.
-
-        Each mock's __enter__ returns itself, mirroring a real DuckDB connection used as a
-        context manager (``with duckdb.connect() as con`` binds con to the connection), so the
-        worker's ATTACH/DETACH calls are recorded on the same mock and __exit__ closes it.
-        """
-        with patch("jkp.data.aux_functions.duckdb") as mock:
-            conns = [MagicMock(name=f"conn{i}") for i in range(32)]
-            for c in conns:
-                c.__enter__.return_value = c
-            mock.connect.side_effect = conns
-            yield mock, conns
 
     def _record_tables(self, mock_dl):
         """Make download_wrds_table_attached record the tables it's asked to download."""
@@ -757,7 +617,7 @@ class TestDateRangeSplitting:
     @patch("jkp.data.aux_functions._compute_histograms")
     @patch("jkp.data.aux_functions.download_wrds_table_attached")
     def test_parallel_download_aggregates_concat_failures(
-        self, mock_dl, mock_hist, mock_concat, test_paths
+        self, mock_dl, mock_hist, mock_concat, mock_duckdb_multi, test_paths
     ):
         """A concat failure surfaces as one aggregated error, not a raw first-failure exception."""
         from jkp.data.aux_functions import SPLIT_TABLES, download_raw_data_tables
@@ -765,21 +625,16 @@ class TestDateRangeSplitting:
         mock_hist.return_value = dict.fromkeys(SPLIT_TABLES, [(y, 10) for y in range(2010, 2022)])
         mock_concat.side_effect = RuntimeError("disk full")
 
-        with patch("jkp.data.aux_functions.duckdb") as mock_duckdb:
-            conns = [MagicMock(name=f"c{i}") for i in range(40)]
-            for c in conns:
-                c.__enter__.return_value = c
-            mock_duckdb.connect.side_effect = conns
-            with pytest.raises(RuntimeError, match="concatenation"):
-                download_raw_data_tables(
-                    test_paths, "user", "pass", end_date=dt.date(2025, 12, 31), max_workers=4
-                )
+        with pytest.raises(RuntimeError, match="concatenation"):
+            download_raw_data_tables(
+                test_paths, "user", "pass", end_date=dt.date(2025, 12, 31), max_workers=4
+            )
 
     @patch("jkp.data.aux_functions._concat_chunks")
     @patch("jkp.data.aux_functions._compute_histograms")
     @patch("jkp.data.aux_functions.download_wrds_table_attached")
     def test_parallel_download_splits_giant_tables(
-        self, mock_dl, mock_hist, mock_concat, test_paths
+        self, mock_dl, mock_hist, mock_concat, mock_duckdb_multi, test_paths
     ):
         """End-to-end (mocked): with an end_date, the giant tables expand into max_workers chunks."""
         from jkp.data.aux_functions import SPLIT_TABLES, download_raw_data_tables
@@ -796,14 +651,9 @@ class TestDateRangeSplitting:
 
         mock_dl.side_effect = record
 
-        with patch("jkp.data.aux_functions.duckdb") as mock_duckdb:
-            conns = [MagicMock(name=f"c{i}") for i in range(40)]
-            for c in conns:
-                c.__enter__.return_value = c
-            mock_duckdb.connect.side_effect = conns
-            download_raw_data_tables(
-                test_paths, "user", "pass", end_date=dt.date(2025, 12, 31), max_workers=4
-            )
+        download_raw_data_tables(
+            test_paths, "user", "pass", end_date=dt.date(2025, 12, 31), max_workers=4
+        )
 
         counts = Counter(recorded)
         for split_table in SPLIT_TABLES:
@@ -838,20 +688,15 @@ class TestDateRangeSplitting:
     @patch("jkp.data.aux_functions._compute_histograms")
     @patch("jkp.data.aux_functions.download_wrds_table_attached")
     def test_parallel_download_concatenates_each_split_table(
-        self, mock_dl, mock_hist, mock_concat, test_paths
+        self, mock_dl, mock_hist, mock_concat, mock_duckdb_multi, test_paths
     ):
         """The concat_map -> ThreadPoolExecutor wiring invokes _concat_chunks once per split table."""
         from jkp.data.aux_functions import SPLIT_TABLES, download_raw_data_tables
 
         mock_hist.return_value = dict.fromkeys(SPLIT_TABLES, [(y, 10) for y in range(2010, 2022)])
-        with patch("jkp.data.aux_functions.duckdb") as mock_duckdb:
-            conns = [MagicMock(name=f"c{i}") for i in range(40)]
-            for c in conns:
-                c.__enter__.return_value = c
-            mock_duckdb.connect.side_effect = conns
-            download_raw_data_tables(
-                test_paths, "user", "pass", end_date=dt.date(2025, 12, 31), max_workers=4
-            )
+        download_raw_data_tables(
+            test_paths, "user", "pass", end_date=dt.date(2025, 12, 31), max_workers=4
+        )
 
         assert mock_concat.call_count == len(SPLIT_TABLES)
         for call in mock_concat.call_args_list:
