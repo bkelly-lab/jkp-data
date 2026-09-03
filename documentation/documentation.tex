@@ -2529,7 +2529,7 @@ These stock-level columns are also used as the daily return leg when constructin
             \begin{itemize}
                 \item Create helper variables:
                 \begin{align*}
-                    \_o\_lat_t &= AT\mbox{*}_{t-1} \\
+                    \_o\_lat_t &= log\left(AT\mbox{*}_t\right) \\
                     \_o\_lev_t &= \frac{DEBT\mbox{*}_t}{AT\mbox{*}_t} \\
                     \_o\_wc_t &= \frac{CA\mbox{*}_t - CL\mbox{*}_t}{AT\mbox{*}_t}  \\
                     \_o\_roe_t &= \frac{NIX\mbox{*}_t}{AT\mbox{*}_t} \\
