@@ -172,8 +172,10 @@ class TestConnectCommand:
         result = runner.invoke(app, ["connect"])
         assert result.exit_code == 0
         assert "testuser" in result.output
-        mock_get_creds.assert_called_once()
-        mock_verify.assert_called_once()
+        # The verifier is handed to the resolver rather than called on its result, so
+        # the freshly-prompted path can run it between the prompt and the store.
+        mock_get_creds.assert_called_once_with(verify=mock_verify)
+        mock_verify.assert_not_called()
 
     @patch("jkp.data.wrds_credentials.reset_credentials")
     def test_connect_reset(self, mock_reset):

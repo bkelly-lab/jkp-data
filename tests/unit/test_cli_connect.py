@@ -3,6 +3,11 @@
 Complements TestConnectCommand in test_cli.py, focusing on how the command
 surfaces verify_wrds_connection's success/failure and never leaks the
 credential password into CLI output.
+
+`connect` injects the verifier into get_wrds_credentials rather than calling it
+on the result, so that a freshly prompted password is checked before it is
+stored. Verification failures therefore reach the command as an exception out of
+get_wrds_credentials, which is how these tests simulate them.
 """
 
 import re
@@ -36,16 +41,20 @@ class TestConnectVerification:
 
         assert result.exit_code == 0
         assert "Connected as:" in result.output
-        mock_verify.assert_called_once_with("testuser", "hunter2")
+        # Passed through, not applied here: verifying the returned credentials again
+        # would open a second WRDS connection and risk a second Duo push.
+        mock_get_creds.assert_called_once_with(verify=mock_verify)
+        mock_verify.assert_not_called()
 
     @patch("jkp.data.wrds_connection.verify_wrds_connection")
     @patch("jkp.data.wrds_credentials.get_wrds_credentials")
     def test_failure_exits_nonzero_with_message_on_stderr_no_traceback(
         self, mock_get_creds, mock_verify
     ):
-        mock_get_creds.return_value = Credentials(username="testuser", password="hunter2")
         message = "Failed to attach WRDS connection. Check credentials and MFA approval."
-        mock_verify.side_effect = RuntimeError(message)
+        # The injected verifier raises inside the resolver, so the failure surfaces
+        # from get_wrds_credentials rather than from a separate call in the command.
+        mock_get_creds.side_effect = RuntimeError(message)
 
         result = runner.invoke(app, ["connect"])
 
@@ -62,9 +71,8 @@ class TestConnectVerification:
         raising; this pins the CLI to surfacing that message verbatim without
         introducing a new leak (e.g. by echoing creds directly)."""
         password = "s3cr3t-p@ss"  # noqa: S105
-        mock_get_creds.return_value = Credentials(username="testuser", password=password)
         # Message the real code would raise: already password-free.
-        mock_verify.side_effect = RuntimeError(
+        mock_get_creds.side_effect = RuntimeError(
             "Failed to attach WRDS connection. Check credentials and MFA approval."
         )
 
