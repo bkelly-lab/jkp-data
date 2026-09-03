@@ -66,7 +66,7 @@ The pipeline has two entry points that run sequentially:
 
 Raw WRDS data → `data/raw/` → intermediate processing in `data/interim/` → final outputs in `data/processed/` (subdirectories: `characteristics/`, `portfolios/`, `return_data/`, `accounting_data/`, `other_output/`).
 
-Static reference data (`data/cluster_labels.csv`, `data/country_classification.xlsx`, `data/factor_details.xlsx`) is checked into the repo and used by the pipeline.
+Static reference data (`src/jkp/data/resources/cluster_labels.csv`, `src/jkp/data/resources/country_classification.xlsx`, `src/jkp/data/resources/factor_details.xlsx`) is packaged with the code and loaded via `_resource_path()` in `paths.py`, not read from the output directory.
 
 ## Code Conventions
 
