@@ -69,7 +69,7 @@ Jensen is at Yale School of Management; \url{www.tijensen.com}. Kelly is at AQR 
 	year = {2023}
 }	
 	\end{verbatim}
-	\item The Global Factor Data includes 406 characteristics and their associated factor portfolios.  This is a superset of the 153 factors analyzed in Jensen, Kelly, and Pedersen (2023).
+	\item The Global Factor Data includes 407 characteristics and their associated factor portfolios (no factor portfolio is constructed for \texttt{eqnpo\_60m}).  This is a superset of the 153 factors analyzed in Jensen, Kelly, and Pedersen (2023).
         \item This documentation is grouped into sections covering data downloads, identifier variables, industry identifiers, helper functions, accounting characteristics, market-based characteristics, detailed characteristic construction, FX conversion rate construction, and factor details and citations.
             \begin{itemize}
                 \item Data downloads describe the files available on jkpfactors.com/factor-returns and their columns.
@@ -2233,7 +2233,9 @@ These stock-level columns are also used as the daily return leg when constructin
 	
 	Net Equity Payout - 6 Month & eqnpo\_6m & $log\left(\frac{RI\mbox{*}_t}{RI\mbox{*}_{t-6}}\right) - log\left(\frac{ME\mbox{*}_t}{ME\mbox{*}_{t-6}}\right)$\\
 	
-	Net Equity Payout - 12 Month & eqnpo\_12m & $log\left(\frac{RI\mbox{*}_t}{RI\mbox{*}_{t-12}}\right) - log\left(\frac{ME\mbox{*}_t}{ME\mbox{*}_{t-12}}\right)$\\	
+	Net Equity Payout - 12 Month & eqnpo\_12m & $log\left(\frac{RI\mbox{*}_t}{RI\mbox{*}_{t-12}}\right) - log\left(\frac{ME\mbox{*}_t}{ME\mbox{*}_{t-12}}\right)$\\
+
+	Net Equity Payout - 60 Month & eqnpo\_60m & $log\left(\frac{RI\mbox{*}_t}{RI\mbox{*}_{t-60}}\right) - log\left(\frac{ME\mbox{*}_t}{ME\mbox{*}_{t-60}}\right)$\\
 
 	\hline 
 	\multicolumn{3}{|c|}{\textbf{Momentum/Reversal}} \\
@@ -2315,11 +2317,11 @@ These stock-level columns are also used as the daily return leg when constructin
 	
 	60 Month CAPM Beta & beta\_60m & $\frac{COVAR\_60M(RET\mbox{*}_t, MKTRF\mbox{*}_t)}{VARC\_60M(MKTRF\mbox{*}_t)}$ \\
 	
-	Performance Based Mispricing & mispricing\_perf\footnote{A rank characteristic has the value of that characteristics rank with respect to other companies' same characteristic of the same month and country scaled [0, 1]. This is identified with a ``r01" superscript.} &
+	Performance Based Mispricing & mispricing\_perf\footnote{Following \citeA{stambaugh2017}, each anomaly variable is sorted into monthly percentile ranks $P(\cdot)$; the ``positive" anomalies (gross profitability, momentum, return on assets) are ranked in descending order so that a higher percentile always indicates a more overpriced stock. Each cluster score is the equal-weighted average of the percentile ranks of its constituent anomalies (management cluster: six anomalies; performance cluster: five).} &
 		
 	$
 	\begin{aligned}
-		\frac{1}{4}\big(&O\_SCORE^{r01}_t + RET\_12\_1^{r01}_t + \\ &GP\_AT^{r01}_t + NIQ\_AT^{r01}_t\big)
+		\frac{1}{5}\big(&P(\text{Distress})_t + P(\text{O-score})_t + P(\text{ROA})_t + \\ &P(\text{Momentum})_t + P(\text{GP})_t\big)
 		\\ &
 	\end{aligned} 
 		$ 
@@ -2331,9 +2333,9 @@ These stock-level columns are also used as the daily return leg when constructin
 	Management Based Mispricing & mispricing\_mgmt & 
 	$
 	\begin{aligned}
-		\frac{1}{6}\big(&CHCSHO\_12M^{r01}_t + EQNPO\_12M^{r01}_t + \\ 
-		&OACCRUALS\_AT^{r01}_t +  NOA\_AT^{r01}_t + \\
-		&AT\_GR1^{r01}_t +  PPEINV\_GR1A^{r01}_t\big)
+		\frac{1}{6}\big(&P(\text{Net Stock Issues})_t + P(\text{Composite Issuance})_t + \\
+		&P(\text{Accruals})_t +  P(\text{NOA})_t + \\
+		&P(\text{Asset Growth})_t +  P(\text{Inv-to-Assets})_t\big)
 	\end{aligned} 
 	$
 		

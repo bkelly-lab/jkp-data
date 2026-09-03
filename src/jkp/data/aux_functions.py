@@ -17,7 +17,10 @@ from dataclasses import dataclass
 from datetime import date
 from math import exp, sqrt
 from pathlib import Path
-from typing import TypeVar
+from typing import TYPE_CHECKING, Literal, TypeVar
+
+if TYPE_CHECKING:
+    from .paths import DataPaths
 
 import duckdb
 import ibis
@@ -31,18 +34,49 @@ from .compustat_correction import (
     correct_decimal_errors,
     drop_unreliable_observations,
 )
-from .config import COLLECT_CHUNK_SIZE, CORRECTION_SPILL_COMPRESSION, END_DATE, MAIN_FILTERS
+from .config import (
+    COLLECT_CHUNK_SIZE,
+    CORRECTION_SPILL_COMPRESSION,
+    END_DATE,
+    FF_CCM_BACKDATE_FROM,
+    FF_CCM_BACKDATE_MAX_YEARS,
+    FF_CCM_BACKDATE_THROUGH,
+    FF_DFF_GATE_COMPUSTAT_PRE1954,
+    FF_DFF_MERGE_YEAR,
+    FF_DFF_SYNTH_COUNT,
+    FF_MIN_STOCKS_BP,
+    FF_MIN_STOCKS_PF,
+    FF_MISSING_RET_CODE,
+    FF_MISSING_RET_TOL,
+    FF_UMD_DAILY_LOOKBACK,
+    FF_UMD_DAILY_SKIP,
+    FF_UMD_MONTHLY_LOOKBACK,
+    FF_UMD_MONTHLY_SKIP,
+    FF_USE_DFF_BE,
+    HXZ_MIN_STOCKS_BP,
+    HXZ_MIN_STOCKS_PF,
+    MAIN_FILTERS,
+    MP_ANOMALY_LIST,
+    MP_CCM_LINKTYPES,
+    MP_CHS_DECAY,
+    MP_DISTRESS_BETAS,
+    MP_LAG_M,
+    MP_MGMT_PCT_COLS,
+    MP_MIN_OBS_PF_WORLD,
+    MP_MIN_STKS_BP_WORLD,
+    MP_PERF_PCT_COLS,
+    MP_POSITIVE_ANOMALIES,
+    MP_START_FACTOR_EOM,
+    MP_WORLD_JKP_CHAR,
+    US_EXCNTRY,
+)
 from .output_writer import write_dataframe
-from .paths import DataPaths
+from .paths import DataPaths, get_dff_be_path
 from .wrds_credentials import WRDS_DB, WRDS_HOST, WRDS_PORT
 
 
 def fl_none():
     return pl.lit(None).cast(pl.Float64)
-
-
-def bo_false():
-    return pl.lit(False).cast(pl.Boolean)
 
 
 def measure_time(func):
@@ -161,25 +195,6 @@ def sic_naics_aux(filename):
     return df
 
 
-def load_age_aux(filename, filter_monthend=False):
-    """
-    Description:
-        Load gvkey–datadate pairs from a parquet; optionally filter to month-end rows.
-
-    Steps:
-        1) Scan parquet lazily.
-        2) If filter_monthend, keep rows with monthend == 1.
-        3) Select gvkey, datadate.
-
-    Output:
-        LazyFrame of (gvkey, datadate).
-    """
-    df = pl.scan_parquet(filename)
-    if filter_monthend:
-        df = df.filter(col("monthend") == 1)
-    return df.select(["gvkey", "datadate"])
-
-
 def comp_hgics_aux(filename):
     """
     Description:
@@ -254,28 +269,6 @@ def header_aux(comp_path, gcomp_path, output_path):
     g_comp = con.read_parquet(gcomp_path).select(["gvkey", "prirow", "priusa", "prican"])
     comp.union(g_comp).distinct(on="gvkey", keep="first").to_parquet(output_path)
     con.disconnect()
-
-
-def prihist_aux(filename, alias_itemvalue):
-    """
-    Description:
-        Build a unified Compustat header table combining NA and Global sources (one row per gvkey).
-
-    Steps:
-        1) Read NA and Global header parquets into Ibis.
-        2) Select gvkey, prirow, priusa, prican from each.
-        3) Union tables and take the first occurrence per gvkey.
-        4) Write to `output_path` and close connection.
-
-    Output:
-        Parquet header file with unique gvkey rows.
-    """
-    df = (
-        pl.scan_parquet(filename)
-        .filter(col("item") == alias_itemvalue.upper())
-        .select(["gvkey", col("itemvalue").alias(alias_itemvalue), "effdate", "thrudate"])
-    )
-    return df
 
 
 def gen_firmshares(paths: DataPaths):
@@ -555,7 +548,7 @@ def gen_crsp_sf(paths: DataPaths, freq):
     senames = con.read_parquet(paths.raw_tables_dir / "crsp_stksecurityinfohist.parquet")
     ccmxpf_lnkhist = con.read_parquet(paths.raw_tables_dir / "crsp_ccmxpf_lnkhist.parquet")
 
-    # ---------- CIZ name mapping by frequency ----------
+    # CIZ name mapping by frequency
     if freq == "m":
         date_expr = sf.mthcaldt.cast("date")
         prc_expr = sf.mthprc
@@ -1401,6 +1394,14 @@ def download_raw_data_tables(
         "comp.g_fundq",
         "comp.secd",
         "comp.g_secd",
+        # Mispricing factors (Stambaugh-Yuan) — CHS DISTRESS inputs.
+        "crsp_a_indexes.msp500",
+        "crsp_a_indexes.acti",
+        # ccmxpf_linktable has usedflag (ccmxpf_lnkhist drops it); needed for SY-parity tiebreak.
+        "crsp.ccmxpf_linktable",
+        # IBES international EPS actuals — anndats supplies ex-US earnings
+        # announcement dates for DHS PEAD (Compustat g_fundq has no rdq).
+        "ibes.actu_epsint",
     ]
 
     # Tables with a known date column are filtered to end_date during download.
@@ -1415,6 +1416,9 @@ def download_raw_data_tables(
         "comp.fundq": "datadate",
         "comp.g_funda": "datadate",
         "comp.g_fundq": "datadate",
+        "crsp_a_indexes.msp500": "caldt",
+        "crsp_a_indexes.acti": "caldt",
+        "ibes.actu_epsint": "anndats",
     }
 
     conninfo = gen_wrds_connection_info(username, password)
@@ -5966,6 +5970,11 @@ def safe_div(num, den, name, mode=1):
     Description:
         Safe division utility with multiple guard modes.
 
+        `num`/`den` may each be a column-name str, a Polars expression, or a
+        numeric literal — they are coerced to expressions internally, so
+        composite numerators/denominators (e.g. ``col("a") - col("b")``) can be
+        passed directly without materializing an intermediate column.
+
     Steps:
         Mode 1: num/den if den≠0.
         Mode 2: num/|den| if den≠0.
@@ -5981,45 +5990,45 @@ def safe_div(num, den, name, mode=1):
         Polars expression named 'name' with NULLs on guard failures.
     """
 
+    def _expr(x):
+        if isinstance(x, str):
+            return col(x)
+        if isinstance(x, pl.Expr):
+            return x
+        return pl.lit(x)
+
+    num = _expr(num)
+    den = _expr(den)
+
     if mode == 1:
-        return pl.when(col(den) != 0).then(col(num) / col(den)).otherwise(fl_none()).alias(name)
+        return pl.when(den != 0).then(num / den).otherwise(fl_none()).alias(name)
     if mode == 2:
-        return (
-            pl.when(col(den) != 0)
-            .then(col(num) / (col(den).abs()))
-            .otherwise(fl_none())
-            .alias(name)
-        )
+        return pl.when(den != 0).then(num / (den.abs())).otherwise(fl_none()).alias(name)
     if mode == 3:
-        return pl.when(col(den) > 0).then(col(num) / col(den)).otherwise(fl_none()).alias(name)
+        return pl.when(den > 0).then(num / den).otherwise(fl_none()).alias(name)
     if mode == 4:
         cond1 = col("count") > 12
-        cond2 = (col(den).shift(12) > 0).over(["gvkey", "curcd"])
-        col_exp = (col(num) / col(den).shift(12)).over(["gvkey", "curcd"])
+        cond2 = (den.shift(12) > 0).over(["gvkey", "curcd"])
+        col_exp = (num / den.shift(12)).over(["gvkey", "curcd"])
         return pl.when(cond1 & cond2).then(col_exp).otherwise(fl_none()).alias(name)
     if mode == 5:
-        return (
-            pl.when(col(den) != 0)
-            .then(col(num) * col("fx") / col(den))
-            .otherwise(fl_none())
-            .alias(name)
-        )
+        return pl.when(den != 0).then(num * col("fx") / den).otherwise(fl_none()).alias(name)
     if mode == 6:
-        cond1 = (col(den).shift(12) != 0).over(["gvkey", "curcd"])
-        col_exp = (col(num) / col(den).shift(12)).over(["gvkey", "curcd"])
+        cond1 = (den.shift(12) != 0).over(["gvkey", "curcd"])
+        col_exp = (num / den.shift(12)).over(["gvkey", "curcd"])
         return pl.when(cond1).then(col_exp).otherwise(fl_none()).alias(name)
     if mode == 7:
-        cond1 = (col(den).shift(12) > 0).over(["gvkey", "curcd"])
-        col_exp = (col(num) / col(den)).shift(12).over(["gvkey", "curcd"])
+        cond1 = (den.shift(12) > 0).over(["gvkey", "curcd"])
+        col_exp = (num / den).shift(12).over(["gvkey", "curcd"])
         return pl.when(cond1).then(col_exp).otherwise(fl_none()).alias(name)
     if mode == 8:
-        cond1 = col(num) > 0
-        cond2 = col(den) > 0
-        return pl.when(cond1 & cond2).then(col(num) / col(den)).otherwise(fl_none()).alias(name)
+        cond1 = num > 0
+        cond2 = den > 0
+        return pl.when(cond1 & cond2).then(num / den).otherwise(fl_none()).alias(name)
     if mode == 9:
         cond1 = col("count") > 3
-        cond2 = col(den).shift(3) > 0
-        col_exp = col(num) / col(den).shift(3)
+        cond2 = den.shift(3) > 0
+        col_exp = num / den.shift(3)
         return pl.when(cond1 & cond2).then(col_exp).otherwise(fl_none()).alias(name)
 
 
@@ -7122,7 +7131,7 @@ def market_chars_monthly(paths: DataPaths, data_path, market_ret_path, local_cur
     div_range = [1, 3, 6, 12]  # [1,3,6,12,24,36]
     div_spc_range = [1, 12]
     chcsho_lags = [1, 3, 6, 12]
-    eqnpo_lags = [1, 3, 6, 12]
+    eqnpo_lags = [1, 3, 6, 12, 60]
     mom_rev_lags = [
         [0, 1],
         [0, 2],
@@ -7315,258 +7324,26 @@ def firm_age(paths: DataPaths, data_path):
     con.disconnect()
 
 
-def char_pf_rets():
-    """
-    Description:
-        Helper expressions for Fama–French-style factor composites.
-
-    Steps:
-        1) lms = average(high) − average(low) across size buckets.
-        2) smb = average(smalls) − average(bigs) across char terciles.
-
-    Output:
-        List of Polars expressions: [lms, smb].
-    """
-    lms = (
-        (col("small_high") + col("big_high")) / 2 - (col("small_low") + col("big_low")) / 2
-    ).alias("lms")
-    smb = (
-        (col("small_high") + col("small_mid") + col("small_low")) / 3
-        - (col("big_high") + col("big_mid") + col("big_low")) / 3
-    ).alias("smb")
-    return [lms, smb]
-
-
-def sort_ff_style(char, min_stocks_bp, min_stocks_pf, date_col, data, sf):
-    """
-    Description:
-        FF-style triple-sort by size and a characteristic within country-month, then compute portfolio returns.
-
-    Steps:
-        1) Filter eligible stocks (US vs ex-US rules) with available {char}_l.
-        2) Compute country breakpoints (30/70) for {char}_l; assign char_pf ∈ {low,mid,high}.
-        3) Form size×char portfolios with ME weights; require min stocks.
-        4) Join with returns; aggregate to value-weighted ret_exc per (excntry, size_pf, char_pf, date).
-        5) Pivot to columns and derive lms/smb composites.
-
-    Output:
-        Tidy DataFrame with per-country portfolio returns and composites for the characteristic.
-    """
-    # print(f"Executing sort_ff_style for {char}", flush=True)
-    c1 = (
-        ((col("size_grp_l").is_in(["small", "large", "mega"])) & (col("excntry_l") != "USA"))
-        | (((col("crsp_nyse_l") == 1) | (col("comp_exchg_l") == 11)) & (col("excntry_l") == "USA"))
-    ) & col(f"{char}_l").is_not_null()
-    char_pf_exp = (
-        pl.when(col(f"{char}_l") >= col("bp_p70"))
-        .then(pl.lit("high"))
-        .when(col(f"{char}_l") >= col("bp_p30"))
-        .then(pl.lit("mid"))
-        .otherwise(pl.lit("low"))
-    ).alias("char_pf")
-    bp_stocks = data.filter(c1).sql(f"""
-                SELECT
-                    eom,
-                    excntry_l,
-                    COUNT(*) AS n,
-                    QUANTILE_DISC({char}_l, 0.3) AS bp_p30,
-                    QUANTILE_DISC({char}_l, 0.7) AS bp_p70
-                FROM self
-                GROUP BY excntry_l, eom
-                ORDER BY excntry_l, eom
-            """)
-    data = (
-        data.join(bp_stocks, how="left", on=["excntry_l", "eom"])
-        .filter(
-            (col("n") >= min_stocks_bp) & (col(f"{char}_l").is_not_null()) & (col("size_pf") != "")
-        )
-        .select(
-            ["excntry_l", "id", "eom", "size_pf", "me_l", "be_me_l", char_pf_exp]
-        )  # This select doesn't impact performance but it helps in debugging
-        .group_by(["excntry_l", "size_pf", "char_pf", "eom"])
-        .agg(id=col("id"), w=col("me_l") / pl.sum("me_l"), n=pl.len())
-        .filter(col("n") >= min_stocks_pf)
-        .drop("n")
-        .explode(["id", "w"])
-    )
-    returns = sf.join(
-        data,
-        how="inner",
-        left_on=["id", "eom", "excntry"],
-        right_on=["id", "eom", "excntry_l"],
-    )
-    returns = (
-        returns.with_columns(ret_exc=col("ret_exc") * col("w"))
-        .group_by(["excntry", "size_pf", "char_pf", date_col])
-        .agg(ret_exc=pl.sum("ret_exc"))
-        .with_columns(
-            characteristic=pl.lit(char),
-            combined_pf=(col("size_pf") + "_" + col("char_pf")),
-        )
-        .collect()
-        .pivot(values="ret_exc", index=["excntry", date_col], on="combined_pf")
-        .select(["excntry", date_col, *char_pf_rets()])
-        .sort(["excntry", date_col])
-    )
-    return returns
-
-
-@measure_time
-def ap_factors(
+def prep_data_factor_regs(
     paths: DataPaths,
-    output_path,
-    freq,
-    sf_path,
-    mchars_path,
-    mkt_path,
-    min_stocks_bp,
-    min_stocks_pf,
+    data_path,
+    factors_path,
     lower: float = 0.001,
     upper: float = 0.999,
 ):
     """
     Description:
-        Build AP-style factor panels (FF HML/SMB and HXZ INV/ROE/SMB) by country and month (or day).
+        Prepare monthly panel for factor regressions.
 
     Steps:
-        1) Load security returns; winsorize ret_exc by eom at configurable percentile bounds.
-        2) Load market characteristics; lag key vars 1 period with continuity guard; filter to eligible stocks.
-        3) Size-bucket each stock; run FF-style sorts for BE/ME, asset growth, and ROE.
-        4) Compose factors: mktrf from market file; HML/SMB (FF); INV/ROE/SMB (HXZ).
-        5) Join and write factors to output_path.
-
-    Output:
-        Parquet factor file with columns: [excntry, date/eom, mktrf, hml, smb_ff, inv, roe, smb_hxz].
-    """
-    # `paths` is retained for the path-explicit convention but not used here:
-    # all inputs and the output are passed as fully-formed absolute paths.
-    date_col = "eom" if freq == "m" else "date"
-    sf_cond = (col("ret_lag_dif") == 1) if freq == "m" else (col("ret_lag_dif") <= 5)
-    lag_vars = [
-        "comp_exchg",
-        "crsp_nyse",
-        "exch_main",
-        "obs_main",
-        "common",
-        "primary_sec",
-        "excntry",
-        "size_grp",
-        "me",
-        "be_me",
-        "at_gr1",
-        "niq_be",
-    ]
-
-    # print(f"Executing AP factors with frequency {freq}", flush=True)
-
-    world_sf1 = (
-        pl.scan_parquet(sf_path)
-        .filter(sf_cond & col("ret_exc").is_not_null())
-        .select(["excntry", "id", "eom", "date", "ret_exc"])
-    )
-    # CTE+JOIN because Polars SQL doesn't support WINDOW with QUANTILE_DISC;
-    # prep_data_factor_regs uses OVER() window functions via DuckDB instead.
-    world_sf2 = world_sf1.sql(f"""
-        WITH bounds AS (
-            SELECT
-                eom,
-                QUANTILE_DISC(ret_exc, {lower}) AS low,
-                QUANTILE_DISC(ret_exc, {upper}) AS high
-            FROM self
-            GROUP BY eom
-        )
-        SELECT
-            excntry, id, self.eom, date,
-            GREATEST(low, LEAST(ret_exc, high)) AS ret_exc
-        FROM self
-        LEFT JOIN bounds
-        USING (eom)
-    """)
-
-    base = (
-        pl.scan_parquet(mchars_path)
-        .sort(["id", "eom"])
-        .with_columns(
-            [col(i).shift(1).over(["id", "source_crsp"]).alias(i + "_l") for i in lag_vars]
-        )
-        .sort(["id", "eom"])
-        .with_columns(
-            [
-                pl.when(
-                    (
-                        12 * (col("eom").dt.year() - col("eom").shift(1).dt.year())
-                        + (col("eom").dt.month() - col("eom").shift(1).dt.month()).cast(pl.Int32)
-                    ).over("id")
-                    != 1
-                )
-                .then(pl.lit(None))
-                .otherwise(i + "_l")
-                .alias(i + "_l")
-                for i in lag_vars
-            ]
-        )
-        .filter(
-            (col("obs_main_l") == 1)
-            & (col("exch_main_l") == 1)
-            & (col("common_l") == 1)
-            & (col("primary_sec_l") == 1)
-            & (col("ret_lag_dif") == 1)
-            & col("me_l").is_not_null()
-        )
-        .with_columns(
-            size_pf=(
-                pl.when(col("size_grp_l").is_null())
-                .then(pl.lit(""))
-                .when(col("size_grp_l").is_in(["large", "mega"]))
-                .then(pl.lit("big"))
-                .otherwise(pl.lit("small"))
-            )
-        )
-    )
-
-    ff = sort_ff_style("be_me", min_stocks_bp, min_stocks_pf, date_col, base, world_sf2).rename(
-        {"lms": "hml", "smb": "smb_ff"}
-    )
-    asset_growth = sort_ff_style(
-        "at_gr1", min_stocks_bp, min_stocks_pf, date_col, base, world_sf2
-    ).rename({"lms": "at_gr1_lms", "smb": "at_gr1_smb"})
-    roeq = sort_ff_style("niq_be", min_stocks_bp, min_stocks_pf, date_col, base, world_sf2).rename(
-        {"lms": "niq_be_lms", "smb": "niq_be_smb"}
-    )
-    hxz = asset_growth.join(roeq, how="left", on=["excntry", date_col]).select(
-        [
-            "excntry",
-            date_col,
-            (-1 * col("at_gr1_lms")).alias("inv"),
-            col("niq_be_lms").alias("roe"),
-            ((col("at_gr1_smb") + col("niq_be_smb")) / 2).alias("smb_hxz"),
-        ]
-    )
-
-    output = (
-        pl.scan_parquet(mkt_path)
-        .select(["excntry", date_col, col("mkt_vw_exc").alias("mktrf")])
-        .collect()
-        .join(ff, how="left", on=["excntry", date_col])
-        .join(hxz, how="left", on=["excntry", date_col])
-    )
-    output.write_parquet(output_path)
-
-
-def prep_data_factor_regs(
-    paths: DataPaths, data_path, fcts_path, lower: float = 0.001, upper: float = 0.999
-):
-    """
-    Description:
-        Prepare monthly panel for factor regressions (join data with factors, filter, winsorize).
-
-    Steps:
-        1) Create __msf1: join msf with factors on (excntry, eom); keep ret_exc, mktrf, hml, smb_ff and valid monthly obs.
+        1) Join msf with merged ap_factors_monthly on (excntry, eom) to pick up
+           mktrf, hml, and smb_ff3 (renamed locally to smb_ff). The merged file
+           carries per-country factors (US + ROW).
         2) Add integer date (aux_date) and cast id_int.
-        3) Winsorize ret_exc by eom at configurable percentile bounds into __msf2.
+        3) Winsorize ret_exc by eom at configurable percentile bounds.
 
     Output:
-        DuckDB connection containing tables '__msf2' (ready for rolling regs).
+        DuckDB connection containing table '__msf2' (ready for rolling regs).
     """
 
     (paths.interim_dir / "aux_factor_regs.ddb").unlink(missing_ok=True)
@@ -7575,15 +7352,15 @@ def prep_data_factor_regs(
     )
 
     data_path_posix = Path(data_path).as_posix()
-    fcts_path_posix = Path(fcts_path).as_posix()
+    factors_path_posix = Path(factors_path).as_posix()
     con.raw_sql(f"""
     CREATE OR REPLACE VIEW data_msf AS
     SELECT *
     FROM read_parquet('{data_path_posix}');
 
     CREATE OR REPLACE VIEW fcts AS
-    SELECT *
-    FROM read_parquet('{fcts_path_posix}');
+    SELECT excntry, eom, mktrf, hml_ff AS hml, smb_ff3 AS smb_ff
+    FROM read_parquet('{factors_path_posix}');
 
     CREATE OR REPLACE TABLE __msf2 AS
     WITH __msf1 AS (
@@ -7628,7 +7405,7 @@ def prep_data_factor_regs(
 
 
 @measure_time
-def market_beta(paths: DataPaths, output_path, data_path, fcts_path, __n, __min):
+def market_beta(paths: DataPaths, output_path, data_path, factors_path, __n, __min):
     """
     Description:
         Estimate rolling CAPM betas and idiosyncratic vol for each stock.
@@ -7641,7 +7418,7 @@ def market_beta(paths: DataPaths, output_path, data_path, fcts_path, __n, __min)
     Output:
         Parquet at output_path with [id, eom, beta_{__n}m, ivol_capm_{__n}m].
     """
-    con = prep_data_factor_regs(paths, data_path, fcts_path)
+    con = prep_data_factor_regs(paths, data_path, factors_path)
     base_data = con.table("__msf2").to_polars().lazy()
     df = pl.concat(
         [process_window(base_data, w, "capm", __n, __min) for w in gen_aux_windows(__n)]
@@ -7673,7 +7450,9 @@ def market_beta(paths: DataPaths, output_path, data_path, fcts_path, __n, __min)
 
 
 @measure_time
-def residual_momentum(paths: DataPaths, output_path, data_path, fcts_path, __n, __min, incl, skip):
+def residual_momentum(
+    paths: DataPaths, output_path, data_path, factors_path, __n, __min, incl, skip
+):
     """
     Description:
         Compute residual momentum from FF3 regressions with rolling windows and skip/inclusion rules.
@@ -7688,7 +7467,7 @@ def residual_momentum(paths: DataPaths, output_path, data_path, fcts_path, __n, 
         as a *stem*, not a full path — the parameter name is a holdover from
         the pre-refactor signature.
     """
-    con = prep_data_factor_regs(paths, data_path, fcts_path)
+    con = prep_data_factor_regs(paths, data_path, factors_path)
     base_data = con.table("__msf2").to_polars().lazy()
     df = pl.concat(
         [
@@ -7731,13 +7510,15 @@ def zero_obs_gate_ok() -> pl.Expr:
 
 
 @measure_time
-def prepare_daily(paths: DataPaths, data_path, fcts_path):
+def prepare_daily(paths: DataPaths, data_path, factors_path):
     """
     Description:
         Build daily dataset: align returns with factors, shrink dtypes, and create helpers.
 
     Steps:
-        1) Join daily stock data with daily factors; filter rows with mktrf.
+        1) Join daily stock data with merged ap_factors_daily (mktrf, FF legs
+           smb_ff3→smb_ff + hml, HXZ legs me_hxz/ia_hxz/roe_hxz) on
+           (excntry, date); filter rows with mktrf.
         2) Create zero_obs flags per (id,eom); cap returns to lag ≤14 days; compute prc_adj.
         3) Write dsf1.parquet and id_int_key.parquet.
         4) Build market lead/lag series per day (dropping null mktrf) and write mkt_lead_lag.parquet.
@@ -7748,7 +7529,18 @@ def prepare_daily(paths: DataPaths, data_path, fcts_path):
         Parquets: dsf1.parquet, id_int_key.parquet, mkt_lead_lag.parquet, corr_data.parquet.
     """
     data = pl.scan_parquet(data_path)
-    fcts = pl.scan_parquet(fcts_path)
+    fcts = pl.scan_parquet(factors_path).select(
+        [
+            "excntry",
+            "date",
+            "mktrf",
+            col("smb_ff3").alias("smb_ff"),
+            col("hml_ff").alias("hml"),
+            "me_hxz",
+            "ia_hxz",
+            "roe_hxz",
+        ]
+    )
     dsf1 = (
         data.select(
             [
@@ -7795,8 +7587,14 @@ def prepare_daily(paths: DataPaths, data_path, fcts_path):
     id_int_key.collect().write_parquet(paths.interim_dir / "id_int_key.parquet")
 
     mkt_lead_lag = (
-        fcts.select(["excntry", "date", "mktrf", col("date").dt.month_end().alias("eom")])
-        .filter(col("mktrf").is_not_null())
+        # ap_factors_daily is a FULL outer join: country-days that a factor
+        # model emits but market_returns_daily dropped (25% coverage gate)
+        # carry null mktrf. Filter them out so the lead/lag shifts bridge the
+        # gap as they did when the panel was market-left-joined — otherwise
+        # the adjacent real days get null mktrf_lg1/ld1 and dimsonbeta
+        # silently discards them.
+        fcts.filter(col("mktrf").is_not_null())
+        .select(["excntry", "date", "mktrf", col("date").dt.month_end().alias("eom")])
         .sort(["excntry", "date"])
         .with_columns(
             mktrf_ld1=col("mktrf").shift(-1).over(["excntry", "eom"]),
@@ -7829,110 +7627,2620 @@ def prepare_daily(paths: DataPaths, data_path, fcts_path):
     corr_data.collect().write_parquet(paths.interim_dir / "corr_data.parquet")
 
 
-def gen_ranks_and_normalize(df, id_vars, geo_vars, time_vars, desc_flag, var, min_stks):
-    """
-    Description:
-        Rank-normalize a variable within geo×time groups and keep percentile ranks.
-
-    Steps:
-        1) Build group keys = geo_vars + time_vars.
-        2) Count valid var per group; require count ≥ min_stks.
-        3) Compute rank / count (descending if desc_flag); keep id_vars + group keys + rank_{var}.
-
-    Output:
-        LazyFrame with percentile column f"rank_{var}" per id and group.
-    """
-
-    by_vars = geo_vars + time_vars
-    var_ranks = (
-        df.select([*id_vars, *by_vars, var])
-        .with_columns(count=pl.count(var).over(by_vars))
-        .filter(col("count") >= min_stks)
-        .with_columns(
-            (col(var).rank(descending=desc_flag) / col("count")).over(by_vars).alias(f"rank_{var}")
-        )
-        .drop([*geo_vars, var, "count"])
-    )
-    return var_ranks
-
-
-def gen_misp_exp(var_list, min_fcts):
-    """
-    Description:
-        Combine multiple rank-percentiles into a single mispricing score with missingness guard.
-
-    Steps:
-        1) Count NULL ranks across var_list; if > min_fcts → set score NULL.
-        2) Else take horizontal mean of rank_{var} columns.
-
-    Output:
-        Polars expression for the composite mispricing score.
-    """
-    sum = col("rank_" + var_list[0]).is_null().cast(pl.Int32)
-    for i in var_list[1:]:
-        sum += col("rank_" + i).is_null().cast(pl.Int32)
-    c1 = sum > min_fcts
+def _mp_universe() -> pl.Expr:
+    """Universe filter — legacy SHRCD={10,11} + EXCHCD={1,2,3} equivalent in
+    CIZ. Stricter than `_ciz_universe()` (extra conditionaltype /
+    tradingstatusflg clauses); do not collapse the two."""
     return (
-        pl.when(c1)
-        .then(fl_none())
-        .otherwise(pl.mean_horizontal(["rank_" + f"{i}" for i in var_list]))
+        (col("sharetype") == "NS")
+        & (col("securitytype") == "EQTY")
+        & (col("securitysubtype") == "COM")
+        & (col("usincflg") == "Y")
+        & col("issuertype").is_in(["ACOR", "CORP"])
+        & col("primaryexch").is_in(["N", "A", "Q"])
+        & (col("conditionaltype") == "RW")
+        & (col("tradingstatusflg") == "A")
     )
 
 
-@measure_time
-def mispricing_factors(paths: DataPaths, data_path, min_stks, min_fcts=3, output_path=None):
-    """
-    Description:
-        Compute two mispricing composites (management & performance) from ranked inputs.
+def _mp_offset_months(c: str | pl.Expr, n: int | pl.Expr) -> pl.Expr:
+    c = col(c) if isinstance(c, str) else c
+    if isinstance(n, int):
+        return c.dt.offset_by(f"{n}mo").dt.month_end()
+    return c.dt.offset_by(pl.format("{}mo", n)).dt.month_end()
 
-    Steps:
-        1) Load/Filter monthly stock panel; keep id/eom/excntry + factor inputs.
-        2) Iteratively join rank-normalized columns per variable with proper direction.
-        3) Build mispricing_mgmt from vars_mgmt and mispricing_perf from vars_perf using gen_misp_exp.
-        4) Keep id/eom + both composites and write parquet.
 
-    Output:
-        '{output_path}' with [id, eom, mispricing_perf, mispricing_mgmt].
-    """
-    if output_path is None:
-        output_path = paths.interim_dir / "mp_factors.parquet"
-    vars_mgmt = [
-        "chcsho_12m",
-        "eqnpo_12m",
-        "oaccruals_at",
-        "noa_at",
-        "at_gr1",
-        "ppeinv_gr1a",
+def _mp_offset_qtrs_end(c: str | pl.Expr, n: int) -> pl.Expr:
+    c = col(c) if isinstance(c, str) else c
+    q = (c.dt.month() - 1) // 3
+    target = q + n
+    yr = c.dt.year() + (target // 4)
+    qm = (target % 4 + 4) % 4
+    end_month = (qm + 1) * 3
+    return pl.date(yr, end_month, 1).dt.month_end()
+
+
+def _mp_month_diff(a: pl.Expr, b: pl.Expr) -> pl.Expr:
+    return (a.dt.year() - b.dt.year()) * 12 + (a.dt.month() - b.dt.month())
+
+
+def _mp_polars_sql(df: pl.DataFrame, query: str, table: str = "src") -> pl.DataFrame:
+    ctx = pl.SQLContext()
+    ctx.register(table, df.lazy())
+    return ctx.execute(query).collect()
+
+
+def _mp_winsorize_per_group(
+    df: pl.DataFrame, cols_list: list[str], *, lo: int = 5, hi: int = 95, by: str = "eom"
+) -> pl.DataFrame:
+    select = [by] + [
+        f"quantile_disc({c}, {lo / 100}) AS _{c}_lo, quantile_disc({c}, {hi / 100}) AS _{c}_hi"
+        for c in cols_list
     ]
-    vars_perf = ["o_score", "ret_12_1", "gp_at", "niq_at"]
-    direction = [True, False, True, True, True, True, True, False, False, False]
-    index = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
-    aux_df = (
-        pl.scan_parquet(data_path)
+    bounds = _mp_polars_sql(df, f"SELECT {', '.join(select)} FROM src GROUP BY {by}")
+    return (
+        df.join(bounds, on=by, how="left")
+        .with_columns(
+            [
+                pl.when(col(c) > col(f"_{c}_hi"))
+                .then(col(f"_{c}_hi"))
+                .when((col(c) < col(f"_{c}_lo")) & col(c).is_not_null())
+                .then(col(f"_{c}_lo"))
+                .otherwise(col(c))
+                .alias(c)
+                for c in cols_list
+            ]
+        )
+        .drop([f"_{c}_lo" for c in cols_list] + [f"_{c}_hi" for c in cols_list])
+    )
+
+
+def _mp_truncate_thin(
+    port_ret: pl.DataFrame, *, by: str = "eom", freq_col: str = "_freq_", min_n: int = 10
+) -> pl.DataFrame:
+    """Drop months where any bucket has < min_n stocks. Thin months in practice
+    form a leading run (the factor starts once every bucket is populated); a
+    thin month appearing later drops only itself — it must not truncate the
+    accumulated history before it."""
+    bad = port_ret.filter(col(freq_col) < min_n)
+    if bad.height == 0:
+        return port_ret
+    return port_ret.join(bad.select(by).unique(), on=by, how="anti")
+
+
+def _mp_filter_full_buckets(
+    port_ret: pl.DataFrame, n_buckets: int, *, by: str | list[str] = "eom"
+) -> pl.DataFrame:
+    return (
+        port_ret.with_columns(_cnt=pl.len().over(by)).filter(col("_cnt") == n_buckets).drop("_cnt")
+    )
+
+
+def _mp_add_leg_score(
+    df: pl.DataFrame, cols_list: list[str], score_col: str, num_col: str, *, min_count: int = 3
+) -> pl.DataFrame:
+    return df.with_columns(
+        **{num_col: sum((col(c) != 0).cast(pl.Int64) for c in cols_list)}
+    ).with_columns(
+        **{
+            score_col: pl.when(col(num_col) >= min_count)
+            .then(sum(col(c) for c in cols_list) / col(num_col))
+            .otherwise(None)
+        }
+    )
+
+
+def _mp_build_crsp_monthly(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
+    """Writes crsp_monthly + crsp_monthly_full. Source: jkp's crsp_msf_v2.parquet (CIZ
+    convenience join with sec info inline). Dedup keep-first to absorb multi-distribution
+    duplicate rows that WRDS msf_v2 produces. Numeric cols cast to Float64 (raw is
+    Decimal which would silently change arithmetic in downstream anomaly logic)."""
+    start_d, end_d = date(1920, 1, 1), END_DATE
+    msf_dedup = (
+        pl.read_parquet(raw_dir / "crsp_msf_v2.parquet")
+        .filter((col("mthcaldt") >= start_d) & (col("mthcaldt") <= end_d))
+        .sort(
+            ["permno", "mthcaldt", "mthret", "mthcap"],
+            descending=[False, False, True, True],
+            nulls_last=True,
+        )
+        .unique(subset=["permno", "mthcaldt"], keep="first", maintain_order=True)
+        .with_columns(
+            col("mthprc", "mthret", "mthretx", "mthcap", "mthvol").cast(pl.Float64, strict=False)
+        )
+    )
+    universe = (
+        msf_dedup.filter(_mp_universe())
+        .rename(
+            {
+                "mthcaldt": "date",
+                "mthprc": "prc",
+                "mthret": "ret",
+                "mthretx": "retx",
+                "mthcap": "cap",
+                "mthvol": "vol",
+            }
+        )
+        .with_columns(eom=col("date").dt.month_end())
+    )
+
+    exchcd = (
+        pl.when(col("primaryexch") == "N")
+        .then(1)
+        .when(col("primaryexch") == "A")
+        .then(2)
+        .when(col("primaryexch") == "Q")
+        .then(3)
+        .otherwise(None)
+        .cast(pl.Int64)
+    )
+    # Pure CIZ v2 precedence (two-branch, no SIZ baggage): mthret IS the canonical
+    # monthly return — CRSP already daily-compounds the delisting-day DA-row into it.
+    # No delret fallback (legacy SIZ field, redundant under CIZ). No Shumway imputation
+    # (DA-row carries realized delist return; no gap to patch).
+    screened = universe.filter(
+        col("permno").is_not_null()
+        & col("prc").is_not_null()
+        & col("cap").is_not_null()
+        & (col("cap") > 0)
+        & col("ret").is_not_null()
+        & col("date").is_not_null()
+    ).with_columns(me=col("cap"), exchcd=exchcd)
+
+    out = screened.select(
+        col("eom"),
+        col("permno").cast(pl.Int64),
+        col("prc").alias("PRC"),
+        col("ret").alias("RET"),
+        col("me"),
+    ).sort("eom", "permno")
+    out.write_parquet(interim_dir / "crsp_monthly.parquet")
+
+    full = (
+        screened.with_columns(shrcd=pl.lit(10).cast(pl.Int64))
+        .select(
+            col("eom"),
+            col("permno").cast(pl.Int64),
+            col("prc").alias("PRC"),
+            col("ret").alias("RET"),
+            col("me"),
+            "shrcd",
+            "exchcd",
+            "siccd",
+        )
+        .sort("eom", "permno")
+    )
+    full.write_parquet(interim_dir / "crsp_monthly_full.parquet")
+    return out
+
+
+def _mp_build_crsp_daily(raw_dir: Path, interim_dir: Path) -> None:
+    """Sinks crsp_daily. Source: jkp's crsp_dsf_v2.parquet. Lazy scan so the
+    projection prunes the full-width daily file (the largest raw table) down
+    to the 4 output columns instead of materializing it eagerly."""
+    start_d, end_d = date(1920, 1, 1), END_DATE
+    (
+        pl.scan_parquet(raw_dir / "crsp_dsf_v2.parquet")
         .filter(
-            (col("common") == 1)
+            (col("dlycaldt") >= start_d)
+            & (col("dlycaldt") <= end_d)
+            & _mp_universe()
+            & col("dlyret").is_not_null()
+        )
+        .rename({"dlycaldt": "date", "dlyret": "ret"})
+        .with_columns(
+            col("ret").cast(pl.Float64, strict=False),
+            eom=col("date").dt.month_end(),
+        )
+        .select("date", col("permno").cast(pl.Int64), "ret", "eom")
+        .sort("permno", "date")
+        .sink_parquet(interim_dir / "crsp_daily.parquet")
+    )
+
+
+def _mp_load_ccm(raw_dir: Path) -> pl.DataFrame:
+    """Load CCM link table (ccmxpf_linktable preferred — has usedflag for tiebreak;
+    falls back to ccmxpf_lnkhist with synthesized usedflag=1 if linktable absent).
+    8-link-type filter matches MisprProject SY-parity baseline."""
+    lt_path = raw_dir / "crsp_ccmxpf_linktable.parquet"
+    src_path = lt_path if lt_path.exists() else raw_dir / "crsp_ccmxpf_lnkhist.parquet"
+    df = pl.read_parquet(src_path).rename(str.lower)
+    if "usedflag" not in df.columns:
+        df = df.with_columns(usedflag=pl.lit(1).cast(pl.Int64))
+    return df.filter(
+        col("linktype").is_in(MP_CCM_LINKTYPES)
+        & (col("linkenddt").is_null() | (col("linkenddt").dt.year() >= 1960))
+    )
+
+
+def _mp_ccm_compustat_join(
+    fa: pl.DataFrame, lnk: pl.DataFrame, mp_con: duckdb.DuckDBPyConnection
+) -> pl.DataFrame:
+    mp_con.register("fa", fa)
+    mp_con.register("lnk", lnk)
+    sql = f"""
+    SELECT CAST(a.lpermno AS BIGINT) AS permno, a.linkprim, a.linktype, a.usedflag,
+           a.linkdt, a.linkenddt, b.*
+    FROM lnk a
+    JOIN fa b
+      ON a.gvkey = b.gvkey
+     AND a.linktype IN ({",".join(repr(x) for x in MP_CCM_LINKTYPES)})
+     AND a.linkprim IN ('P','C')
+     AND (a.linkdt IS NULL OR a.linkdt <= b.datadate)
+     AND (a.linkenddt IS NULL OR b.datadate <= a.linkenddt)
+    WHERE b.indfmt='INDL' AND b.datafmt='STD' AND b.popsrc='D' AND b.consol='C'
+    """
+    return mp_con.execute(sql).pl()
+
+
+def _mp_ccm_tiebreak_dedup(df: pl.DataFrame) -> pl.DataFrame:
+    return (
+        df.with_columns(
+            _lp=pl.when(col("linkprim") == "P").then(0).otherwise(1),
+            _used=pl.when(col("usedflag") == 1).then(0).otherwise(1),
+            # CCM link-type quality rank: lower = preferred. SAS tiebreak ordering.
+            _lt=col("linktype").replace_strict(
+                {"LU": 0, "LC": 1, "LD": 2, "LN": 3, "LX": 4, "LF": 5, "LO": 6, "LS": 7},
+                default=99,
+            ),
+            _span=(
+                col("linkenddt").fill_null(date(9999, 12, 31))
+                - col("linkdt").fill_null(date(1900, 1, 1))
+            ).dt.total_days(),
+        )
+        .sort(
+            ["datadate", "permno", "_lp", "_used", "_lt", "_span", "linkdt", "linkenddt", "gvkey"],
+            descending=[False, False, False, False, False, True, False, False, False],
+            nulls_last=True,
+        )
+        .unique(subset=["datadate", "permno"], keep="first", maintain_order=True)
+        .drop("_lp", "_used", "_lt", "_span", "linktype", "usedflag", "linkdt", "linkenddt")
+    )
+
+
+@functools.cache
+def _mp_load_funda(raw_dir: Path) -> pl.DataFrame:
+    numeric = [
+        "act", "at", "ceq", "che", "cogs", "csho", "dlc", "dltt", "dp", "ib",
+        "invt", "lct", "lt", "mib", "oancf", "ppegt", "pstk", "sale", "seq",
+        "txditc", "xint", "prcc_f", "adjex_c", "revt", "ni", "pi", "txp",
+    ]  # fmt: skip
+    df = pl.read_parquet(raw_dir / "comp_funda.parquet").filter(_compustat_na_filter())
+    return df.with_columns(
+        [col(c).cast(pl.Float64, strict=False) for c in numeric if c in df.columns]
+    )
+
+
+@functools.cache
+def _mp_load_fundq(raw_dir: Path) -> pl.DataFrame:
+    numeric = [
+        "ibq", "saleq", "niq", "cheq", "seqq", "ceqq", "pstkq", "atq",
+        "ltq", "pstkrq", "txditcq", "actq", "lctq", "piq", "dlttq", "revtq",
+    ]  # fmt: skip
+    df = pl.read_parquet(raw_dir / "comp_fundq.parquet").filter(_compustat_na_filter())
+    return df.with_columns(
+        [col(c).cast(pl.Float64, strict=False) for c in numeric if c in df.columns]
+    )
+
+
+def _mp_build_compustat_annual(
+    mp_con: duckdb.DuckDBPyConnection, raw_dir: Path, interim_dir: Path
+) -> pl.DataFrame:
+    fa_cols = [
+        "gvkey",
+        "datadate",
+        "fyear",
+        "fyr",
+        "indfmt",
+        "datafmt",
+        "popsrc",
+        "consol",
+        "act",
+        "at",
+        "ceq",
+        "che",
+        "cogs",
+        "csho",
+        "dlc",
+        "dltt",
+        "dp",
+        "ib",
+        "invt",
+        "lct",
+        "lt",
+        "mib",
+        "oancf",
+        "ppegt",
+        "pstk",
+        "sale",
+        "seq",
+        "txditc",
+        "xint",
+        "prcc_f",
+    ]
+    funda = _mp_load_funda(raw_dir)
+    fa = funda.select([c for c in fa_cols if c in funda.columns])
+    df = (
+        _mp_ccm_tiebreak_dedup(_mp_ccm_compustat_join(fa, _mp_load_ccm(raw_dir), mp_con))
+        .sort(["permno", "fyear", "datadate"])
+        .unique(subset=["permno", "fyear"], keep="last", maintain_order=True)
+        .sort(["permno", "datadate"])
+        .unique(subset=["permno", "datadate"], keep="first", maintain_order=True)
+        .select(
+            "permno",
+            "gvkey",
+            "datadate",
+            "fyear",
+            "fyr",
+            "act",
+            "at",
+            "ceq",
+            "che",
+            "cogs",
+            "csho",
+            "dlc",
+            "dltt",
+            "dp",
+            "ib",
+            "invt",
+            "lct",
+            "lt",
+            "mib",
+            "oancf",
+            "ppegt",
+            "pstk",
+            "sale",
+            "seq",
+            "txditc",
+            "xint",
+            "prcc_f",
+        )
+    )
+    df.write_parquet(interim_dir / "compustat_annual.parquet")
+    return df
+
+
+def _mp_build_compustat_quarterly(
+    mp_con: duckdb.DuckDBPyConnection, raw_dir: Path, interim_dir: Path
+) -> pl.DataFrame:
+    fq_cols = [
+        "gvkey",
+        "datadate",
+        "fyearq",
+        "fqtr",
+        "fyr",
+        "rdq",
+        "indfmt",
+        "datafmt",
+        "popsrc",
+        "consol",
+        "ibq",
+        "saleq",
+        "dlttq",
+        "revtq",
+        "actq",
+        "lctq",
+        "piq",
+        "niq",
+        "cheq",
+        "seqq",
+        "ceqq",
+        "pstkq",
+        "atq",
+        "ltq",
+        "pstkrq",
+    ]
+    fundq = _mp_load_fundq(raw_dir)
+    fq = fundq.select([c for c in fq_cols if c in fundq.columns])
+    joined = _mp_ccm_compustat_join(fq, _mp_load_ccm(raw_dir), mp_con).filter(
+        col("permno").is_not_null() & col("datadate").is_not_null()
+    )
+    df = (
+        _mp_ccm_tiebreak_dedup(joined)
+        .sort(["permno", "fyearq", "fqtr", "datadate"])
+        .unique(subset=["permno", "fyearq", "fqtr"], keep="last", maintain_order=True)
+        # Match SAS v1: after last.fqtr dedup, `proc sort by permno datadate nodupkey`
+        # preserves previous (fyearq, fqtr) ascending order → keeps SMALLEST fyearq+fqtr
+        # on (permno, datadate) ties (typically only matters on fiscal-year-change rows).
+        .sort(["permno", "datadate", "fyearq", "fqtr"])
+        .unique(subset=["permno", "datadate"], keep="first", maintain_order=True)
+        .with_columns(adj_rdq=pl.coalesce(col("rdq"), _mp_offset_months("datadate", 3)))
+        .filter(col("adj_rdq").is_not_null())
+        .sort(["permno", "adj_rdq", "datadate"])
+        .unique(subset=["permno", "adj_rdq", "datadate"], keep="first", maintain_order=True)
+        .with_columns(rdq_crsp=_mp_offset_months("adj_rdq", 1))
+        .sort(["permno", "rdq_crsp", "datadate"], descending=[False, True, True])
+        .with_columns(
+            lead_rdq_crsp=pl.coalesce(
+                col("rdq_crsp").shift(1).over("permno"),
+                _mp_offset_qtrs_end("rdq_crsp", 1),
+            )
+        )
+        .sort(["permno", "adj_rdq", "datadate"])
+        .select(
+            "permno",
+            "gvkey",
+            "datadate",
+            "fyearq",
+            "fyr",
+            "rdq",
+            "fqtr",
+            "ibq",
+            "saleq",
+            "niq",
+            "cheq",
+            "seqq",
+            "ceqq",
+            "pstkq",
+            "atq",
+            "ltq",
+            "pstkrq",
+            "rdq_crsp",
+            "lead_rdq_crsp",
+        )
+    )
+    df.write_parquet(interim_dir / "compustat_quarterly.parquet")
+    return df
+
+
+def _mp_expand_to_crsp_window(
+    anomaly_df: pl.DataFrame, value_col: str, interim_dir: Path
+) -> pl.DataFrame:
+    a = (
+        anomaly_df.select("permno", "datadate", value_col)
+        .with_columns(_off=pl.int_ranges(MP_LAG_M + 1, 13 + MP_LAG_M))
+        .explode("_off")
+        .with_columns(
+            eom=col("datadate").dt.offset_by(pl.format("{}mo", col("_off"))).dt.month_end()
+        )
+        .select("permno", "eom", "datadate", value_col)
+    )
+    month_keys = pl.read_parquet(interim_dir / "crsp_monthly.parquet").select("permno", "eom")
+    return (
+        month_keys.join(a, on=["permno", "eom"], how="left")
+        .sort(["permno", "eom", "datadate"], descending=[False, False, True])
+        .unique(subset=["permno", "eom"], keep="first", maintain_order=True)
+        .select("eom", "permno", value_col)
+        .sort("permno", "eom")
+    )
+
+
+def _mp_rolling_calendar_sum(
+    df: pl.DataFrame,
+    value_col: str,
+    *,
+    lag_min: int,
+    lag_max: int,
+    n_required: int,
+    id_col: str = "permno",
+) -> pl.DataFrame:
+    """Calendar-aware rolling sum of `value_col` over the inclusive window
+    [eom - lag_max months, eom - lag_min months], per `id_col`.
+
+    Returns [id_col, eom, r] keyed by the same id+eom as `df`. `r` is null
+    when fewer than `n_required` non-null source values fall in the window.
+
+    Window is computed on an integer month index (year*12 + month) — using
+    polars' date `offset_by` here would silently misalign because it is
+    day-preserving (e.g. 2019-02-28 - 2mo = 2018-12-28, which excludes the
+    2018-12-31 row that ought to be in the window).
+
+    Returning a keyed frame (not a positional `pl.Series`) lets callers
+    join by key, so polars' parallel hash join can permute row order
+    freely without misaligning the rolling sum onto the wrong rows.
+    """
+    indexed = df.with_columns(_midx=col("eom").dt.year() * 12 + col("eom").dt.month()).sort(
+        id_col, "_midx"
+    )
+    rolled = indexed.rolling(
+        index_column="_midx",
+        group_by=id_col,
+        period=f"{lag_max - lag_min}i",
+        offset=f"-{lag_max}i",
+        closed="both",
+    ).agg(
+        _sum=col(value_col).sum(),
+        _cnt=col(value_col).is_not_null().sum().cast(pl.Int64),
+    )
+    return (
+        indexed.select(id_col, "eom", "_midx")
+        .join(rolled, on=[id_col, "_midx"], how="left")
+        .select(
+            id_col,
+            "eom",
+            pl.when(col("_cnt") == n_required).then(col("_sum")).otherwise(None).alias("r"),
+        )
+    )
+
+
+def _mp_compute_accrual(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
+    ca = (
+        pl.read_parquet(interim_dir / "compustat_annual.parquet")
+        .filter(
+            col("permno").is_not_null()
+            & col("fyear").is_not_null()
+            & col("fyr").is_not_null()
+            & (col("fyr") > 0)
+            & (col("fyear") > 0)
+            & col("at").is_not_null()
+            & (col("at") > 0)
+            & col("act").is_not_null()
+            & col("che").is_not_null()
+            & col("lct").is_not_null()
+            & col("dlc").is_not_null()
+            & col("dp").is_not_null()
+        )
+        .select("permno", "gvkey", "datadate", "act", "at", "che", "lct", "dlc", "dp")
+        .join(
+            _mp_load_funda(raw_dir).select("gvkey", "datadate", "txp"),
+            on=["gvkey", "datadate"],
+            how="left",
+        )
+        .filter(col("txp").is_not_null())
+        .sort(["permno", "datadate", "gvkey"])
+        .unique(subset=["permno", "datadate"], keep="first", maintain_order=True)
+        .with_columns(
+            col(c).shift(1).over("permno").alias(f"lag_{c}")
+            for c in ("act", "che", "lct", "dlc", "txp", "at")
+        )
+        .with_columns(
+            accrual_adj=(
+                2
+                * (
+                    (col("act") - col("lag_act"))
+                    - (col("che") - col("lag_che"))
+                    - (col("lct") - col("lag_lct"))
+                    + (col("dlc") - col("lag_dlc"))
+                    + (col("txp") - col("lag_txp"))
+                    - col("dp")
+                )
+                / (col("at") + col("lag_at"))
+            )
+        )
+        .select("permno", "datadate", "accrual_adj")
+    )
+    out = _mp_expand_to_crsp_window(ca, "accrual_adj", interim_dir)
+    out.write_parquet(interim_dir / "accrual_adj.parquet")
+    return out
+
+
+def _mp_compute_gross_profit(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
+    ca = (
+        pl.read_parquet(interim_dir / "compustat_annual.parquet")
+        .select("permno", "gvkey", "datadate", "fyear", "fyr", "at", "cogs")
+        .join(
+            _mp_load_funda(raw_dir).select("gvkey", "datadate", "revt"),
+            on=["gvkey", "datadate"],
+            how="left",
+        )
+        .filter(
+            col("permno").is_not_null()
+            & col("fyear").is_not_null()
+            & col("fyr").is_not_null()
+            & (col("fyr") > 0)
+            & (col("fyear") > 0)
+            & col("at").is_not_null()
+            & (col("at") > 0)
+            & col("revt").is_not_null()
+            & col("cogs").is_not_null()
+        )
+        .with_columns(gp_adj=safe_div(col("revt") - col("cogs"), col("at"), "gp_adj"))
+        .filter(col("gp_adj").is_not_null())
+        .select("permno", "datadate", "gp_adj")
+        .sort(["permno", "datadate", "gp_adj"], nulls_last=True)
+        .unique(subset=["permno", "datadate"], keep="first", maintain_order=True)
+    )
+    out = _mp_expand_to_crsp_window(ca, "gp_adj", interim_dir)
+    out.write_parquet(interim_dir / "gp_adj.parquet")
+    return out
+
+
+def _mp_compute_oscore(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
+    base = (
+        pl.read_parquet(interim_dir / "compustat_annual.parquet")
+        .select("permno", "gvkey", "datadate", "fyear", "fyr", "at", "lt", "act", "lct")
+        .join(
+            _mp_load_funda(raw_dir).select("gvkey", "datadate", "ni", "pi"),
+            on=["gvkey", "datadate"],
+            how="left",
+        )
+        .filter(
+            col("permno").is_not_null()
+            & col("fyear").is_not_null()
+            & col("fyr").is_not_null()
+            & (col("fyr") > 0)
+            & (col("fyear") > 0)
+            & col("at").is_not_null()
+            & (col("at") > 0)
+            & col("lt").is_not_null()
+            & (col("lt") != 0)
+            & col("act").is_not_null()
+            & (col("act") != 0)
+        )
+        .with_columns(
+            cyear=pl.when((col("fyr") > 0) & (col("fyr") <= 5))
+            .then(col("fyear") + 1)
+            .otherwise(col("fyear")),
+            oeneg=pl.when(col("lt") > col("at")).then(1).otherwise(0),
+            tlta=safe_div("lt", "at", "tlta"),
+            wcta=safe_div(col("act") - col("lct"), col("at"), "wcta"),
+            clca=safe_div("lct", "act", "clca"),
+            nita=safe_div("ni", "at", "nita"),
+            futl=safe_div("pi", "lt", "futl"),
+        )
+    )
+
+    self_lag = base.select("permno", "cyear", col("ni").alias("lagni")).with_columns(
+        cyear=col("cyear") + 1
+    )
+    base = base.join(self_lag, on=["permno", "cyear"], how="inner").with_columns(
+        # safe_div: ni == lagni == 0 must yield null, not NaN — NaN survives
+        # is_not_null() and sorts above every value in the percentile rank.
+        chin=safe_div(col("ni") - col("lagni"), col("ni").abs() + col("lagni").abs(), "chin"),
+        intwo=pl.when((col("ni") < 0) & (col("lagni") < 0)).then(1).otherwise(0),
+    )
+
+    out = (
+        base.join(
+            pl.read_parquet(raw_dir / "crsp_a_indexes_acti.parquet")
+            .with_columns(col("cpiind").cast(pl.Float64, strict=False))
+            .filter(col("caldt").dt.month() == 12)
+            .with_columns(cyear=col("caldt").dt.year() + 1)
+            .select("cyear", "cpiind"),
+            on="cyear",
+            how="inner",
+        )
+        .with_columns(size=(100 * col("at") / col("cpiind")).log())
+        .with_columns(
+            oscore=-1.32
+            - 0.407 * col("size")
+            + 6.03 * col("tlta")
+            - 1.43 * col("wcta")
+            + 0.076 * col("clca")
+            - 1.72 * col("oeneg")
+            - 2.37 * col("nita")
+            - 1.83 * col("futl")
+            + 0.285 * col("intwo")
+            - 0.521 * col("chin")
+        )
+        .filter(col("oscore").is_not_null())
+        .select("permno", "datadate", "cyear", "oscore")
+        .sort(["permno", "cyear", "datadate"], descending=[False, False, True])
+    )
+    out = _mp_expand_to_crsp_window(out, "oscore", interim_dir)
+    out.write_parquet(interim_dir / "oscore.parquet")
+    return out
+
+
+def _mp_compute_nsi_ag_inv_noa(raw_dir: Path, interim_dir: Path) -> None:
+    base = (
+        pl.read_parquet(interim_dir / "compustat_annual.parquet")
+        .filter(
+            col("permno").is_not_null()
+            & col("fyear").is_not_null()
+            & col("fyr").is_not_null()
+            & (col("fyr") > 0)
+            & (col("fyear") > 0)
+        )
+        .select(
+            "permno",
+            "gvkey",
+            "datadate",
+            "csho",
+            "ppegt",
+            "invt",
+            "at",
+            "che",
+            "dlc",
+            "dltt",
+            "mib",
+            "pstk",
+            "ceq",
+        )
+        .join(
+            _mp_load_funda(raw_dir).select("gvkey", "datadate", "adjex_c"),
+            on=["gvkey", "datadate"],
+            how="left",
+        )
+        .sort(["permno", "datadate", "gvkey"])
+        .unique(subset=["permno", "datadate"], keep="first", maintain_order=True)
+        .with_columns(
+            lag_csho=col("csho").shift(1).over("permno"),
+            lag_adjexc=col("adjex_c").shift(1).over("permno"),
+            lag_ppegt=col("ppegt").shift(1).over("permno"),
+            lag_invt=col("invt").shift(1).over("permno"),
+            lag_at=col("at").shift(1).over("permno"),
+        )
+        .with_columns(col("mib").fill_null(0.0), col("pstk").fill_null(0.0))
+        .with_columns(
+            nsi=pl.when(
+                col("csho").is_null()
+                | (col("csho") == 0)
+                | col("adjex_c").is_null()
+                | (col("adjex_c") == 0)
+                | (col("lag_csho") == 0)
+                | (col("lag_adjexc") == 0)
+            )
+            .then(0.0)
+            .when(col("lag_csho").is_null() | col("lag_adjexc").is_null())
+            .then(None)
+            .otherwise(
+                (col("csho") * col("adjex_c") / (col("lag_csho") * col("lag_adjexc"))).log()
+            ),
+            inv=pl.when(
+                col("lag_ppegt").is_null()
+                | col("lag_invt").is_null()
+                | col("lag_at").is_null()
+                | (col("lag_at") == 0)
+            )
+            .then(None)
+            .otherwise(
+                safe_div(
+                    col("ppegt") - col("lag_ppegt") + col("invt") - col("lag_invt"),
+                    col("lag_at"),
+                    "inv",
+                )
+            ),
+            ag=pl.when(col("lag_at") > 0)
+            .then(safe_div(col("at") - col("lag_at"), col("lag_at"), "ag"))
+            .otherwise(None),
+            noa=pl.when(col("lag_at") > 0)
+            .then(
+                safe_div(
+                    (col("at") - col("che"))
+                    - (
+                        col("at") - col("dlc") - col("dltt") - col("mib") - col("pstk") - col("ceq")
+                    ),
+                    col("lag_at"),
+                    "noa",
+                )
+            )
+            .otherwise(None),
+        )
+    )
+
+    for src_col, name in [
+        ("nsi", "stock_issue"),
+        ("ag", "asset_growth"),
+        ("inv", "invasset"),
+        ("noa", "noa"),
+    ]:
+        slice_df = base.select("permno", "datadate", col(src_col).alias(name))
+        _mp_expand_to_crsp_window(slice_df, name, interim_dir).write_parquet(
+            interim_dir / f"{name}.parquet"
+        )
+
+
+def _mp_compute_momentum(interim_dir: Path) -> pl.DataFrame:
+    log_rets = (
+        pl.read_parquet(interim_dir / "crsp_monthly.parquet")
+        .select("permno", "eom", "RET")
+        .with_columns(log_1p_ret=(1 + col("RET")).log())
+    )
+    roll = _mp_rolling_calendar_sum(log_rets, "log_1p_ret", lag_min=2, lag_max=12, n_required=11)
+    out = (
+        log_rets.select("permno", "eom")
+        .join(roll, on=["permno", "eom"], how="left")
+        .with_columns(momentum=col("r").exp() - 1)
+        .select("eom", "permno", "momentum")
+        .sort("permno", "eom")
+    )
+    out.write_parquet(interim_dir / "momentum.parquet")
+    return out
+
+
+def _mp_compute_composite_issue(interim_dir: Path) -> pl.DataFrame:
+    log_rets = (
+        pl.read_parquet(interim_dir / "crsp_monthly.parquet")
+        .select("permno", "eom", "me", "RET")
+        .with_columns(log_1p_ret=(1 + col("RET")).log())
+    )
+    cumret = _mp_rolling_calendar_sum(log_rets, "log_1p_ret", lag_min=0, lag_max=11, n_required=12)
+    me_lag12 = log_rets.select("permno", "eom", col("me").alias("me_lag12")).with_columns(
+        eom=_mp_offset_months("eom", 12)
+    )
+    composite_t = (
+        log_rets.select("permno", "eom", "me")
+        .join(me_lag12, on=["permno", "eom"], how="left")
+        .join(cumret, on=["permno", "eom"], how="left")
+        .select(
+            "permno",
+            col("eom").alias("eom_src"),
+            composite_issue=(col("me") / col("me_lag12")).log() - col("r"),
+        )
+    )
+    out = (
+        log_rets.select("permno", "eom")
+        .with_columns(eom_src=_mp_offset_months("eom", -5))
+        .join(composite_t, on=["permno", "eom_src"], how="left")
+        .select("eom", "permno", "composite_issue")
+        .sort("permno", "eom")
+    )
+    out.write_parquet(interim_dir / "composite_issue.parquet")
+    return out
+
+
+def _mp_compute_roa(mp_con: duckdb.DuckDBPyConnection, interim_dir: Path) -> pl.DataFrame:
+    cq = (
+        pl.read_parquet(interim_dir / "compustat_quarterly.parquet")
+        .select("permno", "datadate", "rdq", "rdq_crsp", "lead_rdq_crsp", "ibq", "atq")
+        .sort("permno", "datadate")
+        .with_columns(
+            lag_dt=col("datadate").shift(1).over("permno"),
+            lag_atq=col("atq").shift(1).over("permno"),
+        )
+        .with_columns(lag_dt=col("lag_dt").fill_null(col("datadate")))
+        .with_columns(
+            gap_mo=_mp_month_diff(col("datadate"), col("lag_dt")),
+            roa=pl.when(col("lag_atq").is_null() | (col("lag_atq") == 0))
+            .then(None)
+            .otherwise(safe_div("ibq", "lag_atq", "roa")),
+        )
+        .with_columns(roa=pl.when(col("gap_mo") >= 6).then(None).otherwise(col("roa")))
+        .filter(col("roa").is_not_null())
+        .select("permno", "datadate", "rdq", "rdq_crsp", "lead_rdq_crsp", "roa")
+    )
+
+    month_keys = pl.read_parquet(interim_dir / "crsp_monthly.parquet").select("permno", "eom")
+    mp_con.register("cq", cq)
+    mp_con.register("month_keys", month_keys)
+    df = mp_con.execute("""
+        SELECT a.permno, a.eom, b.roa, b.datadate, b.rdq
+        FROM month_keys a
+        LEFT JOIN cq b
+          ON a.permno = b.permno AND a.eom >= b.rdq_crsp AND a.eom < b.lead_rdq_crsp
+    """).pl()
+
+    out = (
+        df.sort(["permno", "eom", "datadate", "rdq"], descending=[False, False, True, True])
+        .unique(subset=["permno", "eom"], keep="first", maintain_order=True)
+        .select("eom", "permno", "roa")
+        .sort("permno", "eom")
+    )
+    out.write_parquet(interim_dir / "roa.parquet")
+    return out
+
+
+def _mp_distress_market_inputs(crsp_full: pl.DataFrame, sp500_idx: pl.DataFrame) -> pl.DataFrame:
+    return (
+        crsp_full.with_columns(prc=col("PRC").abs().clip(upper_bound=15.0))
+        .join(sp500_idx, on="eom", how="left")
+        .with_columns(
+            PRICE=col("prc").log(),
+            EXRET=(1 + col("RET")).log() - (1 + col("sprtrn")).log(),
+            RSIZE=(col("me") / col("totval")).log(),
+        )
+        .sort("permno", "eom")
+        .with_columns(
+            form_eom=col("eom").shift(1).over("permno"),
+            lag_ME=col("me").shift(1).over("permno"),
+            lag_PRICE=col("PRICE").shift(1).over("permno"),
+            lag_EXRET=col("EXRET").shift(1).over("permno"),
+            lag_RSIZE=col("RSIZE").shift(1).over("permno"),
+        )
+        .with_columns(gap=_mp_month_diff(col("eom"), col("form_eom")))
+        .with_columns(
+            [
+                pl.when(col("gap") > 1).then(None).otherwise(col(c)).alias(c)
+                for c in ["lag_ME", "lag_PRICE", "lag_EXRET", "lag_RSIZE"]
+            ]
+        )
+        .select(
+            "eom",
+            "permno",
+            col("lag_ME").alias("ME"),
+            col("lag_PRICE").alias("PRICE"),
+            col("lag_EXRET").alias("EXRET"),
+            col("lag_RSIZE").alias("RSIZE"),
+        )
+    )
+
+
+def _mp_distress_book_equity_mb(cq_base: pl.DataFrame, crsp_full: pl.DataFrame) -> pl.DataFrame:
+    return (
+        cq_base.with_columns(pre_stock=pl.coalesce(col("pstkrq"), col("pstkq"), pl.lit(0.0)))
+        .with_columns(extra=-col("pre_stock"))
+        .with_columns(
+            BEQ=pl.when(col("seqq").is_not_null())
+            .then(col("seqq") + col("extra"))
+            .when(col("ceqq").is_not_null() & col("pstkq").is_not_null())
+            .then(col("ceqq") + col("pstkq") + col("extra"))
+            .when(col("atq").is_not_null() & col("ltq").is_not_null())
+            .then((col("atq") - col("ltq")) + col("extra"))
+            .otherwise(None)
+        )
+        .with_columns(eom_match=col("datadate").dt.month_end())
+        .join(
+            crsp_full.select("permno", "eom", "me").rename({"me": "ME"}),
+            left_on=["permno", "eom_match"],
+            right_on=["permno", "eom"],
+            how="inner",
+        )
+        .rename({"eom_match": "eom"})
+        .with_columns(BE=col("BEQ") * 1000)
+        .with_columns(adj_BE=col("BE") + 0.1 * (col("ME") - col("BE")))
+        .with_columns(
+            adj_BE=pl.when((col("adj_BE") < 0) & col("adj_BE").is_not_null())
+            .then(1.0)
+            .otherwise(col("adj_BE"))
+        )
+        .with_columns(MB=safe_div(col("ME"), col("adj_BE"), "MB"))
+    )
+
+
+def _mp_distress_quarterly_inputs(
+    market_inputs: pl.DataFrame,
+    be: pl.DataFrame,
+    cq_base: pl.DataFrame,
+    compustat_quarterly: pl.DataFrame,
+    mp_con: duckdb.DuckDBPyConnection,
+) -> pl.DataFrame:
+    mp_con.register("market_inputs", market_inputs)
+    mp_con.register(
+        "be",
+        be.select(
+            "permno",
+            "datadate",
+            "rdq",
+            "rdq_crsp",
+            "lead_rdq_crsp",
+            "MB",
+            col("ME").alias("ME_lag"),
+        ),
+    )
+    quarterly_joined = mp_con.execute("""
+        SELECT a.*, b.MB, b.ME_lag, b.datadate AS datadate_q, b.rdq AS rdq_be
+        FROM market_inputs a LEFT JOIN be b
+          ON a.permno = b.permno AND a.eom >= b.rdq_crsp AND a.eom < b.lead_rdq_crsp
+    """).pl()
+    quarterly_joined = quarterly_joined.sort(
+        ["permno", "eom", "datadate_q", "rdq_be"], descending=[False, False, True, True]
+    ).unique(subset=["permno", "eom"], keep="first", maintain_order=True)
+
+    cq_extra = (
+        cq_base.select("permno", "datadate", "rdq", "rdq_crsp", "lead_rdq_crsp")
+        .join(
+            compustat_quarterly.select("permno", "datadate", "niq", "cheq"),
+            on=["permno", "datadate"],
+            how="left",
+        )
+        .join(cq_base.select("permno", "datadate", "ltq"), on=["permno", "datadate"], how="left")
+    )
+    mp_con.register("quarterly_joined", quarterly_joined)
+    mp_con.register("cq", cq_extra)
+    panel = mp_con.execute("""
+        SELECT a.*, b.niq AS NIQ, b.ltq AS LTQ, b.cheq AS CHEQ,
+               b.datadate AS datadate_q2, b.rdq AS rdq_q2
+        FROM quarterly_joined a LEFT JOIN cq b
+          ON a.permno = b.permno AND a.eom >= b.rdq_crsp AND a.eom < b.lead_rdq_crsp
+    """).pl()
+    return (
+        panel.sort(
+            ["permno", "eom", "datadate_q2", "rdq_q2"], descending=[False, False, True, True]
+        )
+        .unique(subset=["permno", "eom"], keep="first", maintain_order=True)
+        .with_columns(
+            NIMTA=safe_div(col("NIQ"), col("LTQ") + col("ME_lag") / 1000, "NIMTA"),
+            TLMTA=safe_div(col("LTQ"), col("LTQ") + col("ME_lag") / 1000, "TLMTA"),
+            CASHMTA=safe_div(col("CHEQ"), col("LTQ") + col("ME_lag") / 1000, "CASHMTA"),
+        )
+    )
+
+
+def _mp_distress_nimtaavg(panel: pl.DataFrame) -> tuple[pl.DataFrame, date]:
+    nimta_mean = (
+        panel.filter(col("NIMTA").is_not_null())
+        .group_by("eom")
+        .agg(mean_NIMTA=col("NIMTA").mean(), _f=pl.len())
+        .filter(col("_f") >= 10)
+    )
+    if nimta_mean.height == 0:
+        raise RuntimeError("distress: no eom with >=10 NIMTA obs")
+    min_eom = nimta_mean["eom"].min()
+    floor_eom = pl.select(_mp_offset_months(pl.lit(min_eom), -12)).item()
+
+    panel = (
+        panel.join(nimta_mean.select("eom", "mean_NIMTA"), on="eom", how="left")
+        .with_columns(adj_NIMTA=pl.coalesce(col("NIMTA"), col("mean_NIMTA")))
+        .drop("mean_NIMTA")
+        .sort("permno", "eom")
+    )
+
+    scale_n = (1 - MP_CHS_DECAY**3) / (1 - MP_CHS_DECAY**12)
+    panel = (
+        panel.with_columns(
+            nimta_lag0=col("adj_NIMTA"),
+            nimta_lag3=col("adj_NIMTA").shift(3).over("permno"),
+            nimta_lag6=col("adj_NIMTA").shift(6).over("permno"),
+            nimta_lag9=col("adj_NIMTA").shift(9).over("permno"),
+            eom_lag3=col("eom").shift(3).over("permno"),
+            eom_lag6=col("eom").shift(6).over("permno"),
+            eom_lag9=col("eom").shift(9).over("permno"),
+        )
+        .with_columns(
+            nimta_ok=(
+                (col("eom_lag3") == _mp_offset_months("eom", -3))
+                & (col("eom_lag6") == _mp_offset_months("eom", -6))
+                & (col("eom_lag9") == _mp_offset_months("eom", -9))
+                & col("nimta_lag0").is_not_null()
+                & col("nimta_lag3").is_not_null()
+                & col("nimta_lag6").is_not_null()
+                & col("nimta_lag9").is_not_null()
+            )
+        )
+        .with_columns(
+            NIMTAAVG=pl.when(col("nimta_ok"))
+            .then(
+                scale_n
+                * (
+                    col("nimta_lag0")
+                    + col("nimta_lag3") * MP_CHS_DECAY
+                    + col("nimta_lag6") * MP_CHS_DECAY**2
+                    + col("nimta_lag9") * MP_CHS_DECAY**3
+                )
+            )
+            .otherwise(None)
+        )
+    )
+    return panel, floor_eom
+
+
+def _mp_distress_exretavg(panel: pl.DataFrame, floor_eom: date) -> pl.DataFrame:
+    exret_mean = (
+        panel.filter(col("EXRET").is_not_null()).group_by("eom").agg(mean_EXRET=col("EXRET").mean())
+    )
+    panel = (
+        panel.join(exret_mean, on="eom", how="left")
+        .with_columns(adj_EXRET=pl.coalesce(col("EXRET"), col("mean_EXRET")))
+        .drop("mean_EXRET")
+        .filter(col("eom") >= floor_eom)
+        .sort("permno", "eom")
+    )
+
+    scale_e = (1 - MP_CHS_DECAY) / (1 - MP_CHS_DECAY**12)
+    panel = panel.with_columns(
+        [col("adj_EXRET").shift(i).over("permno").alias(f"el{i}") for i in range(12)]
+        + [col("eom").shift(i).over("permno").alias(f"eoml{i}") for i in range(12)]
+    )
+    consec = pl.lit(True)
+    for i in range(12):
+        consec = consec & (col(f"eoml{i}") == _mp_offset_months("eom", -i))
+        consec = consec & col(f"el{i}").is_not_null()
+    weighted = sum(col(f"el{i}") * (MP_CHS_DECAY**i) for i in range(12))
+    return panel.with_columns(EXRETAVG=pl.when(consec).then(scale_e * weighted).otherwise(None))
+
+
+def _mp_distress_sigma(crsp_daily: pl.DataFrame) -> pl.DataFrame:
+    crsp_daily = crsp_daily.with_columns(eom=col("date").dt.month_end())
+    monthly = (
+        crsp_daily.with_columns(ret2=col("ret") ** 2)
+        .group_by("permno", "eom")
+        .agg(sum_ret2=col("ret2").sum(), obs_m=col("ret").is_not_null().sum().cast(pl.Int64))
+        .sort("permno", "eom")
+    )
+    expanded = (
+        monthly.select("permno", "eom")
+        .with_columns(_off=pl.lit([1, 2, 3]))
+        .explode("_off")
+        .with_columns(
+            eom_src=col("eom").dt.offset_by(pl.format("-{}mo", col("_off"))).dt.month_end()
+        )
+    )
+    sigma_agg = (
+        expanded.join(
+            monthly.select("permno", col("eom").alias("eom_src"), "sum_ret2", "obs_m"),
+            on=["permno", "eom_src"],
+            how="left",
+        )
+        .group_by("permno", "eom")
+        .agg(sum_total=col("sum_ret2").sum(), obs_total=col("obs_m").sum().cast(pl.Int64))
+    )
+    sigma = (
+        monthly.join(sigma_agg, on=["permno", "eom"], how="left")
+        .with_columns(
+            SIGMA=pl.when(col("obs_total") > 0)
+            .then(((252.0 / col("obs_total")) * col("sum_total")).sqrt())
+            .otherwise(None)
+        )
+        .select("permno", "eom", "SIGMA")
+    )
+    sigma_mean = (
+        sigma.filter(col("SIGMA").is_not_null()).group_by("eom").agg(avg_SIGMA=col("SIGMA").mean())
+    )
+    return (
+        sigma.join(sigma_mean, on="eom", how="left")
+        .with_columns(SIGMA=pl.coalesce(col("SIGMA"), col("avg_SIGMA")))
+        .drop("avg_SIGMA")
+    )
+
+
+def _mp_distress_final_score(chs_inputs: pl.DataFrame, sigma: pl.DataFrame) -> pl.DataFrame:
+    scored = (
+        chs_inputs.join(sigma, on=["permno", "eom"], how="left")
+        .sort("permno", "eom")
+        .with_columns(
+            eom_prev=col("eom").shift(1).over("permno"),
+            lag_MB=col("MB").shift(1).over("permno"),
+            lag_TLMTA=col("TLMTA").shift(1).over("permno"),
+            lag_CASHMTA=col("CASHMTA").shift(1).over("permno"),
+        )
+        .with_columns(gap_m=_mp_month_diff(col("eom"), col("eom_prev")))
+        .with_columns(
+            [
+                pl.when(col("gap_m") >= 6).then(None).otherwise(col(c)).alias(c)
+                for c in ["lag_MB", "lag_TLMTA", "lag_CASHMTA"]
+            ]
+        )
+    )
+
+    scored = _mp_winsorize_per_group(
+        scored,
+        ["NIMTAAVG", "lag_TLMTA", "EXRETAVG", "RSIZE", "lag_CASHMTA", "lag_MB", "SIGMA"],
+        lo=5,
+        hi=95,
+        by="eom",
+    )
+
+    scored = scored.filter(
+        col("NIMTAAVG").is_not_null()
+        & col("lag_TLMTA").is_not_null()
+        & col("EXRETAVG").is_not_null()
+        & col("RSIZE").is_not_null()
+        & col("lag_CASHMTA").is_not_null()
+        & col("lag_MB").is_not_null()
+        & col("PRICE").is_not_null()
+        & col("SIGMA").is_not_null()
+    )
+
+    return scored.with_columns(
+        distress=MP_DISTRESS_BETAS["intercept"]
+        + MP_DISTRESS_BETAS["NIMTAAVG"] * col("NIMTAAVG")
+        + MP_DISTRESS_BETAS["TLMTA"] * col("lag_TLMTA")
+        + MP_DISTRESS_BETAS["EXRETAVG"] * col("EXRETAVG")
+        + MP_DISTRESS_BETAS["SIGMA"] * col("SIGMA")
+        + MP_DISTRESS_BETAS["RSIZE"] * col("RSIZE")
+        + MP_DISTRESS_BETAS["CASHMTA"] * col("lag_CASHMTA")
+        + MP_DISTRESS_BETAS["MB"] * col("lag_MB")
+        + MP_DISTRESS_BETAS["PRICE"] * col("PRICE")
+    ).select("eom", "permno", "distress")
+
+
+def _mp_compute_distress(
+    mp_con: duckdb.DuckDBPyConnection, raw_dir: Path, interim_dir: Path
+) -> pl.DataFrame:
+    crsp_monthly_panel = pl.read_parquet(interim_dir / "crsp_monthly.parquet").select(
+        "permno", "eom", "me", "RET", "PRC"
+    )
+    sp500_idx = (
+        pl.read_parquet(raw_dir / "crsp_a_indexes_msp500.parquet")
+        .with_columns(
+            col("totval").cast(pl.Float64, strict=False),
+            col("sprtrn").cast(pl.Float64, strict=False),
+        )
+        .with_columns(eom=col("caldt").dt.month_end())
+        .select("eom", "totval", "sprtrn")
+    )
+    compustat_quarterly = pl.read_parquet(interim_dir / "compustat_quarterly.parquet")
+    cq_base = compustat_quarterly.select(
+        "permno",
+        "gvkey",
+        "datadate",
+        "fyearq",
+        "fqtr",
+        "rdq",
+        "rdq_crsp",
+        "lead_rdq_crsp",
+        "atq",
+        "ltq",
+        "seqq",
+        "ceqq",
+        "pstkq",
+        "pstkrq",
+    )
+
+    market_inputs = _mp_distress_market_inputs(crsp_monthly_panel, sp500_idx)
+    be = _mp_distress_book_equity_mb(cq_base, crsp_monthly_panel)
+    panel = _mp_distress_quarterly_inputs(market_inputs, be, cq_base, compustat_quarterly, mp_con)
+    panel, floor_eom = _mp_distress_nimtaavg(panel)
+    panel = _mp_distress_exretavg(panel, floor_eom)
+
+    chs_inputs = panel.select(
+        "eom", "permno", "NIMTAAVG", "TLMTA", "EXRETAVG", "RSIZE", "CASHMTA", "MB", "PRICE"
+    )
+    sigma = _mp_distress_sigma(pl.read_parquet(interim_dir / "crsp_daily.parquet"))
+    distress = _mp_distress_final_score(chs_inputs, sigma)
+
+    out = (
+        crsp_monthly_panel.select("permno", "eom")
+        .join(distress, on=["permno", "eom"], how="left")
+        .unique(subset=["permno", "eom"], keep="first", maintain_order=True)
+        .sort("permno", "eom")
+        .select("eom", "permno", "distress")
+    )
+    out.write_parquet(interim_dir / "distress.parquet")
+    return out
+
+
+def _mp_monthly_lagged_me_panel(interim_dir: Path) -> pl.DataFrame:
+    # Pure CIZ: ME = mthcap directly (CRSP end-of-month market cap). Sort by
+    # (permno, eom) ascending so .shift(1).over("permno") yields the prior eom obs.
+    return (
+        pl.read_parquet(interim_dir / "crsp_monthly_full.parquet")
+        .select("eom", "permno", "exchcd", "PRC", "RET", "me")
+        .rename({"PRC": "prc", "RET": "ret", "me": "ME"})
+        .with_columns(prc=col("prc").abs())
+        .sort("permno", "eom")
+        .with_columns(
+            mktcap=col("ME").shift(1).over("permno"),
+            lag_prc=col("prc").shift(1).over("permno"),
+        )
+        .filter(
+            col("ret").is_not_null() & col("mktcap").is_not_null() & col("lag_prc").is_not_null()
+        )
+        .select("eom", "permno", "exchcd", "prc", "ret", "ME", "mktcap", "lag_prc")
+    )
+
+
+def _mp_percentile_rank(
+    m: pl.DataFrame,
+    descending: bool,
+    mp_con: duckdb.DuckDBPyConnection,
+    *,
+    id_select: list[str],
+    group_keys: list[str],
+) -> pl.DataFrame:
+    """Percentile rank (1..100) via 99 quantile_disc breakpoints per group.
+    Returns id/group cols, rank_var, cnt (group size), eff (non-null count),
+    pct_raw. Sign-flips rank_var into _v for descending anomalies."""
+    m = m.with_columns(_v=(-col("rank_var")) if descending else col("rank_var"))
+    mp_con.register("m", m)
+    breaks_sql = ", ".join(f"quantile_disc(_v, {k / 100.0}) AS q{k}" for k in range(1, 100))
+    bucket_sql = " + ".join(f"(CASE WHEN a._v >= b.q{k} THEN 1 ELSE 0 END)" for k in range(1, 100))
+    ids = ", ".join(f"a.{c}" for c in id_select)
+    gk = ", ".join(group_keys)
+    gk_a = ", ".join(f"a.{c}" for c in group_keys)
+    join_on = " AND ".join(f"a.{c} = b.{c}" for c in group_keys)
+    return mp_con.execute(f"""
+        WITH breaks AS (
+            SELECT {gk}, {breaks_sql}
+            FROM m WHERE _v IS NOT NULL GROUP BY {gk}
+        )
+        SELECT {ids}, {gk_a}, a.rank_var,
+               COUNT(*) OVER (PARTITION BY {gk_a}) AS cnt,
+               COUNT(a.rank_var) OVER (PARTITION BY {gk_a}) AS eff,
+               ({bucket_sql}) + 1 AS pct_raw
+        FROM m a LEFT JOIN breaks b ON {join_on}
+    """).pl()
+
+
+def _mp_anomaly_pct_panel(
+    me_panel: pl.DataFrame,
+    min_stks: int,
+    mp_con: duckdb.DuckDBPyConnection,
+    *,
+    panel_cols: list[str],
+    sort_keys: list[str],
+    id_cols: list[str],
+    group_keys: list[str],
+    anom_source: Callable[[str], pl.DataFrame | None],
+) -> pl.DataFrame:
+    """Per-group percentile-rank each anomaly and left-join (value, pct) onto
+    the base return panel. Base universe: lag_prc > 5, mktcap > 0, non-null ret.
+    anom_source(anom) returns a (id, eom, rank_var) frame or None to skip.
+    pct nulled when effective group count < min_stks.
+    Returns panel_cols plus one (anom, pct_anom) column pair per available anomaly."""
+    base = me_panel.filter((col("lag_prc") > 5) & (col("mktcap") > 0) & col("ret").is_not_null())
+    panel = base.select(*panel_cols).sort(*sort_keys)
+    src_join = [*id_cols, "eom"]  # anomaly frames are keyed by (id, eom) only
+    panel_join = [*id_cols, *group_keys]
+
+    for anom in MP_ANOMALY_LIST:
+        anom_df = anom_source(anom)
+        if anom_df is None:
+            continue
+        m = (
+            base.select(*panel_join, "mktcap")
+            .join(anom_df, on=src_join, how="inner")
+            .pipe(
+                _mp_percentile_rank,
+                descending=anom in MP_POSITIVE_ANOMALIES,
+                mp_con=mp_con,
+                id_select=id_cols,
+                group_keys=group_keys,
+            )
+            .filter(col("cnt") >= min_stks)
+            .with_columns(
+                pct=pl.when((col("eff") < min_stks) | col("rank_var").is_null())
+                .then(None)
+                .otherwise(col("pct_raw").cast(pl.Float64))
+            )
+        )
+        panel = panel.join(
+            m.select(*panel_join, col("rank_var").alias(anom), col("pct").alias(f"pct_{anom}")),
+            on=panel_join,
+            how="left",
+        )
+    return panel
+
+
+def _mp_percentile_rank_anomalies(
+    me_panel: pl.DataFrame,
+    min_stks: int,
+    mp_con: duckdb.DuckDBPyConnection,
+    interim_dir: Path,
+) -> pl.DataFrame:
+    def anom_source(anom: str) -> pl.DataFrame:
+        fcol = anom.lower()
+        return pl.read_parquet(interim_dir / f"{fcol}.parquet").select(
+            "permno", "eom", col(fcol).alias("rank_var")
+        )
+
+    return _mp_anomaly_pct_panel(
+        me_panel,
+        min_stks,
+        mp_con,
+        panel_cols=["permno", "eom", "ret", "lag_prc", "mktcap", "exchcd"],
+        sort_keys=["permno", "eom"],
+        id_cols=["permno"],
+        group_keys=["eom"],
+        anom_source=anom_source,
+    )
+
+
+def _mp_build_mispricing_panel(
+    min_stks: int, mp_con: duckdb.DuckDBPyConnection, interim_dir: Path
+) -> pl.DataFrame:
+    panel = _mp_percentile_rank_anomalies(
+        _mp_monthly_lagged_me_panel(interim_dir), min_stks, mp_con, interim_dir
+    )
+    pct_cols = [f"pct_{a}" for a in MP_ANOMALY_LIST]
+    return (
+        panel.with_columns(anomal_num=sum(col(c).is_not_null().cast(pl.Int64) for c in pct_cols))
+        .filter(col("anomal_num") > 0)
+        .with_columns([col(c).fill_null(0.0) for c in pct_cols])
+        .sort("eom", "permno")
+    )
+
+
+def _mp_stock_mispricing_scores(
+    mispricing_panel: pl.DataFrame,
+    min_fcts: int,
+    *,
+    sort_keys: list[str],
+    select_cols: list,
+) -> pl.DataFrame:
+    """Mgmt/perf leg scores per stock-month; keeps rows with either score."""
+    return (
+        _mp_add_leg_score(
+            mispricing_panel, MP_MGMT_PCT_COLS, "mispricing_mgmt", "_n_mgmt", min_count=min_fcts
+        )
+        .pipe(_mp_add_leg_score, MP_PERF_PCT_COLS, "mispricing_perf", "_n_perf", min_count=min_fcts)
+        .filter(col("mispricing_mgmt").is_not_null() | col("mispricing_perf").is_not_null())
+        .sort(*sort_keys)
+        .select(*select_cols, "mispricing_mgmt", "mispricing_perf")
+    )
+
+
+def _mp_filter_active(
+    mispricing_panel: pl.DataFrame,
+    cols_list: list[str],
+    score_col: str,
+    num_col: str,
+    min_fcts: int,
+) -> pl.DataFrame:
+    return _mp_add_leg_score(
+        mispricing_panel, cols_list, score_col, num_col, min_count=min_fcts
+    ).filter(col(num_col) >= min_fcts)
+
+
+def _mp_double_sort_buckets(
+    df: pl.DataFrame,
+    score_col: str,
+    *,
+    group_keys: list[str],
+    size_break_sql: str,
+) -> pl.DataFrame:
+    """2×3 double-sort: size median → port_size 1/2, score 20/80 terciles
+    → port_var 1/2/3. Breakpoints computed per group_keys. Returns input
+    frame plus port_size and port_var columns."""
+    gk = ", ".join(group_keys)
+    breaks = _mp_polars_sql(
+        df,
+        f"""
+        SELECT {gk},
+               quantile_disc({size_break_sql}, 0.50) AS size50,
+               quantile_disc({score_col}, 0.20) AS v20,
+               quantile_disc({score_col}, 0.80) AS v80
+        FROM src GROUP BY {gk}
+    """,
+    )
+    return (
+        df.join(breaks, on=group_keys, how="left")
+        .with_columns(
+            port_size=pl.when((col("mktcap") > 0) & (col("mktcap") < col("size50")))
+            .then(1)
+            .when(col("size50") <= col("mktcap"))
+            .then(2)
+            .otherwise(None),
+            port_var=pl.when(col(score_col) < col("v20"))
+            .then(1)
+            .when((col("v20") <= col(score_col)) & (col(score_col) < col("v80")))
+            .then(2)
+            .when(col("v80") <= col(score_col))
+            .then(3)
+            .otherwise(None),
+        )
+        .drop("size50", "v20", "v80")
+    )
+
+
+def _mp_vw_monthly(df: pl.DataFrame, group_cols: list[str]) -> pl.DataFrame:
+    # Total-order sort before the float sums: the legs arrive from
+    # order-unstable joins, and an unordered SUM flips last-ULP results
+    # run-to-run (same class as the res_mom/market_beta determinism fixes).
+    key_cols = [c for c in ("excntry", "permno", "id") if c in df.columns and c not in group_cols]
+    return (
+        df.sort([*group_cols, *key_cols])
+        .group_by(group_cols, maintain_order=True)
+        .agg(
+            vwret=safe_div((col("ret") * col("mktcap")).sum(), col("mktcap").sum(), "vwret"),
+            _freq_=pl.len(),
+        )
+    )
+
+
+def _mp_daily_vw_returns(
+    panel: pl.DataFrame,
+    group_cols: list[str],
+    mp_con: duckdb.DuckDBPyConnection,
+    *,
+    daily_path: str,
+    id_col: str,
+    table: str,
+    qualify_group: bool,
+) -> pl.DataFrame:
+    """Daily VW portfolio returns. Joins the monthly bucket panel onto the
+    daily return file per (id, eom) via DuckDB read_parquet; the float
+    reduction runs in Polars after a total-order sort — DuckDB's multi-
+    threaded SUM accumulates in morsel order and is not run-to-run stable.
+    Returns one row per (date, *group_cols) with vwret and _freq_."""
+    mp_con.register(table, panel)
+    group_sql = ", ".join(group_cols)
+    # Qualify with a.<col> when group cols (e.g. excntry) exist on both join
+    # sides, else DuckDB raises a BinderError.
+    sel_sql = ", ".join(f"a.{c}" for c in group_cols) if qualify_group else group_sql
+    joined = mp_con.execute(f"""
+        SELECT b.date AS date, a.mktcap, b.ret AS ret_d, {sel_sql}, a.{id_col} AS _sid
+        FROM {table} a
+        JOIN read_parquet('{daily_path}') b
+          ON a.{id_col} = b.{id_col} AND a.eom = b.eom
+        WHERE b.ret IS NOT NULL AND a.mktcap IS NOT NULL
+    """).pl()
+    return (
+        joined.sort(["date", *group_cols, "_sid"])
+        .group_by(["date", *group_cols], maintain_order=True)
+        .agg(
+            vwret=safe_div((col("ret_d") * col("mktcap")).sum(), col("mktcap").sum(), "vwret"),
+            _freq_=pl.len().cast(pl.Int64),
+        )
+    )
+
+
+def _mp_diff_legs(
+    df: pl.DataFrame,
+    by: str | list[str],
+    key_col: str,
+    key_a: int,
+    key_b: int,
+    out_name: str,
+) -> pl.DataFrame:
+    by_cols = [by] if isinstance(by, str) else list(by)
+    a = df.filter(col(key_col) == key_a).select(*by_cols, col("vwret").alias("a"))
+    b = df.filter(col(key_col) == key_b).select(*by_cols, col("vwret").alias("b"))
+    return a.join(b, on=by_cols, how="inner").with_columns((col("a") - col("b")).alias(out_name))
+
+
+def _mp_spread_per_size_then_diff(port_ret: pl.DataFrame, by: str | list[str]) -> pl.DataFrame:
+    by_cols = [by] if isinstance(by, str) else list(by)
+    misp = port_ret.group_by(*by_cols, "port_var").agg(misp=col("vwret").mean())
+    return _mp_diff_legs(misp.rename({"misp": "vwret"}), by_cols, "port_var", 1, 3, "umo")
+
+
+def _mp_mispricing_legs(
+    mispricing_panel: pl.DataFrame,
+    min_fcts: int,
+    *,
+    group_keys: list[str],
+    size_break_sql: str,
+) -> dict[str, pl.DataFrame]:
+    """Mgmt/perf legs: filter to active stocks, then 2x3 double-sort buckets."""
+    spec = {
+        "mgmt": (MP_MGMT_PCT_COLS, "score_mgmt", "n_mgmt"),
+        "perf": (MP_PERF_PCT_COLS, "score_perf", "n_perf"),
+    }
+    return {
+        name: _mp_double_sort_buckets(
+            _mp_filter_active(mispricing_panel, cols_list, score_col, num_col, min_fcts),
+            score_col,
+            group_keys=group_keys,
+            size_break_sql=size_break_sql,
+        )
+        for name, (cols_list, score_col, num_col) in spec.items()
+    }
+
+
+def _mp_smb_panel_from_legs(
+    legs: dict[str, pl.DataFrame], key_cols: tuple[str, ...]
+) -> pl.DataFrame:
+    """SMB neutral panel (port_var == 2 stocks). key_cols identifies the
+    stock: ("permno",) for US, ("id", "excntry") for world."""
+    a = (
+        legs["mgmt"]
+        .filter(col("port_var") == 2)
+        .select(*key_cols, "eom", "ret", "mktcap", "port_size")
+    )
+    b = legs["perf"].filter(col("port_var") == 2).select(*key_cols, "eom", "port_size")
+    return a.join(b, on=[*key_cols, "eom", "port_size"], how="inner")
+
+
+def _mp_thin_buckets(
+    port_ret: pl.DataFrame, *, truncate: bool, by: str | list[str], min_n: int
+) -> pl.DataFrame:
+    """Thin-bucket handling: US truncates cross-sectionally, world hard-filters."""
+    if truncate:
+        return _mp_truncate_thin(port_ret, by=by, freq_col="_freq_", min_n=min_n)
+    return port_ret.filter(col("_freq_") >= min_n)
+
+
+def _mp_monthly_factor_returns(
+    legs: dict[str, pl.DataFrame],
+    smb_panel: pl.DataFrame,
+    min_obs: int,
+    *,
+    by: str | list[str],
+    truncate_thin: bool,
+    out_cols: list[str],
+    out_sort: list[str],
+) -> pl.DataFrame:
+    """Monthly UMO (mgmt/perf) and SMB factor returns from bucketed legs.
+    Per leg: VW per (by, port_size, port_var), thin-bucket handling
+    (truncate or hard-filter per truncate_thin), 6-bucket completeness
+    gate, 1-3 spread per size → UMO. SMB: 1-2 diff per port_size.
+    Returns one row per `by` group with smb/mgmt/perf factor returns."""
+    by_cols = [by] if isinstance(by, str) else list(by)
+    leg_umo = {}
+    for name, panel in legs.items():
+        port_returns = (
+            _mp_vw_monthly(
+                panel.filter(col("port_size").is_not_null() & col("port_var").is_not_null()),
+                [*by_cols, "port_size", "port_var"],
+            )
+            .pipe(_mp_thin_buckets, truncate=truncate_thin, by=by, min_n=min_obs)
+            .pipe(_mp_filter_full_buckets, 6, by=by)
+            .sort(*by_cols, "port_size", "port_var")
+        )
+        leg_umo[name] = _mp_spread_per_size_then_diff(port_returns, by).select(
+            *by_cols, col("umo").alias(f"mispricing_{name}")
+        )
+
+    smb_port = (
+        _mp_vw_monthly(smb_panel, [*by_cols, "port_size"])
+        .pipe(_mp_thin_buckets, truncate=truncate_thin, by=by, min_n=min_obs)
+        .pipe(_mp_filter_full_buckets, 2, by=by)
+        .sort(*by_cols, "port_size")
+    )
+    smb_df = _mp_diff_legs(smb_port, by, "port_size", 1, 2, "smb_mispricing").select(
+        *by_cols, "smb_mispricing"
+    )
+
+    return (
+        leg_umo["mgmt"]
+        .join(leg_umo["perf"], on=by_cols, how="inner")
+        .join(smb_df, on=by_cols, how="inner")
+        .filter(col("eom") >= MP_START_FACTOR_EOM)
+        .select(*out_cols, "smb_mispricing", "mispricing_mgmt", "mispricing_perf")
+        .sort(*out_sort)
+    )
+
+
+def _mp_us_daily_factor_returns(
+    legs: dict[str, pl.DataFrame],
+    smb_panel: pl.DataFrame,
+    min_obs: int,
+    mp_con: duckdb.DuckDBPyConnection,
+    interim_dir: Path,
+) -> pl.DataFrame:
+    """US daily UMO (mgmt/perf) and SMB factor returns per date, VW against
+    crsp_daily on permno. Per leg: min_obs filter, 6-bucket completeness
+    gate, 1-3 spread per size -> UMO; SMB: 1-2 diff per port_size."""
+    daily_path = (interim_dir / "crsp_daily.parquet").as_posix()
+    leg_umo = {}
+    for name, panel in legs.items():
+        bucketed = panel.filter(
+            col("port_size").is_not_null() & col("port_var").is_not_null()
+        ).select("permno", "eom", "mktcap", "port_size", "port_var")
+        port_returns = (
+            _mp_daily_vw_returns(
+                bucketed,
+                ["port_size", "port_var"],
+                mp_con,
+                daily_path=daily_path,
+                id_col="permno",
+                table="panel",
+                qualify_group=False,
+            )
+            .filter(col("_freq_") >= min_obs)
+            .pipe(_mp_filter_full_buckets, 6, by="date")
+            .sort("date", "port_size", "port_var")
+        )
+        leg_umo[name] = _mp_spread_per_size_then_diff(port_returns, "date").select(
+            "date", col("umo").alias(f"mispricing_{name}")
+        )
+
+    smb_daily = smb_panel.select("permno", "eom", "mktcap", "port_size")
+    smb_port = (
+        _mp_daily_vw_returns(
+            smb_daily,
+            ["port_size"],
+            mp_con,
+            daily_path=daily_path,
+            id_col="permno",
+            table="panel",
+            qualify_group=False,
+        )
+        .filter(col("_freq_") >= min_obs)
+        .pipe(_mp_filter_full_buckets, 2, by="date")
+        .sort("date", "port_size")
+    )
+    smb_df = _mp_diff_legs(smb_port, "date", "port_size", 1, 2, "smb_mispricing").select(
+        "date", "smb_mispricing"
+    )
+
+    daily_start = date(MP_START_FACTOR_EOM.year, MP_START_FACTOR_EOM.month, 1)
+    return (
+        leg_umo["mgmt"]
+        .join(leg_umo["perf"], on=["date"], how="inner")
+        .join(smb_df, on=["date"], how="inner")
+        .filter(col("date") >= daily_start)
+        .select("date", "smb_mispricing", "mispricing_mgmt", "mispricing_perf")
+        .sort("date")
+    )
+
+
+def _mp_world_daily_factor_returns(
+    legs: dict[str, pl.DataFrame],
+    smb_panel: pl.DataFrame,
+    min_obs: int,
+    mp_con: duckdb.DuckDBPyConnection,
+    interim_dir: Path,
+) -> pl.DataFrame:
+    """World daily UMO (mgmt/perf) and SMB factor returns per (excntry, date),
+    VW against world_dsf on id. Same construction as the US version with
+    per-country grouping."""
+    daily_path = (interim_dir / "world_dsf.parquet").as_posix()
+    leg_umo = {}
+    for name, panel in legs.items():
+        bucketed = panel.filter(
+            col("port_size").is_not_null() & col("port_var").is_not_null()
+        ).select("id", "excntry", "eom", "mktcap", "port_size", "port_var")
+        port_returns = (
+            _mp_daily_vw_returns(
+                bucketed,
+                ["excntry", "port_size", "port_var"],
+                mp_con,
+                daily_path=daily_path,
+                id_col="id",
+                table="panel_w",
+                qualify_group=True,
+            )
+            .filter(col("_freq_") >= min_obs)
+            .pipe(_mp_filter_full_buckets, 6, by=["excntry", "date"])
+            .sort("excntry", "date", "port_size", "port_var")
+        )
+        leg_umo[name] = _mp_spread_per_size_then_diff(port_returns, ["excntry", "date"]).select(
+            "excntry", "date", col("umo").alias(f"mispricing_{name}")
+        )
+
+    smb_daily = smb_panel.select("id", "excntry", "eom", "mktcap", "port_size")
+    smb_port = (
+        _mp_daily_vw_returns(
+            smb_daily,
+            ["excntry", "port_size"],
+            mp_con,
+            daily_path=daily_path,
+            id_col="id",
+            table="panel_w",
+            qualify_group=True,
+        )
+        .filter(col("_freq_") >= min_obs)
+        .pipe(_mp_filter_full_buckets, 2, by=["excntry", "date"])
+        .sort("excntry", "date", "port_size")
+    )
+    smb_df = _mp_diff_legs(
+        smb_port, ["excntry", "date"], "port_size", 1, 2, "smb_mispricing"
+    ).select("excntry", "date", "smb_mispricing")
+
+    daily_start = date(MP_START_FACTOR_EOM.year, MP_START_FACTOR_EOM.month, 1)
+    return (
+        leg_umo["mgmt"]
+        .join(leg_umo["perf"], on=["excntry", "date"], how="inner")
+        .join(smb_df, on=["excntry", "date"], how="inner")
+        .filter(col("date") >= daily_start)
+        .select("date", "excntry", "smb_mispricing", "mispricing_mgmt", "mispricing_perf")
+        .sort("excntry", "date")
+    )
+
+
+def _mp_world_load_world_data(interim_dir: Path, start_dt: date = date(1963, 1, 1)) -> pl.DataFrame:
+    """Load jkp's world_data_prelim.parquet (per-(id, eom) panel with jkp-derived chars).
+    Filter to MAIN_FILTERS, exclude USA (US flows through US branch). Returns the
+    columns needed by the world pipeline. Cast numerics to Float64.
+
+    Reads the prelim file (not final world_data.parquet) because gen_mispricing_data
+    runs before merge_qmj_to_world_data in run_pipeline; the 17 columns selected here
+    all live in the prelim and are not modified by the downstream merges."""
+    p = interim_dir / "world_data_prelim.parquet"
+    cols_keep = [
+        "id",
+        "permno",
+        "gvkey",
+        "excntry",
+        "eom",
+        "me",
+        "prc",
+        "ret",
+        "adjfct",
+        "shares",
+        "size_grp",
+        "common",
+        "primary_sec",
+        "obs_main",
+        "exch_main",
+        # market chars backing the MOMENTUM / COMPOSITE_ISSUE / STOCK_ISSUE
+        # anomalies (see _mp_world_compute_* for the verified mappings)
+        "ret_12_1",
+        "eqnpo_12m",
+        "chcsho_12m",
+    ] + list(MP_WORLD_JKP_CHAR.values())
+    df = (
+        pl.scan_parquet(p)
+        .filter(
+            (col("excntry") != "USA")
+            & (col("common") == 1)
             & (col("primary_sec") == 1)
             & (col("obs_main") == 1)
             & (col("exch_main") == 1)
-            & (col("ret_exc").is_not_null())
-            & (col("me").is_not_null())
+            & (col("eom") >= start_dt)
         )
-        .select(["id", "eom", "excntry", *(vars_mgmt + vars_perf)])
-        .sort(["excntry", "eom"])
+        .select(cols_keep)
+        .collect()
     )
-    chars = {"1": aux_df}
-    for __d, __v, i in zip(direction, vars_mgmt + vars_perf, index, strict=True):
-        subset = gen_ranks_and_normalize(aux_df, ["id"], ["excntry"], ["eom"], __d, __v, min_stks)
-        chars[f"{(i + 1) % 2}"] = chars[f"{i % 2}"].join(subset, on=["id", "eom"], how="left")
-    chars["1"] = (
-        chars["1"]
+    floats = ["me", "prc", "ret", "adjfct", "shares", "ret_12_1", "eqnpo_12m", "chcsho_12m"] + list(
+        MP_WORLD_JKP_CHAR.values()
+    )
+    return df.with_columns(
+        [col(c).cast(pl.Float64, strict=False) for c in floats if c in df.columns]
+    )
+
+
+def _mp_world_load_market(interim_dir: Path, daily: bool = False) -> pl.DataFrame:
+    """Per-country VW market return + total market cap. Cols: excntry, eom (or date),
+    mkt_vw, me_lag1. USD."""
+    name = "market_returns_daily" if daily else "market_returns"
+    p = interim_dir / f"{name}.parquet"
+    date_col = "date" if daily else "eom"
+    return (
+        pl.read_parquet(p)
+        .select("excntry", date_col, "mkt_vw", "me_lag1")
+        .with_columns([col(c).cast(pl.Float64, strict=False) for c in ["mkt_vw", "me_lag1"]])
+    )
+
+
+def _mp_world_load_world_dsf(interim_dir: Path, start_dt: date = date(1963, 1, 1)) -> pl.DataFrame:
+    """Daily world stock panel filtered to common/exch_main. For DISTRESS SIGMA."""
+    p = interim_dir / "world_dsf.parquet"
+    return (
+        pl.scan_parquet(p)
+        .filter(
+            (col("excntry") != "USA")
+            & (col("common") == 1)
+            & (col("primary_sec") == 1)
+            & (col("obs_main") == 1)
+            & (col("exch_main") == 1)
+            & (col("date") >= start_dt)
+            & col("ret").is_not_null()
+        )
+        .select("id", "excntry", "date", "eom", col("ret").cast(pl.Float64, strict=False))
+        .collect()
+    )
+
+
+def _mp_world_load_fundq_global(raw_dir: Path, fx_df: pl.DataFrame) -> pl.DataFrame:
+    """Load global + NA Compustat quarterly, convert monetary items to USD
+    millions via `fx_df` (compustat_fx output, keyed curcdd/datadate), return
+    union. Used by DISTRESS to build NIMTA/TLMTA/CASHMTA/MB per excntry.
+    Files without a curcdq column (synthetic test fixtures) are treated as
+    USD-denominated."""
+    monetary = [
+        "ibq", "saleq", "niq", "cheq", "seqq", "ceqq", "pstkq", "atq",
+        "ltq", "pstkrq", "txditcq", "actq", "lctq", "piq", "dlttq", "revtq",
+    ]  # fmt: skip
+    # NA (US+Canada quarterly) — already used by US distress; reuse.
+    fq_us = _mp_load_fundq(raw_dir).with_columns(excntry_src=pl.lit("USA"))
+    # Global — comp.g_fundq, pulled by jkp. Reported in local currency.
+    g_path = raw_dir / "comp_g_fundq.parquet"
+    g_cols = pl.read_parquet(g_path, n_rows=1).columns
+    fq_g = (
+        pl.read_parquet(g_path)
+        .with_columns([pl.col(c).cast(pl.Float64, strict=False) for c in monetary if c in g_cols])
+        .with_columns(excntry_src=pl.lit("ROW"))
+    )
+    fundq = pl.concat([fq_us, fq_g], how="diagonal_relaxed")
+    if "curcdq" not in fundq.columns:
+        fundq = fundq.with_columns(curcdq=pl.lit("USD"))
+    fundq = fundq.with_columns(curcdq=pl.col("curcdq").fill_null("USD"))
+    present = [c for c in monetary if c in fundq.columns]
+    return add_fx_and_convert_vars(fundq, fx_df, present, freq="quarterly")
+
+
+def _mp_world_compute_jkp_anomalies(world_data: pl.DataFrame) -> dict[str, pl.DataFrame]:
+    """For 7 SY anomalies covered by jkp pre-computed chars, return per-anomaly
+    (id, eom, value) frames. World only — US still computes its own."""
+    out = {}
+    for sy_name, jkp_col in MP_WORLD_JKP_CHAR.items():
+        out[sy_name] = world_data.select(
+            "id", "eom", "excntry", col(jkp_col).alias(sy_name.lower())
+        ).filter(col(sy_name.lower()).is_not_null())
+    return out
+
+
+def _mp_world_lag_char(
+    world_data: pl.DataFrame, value: pl.Expr, lag: int, out: str
+) -> pl.DataFrame:
+    """(eom, id, excntry, out): jkp char expression evaluated at eom - lag
+    months and assigned to the month-t sort — the calendar join nulls the
+    signal across panel gaps instead of picking a stale row."""
+    src = world_data.select("id", col("eom").alias("eom_src"), value.alias(out))
+    return (
+        world_data.select("id", "excntry", "eom")
+        .with_columns(eom_src=_mp_offset_months("eom", -lag))
+        .join(src, on=["id", "eom_src"], how="left")
+        .select("eom", "id", "excntry", out)
+        .sort("id", "eom")
+    )
+
+
+def _mp_world_compute_momentum(world_data: pl.DataFrame) -> pl.DataFrame:
+    """SY MOMENTUM(t) = compound return over months t-2..t-12 = jkp's ret_12_1
+    (ri_x(t-1)/ri_x(t-12) - 1) sampled at t-1. Verified value-identical to the
+    previous in-repo rolling computation on the full world panel (corr 1.0,
+    max|diff| 1.4e-9); jkp's endpoint guard adds coverage where interior
+    window months are missing (the old zero-missing gate dropped them)."""
+    return _mp_world_lag_char(world_data, col("ret_12_1"), 1, "momentum")
+
+
+def _mp_world_compute_composite_issue(world_data: pl.DataFrame) -> pl.DataFrame:
+    """SY composite equity issuance(t) = [log 12m ME growth - 12m cum log ret]
+    at t-5 = -eqnpo_12m(t-5) (jkp: ln(ri/ri_lag12) - ln(me/me_lag12)).
+    Verified corr 1.0, max|diff| 1e-5 (RI-vs-compounded-returns rounding)
+    against the previous in-repo computation."""
+    return _mp_world_lag_char(world_data, -col("eqnpo_12m"), 5, "composite_issue")
+
+
+def _mp_world_compute_stock_issue(world_data: pl.DataFrame) -> pl.DataFrame:
+    """SY net stock issuance(t) = log 12m split-adjusted share growth through
+    t-1 = log(1 + chcsho_12m(t-1)) — the same jkp characteristic (and null->0
+    'no issuance' fill) the DHS NS char uses. Month-t share counts are not
+    observable at formation, hence the 1-month lag."""
+    lc = pl.when((1 + col("chcsho_12m")) > 0).then((1 + col("chcsho_12m")).log())
+    return _mp_world_lag_char(world_data, lc.otherwise(None), 1, "stock_issue").with_columns(
+        stock_issue=col("stock_issue").fill_null(0.0)
+    )
+
+
+def _mp_world_distress_market_inputs(
+    world_monthly: pl.DataFrame, market_m: pl.DataFrame
+) -> pl.DataFrame:
+    """Market inputs per (id, eom): formation-lagged ME, PRICE, EXRET, RSIZE.
+    World analog of _mp_distress_market_inputs (market_returns vs msp500)."""
+    market_idx = market_m.rename({"mkt_vw": "sprtrn", "me_lag1": "totval"})
+    monthly_panel = world_monthly.select(
+        "id", "excntry", "eom", col("prc").alias("PRC"), col("ret").alias("RET"), col("me")
+    )
+    return (
+        monthly_panel.with_columns(prc=col("PRC").abs().clip(upper_bound=15.0))
+        .join(market_idx, on=["excntry", "eom"], how="left")
         .with_columns(
-            mispricing_mgmt=gen_misp_exp(vars_mgmt, min_fcts),
-            mispricing_perf=gen_misp_exp(vars_perf, min_fcts),
+            PRICE=col("prc").log(),
+            EXRET=(1 + col("RET")).log() - (1 + col("sprtrn")).log(),
+            RSIZE=(col("me") / col("totval")).log(),
         )
-        .select(["id", "eom", "mispricing_perf", "mispricing_mgmt"])
+        .sort("id", "eom")
+        .with_columns(
+            form_eom=col("eom").shift(1).over("id"),
+            lag_ME=col("me").shift(1).over("id"),
+            lag_PRICE=col("PRICE").shift(1).over("id"),
+            lag_EXRET=col("EXRET").shift(1).over("id"),
+            lag_RSIZE=col("RSIZE").shift(1).over("id"),
+        )
+        .with_columns(gap=_mp_month_diff(col("eom"), col("form_eom")))
+        .with_columns(
+            [
+                pl.when(col("gap") > 1).then(None).otherwise(col(c)).alias(c)
+                for c in ["lag_ME", "lag_PRICE", "lag_EXRET", "lag_RSIZE"]
+            ]
+        )
+        .select(
+            "id",
+            "excntry",
+            "eom",
+            col("lag_ME").alias("ME"),
+            col("lag_PRICE").alias("PRICE"),
+            col("lag_EXRET").alias("EXRET"),
+            col("lag_RSIZE").alias("RSIZE"),
+        )
     )
-    chars["1"].collect().write_parquet(output_path)
+
+
+def _mp_world_distress_fundq(raw_dir: Path, fx_df: pl.DataFrame) -> pl.DataFrame:
+    """Quarterly Compustat (NA + Global union, USD-converted) with rdq_crsp /
+    lead_rdq_crsp availability windows per (gvkey, datadate)."""
+    fundq = (
+        _mp_world_load_fundq_global(raw_dir, fx_df)
+        .filter(
+            (col("indfmt") == "INDL")
+            & (col("datafmt") == "STD")
+            & (col("popsrc").is_in(["D", "I"]))
+            & (col("consol") == "C")
+        )
+        .select(
+            "gvkey",
+            "datadate",
+            "rdq",
+            "ibq",
+            "atq",
+            "ltq",
+            "seqq",
+            "ceqq",
+            "pstkq",
+            "pstkrq",
+            "niq",
+            "cheq",
+            "excntry_src",
+        )
+    )
+    # NA+Global can carry the same (gvkey, datadate) with different values; prefer NA
+    # (HXZ/FF convention), then a fully-valued ladder so the parallel sort is stable.
+    return (
+        fundq.with_columns(_src=(col("excntry_src") != "USA").cast(pl.Int8))
+        .sort(
+            ["gvkey", "datadate", "_src", "rdq", "ibq", "atq", "ltq", "niq", "cheq"],
+            descending=[False, False, False, False, True, True, True, True, True],
+            nulls_last=True,
+        )
+        .with_columns(adj_rdq=pl.coalesce(col("rdq"), _mp_offset_months("datadate", 3)))
+        .filter(col("adj_rdq").is_not_null())
+        .unique(subset=["gvkey", "datadate"], keep="first", maintain_order=True)
+        .drop("_src", "excntry_src")
+        .with_columns(rdq_crsp=_mp_offset_months("adj_rdq", 1))
+        .sort(["gvkey", "rdq_crsp", "datadate"], descending=[False, True, True])
+        .with_columns(
+            lead_rdq_crsp=pl.coalesce(
+                col("rdq_crsp").shift(1).over("gvkey"),
+                _mp_offset_qtrs_end("rdq_crsp", 1),
+            )
+        )
+        .sort("gvkey", "datadate")
+    )
+
+
+def _mp_world_distress_book_equity_mb(
+    fundq: pl.DataFrame, world_monthly: pl.DataFrame
+) -> pl.DataFrame:
+    """BE chain: SEQQ -> CEQQ+PSTKQ -> ATQ-LTQ, plus TXDITCQ,
+    minus preferred (PSTKRQ -> PSTKQ -> 0; missing pstkrq handled for global).
+    Then adj_BE = BE + 0.1*(ME - BE) floored at 1 and MB = ME / adj_BE.
+    fundq is USD-converted and world me is USD, both in millions — no unit
+    rescaling (unlike the US path, where CRSP mthcap is in $ thousands)."""
+    return (
+        fundq.with_columns(pre_stock=pl.coalesce(col("pstkrq"), col("pstkq"), pl.lit(0.0)))
+        .with_columns(extra=-col("pre_stock"))
+        .with_columns(
+            BEQ=pl.when(col("seqq").is_not_null())
+            .then(col("seqq") + col("extra"))
+            .when(col("ceqq").is_not_null() & col("pstkq").is_not_null())
+            .then(col("ceqq") + col("pstkq") + col("extra"))
+            .when(col("atq").is_not_null() & col("ltq").is_not_null())
+            .then((col("atq") - col("ltq")) + col("extra"))
+            .otherwise(None)
+        )
+        .with_columns(eom_match=col("datadate").dt.month_end())
+        .join(
+            world_monthly.select("id", "gvkey", "eom", col("me").alias("ME")),
+            left_on=["gvkey", "eom_match"],
+            right_on=["gvkey", "eom"],
+            how="inner",
+        )
+        .rename({"eom_match": "eom"})
+        .with_columns(BE=col("BEQ"))
+        .with_columns(adj_BE=col("BE") + 0.1 * (col("ME") - col("BE")))
+        .with_columns(
+            adj_BE=pl.when((col("adj_BE") < 0) & col("adj_BE").is_not_null())
+            .then(1.0)
+            .otherwise(col("adj_BE"))
+        )
+        .with_columns(MB=safe_div(col("ME"), col("adj_BE"), "MB"))
+    )
+
+
+def _mp_world_distress_quarterly_join(
+    market_inputs: pl.DataFrame,
+    id_gvkey: pl.DataFrame,
+    be: pl.DataFrame,
+    fundq: pl.DataFrame,
+    mp_con: duckdb.DuckDBPyConnection,
+) -> pl.DataFrame:
+    """Window-join MB/ME then NIQ/LTQ/CHEQ onto (id, eom) via the gvkey rdq
+    windows; derive NIMTA/TLMTA/CASHMTA."""
+    # Join market_inputs to quarterly via id+eom window. Window uses gvkey-defined rdq_crsp.
+    # Need (id, eom) → applicable (gvkey, rdq window). Use id_gvkey to translate.
+    mp_con.register("market_inputs", market_inputs.join(id_gvkey, on=["id", "eom"], how="left"))
+    mp_con.register(
+        "be",
+        be.select(
+            "gvkey", "datadate", "rdq", "rdq_crsp", "lead_rdq_crsp", "MB", col("ME").alias("ME_lag")
+        ),
+    )
+    quarterly_joined = mp_con.execute("""
+        SELECT a.*, b.MB, b.ME_lag, b.datadate AS datadate_q, b.rdq AS rdq_be
+        FROM market_inputs a LEFT JOIN be b
+          ON a.gvkey = b.gvkey AND a.eom >= b.rdq_crsp AND a.eom < b.lead_rdq_crsp
+    """).pl()
+    # `be` has one row per (gvkey, datadate, share-class id), so a panel row can match
+    # several b rows tied on (datadate_q, rdq_be); MB/ME_lag DESC makes the pick
+    # deterministic (remaining ties have identical payloads).
+    quarterly_joined = quarterly_joined.sort(
+        ["id", "eom", "datadate_q", "rdq_be", "MB", "ME_lag"],
+        descending=[False, False, True, True, True, True],
+        nulls_last=True,
+    ).unique(subset=["id", "eom"], keep="first", maintain_order=True)
+
+    cq_extra = fundq.select(
+        "gvkey", "datadate", "rdq", "rdq_crsp", "lead_rdq_crsp", "niq", "cheq", "ltq"
+    )
+    mp_con.register("quarterly_joined", quarterly_joined)
+    mp_con.register("cq", cq_extra)
+    panel = mp_con.execute("""
+        SELECT a.*, b.niq AS NIQ, b.ltq AS LTQ, b.cheq AS CHEQ,
+               b.datadate AS datadate_q2, b.rdq AS rdq_q2
+        FROM quarterly_joined a LEFT JOIN cq b
+          ON a.gvkey = b.gvkey AND a.eom >= b.rdq_crsp AND a.eom < b.lead_rdq_crsp
+    """).pl()
+    return (
+        panel.sort(["id", "eom", "datadate_q2", "rdq_q2"], descending=[False, False, True, True])
+        .unique(subset=["id", "eom"], keep="first", maintain_order=True)
+        .with_columns(
+            # LTQ (USD millions) + ME_lag (world me, USD millions): same units,
+            # no /1000 (that rescale belongs to the US path's $K mthcap).
+            NIMTA=safe_div(col("NIQ"), col("LTQ") + col("ME_lag"), "NIMTA"),
+            TLMTA=safe_div(col("LTQ"), col("LTQ") + col("ME_lag"), "TLMTA"),
+            CASHMTA=safe_div(col("CHEQ"), col("LTQ") + col("ME_lag"), "CASHMTA"),
+        )
+    )
+
+
+def _mp_world_distress_nimtaavg(panel: pl.DataFrame) -> pl.DataFrame:
+    """NIMTAAVG: per-(excntry, eom) mean fill (>= 10 obs), then 4-quarter
+    geometrically weighted average over consecutive months."""
+    nimta_mean = (
+        panel.filter(col("NIMTA").is_not_null())
+        .group_by("excntry", "eom")
+        .agg(mean_NIMTA=col("NIMTA").mean(), _f=pl.len())
+        .filter(col("_f") >= 10)
+    )
+    scale_n = (1 - MP_CHS_DECAY**3) / (1 - MP_CHS_DECAY**12)
+    return (
+        panel.join(
+            nimta_mean.select("excntry", "eom", "mean_NIMTA"), on=["excntry", "eom"], how="left"
+        )
+        .with_columns(adj_NIMTA=pl.coalesce(col("NIMTA"), col("mean_NIMTA")))
+        .drop("mean_NIMTA")
+        .sort("id", "eom")
+        .with_columns(
+            nimta_lag0=col("adj_NIMTA"),
+            nimta_lag3=col("adj_NIMTA").shift(3).over("id"),
+            nimta_lag6=col("adj_NIMTA").shift(6).over("id"),
+            nimta_lag9=col("adj_NIMTA").shift(9).over("id"),
+            eom_lag3=col("eom").shift(3).over("id"),
+            eom_lag6=col("eom").shift(6).over("id"),
+            eom_lag9=col("eom").shift(9).over("id"),
+        )
+        .with_columns(
+            nimta_ok=(
+                (col("eom_lag3") == _mp_offset_months("eom", -3))
+                & (col("eom_lag6") == _mp_offset_months("eom", -6))
+                & (col("eom_lag9") == _mp_offset_months("eom", -9))
+                & col("nimta_lag0").is_not_null()
+                & col("nimta_lag3").is_not_null()
+                & col("nimta_lag6").is_not_null()
+                & col("nimta_lag9").is_not_null()
+            )
+        )
+        .with_columns(
+            NIMTAAVG=pl.when(col("nimta_ok"))
+            .then(
+                scale_n
+                * (
+                    col("nimta_lag0")
+                    + col("nimta_lag3") * MP_CHS_DECAY
+                    + col("nimta_lag6") * MP_CHS_DECAY**2
+                    + col("nimta_lag9") * MP_CHS_DECAY**3
+                )
+            )
+            .otherwise(None)
+        )
+    )
+
+
+def _mp_world_distress_exretavg(panel: pl.DataFrame) -> pl.DataFrame:
+    """EXRETAVG: per-(excntry, eom) mean fill, then 12-month geometrically
+    weighted average over consecutive months."""
+    exret_mean = (
+        panel.filter(col("EXRET").is_not_null())
+        .group_by("excntry", "eom")
+        .agg(mean_EXRET=col("EXRET").mean())
+    )
+    scale_e = (1 - MP_CHS_DECAY) / (1 - MP_CHS_DECAY**12)
+    consec = pl.lit(True)
+    for i in range(12):
+        consec = consec & (col(f"eoml{i}") == _mp_offset_months("eom", -i))
+        consec = consec & col(f"el{i}").is_not_null()
+    weighted = sum(col(f"el{i}") * (MP_CHS_DECAY**i) for i in range(12))
+    return (
+        panel.join(exret_mean, on=["excntry", "eom"], how="left")
+        .with_columns(adj_EXRET=pl.coalesce(col("EXRET"), col("mean_EXRET")))
+        .drop("mean_EXRET")
+        .sort("id", "eom")
+        .with_columns(
+            [col("adj_EXRET").shift(i).over("id").alias(f"el{i}") for i in range(12)]
+            + [col("eom").shift(i).over("id").alias(f"eoml{i}") for i in range(12)]
+        )
+        .with_columns(EXRETAVG=pl.when(consec).then(scale_e * weighted).otherwise(None))
+    )
+
+
+def _mp_world_distress_sigma(
+    world_daily: pl.DataFrame, world_monthly: pl.DataFrame
+) -> pl.DataFrame:
+    """SIGMA: annualized 3-month rolling daily volatility from world_dsf,
+    cross-sectionally mean-filled per (excntry, eom)."""
+    daily = world_daily.with_columns(eom=col("date").dt.month_end())
+    monthly = (
+        daily.with_columns(ret2=col("ret") ** 2)
+        .group_by("id", "eom")
+        .agg(sum_ret2=col("ret2").sum(), obs_m=col("ret").is_not_null().sum().cast(pl.Int64))
+        .sort("id", "eom")
+    )
+    expanded = (
+        monthly.select("id", "eom")
+        .with_columns(_off=pl.lit([1, 2, 3]))
+        .explode("_off")
+        .with_columns(
+            eom_src=col("eom").dt.offset_by(pl.format("-{}mo", col("_off"))).dt.month_end()
+        )
+    )
+    sigma_agg = (
+        expanded.join(
+            monthly.select("id", col("eom").alias("eom_src"), "sum_ret2", "obs_m"),
+            on=["id", "eom_src"],
+            how="left",
+        )
+        .group_by("id", "eom")
+        .agg(sum_total=col("sum_ret2").sum(), obs_total=col("obs_m").sum().cast(pl.Int64))
+    )
+    sigma = (
+        monthly.join(sigma_agg, on=["id", "eom"], how="left")
+        .with_columns(
+            SIGMA=pl.when(col("obs_total") > 0)
+            .then((safe_div(252.0, col("obs_total"), "_s") * col("sum_total")).sqrt())
+            .otherwise(None)
+        )
+        .select("id", "eom", "SIGMA")
+    )
+
+    # Cross-sectional fill per (excntry, eom). Attach excntry first.
+    sigma_with_x = sigma.join(
+        world_monthly.select("id", "eom", "excntry")
+        .sort(["id", "eom", "excntry"])
+        .unique(["id", "eom"], keep="first", maintain_order=True),
+        on=["id", "eom"],
+        how="left",
+    )
+    sigma_mean = (
+        sigma_with_x.filter(col("SIGMA").is_not_null())
+        .group_by("excntry", "eom")
+        .agg(avg_SIGMA=col("SIGMA").mean())
+    )
+    return (
+        sigma_with_x.join(sigma_mean, on=["excntry", "eom"], how="left")
+        .with_columns(SIGMA=pl.coalesce(col("SIGMA"), col("avg_SIGMA")))
+        .select("id", "eom", "SIGMA")
+    )
+
+
+def _mp_world_distress_final_score(panel: pl.DataFrame, sigma: pl.DataFrame) -> pl.DataFrame:
+    """Lag MB/TLMTA/CASHMTA (gap-gated), winsorize per (excntry, eom) at
+    5/95, require all inputs, apply CHS coefficients."""
+    chs_inputs = panel.select(
+        "id", "excntry", "eom", "NIMTAAVG", "TLMTA", "EXRETAVG", "RSIZE", "CASHMTA", "MB", "PRICE"
+    )
+    scored = (
+        chs_inputs.join(sigma, on=["id", "eom"], how="left")
+        .sort("id", "eom")
+        .with_columns(
+            eom_prev=col("eom").shift(1).over("id"),
+            lag_MB=col("MB").shift(1).over("id"),
+            lag_TLMTA=col("TLMTA").shift(1).over("id"),
+            lag_CASHMTA=col("CASHMTA").shift(1).over("id"),
+        )
+        .with_columns(gap_m=_mp_month_diff(col("eom"), col("eom_prev")))
+        .with_columns(
+            [
+                pl.when(col("gap_m") >= 6).then(None).otherwise(col(c)).alias(c)
+                for c in ["lag_MB", "lag_TLMTA", "lag_CASHMTA"]
+            ]
+        )
+    )
+
+    # Winsorize per (excntry, eom)
+    wins_cols = ["NIMTAAVG", "lag_TLMTA", "EXRETAVG", "RSIZE", "lag_CASHMTA", "lag_MB", "SIGMA"]
+    bounds = _mp_polars_sql(
+        scored,
+        f"""SELECT excntry, eom,
+                  {", ".join(f"quantile_disc({c}, 0.05) AS _{c}_lo, quantile_disc({c}, 0.95) AS _{c}_hi" for c in wins_cols)}
+            FROM src GROUP BY excntry, eom""",
+    )
+    return (
+        scored.join(bounds, on=["excntry", "eom"], how="left")
+        .with_columns(
+            [
+                pl.when(col(c) > col(f"_{c}_hi"))
+                .then(col(f"_{c}_hi"))
+                .when((col(c) < col(f"_{c}_lo")) & col(c).is_not_null())
+                .then(col(f"_{c}_lo"))
+                .otherwise(col(c))
+                .alias(c)
+                for c in wins_cols
+            ]
+        )
+        .drop([f"_{c}_lo" for c in wins_cols] + [f"_{c}_hi" for c in wins_cols])
+        .filter(
+            col("NIMTAAVG").is_not_null()
+            & col("lag_TLMTA").is_not_null()
+            & col("EXRETAVG").is_not_null()
+            & col("RSIZE").is_not_null()
+            & col("lag_CASHMTA").is_not_null()
+            & col("lag_MB").is_not_null()
+            & col("PRICE").is_not_null()
+            & col("SIGMA").is_not_null()
+        )
+        .with_columns(
+            distress=MP_DISTRESS_BETAS["intercept"]
+            + MP_DISTRESS_BETAS["NIMTAAVG"] * col("NIMTAAVG")
+            + MP_DISTRESS_BETAS["TLMTA"] * col("lag_TLMTA")
+            + MP_DISTRESS_BETAS["EXRETAVG"] * col("EXRETAVG")
+            + MP_DISTRESS_BETAS["SIGMA"] * col("SIGMA")
+            + MP_DISTRESS_BETAS["RSIZE"] * col("RSIZE")
+            + MP_DISTRESS_BETAS["CASHMTA"] * col("lag_CASHMTA")
+            + MP_DISTRESS_BETAS["MB"] * col("lag_MB")
+            + MP_DISTRESS_BETAS["PRICE"] * col("PRICE")
+        )
+        .select("eom", "id", "excntry", "distress")
+    )
+
+
+def _mp_world_compute_distress(
+    world_monthly: pl.DataFrame,
+    world_daily: pl.DataFrame,
+    market_m: pl.DataFrame,
+    mp_con: duckdb.DuckDBPyConnection,
+    raw_dir: Path,
+    fx_df: pl.DataFrame,
+) -> pl.DataFrame:
+    """World CHS DISTRESS (same MP_DISTRESS_BETAS as US). Substitutes
+    per-excntry market returns for msp500, world_dsf for crsp_daily, and
+    comp_g_fundq + comp_fundq (unioned, gvkey→id via world_msf) for CRSP
+    quarterly. Returns (eom, id, excntry, distress)."""
+    market_inputs = _mp_world_distress_market_inputs(world_monthly, market_m)
+
+    if "gvkey" not in world_monthly.columns:
+        raise RuntimeError("world wm must carry gvkey for distress linkage")
+    id_gvkey = (
+        world_monthly.select("id", "gvkey", "eom")
+        .sort(["id", "eom", "gvkey"])
+        .unique(subset=["id", "eom"], keep="first", maintain_order=True)
+    )
+
+    fundq = _mp_world_distress_fundq(raw_dir, fx_df)
+    be = _mp_world_distress_book_equity_mb(fundq, world_monthly)
+    return (
+        _mp_world_distress_quarterly_join(market_inputs, id_gvkey, be, fundq, mp_con)
+        .pipe(_mp_world_distress_nimtaavg)
+        .pipe(_mp_world_distress_exretavg)
+        .pipe(
+            _mp_world_distress_final_score,
+            _mp_world_distress_sigma(world_daily, world_monthly),
+        )
+    )
+
+
+def _mp_world_build_anomalies_panel(
+    world_monthly: pl.DataFrame,
+    world_data: pl.DataFrame,
+    market_m: pl.DataFrame,
+    world_daily: pl.DataFrame,
+    mp_con: duckdb.DuckDBPyConnection,
+    raw_dir: Path,
+    fx_df: pl.DataFrame,
+) -> dict[str, pl.DataFrame]:
+    """Assemble per-anomaly (id, eom, excntry, value) frames into a unified panel."""
+    anomalies = _mp_world_compute_jkp_anomalies(world_data)
+    anomalies["MOMENTUM"] = _mp_world_compute_momentum(world_data)
+    anomalies["COMPOSITE_ISSUE"] = _mp_world_compute_composite_issue(world_data)
+    anomalies["STOCK_ISSUE"] = _mp_world_compute_stock_issue(world_data)
+    anomalies["DISTRESS"] = _mp_world_compute_distress(
+        world_monthly, world_daily, market_m, mp_con, raw_dir, fx_df
+    )
+    return anomalies
+
+
+def _mp_world_monthly_lagged_me_panel(world_monthly: pl.DataFrame) -> pl.DataFrame:
+    """Lag-ME panel for world: id, eom, excntry, prc, ret, ME, mktcap, lag_prc."""
+    return (
+        world_monthly.select("id", "eom", "excntry", "prc", "ret", "me")
+        .rename({"prc": "prc", "ret": "ret", "me": "ME"})
+        .with_columns(prc=col("prc").abs())
+        .sort("id", "eom")
+        .with_columns(
+            mktcap=col("ME").shift(1).over("id"),
+            lag_prc=col("prc").shift(1).over("id"),
+        )
+        .filter(
+            col("ret").is_not_null() & col("mktcap").is_not_null() & col("lag_prc").is_not_null()
+        )
+        .select("eom", "id", "excntry", "prc", "ret", "ME", "mktcap", "lag_prc")
+    )
+
+
+def _mp_world_percentile_rank_anomalies(
+    me_panel: pl.DataFrame,
+    anomalies: dict[str, pl.DataFrame],
+    min_stks: int,
+    mp_con: duckdb.DuckDBPyConnection,
+) -> pl.DataFrame:
+    """Per-(excntry, eom) percentile rank for each world anomaly value."""
+
+    def anom_source(anom: str) -> pl.DataFrame | None:
+        if anom not in anomalies:
+            return None
+        a = anomalies[anom]
+        val_col = [c for c in a.columns if c not in ("id", "excntry", "eom")][0]
+        return a.select("id", "eom", col(val_col).alias("rank_var"))
+
+    return _mp_anomaly_pct_panel(
+        me_panel,
+        min_stks,
+        mp_con,
+        panel_cols=["id", "excntry", "eom", "ret", "lag_prc", "mktcap"],
+        sort_keys=["id", "eom"],
+        id_cols=["id"],
+        group_keys=["excntry", "eom"],
+        anom_source=anom_source,
+    )
+
+
+def _mp_world_build_mispricing_panel(
+    world_monthly: pl.DataFrame,
+    world_data: pl.DataFrame,
+    market_m: pl.DataFrame,
+    world_daily: pl.DataFrame,
+    min_stks: int,
+    mp_con: duckdb.DuckDBPyConnection,
+    raw_dir: Path,
+    fx_df: pl.DataFrame,
+) -> pl.DataFrame:
+    anomalies = _mp_world_build_anomalies_panel(
+        world_monthly, world_data, market_m, world_daily, mp_con, raw_dir, fx_df
+    )
+    panel = _mp_world_percentile_rank_anomalies(
+        _mp_world_monthly_lagged_me_panel(world_monthly), anomalies, min_stks, mp_con
+    )
+    pct_cols = [f"pct_{a}" for a in MP_ANOMALY_LIST]
+    return (
+        panel.with_columns(
+            anomal_num=sum(
+                col(c).is_not_null().cast(pl.Int64) for c in pct_cols if c in panel.columns
+            )
+        )
+        .filter(col("anomal_num") > 0)
+        .with_columns([col(c).fill_null(0.0) for c in pct_cols if c in panel.columns])
+        .sort("eom", "excntry", "id")
+    )
+
+
+def _mp_concat_write(
+    us: pl.DataFrame, world: pl.DataFrame, cols: list[str], sort_keys: list[str], path: Path
+) -> None:
+    """Concat the US and world frames on a shared column set, sort, write."""
+    pl.concat([us.select(*cols), world.select(*cols)], how="vertical_relaxed").sort(
+        *sort_keys
+    ).write_parquet(path)
+
+
+@measure_time
+def gen_mispricing_data(
+    paths: DataPaths,
+    monthly_factors_path: Path,
+    daily_factors_path: Path,
+    chars_path: Path,
+    freqs: tuple[str, ...] = ("monthly", "daily"),
+    min_stks: int = 30,
+    min_fcts: int = 3,
+    min_obs: int = 10,
+    min_stks_world: int = MP_MIN_STKS_BP_WORLD,
+    min_obs_world: int = MP_MIN_OBS_PF_WORLD,
+) -> None:
+    """Stambaugh-Yuan 11-anomaly mispricing factor pipeline (incl. CHS DISTRESS), US + WORLD.
+
+    Reference: Stambaugh and Yuan (2017) 'Mispricing factors', Review of
+    Financial Studies 30(4), pp. 1270-1315.
+
+    Ported from the MisprProject standalone. Always runs both branches;
+    outputs concatenated with `excntry` column. Reads jkp's CIZ raws from
+    `paths.raw_tables_dir` ({crsp_msf_v2, crsp_dsf_v2, ccmxpf_lnkhist, funda,
+    fundq, crsp_a_indexes_msp500, crsp_a_indexes_acti}.parquet) and world
+    inputs from `paths.interim_dir`; raw_dir/interim_dir are threaded
+    explicitly through every _mp_* helper that does IO. The 3 output paths
+    are passed in explicitly:
+      <monthly_factors_path>  — eom, excntry, smb_mispricing, mispricing_mgmt, mispricing_perf
+      <daily_factors_path>    — date, excntry, smb_mispricing, mispricing_mgmt, mispricing_perf (US + world)
+      <chars_path>            — id, eom, mispricing_mgmt, mispricing_perf
+    """
+    # _mp_load_funda/_mp_load_fundq are @functools.cache'd on raw_dir; clear so repeated
+    # calls with different paths in one process don't reuse stale frames.
+    _mp_load_funda.cache_clear()
+    _mp_load_fundq.cache_clear()
+    raw_dir = paths.raw_tables_dir
+    interim_dir = paths.interim_dir
+    mp_con = duckdb.connect()
+    mp_con_world = duckdb.connect()
+    try:
+        mp_con.execute("PRAGMA disable_progress_bar")
+        mp_con_world.execute("PRAGMA disable_progress_bar")
+
+        # 1. Return/ME panels: US to interim parquets, world in memory
+        _mp_build_crsp_monthly(raw_dir, interim_dir)
+        _mp_build_crsp_daily(raw_dir, interim_dir)
+        world_data = _mp_world_load_world_data(interim_dir)
+        world_daily = _mp_world_load_world_dsf(interim_dir)
+        market_monthly = _mp_world_load_market(interim_dir, daily=False)
+
+        # 2. US fundamentals (CCM-linked) to interim parquets
+        _mp_build_compustat_annual(mp_con, raw_dir, interim_dir)
+        _mp_build_compustat_quarterly(mp_con, raw_dir, interim_dir)
+
+        # 3. US anomaly characteristics (11 anomalies + CHS DISTRESS),
+        # one interim parquet each; world chars are computed in-memory inside
+        # the world panel build below
+        _mp_compute_accrual(raw_dir, interim_dir)
+        _mp_compute_gross_profit(raw_dir, interim_dir)
+        _mp_compute_oscore(raw_dir, interim_dir)
+        _mp_compute_nsi_ag_inv_noa(raw_dir, interim_dir)
+        _mp_compute_momentum(interim_dir)
+        _mp_compute_composite_issue(interim_dir)
+        _mp_compute_roa(mp_con, interim_dir)
+        _mp_compute_distress(mp_con, raw_dir, interim_dir)
+
+        # 4. Per-stock panels, 2x3 double-sort legs, SMB panels
+        us_panel = _mp_build_mispricing_panel(min_stks, mp_con, interim_dir)
+        # US size median is NYSE-only (exchcd == 1), per-eom breaks.
+        us_legs = _mp_mispricing_legs(
+            us_panel,
+            min_fcts,
+            group_keys=["eom"],
+            size_break_sql="CASE WHEN exchcd = 1 THEN mktcap END",
+        )
+        us_smb = _mp_smb_panel_from_legs(us_legs, key_cols=("permno",))
+        world_monthly = world_data.select(
+            "id", "permno", "gvkey", "excntry", "eom", "me", "prc", "ret", "adjfct", "shares"
+        )
+        world_panel = _mp_world_build_mispricing_panel(
+            world_monthly,
+            world_data,
+            market_monthly,
+            world_daily,
+            min_stks_world,
+            mp_con_world,
+            raw_dir,
+            compustat_fx(paths),
+        )
+        world_legs = _mp_mispricing_legs(
+            world_panel, min_fcts, group_keys=["excntry", "eom"], size_break_sql="mktcap"
+        )
+        world_smb = _mp_smb_panel_from_legs(world_legs, key_cols=("id", "excntry"))
+
+        # 5. Factor returns and per-stock scores
+        # 6. Concat US + world; write outputs (per requested frequency)
+        factor_cols = ["smb_mispricing", "mispricing_mgmt", "mispricing_perf"]
+        if "monthly" in freqs:
+            monthly_us = _mp_monthly_factor_returns(
+                us_legs,
+                us_smb,
+                min_obs,
+                by="eom",
+                truncate_thin=True,
+                out_cols=["eom"],
+                out_sort=["eom"],
+            ).with_columns(excntry=pl.lit("USA"))
+            monthly_world = _mp_monthly_factor_returns(
+                world_legs,
+                world_smb,
+                min_obs_world,
+                by=["excntry", "eom"],
+                truncate_thin=False,
+                out_cols=["eom", "excntry"],
+                out_sort=["excntry", "eom"],
+            )
+            _mp_concat_write(
+                monthly_us,
+                monthly_world,
+                ["eom", "excntry", *factor_cols],
+                ["excntry", "eom"],
+                monthly_factors_path,
+            )
+            # Keep `id` as Int64 to match jkp convention (world_msf.id = BIGINT for both
+            # US permnos and Compustat-derived ids per `combine_crsp_comp_sf`). Casting to
+            # String would break outer-joins in `ap_factor_model_data` against ff/hxz chars.
+            chars_us = _mp_stock_mispricing_scores(
+                us_panel,
+                min_fcts,
+                sort_keys=["permno", "eom"],
+                select_cols=[col("permno").alias("id"), "eom"],
+            ).with_columns(excntry=pl.lit("USA"), id=col("id").cast(pl.Int64))
+            chars_world = _mp_stock_mispricing_scores(
+                world_panel,
+                min_fcts,
+                sort_keys=["id", "eom"],
+                select_cols=["id", "eom", "excntry"],
+            ).with_columns(id=col("id").cast(pl.Int64))
+            _mp_concat_write(
+                chars_us,
+                chars_world,
+                ["id", "eom", "mispricing_mgmt", "mispricing_perf"],
+                ["id", "eom"],
+                chars_path,
+            )
+        if "daily" in freqs:
+            daily_us = _mp_us_daily_factor_returns(
+                us_legs, us_smb, min_obs, mp_con, interim_dir
+            ).with_columns(excntry=pl.lit("USA"))
+            daily_world = _mp_world_daily_factor_returns(
+                world_legs, world_smb, min_obs_world, mp_con_world, interim_dir
+            )
+            _mp_concat_write(
+                daily_us,
+                daily_world,
+                ["date", "excntry", *factor_cols],
+                ["excntry", "date"],
+                daily_factors_path,
+            )
+    finally:
+        mp_con.close()
+        mp_con_world.close()
+        # Release the cached full-width funda/fundq frames — they must not
+        # stay pinned in process memory through the later pipeline stages.
+        _mp_load_funda.cache_clear()
+        _mp_load_fundq.cache_clear()
 
 
 def impute_high_low(df):
@@ -8681,7 +10989,7 @@ def quality_minus_junk(paths: DataPaths, data_path, min_stks):
     qmj = pl.scan_parquet(data_path).filter(c1).select(cols).sort(["excntry", "eom"]).collect()
     for var_z, dir in zip(z_vars, direction, strict=True):
         __z = z_ranks(qmj, var_z, min_stks, dir)
-        qmj = qmj.join(__z, how="full", coalesce=True, on=["excntry", "eom", "id"])
+        qmj = qmj.join(__z, how="left", on=["excntry", "eom", "id"])
 
     qmj = qmj.with_columns(
         __prof=pl.mean_horizontal(
@@ -8701,9 +11009,9 @@ def quality_minus_junk(paths: DataPaths, data_path, min_stks):
     }
     qmj = (
         qmj.select(["excntry", "id", "eom"])
-        .join(ranks["prof"], how="full", coalesce=True, on=["excntry", "id", "eom"])
-        .join(ranks["growth"], how="full", coalesce=True, on=["excntry", "id", "eom"])
-        .join(ranks["safety"], how="full", coalesce=True, on=["excntry", "id", "eom"])
+        .join(ranks["prof"], how="left", on=["excntry", "id", "eom"])
+        .join(ranks["growth"], how="left", on=["excntry", "id", "eom"])
+        .join(ranks["safety"], how="left", on=["excntry", "id", "eom"])
         .with_columns(__qmj=(col("qmj_prof") + col("qmj_growth") + col("qmj_safety")) / 3)
     )
     __qmj = z_ranks(qmj, "__qmj", min_stks, "ascending").rename({"z___qmj": "qmj"})
@@ -8850,6 +11158,7 @@ def save_output_files(paths: DataPaths):
         "return_cutoffs_daily.parquet",
         "ap_factors_monthly.parquet",
         "ap_factors_daily.parquet",
+        "ap_factors_characteristics.parquet",
     ):
         shutil.copy2(paths.interim_dir / name, other_output / name)
 
@@ -9068,13 +11377,14 @@ def merge_world_data_prelim(paths: DataPaths):
     Output:
         'world_data_-1.parquet' with enriched world dataset.
     """
-    a = pl.scan_parquet(paths.interim_dir / "world_data_prelim.parquet")
-    b = pl.scan_parquet(paths.interim_dir / "beta_60m.parquet")
-    c = pl.scan_parquet(paths.interim_dir / "resmom_ff3_12_1.parquet")
-    d = pl.scan_parquet(paths.interim_dir / "resmom_ff3_6_1.parquet")
-    e = pl.scan_parquet(paths.interim_dir / "mp_factors.parquet")
-    f = pl.scan_parquet(paths.interim_dir / "market_chars_d.parquet")
-    g = pl.scan_parquet(paths.interim_dir / "firm_age.parquet").select(["id", "eom", "age"])
+    interim = paths.interim_dir
+    a = pl.scan_parquet(interim / "world_data_prelim.parquet")
+    b = pl.scan_parquet(interim / "beta_60m.parquet")
+    c = pl.scan_parquet(interim / "resmom_ff3_12_1.parquet")
+    d = pl.scan_parquet(interim / "resmom_ff3_6_1.parquet")
+    e = pl.scan_parquet(interim / "ap_factors_characteristics.parquet")
+    f = pl.scan_parquet(interim / "market_chars_d.parquet")
+    g = pl.scan_parquet(interim / "firm_age.parquet").select(["id", "eom", "age"])
     world_data = (
         a.join(b, how="left", on=["id", "eom"])
         .join(c, how="left", on=["id", "eom"])
@@ -9643,18 +11953,18 @@ def hxz4(df, sfx, __min):
         HXZ 4-factor residual volatility and skewness.
 
     Steps:
-        1) OLS: ret_exc ~ mktrf + smb_hxz + roe + inv; require all factors.
+        1) OLS: ret_exc ~ mktrf + me_hxz + roe_hxz + ia_hxz; require all factors.
         2) Aggregate per (id_int,group_number): std(residuals, ddof=4), skew(residuals).
 
     Output:
         LazyFrame with [f'ivol_hxz4{sfx}', f'iskew_hxz4{sfx}'].
     """
     res_exp = pl.col("ret_exc").least_squares.ols(
-        "mktrf", "smb_hxz", "roe", "inv", add_intercept=True, mode="residuals"
+        "mktrf", "me_hxz", "roe_hxz", "ia_hxz", add_intercept=True, mode="residuals"
     )
     df = (
         df.filter(
-            col("smb_hxz").is_not_null() & col("roe").is_not_null() & col("inv").is_not_null()
+            col("me_hxz").is_not_null() & col("roe_hxz").is_not_null() & col("ia_hxz").is_not_null()
         )
         .group_by(["id_int", "group_number"])
         .agg(
@@ -9817,6 +12127,2902 @@ def dimsonbeta(
     )
 
 
+def _ff_port_year() -> pl.Expr:
+    """Formation year y for any date t in Jul(y)..Jun(y+1) — the July-to-June
+    portfolio-assignment convention shared by the FF and HXZ broadcasts."""
+    return (
+        pl.when(pl.col("date").dt.month() >= 7)
+        .then(pl.col("date").dt.year())
+        .otherwise(pl.col("date").dt.year() - 1)
+        .alias("port_year")
+    )
+
+
+def _ff_count_gate() -> pl.Expr:
+    """Two-years-on-Compustat gate for the B/M and OP sorts: not applied to
+    the US (French's modern portfolio descriptions never state it); ROW
+    keeps the JKP convention (count >= 2)."""
+    return (pl.col("excntry") == US_EXCNTRY) | (pl.col("count") >= 2)
+
+
+def _ff_bm_eligible() -> pl.Expr:
+    """B/M sort eligibility: positive book-to-market and me, count gate."""
+    return (pl.col("beme") > 0) & (pl.col("me") > 0) & _ff_count_gate()
+
+
+def _ff_op_eligible() -> pl.Expr:
+    """OP sort eligibility: positive me and BE, count gate, op present."""
+    return (pl.col("me") > 0) & (pl.col("be") > 0) & _ff_count_gate() & pl.col("op").is_not_null()
+
+
+def _ff_inv_eligible() -> pl.Expr:
+    """INV sort eligibility: positive me, inv present (no count gate)."""
+    return (pl.col("me") > 0) & pl.col("inv").is_not_null()
+
+
+def _ff_mom_eligible() -> pl.Expr:
+    """Momentum sort eligibility: 2-12 signal present, positive lagged me."""
+    return pl.col("mom_2_12").is_not_null() & (pl.col("me_lag1") > 0)
+
+
+def _ciz_universe() -> pl.Expr:
+    """CRSP CIZ universe filter shared by FF (ff_load_crsp_panel) and HXZ
+    (hxz_load_crsp). Mispricing has its own `_mp_universe()` with extra
+    conditionaltype / tradingstatusflg clauses; do not collapse those."""
+    return (
+        (pl.col("sharetype") == "NS")
+        & (pl.col("securitytype") == "EQTY")
+        & (pl.col("securitysubtype") == "COM")
+        & (pl.col("usincflg") == "Y")
+        & pl.col("issuertype").is_in(["ACOR", "CORP"])
+        & pl.col("primaryexch").is_in(["N", "A", "Q"])
+    )
+
+
+def _collapse_to_latest_fy(lf: pl.LazyFrame, *, resort: bool = True) -> pl.LazyFrame:
+    """One accounting row per (gvkey, fiscal year), keeping the latest datadate.
+
+    A fiscal-year-end change can yield two datadates in one calendar year;
+    without this the at.shift(1) lag spans the sub-annual stub (fy_gap=0)
+    and nulls inv on the surviving row. Requires a `year` column.
+    """
+    out = lf.sort(["gvkey", "datadate"]).unique(
+        subset=["gvkey", "year"], keep="last", maintain_order=True
+    )
+    return out.sort(["gvkey", "datadate"]) if resort else out
+
+
+def _ff_us_accounting(raw_dir: Path, ff5: bool) -> pl.LazyFrame:
+    """Scan comp_funda.parquet and compute FF-strict BE/OP/INV.
+
+    BE = SHE + txditc_FASB109 − coalesce(pstkrv, pstkl, pstk, 0),
+    SHE = coalesce(seq, ceq + pstk, at − lt) per French's ladder; null when BE < 0.
+    ff5: OP = (revt − cogs − xsga − xint) / (BE + mib),
+    INV = Δat / at_lag with strict 1-year FY gap.
+
+    Output: Lazy [gvkey, datadate, year, be, (op, inv,) count].
+    """
+    base = ["pstkrv", "pstkl", "pstk", "seq", "ceq", "lt", "at", "txditc"]
+    extra = ["revt", "cogs", "xsga", "xint", "mib"]
+    floats = base + (extra if ff5 else [])
+    # Stockholders' equity ladder per French (data library / DFF 2000):
+    # seq, else ceq + pstk, else at - lt. ceq + pstk nulls when pstk is
+    # missing, falling to at - lt (SAS sum semantics).
+    she = pl.coalesce(
+        pl.col("seq"),
+        pl.col("ceq") + pl.col("pstk"),
+        pl.col("at") - pl.col("lt"),
+    )
+    be_raw = she + pl.col("txditc") - pl.col("ps")
+
+    lf = (
+        pl.scan_parquet(raw_dir / "comp_funda.parquet")
+        .with_columns(
+            pl.col("datadate").cast(pl.Date),
+            pl.col(*floats).cast(pl.Float64),
+        )
+        .filter(_compustat_na_filter())
+        .with_columns(
+            ps=pl.coalesce("pstkrv", "pstkl", "pstk", pl.lit(0.0)),
+            txditc=pl.when(pl.col("datadate").dt.year() < 1993)
+            .then(pl.col("txditc").fill_null(0.0))
+            .otherwise(pl.lit(0.0)),
+            year=pl.col("datadate").dt.year(),
+        )
+        .with_columns(be=pl.when(be_raw < 0).then(None).otherwise(be_raw))
+        # BEFORE the inv lag below; mirrors the ROW loaders (_ff_load_funda_na/_ff_load_funda_global).
+        .pipe(_collapse_to_latest_fy)
+    )
+
+    if ff5:
+        op_elig = pl.col("revt").is_not_null() & (
+            pl.col("cogs").is_not_null()
+            | pl.col("xsga").is_not_null()
+            | pl.col("xint").is_not_null()
+        )
+        op_num = (
+            pl.col("revt")
+            - pl.coalesce("cogs", pl.lit(0.0))
+            - pl.coalesce("xsga", pl.lit(0.0))
+            - pl.coalesce("xint", pl.lit(0.0))
+        )
+        fy_gap = pl.col("datadate").dt.year() - pl.col("datadate_lag").dt.year()
+        # OP denominator per French's variable definitions: book equity plus
+        # minority interest; the positive-BE screen stays on BE alone.
+        lf = lf.with_columns(
+            op=pl.when(op_elig & (pl.col("be") > 0))
+            .then(safe_div(op_num, pl.col("be") + pl.coalesce("mib", pl.lit(0.0)), "op"))
+            .otherwise(None),
+            at_lag=pl.col("at").shift(1).over("gvkey"),
+            datadate_lag=pl.col("datadate").shift(1).over("gvkey"),
+        ).with_columns(
+            inv=pl.when(
+                pl.col("at").is_not_null()
+                & pl.col("at_lag").is_not_null()
+                & (pl.col("at_lag") > 0)
+                & (fy_gap == 1)
+            )
+            .then(safe_div(pl.col("at") - pl.col("at_lag"), pl.col("at_lag"), "inv"))
+            .otherwise(None),
+        )
+
+    keep = ["op", "inv"] if ff5 else []
+    return lf.with_columns(count=pl.int_range(pl.len()).over("gvkey") + 1).select(
+        ["gvkey", "datadate", "year", "be", *keep, "count"]
+    )
+
+
+def _ff_ccm_link(comp: pl.LazyFrame, raw_dir: Path) -> pl.DataFrame:
+    """Link Compustat gvkey→permno via CCM; dedup to one row per (permno, year).
+
+    Dedup ladder: in-window > backdated (FF_CCM_BACKDATE_*), then P > C on
+    (datadate, permno), then last entry per (permno, year).
+
+    Output: Eager [gvkey, permno, year, datadate, be, (op, inv,) count, ...].
+    """
+    lnk = (
+        pl.scan_parquet(raw_dir / "crsp_ccmxpf_lnkhist.parquet")
+        .filter(pl.col("linktype").str.starts_with("L") & pl.col("linkprim").is_in(["P", "C"]))
+        .select("gvkey", "lpermno", "linkprim", "linkdt", "linkenddt")
+        .with_columns(
+            pl.col("lpermno").cast(pl.Int64),
+            pl.col("linkdt", "linkenddt").cast(pl.Date),
+        )
+        .with_columns(first_linkdt=pl.col("linkdt").min().over("lpermno"))
+    )
+    # Backfill rescue (FF_CCM_BACKDATE_* in config): a June formation may use fiscal
+    # rows predating the link window when the link is the permno's first and starts
+    # within MAX_YEARS of the formation. In-window links win any collision.
+    in_window = (pl.col("linkdt") <= pl.col("jun_end")) & (
+        pl.col("linkenddt").is_null() | (pl.col("linkenddt") >= pl.col("jun_end"))
+    )
+    backdated = (
+        pl.col("jun_end").is_between(
+            pl.date(FF_CCM_BACKDATE_FROM, 6, 30), pl.date(FF_CCM_BACKDATE_THROUGH, 6, 30)
+        )
+        & (pl.col("linkdt") == pl.col("first_linkdt"))
+        & (pl.col("linkdt") <= pl.col("jun_end").dt.offset_by(f"{FF_CCM_BACKDATE_MAX_YEARS}y"))
+    )
+    return (
+        comp.with_columns(jun_end=pl.date(pl.col("datadate").dt.year() + 1, 6, 30))
+        .join(lnk, on="gvkey", how="inner")
+        .with_columns(in_window=in_window)
+        .filter(pl.col("in_window") | backdated)
+        .rename({"lpermno": "permno"})
+        # gvkey last: duplicate same-prim links on (datadate, permno) exist;
+        # without a total order the kept row is engine-order-dependent.
+        .sort(
+            ["datadate", "permno", "in_window", "linkprim", "gvkey"],
+            descending=[False, False, True, True, False],
+        )
+        .unique(subset=["datadate", "permno"], keep="first")
+        .sort(["permno", "year", "datadate"])
+        .unique(subset=["permno", "year"], keep="last")
+        .drop("in_window", "first_linkdt")
+        .collect()
+    )
+
+
+def _ff_merge_dff_be(
+    comp_ccm: pl.DataFrame,
+    ff5: bool,
+    use_dff: bool,
+    dff_path: Path | None,
+) -> pl.DataFrame:
+    """Optionally union DFF hand-collected Moody's BE to extend coverage back to 1926.
+
+    DFF be(t) is aligned to year t−1 so the June join pairs it with Dec(t−1) ME.
+    Value-level merge: be = coalesce(dff.be, comp.be); Compustat row keeps its
+    op/inv/count. Anti-join appends pure-DFF rows.
+
+    Output: Eager [gvkey, permno, year, datadate, be, (op, inv,) count, ...].
+    """
+    if not use_dff:
+        return comp_ccm
+
+    # DFF hand-collected BE union (see ff_load_compustat_us docstring step 6)
+    keep = ["op", "inv"] if ff5 else []
+    select_cols = ["gvkey", "permno", "year", "datadate", "be", *keep, "count"]
+    dff = (
+        load_dff_be(dff_path)
+        # Match the US Compustat path: BE < 0 → null → dropped. BE == 0 flows
+        # through and is later excluded by the beme > 0 eligibility gate.
+        .filter(pl.col("be").is_not_null() & (pl.col("be") >= 0))
+        .with_columns(
+            # datadate from DFF year t BEFORE the year offset below: a synthetic
+            # formation-aligned stamp (June 30 of t), used only as a dedup
+            # tie-break downstream — never for BE timing itself.
+            datadate=pl.date(pl.col("year"), 6, 30),
+            # ALIGNMENT OFFSET: DFF be(t) → unioned year t−1, so the June-frame
+            # join (cyp1 = year + 1 = t = june_year) pairs it with Dec(t−1) ME.
+            year=pl.col("year") - 1,
+            gvkey=pl.lit(None, dtype=pl.Utf8),
+            count=pl.lit(FF_DFF_SYNTH_COUNT, dtype=pl.Int64),
+            **{c: pl.lit(None, dtype=pl.Float64) for c in keep},
+        )
+        .select(select_cols)
+    )
+    comp_pool = (
+        comp_ccm.filter(pl.col("year") >= FF_DFF_MERGE_YEAR - 1)
+        if FF_DFF_GATE_COMPUSTAT_PRE1954
+        else comp_ccm
+    )
+    n_collisions = (
+        comp_pool.select("permno", "year")
+        .join(dff.select("permno", "year"), on=["permno", "year"], how="inner")
+        .height
+    )
+    if n_collisions:
+        print(
+            f"DFF/Compustat BE overlap: {n_collisions} (permno, year) collisions; "
+            "be coalesced (DFF first)",
+            flush=True,
+        )
+    # be = coalesce(dff.be, comp.be) on (permno, year); sources agree where both are
+    # non-null (median |log ratio| ~ 0). Typical collision: the CCM-linked Compustat
+    # row has BE NULL, so DFF fills BE while that row keeps op/inv/count for FF5.
+    keys = ["permno", "year"]
+    comp_pool = (
+        comp_pool.select(select_cols)
+        .join(dff.select([*keys, "be"]).rename({"be": "_be_dff"}), on=keys, how="left")
+        .with_columns(
+            be=pl.coalesce("_be_dff", "be"),
+            # A DFF-covered cell is eligible regardless of Compustat history:
+            # hand-collected BE needs no backfill-bias seasoning, so it clears the
+            # count >= 2 BM gate like a standalone DFF row.
+            count=pl.when(pl.col("_be_dff").is_not_null())
+            .then(pl.max_horizontal("count", pl.lit(FF_DFF_SYNTH_COUNT, dtype=pl.Int64)))
+            .otherwise(pl.col("count")),
+        )
+        .drop("_be_dff")
+    )
+    dff_only = dff.join(comp_pool.select(keys), on=keys, how="anti")
+    return pl.concat([comp_pool, dff_only], how="vertical_relaxed")
+
+
+def ff_load_compustat_us(
+    raw_dir: Path,
+    ff5: bool,
+    *,
+    use_dff: bool = False,
+    dff_path: Path | None = None,
+) -> pl.DataFrame:
+    """FF-strict Compustat NA funda linked gvkey→permno via CCM. FF3: BE only; FF5 adds OP/INV.
+
+    use_dff: unions DFF hand-collected Moody's BE (permno-keyed) to extend coverage to
+    June 1926. DFF be(t) pairs with Dec(t−1) ME (year = t − 1 in the output); BE in
+    $M, identical to Compustat and to the panel's me. Modern Compustat backfill
+    creates collisions resolved by be = coalesce(dff.be, comp.be).
+
+    Output: Eager [gvkey, permno, year, datadate, be, (op, inv,) count, ...].
+    """
+    comp = _ff_us_accounting(raw_dir, ff5)
+    comp_ccm = _ff_ccm_link(comp, raw_dir)
+    return _ff_merge_dff_be(comp_ccm, ff5, use_dff, dff_path)
+
+
+def ff_load_crsp_panel(raw_dir: Path, freq: Literal["monthly", "daily"]) -> pl.LazyFrame:
+    """Load CRSP msf_v2/dsf_v2 with CIZ universe filters; permco-level ME aggregation.
+
+    ME = sum of permno meq assigned to the largest-meq permno per (date, permco).
+
+    Output: Lazy [permno, permco, date, retadj, retx, prc, shrout, me, exchcd, shrcd].
+    """
+    pq, p = ("crsp_msf_v2.parquet", "mth") if freq == "monthly" else ("crsp_dsf_v2.parquet", "dly")
+    date_c, ret_c, retx_c, prc_c = f"{p}caldt", f"{p}ret", f"{p}retx", f"{p}prc"
+    lf = (
+        pl.scan_parquet(raw_dir / pq)
+        .with_columns(
+            pl.col(date_c).cast(pl.Date),
+            pl.col("permno", "permco").cast(pl.Int64),
+            pl.col(ret_c, retx_c, prc_c, "shrout").cast(pl.Float64),
+        )
+        .filter(_ciz_universe())
+        .with_columns(
+            # /1000: CIZ shrout is in thousands; me in USD millions matches
+            # Compustat BE and the jkp world convention (one unit, US + ROW).
+            meq=pl.col(prc_c).abs() * pl.col("shrout") / 1000.0,
+            exchcd=pl.col("primaryexch").replace_strict(
+                {"N": 1, "A": 2, "Q": 3}, default=None, return_dtype=pl.Int64
+            ),
+            shrcd=pl.lit(10, dtype=pl.Int64),
+        )
+        .rename({date_c: "date", ret_c: "retadj", retx_c: "retx", prc_c: "prc"})
+    )
+    date_expr = pl.col("date").dt.month_end() if freq == "monthly" else pl.col("date")
+    return (
+        lf.with_columns(date=date_expr)
+        .select(
+            "permno",
+            "permco",
+            "date",
+            "retadj",
+            "retx",
+            "prc",
+            "shrout",
+            "meq",
+            "exchcd",
+            "shrcd",
+        )
+        # permno last in the key: two permnos of one permco with equal meq
+        # would otherwise leave unique(keep="last") engine-order-dependent
+        .sort(["date", "permco", "meq", "permno"])
+        .with_columns(me=pl.col("meq").sum().over(["date", "permco"]))
+        .unique(subset=["date", "permco"], keep="last", maintain_order=True)
+        .drop("meq")
+    )
+
+
+def _ff_us_rets_weights_lazy(
+    raw_panel: pl.LazyFrame, freq: Literal["monthly", "daily"]
+) -> pl.LazyFrame:
+    """Lazy US returns/weights panel: FF intra-year ME-compounding weight
+    (`weight_port` = me_base x cumretx at the prior bar within the July-June
+    portfolio year). Fuses with the loader scan; collected once per leg.
+    Output: [permno, date, retadj, weight_port, me, exchcd, shrcd]."""
+    period = (
+        (pl.col("date").dt.month() == 7).cast(pl.Int32).cum_sum().over("permno")
+        if freq == "monthly"
+        else pl.when(pl.col("date").dt.month() >= 7)
+        .then(pl.col("date").dt.year())
+        .otherwise(pl.col("date").dt.year() - 1)
+    )
+    return (
+        raw_panel.sort(["permno", "date"])
+        .with_columns(
+            period=period,
+            retx_safe=pl.col("retx").fill_null(0.0),
+            lag_me=pl.col("me").shift(1).over("permno"),
+        )
+        .with_columns(
+            me_base=pl.when(
+                (pl.col("period") != pl.col("period").shift(1).over("permno")).fill_null(True)
+            )
+            .then(pl.col("lag_me"))
+            .otherwise(None)
+            .forward_fill()
+            .over(["permno", "period"]),
+            cumretx=(1.0 + pl.col("retx_safe")).cum_prod().over(["permno", "period"]),
+        )
+        .with_columns(
+            weight_port=pl.when(pl.col("lag_me").is_not_null() & (pl.col("lag_me") > 0))
+            .then(
+                pl.col("me_base")
+                * pl.col("cumretx").shift(1).over(["permno", "period"]).fill_null(1.0)
+            )
+            .otherwise(None),
+        )
+        .select("permno", "date", "retadj", "weight_port", "me", "exchcd", "shrcd")
+    )
+
+
+def _ff_row_rets_weights_lazy(raw_panel: pl.LazyFrame, freq: str) -> pl.LazyFrame:
+    """Lazy ROW returns/weights panel: w = me.shift(1) over (excntry, id), with a
+    continuity guard — a listing gap (prev row > 1 month back for monthly, > 5
+    days for daily) nulls w so a re-entrant stock doesn't carry a stale market
+    cap into the VW legs (mirrors _hxz_add_me_lag1_ym).
+    world_dsf carries no clean retx, so cumretx intra-year compounding is skipped."""
+    prev_date = pl.col("date").shift(1).over("excntry", "id")
+    ym = pl.col("date").dt.year() * 12 + pl.col("date").dt.month()
+    prev_ym = prev_date.dt.year() * 12 + prev_date.dt.month()
+    contiguous = (
+        (ym - prev_ym) == 1
+        if freq == "monthly"
+        else (pl.col("date") - prev_date).dt.total_days() <= 5
+    )
+    return raw_panel.sort(["excntry", "id", "date"]).with_columns(
+        w=pl.when(contiguous).then(pl.col("me").shift(1).over("excntry", "id")).otherwise(None)
+    )
+
+
+def _ff_us_finish_prepare(
+    data_rets_weights: pl.DataFrame, comp: pl.DataFrame
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Eager US tail of the prepare step: June formation frame from the
+    collected returns/weights panel, projected to the common US/ROW schema.
+
+    comp = ccm2a (gvkey->permno CCM-linked Compustat); joins on permno.
+    me is USD millions (ff_load_crsp_panel), same unit as Compustat BE.
+    Output:
+      data_rets_weights: [excntry, id, date, ret, w, me, exchcd_us, size_grp]
+      data_chars:        [excntry, id, date, me, dec_me, be, op, inv, count,
+                          beme, exchcd_us, size_grp]
+    (exchcd_us US-only; size_grp null here so vertical_relaxed concat with
+    the ROW frames works directly.)
+    """
+
+    # Per-month filter-then-dedup (cheap for daily; no-op dedup for monthly)
+    def _last_per_year(month: int) -> pl.DataFrame:
+        return (
+            data_rets_weights.filter(pl.col("date").dt.month() == month)
+            .with_columns(_y=pl.col("date").dt.year())
+            .sort(["permno", "_y", "date"])
+            .unique(subset=["permno", "_y"], keep="last")
+        )
+
+    june_only = (
+        _last_per_year(6)
+        .with_columns(date=pl.date(pl.col("_y"), 6, 30), june_year=pl.col("_y"))
+        .drop("_y")
+    )
+    dec_me = (
+        _last_per_year(12)
+        .filter(pl.col("me") > 0)
+        .select("permno", june_year=pl.col("_y") + 1, dec_me=pl.col("me"))
+    )
+    # Left joins keep June stocks lacking accounting or Dec(t-1) ME (null beme) so the
+    # US size-median pool spans all NYSE stocks (DFF 2000); sort gates still drop them
+    # from B/M, but US stocks missing only Dec ME stay sortable on OP/INV (French's
+    # OP/INV need June ME, not Dec ME).
+    data_chars = (
+        june_only.join(dec_me, on=["permno", "june_year"], how="left")
+        .join(
+            comp.select("permno", "be", "op", "inv", "count", "datadate", cyp1=pl.col("year") + 1),
+            left_on=["permno", "june_year"],
+            right_on=["permno", "cyp1"],
+            how="left",
+        )
+        .drop("june_year")
+        .with_columns(beme=safe_div(pl.col("be"), pl.col("dec_me"), "beme"))
+    )
+
+    # Shared output schema with _ff_row_finish_prepare.
+    data_rets_weights = data_rets_weights.select(
+        excntry=pl.lit(US_EXCNTRY),
+        id=pl.col("permno"),
+        date=pl.col("date"),
+        ret=pl.col("retadj"),
+        w=pl.col("weight_port"),
+        me=pl.col("me"),
+        exchcd_us=pl.col("exchcd"),
+        size_grp=pl.lit(None, dtype=pl.Utf8),
+    )
+    data_chars = data_chars.select(
+        excntry=pl.lit(US_EXCNTRY),
+        id=pl.col("permno"),
+        date=pl.col("date"),
+        me=pl.col("me"),
+        dec_me=pl.col("dec_me"),
+        be=pl.col("be"),
+        op=pl.col("op"),
+        inv=pl.col("inv"),
+        count=pl.col("count"),
+        beme=pl.col("beme"),
+        exchcd_us=pl.col("exchcd"),
+        size_grp=pl.lit(None, dtype=pl.Utf8),
+    )
+    return data_rets_weights, data_chars
+
+
+def _ff_row_finish_prepare(
+    data_rets_weights: pl.DataFrame, comp: pl.DataFrame
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Eager ROW tail of the prepare step: June formation frame from the
+    collected returns/weights panel, projected to the common US/ROW schema.
+
+    comp = ff_load_world_compustat output; joins on gvkey. Daily input is
+    downsampled to month-end for formation only — the returned panel keeps
+    the original frequency. beme = be / dec_me (both already in $M); the
+    dec_me join is left (US parity — June stocks lacking Dec(t-1) ME keep
+    null beme and stay sortable on OP/INV).
+    Output schema: see _ff_us_finish_prepare.
+    """
+
+    # Per-month filter-then-dedup (cheap for daily; no-op dedup for monthly)
+    def _last_per_year(month: int) -> pl.DataFrame:
+        return (
+            data_rets_weights.filter(pl.col("date").dt.month() == month)
+            .with_columns(_y=pl.col("date").dt.year())
+            .sort(["excntry", "id", "_y", "date"])
+            .unique(subset=["excntry", "id", "_y"], keep="last")
+        )
+
+    june_only = (
+        _last_per_year(6)
+        .with_columns(date=pl.date(pl.col("_y"), 6, 30), june_year=pl.col("_y"))
+        .drop("_y")
+    )
+    dec_me = (
+        _last_per_year(12)
+        .filter(pl.col("me") > 0)
+        .select("excntry", "id", june_year=pl.col("_y") + 1, dec_me=pl.col("me"))
+    )
+    # Left joins keep June stocks lacking accounting or Dec(t-1) ME (null beme),
+    # matching the US branch: the sort gates still drop them from B/M, but stocks
+    # missing only Dec ME stay sortable on OP/INV (which need June ME, not Dec ME).
+    data_chars = (
+        june_only.join(dec_me, on=["excntry", "id", "june_year"], how="left")
+        .join(
+            comp.select("gvkey", "be", "op", "inv", "count", "datadate", cyp1=pl.col("year") + 1),
+            left_on=["gvkey", "june_year"],
+            right_on=["gvkey", "cyp1"],
+            how="left",
+        )
+        .drop("june_year")
+        .with_columns(beme=safe_div(pl.col("be"), pl.col("dec_me"), "beme"))
+    )
+
+    # Shared output schema with _ff_us_finish_prepare.
+    data_rets_weights = data_rets_weights.select(
+        "excntry",
+        "id",
+        "date",
+        ret=pl.col("ret"),
+        w=pl.col("w"),
+        me=pl.col("me"),
+        exchcd_us=pl.lit(None, dtype=pl.Int64),
+        size_grp=pl.col("size_grp"),
+    )
+    data_chars = data_chars.select(
+        "excntry",
+        "id",
+        "date",
+        "me",
+        "dec_me",
+        "be",
+        "op",
+        "inv",
+        "count",
+        "beme",
+        exchcd_us=pl.lit(None, dtype=pl.Int64),
+        size_grp=pl.col("size_grp"),
+    )
+    return data_rets_weights, data_chars
+
+
+def _ff_bucket(val: str, breaks: list[str], labels: list[str]) -> pl.Expr:
+    """Ladder label: `val <= breaks[i]` -> `labels[i]`, else `labels[-1]`.
+    Requires `len(labels) == len(breaks) + 1`."""
+    if len(labels) != len(breaks) + 1:
+        raise ValueError("labels must have exactly one more entry than breaks")
+    out = pl.when(pl.col(val) <= pl.col(breaks[0])).then(pl.lit(labels[0]))
+    for br, lab in zip(breaks[1:], labels[1:-1], strict=True):
+        out = out.when(pl.col(val) <= pl.col(br)).then(pl.lit(lab))
+    return out.otherwise(pl.lit(labels[-1]))
+
+
+def _ff_na_be_op_inv(lf: pl.LazyFrame) -> pl.LazyFrame:
+    """NA-funda BE/OP/INV per JKP (covers Canada and other NA-coverage non-US gvkeys).
+
+    BE: seq → ceq+pstk → at-lt, plus txditc → txdb+itcb,
+    minus preferred pstkrv → pstkl → pstk; no FASB-109 gate, no BE<0 cut.
+    OP = ope_x / BE_local; ope_x = ebitda → oibdp → sale_x − opex_x, minus xint.
+    INV = 1-yr asset growth with strict 1-FY gap.
+    """
+    ps_x = pl.coalesce("pstkrv", "pstkl", "pstk")
+    txditc = pl.coalesce("txditc", pl.col("txdb") + pl.col("itcb"))
+    return (
+        lf.with_columns(
+            be_local=pl.coalesce(
+                "seq", pl.col("ceq") + pl.coalesce(ps_x, 0.0), pl.col("at") - pl.col("lt")
+            )
+            + pl.coalesce(txditc, 0.0)
+            - pl.coalesce(ps_x, 0.0),
+            ope_x=pl.coalesce(
+                "ebitda",
+                "oibdp",
+                pl.coalesce("sale", "revt") - pl.coalesce("xopr", pl.col("cogs") + pl.col("xsga")),
+            )
+            - pl.col("xint"),
+            year=pl.col("datadate").dt.year(),
+        )
+        .sort(["gvkey", "datadate"])
+        .with_columns(
+            op=pl.when(pl.col("ope_x").is_not_null() & (pl.col("be_local") > 0))
+            .then(safe_div(pl.col("ope_x"), pl.col("be_local"), "op"))
+            .otherwise(None),
+            at_lag=pl.col("at").shift(1).over("gvkey"),
+            datadate_lag=pl.col("datadate").shift(1).over("gvkey"),
+        )
+        .with_columns(
+            inv=pl.when(
+                pl.col("at").is_not_null()
+                & pl.col("at_lag").is_not_null()
+                & (pl.col("at_lag") > 0)
+                & (pl.col("datadate").dt.year() - pl.col("datadate_lag").dt.year() == 1)
+            )
+            .then(safe_div(pl.col("at") - pl.col("at_lag"), pl.col("at_lag"), "inv"))
+            .otherwise(None),
+        )
+    )
+
+
+def _ff_global_be_op_inv(lf: pl.LazyFrame) -> pl.LazyFrame:
+    """g_funda BE/OP/INV per JKP. comp.g_funda lacks pstkrv/pstkl/itcb: preferred-stock
+    term collapses to pstk; txditc fallback collapses to txdb (+null preserves null
+    semantics when txdb is null)."""
+    ps_x = pl.col("pstk")
+    txditc = pl.coalesce("txditc", pl.col("txdb") + pl.lit(None, dtype=pl.Float64))
+    return (
+        lf.with_columns(
+            be_local=pl.coalesce(
+                "seq", pl.col("ceq") + pl.coalesce(ps_x, 0.0), pl.col("at") - pl.col("lt")
+            )
+            + pl.coalesce(txditc, 0.0)
+            - pl.coalesce(ps_x, 0.0),
+            ope_x=pl.coalesce(
+                "ebitda",
+                "oibdp",
+                pl.coalesce("sale", "revt") - pl.coalesce("xopr", pl.col("cogs") + pl.col("xsga")),
+            )
+            - pl.col("xint"),
+            year=pl.col("datadate").dt.year(),
+        )
+        .sort(["gvkey", "datadate"])
+        .with_columns(
+            op=pl.when(pl.col("ope_x").is_not_null() & (pl.col("be_local") > 0))
+            .then(safe_div(pl.col("ope_x"), pl.col("be_local"), "op"))
+            .otherwise(None),
+            at_lag=pl.col("at").shift(1).over("gvkey"),
+            datadate_lag=pl.col("datadate").shift(1).over("gvkey"),
+        )
+        .with_columns(
+            inv=pl.when(
+                pl.col("at").is_not_null()
+                & pl.col("at_lag").is_not_null()
+                & (pl.col("at_lag") > 0)
+                & (pl.col("datadate").dt.year() - pl.col("datadate_lag").dt.year() == 1)
+            )
+            .then(safe_div(pl.col("at") - pl.col("at_lag"), pl.col("at_lag"), "inv"))
+            .otherwise(None),
+        )
+    )
+
+
+def _ff_load_funda_na(raw_dir: Path) -> pl.LazyFrame:
+    """Load comp_funda (NA) with the standard INDL/STD/D/C screen; floats
+    include the NA-only pstkrv/pstkl/itcb. Collapses to one row per
+    (gvkey, year) BEFORE be/op/inv are computed (_collapse_to_latest_fy)."""
+    floats = [
+        "pstk",
+        "seq",
+        "ceq",
+        "lt",
+        "txditc",
+        "txdb",
+        "revt",
+        "sale",
+        "cogs",
+        "xsga",
+        "xopr",
+        "xint",
+        "ebitda",
+        "oibdp",
+        "at",
+        "pstkrv",
+        "pstkl",
+        "itcb",
+    ]
+    return (
+        pl.scan_parquet(raw_dir / "comp_funda.parquet")
+        .with_columns(
+            pl.col("datadate").cast(pl.Date),
+            pl.col(*floats).cast(pl.Float64),
+        )
+        .filter(_compustat_na_filter())
+        .with_columns(year=pl.col("datadate").dt.year())
+        .pipe(_collapse_to_latest_fy, resort=False)
+    )
+
+
+def _ff_load_funda_global(raw_dir: Path) -> pl.LazyFrame:
+    """Load comp_g_funda (Global): INDL-or-FS / HIST_STD / I / C screen with
+    INDL-over-FS preference when a (gvkey, datadate) carries both formats.
+    Collapses to one row per (gvkey, year) BEFORE be/op/inv are computed."""
+    floats = [
+        "pstk",
+        "seq",
+        "ceq",
+        "lt",
+        "txditc",
+        "txdb",
+        "revt",
+        "sale",
+        "cogs",
+        "xsga",
+        "xopr",
+        "xint",
+        "ebitda",
+        "oibdp",
+        "at",
+    ]
+    return (
+        pl.scan_parquet(raw_dir / "comp_g_funda.parquet")
+        .with_columns(
+            pl.col("datadate").cast(pl.Date),
+            pl.col(*floats).cast(pl.Float64),
+        )
+        .filter(
+            pl.col("indfmt").is_in(["INDL", "FS"])
+            & (pl.col("datafmt") == "HIST_STD")
+            & (pl.col("popsrc") == "I")
+            & (pl.col("consol") == "C")
+        )
+        .with_columns(_n=pl.len().over(["gvkey", "datadate"]))
+        .filter((pl.col("_n") == 1) | ((pl.col("_n") == 2) & (pl.col("indfmt") == "INDL")))
+        .drop("_n")
+        .with_columns(year=pl.col("datadate").dt.year())
+        .pipe(_collapse_to_latest_fy, resort=False)
+    )
+
+
+def _jkp_annual_acc(interim_dir: Path) -> pl.DataFrame:
+    """jkp standardized annual accounting at the fiscal-report rows, for the ROW FF/HXZ
+    loaders: book equity (be_x, nulled when <=0), operating-profit numerator (ope_x), asset
+    growth (at_gr1 = at_x/at_x.shift(12)-1, replicated exactly from create_acc_chars), and
+    net income (ni_x, the ROW HXZ ROE numerator).
+
+    acc_std_ann is monthly-expanded with the _x fields populated only on report months
+    (source not null); at_gr1 is computed on the full monthly grid (count = cum rows per
+    gvkey/curcd, guard count>12 & at_x_-12>0), then only real fiscal rows are kept, so every
+    value sits at the fiscal-year-end datadate. Keyed (gvkey, datadate).
+
+    acc_std_ann is built with convert_to_usd=1 (main.py), so be_x/ope_x/at_x/ni_x are already
+    USD-denominated (curcd == "USD" for every row); no further FX conversion is applied.
+    """
+    return (
+        pl.scan_parquet(interim_dir / "acc_std_ann.parquet")
+        .sort(["gvkey", "curcd", "datadate"])
+        .with_columns(_cnt=pl.col("gvkey").cum_count().over(["gvkey", "curcd"]))
+        .with_columns(
+            at_gr1=pl.when(
+                (pl.col("_cnt") > 12) & (pl.col("at_x").shift(12).over(["gvkey", "curcd"]) > 0)
+            )
+            .then(pl.col("at_x") / pl.col("at_x").shift(12).over(["gvkey", "curcd"]) - 1)
+            .otherwise(None)
+        )
+        .filter(pl.col("source").is_not_null())
+        .select("gvkey", "datadate", "be_x", "ope_x", "at_gr1", "ni_x")
+        .collect()
+    )
+
+
+def ff_load_world_compustat(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
+    """
+    Description:
+        Worldwide Compustat BE/OP/INV for the ROW FF path: unions comp.funda (NA)
+        and comp.g_funda (Global) to establish the fiscal-record universe, then takes
+        the characteristics themselves from jkp's standardized panel.
+    Steps:
+        1) Load NA (INDL/STD/D/C) and Global (INDL-or-FS/HIST_STD/I/C,
+           INDL-over-FS dedup) for the (gvkey, datadate, year) fiscal universe.
+        2) Full-join jkp acc_std_ann; dedup by (gvkey, year) preferring funda-sourced
+           rows then latest datadate.
+    Output:
+        Eager [gvkey, datadate, year, be, op, inv, count] (BE in USD, OP/INV unitless).
+
+    Book equity, operating profitability, and investment are all sourced from jkp's
+    standardized panel rather than the raw-funda formulas: be = be_x (nulled when BE<=0),
+    op = jkp ope_x / be_x (full ope_be), inv = jkp at_gr1 (at_x growth). So HML/RMW share
+    one jkp book-equity definition and CMA uses jkp asset growth. acc_std_ann is already
+    USD-denominated (built with convert_to_usd=1), so be = be_x directly with no FX step.
+    All three are read/computed at the fiscal-year-end datadate, so the June(t)/Dec(t-1)
+    timing in _ff_build_freq is unchanged. USA is unaffected (this loader feeds only ROW).
+    """
+    na = _ff_na_be_op_inv(_ff_load_funda_na(raw_dir)).select(
+        "gvkey", "datadate", "year", _src=pl.lit(0)
+    )
+    gl = _ff_global_be_op_inv(_ff_load_funda_global(raw_dir)).select(
+        "gvkey", "datadate", "year", _src=pl.lit(1)
+    )
+    ff_side = (
+        pl.concat([na, gl], how="vertical_relaxed")
+        .sort(["gvkey", "datadate", "_src"])
+        .unique(subset=["gvkey", "datadate"], keep="first")
+        .collect()
+    )
+    acc = _jkp_annual_acc(interim_dir)
+    combined = (
+        ff_side.join(acc, on=["gvkey", "datadate"], how="full", coalesce=True)
+        .with_columns(
+            year=pl.coalesce("year", pl.col("datadate").dt.year()),
+            _src=pl.coalesce("_src", pl.lit(2)),  # acc-only rows least preferred in dedup
+        )
+        .with_columns(
+            op=pl.when((pl.col("be_x") > 0) & pl.col("ope_x").is_not_null())
+            .then(safe_div(pl.col("ope_x"), pl.col("be_x"), "op"))
+            .otherwise(None)
+        )
+        # one fiscal record per (gvkey, year): prefer funda-sourced rows, then latest
+        # datadate, so the June join can't fan out.
+        .sort(["gvkey", "year", "_src", "datadate"], descending=[False, False, False, True])
+        .unique(subset=["gvkey", "year"], keep="first")
+        .rename({"at_gr1": "inv"})
+        .drop("_src", "ope_x")
+    )
+    return (
+        # be_x is already USD (acc_std_ann built convert_to_usd=1), so no FX conversion.
+        combined.rename({"be_x": "be"})
+        .filter(
+            pl.col("be").is_not_null() | pl.col("op").is_not_null() | pl.col("inv").is_not_null()
+        )
+        .sort(["gvkey", "datadate"])
+        .with_columns(count=pl.int_range(pl.len()).over("gvkey") + 1)
+        .select("gvkey", "datadate", "year", "be", "op", "inv", "count")
+    )
+
+
+def ff_load_world_panel(interim_dir: Path, freq: str) -> pl.LazyFrame:
+    """Scan world_{m|d}sf.parquet for ROW FF computation; drop USA + apply
+    universe (common/obs_main/primary_sec/exch_main/me). gvkey may be null
+    (US parity — unlinked stocks stay in size pools, VW legs and momentum;
+    they never match the gvkey-keyed accounting join, so they simply drop
+    out of the B/M, OP and INV sorts).
+
+    Daily world_dsf lacks gvkey + size_grp (added only at monthly upstream
+    steps), so join those from world_msf on (id, eom). Returns a LazyFrame —
+    fused with the downstream prepare chain and collected once per leg.
+
+    Gap-spanning returns (ret_lag_dif > 1 month / > 5 days) are nulled, not
+    row-dropped: the VW legs filter ret.is_not_null() so the stale cumulated
+    return is excluded, while the row's me stays available for formation and
+    weight lags."""
+    base_filter = (
+        (pl.col("excntry") != US_EXCNTRY)
+        & (pl.col("common") == 1)
+        & (pl.col("obs_main") == 1)
+        & (pl.col("primary_sec") == 1)
+        & (pl.col("exch_main") == 1)
+        & pl.col("me").is_not_null()
+    )
+    if freq == "monthly":
+        gap_ret = pl.when(pl.col("ret_lag_dif") == 1).then(pl.col("ret")).otherwise(None)
+        return (
+            pl.scan_parquet(interim_dir / "world_msf.parquet")
+            .filter(base_filter)
+            .select(
+                "excntry",
+                "id",
+                "gvkey",
+                pl.col("eom").alias("date"),
+                gap_ret.alias("ret"),
+                "me",
+                "size_grp",
+            )
+        )
+    # world_msf can carry duplicate share-class records per security-month
+    # (see hxz_load_panel_row); dedup so the daily key join cannot fan out.
+    # Deterministic tie-break prefers a linked (non-null gvkey) record.
+    msf_keys = (
+        pl.scan_parquet(interim_dir / "world_msf.parquet")
+        .select("id", "eom", "gvkey", "size_grp")
+        .sort(
+            ["id", "eom", pl.col("gvkey").is_null(), "gvkey", "size_grp"],
+            nulls_last=True,
+        )
+        .unique(subset=["id", "eom"], keep="first", maintain_order=True)
+    )
+    gap_ret = pl.when(pl.col("ret_lag_dif") <= 5).then(pl.col("ret")).otherwise(None)
+    return (
+        pl.scan_parquet(interim_dir / "world_dsf.parquet")
+        .filter(base_filter)
+        .select("excntry", "id", "eom", pl.col("date"), gap_ret.alias("ret"), "me")
+        .join(msf_keys, on=["id", "eom"], how="inner")
+        .select("excntry", "id", "gvkey", "date", "ret", "me", "size_grp")
+    )
+
+
+def ff_country_breakpoints(
+    june: pl.DataFrame,
+    specs: list[tuple[str, float, str]],
+    eligible: pl.Expr,
+    min_stocks_bp: int = FF_MIN_STOCKS_BP,
+) -> pl.DataFrame:
+    """Per-(excntry, date) DuckDB QUANTILE_DISC over the country breakpoint pool.
+
+    Breakpoint pool by country:
+      - USA:  rows with exchcd_us == 1 (NYSE-only).
+      - ROW:  rows with size_grp ∈ {small, large, mega} (ME ≥ US-NYSE p20).
+              Country main-exchange (exch_main==1) gate applied upstream in
+              ff_load_world_panel.
+
+    ROW additionally drops (excntry, date) where pool count < FF_MIN_STOCKS_BP;
+    USA is exempt (always emits breakpoints).
+    """
+    # US = NYSE-only (exchcd_us==1); ROW = size_grp pool (ME >= US-NYSE p20)
+    pool = eligible & (
+        ((pl.col("excntry") == US_EXCNTRY) & (pl.col("exchcd_us") == 1))
+        | ((pl.col("excntry") != US_EXCNTRY) & pl.col("size_grp").is_in(["small", "large", "mega"]))
+    )
+    return country_breakpoints(
+        june,
+        specs,
+        group_keys=["excntry", "date"],
+        pool=pool,
+        min_stocks=min_stocks_bp,
+        usa_exempt=True,
+    )
+
+
+def _ff_size_breaks(
+    june: pl.DataFrame, value_eligible: pl.Expr, min_stocks_bp: int = FF_MIN_STOCKS_BP
+) -> pl.DataFrame:
+    """Per-country size median (sizemedn). US pools ALL NYSE me>0 stocks per
+    DFF 2000 (no BE requirement), while value breakpoints stay on the
+    sort-eligible pool. ROW keeps the JKP convention (sort-eligible pool)."""
+    size_elig = (
+        pl.when(pl.col("excntry") == US_EXCNTRY).then(pl.col("me") > 0).otherwise(value_eligible)
+    )
+    return ff_country_breakpoints(june, [("me", 0.50, "sizemedn")], size_elig, min_stocks_bp)
+
+
+def _ff_bm_breaks(june: pl.DataFrame, min_stocks_bp: int = FF_MIN_STOCKS_BP) -> pl.DataFrame:
+    """B/M NYSE 30/70 breakpoints + all-NYSE size median per (excntry, date)."""
+    bps = ff_country_breakpoints(
+        june, [("beme", 0.30, "beme30"), ("beme", 0.70, "beme70")], _ff_bm_eligible(), min_stocks_bp
+    )
+    return _ff_size_breaks(june, _ff_bm_eligible(), min_stocks_bp).join(
+        bps, on=["excntry", "date"], how="inner"
+    )
+
+
+def _ff_op_breaks(june: pl.DataFrame, min_stocks_bp: int = FF_MIN_STOCKS_BP) -> pl.DataFrame:
+    """OP NYSE 30/70 breakpoints per (excntry, date)."""
+    return ff_country_breakpoints(
+        june, [("op", 0.30, "op30"), ("op", 0.70, "op70")], _ff_op_eligible(), min_stocks_bp
+    )
+
+
+def _ff_inv_breaks(june: pl.DataFrame, min_stocks_bp: int = FF_MIN_STOCKS_BP) -> pl.DataFrame:
+    """INV NYSE 30/70 breakpoints per (excntry, date)."""
+    return ff_country_breakpoints(
+        june, [("inv", 0.30, "inv30"), ("inv", 0.70, "inv70")], _ff_inv_eligible(), min_stocks_bp
+    )
+
+
+def _ff_mom_breaks(mom_signal: pl.DataFrame, min_stocks_bp: int = FF_MIN_STOCKS_BP) -> pl.DataFrame:
+    """Momentum NYSE 30/70 breakpoints + all-NYSE size median per
+    (excntry, date); size dimension is ME at end of t-1 (caller swaps
+    me <- me_lag1 before calling)."""
+    bps = ff_country_breakpoints(
+        mom_signal,
+        [("mom_2_12", 0.30, "mom30"), ("mom_2_12", 0.70, "mom70")],
+        _ff_mom_eligible(),
+        min_stocks_bp,
+    )
+    return _ff_size_breaks(mom_signal, _ff_mom_eligible(), min_stocks_bp).join(
+        bps, on=["excntry", "date"], how="inner"
+    )
+
+
+def ff_assign_portfolios(
+    june: pl.DataFrame,
+    bm_breaks: pl.DataFrame,
+    op_breaks: pl.DataFrame,
+    inv_breaks: pl.DataFrame,
+) -> pl.DataFrame:
+    """June Size + B/M + OP + INV portfolio assignment per (excntry, id, date).
+
+    bm_breaks (with sizemedn) is inner-joined; op/inv breakpoints are
+    left-joined. Each sort requires firm eligibility AND a non-null
+    breakpoint; the size split requires only me > 0.
+    """
+    df = (
+        june.join(bm_breaks, on=["excntry", "date"], how="inner")
+        .join(op_breaks, on=["excntry", "date"], how="left")
+        .join(inv_breaks, on=["excntry", "date"], how="left")
+    )
+    bm_elig = _ff_bm_eligible() & pl.col("beme30").is_not_null()
+    op_elig = _ff_op_eligible() & pl.col("op30").is_not_null()
+    inv_elig = _ff_inv_eligible() & pl.col("inv30").is_not_null()
+    return df.with_columns(
+        sizeport=pl.when(pl.col("me") > 0)
+        .then(_ff_bucket("me", ["sizemedn"], ["S", "B"]))
+        .otherwise(None),
+        positivebeme=bm_elig.cast(pl.Int64),
+        btmport=pl.when(bm_elig)
+        .then(_ff_bucket("beme", ["beme30", "beme70"], ["L", "M", "H"]))
+        .otherwise(None),
+        nonmiss_op=op_elig.cast(pl.Int64),
+        opport=pl.when(op_elig)
+        .then(_ff_bucket("op", ["op30", "op70"], ["W", "N", "R"]))
+        .otherwise(None),
+        nonmiss_inv=inv_elig.cast(pl.Int64),
+        invport=pl.when(inv_elig)
+        .then(_ff_bucket("inv", ["inv30", "inv70"], ["C", "N", "A"]))
+        .otherwise(None),
+    ).select(
+        "excntry",
+        "id",
+        "date",
+        "sizeport",
+        "btmport",
+        "positivebeme",
+        "opport",
+        "nonmiss_op",
+        "invport",
+        "nonmiss_inv",
+    )
+
+
+def ff_assign_mom_portfolios(mom_signal: pl.DataFrame, mom_breaks: pl.DataFrame) -> pl.DataFrame:
+    """Size + momentum portfolio assignment per (excntry, id, date).
+
+    Size split is gated on momentum-leg eligibility (eligible_mom and
+    positive lagged me), matching French's UMD construction.
+    """
+    df = mom_signal.join(mom_breaks, on=["excntry", "date"], how="inner")
+    mom_elig = _ff_mom_eligible() & pl.col("mom30").is_not_null()
+    return df.with_columns(
+        sizeport=pl.when(pl.col("eligible_mom") & (pl.col("me_lag1") > 0))
+        .then(_ff_bucket("me", ["sizemedn"], ["S", "B"]))
+        .otherwise(None),
+        nonmiss_mom=mom_elig.cast(pl.Int64),
+        momport=pl.when(mom_elig)
+        .then(_ff_bucket("mom_2_12", ["mom30", "mom70"], ["L", "N", "H"]))
+        .otherwise(None),
+    ).select("excntry", "id", "date", "sizeport", "momport", "nonmiss_mom")
+
+
+def ff_assign_to_panel(panel: pl.DataFrame, june: pl.DataFrame) -> pl.DataFrame:
+    """Broadcast (excntry, id, June(y)) assignments to the daily/monthly panel
+    via port_year (Jul(y)..Jun(y+1) → formation-year y)."""
+    return (
+        panel.with_columns(_ff_port_year())
+        .join(
+            june.select(
+                "excntry",
+                "id",
+                "sizeport",
+                "btmport",
+                "positivebeme",
+                "opport",
+                "nonmiss_op",
+                "invport",
+                "nonmiss_inv",
+                june_year=pl.col("date").dt.year(),
+            ),
+            left_on=["excntry", "id", "port_year"],
+            right_on=["excntry", "id", "june_year"],
+            how="inner",
+        )
+        .drop("port_year")
+    )
+
+
+def vw_bucket_returns(
+    frame: pl.DataFrame,
+    *,
+    buckets: list[str],
+    weight_col: str,
+    bucket_col: str = "bucket",
+    ret_col: str = "ret",
+    date_col: str = "date",
+    min_stocks_pf: int,
+    ordered: bool = False,
+) -> pl.DataFrame:
+    """Value-weight `ret_col` by `weight_col` per (excntry, date_col, bucket_col),
+    apply the ROW min-stocks gate (USA bypassed), and pivot wide to `buckets`
+    (absent buckets filled as null Float64). Shared by the FF/HXZ/DHS size×char
+    sorts; the caller supplies the pre-built `bucket_col` and has already applied any
+    weight/return validity filter. `ordered`=True keeps input row order within each
+    group (maintain_order + a group-key presort) for float-sum determinism at a
+    discrete breakpoint; FF/HXZ leave it False. `safe_div` returns null on a zero
+    weight sum. Output: [excntry, date_col, *buckets]."""
+    if ordered:
+        frame = frame.sort(["excntry", date_col, bucket_col], maintain_order=True)
+    wide = (
+        frame.group_by(["excntry", date_col, bucket_col], maintain_order=ordered)
+        .agg(
+            vwret=safe_div(
+                (pl.col(ret_col) * pl.col(weight_col)).sum(), pl.col(weight_col).sum(), "vwret"
+            ),
+            _n=pl.len(),
+        )
+        .with_columns(
+            vwret=pl.when((pl.col("excntry") == US_EXCNTRY) | (pl.col("_n") >= min_stocks_pf))
+            .then(pl.col("vwret"))
+            .otherwise(None)
+        )
+        .pivot(values="vwret", index=["excntry", date_col], on=bucket_col)
+    )
+    missing = [c for c in buckets if c not in wide.columns]
+    if missing:
+        wide = wide.with_columns(*[pl.lit(None, dtype=pl.Float64).alias(c) for c in missing])
+    return wide.select("excntry", date_col, *buckets)
+
+
+def _ff_vw_leg(
+    panel: pl.DataFrame,
+    *,
+    port: str,
+    flag: str,
+    buckets: list[str],
+    min_stocks_pf: int = FF_MIN_STOCKS_PF,
+) -> pl.DataFrame:
+    """FF size×`port` VW leg → [excntry, date, *buckets] via vw_bucket_returns. The
+    caller has already applied the shared w>0 / ret-not-null / sizeport-not-null
+    filter."""
+    return vw_bucket_returns(
+        panel.filter((pl.col(flag) == 1) & pl.col(port).is_not_null()).with_columns(
+            bucket=pl.col("sizeport") + pl.col(port)
+        ),
+        buckets=buckets,
+        weight_col="w",
+        min_stocks_pf=min_stocks_pf,
+    )
+
+
+def ff_compute_factors(ccm4: pl.DataFrame, min_stocks_pf: int = FF_MIN_STOCKS_PF) -> pl.DataFrame:
+    """3 independent 2x3 sorts → per (excntry, date) factors.
+
+    For each sort (BM/OP/INV): VW per (excntry, date, sizeport+sortport)
+    bucket via `_ff_vw_leg`. Legs joined on (excntry, date).
+
+    smb_ff3 = BM size leg only; smb_ff5 = average of BM/OP/INV size legs.
+    """
+    # One shared-predicate pass over the full panel instead of three;
+    # filter(a).filter(b) ≡ filter(a & b) row-for-row, so each leg's group
+    # float-sum sequence is unchanged.
+    base = ccm4.filter(
+        (pl.col("w") > 0) & pl.col("ret").is_not_null() & pl.col("sizeport").is_not_null()
+    )
+    bm_leg = _ff_vw_leg(
+        base,
+        port="btmport",
+        flag="positivebeme",
+        buckets=["SL", "SM", "SH", "BL", "BM", "BH"],
+        min_stocks_pf=min_stocks_pf,
+    )
+    op_leg = _ff_vw_leg(
+        base,
+        port="opport",
+        flag="nonmiss_op",
+        buckets=["SW", "SN", "SR", "BW", "BN", "BR"],
+        min_stocks_pf=min_stocks_pf,
+    ).rename({"SN": "SN_op", "BN": "BN_op"})
+    inv_leg = _ff_vw_leg(
+        base,
+        port="invport",
+        flag="nonmiss_inv",
+        buckets=["SC", "SN", "SA", "BC", "BN", "BA"],
+        min_stocks_pf=min_stocks_pf,
+    ).rename({"SN": "SN_inv", "BN": "BN_inv"})
+    wide = (
+        bm_leg.join(op_leg, on=["excntry", "date"], how="full", coalesce=True)
+        .join(inv_leg, on=["excntry", "date"], how="full", coalesce=True)
+        .sort("excntry", "date")
+    )
+
+    smb_bm = pl.mean_horizontal("SL", "SM", "SH", ignore_nulls=False) - pl.mean_horizontal(
+        "BL", "BM", "BH", ignore_nulls=False
+    )
+    smb_op = pl.mean_horizontal("SW", "SN_op", "SR", ignore_nulls=False) - pl.mean_horizontal(
+        "BW", "BN_op", "BR", ignore_nulls=False
+    )
+    smb_inv = pl.mean_horizontal("SC", "SN_inv", "SA", ignore_nulls=False) - pl.mean_horizontal(
+        "BC", "BN_inv", "BA", ignore_nulls=False
+    )
+    return wide.select(
+        pl.col("excntry"),
+        pl.col("date"),
+        smb_ff3=smb_bm,
+        smb_ff5=(smb_bm + smb_op + smb_inv) / 3,
+        hml_ff=pl.mean_horizontal("SH", "BH", ignore_nulls=False)
+        - pl.mean_horizontal("SL", "BL", ignore_nulls=False),
+        rmw_ff=pl.mean_horizontal("SR", "BR", ignore_nulls=False)
+        - pl.mean_horizontal("SW", "BW", ignore_nulls=False),
+        cma_ff=pl.mean_horizontal("SC", "BC", ignore_nulls=False)
+        - pl.mean_horizontal("SA", "BA", ignore_nulls=False),
+    )
+
+
+def _ff_is_neg99(col: str) -> pl.Expr:
+    return pl.col(col).is_not_null() & (
+        (pl.col(col) - FF_MISSING_RET_CODE).abs() < FF_MISSING_RET_TOL
+    )
+
+
+def _ff_neg99_to_zero(expr: pl.Expr) -> pl.Expr:
+    """Replace -99.0 sentinel with 0; pass through null untouched."""
+    return (
+        pl.when((expr - FF_MISSING_RET_CODE).abs() < FF_MISSING_RET_TOL)
+        .then(pl.lit(0.0))
+        .otherwise(expr)
+    )
+
+
+def _ff_mom_signal_monthly(panel: pl.LazyFrame) -> pl.LazyFrame:
+    L = FF_UMD_MONTHLY_LOOKBACK
+    skip = FF_UMD_MONTHLY_SKIP
+    by = ["excntry", "id"]
+    idx = pl.col("date").dt.year() * 12 + pl.col("date").dt.month()
+
+    df = (
+        panel.with_columns(mth_idx=idx.cast(pl.Int64))
+        .sort([*by, "mth_idx"])
+        .with_columns(
+            pl.col("me").shift(1).over(by).alias("me_lag1"),
+            pl.col("me").shift(L + 1).over(by).alias(f"me_lag{L + 1}"),
+            *[pl.col("ret").shift(k).over(by).alias(f"ret_lag{k}") for k in range(1, L + 1)],
+            *[
+                (pl.col("mth_idx") - pl.col("mth_idx").shift(k).over(by)).alias(f"gap{k}")
+                for k in (*range(1, L + 1), L + 1)
+            ],
+        )
+        .with_columns(
+            pl.when(pl.col("gap1") == 1).then(pl.col("me_lag1")).otherwise(None).alias("me_lag1"),
+            pl.when(pl.col(f"gap{L + 1}") == L + 1)
+            .then(pl.col(f"me_lag{L + 1}"))
+            .otherwise(None)
+            .alias(f"me_lag{L + 1}"),
+            *[
+                pl.when(pl.col(f"gap{k}") == k)
+                .then(pl.col(f"ret_lag{k}"))
+                .otherwise(None)
+                .alias(f"ret_lag{k}")
+                for k in range(1, L + 1)
+            ],
+        )
+    )
+
+    elig = (
+        pl.col("me_lag1").is_not_null()
+        & (pl.col("me_lag1") > 0)
+        & pl.col(f"me_lag{L + 1}").is_not_null()
+        & pl.col(f"ret_lag{skip + 1}").is_not_null()
+        & ~_ff_is_neg99(f"ret_lag{skip + 1}")
+    )
+    # Interior months (t-12..t-3): French requires the row on file but tolerates a
+    # missing price (-99.0 on CRSP; null under CIZ), so the US gate needs only gap==k
+    # and the compounding below zero-fills. ROW keeps the strict non-null gate (JKP).
+    is_us = pl.col("excntry") == US_EXCNTRY
+    for k in range(skip + 2, L + 1):
+        elig = elig & pl.when(is_us).then(pl.col(f"gap{k}") == k).otherwise(
+            pl.col(f"ret_lag{k}").is_not_null()
+        )
+
+    terms = [
+        1.0 + _ff_neg99_to_zero(pl.col(f"ret_lag{k}")).fill_null(0.0)
+        for k in range(skip + 1, L + 1)
+    ]
+    mom_expr = functools.reduce(operator.mul, terms) - 1.0
+
+    return df.with_columns(
+        eligible_mom=elig,
+        mom_2_12=pl.when(elig).then(mom_expr).otherwise(None),
+    ).select(
+        "excntry",
+        "id",
+        "date",
+        "ret",
+        "w",
+        "me",
+        "exchcd_us",
+        "size_grp",
+        "me_lag1",
+        "mom_2_12",
+        "eligible_mom",
+    )
+
+
+def _ff_mom_signal_daily(panel: pl.LazyFrame) -> pl.LazyFrame:
+    skip = FF_UMD_DAILY_SKIP
+    look = FF_UMD_DAILY_LOOKBACK
+    by = ["excntry", "id"]
+
+    trading_idx = (
+        panel.select("excntry", "date")
+        .unique()
+        .sort(["excntry", "date"])
+        .with_columns(tidx=pl.int_range(0, pl.len()).cast(pl.Int64).over("excntry"))
+    )
+    # US window (French daily detail): returns t-250..t-21 (t-21 the last day, mirrors
+    # monthly t-2), price anchor t-251, interior missing days tolerated (-99.0/CIZ-null,
+    # log_eff zero-fills). ROW keeps the legacy t-251..t-22 window + zero-missing gate.
+    is_us = pl.col("excntry") == US_EXCNTRY
+    skip_eff = pl.when(is_us).then(skip).otherwise(skip + 1)
+
+    def _us_row_lag(col: str, us_n: int) -> pl.Expr:
+        """Lag by us_n (US) / us_n + 1 (ROW) — the window anchors above."""
+        return (
+            pl.when(is_us)
+            .then(pl.col(col).shift(us_n).over(by))
+            .otherwise(pl.col(col).shift(us_n + 1).over(by))
+        )
+
+    df = (
+        panel.join(trading_idx, on=["excntry", "date"], how="left")
+        .sort([*by, "tidx"])
+        .with_columns(
+            is_null_ret=pl.col("ret").is_null(),
+            log_eff=(1.0 + _ff_neg99_to_zero(pl.col("ret")).fill_null(0.0)).log(),
+        )
+        .with_columns(
+            cum_log=pl.col("log_eff").cum_sum().over(by),
+            cum_null=pl.col("is_null_ret").cast(pl.Int64).cum_sum().over(by),
+        )
+        .with_columns(
+            gap_one=pl.col("tidx") - pl.col("tidx").shift(1).over(by),
+            gap_skip=pl.col("tidx") - _us_row_lag("tidx", skip),
+            gap_look=pl.col("tidx") - pl.col("tidx").shift(look).over(by),
+            cum_log_lag_skip=_us_row_lag("cum_log", skip),
+            cum_log_lag_look=_us_row_lag("cum_log", look),
+            nulls_in_window=(
+                pl.col("cum_null").shift(skip + 1).over(by)
+                - pl.col("cum_null").shift(look + 1).over(by)
+            ),
+            ret_lag_skip=pl.col("ret").shift(skip).over(by),
+            me_lag1=pl.col("me").shift(1).over(by),
+            me_lag_look=pl.col("me").shift(look).over(by),
+        )
+    )
+    elig = (
+        (pl.col("gap_one") == 1)
+        & (pl.col("gap_skip") == skip_eff)
+        & (pl.col("gap_look") == look)
+        & pl.col("me_lag1").is_not_null()
+        & (pl.col("me_lag1") > 0)
+        & pl.col("ret_lag_skip").is_not_null()
+        & ~_ff_is_neg99("ret_lag_skip")
+        & pl.col("me_lag_look").is_not_null()
+        & (is_us | (pl.col("nulls_in_window") == 0))
+    )
+    mom_raw = (pl.col("cum_log_lag_skip") - pl.col("cum_log_lag_look")).exp() - 1.0
+    return df.with_columns(
+        eligible_mom=elig,
+        mom_2_12=pl.when(elig).then(mom_raw).otherwise(None),
+    ).select(
+        "excntry",
+        "id",
+        "date",
+        "ret",
+        "w",
+        "me",
+        "exchcd_us",
+        "size_grp",
+        "me_lag1",
+        "mom_2_12",
+        "eligible_mom",
+    )
+
+
+def ff_build_mom_signal(panel: pl.DataFrame, freq: Literal["monthly", "daily"]) -> pl.DataFrame:
+    """Per-(excntry, id) prior (2-12) return signal + eligibility.
+
+    Dispatches to monthly (calendar-month-indexed lags, sentinel-aware
+    compound product) or daily (per-excntry trading-day rank, cum_log
+    diff; US window t-250..t-21 with interior missing-price tolerance
+    per French's detail pages, ROW t-251..t-22 zero-missing per the
+    JKP convention). Builds lazily and collects once at the boundary —
+    Polars fuses the chained with_columns into one streaming pass.
+
+    Output: panel + [me_lag1, mom_2_12, eligible_mom].
+    """
+    lf = panel.lazy()
+    out = _ff_mom_signal_monthly(lf) if freq == "monthly" else _ff_mom_signal_daily(lf)
+    # Streaming engine: ~35% faster on the daily panel (312M rows) and
+    # verified bit-identical to the in-memory engine on full data.
+    return out.collect(engine="streaming")
+
+
+def ff_compute_umd_factor(
+    panel: pl.DataFrame, min_stocks_pf: int = FF_MIN_STOCKS_PF
+) -> pl.DataFrame:
+    """2x3 size x mom_2_12 → per (excntry, date) umd_ff.
+
+    Single-sort momentum leg collapsed to the UMD spread. Same per-bucket
+    VW + ROW min-stocks gate as the other FF sorts.
+    """
+    base = panel.filter(
+        (pl.col("w") > 0) & pl.col("ret").is_not_null() & pl.col("sizeport").is_not_null()
+    )
+    return (
+        _ff_vw_leg(
+            base,
+            port="momport",
+            flag="nonmiss_mom",
+            buckets=["SL", "SN", "SH", "BL", "BN", "BH"],
+            min_stocks_pf=min_stocks_pf,
+        )
+        .select(
+            "excntry",
+            "date",
+            umd_ff=0.5 * (pl.col("SH") + pl.col("BH")) - 0.5 * (pl.col("SL") + pl.col("BL")),
+        )
+        .sort("excntry", "date")
+    )
+
+
+def ff_build_characteristics(
+    panel: pl.DataFrame,
+    june: pl.DataFrame,
+    freq: Literal["monthly", "daily"],
+    mom_signal: pl.DataFrame | None = None,
+) -> pl.DataFrame:
+    """Per-(excntry, id, eom) characteristics on monthly grid. Daily input
+    downsampled to last trading day per (excntry, id, month). The returned
+    frame carries `excntry`; the writer in `gen_ff_data` drops it (`id` is
+    globally unique).
+
+    If `mom_signal` is provided (output of `ff_build_mom_signal`), the
+    per-stock `mom_2_12` is joined on (excntry, id, date) and emitted as
+    `umd_ff`. Caller should pass the MONTHLY signal so the characteristic
+    aligns to monthly eom rows.
+    """
+    p = panel.with_columns(_ff_port_year()).join(
+        june.select("excntry", "id", "beme", "op", "inv", fy=pl.col("date").dt.year()),
+        left_on=["excntry", "id", "port_year"],
+        right_on=["excntry", "id", "fy"],
+    )
+    if freq == "daily":
+        p = (
+            p.with_columns(_month=pl.col("date").dt.truncate("1mo"))
+            .sort(["excntry", "id", "date"])
+            .unique(subset=["excntry", "id", "_month"], keep="last")
+            .drop("_month")
+        )
+    if mom_signal is not None:
+        p = p.join(
+            mom_signal.select("excntry", "id", "date", "mom_2_12"),
+            on=["excntry", "id", "date"],
+            how="left",
+        )
+    cols = {
+        "me_ff": pl.col("me"),
+        "beme_ff": pl.col("beme"),
+        "op_ff": pl.col("op"),
+        "inv_ff": pl.col("inv"),
+    }
+    if mom_signal is not None:
+        cols["umd_ff"] = pl.col("mom_2_12")
+    return p.select("date", "excntry", "id", **cols).sort("date", "excntry", "id")
+
+
+def _ff_build_freq(
+    freq: Literal["monthly", "daily"],
+    ccm2a: pl.DataFrame,
+    comp_world: pl.DataFrame,
+    raw_dir: Path,
+    interim_dir: Path,
+    min_stocks_bp: int = FF_MIN_STOCKS_BP,
+    min_stocks_pf: int = FF_MIN_STOCKS_PF,
+) -> tuple[pl.DataFrame, pl.DataFrame | None]:
+    """Build FF3/FF5/UMD factors for one frequency; also returns monthly characteristics.
+
+    Output: (factors, chars) — chars is the characteristics frame for monthly, None for daily.
+    """
+    # Both legs as fused lazy plans (loader scan + weights chain), executed
+    # together by polars' own scheduler — single collect_all, no Python
+    # threads. The chars tails then run eagerly off the collected panels.
+    us_lf = ff_load_crsp_panel(raw_dir, freq).pipe(_ff_us_rets_weights_lazy, freq)
+    row_lf = ff_load_world_panel(interim_dir, freq).pipe(_ff_row_rets_weights_lazy, freq)
+    us_rw, row_rw = pl.collect_all([us_lf, row_lf])
+    us_panel, us_chars = _ff_us_finish_prepare(us_rw, ccm2a)
+    row_panel, row_chars = _ff_row_finish_prepare(row_rw, comp_world)
+    panel = pl.concat([us_panel, row_panel], how="vertical_relaxed")
+    data_chars = pl.concat([us_chars, row_chars], how="vertical_relaxed")
+
+    ports = ff_assign_portfolios(
+        data_chars,
+        _ff_bm_breaks(data_chars, min_stocks_bp),
+        _ff_op_breaks(data_chars, min_stocks_bp),
+        _ff_inv_breaks(data_chars, min_stocks_bp),
+    )
+    factors = ff_compute_factors(ff_assign_to_panel(panel, ports), min_stocks_pf)
+
+    # UMD: same per-country breakpoints + ROW gates as the other FF sorts, but size is
+    # ME at t-1, so swap me ← me_lag1 first. mom_signal feeds ff_build_characteristics'
+    # umd_ff column.
+    mom_signal = ff_build_mom_signal(panel, freq).with_columns(me=pl.col("me_lag1"))
+    ports_mom = ff_assign_mom_portfolios(mom_signal, _ff_mom_breaks(mom_signal, min_stocks_bp))
+    umd = ff_compute_umd_factor(
+        mom_signal.join(
+            ports_mom.select("excntry", "id", "date", "sizeport", "momport", "nonmiss_mom"),
+            on=["excntry", "id", "date"],
+            how="left",
+        ).with_columns(w=pl.col("me_lag1")),
+        min_stocks_pf,
+    )
+    # Full join: a country-date can have a UMD value without an FF3/FF5 row
+    # (momentum-eligible universe passes the min-stocks gates while the
+    # beme-eligible one fails) — a left join would silently drop it.
+    factors = factors.join(umd, on=["excntry", "date"], how="full", coalesce=True).sort(
+        ["excntry", "date"]
+    )
+
+    if freq != "monthly":
+        return factors, None
+
+    # count is non-null iff the June stock had a Compustat/DFF row; with the dec_me
+    # condition this reproduces the pre-left-join chars row set (extra rows only widen
+    # the US size-median pool and the OP/INV pools).
+    chars = ff_build_characteristics(
+        panel,
+        data_chars.filter(pl.col("count").is_not_null() & pl.col("dec_me").is_not_null()),
+        freq,
+        mom_signal=mom_signal,
+    )
+    return factors, chars
+
+
+@measure_time
+def gen_ff_data(
+    paths: DataPaths,
+    monthly_factors_path: Path,
+    daily_factors_path: Path,
+    chars_path: Path,
+    freqs: tuple[str, ...] = ("monthly", "daily"),
+    min_stocks_bp: int = FF_MIN_STOCKS_BP,
+    min_stocks_pf: int = FF_MIN_STOCKS_PF,
+) -> None:
+    """
+    Description:
+        Reference: Fama and French (1993) 'Common risk factors in the returns
+        on stocks and bonds', Journal of Financial Economics 33(1), pp. 3-56;
+        Fama and French (2015) 'A five-factor asset pricing model', Journal of
+        Financial Economics 116(1), pp. 1-22. WRDS "Fama-French Factors
+        (CIZ Format)":
+        https://wrds-www.wharton.upenn.edu/login/?next=/pages/wrds-research/applications/risk-factors-and-industry-benchmarks/fama-french-factors-ciz-format/
+        Historical book equity from Ken French's data library:
+        https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/data_library.html#BookEquity
+
+        Build FF3/FF5/UMD factor and characteristic files for all countries.
+        US follows strict-FF methodology on the CIZ universe: raw CRSP CIZ
+        tables + Compustat funda, CIZ universe filters, permco-level ME
+        aggregation, NYSE QUANTILE_DISC breakpoints, July-to-June portfolio
+        assignment; numerics track the FF data-library reference within
+        1 ULP. Reads raw CRSP/Compustat from `paths.raw_tables_dir` and
+        world_msf/world_dsf from `paths.interim_dir`; output paths are passed
+        in explicitly by the caller (composed against `paths.interim_dir`).
+
+    Steps:
+        1) Build US panel/June via raw CRSP path (FF-strict). Tag excntry,
+           rename retadj→ret, weight_port→w, exchcd→exchcd_us; size_grp=null.
+        2) Build ROW panel/June via world_msf path (JKP-spec). Compute
+           me_lag1→w; rename ret_exc→ret; exchcd_us=null.
+        3) Concat US + ROW panels and Junes (vertical_relaxed).
+        4) Compute breakpoints (per (excntry, date), branched pool filter +
+           ROW min-stocks gate), assign portfolios, broadcast to panel, VW
+           per (excntry, date, bucket) with ROW min-stocks gate, factors.
+
+    Output:
+        - <monthly_factors_path>, <daily_factors_path>
+              [excntry, eom/date, smb_ff3, smb_ff5, hml_ff, rmw_ff, cma_ff, umd_ff]
+        - <chars_path>
+              [eom, id, me_ff, beme_ff, op_ff, inv_ff, umd_ff]
+              (excntry dropped: `id` is globally unique)
+    """
+    raw_dir = paths.raw_tables_dir
+    interim_dir = paths.interim_dir
+    out_paths = {
+        "monthly": monthly_factors_path,
+        "daily": daily_factors_path,
+    }
+    chars_out = chars_path
+
+    # US Compustat (FF-strict)
+    ccm2a = ff_load_compustat_us(raw_dir, ff5=True, use_dff=FF_USE_DFF_BE)
+
+    # ROW Compustat (JKP)
+    comp_world = ff_load_world_compustat(raw_dir, interim_dir)
+
+    for freq in freqs:
+        factors, chars = _ff_build_freq(
+            freq, ccm2a, comp_world, raw_dir, interim_dir, min_stocks_bp, min_stocks_pf
+        )
+        dt = "eom" if freq == "monthly" else "date"
+        factors.rename({"date": dt}).write_parquet(out_paths[freq])
+        if chars is not None:
+            chars.rename({"date": "eom"}).drop("excntry").write_parquet(chars_out)
+
+
+def hxz_attach_siccd(lf: pl.LazyFrame, raw_dir: Path, date_col: str) -> pl.LazyFrame:
+    """Event-time join with stksecurityinfohist on permno where
+    secinfostartdt ≤ `date_col` ≤ secinfoenddt (null enddt = open-ended);
+    adds siccd + is_fin. A permno whose windows don't cover `date_col`
+    keeps its panel row with null siccd/is_fin — the row must not vanish
+    from the return universe just because industry history has a gap."""
+    sec = (
+        pl.scan_parquet(raw_dir / "crsp_stksecurityinfohist.parquet")
+        .select("permno", "secinfostartdt", "secinfoenddt", "siccd")
+        .unique()
+    )
+    in_window = (
+        pl.col("secinfostartdt").is_not_null()
+        & (pl.col("secinfostartdt") <= pl.col(date_col))
+        & (pl.col("secinfoenddt").is_null() | (pl.col("secinfoenddt") >= pl.col(date_col)))
+    )
+    # Tie-break: in-window rows first, then newest secinfostartdt (latest
+    # re-classification = current industry), then siccd ASC for determinism.
+    return (
+        lf.join(sec, on="permno", how="left")
+        .with_columns(_in_win=in_window)
+        .sort(
+            ["permno", date_col, "_in_win", "secinfostartdt", "siccd"],
+            descending=[False, False, True, True, False],
+            nulls_last=True,
+        )
+        .unique(subset=["permno", date_col], keep="first", maintain_order=True)
+        .with_columns(siccd=pl.when(pl.col("_in_win")).then(pl.col("siccd")).otherwise(None))
+        .with_columns(is_fin=pl.col("siccd").is_between(6000, 6999))
+        .drop("secinfostartdt", "secinfoenddt", "_in_win")
+    )
+
+
+def hxz_load_crsp(
+    raw_dir: Path, freq: Literal["monthly", "daily"], date_start: date | None = None
+) -> pl.DataFrame:
+    """Load CRSP CIZ (msf_v2 or dsf_v2); permno-level (no permco aggregation).
+
+    Output: Eager [permno, permco, date, ret, retx, prc, shrout, me, exchcd, siccd, is_fin].
+    """
+    pq, p = ("crsp_msf_v2.parquet", "mth") if freq == "monthly" else ("crsp_dsf_v2.parquet", "dly")
+    date_c, ret_c, retx_c, prc_c = f"{p}caldt", f"{p}ret", f"{p}retx", f"{p}prc"
+    date_floor = pl.lit(True) if date_start is None else pl.col(date_c) >= date_start
+    return (
+        pl.scan_parquet(raw_dir / pq)
+        .filter(date_floor & _ciz_universe())
+        .with_columns(pl.col(ret_c, retx_c, prc_c).cast(pl.Float64))
+        .pipe(hxz_attach_siccd, raw_dir, date_c)
+        .select(
+            "permno",
+            "permco",
+            pl.col(date_c).alias("date"),
+            pl.col(ret_c).alias("ret"),
+            pl.col(retx_c).alias("retx"),
+            pl.col(prc_c).alias("prc"),
+            "shrout",
+            # /1000: CIZ shrout is in thousands; me in USD millions matches the
+            # jkp world_msf convention so US and ROW me_hxz share one unit.
+            (pl.col(prc_c).abs() * pl.col("shrout") / 1000.0).alias("me"),
+            pl.col("primaryexch")
+            .replace_strict({"N": 1, "A": 2, "Q": 3}, default=None, return_dtype=pl.Int64)
+            .alias("exchcd"),
+            "siccd",
+            "is_fin",
+        )
+        .collect()
+    )
+
+
+def _compustat_na_filter() -> pl.Expr:
+    """Standard Compustat NA screen (INDL/STD/D/C), shared by the FF, HXZ and
+    mispricing funda/fundq loaders."""
+    return (
+        (pl.col("indfmt") == "INDL")
+        & (pl.col("datafmt") == "STD")
+        & (pl.col("popsrc") == "D")
+        & (pl.col("consol") == "C")
+    )
+
+
+def hxz_load_funda(raw_dir: Path) -> pl.DataFrame:
+    """Annual BE and I/A per (gvkey, fiscal year).
+
+    BE: SEQ → CEQ+PSTK → AT-LT, plus TXDITC unconditionally,
+    minus preferred (PSTKRV → PSTKL → PSTK).
+
+    Output: Eager [gvkey, datadate, be_a, inv, csho, ajex].
+    """
+    at_lag = pl.col("at").shift(1).over("gvkey")
+    fy_gap = pl.col("datadate").dt.year() - pl.col("datadate").shift(1).over("gvkey").dt.year()
+    floats = ["pstkrv", "pstkl", "pstk", "seq", "ceq", "txditc", "lt", "at", "csho", "ajex"]
+    return (
+        pl.scan_parquet(raw_dir / "comp_funda.parquet")
+        .filter(_compustat_na_filter())
+        .with_columns(pl.col(*floats).cast(pl.Float64), pl.col("datadate").cast(pl.Date))
+        .with_columns(
+            ps_a=pl.coalesce("pstkrv", "pstkl", "pstk", pl.lit(0.0)),
+            sh_a=pl.coalesce("seq", pl.col("ceq") + pl.col("pstk"), pl.col("at") - pl.col("lt")),
+        )
+        .with_columns(be_a=pl.col("sh_a") + pl.col("txditc").fill_null(0.0) - pl.col("ps_a"))
+        # BEFORE the inv lag; mirrors ff_load_compustat_us. (year is transient;
+        # dropped by the select.)
+        .with_columns(year=pl.col("datadate").dt.year())
+        .pipe(_collapse_to_latest_fy)
+        .with_columns(
+            inv=pl.when(at_lag.is_not_null() & (at_lag > 0) & (fy_gap == 1))
+            .then((pl.col("at") - at_lag) / at_lag)
+            .otherwise(None)
+        )
+        .select("gvkey", "datadate", "be_a", "inv", "csho", "ajex")
+        .collect()
+    )
+
+
+def hxz_load_fundq(raw_dir: Path) -> pl.DataFrame:
+    """Compustat quarterly BEQ: SEQQ → CEQQ+PSTKQ → ATQ−LTQ, plus TXDITCQ,
+    minus PS_q (PSTKRQ → PSTKQ → 0). One row per (gvkey, fyearq, fqtr).
+
+    Output: Eager [gvkey, datadate, fyearq, fqtr, rdq, ibq, dvpsxq, cshoq, ajexq, beq].
+    """
+    floats = [
+        "ibq", "dvpsxq", "cshoq", "ajexq",
+        "seqq", "ceqq", "pstkq", "atq", "ltq", "txditcq", "pstkrq",
+    ]  # fmt: skip
+    return (
+        pl.scan_parquet(raw_dir / "comp_fundq.parquet")
+        .filter(_compustat_na_filter())
+        .with_columns(
+            pl.col(*floats).cast(pl.Float64),
+            pl.col("datadate").cast(pl.Date),
+            pl.col("rdq").cast(pl.Date),
+        )
+        .with_columns(
+            ps_q=pl.coalesce("pstkrq", "pstkq", pl.lit(0.0)),
+            sh_q=pl.coalesce(
+                "seqq", pl.col("ceqq") + pl.col("pstkq"), pl.col("atq") - pl.col("ltq")
+            ),
+        )
+        .with_columns(beq=pl.col("sh_q") + pl.col("txditcq").fill_null(0.0) - pl.col("ps_q"))
+        # One row per (gvkey, fiscal quarter): FYE changes can file the same
+        # (fyearq, fqtr) under two datadate, and dups fan the dense qidx axis in
+        # hxz_impute_be_clean_surplus -> nondeterministic roe_hxz. Keep latest
+        # datadate, then rdq, then the more valued filing.
+        .sort(
+            ["gvkey", "fyearq", "fqtr", "datadate", "rdq", "ibq", "beq"],
+            descending=[False, False, False, True, True, True, True],
+            nulls_last=True,
+        )
+        .unique(subset=["gvkey", "fyearq", "fqtr"], keep="first", maintain_order=True)
+        .sort(["gvkey", "fyearq", "fqtr"])
+        .select(
+            "gvkey",
+            "datadate",
+            "fyearq",
+            "fqtr",
+            "rdq",
+            "ibq",
+            "dvpsxq",
+            "cshoq",
+            "ajexq",
+            "beq",
+        )  # fmt: skip
+        .collect()
+    )
+
+
+def hxz_supplement_q4_shares(
+    fundq: pl.DataFrame, funda: pl.DataFrame, raw_dir: Path
+) -> pl.DataFrame:
+    """HXZ footnote-3 share supplementation: cshoq/ajexq → annual csho/ajex on Q4 rows
+    → CRSP shrout (thousands) + mthcumfacshr at fiscal-quarter month-end.
+
+    Output: fundq schema + cshoq_eff, ajexq_eff.
+    """
+    df = (
+        fundq.lazy()
+        .join(
+            funda.lazy().select("gvkey", "datadate", "csho", "ajex"),
+            on=["gvkey", "datadate"],
+            how="left",
+        )
+        .with_columns(
+            cshoq_eff=pl.coalesce(
+                "cshoq", pl.when(pl.col("fqtr") == 4).then(pl.col("csho")).otherwise(None)
+            ),
+            ajexq_eff=pl.coalesce(
+                "ajexq", pl.when(pl.col("fqtr") == 4).then(pl.col("ajex")).otherwise(None)
+            ),
+        )
+        .drop("csho", "ajex")
+    )
+    needs = (
+        df.filter(pl.col("cshoq_eff").is_null() | pl.col("ajexq_eff").is_null())
+        .select("gvkey", "datadate")
+        .unique()
+    )
+    lnk = (
+        pl.scan_parquet(raw_dir / "crsp_ccmxpf_lnkhist.parquet")
+        .filter(pl.col("linktype").str.starts_with("L") & pl.col("linkprim").is_in(["P", "C"]))
+        .select("gvkey", "lpermno", "linkprim", "linktype", "linkdt", "linkenddt")
+        .with_columns(
+            pl.col("lpermno").cast(pl.Int64),
+            pl.col("linkdt", "linkenddt").cast(pl.Date),
+        )
+    )
+    nl = (
+        needs.join(lnk, on="gvkey", how="inner")
+        .filter(
+            (pl.col("linkdt") <= pl.col("datadate"))
+            & (pl.col("linkenddt").is_null() | (pl.col("linkenddt") >= pl.col("datadate")))
+        )
+        .with_columns(
+            _link_days=(
+                pl.coalesce(pl.col("linkenddt"), pl.lit(date(9999, 12, 31))) - pl.col("linkdt")
+            ).dt.total_days()
+        )
+        .pipe(_hxz_best_link, subset=["gvkey", "datadate"], tail_key="lpermno")
+        .drop("_link_days")
+    )
+    cfac = (
+        pl.scan_parquet(raw_dir / "crsp_msf_v2.parquet")
+        .select(
+            "permno",
+            pl.col("mthcaldt").dt.month_end().alias("eom"),
+            pl.col("shrout").cast(pl.Float64),
+            pl.col("mthcumfacshr").cast(pl.Float64).alias("cfacshr"),
+        )
+        # CIZ msf_v2 has one row per (permno, mthcaldt); after month_end
+        # bucketing the (permno, eom) pair is unique. Sort enforces stable
+        # order pre-unique so any future schema quirk stays deterministic.
+        .sort(["permno", "eom", "cfacshr", "shrout"], nulls_last=True)
+        .unique(subset=["permno", "eom"], keep="last", maintain_order=True)
+    )
+    nl = (
+        nl.with_columns(eom=pl.col("datadate").dt.month_end())
+        .rename({"lpermno": "permno"})
+        .join(cfac, on=["permno", "eom"], how="left")
+        .select("gvkey", "datadate", "shrout", "cfacshr")
+    )
+    return (
+        df.join(nl, on=["gvkey", "datadate"], how="left")
+        .with_columns(
+            cshoq_eff=pl.coalesce("cshoq_eff", safe_div(pl.col("shrout"), 1000.0, "cshoq_eff")),
+            ajexq_eff=pl.coalesce("ajexq_eff", "cfacshr"),
+        )
+        .drop("shrout", "cfacshr")
+        .collect()
+    )
+
+
+def hxz_merge_be_chain(fundq: pl.DataFrame, funda: pl.DataFrame) -> pl.DataFrame:
+    """Q4 BEQ ← annual BE_a where quarterly is missing."""
+    return (
+        fundq.join(funda.select("gvkey", "datadate", "be_a"), on=["gvkey", "datadate"], how="left")
+        .with_columns(
+            beq=pl.when((pl.col("fqtr") == 4) & pl.col("beq").is_null())
+            .then(pl.col("be_a"))
+            .otherwise(pl.col("beq"))
+        )
+        .drop("be_a")
+    )
+
+
+def hxz_impute_be_clean_surplus(fq: pl.DataFrame) -> pl.DataFrame:
+    """
+    Description:
+        Backward + forward (1≤j≤4) clean-surplus impute of BEQ on a dense
+        calendar-quarter axis (HXZ Appendix A.4).
+    Steps:
+        1) Pad missing quarters per gvkey (qidx = fyearq*4 + fqtr − 1).
+        2) DVQ = dvpsxq × lag(cshoq_eff) × (lag ajexq_eff / ajexq_eff).
+        3) Backward: BEQ_{t−1} = BEQ_t − IBQ_t + DVQ_t (when t−1 null).
+        4) Forward: BEQ_t = BEQ_{t−j} + ΣIBQ − ΣDVQ over j-window, 1≤j≤4,
+           smallest j wins via coalesce.
+        5) Compute calendar-q-lagged BEQ (beq_lag1) for Roe.
+    Output:
+        DataFrame with imputed beq + beq_lag1, padded rows dropped.
+    """
+    df = fq.with_columns(qidx=pl.col("fyearq") * 4 + pl.col("fqtr") - 1)
+    ranges = df.group_by("gvkey").agg(qmin=pl.col("qidx").min(), qmax=pl.col("qidx").max())
+    dense = (
+        ranges.with_columns(qidx=pl.int_ranges("qmin", pl.col("qmax") + 1))
+        .explode("qidx")
+        .select("gvkey", "qidx")
+    )
+    df = dense.join(df, on=["gvkey", "qidx"], how="left").sort(["gvkey", "qidx"]).lazy()
+
+    cshoq_lag = pl.col("cshoq_eff").shift(1).over("gvkey")
+    ajexq_lag = pl.col("ajexq_eff").shift(1).over("gvkey")
+    df = df.with_columns(
+        dvq=pl.when(pl.col("dvpsxq").fill_null(0.0) > 0)
+        .then(
+            pl.col("dvpsxq")
+            * cshoq_lag
+            * pl.when(pl.col("ajexq_eff") > 0)
+            .then(safe_div(ajexq_lag, pl.col("ajexq_eff"), "_ajexq_ratio"))
+            .otherwise(1.0)
+        )
+        .otherwise(0.0)
+    ).with_columns(
+        beq=pl.coalesce(
+            "beq",
+            pl.col("beq").shift(-1).over("gvkey")
+            - pl.col("ibq").shift(-1).over("gvkey")
+            + pl.col("dvq").shift(-1).over("gvkey"),
+        )
+    )
+    fw_cols = [f"beq_fw{j}" for j in range(1, 5)]
+    df = df.with_columns(
+        **{
+            fw: pl.col("beq").shift(j).over("gvkey")
+            + pl.col("ibq").rolling_sum(window_size=j, min_samples=j).over("gvkey")
+            - pl.col("dvq").rolling_sum(window_size=j, min_samples=j).over("gvkey")
+            for j, fw in enumerate(fw_cols, start=1)
+        }
+    ).with_columns(beq=pl.coalesce("beq", *fw_cols))
+    return (
+        df.drop(*fw_cols, "qidx")
+        .with_columns(beq_lag1=pl.col("beq").shift(1).over("gvkey"))
+        .filter(pl.col("datadate").is_not_null())
+        .collect()
+    )
+
+
+def _hxz_best_link(
+    df: pl.DataFrame | pl.LazyFrame, *, subset: list[str], tail_key: str
+) -> pl.DataFrame | pl.LazyFrame:
+    """linkprim DESC, linktype ASC, longest-lived link DESC, linkdt ASC, tail_key ASC."""
+    return df.sort(
+        [*subset, "linkprim", "linktype", "_link_days", "linkdt", tail_key],
+        descending=[False] * len(subset) + [True, False, True, False, False],
+    ).unique(subset=subset, keep="first", maintain_order=True)
+
+
+def hxz_link_compustat(comp: pl.DataFrame, raw_dir: Path) -> pl.DataFrame:
+    """gvkey → permno via CCM; per-row datadate gating (NOT jun_end as FF
+    uses — HXZ links at fiscal-q-end). Primary first; one (datadate, permno)."""
+    lnk = (
+        pl.scan_parquet(raw_dir / "crsp_ccmxpf_lnkhist.parquet")
+        .filter(pl.col("linktype").str.starts_with("L") & pl.col("linkprim").is_in(["P", "C"]))
+        .select("gvkey", "lpermno", "linkprim", "linktype", "linkdt", "linkenddt")
+        .with_columns(
+            pl.col("lpermno").cast(pl.Int64),
+            pl.col("linkdt", "linkenddt").cast(pl.Date),
+        )
+    )
+    return (
+        comp.lazy()
+        .join(lnk, on="gvkey", how="inner")
+        .filter(
+            (pl.col("linkdt") <= pl.col("datadate"))
+            & (pl.col("linkenddt").is_null() | (pl.col("linkenddt") >= pl.col("datadate")))
+        )
+        .rename({"lpermno": "permno"})
+        .with_columns(
+            _link_days=(
+                pl.coalesce(pl.col("linkenddt"), pl.lit(date(9999, 12, 31))) - pl.col("linkdt")
+            ).dt.total_days()
+        )
+        .pipe(_hxz_best_link, subset=["datadate", "permno"], tail_key="gvkey")
+        .drop("linktype", "_link_days")
+        .collect()
+    )
+
+
+def country_breakpoints(
+    df: pl.DataFrame,
+    specs: list[tuple[str, float, str]],
+    *,
+    group_keys: list[str],
+    pool: pl.Expr,
+    min_stocks: int | None = None,
+    usa_exempt: bool = False,
+) -> pl.DataFrame:
+    """Per-`group_keys` QUANTILE_DISC breakpoints over `pool`; one row per group.
+    specs = [(col, quantile, alias)]. `min_stocks` drops groups below that count;
+    `usa_exempt` keeps USA regardless. Shared by the FF/HXZ/DHS sorts — FF and DHS
+    exempt their US NYSE pool via usa_exempt, HXZ instead splits US/ROW into two
+    calls (US min_stocks=None, ROW gated), so the two idioms both route here."""
+    breaks_sql = ", ".join(f"QUANTILE_DISC({c}, {q}) AS {a}" for c, q, a in specs)
+    cols = list(dict.fromkeys(c for c, _, _ in specs))
+    gk = ", ".join(group_keys)
+    having = ""
+    if min_stocks is not None:
+        gate = f"COUNT(*) >= {min_stocks}"
+        having = f" HAVING excntry = '{US_EXCNTRY}' OR {gate}" if usa_exempt else f" HAVING {gate}"
+    return (
+        df.filter(pool)
+        .select(*group_keys, *cols)
+        .sql(f"SELECT {gk}, {breaks_sql} FROM self GROUP BY {gk}{having}")
+    )
+
+
+def _hxz_na_be_inv(lf: pl.LazyFrame) -> pl.LazyFrame:
+    """Compute be_a, inv, ib on a Compustat NA funda LazyFrame.
+    Full pstkrv → pstkl → pstk and txditc → txdb+itcb fallback chains."""
+    ps = pl.coalesce("pstkrv", "pstkl", "pstk")
+    txditc = pl.coalesce("txditc", pl.col("txdb") + pl.col("itcb"))
+    at_lag = pl.col("at").shift(1).over("gvkey")
+    return (
+        lf.with_columns(
+            be_a=pl.coalesce(
+                "seq", pl.col("ceq") + pl.coalesce(ps, 0.0), pl.col("at") - pl.col("lt")
+            )
+            + pl.coalesce(txditc, 0.0)
+            - pl.coalesce(ps, 0.0),
+            year=pl.col("datadate").dt.year(),
+        )
+        # BEFORE the inv lag; mirrors the FF loaders.
+        .pipe(_collapse_to_latest_fy)
+        .with_columns(
+            inv=pl.when(
+                at_lag.is_not_null()
+                & (at_lag > 0)
+                & (
+                    pl.col("datadate").dt.year()
+                    - pl.col("datadate").shift(1).over("gvkey").dt.year()
+                    == 1
+                )
+            )
+            .then((pl.col("at") - at_lag) / at_lag)
+            .otherwise(None),
+        )
+        .select("gvkey", "datadate", "year", "be_a", "inv", "ib")
+    )
+
+
+def _hxz_global_be_inv(lf: pl.LazyFrame) -> pl.LazyFrame:
+    """Compute be_a, inv, ib on a Compustat Global funda LazyFrame.
+    comp.g_funda lacks pstkrv/pstkl/itcb: preferred-stock term collapses to pstk;
+    txditc fallback collapses to txdb (+null preserves null semantics when txdb is null)."""
+    ps = pl.col("pstk")
+    txditc = pl.coalesce("txditc", pl.col("txdb") + pl.lit(None, dtype=pl.Float64))
+    at_lag = pl.col("at").shift(1).over("gvkey")
+    return (
+        lf.with_columns(
+            be_a=pl.coalesce(
+                "seq", pl.col("ceq") + pl.coalesce(ps, 0.0), pl.col("at") - pl.col("lt")
+            )
+            + pl.coalesce(txditc, 0.0)
+            - pl.coalesce(ps, 0.0),
+            year=pl.col("datadate").dt.year(),
+        )
+        # BEFORE the inv lag; mirrors the FF loaders.
+        .pipe(_collapse_to_latest_fy)
+        .with_columns(
+            inv=pl.when(
+                at_lag.is_not_null()
+                & (at_lag > 0)
+                & (
+                    pl.col("datadate").dt.year()
+                    - pl.col("datadate").shift(1).over("gvkey").dt.year()
+                    == 1
+                )
+            )
+            .then((pl.col("at") - at_lag) / at_lag)
+            .otherwise(None),
+        )
+        .select("gvkey", "datadate", "year", "be_a", "inv", "ib")
+    )
+
+
+def hxz_load_compustat_row(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
+    """Annual Compustat for ROW HXZ: unions comp_funda (NA) and comp_g_funda (Global).
+
+    Dedup by (gvkey, datadate) preferring NA. Book equity (be_a), operating I/A (inv), and
+    ROE (numerator and denominator) all come from jkp's standardized panel: be_a = be_x,
+    inv = at_gr1, roe_a = ni_x / be_x_lag1 (prior-year be_x via shift(1); ratio unitless, no
+    FX). Values sit at the fiscal-year-end datadate, preserving the formation-year stamp.
+
+    ROE is deliberately ANNUAL here (ni_x / be_x_lag1), unlike the US quarterly construction
+    (_hxz_us_roe_monthly: IBQ / BEQ_lag1, RDQ-gated, refreshed monthly). Quarterly Compustat
+    Global coverage is too thin to carry ROW: jkp's quarterly niq_be covers only ~56% of ROW
+    firm-months vs ~77% for the annual ROE, so a pure-quarterly ROW ROE would drop ~21pp of
+    the ROE leg. A quarterly/annual fallback is also invalid on its own — a single-quarter
+    ROE is ~1/4 the magnitude of the annual one (ROW medians 0.015 vs 0.064), so coalescing
+    the two would rank annual-ROE firms ~4x too high in one cross-sectional sort. Hence ROW
+    stays annual; the US keeps its quarterly ROE.
+
+    Output: Eager [gvkey, datadate, year, be_a, roe_a, inv]. be_a (= be_x) is USD
+    (acc_std_ann built convert_to_usd=1); it is only used for the eligibility gate
+    be_a > 0 (sign, FX-invariant) and as the roe_a denominator (a same-currency ratio),
+    so no FX conversion is needed.
+    """
+    base_floats = ["pstk", "seq", "ceq", "lt", "txditc", "txdb", "at", "ib"]
+    na_floats = base_floats + ["pstkrv", "pstkl", "itcb"]
+    na_lf = (
+        pl.scan_parquet(raw_dir / "comp_funda.parquet")
+        .filter(
+            (pl.col("indfmt") == "INDL")
+            & (pl.col("datafmt") == "STD")
+            & (pl.col("popsrc") == "D")
+            & (pl.col("consol") == "C")
+        )
+        .with_columns(
+            pl.col("datadate").cast(pl.Date),
+            pl.col(*na_floats).cast(pl.Float64),
+        )
+    )
+    gl_lf = (
+        pl.scan_parquet(raw_dir / "comp_g_funda.parquet")
+        .filter(
+            pl.col("indfmt").is_in(["INDL", "FS"])
+            & (pl.col("datafmt") == "HIST_STD")
+            & (pl.col("popsrc") == "I")
+            & (pl.col("consol") == "C")
+        )
+        .with_columns(
+            pl.col("datadate").cast(pl.Date),
+            pl.col(*base_floats).cast(pl.Float64),
+        )
+    )
+    gl_lf = (
+        gl_lf.with_columns(_n=pl.len().over(["gvkey", "datadate"]))
+        .filter((pl.col("_n") == 1) | ((pl.col("_n") == 2) & (pl.col("indfmt") == "INDL")))
+        .drop("_n")
+    )
+
+    na = _hxz_na_be_inv(na_lf).with_columns(_src=pl.lit(0))
+    gl = _hxz_global_be_inv(gl_lf).with_columns(_src=pl.lit(1))
+    # Fully numeric tie-break (after _src=NA<GL) so polars' parallel sort can't surface
+    # different tied rows: within (gvkey, datadate, _src) prefer non-null then larger
+    # be_a, then larger `at` (via inv); ib/year ASC are final deterministic breakers.
+    combined = (
+        pl.concat([na, gl], how="vertical_relaxed")
+        .with_columns(_be_null=pl.col("be_a").is_null())
+        .sort(
+            ["gvkey", "datadate", "_src", "_be_null", "be_a", "inv", "ib", "year"],
+            descending=[False, False, False, False, True, True, True, False],
+            nulls_last=True,
+        )
+        .unique(subset=["gvkey", "datadate"], keep="first", maintain_order=True)
+        # A gvkey in both NA and Global yields two (gvkey, year) rows; collapse before
+        # the roe_a lag (prefer NA, then latest datadate). Mirrors ff_load_world_compustat.
+        .sort(["gvkey", "year", "_src", "datadate"], descending=[False, False, False, True])
+        .unique(subset=["gvkey", "year"], keep="first", maintain_order=True)
+        .drop("_src", "_be_null")
+        .sort(["gvkey", "datadate"])
+    )
+    # be_a (book equity), I/A, and the ROE numerator (ni_x) all come from jkp's standardized
+    # panel; the funda be_a/inv/ib are kept only for the dedup tie-break above, then dropped.
+    # ROE keeps its ni_x(t)/be(t-1) lag via shift(1) on the (gvkey, year)-deduped,
+    # datadate-sorted frame.
+    acc = _jkp_annual_acc(interim_dir).select("gvkey", "datadate", "be_x", "at_gr1", "ni_x").lazy()
+    be_x_lag1 = pl.col("be_x").shift(1).over("gvkey")
+    return (
+        combined.drop("be_a", "inv", "ib")
+        .join(acc, on=["gvkey", "datadate"], how="left")
+        .sort(["gvkey", "datadate"])
+        .with_columns(
+            roe_a=pl.when(pl.col("ni_x").is_not_null() & (be_x_lag1 > 0))
+            .then(pl.col("ni_x") / be_x_lag1)
+            .otherwise(None),
+        )
+        .drop("ni_x")
+        .rename({"be_x": "be_a", "at_gr1": "inv"})
+        .collect()
+    )
+
+
+def hxz_load_panel_row(interim_dir: Path, freq: Literal["monthly", "daily"]) -> pl.DataFrame:
+    """ROW panel from ff_load_world_panel; attaches (naics, sic) from world_msf to derive is_fin.
+
+    is_fin: NAICS sector 52 or 53 when present; SIC 6000-6999 fallback when naics is null.
+
+    Output: Eager [excntry, id, gvkey, date, ret, me, size_grp, naics, sic, is_fin].
+    """
+    # HXZ keeps the gvkey-linked universe (JKP convention); the FF path drops
+    # the screen for US parity, so re-apply it here.
+    panel = ff_load_world_panel(interim_dir, freq).filter(pl.col("gvkey").is_not_null()).collect()
+    # Dedup (id, eom): world_msf can carry duplicate share-class records per
+    # security-month; without unique() the join multiplies rows non-deterministically
+    # under the parallel scan. Tie-break: non-null naics, then larger (more specific) sic.
+    ind = (
+        pl.scan_parquet(interim_dir / "world_msf.parquet")
+        .select("id", "eom", "naics", "sic")
+        .with_columns(_naics_null=pl.col("naics").is_null())
+        .sort(
+            ["id", "eom", "_naics_null", "naics", "sic"],
+            descending=[False, False, False, True, True],
+            nulls_last=True,
+        )
+        .unique(subset=["id", "eom"], keep="first", maintain_order=True)
+        .drop("_naics_null")
+        .collect()
+    )
+    eom_expr = pl.col("date").dt.month_end() if freq == "daily" else pl.col("date")
+    is_fin = (
+        pl.col("naics").cast(pl.Utf8).str.slice(0, 2).is_in(["52", "53"])
+        | (pl.col("naics").is_null() & pl.col("sic").is_between(6000, 6999))
+    ).fill_null(False)
+    return (
+        panel.with_columns(_eom=eom_expr)
+        .join(ind, left_on=["id", "_eom"], right_on=["id", "eom"], how="left")
+        .with_columns(is_fin=is_fin)
+        .drop("_eom")
+    )
+
+
+def hxz_compute_factors(
+    panel: pl.DataFrame, min_stocks_pf: int = HXZ_MIN_STOCKS_PF
+) -> pl.DataFrame:
+    """18-bucket VW returns per (excntry, date) → HXZ formulas 1-3
+    (me_hxz, ia_hxz, roe_hxz). US bypasses the ROW min_stocks_pf gate."""
+    buckets = [f"S{i}I{j}R{k}" for i in (1, 2) for j in (1, 2, 3) for k in (1, 2, 3)]
+    vw = vw_bucket_returns(
+        panel.filter(
+            (pl.col("me_lag1") > 0)
+            & pl.col("me_lag1").is_finite()
+            & pl.col("ret").is_not_null()
+            & pl.col("ret").is_finite()
+            & pl.col("sizeport").is_not_null()
+            & pl.col("invport").is_not_null()
+            & pl.col("roeport").is_not_null()
+        ).with_columns(
+            bucket=pl.format(
+                "S{}I{}R{}",
+                pl.col("sizeport").cast(pl.Utf8),
+                pl.col("invport").cast(pl.Utf8),
+                pl.col("roeport").cast(pl.Utf8),
+            )
+        ),
+        buckets=buckets,
+        weight_col="me_lag1",
+        min_stocks_pf=min_stocks_pf,
+    )
+
+    # mean_horizontal skips nulls so a missing bucket doesn't void the leg
+    # — needed for thin ROW countries where 18 buckets often have empties.
+    def avg(cols: list[str]) -> pl.Expr:
+        return pl.mean_horizontal(*[pl.col(c) for c in cols])
+
+    small = [c for c in buckets if c.startswith("S1")]
+    big = [c for c in buckets if c.startswith("S2")]
+    lo_i = [c for c in buckets if "I1" in c]
+    hi_i = [c for c in buckets if "I3" in c]
+    hi_r = [c for c in buckets if c.endswith("R3")]
+    lo_r = [c for c in buckets if c.endswith("R1")]
+    return vw.select(
+        "excntry",
+        "date",
+        me_hxz=avg(small) - avg(big),
+        ia_hxz=avg(lo_i) - avg(hi_i),
+        roe_hxz=avg(hi_r) - avg(lo_r),
+    ).sort(["excntry", "date"])
+
+
+def hxz_build_characteristics(panel_m: pl.DataFrame) -> pl.DataFrame:
+    """(excntry, id, eom) stock-level chars used to form HXZ sorts. The
+    returned frame carries `excntry`; the writer in `gen_hxz_data` drops it
+    (`id` is globally unique)."""
+    return panel_m.select(
+        eom=pl.col("date").dt.month_end(),
+        excntry=pl.col("excntry"),
+        id=pl.col("id"),
+        me_hxz=pl.col("me"),
+        ia_hxz=pl.col("inv"),
+        roe_hxz=pl.col("roe"),
+    ).sort(["eom", "excntry", "id"])
+
+
+def _hxz_add_me_lag1_ym(
+    df: pl.DataFrame, key: str, freq: Literal["monthly", "daily"]
+) -> pl.DataFrame:
+    """Attach me_lag1 to a returns frame keyed by `key`.
+
+    Monthly: YM-int (year*100 + month) join — gap-robust + correct when `date`
+    is not calendar month-end (CIZ `mthcaldt` is last trading day).
+    Daily: shift(1).over(key).
+    """
+    if freq == "monthly":
+        ym = (pl.col("date").dt.year() * 100 + pl.col("date").dt.month()).alias("ym")
+        prev_ym_date = pl.col("date").dt.offset_by("-1mo")
+        # Sort by (key, date) so `last()` per (key, ym) group is deterministic
+        # (max-date within month) regardless of polars' hash-grouped ordering.
+        me_by_ym = (
+            df.with_columns(ym)
+            .sort([key, "date"])
+            .group_by([key, "ym"], maintain_order=True)
+            .agg(me_lag1=pl.col("me").last())
+        )
+        return (
+            df.with_columns(prev_ym=prev_ym_date.dt.year() * 100 + prev_ym_date.dt.month())
+            .join(me_by_ym, left_on=[key, "prev_ym"], right_on=[key, "ym"], how="left")
+            .drop("prev_ym")
+        )
+    return df.with_columns(me_lag1=pl.col("me").shift(1).over(key))
+
+
+def hxz_load_returns(
+    raw_dir: Path,
+    interim_dir: Path,
+    freq: Literal["monthly", "daily"],
+    date_start: date | None = None,
+) -> pl.DataFrame:
+    """Unified US + ROW returns/me panel with me_lag1 attached.
+
+    US keyed by excntry=USA, id=permno; ROW by excntry/id/gvkey.
+    Country-specific cols null on the opposite branch.
+
+    Output: Eager [excntry, id, date, ret, me, me_lag1, is_fin, ...].
+    """
+    us = (
+        hxz_load_crsp(raw_dir, freq, date_start=date_start)
+        .sort(["permno", "date"])
+        .with_columns(excntry=pl.lit(US_EXCNTRY), id=pl.col("permno"))
+    )
+    us = _hxz_add_me_lag1_ym(us, key="id", freq=freq)
+
+    row = hxz_load_panel_row(interim_dir, freq).sort(["id", "date"])
+    if date_start is not None:
+        row = row.filter(pl.col("date") >= date_start)
+    row = _hxz_add_me_lag1_ym(row, key="id", freq=freq)
+
+    return pl.concat([us, row], how="diagonal_relaxed")
+
+
+def _hxz_us_roe_monthly(
+    fundq: pl.DataFrame, raw_dir: Path, formation_dates: pl.DataFrame
+) -> pl.DataFrame:
+    """Compute Roe = IBQ / calendar-q-lagged BEQ and assign to each US
+    formation date per HXZ (2015) rules:
+      - formation_date ≥ rdq.month_end + 1mo (earnings publicly announced)
+      - 6mo staleness cap: formation_date ≤ datadate + 6mo (month-end)
+    We follow the HXZ (2015) methodology over the full sample and do not
+    use the Hou et al. (2019) 1967-1972 extension (4mo-lag proxy in place
+    of RDQ): quarterly Compustat coverage in those years is thin and the
+    resulting sorts noisy. The US sample therefore starts January 1972,
+    as in the original paper.
+    """
+    fq = fundq.with_columns(safe_div("ibq", "beq_lag1", "roe", mode=3)).select(
+        "gvkey", "datadate", "rdq", "roe"
+    )
+    # Availability windows as year-month ints: US panel dates are CIZ last
+    # *trading* days, so an exact-date compare against a calendar month-end
+    # (rdq.month_end() + 1mo) would skip the freshest announcement whenever
+    # the month ends on a weekend/holiday. YM compare is trading-day robust.
+    fq_lnk = (
+        hxz_link_compustat(fq, raw_dir)
+        .filter(pl.col("rdq").is_null() | (pl.col("rdq") > pl.col("datadate")))
+        .with_columns(
+            formation_min_ym=pl.when(pl.col("rdq").is_not_null())
+            .then(pl.col("rdq").dt.year() * 12 + pl.col("rdq").dt.month() + 1)
+            .otherwise(None),
+            formation_max_ym=pl.col("datadate").dt.year() * 12 + pl.col("datadate").dt.month() + 6,
+        )
+    )
+    date_ym = pl.col("date").dt.year() * 12 + pl.col("date").dt.month()
+    return (
+        fq_lnk.join(formation_dates.select("date"), how="cross")
+        .filter(
+            pl.col("roe").is_not_null()
+            & pl.col("formation_min_ym").is_not_null()
+            & (date_ym >= pl.col("formation_min_ym"))
+            & (date_ym <= pl.col("formation_max_ym"))
+        )
+        # Sort tie-break: roe DESC then rdq nulls-last so identical
+        # (permno, date, datadate) tuples — rare but possible if linker keeps
+        # multiple gvkeys — resolve the same way under polars threading.
+        .sort(
+            ["permno", "date", "datadate", "roe", "rdq"],
+            descending=[False, False, False, True, False],
+            nulls_last=True,
+        )
+        .unique(subset=["permno", "date"], keep="last", maintain_order=True)
+        .select("permno", "date", "roe")
+    )
+
+
+def _hxz_us_chars(
+    us_panel: pl.DataFrame,
+    funda_us: pl.DataFrame,
+    fundq_us: pl.DataFrame,
+    raw_dir: Path,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """US size+inv (June, CCM-linked) and monthly ROE (RDQ-gated) frames."""
+    # US: June size + inv (annual, link via CCM at fiscal-y-end)
+    us_june = us_panel.filter(pl.col("date").dt.month() == 6)
+    ia_us_lnk = (
+        hxz_link_compustat(
+            funda_us.with_columns(year=pl.col("datadate").dt.year()).select(
+                "gvkey", "datadate", "year", "inv", "be_a"
+            ),
+            raw_dir,
+        )
+        .sort(["permno", "year", "datadate"])
+        # `unique(keep="last")` after sort: deterministic latest-datadate-per-
+        # (permno, year). `group_by().agg(last())` was non-deterministic because
+        # polars group_by doesn't preserve outer sort order within groups.
+        .unique(subset=["permno", "year"], keep="last", maintain_order=True)
+        .with_columns(comp_year_plus_1=pl.col("year") + 1)
+        .select("permno", "comp_year_plus_1", "inv", "be_a")
+    )
+    us_size_ia = (
+        us_june.with_columns(crsp_year=pl.col("date").dt.year())
+        .join(
+            ia_us_lnk,
+            left_on=["permno", "crsp_year"],
+            right_on=["permno", "comp_year_plus_1"],
+            how="left",
+        )
+        .with_columns(elig=(~pl.col("is_fin")) & (pl.col("be_a") > 0) & (pl.col("me") > 0))
+        .select(
+            "excntry",
+            "id",
+            "permno",
+            "date",
+            "me",
+            "inv",
+            "be_a",
+            "is_fin",
+            "exchcd",
+            "elig",
+        )  # fmt: skip
+    )
+
+    # US: monthly ROE (RDQ-gated; pre-1972 extension deliberately not used)
+    us_roe_raw = _hxz_us_roe_monthly(fundq_us, raw_dir, us_panel.select("date").unique())
+    us_roe = us_panel.select("excntry", "id", "permno", "date", "is_fin", "exchcd").join(
+        us_roe_raw, on=["permno", "date"], how="left"
+    )
+
+    return us_size_ia, us_roe
+
+
+def _hxz_row_chars(
+    row_panel: pl.DataFrame,
+    funda_row: pl.DataFrame,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """ROW size+inv (June, gvkey-linked) and monthly ROE (annual broadcast) frames."""
+    # ROW: June size + inv (annual, link via gvkey directly)
+    row_june = row_panel.filter(pl.col("date").dt.month() == 6)
+    ia_row_lnk = (
+        funda_row.sort(["gvkey", "year", "datadate"])
+        .unique(subset=["gvkey", "year"], keep="last", maintain_order=True)
+        .with_columns(comp_year_plus_1=pl.col("year") + 1)
+        .select("gvkey", "comp_year_plus_1", "inv", "be_a")
+    )
+    row_size_ia = (
+        row_june.with_columns(crsp_year=pl.col("date").dt.year())
+        .join(
+            ia_row_lnk,
+            left_on=["gvkey", "crsp_year"],
+            right_on=["gvkey", "comp_year_plus_1"],
+            how="left",
+        )
+        .with_columns(elig=(~pl.col("is_fin")) & (pl.col("be_a") > 0) & (pl.col("me") > 0))
+        .select(
+            "excntry",
+            "id",
+            "gvkey",
+            "date",
+            "me",
+            "inv",
+            "be_a",
+            "is_fin",
+            "size_grp",
+            "elig",
+        )  # fmt: skip
+    )
+
+    # ROW: monthly ROE broadcast (datadate+6mo..datadate+18mo)
+    fmtimes = row_panel.select("date").unique()
+    row_roe_raw = (
+        funda_row.select("gvkey", "datadate", "roe_a")
+        .filter(pl.col("roe_a").is_not_null())
+        .with_columns(
+            formation_min=pl.col("datadate").dt.offset_by("6mo").dt.month_end(),
+            formation_max=pl.col("datadate").dt.offset_by("18mo").dt.month_end(),
+        )
+        .join(fmtimes, how="cross")
+        .filter(
+            (pl.col("date") >= pl.col("formation_min"))
+            & (pl.col("date") <= pl.col("formation_max"))
+        )
+        # datadate ASC + keep="last" takes the most recent fiscal date; the trailing
+        # roe_a DESC only breaks rare (gvkey, date, datadate) ties deterministically
+        # (which row wins is immaterial).
+        .sort(
+            ["gvkey", "date", "datadate", "roe_a"],
+            descending=[False, False, False, True],
+            nulls_last=True,
+        )
+        .unique(subset=["gvkey", "date"], keep="last", maintain_order=True)
+        .select("gvkey", "date", roe=pl.col("roe_a"))
+    )
+    row_roe = row_panel.select("excntry", "id", "gvkey", "date", "is_fin", "size_grp").join(
+        row_roe_raw, on=["gvkey", "date"], how="left"
+    )
+
+    return row_size_ia, row_roe
+
+
+def hxz_compute_chars(
+    panel_m: pl.DataFrame,
+    funda_us: pl.DataFrame,
+    fundq_us: pl.DataFrame,
+    funda_row: pl.DataFrame,
+    raw_dir: Path,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Compute formation-date characteristics for all countries (stage 3).
+
+    Returns:
+      - size_ia_form: June annual frame [me, inv, be_a, elig, permno/exchcd (US), gvkey/size_grp (ROW)]
+      - roe_m: monthly frame [roe] — US: quarterly RDQ-gated; ROW: annual roe_a broadcast 6mo..18mo
+    """
+    us_panel = panel_m.filter(pl.col("excntry") == US_EXCNTRY)
+    row_panel = panel_m.filter(pl.col("excntry") != US_EXCNTRY)
+
+    us_size_ia, us_roe = _hxz_us_chars(us_panel, funda_us, fundq_us, raw_dir)
+    row_size_ia, row_roe = _hxz_row_chars(row_panel, funda_row)
+
+    size_ia_form = pl.concat([us_size_ia, row_size_ia], how="diagonal_relaxed")
+    roe_m = pl.concat([us_roe, row_roe], how="diagonal_relaxed")
+    return size_ia_form, roe_m
+
+
+def _hxz_tercile_port(value_col: str, b30: str, b70: str, gate: pl.Expr) -> pl.Expr:
+    """1/2/3 tercile bucket of `value_col` vs break columns, null when gated off."""
+    return (
+        pl.when(gate)
+        .then(
+            pl.when(pl.col(value_col) <= pl.col(b30))
+            .then(1)
+            .when(pl.col(value_col) <= pl.col(b70))
+            .then(2)
+            .otherwise(3)
+        )
+        .otherwise(None)
+        .cast(pl.Int64)
+    )
+
+
+def _hxz_classify_size_ia(
+    size_ia_form: pl.DataFrame, min_stocks_bp: int = HXZ_MIN_STOCKS_BP
+) -> pl.DataFrame:
+    """Apply country-aware breakpoints + bucket cuts to June size+inv frame.
+    US: NYSE-only pool, per-date breaks. ROW: size_grp pool + min_stocks_bp
+    gate, per-(excntry, date) breaks. Returns June-level classified frame
+    with `sizeport`, `invport` (and `inv` preserved for downstream)."""
+    specs = [("me", 0.50, "sizemedn"), ("inv", 0.30, "inv30"), ("inv", 0.70, "inv70")]
+
+    # US: NYSE-only pool, per-date breaks (sizemedn always present)
+    us = size_ia_form.filter(pl.col("excntry") == US_EXCNTRY)
+    us_breaks = country_breakpoints(
+        us, specs, group_keys=["date"], pool=(pl.col("exchcd") == 1) & pl.col("elig")
+    )
+    us_cls = (
+        us.join(us_breaks, on=["date"], how="left")
+        .with_columns(
+            sizeport=pl.when(pl.col("elig"))
+            .then(pl.when(pl.col("me") <= pl.col("sizemedn")).then(1).otherwise(2))
+            .otherwise(None)
+            .cast(pl.Int64),
+            # Tercile inv bucket; gated on elig + non-null inv and inv30 break.
+            invport=_hxz_tercile_port(
+                "inv",
+                "inv30",
+                "inv70",
+                pl.col("elig") & pl.col("inv").is_not_null() & pl.col("inv30").is_not_null(),
+            ),
+        )
+        .select("excntry", "id", "permno", "date", "sizeport", "invport", "inv")
+    )
+
+    # ROW: size_grp pool + HXZ_MIN_STOCKS_BP gate, per-(excntry, date)
+    # ROW joins breaks per (excntry, date) with a HAVING gate, so sizemedn can be
+    # null after the left join; the size gate therefore also requires it non-null.
+    row = size_ia_form.filter(pl.col("excntry") != US_EXCNTRY)
+    row_breaks = country_breakpoints(
+        row,
+        specs,
+        group_keys=["excntry", "date"],
+        pool=pl.col("elig") & pl.col("size_grp").is_in(["small", "large", "mega"]),
+        min_stocks=min_stocks_bp,
+    )
+    row_cls = (
+        row.join(row_breaks, on=["excntry", "date"], how="left")
+        .with_columns(
+            sizeport=pl.when(pl.col("elig") & pl.col("sizemedn").is_not_null())
+            .then(pl.when(pl.col("me") <= pl.col("sizemedn")).then(1).otherwise(2))
+            .otherwise(None)
+            .cast(pl.Int64),
+            # Tercile inv bucket; gated on elig + non-null inv and inv30 break.
+            invport=_hxz_tercile_port(
+                "inv",
+                "inv30",
+                "inv70",
+                pl.col("elig") & pl.col("inv").is_not_null() & pl.col("inv30").is_not_null(),
+            ),
+        )
+        .select("excntry", "id", "gvkey", "date", "sizeport", "invport", "inv")
+    )
+    return pl.concat([us_cls, row_cls], how="diagonal_relaxed")
+
+
+def _hxz_classify_roe(roe_m: pl.DataFrame, min_stocks_bp: int = HXZ_MIN_STOCKS_BP) -> pl.DataFrame:
+    """Apply country-aware breakpoints + bucket cuts to monthly ROE frame.
+    US: NYSE-only pool, per-date breaks. ROW: size_grp pool, per-(excntry,
+    date) breaks with min_stocks_bp gate."""
+    specs = [("roe", 0.30, "roe30"), ("roe", 0.70, "roe70")]
+    elig = (~pl.col("is_fin")) & pl.col("roe").is_not_null()
+
+    # US: NYSE-only pool, per-date breaks
+    us = roe_m.filter(pl.col("excntry") == US_EXCNTRY).with_columns(elig=elig)
+    us_breaks = country_breakpoints(
+        us, specs, group_keys=["date"], pool=(pl.col("exchcd") == 1) & pl.col("elig")
+    )
+    us_cls = (
+        us.join(us_breaks, on=["date"], how="left")
+        .with_columns(
+            roeport=_hxz_tercile_port(
+                "roe", "roe30", "roe70", pl.col("elig") & pl.col("roe30").is_not_null()
+            )
+        )
+        .select("excntry", "id", "date", "roeport", "roe")
+    )
+
+    # ROW: size_grp pool, per-(excntry, date) breaks with HXZ_MIN_STOCKS_BP gate
+    row = roe_m.filter(pl.col("excntry") != US_EXCNTRY).with_columns(elig=elig)
+    row_breaks = country_breakpoints(
+        row,
+        specs,
+        group_keys=["excntry", "date"],
+        pool=pl.col("elig") & pl.col("size_grp").is_in(["small", "large", "mega"]),
+        min_stocks=min_stocks_bp,
+    )
+    row_cls = (
+        row.join(row_breaks, on=["excntry", "date"], how="left")
+        .with_columns(
+            roeport=_hxz_tercile_port(
+                "roe", "roe30", "roe70", pl.col("elig") & pl.col("roe30").is_not_null()
+            )
+        )
+        .select("excntry", "id", "date", "roeport", "roe")
+    )
+    return pl.concat([us_cls, row_cls], how="vertical_relaxed")
+
+
+def hxz_classify_portfolios(
+    panel_m: pl.DataFrame,
+    size_ia_form: pl.DataFrame,
+    roe_m: pl.DataFrame,
+    min_stocks_bp: int = HXZ_MIN_STOCKS_BP,
+) -> pl.DataFrame:
+    """Classify stocks into HXZ 2×3×3 portfolios (stage 4).
+
+    Country-aware breakpoints: US NYSE-only per-date; ROW size_grp pool
+    per-(excntry, date) with min_stocks_bp gate. June (size, I/A)
+    classification broadcast to Jul(y)..Jun(y+1) via _ff_port_year; monthly
+    ROE classification attached on (excntry, id, date).
+
+    Output: Eager panel [excntry, id, date, ret, me, me_lag1,
+    sizeport, invport, roeport, inv, roe, ...].
+    """
+    size_ia_classified = _hxz_classify_size_ia(size_ia_form, min_stocks_bp)
+    roe_classified = _hxz_classify_roe(roe_m, min_stocks_bp)
+
+    # US broadcast: join June classification on permno + port_year
+    us_panel = panel_m.filter(pl.col("excntry") == US_EXCNTRY)
+    us_size_ia_keyed = (
+        size_ia_classified.filter(pl.col("excntry") == US_EXCNTRY)
+        .with_columns(june_year=pl.col("date").dt.year())
+        .select("excntry", "permno", "june_year", "sizeport", "invport", "inv")
+    )
+    us_attached = (
+        us_panel.with_columns(_ff_port_year())
+        .join(
+            us_size_ia_keyed,
+            left_on=["excntry", "permno", "port_year"],
+            right_on=["excntry", "permno", "june_year"],
+            how="left",
+        )
+        .drop("port_year")
+    )
+
+    # ROW broadcast: join June classification on (id, port_year). Key on id, NOT gvkey
+    # — a multi-share-class firm has >1 id, and a gvkey join would fan each panel row
+    # per share class. Matches the ROE broadcast, the US permno branch, and the FF analog.
+    row_panel = panel_m.filter(pl.col("excntry") != US_EXCNTRY)
+    row_size_ia_keyed = (
+        size_ia_classified.filter(pl.col("excntry") != US_EXCNTRY)
+        .with_columns(june_year=pl.col("date").dt.year())
+        .select("excntry", "id", "june_year", "sizeport", "invport", "inv")
+    )
+    row_attached = (
+        row_panel.with_columns(_ff_port_year())
+        .join(
+            row_size_ia_keyed,
+            left_on=["excntry", "id", "port_year"],
+            right_on=["excntry", "id", "june_year"],
+            how="left",
+        )
+        .drop("port_year")
+    )
+
+    panel_with_size_ia = pl.concat([us_attached, row_attached], how="diagonal_relaxed")
+
+    return panel_with_size_ia.join(
+        roe_classified.select("excntry", "id", "date", "roeport", "roe"),
+        on=["excntry", "id", "date"],
+        how="left",
+    )
+
+
+@measure_time
+def gen_hxz_data(
+    paths: DataPaths,
+    monthly_factors_path: Path,
+    daily_factors_path: Path,
+    chars_path: Path,
+    freqs: tuple[str, ...] = ("monthly", "daily"),
+    min_stocks_bp: int = HXZ_MIN_STOCKS_BP,
+    min_stocks_pf: int = HXZ_MIN_STOCKS_PF,
+) -> None:
+    """
+    Description:
+        Reference: Hou, Xue, and Zhang (2015) 'Digesting anomalies: An
+        investment approach', Review of Financial Studies 28(3), pp. 650-705.
+
+        HXZ q-factor replication: triple 2×3×3 sort on size × I/A × Roe,
+        building R_ME, R_IA, R_ROE at monthly + daily on CRSP CIZ
+        msf_v2/dsf_v2 + Compustat funda/fundq. Permno-level (no permco
+        aggregation). CIZ ret already daily-compounds delret per CRSP CIZ docs.
+        Reads raw CRSP/Compustat from `paths.raw_tables_dir` and world inputs
+        from `paths.interim_dir`; output paths are passed in explicitly.
+    Steps:
+        1) Load + filter return/me data (US + ROW unified)
+        2) Load + filter fundamentals (US quarterly chain + ROW annual)
+        3) Compute characteristics at portfolio formation (size, inv, roe)
+        4) Classify stocks into portfolios (2×3×3, country-aware)
+        5) Portfolio sorts → factor returns
+        6) Output
+    Output:
+        - <monthly_factors_path>  [excntry, eom, me_hxz, ia_hxz, roe_hxz]
+        - <daily_factors_path>    [excntry, date, me_hxz, ia_hxz, roe_hxz]
+        - <chars_path>            [eom, id, me_hxz, ia_hxz, roe_hxz]
+          (excntry dropped: `id` is globally unique)
+    """
+    raw_dir = paths.raw_tables_dir
+    interim_dir = paths.interim_dir
+    output_start = date(1967, 1, 1)
+    # US starts at the HXZ (2015) sample start — limited by RDQ availability;
+    # the RDQ gate in _hxz_us_roe_monthly leaves only stub months before this.
+    us_output_start = date(1972, 1, 1)
+    start_filter = pl.col("date") >= pl.when(pl.col("excntry") == US_EXCNTRY).then(
+        pl.lit(us_output_start)
+    ).otherwise(pl.lit(output_start))
+
+    # 1. Load + filter returns/me (monthly)
+    panel_m_raw = hxz_load_returns(raw_dir, interim_dir, freq="monthly")
+
+    # 2. Load + filter fundamentals
+    funda_us = hxz_load_funda(raw_dir)
+    fundq_us = hxz_impute_be_clean_surplus(
+        hxz_merge_be_chain(
+            hxz_supplement_q4_shares(hxz_load_fundq(raw_dir), funda_us, raw_dir),
+            funda_us,
+        )
+    )
+    funda_row = hxz_load_compustat_row(raw_dir, interim_dir)
+
+    # 3. Compute characteristics at formation date
+    size_ia_form, roe_m = hxz_compute_chars(panel_m_raw, funda_us, fundq_us, funda_row, raw_dir)
+
+    # 4. Classify into portfolios + broadcast to monthly grid
+    panel_m = hxz_classify_portfolios(panel_m_raw, size_ia_form, roe_m, min_stocks_bp).filter(
+        start_filter
+    )
+
+    port_assigns = panel_m.select(
+        "excntry",
+        "id",
+        "sizeport",
+        "invport",
+        "roeport",
+        eom=pl.col("date").dt.month_end(),
+    )
+
+    # 5+6. Monthly sorts + output
+    if "monthly" in freqs:
+        (
+            hxz_compute_factors(panel_m, min_stocks_pf)
+            .with_columns(eom=pl.col("date").dt.month_end())
+            .drop("date")
+            .write_parquet(monthly_factors_path)
+        )
+        hxz_build_characteristics(panel_m).drop("excntry").write_parquet(chars_path)
+
+    # free the monthly frames before the 1925+ daily scan (peak-memory control)
+    del panel_m_raw, panel_m, funda_us, fundq_us, funda_row, size_ia_form, roe_m
+
+    # 5+6. Daily sorts + output
+    if "daily" in freqs:
+        # Floor scan at 6mo before output_start so me_lag1 has prior-day data
+        # on the first output day without holding the full 1925+ daily file.
+        daily_start = date(output_start.year - 1, 7, 1)
+        panel_d_raw = hxz_load_returns(raw_dir, interim_dir, freq="daily", date_start=daily_start)
+        panel_d = (
+            panel_d_raw.filter(start_filter)
+            .with_columns(eom=pl.col("date").dt.month_end())
+            .join(port_assigns, on=["excntry", "id", "eom"], how="left")
+            .drop("eom")
+        )
+        hxz_compute_factors(panel_d, min_stocks_pf).write_parquet(daily_factors_path)
+
+
+def _ap_outer_join_all(frames: list[pl.LazyFrame], key: list[str]) -> pl.LazyFrame:
+    """Left-to-right full outer join of `frames` on `key` (coalesced keys)."""
+    if not frames:
+        raise ValueError("ap_factor_model_data: empty input list")
+    joined = frames[0]
+    for frame in frames[1:]:
+        joined = joined.join(frame, on=key, how="full", coalesce=True)
+    return joined
+
+
+def _ap_check_no_collisions(frames: list[pl.LazyFrame], key: list[str]) -> None:
+    """Raise if a non-key column appears in more than one input (a full join
+    would silently suffix it with `_right` instead of failing)."""
+    seen: dict[str, int] = {}
+    for i, frame in enumerate(frames):
+        for c in frame.collect_schema().names():
+            if c in key:
+                continue
+            if c in seen:
+                raise ValueError(
+                    f"ap_factor_model_data: column {c!r} appears in inputs {seen[c]} and {i}"
+                )
+            seen[c] = i
+
+
+def _ap_join_factor_inputs(
+    mkt_path: Path, factor_inputs: list[Path], date_key: str
+) -> pl.LazyFrame:
+    """Market mktrf (mkt_vw_exc) outer-joined with each factor parquet on
+    (excntry, `date_key`)."""
+    mkt = pl.scan_parquet(mkt_path).select(
+        ["excntry", date_key, pl.col("mkt_vw_exc").alias("mktrf")]
+    )
+    frames = [mkt, *(pl.scan_parquet(p) for p in factor_inputs)]
+    key = ["excntry", date_key]
+    _ap_check_no_collisions(frames, key)
+    return _ap_outer_join_all(frames, key)
+
+
+@measure_time
+def ap_factor_model_data(
+    paths: DataPaths,
+    monthly_factor_inputs: list[Path],
+    daily_factor_inputs: list[Path],
+    chars_inputs: list[Path],
+) -> None:
+    """
+    Description:
+        Unify factor-model outputs into 3 parquets under paths.interim_dir:
+          - ap_factors_monthly.parquet         keyed by (excntry, eom)
+          - ap_factors_daily.parquet           keyed by (excntry, date)
+          - ap_factors_characteristics.parquet keyed by (id, eom); `id` is
+            globally unique so `excntry` is dropped by the per-model chars writers.
+        mktrf is sourced from market_returns_*.parquet (mkt_vw_exc). The fixed I/O
+        paths (market_returns_*, ap_factors_*) are derived from paths.interim_dir;
+        only the per-model input lists are caller-supplied, so the set of models to
+        merge stays defined by the caller (main.py's generators mapping), not
+        hard-coded here. Extensible: append more factor-model parquets to the lists.
+
+    Steps:
+        1) Monthly: scan market_returns.parquet → (excntry, eom, mktrf); outer-join
+           each monthly factor parquet on (excntry, eom); sink.
+        2) Daily:   same with date key, market_returns_daily.parquet.
+        3) Chars:   outer-join each chars parquet on (id, eom); sink.
+
+    Output:
+        - ap_factors_monthly.parquet: [excntry, eom, mktrf] + union of columns from
+                                       each factor parquet in monthly_factor_inputs.
+        - ap_factors_daily.parquet:   [excntry, date, mktrf] + union of daily_factor_inputs.
+        - ap_factors_characteristics.parquet: [id, eom]      + union of chars_inputs.
+    """
+    # Terminal key sorts: full-join output order is not guaranteed by Polars,
+    # and these files are copied verbatim into processed/other_output/ — the
+    # published row order must be run-to-run reproducible.
+    interim = paths.interim_dir
+    _ap_join_factor_inputs(interim / "market_returns.parquet", monthly_factor_inputs, "eom").sort(
+        ["excntry", "eom"]
+    ).sink_parquet(interim / "ap_factors_monthly.parquet")
+    _ap_join_factor_inputs(
+        interim / "market_returns_daily.parquet", daily_factor_inputs, "date"
+    ).sort(["excntry", "date"]).sink_parquet(interim / "ap_factors_daily.parquet")
+
+    chars_frames = [pl.scan_parquet(p) for p in chars_inputs]
+    _ap_check_no_collisions(chars_frames, ["id", "eom"])
+    _ap_outer_join_all(chars_frames, ["id", "eom"]).sort(["id", "eom"]).sink_parquet(
+        interim / "ap_factors_characteristics.parquet"
+    )
+
+
 def add_ecdf(
     df: pl.DataFrame | pl.LazyFrame,
     group_cols: list[str] | None = None,
@@ -9855,11 +15061,9 @@ def add_ecdf(
         )
     )
 
-    # asof-join the ECDF onto every row; rows below any bp value get null,
-    # filled with 0.0 to match the convention expected downstream.
-    # Both sides are sorted within each `by` group; skip the sortedness check
-    # (Polars can't verify it with `by` and would warn at collect time,
-    # outside any catch_warnings context).
+    # asof-join the ECDF onto every row; rows below any bp get null -> 0.0 (downstream
+    # convention). Skip the sortedness check: with `by`, Polars can't verify it and
+    # would warn at collect, outside any catch_warnings context.
     return (
         df.sort(sort_cols)
         .join_asof(bp_ecdf, on="var", by=group_cols, strategy="backward", check_sortedness=False)
@@ -10069,10 +15273,6 @@ def portfolios(
         + ["excntry"]
     )
 
-    # Build the full preprocessing chain as a single lazy pipeline. This lets
-    # polars push predicate/null filters into the parquet reader (skipping row
-    # groups on real production files) and fuse the ~15 intermediate steps into
-    # one pass instead of allocating ~15 intermediate DataFrames.
     cast_exclude = {
         "id",
         "eom",
@@ -10235,27 +15435,17 @@ def portfolios(
                     excntry,
                 )
 
-    # Creating portfolios for all the characteristics.
-    #
-    # Each characteristic builds a per-char lazy pipeline (ECDF -> pf
-    # assignment -> monthly/daily aggregation).  The pipelines accumulate in
-    # ``pf_returns_lazys`` / ``pf_daily_lazys`` and are batch-collected via
-    # ``pl.collect_all`` so polars can execute them concurrently on its thread
-    # pool.  The signals=True branch is the exception: it needs the
-    # intermediate ``sub`` frame alive after each collect to compute
-    # pf_signals, so it collects eagerly per-char.
+    # Per-char lazy pipelines accumulate here and are batch-collected via
+    # collect_all. signals=True is the exception: it collects eagerly per-char
+    # because pf_signals needs the intermediate `sub` frame alive after collect.
     pf_returns_lazys: list[pl.LazyFrame] = []
     pf_daily_lazys: list[pl.LazyFrame] = []
     char_pfs: list[dict] = []  # populated only when signals=True
 
-    # Single shared LazyFrame node for the preprocessed data. All per-char
-    # pipelines branch off this node, enabling polars' common-subplan
-    # elimination (CSE) in collect_all to avoid redundant scans.
+    # Shared node so per-char branches share one scan (polars CSE in collect_all).
     data_lazy = data.lazy()
 
     for x in chars:
-        # Alias current char into a 'var' column on the per-char subset.
-        # Operate on `sub` only -- `data` is not mutated.
         if not signals:
             sub = (
                 data_lazy.with_columns(pl.col(x).cast(pl.Float64).alias("var"))
@@ -10282,12 +15472,8 @@ def portfolios(
             pl.col("bp_n") >= bp_min_n
         )
 
-        # Skip chars with no data after the bp_n filter.  For the
-        # collect_all path we cannot cheaply check emptiness without an
-        # eager collect, so we optimistically build the lazy pipeline and
-        # drop empty results after the batch collect.  For signals=True
-        # we still need the eager gate because the pf_signals block
-        # requires intermediate access to ``sub``.
+        # Lazy path drops empty results after batch collect; signals=True needs
+        # this eager emptiness gate because pf_signals reads `sub` intermediately.
         if signals and sub.limit(1).collect().height == 0:
             continue
 
@@ -10479,8 +15665,7 @@ def portfolios(
                 )
 
     if cmp_key:
-        # Vectorized over all characteristics: unpivot to long form, then compute
-        # ranks/weights/aggregates in a single lazy pipeline.
+        # Unpivot to long form so ranks/weights/aggregates run over all chars at once.
         grp = ["characteristic", "size_grp", "eom"]
         n_grp = pl.len().over(grp)
         p_rank = pl.col("var").rank("average").over(grp) / (n_grp + 1)
@@ -10678,3 +15863,1371 @@ def _write_split_by_key(
             continue
         filtered = df.filter((pl.col(date_col) <= end_date) & (pl.col(key_col) == key))
         write_dataframe(filtered, folder_path / f"{key}.parquet")
+
+
+def load_dff_be(path: Path | None = None) -> pl.DataFrame:
+    """
+    Description:
+        Parse the Davis-Fama-French hand-collected Moody's book equity file
+        into a long Polars DataFrame. Missing values (-99.990) become null.
+        Distributed via Ken French's data library:
+        https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/data_library.html#BookEquity
+        The BE year range is derived from the file itself: the first BE
+        column corresponds to min(First_Moody_Year), and the number of BE
+        columns is the record field count minus the three id fields.
+    Steps:
+        1) Read each line as one string; collapse whitespace; split to a list.
+        2) Derive year range from field count and min(First_Moody_Year).
+        3) Name fields; unpivot BE columns to long; null -99.990; cast dtypes.
+    Output:
+        DataFrame: permno (i64), year (i32), be (f64 nullable, $ millions).
+        BE for year t is publicly available by June 30 of year t.
+    """
+    if path is None:
+        path = get_dff_be_path()
+    raw = pl.read_csv(path, has_header=False, separator="\x01", new_columns=["raw"]).with_columns(
+        pl.col("raw").str.strip_chars().str.replace_all(r"\s+", " ").str.split(" ")
+    )
+
+    n_fields = raw.select(pl.col("raw").list.len().unique()).to_series()
+    if len(n_fields) != 1:
+        msg = f"ragged records: field counts {sorted(n_fields)}"
+        raise ValueError(msg)
+    start_year = raw.select(pl.col("raw").list.get(1).cast(pl.Int32).min()).item()
+    years = [start_year + i for i in range(n_fields[0] - 3)]
+
+    fields = ["permno", "first_moody_year", "last_moody_year", *[f"be_{y}" for y in years]]
+    return (
+        raw.with_columns(pl.col("raw").list.to_struct(fields=fields))
+        .unnest("raw")
+        .unpivot(
+            index="permno",
+            on=[f"be_{y}" for y in years],
+            variable_name="year",
+            value_name="be",
+        )
+        .with_columns(
+            pl.col("permno").cast(pl.Int64),
+            pl.col("year").str.strip_prefix("be_").cast(pl.Int32),
+            pl.when(pl.col("be").cast(pl.Float64) == -99.99)
+            .then(None)
+            .otherwise(pl.col("be"))
+            .cast(pl.Float64)
+            .alias("be"),
+        )
+        .sort(["permno", "year"])
+    )
+
+
+def _dhs_wd_idx(col: pl.Expr) -> pl.Expr:
+    """Weekday (business-day) index for a date column, so a difference of two
+    indices counts the trading days between them for the ABR event window.
+
+    Anchor 1960-01-04 (a Monday) has index 0; each weekday steps by 1 and Sat/Sun
+    collapse onto the prior Friday (both share that Friday's index). For calendar
+    offset n days: full weeks contribute 5 each, and the within-week remainder is
+    capped at 4 (Fri) so weekend days don't advance the count.
+    """
+    n = (col - pl.date(1960, 1, 4)).dt.total_days()
+    weeks = n // 7
+    return weeks * 5 + pl.min_horizontal(n - weeks * 7, pl.lit(4))
+
+
+def _dhs_non_financial(col: str = "siccd") -> pl.Expr:
+    """Keep non-financials: drop SIC 6000-6999, but KEEP a missing SIC."""
+    return pl.col(col).is_null() | ~((pl.col(col) >= 6000) & (pl.col(col) <= 6999))
+
+
+def _dhs_size_group(me: str, p50: str = "P50") -> pl.Expr:
+    """NYSE-median size split: B if ME>P50; S if ME<=P50 or ME missing; null
+    (dropped) if the P50 breakpoint is missing."""
+    return (
+        pl.when(pl.col(me).is_not_null() & pl.col(p50).is_not_null() & (pl.col(me) > pl.col(p50)))
+        .then(pl.lit("B"))
+        .when(pl.col(me).is_null() | (pl.col(p50).is_not_null() & (pl.col(me) <= pl.col(p50))))
+        .then(pl.lit("S"))
+        .otherwise(None)
+    )
+
+
+def _dhs_group_quantiles(
+    df: pl.DataFrame,
+    by: str,
+    var: str,
+    pcts: list[int],
+    prefix: str,
+    *,
+    pool: pl.Expr,
+    min_stocks: int = 0,
+) -> pl.DataFrame:
+    """QUANTILE_DISC percentiles of `var` per (excntry, `by`) over the breakpoint
+    `pool` (US = primaryexch=='N'). Null `var` rows are dropped so the min-stocks
+    COUNT sees only rankable stocks. Thin wrapper over country_breakpoints."""
+    specs = [(var, p / 100, f"{prefix}{p}") for p in pcts]
+    return country_breakpoints(
+        df,
+        specs,
+        group_keys=["excntry", by],
+        pool=pool & pl.col(var).is_not_null(),
+        min_stocks=min_stocks,
+        usa_exempt=True,
+    )
+
+
+def _dhs_form_factor(
+    base: pl.DataFrame,
+    *,
+    long: tuple[str, str],
+    short: tuple[str, str],
+    name: str,
+    date_col: str = "eom",
+    ret_col: str = "ret",
+    w_col: str = "lagCRSPSIZE",
+    min_stocks_pf: int = FF_MIN_STOCKS_PF,
+) -> pl.DataFrame:
+    """VW the `portfolio` cells (via vw_bucket_returns, ordered for float
+    determinism) and form ((long1+long2)-(short1+short2))/2. Shared by the monthly
+    sorts (defaults) and the daily leg (date_col="date", w_col="w"); the ROW-only
+    min_stocks_pf gate is applied in vw_bucket_returns (USA bypassed). Returns
+    [excntry, date_col, name] in the (decimal) return unit."""
+    wide = vw_bucket_returns(
+        base.filter(
+            pl.col("portfolio").is_not_null()
+            & pl.col(ret_col).is_not_null()
+            & pl.col(w_col).is_not_null()
+        ),
+        buckets=[*long, *short],
+        weight_col=w_col,
+        bucket_col="portfolio",
+        ret_col=ret_col,
+        date_col=date_col,
+        min_stocks_pf=min_stocks_pf,
+        ordered=True,
+    )
+    long_leg = (pl.col(long[0]) + pl.col(long[1])) / 2
+    short_leg = (pl.col(short[0]) + pl.col(short[1])) / 2
+    return wide.select("excntry", date_col, (long_leg - short_leg).alias(name))
+
+
+def _dhs_universe() -> pl.Expr:
+    """US common-stock tradable universe — the CIZ legacy-SHRCD/EXCHCD replica
+    (== _mp_universe): CIZ screen + conditionaltype=='RW' + tradingstatusflg=='A'
+    (drops halted/suspended). The NYSE size-median pool uses the plain _ciz_universe
+    (via ff_load_crsp_panel), not this screen."""
+    return _mp_universe()
+
+
+def _dhs_load_msf(raw_dir: Path, beg: int, end: int) -> pl.LazyFrame:
+    """Scan crsp_msf_v2 for [beg, end] (no universe screen: the monthly panel
+    screens itself and the IR build needs full history for its 60-month window).
+    (permno, mthcaldt) is unique in CIZ v2, so no de-duplication is needed. Decimal
+    ret/cap are cast to Float64 — Decimal division truncates to the operands' scale
+    (12.34/10.00 -> 1.23), corrupting the IR ratio. `cap` is mthcap ($1000s)."""
+    return (
+        pl.scan_parquet(raw_dir / "crsp_msf_v2.parquet")
+        .rename({"mthcaldt": "date", "mthret": "ret", "mthcap": "cap"})
+        .with_columns(pl.col("ret", "cap").cast(pl.Float64))
+        .select(
+            "permno",
+            "date",
+            "ret",
+            "cap",
+            "siccd",
+            "securitytype",
+            "securitysubtype",
+            "sharetype",
+            "issuertype",
+            "usincflg",
+            "conditionaltype",
+            "tradingstatusflg",
+            "primaryexch",
+        )
+        .filter(pl.col("date").dt.year().is_between(beg, end))
+    )
+
+
+def _dhs_monthly_panel(msf: pl.DataFrame, beg: int, end: int) -> pl.DataFrame:
+    """Master monthly return panel: _dhs_universe screen, price clean, SIZE =
+    mthcap/1000 ($MM), lagCRSPSIZE = prior-month SIZE nulled across a calendar gap.
+    cyear maps July(t)..June(t+1) to t within [beg, end]. The NYSE flag is
+    primaryexch ("N"), not a numeric exchcd; siccd is dense per-row. Output:
+    [excntry, id, CRSPDATE, eom, year, month, cyear, ret, CRSPSIZE, lagCRSPSIZE,
+    primaryexch, siccd, size_grp]."""
+    cbase = pl.when(pl.col("month") >= 7).then(pl.col("year")).otherwise(pl.col("year") - 1)
+    # reportbreak gates the lagged SIZE (a >1 month gap nulls the lag). Per-firm
+    # ops partition on the globally-unique `id` (== permno for US), so ROW ids
+    # never share a partition with a US permno.
+    reportbreak = 12 * (pl.col("year") - pl.col("year").shift(1).over("id")) + (
+        pl.col("month") - pl.col("month").shift(1).over("id")
+    )
+    return (
+        # passing rows are already RW + N/A/Q; NYSE flag carried as primaryexch (no exchcd screen)
+        msf.filter(_dhs_universe())
+        .filter((pl.col("cap") > 0) & pl.col("ret").is_not_null())  # cap-native validity
+        .with_columns(
+            SIZE=pl.col("cap") / 1000,  # mthcap ($1000s) -> $MM
+            eom=pl.col("date").dt.month_end(),  # canonical monthly key (real Date)
+            year=pl.col("date").dt.year(),
+            month=pl.col("date").dt.month(),
+            excntry=pl.lit("USA"),  # country dimension
+            id=pl.col("permno"),  # country-generic stock key (== permno for US)
+            size_grp=pl.lit(
+                None, dtype=pl.String
+            ),  # ROW-only breakpoint pool tag; null for US (NYSE pool)
+        )
+        # sort by (excntry, id, date) so each id's rows are date-ordered for the
+        # per-id lags; id == permno for US, so the ordering is unchanged.
+        .sort(["excntry", "id", "date"])
+        .with_columns(
+            cyear=pl.when((cbase >= beg) & (cbase <= end)).then(cbase).otherwise(None),
+            lagCRSPSIZE=pl.when(reportbreak > 1)
+            .then(None)
+            .otherwise(pl.col("SIZE").shift(1).over("id")),
+        )
+        .rename({"date": "CRSPDATE", "SIZE": "CRSPSIZE"})
+        .select(
+            "excntry",
+            "id",
+            "CRSPDATE",
+            "eom",
+            "year",
+            "month",
+            "cyear",
+            "ret",
+            "CRSPSIZE",
+            "lagCRSPSIZE",
+            "primaryexch",
+            "siccd",
+            "size_grp",
+        )
+    )
+
+
+def _dhs_row_universe() -> pl.Expr:
+    """ROW (ex-US) jkp main-sample screen: common stock, primary security, main
+    observation, main exchange, ME present; excntry != USA (US flows the CRSP path)."""
+    return (
+        (pl.col("excntry") != US_EXCNTRY)
+        & (pl.col("common") == 1)
+        & (pl.col("primary_sec") == 1)
+        & (pl.col("obs_main") == 1)
+        & (pl.col("exch_main") == 1)
+        & pl.col("me").is_not_null()
+    )
+
+
+def _dhs_load_row_panel(interim_dir: Path, beg: int, end: int) -> pl.DataFrame:
+    """ROW (ex-US) monthly panel from jkp's world_data, in the SAME schema as the
+    US _dhs_monthly_panel so the two concat. me -> CRSPSIZE; lagCRSPSIZE = prior-
+    month me nulled across a calendar gap (world_msf has no me_lag1, so it is
+    computed like the US panel); sic (from world_msf) -> siccd; primaryexch null
+    (ROW has no NYSE; the FIN breakpoint pool uses size_grp). cyear maps
+    July(t)..June(t+1) to t in [beg, end]. Dtypes match the US panel's so
+    pl.concat(vertical) leaves US bytes intact."""
+    sic = pl.scan_parquet(interim_dir / "world_msf.parquet").select(
+        "id", "eom", pl.col("sic").cast(pl.Int64).alias("siccd")
+    )
+    cbase = pl.when(pl.col("month") >= 7).then(pl.col("year")).otherwise(pl.col("year") - 1)
+    reportbreak = 12 * (pl.col("year") - pl.col("year").shift(1).over("id")) + (
+        pl.col("month") - pl.col("month").shift(1).over("id")
+    )
+    return (
+        pl.scan_parquet(interim_dir / "world_data_prelim.parquet")
+        .filter(_dhs_row_universe() & pl.col("eom").dt.year().is_between(beg, end))
+        .join(sic, on=["id", "eom"], how="left")
+        .with_columns(year=pl.col("eom").dt.year(), month=pl.col("eom").dt.month())
+        .sort(["id", "eom"])  # per-id date order for the gap-nulled prior-month lag
+        .with_columns(
+            lagCRSPSIZE=pl.when(reportbreak > 1)
+            .then(None)
+            .otherwise(pl.col("me").shift(1).over("id"))
+            .cast(pl.Float64),
+        )
+        .select(
+            "excntry",
+            pl.col("id").cast(pl.Int64),
+            pl.col("eom").alias("CRSPDATE"),
+            "eom",
+            pl.col("year").cast(pl.Int32),
+            pl.col("month").cast(pl.Int8),
+            pl.when((cbase >= beg) & (cbase <= end))
+            .then(cbase)
+            .otherwise(None)
+            .cast(pl.Int32)
+            .alias("cyear"),
+            pl.col("ret").cast(pl.Float64),
+            pl.col("me").cast(pl.Float64).alias("CRSPSIZE"),
+            "lagCRSPSIZE",
+            pl.lit(None, dtype=pl.String).alias("primaryexch"),
+            "siccd",
+            pl.col("size_grp").cast(pl.String),
+        )
+        .collect()
+    )
+
+
+def _dhs_row_chars(interim_dir: Path, beg: int, end: int) -> pl.DataFrame:
+    """ROW (ex-US) annual FIN characteristics from jkp's world_data, in the US
+    annual_chars schema [id, datadate, YEAR, lagBE, NS, IR] (excntry flows in later
+    via the id join to the ROW panel). Computed at each June(t) per id:
+        NS = log(1 + chcsho_12m) = log(adj_shares_June(t) / adj_shares_June(t-1))
+             (reuses jkp's chcsho_12m 12-month share-change characteristic)
+        IR = -eqnpo_60m = log(me_June(t) / me_June(t-5)) - log(60-month gross cumret)
+             (reuses jkp's eqnpo_60m 60-month equity-net-payout characteristic;
+             its endpoint-only ri/me guards give a coverage superset of the prior
+             in-repo 60-of-60 contiguous-window computation)
+        lagBE = be_x for the fiscal year ending in calendar YEAR-1 (JKP standardized
+                USD book equity, positive-only, joined by gvkey; the same prior-
+                fiscal-year BE-level guard as the US branch)
+    YEAR-relabel keeps the validated fin_factor offsets untouched: IR belongs to
+    the June(t) rebalance (cyear=t, YEAR==cyear) so YEAR=t; NS uses YEAR+1==cyear
+    so it is emitted at YEAR=t-1. [beg, end] clip the eom year, matching the US
+    msf window."""
+    # NS reuses jkp's chcsho_12m characteristic (trailing-12m share change, arithmetic
+    # ratio-1 of the same shares*adjfct) instead of recomputing the June-over-June ratio:
+    # NS = log(adj_shares(t)/adj_shares(t-12)) = log(1 + chcsho_12m), sampled at the June
+    # formation. Value-exact vs the prior direct computation on ROW (both use the same
+    # Compustat-Global shares*adjfct); chcsho_12m carries its own 12-month/count guard.
+    ns_expr = pl.when((1 + pl.col("chcsho_12m")) > 0).then((1 + pl.col("chcsho_12m")).log())
+    june = (
+        pl.scan_parquet(interim_dir / "world_data_prelim.parquet")
+        .filter(
+            (pl.col("excntry") != US_EXCNTRY)
+            & pl.col("eom").dt.year().is_between(beg, end)
+            & (pl.col("eom").dt.month() == 6)
+        )
+        .select("id", "gvkey", "eom", "chcsho_12m", "eqnpo_60m")
+        .with_columns(
+            NS=ns_expr.otherwise(None),
+            IR=-pl.col("eqnpo_60m"),
+            YEAR=pl.col("eom").dt.year().cast(pl.Int32),
+            datadate=pl.col("eom"),
+        )
+        .select("id", "gvkey", "datadate", "YEAR", "NS", "IR")
+        .collect()
+    )
+    # lagBE = JKP standardized USD book equity (be_x, positive-only by
+    # construction) for the fiscal year ending in calendar YEAR-1, joined by
+    # gvkey after the YEAR relabel below — the same BE-level-of-prior-fiscal-
+    # year guard the US branch uses (its lagBE is BE(YEAR-1) on each row's
+    # YEAR), instead of a prior-June be_me ratio proxy. The statement is
+    # always public by the rebalance: datadate <= Dec(YEAR-1) and JKP's
+    # 4-month lag put it out by Apr(YEAR) < June(YEAR+1) (NS) / June(YEAR) (IR).
+    be_fy = (
+        pl.scan_parquet(interim_dir / "acc_std_ann.parquet")
+        .select("gvkey", "datadate", "be_x")
+        .filter(pl.col("gvkey").is_not_null() & pl.col("be_x").is_not_null())
+        .with_columns(fy=pl.col("datadate").dt.year().cast(pl.Int32))
+        .sort(["gvkey", "fy", "datadate", "be_x"])
+        .unique(subset=["gvkey", "fy"], keep="last", maintain_order=True)
+        .select("gvkey", "fy", pl.col("be_x").alias("lagBE"))
+        .collect()
+    )
+    # split so fin_factor's offsets land both on the June(t) rebalance:
+    #   IR-row at YEAR=t   (IR filter YEAR==cyear),  NS-row at YEAR=t-1 (NS filter YEAR+1==cyear)
+    ir_rows = june.select("id", "gvkey", "datadate", "YEAR", "IR").with_columns(
+        NS=pl.lit(None, pl.Float64)
+    )
+    ns_rows = june.select(
+        "id", "gvkey", "datadate", (pl.col("YEAR") - 1).alias("YEAR"), "NS"
+    ).with_columns(IR=pl.lit(None, pl.Float64))
+    return (
+        pl.concat([ir_rows, ns_rows], how="diagonal_relaxed")
+        .with_columns(_fy=pl.col("YEAR") - 1)
+        .join(be_fy, left_on=["gvkey", "_fy"], right_on=["gvkey", "fy"], how="left")
+        .drop("_fy", "gvkey")
+    )
+
+
+def _dhs_ccm_link(comp: pl.LazyFrame, endfyr_col: str, raw_dir: Path) -> pl.LazyFrame:
+    """Link Compustat rows to CRSP permnos via CCM: LINKTYPE in (LU,LC,LD,LN,LS,LX),
+    usedflag == 1, LINKDT <= endfyr <= LINKENDDT (NULL bound = open). lpermno is
+    cast off Decimal (join key vs Int64 permno)."""
+    link = (
+        pl.scan_parquet(raw_dir / "crsp_ccmxpf_linktable.parquet")
+        .with_columns(pl.col("lpermno").cast(pl.Int64))
+        .filter(
+            pl.col("linktype").is_in(["LU", "LC", "LD", "LN", "LS", "LX"])
+            & (pl.col("usedflag") == 1)  # usedflag is Float64; == 1 serves
+            & pl.col("lpermno").is_not_null()
+        )
+    )
+    return comp.join(link, on="gvkey", how="inner").filter(
+        (pl.col("linkdt").is_null() | (pl.col("linkdt") <= pl.col(endfyr_col)))
+        & (pl.col("linkenddt").is_null() | (pl.col(endfyr_col) <= pl.col("linkenddt")))
+    )
+
+
+def _dhs_issuance_chars(msf: pl.DataFrame, raw_dir: Path, beg: int, end: int) -> pl.DataFrame:
+    """Annual Compustat characteristics (NS, lagBE, IR per fiscal year).
+    `msf` is the RAW unfiltered monthly file (IR is built
+    off it). Financials are screened later on the CRSP siccd, never on funda's
+    sich.
+
+    Steps:
+        1) Scan comp_funda (industrial screen + fyear window), cast numerics to
+           Float64, link to CRSP via CCM; keep LATEST datadate per (LPERMNO, YEAR).
+        2) NS = log(adjusted-shares ratio) with divide/nonpositive guards; BE via
+           the equity waterfall; lagged BE across a calendar gap.
+        3) IR = log(ME_June/ME_June_5yr_ago) - log(60-month gross cumret), on the
+           raw msf's June rows.
+
+    Output: one row per (LPERMNO, YEAR) with NS, lagBE, IR.
+    """
+    funda_num = [
+        "at",
+        "csho",
+        "ajex",
+        "pstkrv",
+        "pstkl",
+        "pstk",
+        "seq",
+        "ceq",
+        "lt",
+        "txditc",
+        "txdb",
+        "itcb",
+    ]
+    funda = (
+        pl.scan_parquet(raw_dir / "comp_funda.parquet")
+        .filter(_compustat_na_filter())
+        .filter(pl.col("fyear").is_between(beg, end))  # datadate already Date
+        .with_columns(
+            *[pl.col(c).cast(pl.Float64) for c in funda_num],
+            endfyr=pl.col("datadate"),
+        )
+    )
+    # collect: linked pool feeds the eager per-(LPERMNO, YEAR) dedupe + char build
+    linked = _dhs_ccm_link(funda, "endfyr", raw_dir).rename({"lpermno": "LPERMNO"}).collect()
+
+    reportbreak = pl.col("YEAR") - pl.col("YEAR").shift(1).over("LPERMNO")
+
+    def _lag(val: pl.Expr) -> pl.Expr:
+        # gap-nulled 1-period lag over LPERMNO; missing break fails >1 (lag taken), first row null via shift()
+        return pl.when(reportbreak > 1).then(None).otherwise(val.shift(1).over("LPERMNO"))
+
+    # NS = log(adjusted-shares ratio); div-by-zero or nonpositive ratio -> missing
+    adj_csho = pl.col("csho") * pl.col("ajex")
+    lag_adj = _lag(adj_csho)
+    ratio = safe_div(adj_csho, lag_adj, "ratio")
+
+    # Book-equity waterfall; each component falls back through its alternatives.
+    # preferred: redemption value, else liquidating value, else par
+    preferred = pl.coalesce("pstkrv", "pstkl", "pstk")
+    # shareholders' equity: SEQ, else CEQ + preferred par (missing par -> 0,
+    # so CEQ-only firms don't fall out of the ladder), else AT - LT
+    shareholders_equity = (
+        pl.when(pl.col("seq").is_not_null())
+        .then(pl.col("seq"))
+        .when(pl.col("ceq").is_not_null())
+        .then(pl.col("ceq") + pl.col("pstk").fill_null(0.0))
+        .otherwise(pl.col("at") - pl.col("lt"))
+    )
+    # deferred taxes: TXDITC, else TXDB+ITCB (missing addend -> the other alone; both missing -> missing)
+    deferred_tax = (
+        pl.when(pl.col("txditc").is_not_null())
+        .then(pl.col("txditc"))
+        .when(pl.col("txdb").is_null())
+        .then(pl.col("itcb"))
+        .when(pl.col("itcb").is_null())
+        .then(pl.col("txdb"))
+        .otherwise(pl.col("txdb") + pl.col("itcb"))
+    )
+    # BE = equity + deferred_tax - preferred; missing deferred_tax/preferred -> 0, missing equity -> missing
+    be = shareholders_equity + deferred_tax.fill_null(0) - preferred.fill_null(0)
+
+    chars = (
+        linked.sort(["gvkey", "datadate"])  # gvkey order is the dedupe tie-break
+        .with_columns(YEAR=pl.col("datadate").dt.year())  # calendar year of FY-end, NOT fyear
+        # dedupe: keep LATEST datadate per (LPERMNO, YEAR)
+        .sort(["LPERMNO", "YEAR", "datadate"])
+        .unique(subset=["LPERMNO", "YEAR"], keep="last", maintain_order=True)
+        .sort(["LPERMNO", "YEAR"])
+        .with_columns(
+            NS=pl.when(ratio > 0).then(ratio.log()).otherwise(None),
+            lagBE=_lag(be),
+        )
+    )
+
+    # IR = log_ME - log_cumret in ONE (permno,date)-sorted pass over raw msf:
+    #   log_ME     = log(ME_June / ME_June_5yr_ago), 5-yr positional June lag; ME/0 -> null
+    #   log_cumret = trailing-60-month sum of log1p(ret); nonpositive gross or any missing
+    #                window month -> invalidated. One sort serves window + shift(5); no self-join.
+    me_june = pl.when(pl.col("cap") > 0).then(pl.col("cap") / 1000).otherwise(None)  # $MM
+    log1p = pl.when((1 + pl.col("ret")) > 0).then((1 + pl.col("ret")).log()).otherwise(None)
+    n_valid = (
+        log1p.is_not_null()
+        .cast(pl.Int32)
+        .rolling_sum(window_size=60, min_samples=60)
+        .over("permno")
+    )
+    me_lag5 = pl.col("ME_June").shift(5).over("permno")
+    me_ratio = safe_div(pl.col("ME_June"), me_lag5, "me_ratio")
+    ir = (
+        msf.select("permno", "date", "cap", "ret")
+        .sort(["permno", "date"])
+        # ME_June + rolling sum need the full series, so compute before the June filter
+        .with_columns(
+            ME_June=me_june,
+            log_cumret=pl.when(n_valid == 60)
+            .then(log1p.rolling_sum(window_size=60, min_samples=60).over("permno"))
+            .otherwise(None),
+        )
+        .filter(pl.col("date").dt.month() == 6)
+        # the 5-year June lag is positional over the June rows, so it comes after the filter
+        .with_columns(log_ME=pl.when(me_ratio > 0).then(me_ratio.log()).otherwise(None))
+        .select(
+            pl.col("permno").alias("LPERMNO"),
+            pl.col("date").dt.year().alias("YEAR"),
+            (pl.col("log_ME") - pl.col("log_cumret")).alias("IR"),
+        )
+    )
+    # expose the firm key as the globally-unique `id` (== LPERMNO for this US
+    # builder) so the concat-bound FIN path keys uniformly on id.
+    return chars.join(ir, on=["LPERMNO", "YEAR"], how="left").rename({"LPERMNO": "id"})
+
+
+def _dhs_market_daily(interim_dir: Path) -> pl.LazyFrame:
+    """Daily market return -> [excntry, date, mkt] DECIMAL: the interim
+    market_returns_daily mkt_vw, per country, for the announcement (ret - mkt)
+    window. Under US-only stock data only the USA rows are ever joined."""
+    return (
+        pl.scan_parquet(interim_dir / "market_returns_daily.parquet")
+        .select(
+            pl.col("excntry"),
+            pl.col("date").cast(pl.Date),
+            pl.col("mkt_vw").cast(pl.Float64).alias("mkt"),
+        )
+        .sort(["excntry", "date"])
+    )
+
+
+def _dhs_abr_window(ann: pl.DataFrame, daily: pl.DataFrame) -> pl.DataFrame:
+    """Abr per (id, RDQ) over the weekday window [RDQ-2, RDQ+1]. `ann` = [id,
+    datadate, rdq]; `daily` = [id, date, ret, mkt] (ret, mkt decimal). An inner
+    window join drops a missing RDQ, the window
+    sum and non-missing day count are each scaled by the announcement rows sharing
+    (id, RDQ), counts are kept in [2,4], and RDQ must sit >=1 weekday before its
+    calendar month end. The window sum is ORDERED (sort + maintain_order) so the
+    float add is deterministic at a discrete quantile breakpoint. Country-generic:
+    the US path renames LPERMNO->id, the ROW path is already id-keyed. Returns
+    [id, DATADATE, RDQ, Abr, eom]."""
+    ann = ann.filter(pl.col("rdq").is_not_null()).select("id", "datadate", "rdq")
+    ann_groups = ann.group_by(["id", "rdq"]).agg(n_arows=pl.len())
+    rdq_wd = _dhs_wd_idx(pl.col("rdq"))
+    win = ann_groups.with_columns(
+        wd=pl.concat_list(rdq_wd - 2, rdq_wd - 1, rdq_wd, rdq_wd + 1)
+    ).explode("wd")
+    daily_idx = daily.with_columns(wd=_dhs_wd_idx(pl.col("date")))
+    joined = win.join(daily_idx, on=["id", "wd"], how="inner")
+    stats = (
+        joined.sort(["id", "rdq", "wd"], maintain_order=True)
+        .group_by(["id", "rdq"], maintain_order=True)
+        .agg(
+            abr_sum=(pl.col("ret") - pl.col("mkt")).sum(),  # sum skips null terms
+            cnt=pl.col("ret").is_not_null().sum(),  # count of non-missing ret
+        )
+    )
+    rme = pl.col("rdq").dt.month_end()
+    return (
+        ann.join(ann_groups, on=["id", "rdq"], how="left")
+        .join(stats, on=["id", "rdq"], how="inner")
+        .with_columns(
+            Abr=pl.col("abr_sum") * pl.col("n_arows"),
+            count=pl.col("cnt") * pl.col("n_arows"),
+        )
+        .filter((pl.col("count") >= 2) & (pl.col("count") <= 4))
+        .with_columns(n_weekdays=_dhs_wd_idx(rme) - _dhs_wd_idx(pl.col("rdq")))
+        .filter(pl.col("n_weekdays") >= 1)
+        .select(
+            "id",
+            pl.col("datadate").alias("DATADATE"),
+            pl.col("rdq").alias("RDQ"),
+            "Abr",
+            rme.alias("eom"),  # announcement month-end
+        )
+        .sort(["id", "eom", "RDQ", "DATADATE"])
+    )
+
+
+def _dhs_align_abr(panel_rows: pl.DataFrame, abr: pl.DataFrame) -> pl.DataFrame:
+    """Align per-(id, RDQ) Abr to the monthly panel. Two announcements in one
+    id-month: the later RDQ is ordered FIRST, so its
+    lagAbr is null across the month gap and it drops; the earlier-RDQ row survives
+    carrying the later Abr as lagAbr, and the forward-fill feeds the earlier quarter's
+    DATADATE into the staleness test. `panel_rows` must carry [excntry, eom,
+    id, primaryexch, lagCRSPSIZE, siccd, size_grp, year, month, CRSPDATE, ret]; `abr`
+    is [id, DATADATE, RDQ, Abr, eom] plus an optional Boolean `san` (semiannual
+    periodicity; treated as False when absent or null). The staleness gate keeps a
+    period-end-to-CRSP-month gap of up to 9 months for SAN announcements (semiannual
+    cycles run 7-9 months to the next announcement) and 6 otherwise. Per-firm ops
+    partition on the globally-unique id."""
+    if "san" not in abr.columns:
+        abr = abr.with_columns(san=pl.lit(False))
+    filled_datadate = pl.col("DATADATE").forward_fill().over("id")
+    mreportbreak = 12 * (pl.col("year") - pl.col("year").shift(1).over("id")) + (
+        pl.col("month") - pl.col("month").shift(1).over("id")
+    )
+    return (
+        panel_rows.join(abr, on=["id", "eom"], how="left")
+        .sort(["id", "CRSPDATE", "RDQ", "DATADATE"], descending=[False, False, True, True])
+        # fill DATADATE/RDQ/san, then the fiscal-period->CRSP-month gap off the FILLED DATADATE
+        .with_columns(
+            DATADATE=filled_datadate,
+            RDQ=pl.col("RDQ").forward_fill().over("id"),
+            san=pl.col("san").forward_fill().over("id").fill_null(False),
+            gap_crsp_fqtr=(pl.col("CRSPDATE").dt.year() - filled_datadate.dt.year()) * 12
+            + (pl.col("CRSPDATE").dt.month() - filled_datadate.dt.month()),
+        )
+        # keep rows within the periodicity gate; rows with a missing gap are also kept
+        .filter(
+            pl.col("gap_crsp_fqtr").is_null()
+            | (pl.col("gap_crsp_fqtr") <= pl.when(pl.col("san")).then(9).otherwise(6))
+        )
+        # Abr fill runs AFTER the gap filter (on the surviving rows)
+        .with_columns(Abr=pl.col("Abr").forward_fill().over("id"))
+        .sort(["id", "eom", "RDQ", "DATADATE"], descending=[False, False, True, True])
+        .with_columns(
+            lagAbr=pl.when(mreportbreak > 1).then(None).otherwise(pl.col("Abr").shift(1).over("id"))
+        )
+        # drop financials (SIC 6000-6999, missing siccd KEPT) AND require non-null lagAbr
+        .filter(_dhs_non_financial() & pl.col("lagAbr").is_not_null())
+        .drop("san")  # gate-only column; output schema unchanged
+    )
+
+
+def _dhs_ibes_announcements(raw_dir: Path, interim_dir: Path, beg: int, end: int) -> pl.DataFrame:
+    """IBES international announcement dates bridged to the world `id`.
+    Compustat g_fundq has no rdq ex-US, so ibes.actu_epsint (usfirm=0, QTR or SAN
+    periodicity, any measure — only anndats is needed and e.g. REITs report FFO)
+    supplies anndats (announcement date, the ex-US RDQ) and pends (fiscal period
+    end). SAN (semiannual) is admitted because semiannual-reporting markets (UK,
+    much of Europe) carry their interim announcements under SAN — QTR-only starves
+    their PEAD pools below the min-stocks gate. The IBES ticker is linked to gvkey
+    via the ibtic column (the vendor-maintained IBES link) of BOTH Compustat
+    security masters (global and North America — cross-listed ROW firms can sit in
+    either), then to the world id of the gvkey's primary security. Bridges are
+    deduped one-to-one (deterministic sort + keep-first). One (id, period-end) row
+    keeps the EARLIEST anndats (QTR wins a same-day tie), which also collapses a
+    period reported under both periodicities or multiple measures. Returns [id,
+    datadate (=pends), rdq (=anndats), san (kept row has SAN periodicity)]."""
+    # ibtic (IBES ticker) -> gvkey, one gvkey per ticker; both security masters
+    ibtic_gv = (
+        pl.concat(
+            [
+                pl.scan_parquet(raw_dir / "comp_g_security.parquet").select("ibtic", "gvkey"),
+                pl.scan_parquet(raw_dir / "comp_security.parquet").select("ibtic", "gvkey"),
+            ]
+        )
+        .filter(pl.col("ibtic").is_not_null() & pl.col("gvkey").is_not_null())
+        .select(pl.col("ibtic").alias("ticker"), pl.col("gvkey").cast(pl.Utf8))
+        .unique()
+        .sort(["ticker", "gvkey"])
+        .unique(subset=["ticker"], keep="first", maintain_order=True)
+    )
+    # gvkey -> world id (primary security in the ROW universe), one id per gvkey
+    gv_id = (
+        pl.scan_parquet(interim_dir / "world_data_prelim.parquet")
+        .filter(_dhs_row_universe())
+        .select(pl.col("gvkey").cast(pl.Utf8), pl.col("id").cast(pl.Int64))
+        .unique()
+        .sort(["gvkey", "id"])
+        .unique(subset=["gvkey"], keep="first", maintain_order=True)
+    )
+    return (
+        pl.scan_parquet(raw_dir / "ibes_actu_epsint.parquet")
+        .filter(
+            (pl.col("usfirm") == 0)
+            & pl.col("pdicity").is_in(["QTR", "SAN"])
+            & pl.col("ticker").is_not_null()
+            & pl.col("anndats").is_not_null()
+            & pl.col("pends").is_not_null()
+        )
+        .select(
+            "ticker",
+            pl.col("anndats").cast(pl.Date).alias("rdq"),
+            pl.col("pends").cast(pl.Date).alias("datadate"),
+            (pl.col("pdicity") == "SAN").alias("san"),
+        )
+        .filter(pl.col("rdq").dt.year().is_between(beg, end))
+        .join(ibtic_gv, on="ticker", how="inner")
+        .join(gv_id, on="gvkey", how="inner")
+        .select("id", "datadate", "rdq", "san")
+        # earliest announcement per (id, period-end); QTR (san=False) wins a tie
+        .sort(["id", "datadate", "rdq", "san"])
+        .unique(subset=["id", "datadate"], keep="first", maintain_order=True)
+        .collect()
+    )
+
+
+def _dhs_row_announcement_returns(
+    monthly_panel: pl.DataFrame,
+    raw_dir: Path,
+    interim_dir: Path,
+    beg: int,
+    end: int,
+) -> pl.DataFrame:
+    """ROW (ex-US) announcement returns (Abr) for international PEAD, in the SAME
+    schema as the US _dhs_announcement_returns abr_panel so the two concat. The
+    announcement date is IBES anndats (bridged to the world id via ibtic->gvkey);
+    Abr is the [anndats-2, anndats+1] weekday CAR of world_dsf daily returns net of
+    the per-country market_returns_daily benchmark, aligned to the ROW monthly panel
+    exactly like the US path — except that the announcement's `san` flag rides along
+    so the staleness gate in _dhs_align_abr widens to 9 months for semiannual
+    reporters."""
+    row_panel = monthly_panel.filter(pl.col("excntry") != US_EXCNTRY)
+    # ROW daily returns net of the per-country market benchmark: [id, date, ret, mkt]
+    daily = (
+        _dhs_load_row_daily(interim_dir)
+        .join(_dhs_market_daily(interim_dir).collect(), on=["excntry", "date"], how="left")
+        .filter(pl.col("date").dt.year().is_between(beg, end))
+        .select("id", "date", "ret", "mkt")
+    )
+    ann = _dhs_ibes_announcements(raw_dir, interim_dir, beg, end)
+    # re-attach the periodicity flag: ann is unique per (id, datadate), so the join
+    # is one-to-one on the window output's (id, DATADATE)
+    abr = _dhs_abr_window(ann, daily).join(
+        ann.select("id", pl.col("datadate").alias("DATADATE"), "san"),
+        on=["id", "DATADATE"],
+        how="left",
+    )
+    return _dhs_align_abr(
+        row_panel.select(
+            "excntry",
+            "eom",
+            "id",
+            "primaryexch",
+            "lagCRSPSIZE",
+            "siccd",
+            "size_grp",
+            "year",
+            "month",
+            "CRSPDATE",
+            "ret",
+        ),
+        abr,
+    )
+
+
+def _dhs_announcement_returns(
+    monthly_panel: pl.DataFrame,
+    raw_dir: Path,
+    interim_dir: Path,
+    beg: int,
+    end: int,
+    beg_q: int,
+    end_q: int,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Cumulative abnormal return around earnings announcements (Abr), aligned to
+    the monthly CRSP panel. Daily stock data
+    is crsp_dsf_v2 under the per-row universe screen; the market return is the
+    interim US panel.
+
+    Steps:
+        1) Clean daily CRSP to (permno, date, ret, mkt) DECIMAL; the one decimal
+           ret feeds both the Abr window and the daily factor build.
+        2) Link fundq to CRSP, dedupe to one row per (LPERMNO, datadate).
+        3) Abr over the weekday window [RDQ-2, RDQ+1], scaling window sum and day
+           count by the announcement rows sharing (LPERMNO, RDQ); keep counts in
+           [2,4] and RDQ >=1 weekday before month end.
+        4) Align to the monthly panel: later-RDQ fan-out row ordered first,
+           forward-fill DATADATE/RDQ/Abr, 6-month staleness gate (missing gap
+           kept), financials screen (missing siccd kept), require non-null lagAbr.
+
+    Output: (abr_panel with Abr/lagAbr + returns/size; daily_stock [permno, date,
+        ret] DECIMAL for the daily factor build).
+    """
+    # daily CRSP cleaned to (permno, date, ret decimal); (permno, dlycaldt) is unique
+    # in CIZ v2, so no de-duplication is needed; universe screen at scan time.
+    # cap-native validity: dlycap>0 & ret present (dlycap == |dlyprc|*shrout, $1000s).
+    daily_clean = (
+        pl.scan_parquet(raw_dir / "crsp_dsf_v2.parquet")
+        .filter(_dhs_universe())
+        .select(
+            pl.col("permno"),
+            pl.col("dlycaldt").alias("date"),
+            pl.col("dlyret").cast(pl.Float64).alias("ret"),
+            pl.col("dlycap").cast(pl.Float64).alias("cap"),
+        )
+        .filter(pl.col("date").dt.year().is_between(beg, end))
+        .filter((pl.col("cap") > 0) & pl.col("ret").is_not_null())
+        .with_columns(excntry=pl.lit("USA"))  # country dimension (US-only stock feed)
+    )
+    market = _dhs_market_daily(interim_dir)
+    # collect once: daily reused by the Abr window, daily_stock, and coverage guard.
+    # join on (excntry, date): with US-only stock rows only USA market rows match,
+    # identical to first filtering the benchmark to USA and joining on date.
+    daily = (
+        daily_clean.join(market, on=["excntry", "date"], how="left")
+        .select("excntry", "permno", "date", "ret", "mkt")
+        .sort(["excntry", "permno", "date"])
+        .collect()
+    )
+    daily_stock = daily.select("excntry", pl.col("permno").alias("id"), "date", "ret")
+    # benchmark must cover the daily sample, else (ret - mkt) loses its mkt term and Abr -> ~0 on the uncovered tail
+    daily_max = daily["date"].max()
+    # coverage bound of the US benchmark specifically (daily is US-only here)
+    mkt_max = (
+        market.filter(pl.col("excntry") == "USA").select(pl.col("date").max()).collect().item()
+    )
+    if daily_max > mkt_max:
+        raise ValueError(
+            f"daily CRSP sample extends to {daily_max} but the market benchmark "
+            f"(market_returns_daily.parquet) only covers through {mkt_max}; "
+            f"refresh the stale market_returns_daily.parquet input"
+        )
+
+    fundq = (
+        pl.scan_parquet(raw_dir / "comp_fundq.parquet")
+        .filter(_compustat_na_filter())
+        .filter(pl.col("fyearq").is_between(beg_q, end_q))  # datadate/rdq already Date
+        .with_columns(endfyr=pl.col("datadate"))
+    )
+    # collect: linked quarterly pool feeds the eager dedupe + Abr build
+    qtr_linked = _dhs_ccm_link(fundq, "endfyr", raw_dir).rename({"lpermno": "LPERMNO"}).collect()
+    qtr_linked_dedup = (
+        # deterministic tie-break (gvkey, linkdt) among rows sharing (LPERMNO, datadate)
+        qtr_linked.sort(["LPERMNO", "datadate", "gvkey", "linkdt"]).unique(
+            subset=["LPERMNO", "datadate"], keep="first", maintain_order=True
+        )
+    )
+
+    # Abr per (id, RDQ) over the weekday window, then aligned to the monthly panel;
+    # both steps are country-generic (US keys on LPERMNO == id). size_grp (null for
+    # US) rides along for the ROW PEAD breakpoint pool; it does not affect US values.
+    ann = qtr_linked_dedup.filter(pl.col("rdq").is_not_null()).select(
+        pl.col("LPERMNO").alias("id"), "datadate", "rdq"
+    )
+    abr = _dhs_abr_window(ann, daily.select(pl.col("permno").alias("id"), "date", "ret", "mkt"))
+    abr_panel = _dhs_align_abr(
+        monthly_panel.select(
+            "excntry",
+            "eom",
+            "id",
+            "primaryexch",
+            "lagCRSPSIZE",
+            "siccd",
+            "size_grp",
+            "year",
+            "month",
+            "CRSPDATE",
+            "ret",
+        ),
+        abr,
+    )
+    return abr_panel, daily_stock
+
+
+def _dhs_nyse_size_median(
+    raw_dir: Path, interim_dir: Path, min_stocks_bp: int = FF_MIN_STOCKS_BP
+) -> pl.DataFrame:
+    """Per-(excntry) size median P50, via jkp's ff_country_breakpoints (US branch =
+    NYSE exchcd_us==1; ROW branch = size_grp ∈ {small,large,mega}; me>0; per-country
+    min-stocks gate, USA exempt). US pool = ff_load_crsp_panel (CIZ, permco ME,
+    DFF-2000), whose me is already USD millions — the same unit as US CRSPSIZE
+    (mthcap/1000); ROW pool = world_data (when present), in world units matching
+    ROW CRSPSIZE. Output: [excntry, eom, P50].
+    """
+    us = (
+        ff_load_crsp_panel(raw_dir, "monthly")
+        .select("date", "me", pl.col("exchcd").alias("exchcd_us"))
+        .with_columns(excntry=pl.lit("USA"), size_grp=pl.lit(None, dtype=pl.String))
+        .collect()  # ff_country_breakpoints takes an eager frame
+    )
+    panel = us
+    if (interim_dir / "world_data_prelim.parquet").exists():
+        row = (
+            pl.scan_parquet(interim_dir / "world_data_prelim.parquet")
+            .filter(_dhs_row_universe())
+            .select(
+                pl.col("eom").alias("date"),
+                pl.col("me").cast(pl.Float64),
+                "excntry",
+                pl.lit(None, dtype=pl.Int64).alias("exchcd_us"),
+                pl.col("size_grp").cast(pl.String),
+            )
+            .collect()
+        )
+        panel = pl.concat([us, row], how="diagonal_relaxed")
+    return (
+        ff_country_breakpoints(panel, [("me", 0.50, "P50")], pl.col("me") > 0, min_stocks_bp)
+        .select("excntry", pl.col("date").alias("eom"), "P50")
+        .sort(["excntry", "eom"])
+    )
+
+
+def _dhs_fin_factor(
+    annual_chars: pl.DataFrame,
+    monthly_panel: pl.DataFrame,
+    nyse_p50: pl.DataFrame,
+    min_stocks_bp: int = FF_MIN_STOCKS_BP,
+    min_stocks_pf: int = FF_MIN_STOCKS_PF,
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+    """FIN factor (NS×IR overlap, 2 size groups, annual June rebalance).
+    Returns (factor [excntry, eom, fin_dhs], chars [id, eom, ns, ir],
+    members [excntry, id, eom, portfolio, w]).
+
+    Steps:
+        1) Clean NS (lagBE guard, NS != 0) and IR into per-variable monthly panels
+           merged to the monthly returns.
+        2) Rank NS into L/2/3/4/H (negatives and positives separately, NYSE
+           breakpoints), IR into NYSE quintiles; take the H/L overlap.
+        3) Cross with the NYSE-median size split on June-of-CYEAR ME.
+        4) Value-weight the six SL..BH legs; FIN = low-issuance minus high.
+    """
+    # firm key is the globally-unique `id` (annual_chars and monthly_panel both
+    # expose it; == permno for US), so id-alone joins/dedupes are country-safe.
+    keep = ["id", "datadate", "YEAR", "lagBE"]
+    # 'lagBE < 0' also drops rows with a missing lagBE
+    lagbe_ok = pl.col("lagBE").is_not_null() & (pl.col("lagBE") >= 0)
+    ns_chars = annual_chars.select(keep + ["NS"]).filter(
+        lagbe_ok & pl.col("NS").is_not_null() & (pl.col("NS") != 0)
+    )
+    ir_chars = annual_chars.select(keep + ["IR"]).filter(lagbe_ok & pl.col("IR").is_not_null())
+
+    non_fin = _dhs_non_financial()  # drop financials (SIC 6000-6999), missing siccd KEPT
+    crsp_cols = monthly_panel.select(
+        "excntry", "id", "eom", "cyear", "primaryexch", "siccd", "size_grp"
+    )
+    ns_panel = (
+        ns_chars.join(crsp_cols, on="id", how="inner")
+        .filter((pl.col("YEAR") + 1 == pl.col("cyear")) & non_fin)  # NS: YEAR+1 = CYEAR
+        .sort(["id", "datadate", "eom"])
+    )
+    ir_panel = (
+        ir_chars.join(crsp_cols, on="id", how="inner")
+        .filter((pl.col("YEAR") == pl.col("cyear")) & non_fin)  # IR: YEAR = CYEAR (no shift)
+        .sort(["id", "datadate", "eom"])
+    )
+
+    # rank NS L/2/3/4/H, negatives and positives separately. One obs per (id,
+    # YEAR): first in (id, datadate, eom) order = the FY's first month (its NYSE flag feeds the pool).
+    ns_rank = (
+        ns_panel.sort(["id", "datadate", "eom"])
+        .unique(subset=["id", "YEAR"], keep="first", maintain_order=True)
+        .select("excntry", "id", "YEAR", "NS", "primaryexch", "size_grp")
+    )
+    is_neg = pl.col("NS").is_not_null() & (pl.col("NS") < 0)
+    # country breakpoint pool: US = NYSE (primaryexch=="N"); ROW = size_grp eligible.
+    # US rows have size_grp null and ROW rows have primaryexch null, so exactly one
+    # branch fires per row -> US pool is unchanged (byte-identical).
+    bp_pool = (pl.col("primaryexch") == "N") | pl.col("size_grp").is_in(["small", "large", "mega"])
+    bp_neg = _dhs_group_quantiles(
+        ns_rank, "YEAR", "NS", [50], "P", pool=is_neg & bp_pool, min_stocks=min_stocks_bp
+    )
+    # a missing breakpoint = the (excntry, YEAR) pool was below min_stocks (dropped by
+    # HAVING), so those stocks are EXCLUDED (group1 null), not defaulted — mirrors jkp
+    # ff_assign_portfolios' inner join. USA is HAVING-exempt, so this never fires for US.
+    ns_neg = (
+        ns_rank.filter(is_neg)
+        .join(bp_neg, on=["excntry", "YEAR"], how="left")
+        .with_columns(
+            group1=pl.when(pl.col("P50").is_null())
+            .then(None)
+            .when(pl.col("NS") > pl.col("P50"))
+            .then(pl.lit("2"))
+            .otherwise(pl.lit("L"))
+        )
+    )
+    bp_pos = _dhs_group_quantiles(
+        ns_rank,
+        "YEAR",
+        "NS",
+        [30, 70],
+        "P",
+        pool=(pl.col("NS") > 0) & bp_pool,
+        min_stocks=min_stocks_bp,
+    )
+    ns_pos = (
+        ns_rank.filter(pl.col("NS") > 0)
+        .join(bp_pos, on=["excntry", "YEAR"], how="left")
+        .with_columns(
+            group1=pl.when(pl.col("P30").is_null())
+            .then(None)
+            .when(pl.col("NS") > pl.col("P70"))
+            .then(pl.lit("H"))
+            .when(pl.col("NS") > pl.col("P30"))
+            .then(pl.lit("4"))
+            .otherwise(pl.lit("3"))
+        )
+    )
+    umo_ns = pl.concat(
+        [ns_neg.select("id", "YEAR", "group1"), ns_pos.select("id", "YEAR", "group1")]
+    )
+
+    # rank IR into NYSE quintiles L/2/3/4/H
+    ir_rank = (
+        ir_panel.sort(["id", "datadate", "eom"])
+        .unique(subset=["id", "YEAR"], keep="first", maintain_order=True)
+        .select("excntry", "id", "YEAR", "IR", "primaryexch", "size_grp")
+    )
+    bp_ir = _dhs_group_quantiles(
+        ir_rank, "YEAR", "IR", [20, 40, 60, 80], "P", pool=bp_pool, min_stocks=min_stocks_bp
+    )
+    umo_ir = (
+        ir_rank.join(bp_ir, on=["excntry", "YEAR"], how="left")
+        .with_columns(
+            group1=pl.when(pl.col("IR").is_null() | pl.col("P20").is_null())
+            .then(None)  # thin pool dropped -> exclude
+            .when(pl.col("IR") > pl.col("P80"))
+            .then(pl.lit("H"))
+            .when(pl.col("IR") > pl.col("P60"))
+            .then(pl.lit("4"))
+            .when(pl.col("IR") > pl.col("P40"))
+            .then(pl.lit("3"))
+            .when(pl.col("IR") > pl.col("P20"))
+            .then(pl.lit("2"))
+            .otherwise(pl.lit("L"))
+        )
+        .select("id", "YEAR", "group1")
+    )
+
+    ns_monthly = ns_panel.join(umo_ns, on=["id", "YEAR"], how="left").select(
+        "id", "eom", pl.col("group1").alias("group_NS")
+    )
+    ir_monthly = ir_panel.join(umo_ir, on=["id", "YEAR"], how="left").select(
+        "id", "eom", pl.col("group1").alias("group_IR")
+    )
+    # overlap: H needs H+H or H+missing; L symmetric; drop both-missing; else M
+    g = (
+        pl.when(
+            ((pl.col("group_NS") == "H") & (pl.col("group_IR") == "H"))
+            | ((pl.col("group_NS") == "H") & pl.col("group_IR").is_null())
+            | (pl.col("group_NS").is_null() & (pl.col("group_IR") == "H"))
+        )
+        .then(pl.lit("H"))
+        .when(
+            ((pl.col("group_NS") == "L") & (pl.col("group_IR") == "L"))
+            | (pl.col("group_NS").is_null() & (pl.col("group_IR") == "L"))
+            | ((pl.col("group_NS") == "L") & pl.col("group_IR").is_null())
+        )
+        .then(pl.lit("L"))
+        .otherwise(None)
+    )
+    me_june = monthly_panel.select(
+        "excntry", "id", pl.col("eom").alias("rankdate"), pl.col("CRSPSIZE").alias("MEJune")
+    )
+    bp = nyse_p50.filter(pl.col("eom").dt.month() == 6)  # June NYSE P50
+    group2 = _dhs_size_group("MEJune")  # size leg vs the June NYSE ME median
+    base = (
+        monthly_panel.select("excntry", "id", "eom", "lagCRSPSIZE", "cyear", "ret")
+        .join(ns_monthly, on=["id", "eom"], how="left")
+        .join(ir_monthly, on=["id", "eom"], how="left")
+        .filter(~(pl.col("group_NS").is_null() & pl.col("group_IR").is_null()))
+        # group1 = overlap (M fills the interior); rankdate = June-of-CYEAR
+        .with_columns(
+            group1=g.fill_null("M"),
+            rankdate=pl.date(pl.col("cyear"), 6, 1).dt.month_end(),
+        )
+        .join(me_june, on=["excntry", "id", "rankdate"], how="left")
+        .join(bp.rename({"eom": "rankdate"}), on=["excntry", "rankdate"], how="left")
+        .with_columns(
+            portfolio=pl.when(group2.is_null() | pl.col("group1").is_null())
+            .then(None)
+            .otherwise(group2 + pl.col("group1"))
+        )
+    )
+
+    # FIN = low-issuance (L) long minus high (H) short
+    factor = _dhs_form_factor(
+        base, long=("SL", "BL"), short=("SH", "BH"), name="fin_dhs", min_stocks_pf=min_stocks_pf
+    )
+    # per-stock raw sort values, one row per (id, eom) where either char exists
+    chars = ns_panel.select("id", "eom", pl.col("NS").alias("ns")).join(
+        ir_panel.select("id", "eom", pl.col("IR").alias("ir")),
+        on=["id", "eom"],
+        how="full",
+        coalesce=True,
+    )
+    members = base.select("excntry", "id", "eom", "portfolio", pl.col("lagCRSPSIZE").alias("w"))
+    return factor, chars, members
+
+
+def _dhs_pead_factor(
+    abr_panel: pl.DataFrame,
+    nyse_p50: pl.DataFrame,
+    min_stocks_bp: int = FF_MIN_STOCKS_BP,
+    min_stocks_pf: int = FF_MIN_STOCKS_PF,
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+    """PEAD factor (monthly 2×5 sort on lagged Abr).
+    Returns (factor [excntry, eom, pead_dhs], chars [id, eom, abr], members
+    [excntry, id, eom, portfolio, w]).
+
+    Steps:
+        1) One obs per (id, eom); lagAbr is the sort char.
+        2) Size split: month-t formation uses month t-1's NYSE P50, attached via a
+           +1-month date offset then joined on the formation month.
+        3) NYSE quintiles of lagAbr (2×5; only 20/80 bind).
+        4) Value-weight the six SL..BH legs; PEAD = high-Abr minus low-Abr.
+    """
+    # one row per (id, eom), keeping the first in the current fan-out order
+    # (abr_panel is sorted (id, eom) with the fan-out preserved)
+    pead = abr_panel.unique(subset=["id", "eom"], keep="first", maintain_order=True).with_columns(
+        SIZE=pl.col("lagCRSPSIZE")
+    )
+
+    # size leg: month-t formation uses month t-1's NYSE P50, shifted to the next
+    # month-end via a date offset (gap/year-safe), then joined on the formation eom.
+    bp = nyse_p50.with_columns(eom_next=pl.col("eom").dt.offset_by("1mo").dt.month_end())
+    sized = (
+        pead.join(
+            bp.select("excntry", pl.col("eom_next").alias("eom"), "P50"),
+            on=["excntry", "eom"],
+            how="left",
+        )
+        .filter(pl.col("SIZE").is_not_null() & pl.col("lagAbr").is_not_null())
+        .with_columns(group1=_dhs_size_group("SIZE"))  # size leg vs the prior-month NYSE ME median
+    )
+
+    # lagAbr breakpoints per (excntry, formation month) (P20..P80; only 20/80 bind).
+    # Pool: US = NYSE (primaryexch=="N"), ROW = size_grp eligible; US rows have size_grp
+    # null and ROW rows primaryexch null, so exactly one branch fires (US byte-identical).
+    bp_pool = (pl.col("primaryexch") == "N") | pl.col("size_grp").is_in(["small", "large", "mega"])
+    bp_char = _dhs_group_quantiles(
+        sized,
+        "eom",
+        "lagAbr",
+        [20, 40, 60, 80],
+        "NYSEcharP",
+        pool=bp_pool,
+        min_stocks=min_stocks_bp,
+    )
+    # a missing breakpoint means the (excntry, eom) pool was below min_stocks and was
+    # dropped by the HAVING gate; those stocks are EXCLUDED (group2 null -> portfolio
+    # null), not forced into L. USA is HAVING-exempt, so this never fires for US.
+    group2 = (
+        pl.when(pl.col("NYSEcharP20").is_null())
+        .then(None)
+        .when(pl.col("lagAbr") > pl.col("NYSEcharP80"))
+        .then(pl.lit("H"))
+        .when(pl.col("lagAbr") > pl.col("NYSEcharP20"))
+        .then(pl.lit("M"))
+        .otherwise(pl.lit("L"))
+    )
+    ranked = (
+        sized.join(bp_char, on=["excntry", "eom"], how="left")
+        .with_columns(
+            portfolio=pl.when(pl.col("group1").is_null() | group2.is_null())
+            .then(None)
+            .otherwise(pl.col("group1") + group2)
+        )
+        .select("id", "eom", "portfolio")
+    )
+    merged = pead.join(ranked, on=["id", "eom"], how="left")
+
+    # PEAD = high-Abr (H) long minus low-Abr (L) short
+    factor = _dhs_form_factor(
+        merged, long=("SH", "BH"), short=("SL", "BL"), name="pead_dhs", min_stocks_pf=min_stocks_pf
+    )
+    chars = pead.select("id", "eom", pl.col("lagAbr").alias("abr"))
+    members = merged.select("excntry", "id", "eom", "portfolio", pl.col("lagCRSPSIZE").alias("w"))
+    return factor, chars, members
+
+
+def _dhs_load_row_daily(interim_dir: Path) -> pl.DataFrame:
+    """ROW (ex-US) daily stock returns from jkp's world_dsf, matching the US
+    daily_stock schema [excntry, id, date, ret] so ROW monthly FIN membership can
+    be value-weighted on ROW daily returns. world_dsf has no ME, so the universe
+    screen omits the me>0 clause used for the monthly ROW panel."""
+    return (
+        pl.scan_parquet(interim_dir / "world_dsf.parquet")
+        .filter(
+            (pl.col("excntry") != US_EXCNTRY)
+            & (pl.col("common") == 1)
+            & (pl.col("primary_sec") == 1)
+            & (pl.col("obs_main") == 1)
+            & (pl.col("exch_main") == 1)
+            & pl.col("ret").is_not_null()
+        )
+        .select("excntry", pl.col("id").cast(pl.Int64), "date", pl.col("ret").cast(pl.Float64))
+        .collect()
+    )
+
+
+def _dhs_daily_factors(
+    fin_members: pl.DataFrame,
+    pead_members: pl.DataFrame,
+    daily_stock: pl.DataFrame,
+    row_daily: pl.DataFrame | None = None,
+    min_stocks_pf: int = FF_MIN_STOCKS_PF,
+) -> pl.DataFrame:
+    """Daily FIN/PEAD factor returns from the monthly portfolio membership.
+
+    Each factor's monthly membership (excntry, id, eom, portfolio, w=lagCRSPSIZE)
+    is applied to the SAME month's daily returns: the row at eom = m holds the
+    portfolio during month m weighted by ME(m-1), so daily returns join on
+    eom = month_end(date). _dhs_form_factor value-weights per (excntry, date, portfolio)
+    with the decimal `ret`, forming the same long-minus-short spreads as the monthly
+    path. `row_daily` (ex-US world_dsf returns) extends both FIN and PEAD daily to
+    ROW when the memberships carry ROW rows (ROW PEAD members exist only when the
+    IBES announcement inputs were present in the monthly build; else ROW drops out
+    of the PEAD inner join and only US daily PEAD is produced)."""
+    if row_daily is not None:
+        daily_stock = pl.concat([daily_stock, row_daily], how="vertical_relaxed")
+    daily = daily_stock.with_columns(eom=pl.col("date").dt.month_end())
+    fin = _dhs_form_factor(
+        daily.join(fin_members, on=["excntry", "id", "eom"], how="inner"),
+        long=("SL", "BL"),
+        short=("SH", "BH"),
+        name="fin_dhs",
+        date_col="date",
+        w_col="w",
+        min_stocks_pf=min_stocks_pf,
+    )
+    pead = _dhs_form_factor(
+        daily.join(pead_members, on=["excntry", "id", "eom"], how="inner"),
+        long=("SH", "BH"),
+        short=("SL", "BL"),
+        name="pead_dhs",
+        date_col="date",
+        w_col="w",
+        min_stocks_pf=min_stocks_pf,
+    )
+    return fin.join(pead, on=["excntry", "date"], how="full", coalesce=True).sort(
+        ["excntry", "date"]
+    )
+
+
+def _dhs_write_factors(frame: pl.DataFrame, date_col: str, path: Path) -> None:
+    """Write [excntry, <date_col>, fin_dhs, pead_dhs] (decimal); excntry is carried
+    from _dhs_form_factor (== "USA" under the US-only feed)."""
+    frame.select("excntry", date_col, "fin_dhs", "pead_dhs").write_parquet(path)
+
+
+@measure_time
+def gen_dhs_data(
+    paths: DataPaths,
+    monthly_factors_path: Path,
+    daily_factors_path: Path,
+    chars_path: Path,
+    freqs: tuple[str, ...] = ("monthly", "daily"),
+    min_stocks_bp: int = FF_MIN_STOCKS_BP,
+    min_stocks_pf: int = FF_MIN_STOCKS_PF,
+    beg: int = 1966,
+    end: int | None = None,
+    beg_q: int = 1971,
+    end_q: int | None = None,
+) -> None:
+    """Build the DHS FIN + PEAD factors (US + international) from the jkp data
+    directory (no downloads).
+
+    Reference: Daniel, Hirshleifer, and Sun (2020) 'Short- and long-horizon
+    behavioral factors', Review of Financial Studies 33(4), pp. 1673-1736.
+
+    Reads
+    raw CRSP/Compustat from `paths.raw_tables_dir` and market_returns_daily from
+    `paths.interim_dir`. [beg, end] bound the monthly/annual sample; [beg_q, end_q]
+    the quarterly announcement sample (coverage starts ~1971). end/end_q default
+    to config.END_DATE's year so the DHS sample advances with the pipeline
+    vintage instead of truncating at a hardcoded year.
+
+    Steps:
+        1) Monthly return panel from crsp_msf_v2 (read once).
+        2) Annual issuance chars (NS, IR) + the Abr panel (which also emits the
+           cleaned daily stock panel).
+        3) NYSE size median (June P50 for FIN, prior-month P50 for PEAD).
+        4) FIN and PEAD monthly factors + per-stock chars, keeping monthly
+           membership for the daily build.
+        5) If "daily" in freqs, value-weight the memberships on daily returns.
+
+    Output (monthly factors + chars always written, daily only when requested):
+        - <monthly_factors_path>: [excntry, eom, fin_dhs, pead_dhs]  (decimal)
+        - <daily_factors_path>:   [excntry, date, fin_dhs, pead_dhs]  (decimal)
+        - <chars_path>: [id, eom, ns_dhs, ir_dhs, abr_dhs]; id = permno (Int64),
+              ns/ir the log measures, abr_dhs the decimal abnormal return.
+    """
+    raw_dir, interim_dir = paths.raw_tables_dir, paths.interim_dir
+    end = END_DATE.year if end is None else end
+    end_q = END_DATE.year if end_q is None else end_q
+
+    # collect once: msf is reused by the monthly panel + the IR build (has a dedupe)
+    msf = _dhs_load_msf(raw_dir, beg, end).collect()
+    monthly_panel = _dhs_monthly_panel(msf, beg, end)
+    annual_chars = _dhs_issuance_chars(msf, raw_dir, beg, end)
+    # FIN goes international: append the ROW panel + chars when the ROW inputs are present.
+    # Read world_data_prelim (not the final world_data.parquet): gen_dhs_data runs inside
+    # generate_factor_models, before merge_qmj_to_world_data writes world_data.parquet, so
+    # the final file does not yet exist here. The prelim carries every column the ROW path
+    # needs and the downstream QMJ merge never touches them (same pattern as
+    # gen_mispricing_data / _mp_world_load_world_data). US byte-identity still holds —
+    # per-country breakpoints/size/VW keep the US self-contained.
+    row = (interim_dir / "world_data_prelim.parquet").exists()
+    if row:
+        # require every ROW input up front so a run can't write partial outputs
+        # (monthly with ROW, then crash before the daily leg)
+        needed = ["world_data_prelim.parquet", "world_msf.parquet"] + (
+            ["world_dsf.parquet"] if "daily" in freqs else []
+        )
+        missing = [f for f in needed if not (interim_dir / f).exists()]
+        if missing:
+            raise FileNotFoundError(f"ROW inputs missing from {interim_dir}: {missing}")
+        row_panel = _dhs_load_row_panel(interim_dir, beg, end)
+        # ROW ids and US permnos share the id column; they are disjoint by construction
+        # (US CRSP permno is 5-digit; jkp ROW id is a 9+ digit BIGINT). Assert it so a
+        # future id-scheme change can't silently cross-contaminate the id-keyed joins.
+        if row_panel.height and row_panel["id"].min() <= monthly_panel["id"].max():
+            raise ValueError(
+                "ROW id overlaps the US permno range; id-keyed joins would cross countries"
+            )
+        # vertical_relaxed: siccd is Int32 (US CRSP) vs Int64 (ROW) on real data;
+        # it only feeds the financial screen (never the output), so the supertype
+        # cast is byte-safe. All output-feeding columns already share dtypes.
+        monthly_panel = pl.concat([monthly_panel, row_panel], how="vertical_relaxed")
+        annual_chars = pl.concat(
+            [
+                annual_chars.select("id", "datadate", "YEAR", "lagBE", "NS", "IR"),
+                _dhs_row_chars(interim_dir, beg, end),
+            ],
+            how="diagonal_relaxed",
+        )
+    abr_panel, daily_stock = _dhs_announcement_returns(
+        monthly_panel, raw_dir, interim_dir, beg, end, beg_q, end_q
+    )
+    # International PEAD: append the ROW announcement panel (IBES anndats bridged via
+    # ibtic->gvkey->id, Abr on world_dsf) when the ex-US daily + IBES inputs are
+    # present; without them ROW pead_dhs stays null (FIN-international is unaffected).
+    if (
+        row
+        and (interim_dir / "world_dsf.parquet").exists()
+        and (raw_dir / "ibes_actu_epsint.parquet").exists()
+    ):
+        abr_panel = pl.concat(
+            [
+                abr_panel,
+                _dhs_row_announcement_returns(monthly_panel, raw_dir, interim_dir, beg, end),
+            ],
+            how="vertical_relaxed",
+        )
+    nyse_p50 = _dhs_nyse_size_median(raw_dir, interim_dir, min_stocks_bp)
+    fin, fin_chars, fin_members = _dhs_fin_factor(
+        annual_chars, monthly_panel, nyse_p50, min_stocks_bp, min_stocks_pf
+    )
+    pead, pead_chars, pead_members = _dhs_pead_factor(
+        abr_panel, nyse_p50, min_stocks_bp, min_stocks_pf
+    )
+
+    # monthly factors + per-stock chars always written; daily only when requested
+    _dhs_write_factors(
+        fin.join(pead, on=["excntry", "eom"], how="full", coalesce=True).sort(["excntry", "eom"]),
+        "eom",
+        monthly_factors_path,
+    )
+    (
+        fin_chars.join(pead_chars, on=["id", "eom"], how="full", coalesce=True)
+        .select(
+            "id",
+            "eom",
+            pl.col("ns").alias("ns_dhs"),
+            pl.col("ir").alias("ir_dhs"),
+            pl.col("abr").alias("abr_dhs"),
+        )
+        .sort(["id", "eom"])
+        .write_parquet(chars_path)
+    )
+    if "daily" in freqs:
+        row_daily = _dhs_load_row_daily(interim_dir) if row else None
+        _dhs_write_factors(
+            _dhs_daily_factors(fin_members, pead_members, daily_stock, row_daily, min_stocks_pf),
+            "date",
+            daily_factors_path,
+        )

@@ -215,6 +215,158 @@ ROLLING_DAILY_SPECS: list[tuple[str, int, list[str]]] = [
     ("_1260d", 750, ["mktcorr"]),
 ]
 
+# ============================================================================
+# FF factor pipeline (gen_ff_data)
+# ============================================================================
+
+# ISO-3 code for the United States; sentinel for excntry-branched filters in
+# the unified FF pipeline (US-strict NYSE breakpoint pool, US-bypassed
+# min-stocks gates).
+US_EXCNTRY = "USA"
+
+# Min firms per (excntry, June(y)) for ROW breakpoints; US bypassed.
+FF_MIN_STOCKS_BP = 10
+
+# Min firms per (excntry, date, bucket) for ROW VW; US bypassed.
+FF_MIN_STOCKS_PF = 3
+
+# HXZ q-factor ROW thresholds (same values as FF; separate names for clarity).
+HXZ_MIN_STOCKS_BP = 10
+HXZ_MIN_STOCKS_PF = 3
+
+# CRSP -99.0 missing-return sentinel: treat as 0 return when compounding the
+# UMD prior-(2-12) signal, per FF convention.
+FF_MISSING_RET_CODE = -99.0
+FF_MISSING_RET_TOL = 1e-6
+
+# UMD signal window lengths (trading days for daily, calendar months for monthly).
+FF_UMD_DAILY_SKIP = 21
+FF_UMD_DAILY_LOOKBACK = 251
+FF_UMD_MONTHLY_LOOKBACK = 12
+FF_UMD_MONTHLY_SKIP = 1
+
+# DFF (Davis-Fama-French) hand-collected Moody's BE splice into the US FF path.
+# When True, union DFF BE (permno-keyed, bundled resource) with Compustat BE;
+# DFF fills (permno, formation year) cells Compustat lacks, extending SMB/HML
+# back to 1926-07 (and UMD to ~1927-01 via the longer CRSP panel). Per DFF
+# (2000) the two BE sets are disjoint by construction: "we collect book common
+# equity (BE) from 1925 to 1996 for all NYSE industrial firms that do not have
+# BE data on Compustat."
+FF_USE_DFF_BE = True
+
+# Strict DFF (2000) replication gate: "beginning in 1954 we merge the
+# hand-collected data ... with the Compustat data". True drops Compustat BE
+# from formations before June FF_DFF_MERGE_YEAR prior to the union (pre-1954
+# Compustat rows are backfill French never used). Default False: union
+# whatever Compustat exists.
+FF_DFF_GATE_COMPUSTAT_PRE1954 = False
+FF_DFF_MERGE_YEAR = 1954
+
+# On a (permno, year) collision the BE value is coalesced DFF-first
+# (be = coalesce(dff.be, comp.be)) while the Compustat row keeps its
+# accounting fields: most collisions are Compustat rows with NULL BE (early
+# balance-sheet fields absent from the current vintage), and where both are
+# non-null the sources agree (median |log ratio| ~ 0).
+
+# Synthetic per-firm Compustat-history count for DFF-only rows so they clear
+# the count >= 2 BM eligibility gate (_ff_bm_eligible). DFF rows carry no
+# Compustat fiscal-year history; this count feeds ONLY the eligibility gate —
+# op/inv stay null so DFF rows drop out of OP/INV (RMW/CMA) sorts.
+FF_DFF_SYNTH_COUNT = 2
+
+# CCM link-window backdating rescue for the early-1960s Compustat expansion.
+# Compustat added ~200 (mostly small) NYSE/AMEX firms per year around 1964-66
+# and backfilled their fy1962-64 statements; CCM stamps linkdt at coverage
+# start, so those fiscal years sit BEFORE the link window and the standard
+# linkdt <= June(t) filter rejects them. French uses them (his ME x OP
+# portfolio counts exceed ours by ~200/yr in 1963-65 and match from 1966;
+# diagnosed 2026-06: 208/206/192 of the misses are window-only failures with
+# a valid L*/P-C link and a fy(t-1) funda row, median linkdt 2.6y after the
+# formation). Rescue: for June formations in [FROM, THROUGH], accept a link
+# whose linkdt is after the formation when it is the permno's first link and
+# starts within FF_CCM_BACKDATE_MAX_YEARS of the formation (kills recycled-
+# permno misattribution, e.g. a 2001 link claiming a 1963 row).
+FF_CCM_BACKDATE_FROM = 1963
+FF_CCM_BACKDATE_THROUGH = 1966
+FF_CCM_BACKDATE_MAX_YEARS = 5
+
+
+# ============================================================================
+# Mispricing Factors (Stambaugh-Yuan) — ported from MisprProject
+# ============================================================================
+
+# anomallist.sas7bdat (alphabetical, 1-indexed to match SAS macro args)
+MP_ANOMALY_LIST = [
+    "ACCRUAL_ADJ",  # 1
+    "ASSET_GROWTH",  # 2
+    "COMPOSITE_ISSUE",  # 3
+    "DISTRESS",  # 4
+    "GP_ADJ",  # 5
+    "INVASSET",  # 6
+    "MOMENTUM",  # 7
+    "NOA",  # 8
+    "OSCORE",  # 9
+    "ROA",  # 10
+    "STOCK_ISSUE",  # 11
+]
+MP_POSITIVE_ANOMALIES = {"GP_ADJ", "MOMENTUM", "ROA"}  # bucketed descending
+
+# Cal_M4 macro args. SAS final cols rename umo1->MGMT, umo2->PERF.
+# WARNING: SAS dump filenames are SWAPPED relative to leg content. Preserve verbatim.
+MP_MGMT_IDX = [
+    6,
+    1,
+    3,
+    8,
+    2,
+    11,
+]  # INVASSET, ACCRUAL_ADJ, COMPOSITE_ISSUE, NOA, ASSET_GROWTH, STOCK_ISSUE
+MP_PERF_IDX = [4, 9, 10, 7, 5]  # DISTRESS, OSCORE, ROA, MOMENTUM, GP_ADJ
+
+# CHS distress (Campbell-Hilscher-Szilagyi) coefficient set
+MP_DISTRESS_BETAS = {
+    "intercept": -9.164,
+    "NIMTAAVG": -20.264,
+    "TLMTA": 1.416,
+    "EXRETAVG": -7.129,
+    "SIGMA": 1.411,
+    "RSIZE": -0.045,
+    "CASHMTA": -2.132,
+    "MB": 0.075,
+    "PRICE": -0.058,
+}
+
+MP_LAG_M = 4
+MP_START_FACTOR_EOM = date(1963, 1, 31)
+
+# World extension constants (per-country breakpoint pool gates, mirrors jkp ROW gen_ff_data)
+MP_MIN_STKS_BP_WORLD = 10  # min stocks per (excntry, eom) for percentile rank inclusion
+MP_MIN_OBS_PF_WORLD = 3  # min stocks per (excntry, eom, bucket) for portfolio VW
+
+# pct_* column names per leg, derived from the anomaly index lists above.
+MP_MGMT_PCT_COLS = [f"pct_{MP_ANOMALY_LIST[i - 1]}" for i in MP_MGMT_IDX]
+MP_PERF_PCT_COLS = [f"pct_{MP_ANOMALY_LIST[i - 1]}" for i in MP_PERF_IDX]
+
+# CCM link types accepted by the SY US fundamental join (SAS-parity baseline).
+MP_CCM_LINKTYPES = ["LU", "LC", "LD", "LF", "LN", "LO", "LS", "LX"]
+
+# CHS distress geometric weight (annual half-life ~3 quarters).
+MP_CHS_DECAY = 2.0 ** (-1.0 / 3.0)
+
+# Map MisprProject anomaly names to jkp pre-computed chars in world_data_prelim.parquet.
+# Direction follows MisprProject's MP_POSITIVE_ANOMALIES convention
+# (those anomalies bucketed descending so "bigger pct = more overpriced").
+MP_WORLD_JKP_CHAR = {
+    "ACCRUAL_ADJ": "oaccruals_at",  # higher accruals -> overpriced (asc)
+    "ASSET_GROWTH": "at_gr1",  # higher growth -> overpriced (asc)
+    "GP_ADJ": "gp_at",  # higher GP -> underpriced; flip -> descending sort
+    "INVASSET": "ppeinv_gr1a",  # higher invest -> overpriced (asc)
+    "NOA": "noa_at",  # higher NOA -> overpriced (asc)
+    "OSCORE": "o_score",  # higher O -> overpriced (asc)
+    "ROA": "niq_at",  # higher ROA -> underpriced; flip -> descending
+}
+
+
 PORTFOLIO_SETTINGS = {
     "end_date": END_DATE,
     "pfs": PORTFOLIO_PFS,

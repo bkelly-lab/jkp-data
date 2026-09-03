@@ -3,7 +3,7 @@ from pathlib import Path
 from .aux_functions import (
     acc_chars_list,
     add_ret_exc_wins,
-    ap_factors,
+    ap_factor_model_data,
     bidask_hl,
     classify_stocks_size_groups,
     combine_ann_qtr_chars,
@@ -20,6 +20,10 @@ from .aux_functions import (
     filter_world,
     finish_daily_chars,
     firm_age,
+    gen_dhs_data,
+    gen_ff_data,
+    gen_hxz_data,
+    gen_mispricing_data,
     gen_raw_data_dfs,
     market_beta,
     market_chars_monthly,
@@ -28,7 +32,6 @@ from .aux_functions import (
     merge_qmj_to_world_data,
     merge_roll_apply_daily_results,
     merge_world_data_prelim,
-    mispricing_factors,
     nyse_size_cutoffs,
     prepare_comp_sf,
     prepare_crsp_sf,
@@ -49,6 +52,46 @@ from .aux_functions import (
 from .config import ACCOUNTING_START_DATE, END_DATE, ROLLING_DAILY_SPECS
 from .paths import DataPaths
 from .wrds_credentials import get_wrds_credentials
+
+
+def factor_paths(interim: Path, prefix: str) -> tuple[Path, Path, Path]:
+    """The (monthly, daily, characteristics) output paths for one factor model."""
+    return (
+        interim / f"{prefix}_factors_monthly.parquet",
+        interim / f"{prefix}_factors_daily.parquet",
+        interim / f"{prefix}_characteristics.parquet",
+    )
+
+
+def generate_factor_models(paths: DataPaths, interim: Path) -> dict[str, tuple[Path, Path, Path]]:
+    """Run each factor-model generator; return its output paths keyed by prefix.
+
+    The generators mapping is the single source of truth: its order fixes the run
+    order and the order in which combine_factor_models feeds ap_factor_model_data.
+    """
+    generators = {
+        "ff": gen_ff_data,
+        "hxz": gen_hxz_data,
+        "mp": gen_mispricing_data,
+        "dhs": gen_dhs_data,
+    }
+    outputs = {prefix: factor_paths(interim, prefix) for prefix in generators}
+    for prefix, generator in generators.items():
+        generator(paths, *outputs[prefix])
+    return outputs
+
+
+def combine_factor_models(
+    paths: DataPaths, factor_outputs: dict[str, tuple[Path, Path, Path]]
+) -> None:
+    """Merge the per-model outputs into the combined AP factor-model data."""
+    models = list(factor_outputs.values())
+    ap_factor_model_data(
+        paths,
+        monthly_factor_inputs=[monthly for monthly, _, _ in models],
+        daily_factor_inputs=[daily for _, daily, _ in models],
+        chars_inputs=[chars for _, _, chars in models],
+    )
 
 
 def run_pipeline(
@@ -139,28 +182,9 @@ def run_pipeline(
         interim / "acc_chars_world.parquet",
         interim / "world_data_prelim.parquet",
     )
-    ap_factors(
-        paths,
-        interim / "ap_factors_daily.parquet",
-        "d",
-        interim / "world_dsf.parquet",
-        interim / "world_data_prelim.parquet",
-        interim / "market_returns_daily.parquet",
-        10,
-        3,
-    )
-    ap_factors(
-        paths,
-        interim / "ap_factors_monthly.parquet",
-        "m",
-        interim / "world_msf.parquet",
-        interim / "world_data_prelim.parquet",
-        interim / "market_returns.parquet",
-        10,
-        3,
-    )
+    factor_outputs = generate_factor_models(paths, interim)
+    combine_factor_models(paths, factor_outputs)
     firm_age(paths, interim / "world_msf.parquet")
-    mispricing_factors(paths, interim / "world_data_prelim.parquet", 10, min_fcts=3)
     market_beta(
         paths,
         interim / "beta_60m.parquet",
@@ -196,7 +220,11 @@ def run_pipeline(
         interim / "market_returns_daily.parquet",
         10,
     )
-    prepare_daily(paths, interim / "world_dsf.parquet", interim / "ap_factors_daily.parquet")
+    prepare_daily(
+        paths,
+        interim / "world_dsf.parquet",
+        interim / "ap_factors_daily.parquet",
+    )
     for sfx, min_obs, vars_ in ROLLING_DAILY_SPECS:
         for var in vars_:
             roll_apply_daily(paths, var, sfx, min_obs)
