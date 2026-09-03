@@ -120,7 +120,9 @@ def connect(
 
     Opens a real WRDS connection (attaches the database read-only and runs a
     trivial query), so a successful run confirms credentials, connectivity,
-    and MFA all actually work. This triggers a WRDS Duo MFA push on every run.
+    and MFA all actually work. This may trigger a WRDS Duo MFA push: WRDS trusts a
+    username/IP pair for 30 days after a successful approval, so expect one on the
+    first run from a new IP and again once that window expires.
 
     Credential precedence (highest first):
 
@@ -147,10 +149,15 @@ def connect(
             typer.echo("Credentials reset.")
             return
 
-        creds = get_wrds_credentials()
-
+        # Imported before resolving credentials, not after: this is the process's
+        # first `duckdb` import, and a broken native wheel (GLIBC mismatch on an HPC
+        # node) raises ImportError, which is not in the except tuple below and so
+        # escapes to Typer's pretty-exception handler. That handler prints frame
+        # locals on typer < 0.23.0, and pyproject allows typer>=0.15.0 — so no
+        # plaintext password may be bound in this frame when the import runs.
         from .wrds_connection import verify_wrds_connection
 
+        creds = get_wrds_credentials()
         verify_wrds_connection(creds.username, creds.password)
         typer.echo(f"Connected as: {creds.username}")
     except (RuntimeError, ValueError, OSError) as exc:
@@ -161,6 +168,14 @@ def connect(
         # Their messages are password-free; surface the message and exit non-zero rather
         # than dumping a traceback.
         typer.echo(str(exc), err=True)
+        # A mistyped password is stored before it is ever verified, so the next run
+        # finds it, never re-prompts, and fails identically forever. --reset is the
+        # only way out, and it belongs here rather than in the wrds_connection
+        # messages, which pipeline workers share and for which it is not the fix.
+        typer.echo(
+            "If a stored password is wrong, run `jkp connect --reset` and re-enter credentials.",
+            err=True,
+        )
         raise typer.Exit(1) from exc
 
 
