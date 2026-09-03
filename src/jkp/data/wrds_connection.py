@@ -39,7 +39,7 @@ def _sql_literal(value: str) -> str:
 
 
 def gen_wrds_connection_info(
-    user, password: str | None = None, *, connect_timeout: int | None = None
+    user: str, password: str | None = None, *, connect_timeout: int | None = None
 ) -> str:
     """Build a libpq conninfo for WRDS.
 
@@ -97,17 +97,22 @@ def _attach_wrds(con: duckdb.DuckDBPyConnection, conninfo: str, password: str | 
     """ATTACH the WRDS Postgres database read-only on an existing DuckDB connection.
 
     DuckDB's postgres extension embeds the full connection string (including the password) in
-    ATTACH error text, so on failure suppress the original exception and raise a generic,
+    ATTACH error text, so on failure drop the original exception and raise a generic,
     password-free error. Errors that don't contain the password propagate unchanged.
     """
+    leaked = False
     try:
         con.execute(f"ATTACH '{_sql_literal(conninfo)}' AS wrds (TYPE postgres, READ_ONLY)")
     except Exception as e:
-        if password and _password_in_error(str(e), password):
-            raise RuntimeError(
-                "Failed to attach WRDS connection. Check credentials and MFA approval."
-            ) from None
-        raise
+        if not (password and _password_in_error(str(e), password)):
+            raise
+        leaked = True
+    if leaked:
+        # Raised after the except block exits rather than with `from None` inside it. The
+        # interpreter clears the handled exception on exit, so __context__ is None here;
+        # `from None` only hides the chain from printed tracebacks, leaving the DuckDB
+        # error (whose text embeds the password) reachable on the exception object.
+        raise RuntimeError("Failed to attach WRDS connection. Check credentials and MFA approval.")
 
 
 def _install_postgres_extension() -> None:
@@ -135,6 +140,7 @@ def verify_wrds_connection(
     it must leave the user time to approve the Duo MFA push, so it defaults to 25s.
     """
     conninfo = gen_wrds_connection_info(username, password, connect_timeout=connect_timeout)
+    failed = False
     try:
         # Inside the try: INSTALL can itself fail (e.g. no network to DuckDB's
         # extension repo, plausible on the headless HPC nodes this targets), and
@@ -149,13 +155,15 @@ def verify_wrds_connection(
         # the failure text embeds the password; pass it through unchanged.
         raise
     except Exception:
-        # Any other failure (a failed INSTALL/LOAD, or the ~/.pgpass auth path where
-        # password is None and _attach_wrds re-raises the raw DuckDB exception, or a
-        # query error). Surface one actionable, password-free message so callers that
-        # only handle RuntimeError (e.g. `jkp connect`) exit cleanly instead of a
-        # traceback. Use `from None`, not `from e`: the raw DuckDB error can embed the
-        # conninfo/password, and chaining it as __cause__ would carry the secret on the
-        # exception object even though this message is clean.
+        # Any other failure (a failed INSTALL/LOAD, the ~/.pgpass auth path where password
+        # is None and _attach_wrds re-raises the raw DuckDB exception, or the probe query
+        # failing). Recorded here and raised below.
+        failed = True
+    if failed:
+        # Raised outside the handler for the same reason as in _attach_wrds: the raw DuckDB
+        # error can embed the conninfo and password, and `from None` would leave it on
+        # __context__. One actionable, password-free message also lets callers that only
+        # handle RuntimeError (e.g. `jkp connect`) exit cleanly instead of dumping a traceback.
         raise RuntimeError(
             "Failed to connect to WRDS. Check your network, credentials, and MFA approval."
-        ) from None
+        )

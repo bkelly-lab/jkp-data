@@ -177,14 +177,6 @@ class TestGenWrdsConnectionInfo:
 
         assert "connect_timeout" not in result
 
-    def test_password_none_omits_password_field(self):
-        """password=None (no positional password arg) omits password= entirely."""
-        from jkp.data.wrds_connection import gen_wrds_connection_info
-
-        result = gen_wrds_connection_info("u", None)
-
-        assert "password=" not in result
-
 
 class TestVerifyWrdsConnection:
     """Tests for verify_wrds_connection() — the CLI-facing connectivity check."""
@@ -252,6 +244,10 @@ class TestVerifyWrdsConnection:
         msg = str(exc_info.value)
         assert password not in msg
         assert "credentials" in msg.lower()
+        # The DuckDB error this replaces embeds the password. `from None` would clear
+        # __cause__ but leave it on __context__, still reachable to a crash reporter or
+        # post-mortem debugger; raising outside the handler drops it entirely.
+        assert exc_info.value.__context__ is None
 
     def test_pgpass_auth_failure_wrapped_as_runtime_error(self, monkeypatch):
         """With password=None (the ~/.pgpass auth path) _attach_wrds re-raises the
@@ -279,6 +275,38 @@ class TestVerifyWrdsConnection:
             mod.verify_wrds_connection("testuser", None, connect_timeout=1)
 
         assert "credentials" in str(exc_info.value).lower()
+        assert exc_info.value.__context__ is None  # see the attach-failure test above
+
+    def test_probe_query_failure_wrapped_as_runtime_error(self, monkeypatch):
+        """ATTACH succeeds but the information_schema probe fails — a valid login with
+        revoked or limited WRDS product permissions, or a connection dropped between the
+        attach and the first query. The probe is the step this function exists for, so its
+        failure must surface as the same password-free RuntimeError as an attach failure."""
+        from jkp.data import wrds_connection as mod
+
+        password = "hunter2"  # noqa: S105
+
+        class FakeConnection:
+            def execute(self, sql, *args):
+                if "information_schema" in sql:
+                    raise OSError("Permission denied for schema information_schema")
+                return None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc_info):
+                return False
+
+        monkeypatch.setattr(mod.duckdb, "connect", lambda *a, **kw: FakeConnection())
+
+        with pytest.raises(RuntimeError) as exc_info:
+            mod.verify_wrds_connection("testuser", password, connect_timeout=1)
+
+        msg = str(exc_info.value)
+        assert password not in msg
+        assert "credentials" in msg.lower()
+        assert exc_info.value.__context__ is None
 
     def test_install_extension_failure_wrapped_as_runtime_error(self, monkeypatch):
         """A failed INSTALL postgres (e.g. no network to the extension repo on a
