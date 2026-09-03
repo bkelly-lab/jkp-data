@@ -219,31 +219,36 @@ class TestEffectiveDownloadWorkers:
         assert _effective_download_workers(4, 25) == 4
 
 
+@pytest.fixture
+def mock_duckdb_multi():
+    """Patch duckdb so each connect() returns a distinct mock connection.
+
+    Each mock's __enter__ returns itself, mirroring a real DuckDB connection used as a
+    context manager (``with duckdb.connect() as con`` binds con to the connection), so the
+    worker's ATTACH/DETACH calls are recorded on the same mock and __exit__ closes it.
+
+    Module-scoped rather than nested in one test class: every test that reaches the
+    download path needs the dual patch below, and hand-rolled single-module patches
+    silently fall through to a real INSTALL.
+    """
+    # Patch duckdb in both modules that open connections on the download path:
+    # the per-worker ATTACH connections live in aux_functions, while the one
+    # up-front INSTALL connection is opened by wrds_connection._install_postgres_extension.
+    # Pointing both names at the same mock keeps a single ordered connect() sequence
+    # (install consumes conns[0], workers consume conns[1:]).
+    with (
+        patch("jkp.data.aux_functions.duckdb") as mock,
+        patch("jkp.data.wrds_connection.duckdb", mock),
+    ):
+        conns = [MagicMock(name=f"conn{i}") for i in range(32)]
+        for c in conns:
+            c.__enter__.return_value = c
+        mock.connect.side_effect = conns
+        yield mock, conns
+
+
 class TestParallelDownload:
     """Tests for the parallel (max_workers > 1) download path."""
-
-    @pytest.fixture
-    def mock_duckdb_multi(self):
-        """Patch duckdb so each connect() returns a distinct mock connection.
-
-        Each mock's __enter__ returns itself, mirroring a real DuckDB connection used as a
-        context manager (``with duckdb.connect() as con`` binds con to the connection), so the
-        worker's ATTACH/DETACH calls are recorded on the same mock and __exit__ closes it.
-        """
-        # Patch duckdb in both modules that open connections on the download path:
-        # the per-worker ATTACH connections live in aux_functions, while the one
-        # up-front INSTALL connection is opened by wrds_connection._install_postgres_extension.
-        # Pointing both names at the same mock keeps a single ordered connect() sequence
-        # (install consumes conns[0], workers consume conns[1:]).
-        with (
-            patch("jkp.data.aux_functions.duckdb") as mock,
-            patch("jkp.data.wrds_connection.duckdb", mock),
-        ):
-            conns = [MagicMock(name=f"conn{i}") for i in range(32)]
-            for c in conns:
-                c.__enter__.return_value = c
-            mock.connect.side_effect = conns
-            yield mock, conns
 
     def _record_tables(self, mock_dl):
         """Make download_wrds_table_attached record the tables it's asked to download."""
@@ -612,7 +617,7 @@ class TestDateRangeSplitting:
     @patch("jkp.data.aux_functions._compute_histograms")
     @patch("jkp.data.aux_functions.download_wrds_table_attached")
     def test_parallel_download_aggregates_concat_failures(
-        self, mock_dl, mock_hist, mock_concat, test_paths
+        self, mock_dl, mock_hist, mock_concat, mock_duckdb_multi, test_paths
     ):
         """A concat failure surfaces as one aggregated error, not a raw first-failure exception."""
         from jkp.data.aux_functions import SPLIT_TABLES, download_raw_data_tables
@@ -620,21 +625,16 @@ class TestDateRangeSplitting:
         mock_hist.return_value = dict.fromkeys(SPLIT_TABLES, [(y, 10) for y in range(2010, 2022)])
         mock_concat.side_effect = RuntimeError("disk full")
 
-        with patch("jkp.data.aux_functions.duckdb") as mock_duckdb:
-            conns = [MagicMock(name=f"c{i}") for i in range(40)]
-            for c in conns:
-                c.__enter__.return_value = c
-            mock_duckdb.connect.side_effect = conns
-            with pytest.raises(RuntimeError, match="concatenation"):
-                download_raw_data_tables(
-                    test_paths, "user", "pass", end_date=dt.date(2025, 12, 31), max_workers=4
-                )
+        with pytest.raises(RuntimeError, match="concatenation"):
+            download_raw_data_tables(
+                test_paths, "user", "pass", end_date=dt.date(2025, 12, 31), max_workers=4
+            )
 
     @patch("jkp.data.aux_functions._concat_chunks")
     @patch("jkp.data.aux_functions._compute_histograms")
     @patch("jkp.data.aux_functions.download_wrds_table_attached")
     def test_parallel_download_splits_giant_tables(
-        self, mock_dl, mock_hist, mock_concat, test_paths
+        self, mock_dl, mock_hist, mock_concat, mock_duckdb_multi, test_paths
     ):
         """End-to-end (mocked): with an end_date, the giant tables expand into max_workers chunks."""
         from jkp.data.aux_functions import SPLIT_TABLES, download_raw_data_tables
@@ -651,14 +651,9 @@ class TestDateRangeSplitting:
 
         mock_dl.side_effect = record
 
-        with patch("jkp.data.aux_functions.duckdb") as mock_duckdb:
-            conns = [MagicMock(name=f"c{i}") for i in range(40)]
-            for c in conns:
-                c.__enter__.return_value = c
-            mock_duckdb.connect.side_effect = conns
-            download_raw_data_tables(
-                test_paths, "user", "pass", end_date=dt.date(2025, 12, 31), max_workers=4
-            )
+        download_raw_data_tables(
+            test_paths, "user", "pass", end_date=dt.date(2025, 12, 31), max_workers=4
+        )
 
         counts = Counter(recorded)
         for split_table in SPLIT_TABLES:
@@ -693,20 +688,15 @@ class TestDateRangeSplitting:
     @patch("jkp.data.aux_functions._compute_histograms")
     @patch("jkp.data.aux_functions.download_wrds_table_attached")
     def test_parallel_download_concatenates_each_split_table(
-        self, mock_dl, mock_hist, mock_concat, test_paths
+        self, mock_dl, mock_hist, mock_concat, mock_duckdb_multi, test_paths
     ):
         """The concat_map -> ThreadPoolExecutor wiring invokes _concat_chunks once per split table."""
         from jkp.data.aux_functions import SPLIT_TABLES, download_raw_data_tables
 
         mock_hist.return_value = dict.fromkeys(SPLIT_TABLES, [(y, 10) for y in range(2010, 2022)])
-        with patch("jkp.data.aux_functions.duckdb") as mock_duckdb:
-            conns = [MagicMock(name=f"c{i}") for i in range(40)]
-            for c in conns:
-                c.__enter__.return_value = c
-            mock_duckdb.connect.side_effect = conns
-            download_raw_data_tables(
-                test_paths, "user", "pass", end_date=dt.date(2025, 12, 31), max_workers=4
-            )
+        download_raw_data_tables(
+            test_paths, "user", "pass", end_date=dt.date(2025, 12, 31), max_workers=4
+        )
 
         assert mock_concat.call_count == len(SPLIT_TABLES)
         for call in mock_concat.call_args_list:
