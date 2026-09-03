@@ -35,6 +35,7 @@ import os
 import re
 import sys
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -64,6 +65,13 @@ _LEGACY_USER_FILE = Path.home() / ".wrds_user"
 # differs from platformdirs on macOS/Windows — so we must use keyring's function,
 # not platformdirs, to find the file keyrings.alt actually wrote.
 _LEGACY_KEYRING_FILE = Path(_keyring_data_root()) / "keyring_pass.cfg"
+
+
+# Signature of the connectivity check injected into get_wrds_credentials. Taking it
+# as a parameter rather than importing it keeps the dependency one-way: wrds_connection
+# imports the WRDS endpoint constants from here, so importing the verifier back would
+# be a cycle. Called as verify(username, password); raises on failure.
+VerifyConnection = Callable[[str, str | None], None]
 
 
 @dataclass(frozen=True)
@@ -542,14 +550,27 @@ def _resolve_username(env_user: str | None = None) -> str:
     )
 
 
-def _prompt_and_store(username: str) -> Credentials:
-    """Interactively obtain a password and persist it to the best available store."""
+def _prompt_verify_store(username: str, verify: VerifyConnection | None = None) -> Credentials:
+    """Interactively obtain a password, verify it, and persist it to the best store.
+
+    Nothing is written until ``verify`` returns. A mistyped password would otherwise
+    be stored and then resolved by every later run, which never re-prompts — leaving
+    the user stuck until they find ``jkp connect --reset``. With ``verify=None`` the
+    password is stored unverified, which is the historical behavior.
+
+    On the no-keyring fallback the check runs against the typed password in the
+    conninfo and the ``~/.pgpass`` line is written afterwards, so it proves the
+    credential rather than the written file.
+    """
     password = getpass.getpass(f"Password or token for {username} at {SERVICE_NAME}: ")
     if not password:
         # An empty password would be stored as a junk ``…:username:`` pgpass line
         # that later "resolves" while auth silently fails — reject it, mirroring
         # the empty-username guard.
         raise RuntimeError(f"Empty password entered for {username}; nothing stored.")
+    if verify is not None:
+        # Raises on failure, so every write below is unreachable for a bad password.
+        verify(username, password)
     # Cache the username alongside the stored password, so a credential provisioned
     # for an env-provided WRDS_USERNAME (which _resolve_username does not persist)
     # is still revocable via `jkp connect --reset` rather than orphaned.
@@ -581,7 +602,14 @@ def _no_credentials_error(username: str) -> RuntimeError:
     )
 
 
-def get_wrds_credentials() -> Credentials:
+def _verified(creds: Credentials, verify: VerifyConnection | None) -> Credentials:
+    """Run the injected connectivity check against already-stored credentials."""
+    if verify is not None:
+        verify(creds.username, creds.password)
+    return creds
+
+
+def get_wrds_credentials(verify: VerifyConnection | None = None) -> Credentials:
     """Resolve WRDS credentials following the documented precedence order.
 
     Steps:
@@ -590,6 +618,13 @@ def get_wrds_credentials() -> Credentials:
       3. Password: ``WRDS_PASSWORD`` → system keyring → ``~/.pgpass``/``$PGPASSFILE``.
       4. If nothing is found and a terminal is available, prompt and store;
          otherwise raise with actionable guidance.
+
+    ``verify`` is an optional connectivity check (in practice
+    ``wrds_connection.verify_wrds_connection``, injected rather than imported to keep
+    the module dependency one-way). When given it runs on every path exactly once —
+    before persisting on the freshly-prompted path, and as a plain check on the paths
+    that read an existing store — so callers must not verify the result again. Each
+    call opens a real WRDS connection, so a second check risks a second Duo MFA push.
     """
     # Strip before the truthiness check so WRDS_USERNAME="   " is treated as
     # unset rather than accepted as username="".
@@ -600,20 +635,20 @@ def get_wrds_credentials() -> Credentials:
         # "password"-named identifier flows into a logging sink — the value is
         # never logged, only the source label.
         _log_source("the WRDS_USERNAME/WRDS_PASSWORD environment variables")
-        return Credentials(env_user, env_pw)  # env_user already stripped/non-empty
+        return _verified(Credentials(env_user, env_pw), verify)  # env_user already stripped
 
     username = _resolve_username(env_user)
 
     if env_pw:
         _log_source("the WRDS_PASSWORD environment variable")
-        return Credentials(username, env_pw)
+        return _verified(Credentials(username, env_pw), verify)
 
     keyring_pw = _keyring_get(username)
     if keyring_pw:
         # The keyring supersedes any legacy plaintext copy; clean it up.
         _cleanup_legacy_keyring_section(username)
         _log_source("the system keyring")
-        return Credentials(username, keyring_pw)
+        return _verified(Credentials(username, keyring_pw), verify)
 
     # One-time migration off the legacy plaintext keyring, reached only when
     # neither an env password nor a system-keyring entry supplied the password.
@@ -646,10 +681,10 @@ def get_wrds_credentials() -> Credentials:
                 file=sys.stderr,
                 flush=True,
             )
-        return Credentials(username, None)
+        return _verified(Credentials(username, None), verify)
 
     if _interactive():
-        return _prompt_and_store(username)
+        return _prompt_verify_store(username, verify)
 
     raise _no_credentials_error(username)
 

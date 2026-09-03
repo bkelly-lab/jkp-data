@@ -120,7 +120,9 @@ def connect(
 
     Opens a real WRDS connection (attaches the database read-only and runs a
     trivial query), so a successful run confirms credentials, connectivity,
-    and MFA all actually work. This may trigger a WRDS Duo MFA push: WRDS trusts a
+    and MFA all actually work. A password entered at the prompt is verified
+    before it is stored, so a typo is never persisted and simply re-prompts on
+    the next run. This may trigger a WRDS Duo MFA push: WRDS trusts a
     username/IP pair for 30 days after a successful approval, so expect one on the
     first run from a new IP and again once that window expires.
 
@@ -157,8 +159,13 @@ def connect(
         # plaintext password may be bound in this frame when the import runs.
         from .wrds_connection import verify_wrds_connection
 
-        creds = get_wrds_credentials()
-        verify_wrds_connection(creds.username, creds.password)
+        # Injected rather than called on the result: on the freshly-prompted path the
+        # check has to run between the prompt and the store, which is inside
+        # get_wrds_credentials. It verifies every resolution path exactly once, so
+        # verifying again here would open a second connection (and risk a second Duo
+        # push). Passing the function also keeps the plaintext password out of this
+        # frame on the prompt path.
+        creds = get_wrds_credentials(verify=verify_wrds_connection)
         typer.echo(f"Connected as: {creds.username}")
     except (RuntimeError, ValueError, OSError) as exc:
         # Anticipated, actionable failures from credential resolution and connection
@@ -168,10 +175,12 @@ def connect(
         # Their messages are password-free; surface the message and exit non-zero rather
         # than dumping a traceback.
         typer.echo(str(exc), err=True)
-        # A mistyped password is stored before it is ever verified, so the next run
-        # finds it, never re-prompts, and fails identically forever. --reset is the
-        # only way out, and it belongs here rather than in the wrds_connection
-        # messages, which pipeline workers share and for which it is not the fix.
+        # Still worth pointing at: a password typed at the prompt is now verified
+        # before it is stored, but one that arrived from an env var, an entry
+        # predating this check, or a hand-edited ~/.pgpass can still be wrong, and
+        # resolution never re-prompts while a stored value exists. Kept at the CLI
+        # layer because the wrds_connection messages are shared with pipeline worker
+        # paths, where --reset is not the right advice.
         typer.echo(
             "If a stored password is wrong, run `jkp connect --reset` and re-enter credentials.",
             err=True,

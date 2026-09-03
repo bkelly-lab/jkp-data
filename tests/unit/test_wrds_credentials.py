@@ -156,19 +156,19 @@ def test_empty_prompt_password_is_rejected(monkeypatch, _isolate_credential_stat
     monkeypatch.setattr("getpass.getpass", lambda *a, **kw: "")
 
     with pytest.raises(RuntimeError, match="[Ee]mpty password"):
-        mod._prompt_and_store("testuser")
+        mod._prompt_verify_store("testuser")
     assert not mod._pgpass_path().exists() or "testuser" not in mod._pgpass_path().read_text()
 
 
 @pytest.mark.unit
-def test_prompt_and_store_persists_username_for_reset(monkeypatch, _isolate_credential_state):
+def test_prompt_verify_store_persists_username_for_reset(monkeypatch, _isolate_credential_state):
     """A credential provisioned for an env-provided WRDS_USERNAME (which the
     resolver does not persist) must still cache the username, so `jkp connect
     --reset` can revoke it rather than leaving an orphaned ~/.pgpass line."""
     mod = _isolate_credential_state
     monkeypatch.setattr("getpass.getpass", lambda *a, **kw: "typed-secret")
 
-    mod._prompt_and_store("env-user")  # no keyring in tests -> written to ~/.pgpass
+    mod._prompt_verify_store("env-user")  # no keyring in tests -> written to ~/.pgpass
 
     assert mod.LAST_USER_FILE.read_text().strip() == "env-user"  # cached for reset
     pgpass = mod._pgpass_path()
@@ -176,6 +176,140 @@ def test_prompt_and_store_persists_username_for_reset(monkeypatch, _isolate_cred
     # ...and reset can now find + remove it
     mod.reset_credentials(full_reset=True)
     assert not pgpass.exists() or "env-user" not in pgpass.read_text()
+
+
+@pytest.mark.unit
+def test_prompt_verify_store_verifies_before_storing(monkeypatch, _isolate_credential_state):
+    """The connectivity check must run before anything is written, so ordering — not
+    just the end state — is what this pins."""
+    mod = _isolate_credential_state
+    monkeypatch.setattr("getpass.getpass", lambda *a, **kw: "typed-secret")
+    events: list[str] = []
+
+    def record_write(_username, _password):
+        events.append("write_pgpass")
+        return mod._pgpass_path()
+
+    monkeypatch.setattr(mod, "_persist_username", lambda u: events.append("persist_username"))
+    monkeypatch.setattr(mod, "_write_pgpass", record_write)
+
+    mod._prompt_verify_store("testuser", lambda u, p: events.append(f"verify:{u}:{p}"))
+
+    assert events[0] == "verify:testuser:typed-secret"
+    assert events[1:] == ["persist_username", "write_pgpass"]
+
+
+@pytest.mark.unit
+def test_failed_verification_stores_nothing(monkeypatch, _isolate_credential_state):
+    """A mistyped password must leave no trace. Otherwise resolution finds it on the
+    next run, never re-prompts, and the user is stuck until they discover --reset."""
+    mod = _isolate_credential_state
+    monkeypatch.setattr("getpass.getpass", lambda *a, **kw: "mistyped")
+    stored: dict[str, str] = {}
+    monkeypatch.setattr(mod.keyring, "set_password", lambda s, u, p: stored.update({u: p}))
+
+    def reject(_username, _password):
+        raise RuntimeError("Failed to attach WRDS connection.")
+
+    with pytest.raises(RuntimeError, match="Failed to attach"):
+        mod._prompt_verify_store("testuser", reject)
+
+    assert stored == {}  # nothing in the keyring
+    assert not mod._pgpass_path().exists()  # nothing in ~/.pgpass
+    assert not mod.LAST_USER_FILE.exists()  # no username cached either
+
+
+@pytest.mark.unit
+def test_verification_failure_leaves_next_run_able_to_prompt(
+    monkeypatch, _isolate_credential_state
+):
+    """End-to-end shape of the fix: a rejected password then a good one, with no
+    --reset in between. The second run must still prompt, which only holds because
+    the first stored nothing."""
+    mod = _isolate_credential_state
+    monkeypatch.setattr(mod, "_interactive", lambda: True)
+    typed = iter(["mistyped", "correct-horse"])
+    monkeypatch.setattr("getpass.getpass", lambda *a, **kw: next(typed))
+    mod.LAST_USER_FILE.parent.mkdir(parents=True, exist_ok=True)
+    mod.LAST_USER_FILE.write_text("testuser")
+    seen: list[str] = []
+
+    def verify(_username, password):
+        seen.append(password)
+        if password == "mistyped":
+            raise RuntimeError("Failed to attach WRDS connection.")
+
+    with pytest.raises(RuntimeError, match="Failed to attach"):
+        mod.get_wrds_credentials(verify=verify)
+    assert not mod._pgpass_path().exists()
+
+    creds = mod.get_wrds_credentials(verify=verify)  # prompts again, no --reset needed
+
+    assert seen == ["mistyped", "correct-horse"]
+    assert creds.username == "testuser"
+    assert "correct-horse" in mod._pgpass_path().read_text()
+
+
+@pytest.mark.unit
+def test_verify_none_stores_without_checking(monkeypatch, _isolate_credential_state):
+    """Default (no verifier injected) keeps the historical behavior, which is what
+    run_pipeline still relies on."""
+    mod = _isolate_credential_state
+    monkeypatch.setattr("getpass.getpass", lambda *a, **kw: "typed-secret")
+
+    creds = mod._prompt_verify_store("testuser")
+
+    assert creds.username == "testuser"
+    assert "typed-secret" in mod._pgpass_path().read_text()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("setup", "expected_password"),
+    [
+        ("env", "env-secret"),
+        ("keyring", "kr-secret"),
+        ("pgpass", None),
+    ],
+)
+def test_stored_credentials_are_verified_exactly_once(
+    monkeypatch, _isolate_credential_state, setup, expected_password
+):
+    """Every resolution path runs the injected check exactly once. The CLI relies on
+    this to skip verifying the result itself — a second call would open a second WRDS
+    connection and risk a second Duo push."""
+    mod = _isolate_credential_state
+    mod.LAST_USER_FILE.parent.mkdir(parents=True, exist_ok=True)
+    mod.LAST_USER_FILE.write_text("testuser")
+    if setup == "env":
+        monkeypatch.setenv("WRDS_PASSWORD", "env-secret")
+    elif setup == "keyring":
+        monkeypatch.setattr(mod.keyring, "get_password", lambda *a, **kw: "kr-secret")
+    else:
+        _write_pgpass(mod, "wrds-pgdata.wharton.upenn.edu:9737:wrds:testuser:stored\n")
+    calls: list[tuple[str, str | None]] = []
+
+    creds = mod.get_wrds_credentials(verify=lambda u, p: calls.append((u, p)))
+
+    assert calls == [("testuser", expected_password)]
+    assert creds.password == expected_password
+
+
+@pytest.mark.unit
+def test_failed_verification_of_stored_credentials_propagates(
+    monkeypatch, _isolate_credential_state
+):
+    """A stored-but-wrong password still fails loudly; it is simply not re-written."""
+    mod = _isolate_credential_state
+    mod.LAST_USER_FILE.parent.mkdir(parents=True, exist_ok=True)
+    mod.LAST_USER_FILE.write_text("testuser")
+    monkeypatch.setattr(mod.keyring, "get_password", lambda *a, **kw: "stale-secret")
+
+    def reject(_username, _password):
+        raise RuntimeError("Failed to attach WRDS connection.")
+
+    with pytest.raises(RuntimeError, match="Failed to attach"):
+        mod.get_wrds_credentials(verify=reject)
 
 
 @pytest.mark.unit
@@ -208,13 +342,13 @@ def test_locked_keyring_warns_and_falls_through(monkeypatch, _isolate_credential
 @pytest.mark.unit
 def test_prompt_stores_to_pgpass_when_keyring_locked(monkeypatch, _isolate_credential_state):
     """The *store* side of a locked keyring: if set_password raises a KeyringError
-    (not NoKeyringError), _prompt_and_store must fall through to ~/.pgpass rather
+    (not NoKeyringError), _prompt_verify_store must fall through to ~/.pgpass rather
     than crash — the write-side mirror of the locked-keyring read fallback."""
     mod = _isolate_credential_state
     monkeypatch.setattr(mod.keyring, "set_password", _raises(mod.keyring.errors.KeyringLocked))
     monkeypatch.setattr("getpass.getpass", lambda *a, **kw: "typed-secret")
 
-    creds = mod._prompt_and_store("testuser")
+    creds = mod._prompt_verify_store("testuser")
 
     assert creds.username == "testuser"
     assert creds.password is None  # written to ~/.pgpass, not returned
@@ -855,7 +989,7 @@ def test_pgpass_escapes_special_username(_isolate_credential_state):
 
 
 @pytest.mark.unit
-def test_prompt_and_store_uses_keyring_when_available(monkeypatch, _isolate_credential_state):
+def test_prompt_verify_store_uses_keyring_when_available(monkeypatch, _isolate_credential_state):
     mod = _isolate_credential_state
     mod.LAST_USER_FILE.parent.mkdir(parents=True, exist_ok=True)
     mod.LAST_USER_FILE.write_text("u")
@@ -873,7 +1007,7 @@ def test_prompt_and_store_uses_keyring_when_available(monkeypatch, _isolate_cred
 
 
 @pytest.mark.unit
-def test_prompt_and_store_falls_back_to_pgpass_without_keyring(
+def test_prompt_verify_store_falls_back_to_pgpass_without_keyring(
     monkeypatch, _isolate_credential_state
 ):
     mod = _isolate_credential_state
