@@ -52,8 +52,8 @@ AP_FACTORS_MONTHLY_INPUT_SCHEMA: dict[str, pl.DataType] = {
     "excntry": pl.String,
     "eom": pl.Date,
     "mktrf": pl.Float64,
-    "hml": pl.Float64,
-    "smb_ff": pl.Float64,
+    "hml_ff": pl.Float64,
+    "smb_ff3": pl.Float64,
 }
 
 
@@ -70,7 +70,7 @@ def _calendar() -> list[date]:
 
 
 def _factor_arrays(seed: int) -> tuple[list[date], np.ndarray, np.ndarray, np.ndarray]:
-    """Draw the (dates, mktrf, hml, smb_ff) factor series deterministically.
+    """Draw the (dates, mktrf, hml_ff, smb_ff3) factor series deterministically.
 
     Kept private and drawn from a fresh ``default_rng(seed)`` so both the factor
     builder and the return builder reproduce the identical ``mktrf`` series.
@@ -78,9 +78,9 @@ def _factor_arrays(seed: int) -> tuple[list[date], np.ndarray, np.ndarray, np.nd
     rng = np.random.default_rng(seed)
     dates = _calendar()
     mktrf = rng.normal(0.005, 0.05, _N_MONTHS)
-    hml = rng.normal(0.0, 0.03, _N_MONTHS)
-    smb_ff = rng.normal(0.0, 0.03, _N_MONTHS)
-    return dates, mktrf, hml, smb_ff
+    hml_ff = rng.normal(0.0, 0.03, _N_MONTHS)
+    smb_ff3 = rng.normal(0.0, 0.03, _N_MONTHS)
+    return dates, mktrf, hml_ff, smb_ff3
 
 
 def _bulk_calendar() -> list[date]:
@@ -89,7 +89,7 @@ def _bulk_calendar() -> list[date]:
 
 
 def _bulk_factor_arrays() -> tuple[list[date], np.ndarray, np.ndarray, np.ndarray]:
-    """Draw the (dates, mktrf, hml, smb_ff) BLK factor series deterministically.
+    """Draw the (dates, mktrf, hml_ff, smb_ff3) BLK factor series deterministically.
 
     Drawn from a fixed ``default_rng(_BULK_SEED)`` so the factor builder and the
     return builder reproduce the identical ``mktrf`` series for the bulk panel.
@@ -97,9 +97,9 @@ def _bulk_factor_arrays() -> tuple[list[date], np.ndarray, np.ndarray, np.ndarra
     rng = np.random.default_rng(_BULK_SEED)
     dates = _bulk_calendar()
     mktrf = rng.normal(0.005, 0.05, _N_BULK_MONTHS)
-    hml = rng.normal(0.0, 0.03, _N_BULK_MONTHS)
-    smb_ff = rng.normal(0.0, 0.03, _N_BULK_MONTHS)
-    return dates, mktrf, hml, smb_ff
+    hml_ff = rng.normal(0.0, 0.03, _N_BULK_MONTHS)
+    smb_ff3 = rng.normal(0.0, 0.03, _N_BULK_MONTHS)
+    return dates, mktrf, hml_ff, smb_ff3
 
 
 def build_ap_factors_monthly_input(seed: int = 42) -> pl.DataFrame:
@@ -107,24 +107,24 @@ def build_ap_factors_monthly_input(seed: int = 42) -> pl.DataFrame:
 
     Description:
         One factor row per (excntry, eom) for the 72-month USA calendar. Only
-        ``mktrf`` is consumed by ``capm``; ``hml``/``smb_ff`` are carried through
+        ``mktrf`` is consumed by ``capm``; ``hml_ff``/``smb_ff3`` are carried through
         ``prep_data_factor_regs`` but unused, so they are non-null noise.
     Steps:
-        1) Draw mktrf ~ N(0.005, 0.05) and hml/smb_ff ~ N(0, 0.03) from rng(seed).
+        1) Draw mktrf ~ N(0.005, 0.05) and hml_ff/smb_ff3 ~ N(0, 0.03) from rng(seed).
         2) Assemble one USA row per month, all non-null (mktrf-IS-NOT-NULL passes).
         3) Append the BLK bulk factor rows (own seed, disjoint eom range).
     Output:
         DataFrame with schema AP_FACTORS_MONTHLY_INPUT_SCHEMA
         (72 USA + _N_BULK_MONTHS BLK rows).
     """
-    dates, mktrf, hml, smb_ff = _factor_arrays(seed)
+    dates, mktrf, hml_ff, smb_ff3 = _factor_arrays(seed)
     usa = pl.DataFrame(
         {
             "excntry": [_EXCNTRY] * _N_MONTHS,
             "eom": dates,
             "mktrf": mktrf,
-            "hml": hml,
-            "smb_ff": smb_ff,
+            "hml_ff": hml_ff,
+            "smb_ff3": smb_ff3,
         },
         schema=AP_FACTORS_MONTHLY_INPUT_SCHEMA,
     )
@@ -134,8 +134,8 @@ def build_ap_factors_monthly_input(seed: int = 42) -> pl.DataFrame:
             "excntry": [_BULK_EXCNTRY] * _N_BULK_MONTHS,
             "eom": b_dates,
             "mktrf": b_mktrf,
-            "hml": b_hml,
-            "smb_ff": b_smb,
+            "hml_ff": b_hml,
+            "smb_ff3": b_smb,
         },
         schema=AP_FACTORS_MONTHLY_INPUT_SCHEMA,
     )

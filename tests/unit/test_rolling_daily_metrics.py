@@ -899,17 +899,17 @@ class TestHxz4:
                 "id_int": [1, 1, 1, 1, 1, 1, 1],
                 "group_number": [10, 10, 10, 10, 10, 10, 10],
                 "mktrf": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
-                "smb_hxz": [0.5, 1.0, 1.5, 0.0, -0.5, 2.0, 1.0],
-                "roe": [2.0, 1.0, 0.0, 3.0, 4.0, -1.0, 2.0],
-                "inv": [0.0, 1.0, 0.5, 2.0, 1.5, -0.5, 1.0],
+                "me_hxz": [0.5, 1.0, 1.5, 0.0, -0.5, 2.0, 1.0],
+                "roe_hxz": [2.0, 1.0, 0.0, 3.0, 4.0, -1.0, 2.0],
+                "ia_hxz": [0.0, 1.0, 0.5, 2.0, 1.5, -0.5, 1.0],
             }
         ).with_columns(
             (
                 1.0
                 + 2.0 * pl.col("mktrf")
-                + 3.0 * pl.col("smb_hxz")
-                + 4.0 * pl.col("roe")
-                + 5.0 * pl.col("inv")
+                + 3.0 * pl.col("me_hxz")
+                + 4.0 * pl.col("roe_hxz")
+                + 5.0 * pl.col("ia_hxz")
             ).alias("ret_exc")
         )
 
@@ -929,17 +929,17 @@ class TestHxz4:
                 "id_int": [1, 1, 1, 1, 1, 1, 1],
                 "group_number": [10, 10, 10, 10, 10, 10, 10],
                 "mktrf": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
-                "smb_hxz": [0.5, 1.0, 1.5, 0.0, -0.5, 2.0, 1.0],
-                "roe": [2.0, 1.0, 0.0, 3.0, 4.0, -1.0, 2.0],
-                "inv": [0.0, 1.0, 0.5, 2.0, 1.5, -0.5, 1.0],
+                "me_hxz": [0.5, 1.0, 1.5, 0.0, -0.5, 2.0, 1.0],
+                "roe_hxz": [2.0, 1.0, 0.0, 3.0, 4.0, -1.0, 2.0],
+                "ia_hxz": [0.0, 1.0, 0.5, 2.0, 1.5, -0.5, 1.0],
             }
         ).with_columns(
             (
                 1.0
                 + 2.0 * pl.col("mktrf")
-                + 3.0 * pl.col("smb_hxz")
-                + 4.0 * pl.col("roe")
-                + 5.0 * pl.col("inv")
+                + 3.0 * pl.col("me_hxz")
+                + 4.0 * pl.col("roe_hxz")
+                + 5.0 * pl.col("ia_hxz")
             ).alias("ret_exc")
         )
         low_min = hxz4(df, "_21d", __min=1).sort(["id_int", "group_number"])
@@ -953,9 +953,9 @@ class TestHxz4:
                 "group_number": pl.Int64,
                 "ret_exc": pl.Float64,
                 "mktrf": pl.Float64,
-                "smb_hxz": pl.Float64,
-                "roe": pl.Float64,
-                "inv": pl.Float64,
+                "me_hxz": pl.Float64,
+                "roe_hxz": pl.Float64,
+                "ia_hxz": pl.Float64,
             }
         )
         result = hxz4(df, "_21d", __min=15)
@@ -1697,8 +1697,11 @@ class TestPrepareDailyCorr:
                 "excntry": ["USA"] * len(all_dates),
                 "date": all_dates,
                 "mktrf": [0.005] * len(all_dates),
-                "smb": [0.001] * len(all_dates),
-                "hml": [0.001] * len(all_dates),
+                "smb_ff3": [0.001] * len(all_dates),
+                "hml_ff": [0.001] * len(all_dates),
+                "me_hxz": [0.001] * len(all_dates),
+                "ia_hxz": [0.001] * len(all_dates),
+                "roe_hxz": [0.001] * len(all_dates),
             }
         )
         fcts_path = test_paths.interim_dir / "fcts.parquet"
@@ -1753,8 +1756,11 @@ class TestPrepareDailyCorr:
                 "excntry": ["USA"] * 10,
                 "date": dates,
                 "mktrf": [0.005] * 10,
-                "smb": [0.001] * 10,
-                "hml": [0.001] * 10,
+                "smb_ff3": [0.001] * 10,
+                "hml_ff": [0.001] * 10,
+                "me_hxz": [0.001] * 10,
+                "ia_hxz": [0.001] * 10,
+                "roe_hxz": [0.001] * 10,
             }
         )
         fcts_path = test_paths.interim_dir / "fcts.parquet"
@@ -1796,8 +1802,11 @@ class TestPrepareDailyCorr:
                 "excntry": ["USA"],
                 "date": [date(2020, 1, 2)],
                 "mktrf": [0.005],
-                "smb": [0.001],
-                "hml": [0.001],
+                "smb_ff3": [0.001],
+                "hml_ff": [0.001],
+                "me_hxz": [0.001],
+                "ia_hxz": [0.001],
+                "roe_hxz": [0.001],
             }
         )
         fcts_path = test_paths.interim_dir / "fcts.parquet"
