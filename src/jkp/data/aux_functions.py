@@ -580,7 +580,6 @@ def gen_crsp_sf(paths: DataPaths, freq):
         cfacshr_expr = sf.dlycumfacshr
         askhi_expr = sf.dlyhigh
         bidlo_expr = sf.dlylow
-        del_flag_expr = sf.dlydelflg
         open_expr = sf.dlyopen
         close_expr = sf.dlyclose
 
@@ -645,56 +644,60 @@ def gen_crsp_sf(paths: DataPaths, freq):
         else ibis.null()
     )
 
-    result = full_join.mutate(
-        date=date_expr,
-        bidask=bidask_expr,
-        prc=prc_expr,
-        shrout=(sf.shrout / 1000),
-        me=(prc_expr * (sf.shrout / 1000)),
-        prc_high=ibis.cases(((prc_expr > 0) & (askhi_expr > 0), askhi_expr), else_=ibis.null()),
-        prc_low=ibis.cases(((prc_expr > 0) & (bidlo_expr > 0), bidlo_expr), else_=ibis.null()),
-        prc_open=prc_open_mutate,
-        prc_close=prc_close_mutate,
-        iid=ccmxpf_lnkhist.liid,
-        ret=ret_expr,
-        retx=retx_expr,
-        cfacshr=cfacshr_expr,
-        vol=vol_expr,
-        del_flag=del_flag_expr,
-        common=is_common_expr.cast("int32"),
-        primaryexch=primaryexch_expr,
-        conditionaltype=conditionaltype_expr,
-        exch_main=exch_main_expr,
-        crsp_nyse=crsp_nyse_expr,
-        gvkey=ccmxpf_lnkhist.gvkey,
-    ).select(
-        [
-            "permno",
-            "permco",
-            "date",
-            "bidask",
-            "prc",
-            "prc_open",
-            "prc_close",
-            "shrout",
-            "ret",
-            "retx",
-            "cfacshr",
-            "vol",
-            "prc_high",
-            "prc_low",
-            "del_flag",
-            "common",
-            "primaryexch",
-            "conditionaltype",
-            "crsp_nyse",
-            "gvkey",
-            "iid",
-            "exch_main",
-            "me",
-            "ticker",
-        ]
-    )
+    mutate_fields = {
+        "date": date_expr,
+        "bidask": bidask_expr,
+        "prc": prc_expr,
+        "shrout": (sf.shrout / 1000),
+        "me": (prc_expr * (sf.shrout / 1000)),
+        "prc_high": ibis.cases(((prc_expr > 0) & (askhi_expr > 0), askhi_expr), else_=ibis.null()),
+        "prc_low": ibis.cases(((prc_expr > 0) & (bidlo_expr > 0), bidlo_expr), else_=ibis.null()),
+        "prc_open": prc_open_mutate,
+        "prc_close": prc_close_mutate,
+        "iid": ccmxpf_lnkhist.liid,
+        "ret": ret_expr,
+        "retx": retx_expr,
+        "cfacshr": cfacshr_expr,
+        "vol": vol_expr,
+        "common": is_common_expr.cast("int32"),
+        "primaryexch": primaryexch_expr,
+        "conditionaltype": conditionaltype_expr,
+        "exch_main": exch_main_expr,
+        "crsp_nyse": crsp_nyse_expr,
+        "gvkey": ccmxpf_lnkhist.gvkey,
+    }
+    select_cols = [
+        "permno",
+        "permco",
+        "date",
+        "bidask",
+        "prc",
+        "prc_open",
+        "prc_close",
+        "shrout",
+        "ret",
+        "retx",
+        "cfacshr",
+        "vol",
+        "prc_high",
+        "prc_low",
+        "common",
+        "primaryexch",
+        "conditionaltype",
+        "crsp_nyse",
+        "gvkey",
+        "iid",
+        "exch_main",
+        "me",
+        "ticker",
+    ]
+    # del_flag is only needed on the monthly path for the CIZ delist-return
+    # adjustment in prepare_crsp_sf; the daily path never reads it.
+    if freq == "m":
+        mutate_fields["del_flag"] = del_flag_expr
+        select_cols.insert(select_cols.index("common"), "del_flag")
+
+    result = full_join.mutate(**mutate_fields).select(select_cols)
     return result
 
 
@@ -2717,10 +2720,12 @@ def prepare_crsp_sf(paths: DataPaths, freq):
     Steps:
         1) Read raw_data_dfs/__crsp_sf_{freq}.parquet; cast key numeric columns; apply NASDAQ volume adjustment.
         2) Compute dollar volume and infer dividend totals from (ret − retx) scaled by lagged price and split factors.
-        3) Join CRSP delists (crsp_{freq}sedelist); apply CIZ flag-conditional delisting-return
-           adjustment: for monthly, only compound delret into ret when del_flag is M (unobserved
-           payoff), preserving the −0.30 imputation for bad-delist buckets; for daily, skip
-           compounding entirely since DlyRet already reflects (or excludes) the delisting payoff.
+        3) Monthly only: join CRSP delists (crsp_msedelist); apply CIZ flag-conditional
+           delisting-return adjustment — compound delret into ret unless del_flag is A or P
+           (payoff already in MthRet), preserving the −0.30 imputation for bad-delist buckets.
+           Daily path skips the sedelist join entirely: DlyRet already reflects (or excludes)
+           the delisting payoff, so the join would add ~110 M rows of unused columns that are
+           dropped at the end — wasted work plus a latent fan-out / nondeterminism risk.
         4) Join risk-free proxies (CRSP T-bill and FF RF) and compute excess return ret_exc; compute company ME by summing ME across permnos within permco-date.
         5) If daily, compute LPS (2019) overnight/intraday returns (USD and local).
         6) If monthly, rescale vol and dolvol for unit alignment.
@@ -2776,64 +2781,12 @@ def prepare_crsp_sf(paths: DataPaths, freq):
         )
     )
 
-    crsp_sedelist_aux_col = (
-        [gen_MMYY_column("delistingdt").alias("merge_aux")]
-        if (freq == "m")
-        else [col("delistingdt").alias("date")]
-    )
-
-    crsp_sedelist = pl.scan_parquet(
-        paths.interim_dir / "raw_data_dfs" / f"crsp_{freq}sedelist.parquet"
-    ).with_columns(crsp_sedelist_aux_col)
-
     crsp_mcti = add_MMYY_column_drop_original(
         pl.scan_parquet(paths.interim_dir / "raw_data_dfs" / "crsp_mcti_t30ret.parquet"), "caldt"
     )
     ff_factors_monthly = add_MMYY_column_drop_original(
         pl.scan_parquet(paths.interim_dir / "raw_data_dfs" / "ff_factors_monthly.parquet"), "date"
     )
-
-    c1 = col("delret").is_null()
-
-    # CIZ replacement for legacy "dlstcd == 500"
-    c2 = (
-        (col("delreasontype") == "UNAV")
-        & (col("delactiontype") == "GDR")
-        & (col("delpaymenttype") == "PRCF")
-        & (col("delstatustype") == "VCL")
-    )
-
-    # CIZ replacement for legacy "dlstcd between 520 and 584"
-    c3 = (
-        (col("delactiontype") == "GDR")
-        & (col("delpaymenttype") == "PRCF")
-        & (col("delstatustype") == "VCL")
-        & col("delreasontype").is_in(
-            [
-                "MVOT",  # Move to OTC
-                "MTMK",  # Market Makers
-                "SHLD",  # Shareholders
-                "LP",  # Low Price
-                "INSC",  # Insufficient Capital
-                "INSF",  # Insufficient Float
-                "CORQ",  # Company Request
-                "DERE",  # Deregistration
-                "BKPY",  # Bankruptcy
-                "OFFRE",  # Offer Rescinded
-                "DELQ",  # Delinquent
-                "FARG",  # Failure to Register
-                "EQRQ",  # Equity Requirements
-                "DEEX",  # Denied Exception
-                "FING",  # Financial Guidelines
-            ]
-        )
-    )
-
-    c4 = c1 & (c2 | c3)
-
-    c5 = col("ret").is_null()
-    c6 = col("delret").is_not_null()
-    c7 = c5 & c6
 
     me_company_exp = (
         pl.when(pl.count("me").over(["permco", "date"]) != 0)
@@ -2844,30 +2797,111 @@ def prepare_crsp_sf(paths: DataPaths, freq):
     scale = 1 if (freq == "m") else 21
     ret_exc_exp = col("ret") - pl.coalesce(["t30ret", "rf"]) / scale
 
-    __crsp_sf = __crsp_sf.join(crsp_sedelist, how="left", on=merge_vars)
-
     # CIZ flag-conditional delisting-return adjustment (Xia 2026, SSRN 7243220).
     #
     # Monthly: MthDelFlg (propagated as del_flag) indicates whether MthRet
-    # already includes the delisting payoff.  Only flag M (unobserved terminal
-    # payoff) requires compounding; A/P/V/G/N already reflect (or exclude) the
-    # payoff in MthRet.
+    # already includes the delisting payoff:
+    #   A/P — payoff already compounded into MthRet → skip compounding
+    #   M   — delisting return missing          → compound (+ impute −0.30
+    #         for bad-delist buckets when delret is null)
+    #   G   — delisting return excluded (date gap >10 trading days) → compound
+    #   N   — no delist this period (delret typically null after join) → compound
+    #         is a no-op in practice
+    #   null — no delisting event in the stock file → treated as "needs
+    #          compound" (fill_null makes the gate true); in practice delret is
+    #          null after the left join so compounding is a no-op, but if a
+    #          sedelist row does join the payoff is correctly folded in
+    #
+    # Rule: compound unless the flag says the payoff is already in MthRet
+    # (A or P).  Null del_flag is also excluded (is_in returns null → falsy).
     #
     # Daily: DlyDelFlg is Y (delisting return in DlyRet) or N (ordinary return);
-    # in neither case should DelRet be compounded.
+    # in neither case should DelRet be compounded.  The sedelist columns
+    # (delret, delistingdt, delreasontype, …) are never consumed on the daily
+    # path and are dropped at the end — so we skip the ~110 M-row join entirely
+    # to avoid wasted work and a latent fan-out / nondeterminism risk.
     if freq == "m":
-        is_m_flag = col("del_flag") == "M"
+        crsp_sedelist = pl.scan_parquet(
+            paths.interim_dir / "raw_data_dfs" / "crsp_msedelist.parquet"
+        ).with_columns(gen_MMYY_column("delistingdt").alias("merge_aux"))
+
+        __crsp_sf = __crsp_sf.join(crsp_sedelist, how="left", on=merge_vars)
+
+        # Validate del_flag values — warn if CRSP introduces a new flag we
+        # haven't explicitly classified as "payoff already in MthRet" or not.
+        _KNOWN_DEL_FLAGS = {"A", "P", "M", "G", "N", "V"}
+        _observed_flags = (
+            __crsp_sf.select(col("del_flag").drop_nulls().unique()).collect().to_series().to_list()
+        )
+        _unexpected = set(_observed_flags) - _KNOWN_DEL_FLAGS
+        if _unexpected:
+            warnings.warn(
+                f"Unexpected MthDelFlg values {sorted(_unexpected)!r} in CRSP stock file; "
+                "these will be compounded with delret (not in A/P exclusion list). "
+                "Review CRSP documentation and update the A/P gate if needed.",
+                stacklevel=2,
+            )
+
+        c1 = col("delret").is_null()
+
+        # CIZ replacement for legacy "dlstcd == 500"
+        c2 = (
+            (col("delreasontype") == "UNAV")
+            & (col("delactiontype") == "GDR")
+            & (col("delpaymenttype") == "PRCF")
+            & (col("delstatustype") == "VCL")
+        )
+
+        # CIZ replacement for legacy "dlstcd between 520 and 584"
+        c3 = (
+            (col("delactiontype") == "GDR")
+            & (col("delpaymenttype") == "PRCF")
+            & (col("delstatustype") == "VCL")
+            & col("delreasontype").is_in(
+                [
+                    "MVOT",  # Move to OTC
+                    "MTMK",  # Market Makers
+                    "SHLD",  # Shareholders
+                    "LP",  # Low Price
+                    "INSC",  # Insufficient Capital
+                    "INSF",  # Insufficient Float
+                    "CORQ",  # Company Request
+                    "DERE",  # Deregistration
+                    "BKPY",  # Bankruptcy
+                    "OFFRE",  # Offer Rescinded
+                    "DELQ",  # Delinquent
+                    "FARG",  # Failure to Register
+                    "EQRQ",  # Equity Requirements
+                    "DEEX",  # Denied Exception
+                    "FING",  # Financial Guidelines
+                ]
+            )
+        )
+
+        c4 = c1 & (c2 | c3)
+
+        c5 = col("ret").is_null()
+        c6 = col("delret").is_not_null()
+        c7 = c5 & c6
+
+        # Gate: compound unless A/P.  fill_null(False) ensures null del_flag
+        # (no delisting event in the stock file) also enters the compound branch
+        # rather than silently skipping the adjustment.  For these rows delret is
+        # typically null (no sedelist match), so coalesce(delret, 0) yields 1 and
+        # compounding is a no-op — but if a sedelist row does join, the payoff is
+        # correctly folded in instead of being silently dropped.
+        needs_compound = ~col("del_flag").is_in(["A", "P"]).fill_null(False)
         __crsp_sf = (
             __crsp_sf
-            # impute missing delret to -0.30 for "bad delist" buckets, M flag only
+            # impute missing delret to -0.30 for "bad delist" buckets
             .with_columns(
-                delret=pl.when(is_m_flag & c4).then(pl.lit(-0.3)).otherwise(col("delret"))
+                delret=pl.when(needs_compound & c4).then(pl.lit(-0.3)).otherwise(col("delret"))
             )
-            # if ret missing but delret exists under M flag, set ret=0
-            .with_columns(ret=pl.when(is_m_flag & c7).then(pl.lit(0.0)).otherwise(col("ret")))
-            # compound ret with delret only for M-flagged observations
+            # if ret missing but delret exists, set ret=0 so compounding works
+            .with_columns(ret=pl.when(needs_compound & c7).then(pl.lit(0.0)).otherwise(col("ret")))
+            # compound ret with delret unless payoff is already in MthRet (A/P)
             .with_columns(
-                ret=pl.when(is_m_flag)
+                ret=pl.when(needs_compound)
                 .then((col("ret") + 1) * (pl.coalesce(["delret", 0.0]) + 1) - 1)
                 .otherwise(col("ret"))
             )
@@ -2911,24 +2945,19 @@ def prepare_crsp_sf(paths: DataPaths, freq):
             [(col(var) * 100).alias(var) for var in ["vol", "dolvol"]]
         )
 
-    __crsp_sf = (
-        __crsp_sf.drop(
-            [
-                "rf",
-                "t30ret",
-                "merge_aux",
-                "del_flag",
-                "delret",
-                "delistingdt",
-                "delreasontype",
-                "delactiontype",
-                "delpaymenttype",
-                "delstatustype",
-            ]
-        )
-        .unique(["permno", "date"])
-        .sort(["permno", "date"])
-    )
+    drop_cols = ["rf", "t30ret", "merge_aux"]
+    if freq == "m":
+        drop_cols += [
+            "del_flag",
+            "delret",
+            "delistingdt",
+            "delreasontype",
+            "delactiontype",
+            "delpaymenttype",
+            "delstatustype",
+        ]
+
+    __crsp_sf = __crsp_sf.drop(drop_cols).unique(["permno", "date"]).sort(["permno", "date"])
 
     __crsp_sf.collect().write_parquet(paths.interim_dir / f"crsp_{freq}sf.parquet")
 

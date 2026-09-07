@@ -68,6 +68,12 @@ SCHEMA_CRSP_SF: dict[str, pl.DataType] = {
     "ticker": pl.Utf8,
 }
 
+# Daily variant: gen_crsp_sf no longer emits del_flag for freq="d" (the daily
+# path never consumed it — see prepare_crsp_sf skip of the sedelist join).
+SCHEMA_CRSP_DSF: dict[str, pl.DataType] = {
+    k: v for k, v in SCHEMA_CRSP_SF.items() if k != "del_flag"
+}
+
 SCHEMA_SEDELIST: dict[str, pl.DataType] = {
     "delret": pl.Float64,
     "delactiontype": pl.Utf8,
@@ -323,27 +329,17 @@ def build_crsp_sf_input(freq: str) -> pl.DataFrame:
             ),
             # 20002 permco 200 NYSE, same day as 20001 d3 -> me_company daily sum.
             _crsp_row(20002, 200, date(2000, 1, 5), 20.0, 1.0, 0.02, 0.02, 500, 80.0, nasdaq=False),
-            # 20003 permco 203: delist only on the exact day 2000-01-07.
+            # 20003 permco 203: two consecutive days; ret is pass-through (no
+            # sedelist join on the daily path).
             _crsp_row(20003, 203, date(2000, 1, 6), 15.0, 1.0, 0.03, 0.03, 300, 50.0, nasdaq=False),
-            _crsp_row(
-                20003,
-                203,
-                date(2000, 1, 7),
-                15.0,
-                1.0,
-                0.04,
-                0.04,
-                310,
-                52.0,
-                nasdaq=False,
-                del_flag="Y",
-            ),
+            _crsp_row(20003, 203, date(2000, 1, 7), 15.0, 1.0, 0.04, 0.04, 310, 52.0, nasdaq=False),
             # 20004 permco 204: t30ret present -> ret_exc = ret - t30ret/21.
             _crsp_row(20004, 204, date(2000, 1, 4), 9.0, 1.0, 0.05, 0.05, 90, 60.0, nasdaq=False),
         ]
     else:
         rows = []
-    return pl.DataFrame(rows + _build_bulk_rows(freq), schema=SCHEMA_CRSP_SF)
+    schema = SCHEMA_CRSP_SF if freq == "m" else SCHEMA_CRSP_DSF
+    return pl.DataFrame(rows + _build_bulk_rows(freq), schema=schema)
 
 
 def _del_row(
@@ -449,28 +445,31 @@ def build_ff_input() -> pl.DataFrame:
 
 
 def write_all_inputs(paths: DataPaths, freq: str) -> None:
-    """Write the six input parquets ``prepare_crsp_sf`` reads for one freq.
+    """Write the input parquets ``prepare_crsp_sf`` reads for one freq.
 
     Description:
-        Materialize the freq-specific panel + delist and the two shared monthly
-        rf tables to the exact interim/raw_data_dfs paths the function scans.
+        Materialize the freq-specific panel, the two shared monthly rf tables,
+        and (monthly only) the sedelist to the exact interim/raw_data_dfs paths
+        the function scans.  The daily path never joins the sedelist, so no
+        sedelist file is written when freq="d".
     Steps:
         1) Ensure interim/raw_data_dfs exists.
-        2) Write __crsp_sf_{freq}, crsp_{freq}sedelist, crsp_mcti_t30ret,
-           ff_factors_monthly.
+        2) Write __crsp_sf_{freq}, crsp_mcti_t30ret, ff_factors_monthly.
+        3) Monthly only: write crsp_msedelist.
     Output:
         None (side effect: parquet files on disk).
     """
     raw_dir = paths.interim_dir / "raw_data_dfs"
     raw_dir.mkdir(parents=True, exist_ok=True)
     build_crsp_sf_input(freq).write_parquet(raw_dir / f"__crsp_sf_{freq}.parquet")
-    build_sedelist_input(freq).write_parquet(raw_dir / f"crsp_{freq}sedelist.parquet")
+    if freq == "m":
+        build_sedelist_input(freq).write_parquet(raw_dir / "crsp_msedelist.parquet")
     build_mcti_input().write_parquet(raw_dir / "crsp_mcti_t30ret.parquet")
     build_ff_input().write_parquet(raw_dir / "ff_factors_monthly.parquet")
 
 
 def write_empty_inputs(paths: DataPaths, freq: str) -> None:
-    """Write 0-row typed versions of the four input parquets for one freq.
+    """Write 0-row typed versions of the input parquets for one freq.
 
     Description:
         Materialize empty but fully-typed inputs so tests can assert that
@@ -478,12 +477,15 @@ def write_empty_inputs(paths: DataPaths, freq: str) -> None:
     Steps:
         1) Ensure interim/raw_data_dfs exists.
         2) Write each table as an empty DataFrame carrying its schema.
+        3) Monthly only: write the empty sedelist.
     Output:
         None (side effect: 0-row parquet files on disk).
     """
     raw_dir = paths.interim_dir / "raw_data_dfs"
     raw_dir.mkdir(parents=True, exist_ok=True)
-    pl.DataFrame(schema=SCHEMA_CRSP_SF).write_parquet(raw_dir / f"__crsp_sf_{freq}.parquet")
-    pl.DataFrame(schema=SCHEMA_SEDELIST).write_parquet(raw_dir / f"crsp_{freq}sedelist.parquet")
+    sf_schema = SCHEMA_CRSP_SF if freq == "m" else SCHEMA_CRSP_DSF
+    pl.DataFrame(schema=sf_schema).write_parquet(raw_dir / f"__crsp_sf_{freq}.parquet")
+    if freq == "m":
+        pl.DataFrame(schema=SCHEMA_SEDELIST).write_parquet(raw_dir / "crsp_msedelist.parquet")
     pl.DataFrame(schema=SCHEMA_MCTI).write_parquet(raw_dir / "crsp_mcti_t30ret.parquet")
     pl.DataFrame(schema=SCHEMA_FF).write_parquet(raw_dir / "ff_factors_monthly.parquet")
