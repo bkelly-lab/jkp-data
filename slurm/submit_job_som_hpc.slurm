@@ -13,21 +13,23 @@
 # proceeding to `jkp portfolio` against incomplete data.
 set -e
 
-echo '-------------------------------'
-cd "${SLURM_SUBMIT_DIR}"
-echo "${SLURM_SUBMIT_DIR}"
-echo "Running on host $(hostname)"
-echo "Time is $(date)"
-echo "SLURM_NODES are ${SLURM_NODELIST}"
-echo '-------------------------------'
-echo
-
 # Output directory for the pipeline, taken from the first script argument.
 # Relative paths resolve against the submit directory. Defaults to "data":
 #
 #     sbatch slurm/submit_job_som_hpc.slurm /path/to/output
 #
+# Assigned after the cd below so relative paths resolve against the submit
+# directory, and echoed so the job log records where the run actually wrote.
+echo '-------------------------------'
+cd "${SLURM_SUBMIT_DIR}"
 OUTPUT_DIR="${1:-data}"
+echo "${SLURM_SUBMIT_DIR}"
+echo "Running on host $(hostname)"
+echo "Time is $(date)"
+echo "SLURM_NODES are ${SLURM_NODELIST}"
+echo "Output directory is $(realpath -m "${OUTPUT_DIR}")"
+echo '-------------------------------'
+echo
 
 # (Optional) Make threaded libs respect Slurm CPU allocation
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
