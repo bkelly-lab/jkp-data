@@ -254,6 +254,7 @@ class TestDownloadWrdsTable:
             filename="out.parquet",
             date_column=date_column,
             end_date=end_date,
+            password=None,
         )
         return mock_conn.execute.call_args[0][0]
 

@@ -721,6 +721,16 @@ def gen_wrds_connection_info(user, password: str | None = None) -> str:
 
     When ``password`` is ``None`` the ``password=`` field is omitted, so libpq
     authenticates from ``$PGPASSFILE`` / ``~/.pgpass`` instead.
+
+    Password-masking note: DuckDB's *statement* echo (``LINE 1: ...``) is a caret-centered window
+    with front elision (``...``), not a head-anchored cut, so field ordering does NOT make it safe --
+    a left cut whose window starts inside the password leaves only a tail fragment, and ``password=``
+    coming last actually maximizes that tail exposure. This isn't defended here by ordering; it's
+    defended downstream: connection-stage errors echo the full conninfo untruncated (detection fires
+    and masks), and the guards use fragment-tolerant detection that fails closed on a truncated echo
+    (see :func:`_password_leak_in_error`, which also notes the one gap -- a truncated echo that
+    retains fewer than 8 consecutive form characters). A truncated statement echo is also unreachable
+    through the current call sites, whose SQL templates are fixed and conninfo is ``_sql_literal``d.
     """
     parts = [
         f"host={WRDS_HOST}",
@@ -744,9 +754,10 @@ def gen_wrds_connection_info(user, password: str | None = None) -> str:
 def _password_forms(password: str) -> tuple[str, str, str]:
     """The forms the password can take on its way into an error message: raw, the
     libpq-escaped conninfo form (echoed by a connection IOException), and the
-    SQL-escaped-then-libpq-escaped form (echoed from the raw statement text by a
-    parser error). Ordered most-escaped first so redaction replaces the longest
-    match before its shorter substrings."""
+    libpq-escaped form with SQL-escaping applied on top (echoed from the raw statement
+    text by a parser error -- ``_sql_literal(_pg_escape_value(pw))``, libpq first then SQL).
+    Ordered most-escaped first so redaction replaces the longest match before its shorter
+    substrings."""
     escaped = _pg_escape_value(password)
     return (_sql_literal(escaped), escaped, password)
 
@@ -754,23 +765,207 @@ def _password_forms(password: str) -> tuple[str, str, str]:
 def _password_in_error(text: str, password: str) -> bool:
     """True if the password appears in ``text`` in any of the forms it can take in
     an error message (see :func:`_password_forms`)."""
+    if not password:  # an empty password has no forms to find; "" is a substring of everything
+        return False
     return any(form in text for form in _password_forms(password))
 
 
 def _redact_password(text: str, password: str) -> str:
     """Replace the password with ``***`` in every form it can take in an error
     message (see :func:`_password_forms`)."""
+    if not password:  # guard against "" interleaving *** between every character
+        return text
     for form in _password_forms(password):
         text = text.replace(form, "***")
     return text
 
 
-def get_columns(conn, conninfo, lib, table):
-    cols = conn.execute(f"""
-        SELECT *
-        FROM postgres_scan('{_sql_literal(conninfo)}', '{lib}', '{table}')
-        LIMIT 0
-    """).description
+# A run of this many consecutive password-form characters in an error is treated as a leak. DuckDB's
+# ``LINE 1: ...`` statement excerpt is a caret-centered window with front elision that can slice a
+# password mid-string, leaving only a fragment that no complete-form check would catch (see
+# :func:`gen_wrds_connection_info`). Long enough that a coincidental match against real error text is
+# implausible for a real (high-entropy) WRDS password; a password made of common words could still
+# false-positive, which only over-masks (never leaks). It also bounds what fragment detection can
+# reach: an echo retaining fewer than this many consecutive form chars fails open -- see the
+# limitation in :func:`_password_leak_in_error`.
+_MIN_LEAK_FRAGMENT = 8
+
+
+def _password_leak_in_error(text: str, password: str) -> bool:
+    """True if the password appears in ``text`` in full *or* as a truncated fragment.
+
+    Connection-stage failures echo the full conninfo (a complete :func:`_password_forms` form
+    appears), but a statement-echo error can slice a form, leaving a prefix/suffix. Detection catches
+    both by scanning ``_MIN_LEAK_FRAGMENT``-char windows of ``text`` (bounded by the error length,
+    not the password length).
+
+    Known limitation -- short surviving runs: fragment matching needs a run of ``_MIN_LEAK_FRAGMENT``
+    consecutive form characters, so ANY echo that retains fewer than that (<= 7) consecutive form
+    chars fails open (re-raised raw), regardless of the password's length. A short password (every
+    form < 8 chars) hits this on *any* truncation and so is the guaranteed case; a longer password
+    hits it only when the cut happens to leave a <= 7-char run. This is not fixable by lowering the
+    window: any window short enough to catch a <= 7-char run (<= 6, <= 4, ...) false-positives on
+    ordinary error text, which would over-mask real diagnostics. It is a narrow gap -- the
+    truncated-echo path is unreachable through the current fixed, ``_sql_literal``-escaped call
+    sites -- so it is disclosed rather than papered over."""
+    if not password:
+        return False
+    forms = _password_forms(password)
+    if any(form in text for form in forms):  # fast path: a complete form is present
+        return True
+    if len(text) < _MIN_LEAK_FRAGMENT:
+        return False
+    for i in range(len(text) - _MIN_LEAK_FRAGMENT + 1):
+        window = text[i : i + _MIN_LEAK_FRAGMENT]
+        if any(window in form for form in forms):
+            return True
+    return False
+
+
+_GuardT = TypeVar("_GuardT")
+
+
+def _guard_password_errors(
+    password: str | None, transform: Callable[[str], str], fn: Callable[[], _GuardT]
+) -> _GuardT:
+    """Shared core for the password-leak guards below. Runs ``fn()`` and returns its result.
+
+    DuckDB's postgres extension embeds the full conninfo (including the password) in the error text
+    of a failed ``postgres_scan('...')`` / ``ATTACH '...'``. If ``fn`` raises an error whose text
+    carries the password (in any of the forms it can take -- see :func:`_password_forms`), re-raise
+    ``RuntimeError(transform(text))``. Errors that don't carry the password (e.g. a missing table)
+    propagate unchanged.
+
+    Channels through which the raw (password-bearing) error text could re-surface are closed:
+
+    1. The exception *chain*: the replacement is raised *outside* the ``except`` block, so the
+       original exception is not attached as ``__context__``/``__cause__`` and can't be recovered by
+       anything that walks the chain (Sentry-style capture). A context-manager form can't do this:
+       raising the replacement from ``__exit__`` runs while the body's exception is still the one
+       being handled, so Python sets it as the new exception's ``__context__`` (verified
+       empirically). The guard must therefore wrap the call itself and raise after the ``except``.
+    2. This frame's *locals*: the raise-site frame is the one ``pytest --showlocals`` (and
+       Sentry-style local capture) renders, and it is the only frame that holds the raw error
+       string, so its locals are dropped in ``finally`` before the traceback escapes. (Stdlib
+       ``logging`` with ``exc_info`` does *not* render locals, so it was never at risk.)
+    3. Exotic exits: if ``transform`` itself raises anything (a ``MemoryError``, or a
+       ``KeyboardInterrupt`` landing inside it), the raw text sits on its frame -- that
+       sub-traceback is dropped. If a ``KeyboardInterrupt`` lands in the microsecond detection
+       window instead, the raw exception would ride out as its ``__context__`` (severed) and on the
+       detection/guard frames (dropped by nulling the interrupt's traceback). Both leave the raw
+       text unreachable via the escaping exception's chain or frame locals.
+
+    Not in scope: caller frames still hold ``password``/``conninfo`` in their own locals; that
+    exposure is inherent to those call sites and can't be closed from here. Only the raw error text
+    -- unique to this frame -- is scrubbed.
+    """
+    text: str | None = None
+    try:
+        return fn()
+    except Exception as e:
+        try:
+            detail = str(e)  # inside the guarded region: a raising __str__ can't chain the raw
+            leaked = bool(password) and _password_leak_in_error(detail, password)
+        except BaseException as interrupt:  # e.g. Ctrl-C mid-detection, or a raising __str__
+            interrupt.__context__ = None  # don't chain the raw exception onto the interrupt
+            interrupt.__traceback__ = None  # drop the detection frame (holds the raw text)
+            raise
+        if not leaked:
+            raise
+        text = detail
+        del detail
+    try:
+        message = transform(text)
+    except BaseException as exc:  # MemoryError, or a Ctrl-C landing inside transform
+        exc.__traceback__ = None  # drop that sub-traceback (transform's frame holds the raw text)
+        raise
+    finally:
+        del text
+    try:
+        raise RuntimeError(message)
+    finally:
+        del password, transform, fn, message
+
+
+# Generic, password-free message. A connection failure echoes the full conninfo regardless of its
+# cause (bad password, DNS failure, TLS problem), so the hint names all the likely culprits rather
+# than misattributing every failure to credentials.
+_WRDS_QUERY_FAILED_MSG = (
+    "WRDS query failed. Check credentials, MFA approval, or network connectivity."
+)
+
+
+def _mask_password_errors(
+    password: str | None,
+    fn: Callable[[], _GuardT],
+    *,
+    message: str = _WRDS_QUERY_FAILED_MSG,
+) -> _GuardT:
+    """Run ``fn``, replacing a password-bearing failure with a generic ``message``.
+
+    Use for connection-establishing operations (ATTACH, the first ``postgres_scan`` probe), where a
+    failure most likely means bad credentials and a friendly hint is more useful than the raw error.
+    """
+    return _guard_password_errors(password, lambda _text: message, fn)
+
+
+def _redact_password_errors(
+    password: str | None, fn: Callable[[], _GuardT], *, context: str | None = None
+) -> _GuardT:
+    """Run ``fn``, re-raising a password-bearing failure with only the secret scrubbed.
+
+    Use where a genuine diagnostic (e.g. a mid-download socket drop) is more useful than a credential
+    hint. Two of the three call sites are post-ATTACH -- the histogram query and the persistent
+    per-table download -- where the connection (and thus the password) already succeeded, so a later
+    failure is almost certainly a diagnostic. The default ``postgres_scan`` COPY also uses redact,
+    as a deliberate deviation: it opens a fresh connection per statement, so a bad password *can*
+    first surface there (see its call-site comment), but the preceding ``get_columns`` probe already
+    established the credentials, so a COPY failure is far more likely a real mid-transfer error --
+    worth keeping over a misattributed credential message. Either way the fail-closed check below
+    guarantees no secret survives. Keeps the real error text minus the password (cf.
+    :func:`_redact_password`), matching the parallel worker's policy. ``context`` (e.g. a table name)
+    is prefixed onto the scrubbed message so a failure in a per-item loop keeps its identity.
+
+    Fail-closed: :func:`_redact_password` replaces whole forms only, so redact then *re-check the
+    result* with the fragment-aware detector. If anything still matches -- the error was
+    fragment-only (no whole form to scrub), or it mixed a complete echo (scrubbed) with a sliced
+    ``LINE 1: ...`` excerpt (a fragment, not scrubbed) -- fall back to the generic mask message
+    rather than surface a partially-redacted error.
+    """
+
+    def _transform(text: str) -> str:
+        body = _redact_password(text, password or "")
+        if password and _password_leak_in_error(body, password):
+            body = _WRDS_QUERY_FAILED_MSG  # a fragment survived redaction: fail closed
+        return f"{context}: {body}" if context else body
+
+    return _guard_password_errors(password, _transform, fn)
+
+
+def get_columns(
+    conn: duckdb.DuckDBPyConnection,
+    conninfo: str,
+    lib: str,
+    table: str,
+    *,
+    password: str | None,
+) -> list[str]:
+    """Column names of a WRDS table read via ``postgres_scan``.
+
+    ``password`` is keyword-only and required (pass ``None`` only for the ``~/.pgpass`` path, which
+    has no secret in the conninfo) so a caller can't silently omit it and re-open the leak: on a
+    wrong/expired password DuckDB echoes the conninfo, so the probe is guarded.
+    """
+    cols = _mask_password_errors(
+        password,
+        lambda: (
+            conn.execute(f"""
+            SELECT *
+            FROM postgres_scan('{_sql_literal(conninfo)}', '{lib}', '{table}')
+            LIMIT 0
+        """).description
+        ),
+    )
     return [c[0] for c in cols]
 
 
@@ -851,23 +1046,37 @@ def download_wrds_table(
     filename: str,
     date_column: str | None = None,
     end_date: date | None = None,
+    *,
+    password: str | None,
 ) -> None:
+    """Download a WRDS table to ``filename`` via ``postgres_scan`` (optionally date-filtered).
+
+    ``password`` is keyword-only and required (pass ``None`` only for the ``~/.pgpass`` path) for
+    the same reason as :func:`get_columns`: it feeds the password-leak guards around the probe and
+    the COPY, so a caller can't silently omit it and re-open the leak.
+    """
     lib, table = table_name.split(".")
-    cols = get_columns(duckdb_conn, conninfo, lib, table)
+    cols = get_columns(duckdb_conn, conninfo, lib, table, password=password)
     projection = build_projection(cols)
 
     where_clause = ""
     if date_column and end_date:
         where_clause = f"WHERE {date_column} <= '{end_date}'"
 
-    duckdb_conn.execute(f"""
-        COPY (
-          SELECT {projection}
-          FROM postgres_scan('{_sql_literal(conninfo)}', '{lib}', '{table}')
-          {where_clause}
-        )
-        TO '{filename}' (FORMAT PARQUET);
-    """)
+    # postgres_scan opens a fresh connection per statement, so a wrong/expired password (or MFA
+    # denial) can first surface here at the COPY, not only at the get_columns probe. Redact rather
+    # than mask so a genuine mid-transfer diagnostic (e.g. a socket drop) survives with its detail.
+    _redact_password_errors(
+        password,
+        lambda: duckdb_conn.execute(f"""
+            COPY (
+              SELECT {projection}
+              FROM postgres_scan('{_sql_literal(conninfo)}', '{lib}', '{table}')
+              {where_clause}
+            )
+            TO '{filename}' (FORMAT PARQUET);
+        """),
+    )
 
 
 # The raw-data download is the one place in this pipeline that runs an explicit Python thread pool.
@@ -930,14 +1139,14 @@ def _attach_wrds(con: duckdb.DuckDBPyConnection, conninfo: str, password: str | 
     ATTACH error text, so on failure suppress the original exception and raise a generic,
     password-free error. Errors that don't contain the password propagate unchanged.
     """
-    try:
-        con.execute(f"ATTACH '{_sql_literal(conninfo)}' AS wrds (TYPE postgres, READ_ONLY)")
-    except Exception as e:
-        if password and _password_in_error(str(e), password):
-            raise RuntimeError(
-                "Failed to attach WRDS connection. Check credentials and MFA approval."
-            ) from None
-        raise
+    _mask_password_errors(
+        password,
+        lambda: con.execute(
+            f"ATTACH '{_sql_literal(conninfo)}' AS wrds (TYPE postgres, READ_ONLY)"
+        ),
+        message="Failed to attach WRDS connection. Check credentials, MFA approval, or network "
+        "connectivity.",
+    )
 
 
 def _install_postgres_extension() -> None:
@@ -1053,7 +1262,13 @@ def _compute_histograms(
             con.execute("LOAD postgres;")  # extension installed once up front by the caller
             _attach_wrds(con, conninfo, password)
             try:
-                return table, _year_histogram(con, "wrds", lib, tbl, date_columns[table], end_date)
+                # Post-ATTACH: the password already authenticated, so redact (keep the diagnostic)
+                # rather than mask a genuine query/connection error as a credential problem.
+                hist = _redact_password_errors(
+                    password,
+                    lambda: _year_histogram(con, "wrds", lib, tbl, date_columns[table], end_date),
+                )
+                return table, hist
             finally:
                 with contextlib.suppress(Exception):
                     con.execute("DETACH wrds")
@@ -1458,19 +1673,32 @@ def download_raw_data_tables(
 
     if persistent_connection:
         # Use ATTACH for a single persistent connection (reduces MFA on NAT-rotated networks).
+        # ATTACH succeeded, so the password is valid, but a later per-table query can still echo the
+        # conninfo (e.g. if WRDS drops the socket mid-download and the reconnect fails) -- redact so
+        # that working password can't reach the terminal or Slurm log. Guard each table
+        # individually (with its name as context) so a mid-run failure keeps its identity instead
+        # of surfacing as a bare, table-less error, mirroring the parallel worker's per-task prefix.
         _attach_wrds(con, conninfo, password)
         try:
             for table in table_names:
-                download_wrds_table_attached(
-                    con,
-                    "wrds",
-                    table,
-                    filenames[table],
-                    date_column=date_columns.get(table),
-                    end_date=end_date,
+                _redact_password_errors(
+                    password,
+                    lambda t=table: download_wrds_table_attached(
+                        con,
+                        "wrds",
+                        t,
+                        filenames[t],
+                        date_column=date_columns.get(t),
+                        end_date=end_date,
+                    ),
+                    context=table,
                 )
         finally:
-            con.execute("DETACH wrds")
+            # A DETACH on a connection dropped mid-download would itself raise and displace the
+            # redacted error (which then survives only as __context__), burying the diagnostic.
+            # Suppress it, matching _compute_histograms and the parallel worker.
+            with contextlib.suppress(Exception):
+                con.execute("DETACH wrds")
     else:
         # Use postgres_scan() which creates a new connection per query (default)
         for table in table_names:
@@ -1481,6 +1709,7 @@ def download_raw_data_tables(
                 filenames[table],
                 date_column=date_columns.get(table),
                 end_date=end_date,
+                password=password,
             )
 
     con.close()

@@ -197,6 +197,66 @@ class TestGenWrdsConnectionInfo:
         assert _password_in_error(err, pw)
         assert composed not in _redact_password(err, pw)
 
+    def test_empty_password_is_a_noop(self):
+        """An empty password has no forms to find/replace. Without an early-out, "" is a substring
+        of everything: _password_in_error would report a match and _redact_password would interleave
+        *** between every character. Guard against that footgun (it's truthiness-gated in the guards,
+        but the helpers must be safe on their own)."""
+        from jkp.data.aux_functions import (
+            _password_in_error,
+            _password_leak_in_error,
+            _redact_password,
+        )
+
+        text = "IO Error: connection reset by peer"
+        assert _password_in_error(text, "") is False
+        assert _password_leak_in_error(text, "") is False
+        assert _redact_password(text, "") == text
+
+    def test_password_leak_detects_truncated_fragment(self):
+        """A truncated statement echo (DuckDB's caret-centered ``LINE 1: ...`` window) can slice a
+        password, leaving only a tail fragment with no complete form. _password_in_error misses that
+        (whole forms only); _password_leak_in_error must catch a >= 8-char fragment so the guard
+        doesn't fail open."""
+        from jkp.data.aux_functions import _password_in_error, _password_leak_in_error
+
+        password = "SEKRIT-abcdefghijklmnop"  # noqa: S105
+        # Front-elided echo: the head (incl. `password='`) is cut; a 12-char tail survives.
+        truncated = (
+            "Parser Error: syntax error\n\nLINE 1: ...efghijklmnop', 'comp', 'funda')) TO 'x'"
+        )
+        assert password not in truncated  # no complete form present...
+        assert _password_in_error(truncated, password) is False  # ...so the whole-form check misses
+        assert (
+            _password_leak_in_error(truncated, password) is True
+        )  # ...but the fragment check hits
+
+    def test_password_leak_ignores_short_coincidental_runs(self):
+        """Fragment matching needs a run of >= 8 password chars, so a short coincidental overlap
+        (here 'reset' happens to be inside the password) does not trigger a false leak."""
+        from jkp.data.aux_functions import _password_leak_in_error
+
+        password = "reset-Xq"  # noqa: S105  # 'reset' overlaps common error text, but only 5 chars
+        assert _password_leak_in_error("IO Error: connection reset by peer", password) is False
+
+    def test_truncation_below_fragment_length_is_a_documented_gap(self):
+        """Documented limitation, not a bug: detection needs a run of _MIN_LEAK_FRAGMENT consecutive
+        form chars, so ANY echo retaining <= 7 of them fails open -- regardless of password length. A
+        short password is the guaranteed case (any truncation); a long password hits it only when the
+        cut leaves a <= 7-char run. Intentional -- any window short enough to catch a <= 7-char run
+        would false-positive on ordinary error text (see _password_leak_in_error). Pinned so the
+        boundary is a conscious choice: if you make this pass, you have changed the detection
+        contract."""
+        from jkp.data.aux_functions import _password_leak_in_error
+
+        short = "hunter2"  # noqa: S105  # 7 chars: every truncation leaves <= 6
+        assert _password_leak_in_error("... password=hunter2 ...", short) is True  # full: caught
+        assert _password_leak_in_error("LINE 1: ...unter2', 'comp')", short) is False  # tail: not
+
+        # A LONG password truncated to a 7-char surviving run also fails open -- not a length issue.
+        long = "SEKRIT-abcdefghijklmnop"  # noqa: S105
+        assert _password_leak_in_error("LINE 1: ...klmnop', 'comp')", long) is False  # 6-char tail
+
 
 class TestDownloadRawDataTablesBranching:
     """Tests for download_raw_data_tables() branching logic.
@@ -286,6 +346,92 @@ class TestDownloadRawDataTablesBranching:
 
         download_raw_data_tables(test_paths, "user", "pass", persistent_connection=True)
         mock_conn.close.assert_called_once()
+
+    def test_sequential_postgres_scan_masks_password_end_to_end(self, mock_duckdb, test_paths):
+        """Default-flag download: a wrong password surfaced by the first postgres_scan probe must
+        not leak through the orchestrator (issue #250). Exercises the real get_columns/
+        download_wrds_table and pins the ``password=`` plumbing at the sequential call site.
+
+        The broad ``pytest.raises(Exception)`` only proves *something* raised; the ``credentials``
+        assertion below is what makes this strict (that the leak was masked). Do not drop it."""
+        from jkp.data.aux_functions import download_raw_data_tables
+
+        _mock, mock_conn = mock_duckdb
+        password = "topsecret"  # noqa: S105
+
+        def execute(sql, *args):
+            if "LIMIT 0" in sql:  # get_columns probe -> first postgres_scan, wrong password
+                raise RuntimeError(f"IO Error: Connection failed: password={password} dbname=wrds")
+            return MagicMock(description=[("col1",), ("col2",)])
+
+        mock_conn.execute.side_effect = execute  # side_effect overrides the fixture's return_value
+        with pytest.raises(Exception) as exc_info:  # noqa: PT011
+            download_raw_data_tables(test_paths, "user", password, end_date=dt.date(2025, 12, 31))
+        assert password not in str(exc_info.value)
+        assert "credentials" in str(exc_info.value).lower()
+
+    def test_persistent_connection_redacts_password_end_to_end(self, mock_duckdb, test_paths):
+        """Persistent-connection path: ATTACH succeeds (valid password), but a later per-table
+        query that echoes the conninfo must not leak that working password (issue #250 sibling).
+
+        As above, the ``connection reset`` assertion (redaction kept the real diagnostic) is what
+        makes the broad ``pytest.raises`` strict -- do not drop it."""
+        from jkp.data.aux_functions import download_raw_data_tables
+
+        _mock, mock_conn = mock_duckdb
+        password = "topsecret"  # noqa: S105
+
+        def execute(sql, *args):
+            # ATTACH / LOAD / the LIMIT 0 probe succeed; the COPY drops the socket mid-download.
+            if "COPY" in sql:
+                raise RuntimeError(f"IO Error: password={password} dbname=wrds connection reset")
+            return MagicMock(description=[("col1",), ("col2",)])
+
+        mock_conn.execute.side_effect = execute  # side_effect overrides the fixture's return_value
+        with pytest.raises(Exception) as exc_info:  # noqa: PT011
+            download_raw_data_tables(
+                test_paths,
+                "user",
+                password,
+                end_date=dt.date(2025, 12, 31),
+                persistent_connection=True,
+            )
+        msg = str(exc_info.value)
+        assert password not in msg
+        assert "connection reset" in msg  # redaction keeps the real diagnostic
+        # Per-table guard tags the failing table so a mid-run failure keeps its identity. The first
+        # table in the canonical list is comp.exrt_dly, so its COPY is the one that fails here.
+        assert msg.startswith("comp.exrt_dly: ")
+
+    def test_persistent_detach_failure_does_not_bury_redacted_error(self, mock_duckdb, test_paths):
+        """The mid-download socket-drop scenario: the COPY fails (redacted, password-free) AND the
+        DETACH in the finally then fails on the dead connection. The DETACH must be suppressed, or it
+        would displace the redacted per-table diagnostic (which then survives only as __context__)."""
+        from jkp.data.aux_functions import download_raw_data_tables
+
+        _mock, mock_conn = mock_duckdb
+        password = "topsecret"  # noqa: S105
+
+        def execute(sql, *args):
+            if "COPY" in sql:
+                raise RuntimeError(f"IO Error: password={password} dbname=wrds connection reset")
+            if "DETACH" in sql:
+                raise RuntimeError("Cannot DETACH: connection already closed")
+            return MagicMock(description=[("col1",), ("col2",)])
+
+        mock_conn.execute.side_effect = execute
+        with pytest.raises(Exception) as exc_info:  # noqa: PT011
+            download_raw_data_tables(
+                test_paths,
+                "user",
+                password,
+                end_date=dt.date(2025, 12, 31),
+                persistent_connection=True,
+            )
+        msg = str(exc_info.value)
+        assert "connection reset" in msg  # the redacted COPY diagnostic survived...
+        assert "DETACH" not in msg  # ...and the DETACH failure did not displace it
+        assert password not in msg
 
 
 class TestGetColumnsAttached:
@@ -889,19 +1035,24 @@ class TestDateRangeSplitting:
 
 
 class TestAttachWrds:
-    """The shared WRDS ATTACH helper (password redaction)."""
+    """The shared WRDS ATTACH helper (password masking -- _attach_wrds uses _mask_password_errors,
+    so a leak surfaces the generic credential message, not a redacted error)."""
 
-    def test_redacts_password_on_attach_error(self):
+    def test_masks_password_on_attach_error(self):
         from jkp.data.aux_functions import _attach_wrds
 
         con = MagicMock()
         con.execute.side_effect = RuntimeError("ATTACH failed: host=x password=hunter2 dbname=wrds")
         with pytest.raises(RuntimeError) as exc_info:
             _attach_wrds(con, "host=x password=hunter2", "hunter2")
-        assert "hunter2" not in str(exc_info.value)
-        assert "credentials" in str(exc_info.value).lower()
+        msg = str(exc_info.value)
+        assert "hunter2" not in msg
+        assert "credentials" in msg.lower()
+        # Pin the ATTACH-specific message so a dropped `message=` (falling back to the generic
+        # get_columns text) is caught, not silently accepted.
+        assert "attach" in msg.lower()
 
-    def test_redacts_special_char_password_on_attach_error(self):
+    def test_masks_special_char_password_on_attach_error(self):
         """The escaped form of a special-character password is what appears in the
         ATTACH error, so detection must match it — a raw ``password in str(e)``
         would miss it and re-raise the secret."""
@@ -923,6 +1074,319 @@ class TestAttachWrds:
         # A non-credential error (no password in it) propagates unchanged.
         with pytest.raises(RuntimeError, match="too many connections"):
             _attach_wrds(con, "host=x password=hunter2", "hunter2")
+
+
+class TestPostgresScanPasswordMasking:
+    """The default sequential postgres_scan() download path must not leak the password.
+
+    Unlike the ATTACH path (see TestAttachWrds), get_columns()/download_wrds_table() embed the
+    full conninfo in ``postgres_scan('...')`` SQL, so a wrong/expired password makes DuckDB echo
+    the conninfo — and thus the password — in the IOException it raises.
+    """
+
+    def test_get_columns_masks_password_on_error(self):
+        """get_columns()'s probe must scrub the password from a postgres_scan failure (#250).
+
+        The probe establishes the connection, so a failure most likely means bad credentials —
+        hence the generic credential-check message (mask), not a redacted raw error."""
+        from jkp.data.aux_functions import get_columns
+
+        password = "topsecret"  # noqa: S105
+        conn = MagicMock()
+        conn.execute.side_effect = RuntimeError(
+            f"IO Error: Connection failed: host=x password={password} dbname=wrds"
+        )
+        with pytest.raises(Exception) as exc_info:  # noqa: PT011
+            get_columns(conn, f"host=x password={password}", "comp", "funda", password=password)
+        assert password not in str(exc_info.value)
+        assert "credentials" in str(exc_info.value).lower()
+
+    def test_get_columns_requires_password_keyword(self):
+        """password is keyword-only and required, so a caller can't silently omit it and re-open
+        the leak (the fail-open regression shape). Omitting it is a TypeError, not a quiet no-op."""
+        from jkp.data.aux_functions import get_columns
+
+        with pytest.raises(TypeError):
+            get_columns(MagicMock(), "host=x", "comp", "funda")  # type: ignore[call-arg]
+
+    def test_download_wrds_table_requires_password_keyword(self):
+        """Same fail-open guard on download_wrds_table: omitting password is a TypeError, so a
+        reintroduced ``password=None`` default (which would disable masking) can't slip through."""
+        from jkp.data.aux_functions import download_wrds_table
+
+        with pytest.raises(TypeError):
+            download_wrds_table("host=x", MagicMock(), "comp.funda", "out.parquet")  # type: ignore[call-arg]
+
+    def test_download_wrds_table_redacts_password_on_copy_error(self):
+        """download_wrds_table()'s COPY runs after the probe already opened the connection, so a
+        failure there is a genuine diagnostic: redact the secret but keep the rest (#250)."""
+        from jkp.data.aux_functions import download_wrds_table
+
+        password = "topsecret"  # noqa: S105
+
+        def execute(sql, *args):
+            # get_columns' LIMIT 0 probe succeeds; the COPY fails echoing the conninfo.
+            if "COPY" in sql:
+                raise RuntimeError(f"IO Error: host=x password={password} dbname=wrds table full")
+            return MagicMock(description=[("col_a",), ("col_b",)])
+
+        conn = MagicMock()
+        conn.execute.side_effect = execute
+        with pytest.raises(Exception) as exc_info:  # noqa: PT011
+            download_wrds_table(
+                f"host=x password={password}",
+                conn,
+                "comp.funda",
+                "out.parquet",
+                password=password,
+            )
+        msg = str(exc_info.value)
+        assert password not in msg
+        assert "table full" in msg  # redaction preserves the diagnostic
+
+    def test_masked_error_does_not_leak_via_exception_chain(self):
+        """The password must be gone from the whole chain, not just str(e): a context-manager guard
+        scrubs the message but leaves the original on __context__, which Sentry-style chain-walking
+        recovers. The guard wraps the call and raises outside the except, so the chain is clean."""
+        from jkp.data.aux_functions import get_columns
+
+        password = "topsecret"  # noqa: S105
+        conn = MagicMock()
+        conn.execute.side_effect = RuntimeError(f"IO Error: password={password} dbname=wrds")
+        with pytest.raises(Exception) as exc_info:  # noqa: PT011
+            get_columns(conn, f"host=x password={password}", "comp", "funda", password=password)
+
+        node: BaseException | None = exc_info.value
+        while node is not None:
+            assert password not in str(node)
+            node = node.__context__ or node.__cause__
+
+    def test_guard_frame_does_not_retain_raw_error_in_locals(self):
+        """The raise-site frame (_guard_password_errors) is what ``pytest --showlocals`` /
+        Sentry-style local capture render, and it is the only frame that holds the raw
+        password-bearing error text. It must drop that from its locals. A unique marker present
+        *only* in the raw error (not in the password or conninfo, so caller-frame locals can't
+        account for it) must not survive in that frame's locals."""
+        import traceback
+
+        from jkp.data.aux_functions import get_columns
+
+        password = "topsecret"  # noqa: S105
+        marker = "RAWERR_MARKER_9x8y7z"  # appears only inside the raw DuckDB error string
+        conn = MagicMock()
+        conn.execute.side_effect = RuntimeError(
+            f"IO Error: password={password} dbname=wrds {marker}"
+        )
+        with pytest.raises(Exception) as exc_info:  # noqa: PT011
+            get_columns(conn, f"host=x password={password}", "comp", "funda", password=password)
+
+        assert marker not in str(exc_info.value)
+        guard_frames = [
+            frame
+            for frame, _lineno in traceback.walk_tb(exc_info.value.__traceback__)
+            if frame.f_code.co_name == "_guard_password_errors"
+        ]
+        assert guard_frames, "guard frame not found in traceback"
+        for frame in guard_frames:
+            assert marker not in repr(frame.f_locals)
+
+    @staticmethod
+    def _raw_reachable(exc: BaseException, sentinel: str) -> bool:
+        """True if ``sentinel`` is reachable from ``exc`` via its chain (``str``) or ANY traceback
+        frame's locals. ``sentinel`` must be a string that exists ONLY inside the raw error text --
+        never as a standalone test local -- so a hit means the raw error survived on some frame.
+        (An earlier version filtered by frame name and so skipped the transform/callback frames
+        where these leaks actually live, letting mutants pass; search every frame instead.)"""
+        node: BaseException | None = exc
+        while node is not None:
+            if sentinel in str(node):
+                return True
+            tb = node.__traceback__
+            while tb is not None:
+                if sentinel in repr(tb.tb_frame.f_locals):
+                    return True
+                tb = tb.tb_next
+            node = node.__context__ or node.__cause__
+        return False
+
+    def test_transform_failure_does_not_leak_raw_text(self):
+        """Exotic exit: if the transform itself raises (realistically MemoryError), the raw text is
+        on the transform's frame. That sub-traceback must be dropped so it can't be walked out.
+
+        The sentinel is an inline literal that appears only inside the raised error's text (never as
+        a standalone local), so _raw_reachable's all-frames search can't false-hit a test local -- a
+        hit means the transform frame's ``_text`` survived (which reverting exc.__traceback__=None
+        would cause)."""
+        from jkp.data.aux_functions import _guard_password_errors
+
+        password = "topsecret"  # noqa: S105
+
+        def boom():
+            raise RuntimeError(f"IO Error: password={password} dbname=wrds RAWSENTINEL_XFORM_MEM")
+
+        def bad_transform(_text):
+            raise MemoryError("out of memory")
+
+        with pytest.raises(MemoryError) as exc_info:
+            _guard_password_errors(password, bad_transform, boom)
+        # Compute on its own line, NOT inline in the assert: pytest's assertion rewriter binds the
+        # literal argument to a temp local in this frame, and this frame is in the traceback being
+        # walked, so an inline sentinel would false-hit.
+        reachable = self._raw_reachable(exc_info.value, "RAWSENTINEL_XFORM_MEM")
+        assert not reachable
+
+    def test_interrupt_during_detection_does_not_leak(self):
+        """Exotic exit: a Ctrl-C landing in the detection window must not carry the raw exception
+        out on the KeyboardInterrupt's chain, nor on the detection/guard frames."""
+        from jkp.data.aux_functions import _guard_password_errors
+
+        password = "topsecret"  # noqa: S105
+
+        def boom():
+            raise RuntimeError(f"IO Error: password={password} dbname=wrds RAWSENTINEL_DETECT")
+
+        def interrupt_detection(_text, _password):
+            raise KeyboardInterrupt
+
+        with (
+            patch("jkp.data.aux_functions._password_leak_in_error", interrupt_detection),
+            pytest.raises(KeyboardInterrupt) as exc_info,
+        ):
+            _guard_password_errors(password, lambda t: t, boom)
+        assert exc_info.value.__context__ is None  # chain severed
+        reachable = self._raw_reachable(exc_info.value, "RAWSENTINEL_DETECT")  # own line: see above
+        assert not reachable
+
+    def test_interrupt_during_transform_does_not_leak(self):
+        """Sibling of the above: a Ctrl-C landing *inside* transform (not the detection window) is a
+        BaseException, so the transform escape hatch must catch BaseException -- not just Exception
+        -- or the raw text rides out on transform's frame."""
+        from jkp.data.aux_functions import _guard_password_errors
+
+        password = "topsecret"  # noqa: S105
+
+        def boom():
+            raise RuntimeError(f"IO Error: password={password} dbname=wrds RAWSENTINEL_XFORM_KI")
+
+        def interrupt_transform(_text):
+            raise KeyboardInterrupt
+
+        with pytest.raises(KeyboardInterrupt) as exc_info:
+            _guard_password_errors(password, interrupt_transform, boom)
+        reachable = self._raw_reachable(
+            exc_info.value, "RAWSENTINEL_XFORM_KI"
+        )  # own line: see above
+        assert not reachable
+
+    def test_redact_errors_prefixes_context(self):
+        """_redact_password_errors(..., context=table) tags the scrubbed message with the failing
+        item's identity, so a per-table loop failure isn't a bare, table-less error."""
+        from jkp.data.aux_functions import _redact_password_errors
+
+        password = "topsecret"  # noqa: S105
+
+        def boom():
+            raise RuntimeError(f"IO Error: password={password} dbname=wrds reset")
+
+        with pytest.raises(RuntimeError) as exc_info:
+            _redact_password_errors(password, boom, context="crsp.dsf_v2")
+        msg = str(exc_info.value)
+        assert msg.startswith("crsp.dsf_v2: ")
+        assert password not in msg
+        assert "reset" in msg  # diagnostic preserved
+
+    def test_redact_fails_closed_on_truncated_fragment(self):
+        """When only a truncated fragment matched (no complete form), _redact_password can't scrub
+        it, so the redact path must fail closed to the generic message -- not surface the raw error
+        with the password tail intact (issue #250, the truncated-echo fail-open)."""
+        from jkp.data.aux_functions import _password_in_error, _redact_password_errors
+
+        password = "SEKRIT-abcdefghijklmnop"  # noqa: S105
+        tail = "efghijklmnop', 'comp', 'funda')) TO 'x'"  # >=8-char fragment, no complete form
+
+        def boom():
+            raise RuntimeError(f"Parser Error: syntax error\n\nLINE 1: ...{tail}")
+
+        assert not _password_in_error(f"...{tail}", password)  # precondition: fragment only
+        with pytest.raises(RuntimeError) as exc_info:
+            _redact_password_errors(password, boom, context="crsp.dsf_v2")
+        msg = str(exc_info.value)
+        assert "efghijklmnop" not in msg  # the raw fragment must not survive
+        assert "credentials" in msg.lower()  # failed closed to the generic message
+        assert msg.startswith("crsp.dsf_v2: ")  # context still preserved
+
+    def test_redact_fails_closed_on_mixed_full_and_fragment_echo(self):
+        """The dangerous case: one error carries BOTH a complete conninfo echo AND an independent
+        truncated fragment (DuckDB can emit a header echo plus a sliced LINE 1: excerpt). Redacting
+        whole forms leaves the fragment; the re-check on the redacted body must catch it and fail
+        closed, or the fragment ships inside 'redacted' output."""
+        from jkp.data.aux_functions import _redact_password_errors
+
+        password = "SEKRIT-abcdefghijklmnop"  # noqa: S105
+
+        def boom():
+            # complete form (scrubbable) AND a sliced tail fragment (not scrubbable) in one message
+            raise RuntimeError(
+                f"IO Error: ... password='{password}' ... connection dropped\n\n"
+                "LINE 1: ...efghijklmnop', 'crsp', 'msf_v2') TO 'out.parquet'"
+            )
+
+        with pytest.raises(RuntimeError) as exc_info:
+            _redact_password_errors(password, boom, context="crsp.msf_v2")
+        msg = str(exc_info.value)
+        assert "efghijklmnop" not in msg  # the sliced fragment must not survive the redaction
+        assert password not in msg
+        assert "credentials" in msg.lower()  # failed closed rather than ship a partial redaction
+
+    def test_get_columns_passes_through_non_password_error(self):
+        """A failure that doesn't carry the password propagates unchanged."""
+        from jkp.data.aux_functions import get_columns
+
+        conn = MagicMock()
+        conn.execute.side_effect = RuntimeError("Catalog Error: table does not exist")
+        with pytest.raises(RuntimeError, match="does not exist"):
+            get_columns(conn, "host=x password=hunter2", "comp", "nope", password="hunter2")
+
+    def test_get_columns_none_password_propagates_raw_error(self):
+        """The ~/.pgpass path passes password=None (no secret in the conninfo), so masking is a
+        no-op and the original error propagates unchanged."""
+        from jkp.data.aux_functions import get_columns
+
+        conn = MagicMock()
+        conn.execute.side_effect = RuntimeError("IO Error: connection reset by peer")
+        with pytest.raises(RuntimeError, match="connection reset by peer"):
+            get_columns(conn, "host=x sslmode=require", "comp", "funda", password=None)
+
+    def test_compute_histograms_query_failure_is_redacted(self):
+        """A histogram query (post-ATTACH) failure must not leak the password, but must keep the
+        real diagnostic (redaction, not the credential-check message) since the password is valid."""
+        from jkp.data.aux_functions import _compute_histograms
+
+        password = "topsecret"  # noqa: S105
+
+        def execute(sql, *args):
+            # ATTACH succeeds; the per-year COUNT(*) query fails echoing the conninfo.
+            if "EXTRACT(YEAR" in sql:
+                raise RuntimeError(f"IO Error: host=x password={password} dbname=wrds reset")
+            return MagicMock()
+
+        with patch("jkp.data.aux_functions.duckdb") as mock_duckdb:
+            con = MagicMock()
+            con.__enter__.return_value = con
+            con.execute.side_effect = execute
+            mock_duckdb.connect.return_value = con
+            with pytest.raises(Exception) as exc_info:  # noqa: PT011
+                _compute_histograms(
+                    f"host=x password={password}",
+                    ["crsp.dsf_v2"],
+                    {"crsp.dsf_v2": "dlycaldt"},
+                    dt.date(2025, 12, 31),
+                    4,
+                    password,
+                )
+        msg = str(exc_info.value)
+        assert password not in msg
+        assert "reset" in msg  # redaction preserves the diagnostic
 
 
 class TestMapInterruptible:
