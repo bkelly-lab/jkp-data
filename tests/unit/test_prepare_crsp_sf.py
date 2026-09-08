@@ -39,10 +39,8 @@ def _run(
     raw.mkdir(parents=True, exist_ok=True)
     sf_schema = SCHEMA_CRSP_SF if freq == "m" else SCHEMA_CRSP_DSF
     pl.DataFrame(crsp_rows, schema=sf_schema).write_parquet(raw / f"__crsp_sf_{freq}.parquet")
-    if freq == "m":
-        pl.DataFrame(del_rows or [], schema=SCHEMA_SEDELIST).write_parquet(
-            raw / "crsp_msedelist.parquet"
-        )
+    sedelist_file = "crsp_msedelist.parquet" if freq == "m" else "crsp_dsedelist.parquet"
+    pl.DataFrame(del_rows or [], schema=SCHEMA_SEDELIST).write_parquet(raw / sedelist_file)
     pl.DataFrame(
         {"caldt": [r[0] for r in (mcti_rows or [])], "t30ret": [r[1] for r in (mcti_rows or [])]},
         schema=SCHEMA_MCTI,
@@ -208,8 +206,8 @@ def test_me_company(test_paths: DataPaths) -> None:
     assert _val(df, 4, d, "me_company") is None
 
 
-def test_daily_ret_passthrough(test_paths: DataPaths) -> None:
-    """Daily ret is never compounded with delist returns (no sedelist join)."""
+def test_daily_ret_passthrough_no_delist(test_paths: DataPaths) -> None:
+    """Daily ret is pass-through when no sedelist row matches the date."""
     rows = [
         _crsp_row(1, 1, date(2000, 1, 6), 10.0, 1.0, 0.03, 0.03, 100, 1.0, nasdaq=False),
         _crsp_row(1, 1, date(2000, 1, 7), 10.0, 1.0, 0.04, 0.04, 100, 1.0, nasdaq=False),
@@ -229,13 +227,9 @@ def test_both_freq_filename_and_columns(test_paths: DataPaths, freq: str) -> Non
     cols = pl.read_parquet(out).columns
     for extra in ("dolvol", "div_tot", "ret_exc", "me_company"):
         assert extra in cols
-    # Monthly drops delist helper columns after the sedelist join; daily never
-    # has them (the sedelist join is skipped entirely for freq="d").
-    for dropped in ("rf", "t30ret", "merge_aux"):
+    # Both frequencies drop delist helper columns after the sedelist join.
+    for dropped in ("rf", "t30ret", "merge_aux", "delret", "del_flag"):
         assert dropped not in cols
-    if freq == "m":
-        for dropped in ("delret", "del_flag", "delistingdt"):
-            assert dropped not in cols
 
 
 def test_empty_input_yields_typed_empty_output(test_paths: DataPaths) -> None:
@@ -382,12 +376,13 @@ def test_monthly_delist_month_mismatch_no_join(test_paths: DataPaths) -> None:
     assert _val(df, 1, d, "ret") == pytest.approx(0.02)
 
 
-def test_daily_no_sedelist_join(test_paths: DataPaths) -> None:
-    """Daily path skips the sedelist join entirely; ret is always pass-through."""
+def test_daily_delist_N_compounds_on_exact_date(test_paths: DataPaths) -> None:
+    """DlyDelFlg=N on the exact delistingdt: sedelist joins and delret is compounded."""
     d = date(2000, 1, 6)
-    rows = [_crsp_row(1, 1, d, 10.0, 1.0, 0.03, 0.03, 100, 1.0, nasdaq=False)]
-    df = _run(test_paths, "d", rows)
-    assert _val(df, 1, d, "ret") == pytest.approx(0.03)
+    rows = [_crsp_row(1, 1, d, 10.0, 1.0, 0.03, 0.03, 100, 1.0, nasdaq=False, del_flag="N")]
+    dels = [_del_row(1, d, -0.20, "MERG", None, None, None)]
+    df = _run(test_paths, "d", rows, dels)
+    assert _val(df, 1, d, "ret") == pytest.approx((0.03 + 1) * (-0.20 + 1) - 1)
 
 
 def test_ret_null_no_delist_stays_null(test_paths: DataPaths) -> None:
@@ -419,13 +414,14 @@ def test_me_company_mixed_null_coalesces_to_zero(test_paths: DataPaths) -> None:
 # --- schema / dtypes ---------------------------------------------------------
 
 
-def test_output_dtypes(test_paths: DataPaths) -> None:
-    """Computed columns are Float64; monthly vol is promoted to Float64 and the
-    delist helper columns are dropped."""
-    d = date(2001, 1, 31)
+@pytest.mark.parametrize("freq", ["m", "d"])
+def test_output_dtypes(test_paths: DataPaths, freq: str) -> None:
+    """Computed columns are Float64; delist helper columns are dropped for
+    both frequencies."""
+    d = date(2001, 1, 31) if freq == "m" else date(2001, 1, 15)
     rows = [_crsp_row(1, 1, d, 10.0, 1.0, 0.01, 0.005, 100, 1.0, nasdaq=False)]
-    df = _run(test_paths, "m", rows)
-    for c in ("dolvol", "div_tot", "ret_exc", "me_company", "vol"):
+    df = _run(test_paths, freq, rows)
+    for c in ("dolvol", "div_tot", "ret_exc", "me_company"):
         assert df.schema[c] == pl.Float64
     for dropped in (
         "delret",
@@ -511,11 +507,13 @@ def test_monthly_null_flag_compounds_when_delret_present(test_paths: DataPaths) 
     assert _val(df, 1, d, "ret") == pytest.approx((0.04 + 1) * (-0.50 + 1) - 1)
 
 
-def test_daily_negative_ret_passthrough(test_paths: DataPaths) -> None:
-    """Daily ret is pass-through even for large negative returns (no sedelist join)."""
+def test_daily_flag_Y_no_double_count(test_paths: DataPaths) -> None:
+    """DlyDelFlg=Y: delisting return already in DlyRet, so ret stays as-is
+    even when a non-null delret is present from stkdelists."""
     d = date(2000, 1, 7)
-    rows = [_crsp_row(1, 1, d, 10.0, 1.0, -0.40, -0.40, 100, 1.0, nasdaq=False)]
-    df = _run(test_paths, "d", rows)
+    rows = [_crsp_row(1, 1, d, 10.0, 1.0, -0.40, -0.40, 100, 1.0, nasdaq=False, del_flag="Y")]
+    dels = [_del_row(1, d, -0.50, "GDR", "VCL", "UNAV", "PRCF")]
+    df = _run(test_paths, "d", rows, dels)
     assert _val(df, 1, d, "ret") == pytest.approx(-0.40)
 
 
@@ -534,9 +532,45 @@ def test_unexpected_del_flag_warns(test_paths: DataPaths) -> None:
     assert "'Z'" in str(flag_warnings[0].message)
 
 
-def test_daily_small_ret_passthrough(test_paths: DataPaths) -> None:
-    """Daily ret is pass-through for ordinary-sized returns (no sedelist join)."""
+def test_daily_bad_delist_imputes_minus_030(test_paths: DataPaths) -> None:
+    """Daily DlyDelFlg=N on exact delistingdt with null delret in a c2 bucket
+    imputes delret=-0.30 and compounds, matching the monthly M-flag path."""
+    d = date(2000, 1, 7)
+    rows = [_crsp_row(1, 1, d, 10.0, 1.0, 0.02, 0.02, 100, 1.0, nasdaq=False, del_flag="N")]
+    dels = [_del_row(1, d, None, "GDR", "VCL", "UNAV", "PRCF")]
+    df = _run(test_paths, "d", rows, dels)
+    assert _val(df, 1, d, "ret") == pytest.approx((0.02 + 1) * (1 - 0.3) - 1)
+
+
+def test_daily_date_mismatch_no_join(test_paths: DataPaths) -> None:
+    """Daily join is on exact (permno, date); a sedelist row on a different
+    date does not match, so ret is unchanged."""
     d = date(2000, 1, 7)
     rows = [_crsp_row(1, 1, d, 10.0, 1.0, 0.02, 0.02, 100, 1.0, nasdaq=False)]
-    df = _run(test_paths, "d", rows)
+    dels = [_del_row(1, date(2000, 1, 8), -0.50, "GDR", "VCL", "UNAV", "PRCF")]
+    df = _run(test_paths, "d", rows, dels)
     assert _val(df, 1, d, "ret") == pytest.approx(0.02)
+
+
+def test_daily_ret_backfill_when_missing(test_paths: DataPaths) -> None:
+    """Daily: ret null + delret present under N flag -> ret set to 0 then compounded."""
+    d = date(2000, 1, 7)
+    rows = [_crsp_row(1, 1, d, 10.0, 1.0, None, None, 100, 1.0, nasdaq=False, del_flag="N")]
+    dels = [_del_row(1, d, -0.2, None, None, None, None)]
+    df = _run(test_paths, "d", rows, dels)
+    assert _val(df, 1, d, "ret") == pytest.approx(-0.2)
+
+
+def test_daily_unexpected_del_flag_warns(test_paths: DataPaths) -> None:
+    """An unrecognised DlyDelFlg value triggers a UserWarning naming the value."""
+    import warnings
+
+    d = date(2000, 1, 7)
+    rows = [_crsp_row(1, 1, d, 10.0, 1.0, 0.03, 0.03, 100, 1.0, nasdaq=False, del_flag="Z")]
+    dels = [_del_row(1, d, -0.20, "GDR", "VCL", "UNAV", "PRCF")]
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        _run(test_paths, "d", rows, dels)
+    flag_warnings = [w for w in caught if "Unexpected DlyDelFlg" in str(w.message)]
+    assert len(flag_warnings) == 1
+    assert "'Z'" in str(flag_warnings[0].message)
