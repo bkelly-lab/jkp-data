@@ -1,0 +1,1977 @@
+char accounting adv_sale
+char accounting aliq_at
+char accounting aliq_mat
+char accounting ap_days
+char accounting ap_gr1a
+char accounting ap_gr3a
+char accounting ap_turnover
+char accounting assets
+char accounting at_be
+char accounting at_gr1
+char accounting at_gr3
+char accounting at_me
+char accounting at_mev
+char accounting at_turnover
+char accounting be_bev
+char accounting be_gr1
+char accounting be_gr1a
+char accounting be_gr3
+char accounting be_me
+char accounting be_mev
+char accounting bev_mev
+char accounting book_equity
+char accounting ca_cl
+char accounting ca_gr1
+char accounting ca_gr3
+char accounting caliq_cl
+char accounting capex_abn
+char accounting capx_at
+char accounting capx_gr1
+char accounting capx_gr1a
+char accounting capx_gr2
+char accounting capx_gr3
+char accounting capx_gr3a
+char accounting cash_at
+char accounting cash_bev
+char accounting cash_cl
+char accounting cash_conversion
+char accounting cash_gr1a
+char accounting cash_gr3a
+char accounting cash_lt
+char accounting cash_me
+char accounting cash_mev
+char accounting cfoa_ch5
+char accounting cl_gr1
+char accounting cl_gr3
+char accounting cl_lt
+char accounting coa_gr1a
+char accounting coa_gr3a
+char accounting cogs_gr1
+char accounting cogs_gr3
+char accounting col_gr1a
+char accounting col_gr3a
+char accounting cop_at
+char accounting cop_atl1
+char accounting cop_bev
+char accounting cop_me
+char accounting cop_mev
+char accounting cowc_gr1a
+char accounting cowc_gr3a
+char accounting dbnetis_at
+char accounting dbnetis_gr1a
+char accounting dbnetis_gr3a
+char accounting dbnetis_mev
+char accounting debt_at
+char accounting debt_be
+char accounting debt_bev
+char accounting debt_gr1
+char accounting debt_gr3
+char accounting debt_me
+char accounting debt_mev
+char accounting debtlt_be
+char accounting debtlt_bev
+char accounting debtlt_debt
+char accounting debtlt_gr1a
+char accounting debtlt_gr3a
+char accounting debtlt_mev
+char accounting debtst_bev
+char accounting debtst_debt
+char accounting debtst_gr1a
+char accounting debtst_gr3a
+char accounting debtst_mev
+char accounting dgp_dsale
+char accounting div_at
+char accounting div_gr1a
+char accounting div_gr3a
+char accounting div_me
+char accounting div_ni
+char accounting dltnetis_at
+char accounting dltnetis_gr1a
+char accounting dltnetis_gr3a
+char accounting dltnetis_mev
+char accounting dp_gr1a
+char accounting dp_gr3a
+char accounting dsale_dinv
+char accounting dsale_drec
+char accounting dsale_dsga
+char accounting dstnetis_at
+char accounting dstnetis_gr1a
+char accounting dstnetis_gr3a
+char accounting dstnetis_mev
+char accounting earnings_variability
+char accounting ebit_at
+char accounting ebit_bev
+char accounting ebit_gr1a
+char accounting ebit_gr3a
+char accounting ebit_int
+char accounting ebit_me
+char accounting ebit_mev
+char accounting ebit_sale
+char accounting ebitda_at
+char accounting ebitda_bev
+char accounting ebitda_debt
+char accounting ebitda_gr1a
+char accounting ebitda_gr3a
+char accounting ebitda_me
+char accounting ebitda_mev
+char accounting ebitda_ppen
+char accounting ebitda_sale
+char accounting emp_gr1
+char accounting enterprise_value
+char accounting eq_dur
+char accounting eqbb_at
+char accounting eqbb_gr1a
+char accounting eqbb_gr3a
+char accounting eqbb_me
+char accounting eqis_at
+char accounting eqis_gr1a
+char accounting eqis_gr3a
+char accounting eqis_me
+char accounting eqnetis_at
+char accounting eqnetis_gr1a
+char accounting eqnetis_gr3a
+char accounting eqnetis_me
+char accounting eqnpo_at
+char accounting eqnpo_gr1a
+char accounting eqnpo_gr3a
+char accounting eqnpo_me
+char accounting eqpo_gr1a
+char accounting eqpo_gr3a
+char accounting eqpo_me
+char accounting f_score
+char accounting fcf_be
+char accounting fcf_gr1a
+char accounting fcf_gr3a
+char accounting fcf_me
+char accounting fcf_mev
+char accounting fcf_ocf
+char accounting fcf_ppen
+char accounting fcf_sale
+char accounting fi_at
+char accounting fi_bev
+char accounting fincf_at
+char accounting fincf_gr1a
+char accounting fincf_gr3a
+char accounting fincf_mev
+char accounting fna_gr1a
+char accounting fna_gr3a
+char accounting fnl_gr1a
+char accounting fnl_gr3a
+char accounting gmar_ch5
+char accounting gp_at
+char accounting gp_atl1
+char accounting gp_bev
+char accounting gp_gr1a
+char accounting gp_gr3a
+char accounting gp_me
+char accounting gp_mev
+char accounting gp_ppen
+char accounting gp_sale
+char accounting gpoa_ch5
+char accounting int_debt
+char accounting int_debtlt
+char accounting intan_gr1a
+char accounting intan_gr3a
+char accounting intrinsic_value
+char accounting inv_act
+char accounting inv_days
+char accounting inv_gr1
+char accounting inv_gr1a
+char accounting inv_gr3a
+char accounting inv_turnover
+char accounting ival_me
+char accounting kz_index
+char accounting lnoa_gr1a
+char accounting lt_gr1
+char accounting lt_gr3
+char accounting lt_ppen
+char accounting lti_gr1a
+char accounting lti_gr3a
+char accounting nca_gr1
+char accounting nca_gr3
+char accounting ncl_gr1
+char accounting ncl_gr3
+char accounting ncoa_gr1a
+char accounting ncoa_gr3a
+char accounting ncol_gr1a
+char accounting ncol_gr3a
+char accounting net_income
+char accounting netdebt_me
+char accounting netis_at
+char accounting netis_gr1a
+char accounting netis_gr3a
+char accounting netis_mev
+char accounting nfna_gr1a
+char accounting nfna_gr3a
+char accounting ni_ar1
+char accounting ni_at
+char accounting ni_be
+char accounting ni_emp
+char accounting ni_gr1a
+char accounting ni_gr3a
+char accounting ni_inc8q
+char accounting ni_ivol
+char accounting ni_me
+char accounting ni_sale
+char accounting niq_at
+char accounting niq_at_chg1
+char accounting niq_be
+char accounting niq_be_chg1
+char accounting niq_saleq_std
+char accounting niq_su
+char accounting nix_be
+char accounting nix_gr1a
+char accounting nix_gr3a
+char accounting nix_me
+char accounting nix_sale
+char accounting nncoa_gr1a
+char accounting nncoa_gr3a
+char accounting noa_at
+char accounting noa_gr1a
+char accounting nri_at
+char accounting nwc_at
+char accounting nwc_gr1a
+char accounting nwc_gr3a
+char accounting o_score
+char accounting oa_gr1a
+char accounting oa_gr3a
+char accounting oaccruals_at
+char accounting oaccruals_ni
+char accounting ocf_at
+char accounting ocf_at_chg1
+char accounting ocf_be
+char accounting ocf_cl
+char accounting ocf_debt
+char accounting ocf_gr1a
+char accounting ocf_gr3a
+char accounting ocf_me
+char accounting ocf_mev
+char accounting ocf_sale
+char accounting ocfq_saleq_std
+char accounting ol_gr1a
+char accounting ol_gr3a
+char accounting op_at
+char accounting op_atl1
+char accounting ope_be
+char accounting ope_bel1
+char accounting ope_gr1a
+char accounting ope_gr3a
+char accounting ope_me
+char accounting opex_at
+char accounting opex_gr1
+char accounting opex_gr3
+char accounting pi_nix
+char accounting pi_sale
+char accounting ppeg_gr1a
+char accounting ppeg_gr3a
+char accounting ppeinv_gr1a
+char accounting ppen_mev
+char accounting profit_cl
+char accounting pstk_bev
+char accounting pstk_gr1
+char accounting pstk_gr3
+char accounting pstk_mev
+char accounting rd5_at
+char accounting rd_at
+char accounting rd_me
+char accounting rd_sale
+char accounting rec_act
+char accounting rec_days
+char accounting rec_gr1a
+char accounting rec_gr3a
+char accounting rec_turnover
+char accounting roa_ch5
+char accounting roe_be_std
+char accounting roe_ch5
+char accounting roeq_be_std
+char accounting sale_be
+char accounting sale_bev
+char accounting sale_emp
+char accounting sale_emp_gr1
+char accounting sale_gr1
+char accounting sale_gr3
+char accounting sale_me
+char accounting sale_mev
+char accounting sale_nwc
+char accounting saleq_gr1
+char accounting saleq_su
+char accounting sales
+char accounting sga_gr1
+char accounting sga_gr3
+char accounting spi_at
+char accounting staff_sale
+char accounting sti_gr1a
+char accounting taccruals_at
+char accounting taccruals_ni
+char accounting tangibility
+char accounting tax_gr1a
+char accounting tax_gr3a
+char accounting tax_pi
+char accounting txditc_gr1a
+char accounting txditc_gr3a
+char accounting txp_gr1a
+char accounting txp_gr3a
+char accounting xido_at
+char accounting z_score
+char portfolio age
+char portfolio aliq_at
+char portfolio aliq_mat
+char portfolio ami_126d
+char portfolio at_be
+char portfolio at_gr1
+char portfolio at_me
+char portfolio at_turnover
+char portfolio be_gr1a
+char portfolio be_me
+char portfolio beta_60m
+char portfolio beta_dimson_21d
+char portfolio betabab_1260d
+char portfolio betadown_252d
+char portfolio bev_mev
+char portfolio bidaskhl_21d
+char portfolio capex_abn
+char portfolio capx_gr1
+char portfolio capx_gr2
+char portfolio capx_gr3
+char portfolio cash_at
+char portfolio chcsho_12m
+char portfolio coa_gr1a
+char portfolio col_gr1a
+char portfolio cop_at
+char portfolio cop_atl1
+char portfolio corr_1260d
+char portfolio coskew_21d
+char portfolio cowc_gr1a
+char portfolio dbnetis_at
+char portfolio debt_gr3
+char portfolio debt_me
+char portfolio dgp_dsale
+char portfolio div12m_me
+char portfolio dolvol_126d
+char portfolio dolvol_var_126d
+char portfolio dsale_dinv
+char portfolio dsale_drec
+char portfolio dsale_dsga
+char portfolio earnings_variability
+char portfolio ebit_bev
+char portfolio ebit_sale
+char portfolio ebitda_mev
+char portfolio emp_gr1
+char portfolio eq_dur
+char portfolio eqnetis_at
+char portfolio eqnpo_12m
+char portfolio eqnpo_me
+char portfolio eqpo_me
+char portfolio f_score
+char portfolio fcf_me
+char portfolio fnl_gr1a
+char portfolio gp_at
+char portfolio gp_atl1
+char portfolio inv_gr1
+char portfolio inv_gr1a
+char portfolio iskew_capm_21d
+char portfolio iskew_ff3_21d
+char portfolio iskew_hxz4_21d
+char portfolio ival_me
+char portfolio ivol_capm_21d
+char portfolio ivol_capm_252d
+char portfolio ivol_ff3_21d
+char portfolio ivol_hxz4_21d
+char portfolio kz_index
+char portfolio lnoa_gr1a
+char portfolio lti_gr1a
+char portfolio market_equity
+char portfolio mispricing_mgmt
+char portfolio mispricing_perf
+char portfolio ncoa_gr1a
+char portfolio ncol_gr1a
+char portfolio netdebt_me
+char portfolio netis_at
+char portfolio nfna_gr1a
+char portfolio ni_ar1
+char portfolio ni_be
+char portfolio ni_inc8q
+char portfolio ni_ivol
+char portfolio ni_me
+char portfolio niq_at
+char portfolio niq_at_chg1
+char portfolio niq_be
+char portfolio niq_be_chg1
+char portfolio niq_su
+char portfolio nncoa_gr1a
+char portfolio noa_at
+char portfolio noa_gr1a
+char portfolio o_score
+char portfolio oaccruals_at
+char portfolio oaccruals_ni
+char portfolio ocf_at
+char portfolio ocf_at_chg1
+char portfolio ocf_me
+char portfolio ocfq_saleq_std
+char portfolio op_at
+char portfolio op_atl1
+char portfolio ope_be
+char portfolio ope_bel1
+char portfolio opex_at
+char portfolio pi_nix
+char portfolio ppeinv_gr1a
+char portfolio prc
+char portfolio prc_highprc_252d
+char portfolio qmj
+char portfolio qmj_growth
+char portfolio qmj_prof
+char portfolio qmj_safety
+char portfolio rd5_at
+char portfolio rd_me
+char portfolio rd_sale
+char portfolio resff3_12_1
+char portfolio resff3_6_1
+char portfolio ret_12_1
+char portfolio ret_12_7
+char portfolio ret_1_0
+char portfolio ret_3_1
+char portfolio ret_60_12
+char portfolio ret_6_1
+char portfolio ret_9_1
+char portfolio rmax1_21d
+char portfolio rmax5_21d
+char portfolio rmax5_rvol_21d
+char portfolio rskew_21d
+char portfolio rvol_21d
+char portfolio sale_bev
+char portfolio sale_emp_gr1
+char portfolio sale_gr1
+char portfolio sale_gr3
+char portfolio sale_me
+char portfolio saleq_gr1
+char portfolio saleq_su
+char portfolio seas_11_15an
+char portfolio seas_11_15na
+char portfolio seas_16_20an
+char portfolio seas_16_20na
+char portfolio seas_1_1an
+char portfolio seas_1_1na
+char portfolio seas_2_5an
+char portfolio seas_2_5na
+char portfolio seas_6_10an
+char portfolio seas_6_10na
+char portfolio sti_gr1a
+char portfolio taccruals_at
+char portfolio taccruals_ni
+char portfolio tangibility
+char portfolio tax_gr1a
+char portfolio turnover_126d
+char portfolio turnover_var_126d
+char portfolio z_score
+char portfolio zero_trades_126d
+char portfolio zero_trades_21d
+char portfolio zero_trades_252d
+chlog 01-15-2021
+chlog 01-25-2021
+chlog 02-01-2021
+chlog 02-15-2021
+chlog 02-19-2021
+chlog 03-03-2023
+chlog 04-07-2026
+chlog 05-03-2025 [Factor data set]
+chlog 08-02-2022
+chlog 10-07-2026
+chlog 11-03-2024
+chlog 14-04-2026
+chlog 14-06-2021
+chlog 16-11-2021
+chlog 22-04-2026
+chlog 27-04-2026
+chlog 27-08-2021
+chlog 30-06-2022 [Paper data set]
+dispatch process_window.funcs ami -> ami
+dispatch process_window.funcs capm -> capm
+dispatch process_window.funcs capm_ext -> capm_ext
+dispatch process_window.funcs dimsonbeta -> dimsonbeta
+dispatch process_window.funcs dolvol -> dolvol
+dispatch process_window.funcs downbeta -> downbeta
+dispatch process_window.funcs ff3 -> ff3
+dispatch process_window.funcs hxz4 -> hxz4
+dispatch process_window.funcs mktcorr -> mktcorr
+dispatch process_window.funcs mktrf_vol -> mktrf_vol
+dispatch process_window.funcs mktvol -> mktrf_vol
+dispatch process_window.funcs prc_to_high -> prc_to_high
+dispatch process_window.funcs res_mom -> res_mom
+dispatch process_window.funcs rmax -> rmax
+dispatch process_window.funcs rvol -> rvol
+dispatch process_window.funcs skew -> skew
+dispatch process_window.funcs turnover -> turnover
+dispatch process_window.funcs zero_trades -> zero_trades
+file .claude/agents/code-critic.md
+file .claude/agents/copilot-triage.md
+file .claude/agents/doc-sync.md
+file .claude/agents/pr-reviewer.md
+file .claude/agents/test-scaffolder.md
+file .claude/settings.json
+file .claude/skills/approve-pr/SKILL.md
+file .claude/skills/check-docs/SKILL.md
+file .claude/skills/draft-pr-comment/SKILL.md
+file .claude/skills/review-code/SKILL.md
+file .claude/skills/review-pr/SKILL.md
+file .claude/skills/review-workflow/SKILL.md
+file .claude/skills/triage-copilot/SKILL.md
+file .claude/skills/verify-review/SKILL.md
+file .github/ISSUE_TEMPLATE/bug_report.yml
+file .github/ISSUE_TEMPLATE/config.yml
+file .github/ISSUE_TEMPLATE/data_discrepancy.yml
+file .github/ISSUE_TEMPLATE/feature_request.yml
+file .github/ISSUE_TEMPLATE/other_question.yml
+file .github/PULL_REQUEST_TEMPLATE.md
+file .github/workflows/ci.yml
+file .github/workflows/claude-code-review.yml
+file .github/workflows/claude.yml
+file .github/workflows/codeql.yml
+file .gitignore
+file .python-version
+file CHANGELOG_DATA.md
+file CITATION.cff
+file CLAUDE.md
+file CONTRIBUTING.md
+file DATA_LICENSE
+file LICENSE
+file README.md
+file SECURITY.md
+file documentation/compustat_correction/compustat_correction.html
+file documentation/compustat_correction/compustat_correction.qmd
+file documentation/compustat_correction/correction_compare.py
+file documentation/compustat_correction/data/correction_factor_stats.parquet
+file documentation/compustat_correction/styles.scss
+file documentation/documentation.bib
+file documentation/documentation.pdf
+file documentation/documentation.tex
+file documentation/is_there_a_replication_crisis_in_finance_JF.pdf
+file documentation/sas_to_python/.Rhistory
+file documentation/sas_to_python/data/US_factors_SAS.parquet
+file documentation/sas_to_python/data/US_factors_py.parquet
+file documentation/sas_to_python/data/WxUS_factors_SAS.parquet
+file documentation/sas_to_python/data/WxUS_factors_py.parquet
+file documentation/sas_to_python/data/lms_comparison.parquet
+file documentation/sas_to_python/data/sas_vs_py_summ_stats.parquet
+file documentation/sas_to_python/release_notes.html
+file documentation/sas_to_python/release_notes.qmd
+file documentation/sas_to_python/release_notes_files/figure-markdown_strict/fig-comparison1-output-1.png
+file documentation/sas_to_python/release_notes_files/figure-markdown_strict/fig-comparison2-output-1.png
+file documentation/sas_to_python/release_notes_files/figure-markdown_strict/fig-comparison3-output-1.png
+file documentation/sas_to_python/release_notes_files/figure-markdown_strict/fig-comparison4-output-1.png
+file documentation/sas_to_python/release_notes_files/figure-markdown_strict/fig-comparison5-output-1.png
+file documentation/sas_to_python/release_notes_files/figure-markdown_strict/fig-comparison6-output-1.png
+file pyproject.toml
+file scripts/benchmark_dimsonbeta.py
+file slurm/submit_job_som_hpc.slurm
+file src/jkp/data/__init__.py
+file src/jkp/data/aux_functions.py
+file src/jkp/data/cli.py
+file src/jkp/data/compustat_correction.py
+file src/jkp/data/config.py
+file src/jkp/data/main.py
+file src/jkp/data/output_writer.py
+file src/jkp/data/paths.py
+file src/jkp/data/portfolio.py
+file src/jkp/data/py.typed
+file src/jkp/data/resources/README.md
+file src/jkp/data/resources/Siccodes49.txt
+file src/jkp/data/resources/cluster_labels.csv
+file src/jkp/data/resources/country_classification.xlsx
+file src/jkp/data/resources/factor_details.xlsx
+file src/jkp/data/wrds_credentials.py
+file tests/README.md
+file tests/__init__.py
+file tests/conftest.py
+file tests/fixtures/__init__.py
+file tests/fixtures/portfolio_legacy.py
+file tests/golden/__init__.py
+file tests/golden/comp_industry_stubs.py
+file tests/golden/comp_sic_naics_inputs.py
+file tests/golden/conftest.py
+file tests/golden/crsp_industry_inputs.py
+file tests/golden/firm_age_inputs.py
+file tests/golden/fixtures/cmp_on/clusters.parquet
+file tests/golden/fixtures/cmp_on/cmp.parquet
+file tests/golden/fixtures/cmp_on/country_factors/FRA.parquet
+file tests/golden/fixtures/cmp_on/country_factors/USA.parquet
+file tests/golden/fixtures/cmp_on/hml.parquet
+file tests/golden/fixtures/cmp_on/industry_ff49.parquet
+file tests/golden/fixtures/cmp_on/industry_gics.parquet
+file tests/golden/fixtures/cmp_on/lms.parquet
+file tests/golden/fixtures/cmp_on/pfs.parquet
+file tests/golden/fixtures/cmp_on/regional_clusters/world.parquet
+file tests/golden/fixtures/cmp_on/regional_factors/world.parquet
+file tests/golden/fixtures/comp_industry/comp_ind.parquet
+file tests/golden/fixtures/comp_sic_naics/comp_other.parquet
+file tests/golden/fixtures/crsp_industry/crsp_ind.parquet
+file tests/golden/fixtures/crsp_only/clusters.parquet
+file tests/golden/fixtures/crsp_only/country_factors/FRA.parquet
+file tests/golden/fixtures/crsp_only/country_factors/USA.parquet
+file tests/golden/fixtures/crsp_only/hml.parquet
+file tests/golden/fixtures/crsp_only/lms.parquet
+file tests/golden/fixtures/crsp_only/pfs.parquet
+file tests/golden/fixtures/crsp_only/regional_clusters/world.parquet
+file tests/golden/fixtures/crsp_only/regional_factors/world.parquet
+file tests/golden/fixtures/default_monthly/clusters.parquet
+file tests/golden/fixtures/default_monthly/country_factors/FRA.parquet
+file tests/golden/fixtures/default_monthly/country_factors/USA.parquet
+file tests/golden/fixtures/default_monthly/hml.parquet
+file tests/golden/fixtures/default_monthly/industry_ff49.parquet
+file tests/golden/fixtures/default_monthly/industry_gics.parquet
+file tests/golden/fixtures/default_monthly/lms.parquet
+file tests/golden/fixtures/default_monthly/pfs.parquet
+file tests/golden/fixtures/default_monthly/regional_clusters/world.parquet
+file tests/golden/fixtures/default_monthly/regional_factors/world.parquet
+file tests/golden/fixtures/firm_age/firm_age.parquet
+file tests/golden/fixtures/full_daily/clusters.parquet
+file tests/golden/fixtures/full_daily/clusters_daily.parquet
+file tests/golden/fixtures/full_daily/country_factors/FRA.parquet
+file tests/golden/fixtures/full_daily/country_factors/USA.parquet
+file tests/golden/fixtures/full_daily/country_factors_daily/FRA.parquet
+file tests/golden/fixtures/full_daily/country_factors_daily/USA.parquet
+file tests/golden/fixtures/full_daily/hml.parquet
+file tests/golden/fixtures/full_daily/hml_daily.parquet
+file tests/golden/fixtures/full_daily/industry_ff49.parquet
+file tests/golden/fixtures/full_daily/industry_ff49_daily.parquet
+file tests/golden/fixtures/full_daily/industry_gics.parquet
+file tests/golden/fixtures/full_daily/industry_gics_daily.parquet
+file tests/golden/fixtures/full_daily/lms.parquet
+file tests/golden/fixtures/full_daily/lms_daily.parquet
+file tests/golden/fixtures/full_daily/pfs.parquet
+file tests/golden/fixtures/full_daily/pfs_daily.parquet
+file tests/golden/fixtures/full_daily/regional_clusters/world.parquet
+file tests/golden/fixtures/full_daily/regional_clusters_daily/world.parquet
+file tests/golden/fixtures/full_daily/regional_factors/world.parquet
+file tests/golden/fixtures/full_daily/regional_factors_daily/world.parquet
+file tests/golden/fixtures/hgics_join/comp_hgics.parquet
+file tests/golden/fixtures/market_beta/beta_60m.parquet
+file tests/golden/fixtures/nyse_breakpoints/clusters.parquet
+file tests/golden/fixtures/nyse_breakpoints/country_factors/FRA.parquet
+file tests/golden/fixtures/nyse_breakpoints/country_factors/USA.parquet
+file tests/golden/fixtures/nyse_breakpoints/hml.parquet
+file tests/golden/fixtures/nyse_breakpoints/industry_ff49.parquet
+file tests/golden/fixtures/nyse_breakpoints/industry_gics.parquet
+file tests/golden/fixtures/nyse_breakpoints/lms.parquet
+file tests/golden/fixtures/nyse_breakpoints/pfs.parquet
+file tests/golden/fixtures/nyse_breakpoints/regional_clusters/world.parquet
+file tests/golden/fixtures/nyse_breakpoints/regional_factors/world.parquet
+file tests/golden/fixtures/prc_to_high_21d.parquet
+file tests/golden/fixtures/prepare_crsp_sf/crsp_dsf.parquet
+file tests/golden/fixtures/prepare_crsp_sf/crsp_msf.parquet
+file tests/golden/fixtures/qmj/qmj.parquet
+file tests/golden/fixtures/residual_momentum/resmom_ff3_12_1.parquet
+file tests/golden/fixtures/residual_momentum/resmom_ff3_6_1.parquet
+file tests/golden/fixtures/signals_on/clusters.parquet
+file tests/golden/fixtures/signals_on/country_factors/FRA.parquet
+file tests/golden/fixtures/signals_on/country_factors/USA.parquet
+file tests/golden/fixtures/signals_on/hml.parquet
+file tests/golden/fixtures/signals_on/lms.parquet
+file tests/golden/fixtures/signals_on/pfs.parquet
+file tests/golden/fixtures/signals_on/regional_clusters/world.parquet
+file tests/golden/fixtures/signals_on/regional_factors/world.parquet
+file tests/golden/fixtures/turnover_126d.parquet
+file tests/golden/fixtures/zero_trades_126d.parquet
+file tests/golden/generate_comp_industry_golden.py
+file tests/golden/generate_comp_sic_naics_golden.py
+file tests/golden/generate_crsp_industry_golden.py
+file tests/golden/generate_firm_age_golden.py
+file tests/golden/generate_hgics_join_golden.py
+file tests/golden/generate_market_beta_golden.py
+file tests/golden/generate_prepare_crsp_sf_golden.py
+file tests/golden/generate_qmj_golden.py
+file tests/golden/generate_residual_momentum_golden.py
+file tests/golden/generate_rolling_golden.py
+file tests/golden/market_beta_inputs.py
+file tests/golden/prepare_crsp_sf_inputs.py
+file tests/golden/residual_momentum_inputs.py
+file tests/golden/test_firm_age_golden.py
+file tests/golden/test_market_beta_golden.py
+file tests/golden/test_prepare_crsp_sf_golden.py
+file tests/golden/test_quality_minus_junk_golden.py
+file tests/golden/test_residual_momentum_golden.py
+file tests/golden/test_run_portfolio_golden.py
+file tests/integration/__init__.py
+file tests/integration/test_portfolios_matrix.py
+file tests/integration/test_qmj_pipeline.py
+file tests/integration/test_run_portfolio_outputs.py
+file tests/perf/bench_dimsonbeta.py
+file tests/property/__init__.py
+file tests/property/test_portfolio_invariants.py
+file tests/structure/__init__.py
+file tests/structure/build_manifest.py
+file tests/structure/test_manifest.py
+file tests/unit/__init__.py
+file tests/unit/portfolio/__init__.py
+file tests/unit/portfolio/conftest.py
+file tests/unit/portfolio/test_add_ecdf.py
+file tests/unit/portfolio/test_breakpoints_and_sources.py
+file tests/unit/portfolio/test_build_hml_lms.py
+file tests/unit/portfolio/test_build_regional_loop.py
+file tests/unit/portfolio/test_cluster_portfolios.py
+file tests/unit/portfolio/test_cmp_branch.py
+file tests/unit/portfolio/test_date_arithmetic.py
+file tests/unit/portfolio/test_industry_returns.py
+file tests/unit/portfolio/test_output_format.py
+file tests/unit/portfolio/test_portfolios_core.py
+file tests/unit/portfolio/test_regional_data.py
+file tests/unit/portfolio/test_signals_branch.py
+file tests/unit/portfolio/test_stack_outputs.py
+file tests/unit/portfolio/test_winsorization.py
+file tests/unit/portfolio/test_writers.py
+file tests/unit/test_accounting_formulas.py
+file tests/unit/test_aug_msf_v2.py
+file tests/unit/test_aux_functions.py
+file tests/unit/test_cli.py
+file tests/unit/test_combine_crsp_comp_sf.py
+file tests/unit/test_comp_hgics.py
+file tests/unit/test_comp_industry.py
+file tests/unit/test_comp_industry_legacy_equivalence.py
+file tests/unit/test_comp_sic_naics.py
+file tests/unit/test_compustat_correction.py
+file tests/unit/test_crsp_industry.py
+file tests/unit/test_deterministic_dedup.py
+file tests/unit/test_download_and_config.py
+file tests/unit/test_expressions.py
+file tests/unit/test_ff_ind_class.py
+file tests/unit/test_firm_age.py
+file tests/unit/test_hgics_join.py
+file tests/unit/test_market_beta.py
+file tests/unit/test_output_writer.py
+file tests/unit/test_paths.py
+file tests/unit/test_prepare_crsp_sf.py
+file tests/unit/test_public_api.py
+file tests/unit/test_quality_minus_junk.py
+file tests/unit/test_residual_momentum.py
+file tests/unit/test_ret_exc_wins.py
+file tests/unit/test_rolling_daily_metrics.py
+file tests/unit/test_scaling_ratios.py
+file tests/unit/test_winsorization.py
+file tests/unit/test_wrds_credentials.py
+file tests/unit/test_wrds_download.py
+file uv.lock
+fn __init__.__dir__()
+fn __init__.__getattr__(name: str)
+fn aux_functions._attach_download_worker(task_queue: queue.Queue[_DownloadTask], conninfo: str, password: str | None, task_errors: list[str], startup_errors: list[str], errors_lock: threading.Lock, stop_event: threading.Event)
+fn aux_functions._attach_wrds(con: duckdb.DuckDBPyConnection, conninfo: str, password: str | None)
+fn aux_functions._balanced_year_chunks(histogram: list[tuple[int, int]], n_chunks: int, end_date: date | None)
+fn aux_functions._build_download_tasks(table_names: list[str], filenames: dict[str, str], date_columns: dict[str, str], end_date: date | None, split_tables: frozenset[str], n_chunks: int, histograms: dict[str, list[tuple[int, int]]])
+fn aux_functions._build_hml_lms(pf_df: pl.DataFrame, char_info: pl.DataFrame, n_pfs: int, date_col: str, include_signal: bool)
+fn aux_functions._build_industry_daily_returns(data: pl.DataFrame, daily: pl.DataFrame, industry_col: str, bp_min_n: int, excntry: str, industry_transform: pl.Expr | None=None)
+fn aux_functions._build_industry_monthly_returns(data: pl.DataFrame, industry_col: str, bp_min_n: int, excntry: str, industry_transform: pl.Expr | None=None)
+fn aux_functions._build_regional_loop(data: pl.DataFrame, mkt: pl.DataFrame, regions: pl.DataFrame, date_col: str, char_col: str, output_cols: list[str], weighting: str, periods_min: int, stocks_min: int)
+fn aux_functions._chunk_path(filename: str, i: int)
+fn aux_functions._compute_histograms(conninfo: str, tables: list[str], date_columns: dict[str, str], end_date: date | None, max_conns: int, password: str | None)
+fn aux_functions._compute_histograms.one(table: str)
+fn aux_functions._concat_chunks(final_file: str, chunk_files: list[str])
+fn aux_functions._date_where(date_column: str | None, start_date: date | None, end_date: date | None)
+fn aux_functions._download_tables_parallel(table_names: list[str], filenames: dict[str, str], conninfo: str, date_columns: dict[str, str], end_date: date | None, password: str | None, workers: int, split_tables: frozenset[str]=frozenset(), n_chunks: int=1)
+fn aux_functions._download_tables_parallel.concat_one(item: tuple[str, list[str]])
+fn aux_functions._effective_download_workers(requested: int, n_tables: int)
+fn aux_functions._install_postgres_extension()
+fn aux_functions._main_filter_expr()
+fn aux_functions._map_interruptible(fn: Callable[[_MapT], _MapR], items: Iterable[_MapT], max_workers: int)
+fn aux_functions._parse_siccodes_file(filename: str, label: str)
+fn aux_functions._password_forms(password: str)
+fn aux_functions._password_in_error(text: str, password: str)
+fn aux_functions._pg_escape_value(value: str)
+fn aux_functions._redact_password(text: str, password: str)
+fn aux_functions._remove_chunk_parts(filename: str)
+fn aux_functions._sql_literal(value: str)
+fn aux_functions._stack_outputs(portfolio_data: dict, key: str, sort_cols: list[str], select_cols: list[str] | None=None)
+fn aux_functions._turnover_d_expr()
+fn aux_functions._write_filtered(df: pl.DataFrame, path: Path, date_col: str, end_date: date)
+fn aux_functions._write_split_by_key(df: pl.DataFrame, folder_path: Path, key_col: str, date_col: str, end_date: date)
+fn aux_functions._year_histogram(con: duckdb.DuckDBPyConnection, db_alias: str, lib: str, table: str, date_column: str, end_date: date | None)
+fn aux_functions.acc_chars_list()
+fn aux_functions.add_MMYY_column_drop_original(df, var)
+fn aux_functions.add_accounting_misc_cols_1(df)
+fn aux_functions.add_accounting_misc_cols_2(df)
+fn aux_functions.add_cutoffs_and_winsorize(df, wins_data_path, group_vars, dt_col)
+fn aux_functions.add_earnings_persistence_and_expand(paths: DataPaths, df, data_path, lag_to_pub, max_lag)
+fn aux_functions.add_ecdf(df: pl.DataFrame | pl.LazyFrame, group_cols: list[str] | None=None)
+fn aux_functions.add_fx_and_convert_vars(df, fx_df, vars, freq)
+fn aux_functions.add_helper_vars(paths: DataPaths, data)
+fn aux_functions.add_liq_and_efficiency_ratios(df)
+fn aux_functions.add_me_data_and_compute_me_mev_mat_eqdur_vars(df, me_df)
+fn aux_functions.add_primary_sec(paths: DataPaths, data_path, datevar, file_name)
+fn aux_functions.add_profit_scaled_by_lagged_vars(df)
+fn aux_functions.add_ret_exc_wins(paths: DataPaths, freq: str, lower: float=0.001, upper: float=0.999)
+fn aux_functions.add_rf_and_exchange_data_to_temporary_sf(paths: DataPaths, freq, temp_sf)
+fn aux_functions.adj_trd_vol_NASDAQ(datevar, col_to_adjust, is_nasdaq_expr)
+fn aux_functions.adjust_overnight_returns(df)
+fn aux_functions.altman_z(df, name='z_score')
+fn aux_functions.ami(df, sfx, __min)
+fn aux_functions.ap_factors(paths: DataPaths, output_path, freq, sf_path, mchars_path, mkt_path, min_stocks_bp, min_stocks_pf, lower: float=0.001, upper: float=0.999)
+fn aux_functions.apply_group_filter(df, stat, min_obs)
+fn aux_functions.apply_indfmt_filter(df)
+fn aux_functions.apply_stock_filter_and_compute_indexes(df, dt_col, max_date_lag)
+fn aux_functions.aug_msf_v2(paths: DataPaths)
+fn aux_functions.base_data_filter_exp(stat)
+fn aux_functions.be_and_cd_exps(i)
+fn aux_functions.bidask_hl(paths: DataPaths, output_path, data_path, market_returns_daily_path, __min_obs)
+fn aux_functions.bo_false()
+fn aux_functions.build_mcti(paths: DataPaths)
+fn aux_functions.build_projection(cols)
+fn aux_functions.calculate_consecutive_earnings_increases(df)
+fn aux_functions.capm(df, sfx, __min)
+fn aux_functions.capm_ext(df, sfx, __min)
+fn aux_functions.char_pf_rets()
+fn aux_functions.chcsho_cols(i)
+fn aux_functions.chg_to_assets(var_gr, horizon)
+fn aux_functions.chg_to_avgassets(var)
+fn aux_functions.chg_to_exp(var)
+fn aux_functions.chg_to_lagassets(var_gr)
+fn aux_functions.chg_var1_to_var2(df, name, var1, var2, horizon)
+fn aux_functions.classify_stocks_size_groups(paths: DataPaths)
+fn aux_functions.collect_and_write(df, filename, collect_streaming=False)
+fn aux_functions.combine_ann_qtr_chars(paths: DataPaths, ann_df_path, qtr_df_path, char_vars, q_suffix)
+fn aux_functions.combine_crsp_comp_sf(paths: DataPaths)
+fn aux_functions.comp_exchanges(paths: DataPaths)
+fn aux_functions.comp_hgics(paths: DataPaths, lib)
+fn aux_functions.comp_hgics_aux(filename)
+fn aux_functions.comp_industry(paths: DataPaths)
+fn aux_functions.comp_sic_naics(paths: DataPaths)
+fn aux_functions.compustat_fx(paths: DataPaths)
+fn aux_functions.compute_bidask_spread(df, __min_obs)
+fn aux_functions.compute_capex_abn(df)
+fn aux_functions.compute_earnings_persistence(paths: DataPaths, data_path, __n, __min)
+fn aux_functions.convert_raw_vars_to_usd(paths: DataPaths, df)
+fn aux_functions.create_acc_chars(paths: DataPaths, data_path, output_path, lag_to_public, max_data_lag, __keep_vars, me_data_path, suffix)
+fn aux_functions.create_world_data_prelim(paths: DataPaths, msf_path, market_chars_monthly_path, acc_chars_world_path, output_path)
+fn aux_functions.crsp_industry(paths: DataPaths)
+fn aux_functions.cumulate_4q(df, var_list)
+fn aux_functions.dimsonbeta(df: pl.DataFrame | pl.LazyFrame, sfx: str, __min: int)
+fn aux_functions.div_cols(i, spc=False)
+fn aux_functions.dolvol(df, sfx, __min)
+fn aux_functions.downbeta(df, sfx, __min)
+fn aux_functions.download_raw_data_tables(paths: DataPaths, username: str, password: str | None, end_date: date | None=None, persistent_connection: bool=False, max_workers: int=1)
+fn aux_functions.download_wrds_table(conninfo: str, duckdb_conn: duckdb.DuckDBPyConnection, table_name: str, filename: str, date_column: str | None=None, end_date: date | None=None)
+fn aux_functions.download_wrds_table_attached(duckdb_conn, db_alias, table_name, filename, date_column: str | None=None, end_date: date | None=None, start_date: date | None=None)
+fn aux_functions.drop_non_trading_days(df, n_col, dt_col, over_vars, thresh_fraction)
+fn aux_functions.earnings_variability(df, esm_h=5)
+fn aux_functions.emp_gr(path)
+fn aux_functions.eqnpo_cols(lag)
+fn aux_functions.equity_duration_cd(df, horizon=10, r=0.12, roe_mean=0.12, roe_ar1=0.57, g_mean=0.06, g_ar1=0.24)
+fn aux_functions.ex_country_aux(filename)
+fn aux_functions.expand(data, id_vars, start_date, end_date, freq='day', new_date_name='date')
+fn aux_functions.ff3(df, sfx, __min)
+fn aux_functions.ff_ind_class(paths: DataPaths, data_path: str)
+fn aux_functions.filter_dsf(paths: DataPaths)
+fn aux_functions.filter_msf(paths: DataPaths)
+fn aux_functions.filter_world(paths: DataPaths)
+fn aux_functions.financial_soundness_and_misc_ratios_exps()
+fn aux_functions.finish_daily_chars(paths: DataPaths, output_path)
+fn aux_functions.firm_age(paths: DataPaths, data_path)
+fn aux_functions.fl_none()
+fn aux_functions.gen_MMYY_column(var, shift=None)
+fn aux_functions.gen_aux_windows(sfx: str | int)
+fn aux_functions.gen_comp_dsf(paths: DataPaths, apply_correction: bool=True, correction_method: str='multiplier', variation_threshold: float=1.3)
+fn aux_functions.gen_comp_msf(paths: DataPaths)
+fn aux_functions.gen_crsp_sf(paths: DataPaths, freq)
+fn aux_functions.gen_delist_df(paths: DataPaths, __returns)
+fn aux_functions.gen_firmshares(paths: DataPaths)
+fn aux_functions.gen_fx1(paths: DataPaths)
+fn aux_functions.gen_misp_exp(var_list, min_fcts)
+fn aux_functions.gen_prihist_files(paths: DataPaths)
+fn aux_functions.gen_ranks_and_normalize(df, id_vars, geo_vars, time_vars, desc_flag, var, min_stks)
+fn aux_functions.gen_raw_data_dfs(paths: DataPaths)
+fn aux_functions.gen_returns_df(paths: DataPaths, freq)
+fn aux_functions.gen_secd_data(paths: DataPaths)
+fn aux_functions.gen_secm_data(paths: DataPaths)
+fn aux_functions.gen_temporary_sf(paths: DataPaths, freq, __returns, __delist)
+fn aux_functions.gen_wrds_connection_info(user, password: str | None=None)
+fn aux_functions.get_columns(conn, conninfo, lib, table)
+fn aux_functions.get_columns_attached(conn, db_alias, lib, table)
+fn aux_functions.header_aux(comp_path, gcomp_path, output_path)
+fn aux_functions.hgics_join(paths: DataPaths)
+fn aux_functions.hxz4(df, sfx, __min)
+fn aux_functions.impute_high_low(df)
+fn aux_functions.intrinsic_value(df, name='intrinsic_value', r=0.12)
+fn aux_functions.kz_index(df, name='kz_index')
+fn aux_functions.load_age_aux(filename, filter_monthend=False)
+fn aux_functions.load_mkt_equity_data(filename, alias=True)
+fn aux_functions.load_mkt_returns_params(freq)
+fn aux_functions.load_raw_fund_table_and_filter(filename, start_date, source_str, mode)
+fn aux_functions.load_rf_and_exchange_data(paths: DataPaths)
+fn aux_functions.market_beta(paths: DataPaths, output_path, data_path, fcts_path, __n, __min)
+fn aux_functions.market_chars_monthly(paths: DataPaths, data_path, market_ret_path, local_currency=False)
+fn aux_functions.market_returns(paths: DataPaths, data_path, freq, wins_comp, wins_data_path, nyse_cutoffs_path)
+fn aux_functions.mean_year(var)
+fn aux_functions.measure_time(func)
+fn aux_functions.measure_time.wrapper(*args, **kwargs)
+fn aux_functions.merge_industry_to_world_msf(paths: DataPaths)
+fn aux_functions.merge_qmj_to_world_data(paths: DataPaths)
+fn aux_functions.merge_roll_apply_daily_results(paths: DataPaths)
+fn aux_functions.merge_world_data_prelim(paths: DataPaths)
+fn aux_functions.mispricing_factors(paths: DataPaths, data_path, min_stks, min_fcts=3, output_path=None)
+fn aux_functions.mktcorr(df, sfx, __min)
+fn aux_functions.mktrf_vol(df, sfx, __min)
+fn aux_functions.mom_rev_cols(i, j)
+fn aux_functions.nyse_size_cutoffs(paths: DataPaths, data_path)
+fn aux_functions.ohlson_o(df, name='o_score')
+fn aux_functions.pitroski_f(df, name='f_score')
+fn aux_functions.populate_own(paths: DataPaths, inset_path, idvar, datevar, datename)
+fn aux_functions.portfolios(paths: DataPaths, excntry, chars, pfs, bps, bp_min_n, nyse_size_cutoffs, source=None, wins_ret=True, cmp_key=False, signals=False, signals_standardize=False, signals_w='vw_cap', daily_pf=False, ind_pf=True, ret_cutoffs=None, ret_cutoffs_daily=None)
+fn aux_functions.prc_to_high(df, sfx, __min)
+fn aux_functions.prep_data_factor_regs(paths: DataPaths, data_path, fcts_path, lower: float=0.001, upper: float=0.999)
+fn aux_functions.prepare_base_data(paths: DataPaths, stat)
+fn aux_functions.prepare_comp_sf(paths: DataPaths, freq)
+fn aux_functions.prepare_crsp_sf(paths: DataPaths, freq)
+fn aux_functions.prepare_daily(paths: DataPaths, data_path, fcts_path)
+fn aux_functions.prihist_aux(filename, alias_itemvalue)
+fn aux_functions.process_comp_sf1(paths: DataPaths, freq)
+fn aux_functions.process_window(base_data, window: tuple[int, int, int], stats, sfx, __min, incl=None, skip=None)
+fn aux_functions.quality_minus_junk(paths: DataPaths, data_path, min_stks)
+fn aux_functions.quarterize(df, var_list)
+fn aux_functions.regional_data(data: pl.DataFrame, mkt: pl.DataFrame, date_col: str, char_col: str, countries: pl.Series, weighting: str, countries_min: int, periods_min: int, stocks_min: int)
+fn aux_functions.rename_cols_and_select_keep_vars(df, rename_dict, vars_to_keep, suffix)
+fn aux_functions.res_mom(df, sfx, __min, incl, skip)
+fn aux_functions.residual_momentum(paths: DataPaths, output_path, data_path, fcts_path, __n, __min, incl, skip)
+fn aux_functions.return_cutoffs(paths: DataPaths, freq, crsp_only)
+fn aux_functions.rmax(df, sfx, __min)
+fn aux_functions.roe_and_g_exps(i, g_c, g_ar1, roe_c, roe_ar1)
+fn aux_functions.roll_apply_daily(paths: DataPaths, stats, sfx, __min)
+fn aux_functions.rvol(df, sfx, __min)
+fn aux_functions.safe_div(num, den, name, mode=1)
+fn aux_functions.sas_sum_agg(name)
+fn aux_functions.save_accounting_data(paths: DataPaths)
+fn aux_functions.save_daily_ret(paths: DataPaths)
+fn aux_functions.save_full_files_and_cleanup(paths: DataPaths, clear_interim=True)
+fn aux_functions.save_main_data(paths: DataPaths)
+fn aux_functions.save_monthly_ret(paths: DataPaths)
+fn aux_functions.save_output_files(paths: DataPaths)
+fn aux_functions.scale_me(var)
+fn aux_functions.scale_mev(var)
+fn aux_functions.seasonality(data, ret_x, start_year, end_year)
+fn aux_functions.sec_info_aux(filename)
+fn aux_functions.setup_folder_structure(paths: DataPaths)
+fn aux_functions.sic_naics_aux(filename)
+fn aux_functions.skew(df, sfx, __min)
+fn aux_functions.sort_ff_style(char, min_stocks_bp, min_stocks_pf, date_col, data, sf)
+fn aux_functions.standardized_accounting_data(paths: DataPaths, coverage, convert_to_usd, me_data_path, include_helpers_vars, start_date)
+fn aux_functions.standardized_unexpected(df, var, qtrs, qtrs_min)
+fn aux_functions.sub_sas(col1, col2)
+fn aux_functions.sum_sas(col1, col2)
+fn aux_functions.tangibility()
+fn aux_functions.temp_liq_rat(col_avg, den, alias)
+fn aux_functions.temp_rat_other(num, den, alias)
+fn aux_functions.temp_rat_other_spc()
+fn aux_functions.ttm(var)
+fn aux_functions.turnover(df, sfx, __min)
+fn aux_functions.update_ni_inc_and_decrease(df, lag)
+fn aux_functions.var_growth(var_gr, horizon)
+fn aux_functions.vola(df, name, var, yrs, yrs_min)
+fn aux_functions.volq(df, name, var, qtrs, qtrs_min)
+fn aux_functions.z_ranks(data, var, __min, sort)
+fn aux_functions.zero_trades(df, sfx, __min)
+fn cli._version_callback(value: bool)
+fn cli.build(output_dir: Path=typer.Argument(help='Directory for pipeline output (raw, interim, and processed data).'), persistent_connection: bool=typer.Option(False, '--persistent-connection', '-p', help='Use a single persistent WRDS connection (reduces MFA prompts on NAT-rotated networks).'), download_workers: int=typer.Option(1, '--download-workers', '-j', help='Number of concurrent WRDS download connections (default 1 = sequential). Higher values download tables in parallel and cut wall time, capped at the WRDS per-account connection limit. Ignored when --persistent-connection is set (which forces a single connection). On NAT-rotated networks each worker may trigger its own MFA prompt at startup; keep at 1 there.'), force: bool=typer.Option(False, '--force', '-f', help='Overwrite existing data in output directory without prompting.'))
+fn cli.connect(reset: bool=typer.Option(False, '--reset', '-r', help='Reset stored WRDS credentials.'))
+fn cli.main(version: bool=typer.Option(False, '--version', callback=_version_callback, is_eager=True, help='Show the package version and exit.'))
+fn cli.portfolio(output_dir: Path=typer.Argument(help='Directory containing pipeline output (must match output_dir from build).'), output_format: OutputFormat=typer.Option(OutputFormat.parquet, '--output-format', help='Output file format.'))
+fn compustat_correction._build_filter_inputs(data: pl.DataFrame, group_cols: list[str])
+fn compustat_correction._correct_variable_arrays(values: np.ndarray, starts: np.ndarray, window_sizes: list[int], correction_method: str, price_floor: bool=False, variation_threshold: float=1.3)
+fn compustat_correction._detect_single_one(x, factor, ep_l, ep_r)
+fn compustat_correction._early_jump_stage(reason, jump_series, confirm_series, return_based, chn)
+fn compustat_correction._filter_adjcsho_jumps(reason, cshoc, ajexdi, me, chn)
+fn compustat_correction._filter_data_gaps(reason, dates, gap_days)
+fn compustat_correction._filter_initial_ratio_errors(reason, prc, me)
+fn compustat_correction._filter_low_price_or_me(reason, prc, me, dates, low_thr)
+fn compustat_correction._filter_low_volume(reason, remove_low_volume)
+fn compustat_correction._filter_me_jumps(reason, me, ri, chn)
+fn compustat_correction._filter_return_me_mismatch(reason, ri, me)
+fn compustat_correction._filter_zero_ajexdi(reason, ajexdi)
+fn compustat_correction._group_starts(df: pl.DataFrame, group_cols: list[str])
+fn compustat_correction._kill_all(reason)
+fn compustat_correction._load_correction_inputs(sorted_path: Path, group_cols: list[str], sort_col: str)
+fn compustat_correction._load_filter_inputs(sorted_path: Path, group_cols: list[str], sort_col: str, country_col: str)
+fn compustat_correction._low_volume_decision(data: pl.DataFrame, group_cols: list[str])
+fn compustat_correction._magnitude_factor(rl, rr)
+fn compustat_correction._multi_one(x, factor, wsize, ep_l, ep_r, nlags, vthr)
+fn compustat_correction._multi_pass_one(x, factor, wsize, ep_l, ep_r, nlag, ep_lag, ep_lead, ilo, ihi, vthr, det, det_epl, det_epr)
+fn compustat_correction._reattach_corrected(sorted_path: Path, corrected: dict[str, np.ndarray], spill_dir: Path)
+fn compustat_correction._reattach_reason(sorted_path: Path, reason: np.ndarray, spill_dir: Path)
+fn compustat_correction._run_decimal_correction(data: pl.DataFrame, starts: np.ndarray, window_sizes: list[int], has_adrrc: bool, correction_method: str, variation_threshold: float)
+fn compustat_correction._run_filters_one_security(reason, remove_low_volume, ajexdi, prc, me, ri, cshoc, dates, low_thr, chn, gap_days)
+fn compustat_correction._sort_to_spill(df: pl.LazyFrame, sort_keys: list[str], path: Path)
+fn compustat_correction._validate_one(factor, wsize, reject)
+fn compustat_correction._verify_presorted_order(data: pl.DataFrame, group_cols: list[str], inp: FilterInputs, sorted_path: Path)
+fn compustat_correction.correct_decimal_errors(df: pl.LazyFrame, group_cols: list[str] | None=None, sort_col: str='datadate', window_sizes: list[int] | None=None, has_adrrc: bool=False, correction_method: str='multiplier', spill_dir: Path | None=None, variation_threshold: float=1.3)
+fn compustat_correction.detect_multi_period_all(x, starts, factor, wsize, ep_l, ep_r, nlags, vthr)
+fn compustat_correction.detect_single_period_all(x, starts, factor, ep_l, ep_r)
+fn compustat_correction.drop_unreliable_observations(df: pl.LazyFrame, group_cols: list[str] | None=None, sort_col: str='datadate', country_col: str='excntry', spill_dir: Path | None=None, presorted_path: Path | None=None)
+fn compustat_correction.run_all_filters(starts, reason, remove_low_volume, ajexdi, prc, me, ri, cshoc, dates, low_thr, chn, gap_days)
+fn compustat_correction.validate_cascading_all(starts, factor, wsize)
+fn main.run_pipeline(*, persistent_connection: bool=False, max_workers: int=1, output_dir: Path)
+fn output_writer._collect_dataframe(df: pl.DataFrame | pl.LazyFrame, *, streaming: bool=False, shrink_dtype: bool=False)
+fn output_writer._convert_parquet_to_csv(parquet_path: Path, csv_path: Path)
+fn output_writer.configure_output_format(format_str: str, *, _allow_reset: bool=False)
+fn output_writer.convert_outputs_to_csv(processed_dir: str | Path='data/processed', output_dir: str | Path | None=None)
+fn output_writer.convert_outputs_to_csv.convert_single_file(parquet_file: Path)
+fn output_writer.get_output_format()
+fn output_writer.write_dataframe(df: pl.DataFrame | pl.LazyFrame, path: str | Path, *, streaming: bool=False, shrink_dtype: bool=False)
+fn paths.DataPaths.interim_dir(self)
+fn paths.DataPaths.processed_dir(self)
+fn paths.DataPaths.raw_dir(self)
+fn paths.DataPaths.raw_tables_dir(self)
+fn paths._resource_path(filename: str)
+fn paths.get_cluster_labels_path()
+fn paths.get_country_classification_path()
+fn paths.get_data_readme_path()
+fn paths.get_factor_details_path()
+fn paths.get_siccodes_path()
+fn portfolio.__dir__()
+fn portfolio.__getattr__(name: str)
+fn portfolio.run_portfolio(*, output_format: str='parquet', output_dir: Path)
+fn wrds_credentials._atomic_write(path: Path, text: str)
+fn wrds_credentials._cleanup_legacy_keyring_section(username: str)
+fn wrds_credentials._drop_legacy_keyring_option(cp: configparser.RawConfigParser, path: Path, username: str)
+fn wrds_credentials._esc_pgpass(value: str)
+fn wrds_credentials._escape_keyring_option(username: str)
+fn wrds_credentials._interactive()
+fn wrds_credentials._is_wrds_line(fields: list[str], username: str)
+fn wrds_credentials._keyring_delete(username: str)
+fn wrds_credentials._keyring_get(username: str)
+fn wrds_credentials._keyring_set(username: str, password: str)
+fn wrds_credentials._load_legacy_cfg()
+fn wrds_credentials._log_source(desc: str)
+fn wrds_credentials._migrate_legacy_keyring(username: str)
+fn wrds_credentials._no_credentials_error(username: str)
+fn wrds_credentials._perms_too_open(path: Path)
+fn wrds_credentials._persist_username(username: str)
+fn wrds_credentials._pgpass_has_entry(username: str, *, check_perms: bool=True)
+fn wrds_credentials._pgpass_line(username: str, password: str)
+fn wrds_credentials._pgpass_path()
+fn wrds_credentials._pgpass_scan(username: str, *, check_perms: bool=True)
+fn wrds_credentials._prompt_and_store(username: str)
+fn wrds_credentials._read_pgpass_lines(path: Path)
+fn wrds_credentials._remove_pgpass_entry(username: str)
+fn wrds_credentials._resolve_username(env_user: str | None=None)
+fn wrds_credentials._split_pgpass(line: str)
+fn wrds_credentials._write_pgpass(username: str, password: str)
+fn wrds_credentials.get_wrds_credentials()
+fn wrds_credentials.reset_credentials(full_reset: bool=False)
+imp aux_functions -> compustat_correction
+imp aux_functions -> config
+imp aux_functions -> output_writer
+imp aux_functions -> paths
+imp aux_functions -> wrds_credentials
+imp cli -> __version__
+imp cli -> main
+imp cli -> portfolio
+imp cli -> wrds_credentials
+imp compustat_correction -> config
+imp main -> aux_functions
+imp main -> config
+imp main -> paths
+imp main -> wrds_credentials
+imp portfolio -> aux_functions
+imp portfolio -> config
+imp portfolio -> output_writer
+imp portfolio -> paths
+stage 000 setup_folder_structure
+stage 001 download_raw_data_tables
+stage 002 gen_raw_data_dfs
+stage 003 prepare_comp_sf
+stage 004 prepare_crsp_sf
+stage 005 prepare_crsp_sf
+stage 006 combine_crsp_comp_sf
+stage 007 crsp_industry
+stage 008 comp_industry
+stage 009 merge_industry_to_world_msf
+stage 010 ff_ind_class
+stage 011 nyse_size_cutoffs
+stage 012 classify_stocks_size_groups
+stage 013 return_cutoffs
+stage 014 return_cutoffs
+stage 015 add_ret_exc_wins
+stage 016 add_ret_exc_wins
+stage 017 market_returns
+stage 018 market_returns
+stage 019 standardized_accounting_data
+stage 020 create_acc_chars
+stage 021 create_acc_chars
+stage 022 combine_ann_qtr_chars
+stage 023 market_chars_monthly
+stage 024 create_world_data_prelim
+stage 025 ap_factors
+stage 026 ap_factors
+stage 027 firm_age
+stage 028 mispricing_factors
+stage 029 market_beta
+stage 030 residual_momentum
+stage 031 residual_momentum
+stage 032 bidask_hl
+stage 033 prepare_daily
+stage 034 roll_apply_daily
+stage 035 merge_roll_apply_daily_results
+stage 036 finish_daily_chars
+stage 037 merge_world_data_prelim
+stage 038 quality_minus_junk
+stage 039 merge_qmj_to_world_data
+stage 040 filter_dsf
+stage 041 filter_msf
+stage 042 filter_world
+stage 043 save_main_data
+stage 044 save_daily_ret
+stage 045 save_monthly_ret
+stage 046 save_accounting_data
+stage 047 save_output_files
+stage 048 save_full_files_and_cleanup
+test tests/conftest.py::test_paths
+test tests/golden/test_firm_age_golden.py::test_firm_age_golden
+test tests/golden/test_market_beta_golden.py::test_market_beta_golden
+test tests/golden/test_prepare_crsp_sf_golden.py::test_prepare_crsp_sf_empty_input
+test tests/golden/test_prepare_crsp_sf_golden.py::test_prepare_crsp_sf_golden
+test tests/golden/test_quality_minus_junk_golden.py::test_quality_minus_junk_golden
+test tests/golden/test_residual_momentum_golden.py::test_residual_momentum_golden
+test tests/golden/test_run_portfolio_golden.py::test_run_portfolio_golden
+test tests/integration/test_portfolios_matrix.py::TestPortfoliosMatrix::test_portfolios_runs_and_returns_expected_keys
+test tests/integration/test_qmj_pipeline.py::TestQmjPipeline::test_gate_failing_rows_present_with_null_qmj
+test tests/integration/test_qmj_pipeline.py::TestQmjPipeline::test_height_equals_unique_id_eom
+test tests/integration/test_qmj_pipeline.py::TestQmjPipeline::test_output_sorted_by_id_eom
+test tests/integration/test_qmj_pipeline.py::TestQmjPipeline::test_qmj_values_match_standalone
+test tests/integration/test_qmj_pipeline.py::TestQmjPipeline::test_world_data_has_qmj_cols
+test tests/integration/test_qmj_pipeline.py::test_duplicate_id_eom_collapses
+test tests/integration/test_run_portfolio_outputs.py::TestRunPortfolioOutputs::test_country_excl_drops_zwe_from_regional_aggregation
+test tests/integration/test_run_portfolio_outputs.py::TestRunPortfolioOutputs::test_end_date_filter_applied
+test tests/integration/test_run_portfolio_outputs.py::TestRunPortfolioOutputs::test_no_daily_files_when_daily_pf_false
+test tests/integration/test_run_portfolio_outputs.py::TestRunPortfolioOutputs::test_no_industry_files_when_ind_pf_false
+test tests/integration/test_run_portfolio_outputs.py::TestRunPortfolioOutputs::test_output_format_csv
+test tests/integration/test_run_portfolio_outputs.py::TestRunPortfolioOutputs::test_writes_clusters_parquet
+test tests/integration/test_run_portfolio_outputs.py::TestRunPortfolioOutputs::test_writes_country_factors_partition
+test tests/integration/test_run_portfolio_outputs.py::TestRunPortfolioOutputs::test_writes_industry_files_when_ind_pf_true
+test tests/integration/test_run_portfolio_outputs.py::TestRunPortfolioOutputs::test_writes_pfs_and_hml_lms_parquets
+test tests/integration/test_run_portfolio_outputs.py::TestRunPortfolioOutputs::test_writes_regional_factors_partition
+test tests/property/test_portfolio_invariants.py::TestPortfolioInvariants::test_idempotent_under_seed_reuse
+test tests/property/test_portfolio_invariants.py::TestPortfolioInvariants::test_n_per_pf_eom_sums_to_total_observations
+test tests/property/test_portfolio_invariants.py::TestPortfolioInvariants::test_no_nan_in_returns
+test tests/property/test_portfolio_invariants.py::TestPortfolioInvariants::test_pf_monotone_signal_medians
+test tests/property/test_portfolio_invariants.py::TestPortfolioInvariants::test_pf_returns_height_positive
+test tests/property/test_portfolio_invariants.py::TestPortfolioInvariants::test_pf_returns_schema_has_required_columns
+test tests/property/test_portfolio_invariants.py::TestPortfolioInvariants::test_pf_values_in_one_to_pfs
+test tests/property/test_portfolio_invariants.py::TestPortfolioInvariants::test_ret_ew_within_input_bounds
+test tests/structure/build_manifest.py::test_lines
+test tests/structure/test_manifest.py::test_characteristic_sources_agree
+test tests/structure/test_manifest.py::test_manifest_matches_repository
+test tests/structure/test_manifest.py::test_no_orphaned_modules
+test tests/unit/portfolio/test_add_ecdf.py::TestAddEcdf::test_basic_ecdf_uniform
+test tests/unit/portfolio/test_add_ecdf.py::TestAddEcdf::test_below_min_bp_var_fills_null_cdf_to_zero
+test tests/unit/portfolio/test_add_ecdf.py::TestAddEcdf::test_cdf_in_unit_interval_on_breakpoint_sample
+test tests/unit/portfolio/test_add_ecdf.py::TestAddEcdf::test_empty_bp_stock_group_yields_zero_cdf
+test tests/unit/portfolio/test_add_ecdf.py::TestAddEcdf::test_idempotence_on_double_call
+test tests/unit/portfolio/test_add_ecdf.py::TestAddEcdf::test_lazyframe_in_lazyframe_out
+test tests/unit/portfolio/test_add_ecdf.py::TestAddEcdf::test_multi_group_cols_characteristic_and_eom
+test tests/unit/portfolio/test_add_ecdf.py::TestAddEcdf::test_multiple_eom_groups_independent
+test tests/unit/portfolio/test_add_ecdf.py::TestAddEcdf::test_non_bp_stock_gets_asof_cdf
+test tests/unit/portfolio/test_add_ecdf.py::TestAddEcdf::test_ties_give_step_cdf
+test tests/unit/portfolio/test_breakpoints_and_sources.py::TestBpsModes::test_bps_modes_produce_different_pf_assignments
+test tests/unit/portfolio/test_breakpoints_and_sources.py::TestBpsModes::test_bps_non_mc_excludes_microcap_from_breakpoint_sample
+test tests/unit/portfolio/test_breakpoints_and_sources.py::TestBpsModes::test_bps_nyse_uses_nyse_flagged_rows
+test tests/unit/portfolio/test_breakpoints_and_sources.py::TestMeCap::test_me_cap_equals_min_me_nyse_p80
+test tests/unit/portfolio/test_breakpoints_and_sources.py::TestSourceFilter::test_source_filter_retains_only_specified_source
+test tests/unit/portfolio/test_build_hml_lms.py::TestBuildHmlLms::test_direction_minus_one_flips_signs
+test tests/unit/portfolio/test_build_hml_lms.py::TestBuildHmlLms::test_direction_plus_one_lms_equals_hml
+test tests/unit/portfolio/test_build_hml_lms.py::TestBuildHmlLms::test_include_signal_false_omits_signal_column
+test tests/unit/portfolio/test_build_hml_lms.py::TestBuildHmlLms::test_n_stocks_is_sum_of_extremes
+test tests/unit/portfolio/test_build_hml_lms.py::TestBuildHmlLms::test_pfs_filter_drops_singleton_cohorts
+test tests/unit/portfolio/test_build_regional_loop.py::TestBuildRegionalLoop::test_concatenates_one_block_per_region
+test tests/unit/portfolio/test_build_regional_loop.py::TestBuildRegionalLoop::test_runs_with_list_country_codes
+test tests/unit/portfolio/test_build_regional_loop.py::TestBuildRegionalLoop::test_uses_per_region_countries_min
+test tests/unit/portfolio/test_build_regional_loop.py::TestBuildRegionalLoopFiveRegions::test_outputs_one_block_per_region
+test tests/unit/portfolio/test_build_regional_loop.py::TestBuildRegionalLoopFiveRegions::test_per_region_countries_min_respected
+test tests/unit/portfolio/test_build_regional_loop.py::TestBuildRegionalLoopFiveRegions::test_region_column_populated
+test tests/unit/portfolio/test_cluster_portfolios.py::TestClusterPortfolios::test_cluster_join_drops_unmapped_characteristics
+test tests/unit/portfolio/test_cluster_portfolios.py::TestClusterPortfolios::test_cluster_n_factors_equals_join_cardinality
+test tests/unit/portfolio/test_cluster_portfolios.py::TestClusterPortfolios::test_cluster_ret_ew_is_simple_mean_of_factor_rets
+test tests/unit/portfolio/test_cluster_portfolios.py::TestClusterPortfolios::test_empty_lms_returns_no_clusters
+test tests/unit/portfolio/test_cluster_portfolios.py::TestClusterPortfolios::test_run_portfolio_writes_clusters_parquet
+test tests/unit/portfolio/test_cmp_branch.py::TestCmpBranch::test_cmp_drops_zero_sd_var_cohorts
+test tests/unit/portfolio/test_cmp_branch.py::TestCmpBranch::test_cmp_eom_advanced_one_month_to_month_end
+test tests/unit/portfolio/test_cmp_branch.py::TestCmpBranch::test_cmp_key_false_omits_cmp
+test tests/unit/portfolio/test_cmp_branch.py::TestCmpBranch::test_cmp_key_true_emits_cmp_in_output
+test tests/unit/portfolio/test_cmp_branch.py::TestCmpBranch::test_cmp_schema
+test tests/unit/portfolio/test_date_arithmetic.py::TestEomLag1FromDate::test_eom_lag1_via_month_start_minus_one_day
+test tests/unit/portfolio/test_date_arithmetic.py::TestEomOffset1MoMonthEnd::test_dec_to_jan_year_increment
+test tests/unit/portfolio/test_date_arithmetic.py::TestEomOffset1MoMonthEnd::test_offset_one_month_then_month_end
+test tests/unit/portfolio/test_industry_returns.py::TestBuildIndustryDailyReturns::test_bp_min_n_filters_small_industry_cohorts
+test tests/unit/portfolio/test_industry_returns.py::TestBuildIndustryDailyReturns::test_groups_by_industry_and_date
+test tests/unit/portfolio/test_industry_returns.py::TestBuildIndustryDailyReturns::test_joins_monthly_weights_with_daily_returns
+test tests/unit/portfolio/test_industry_returns.py::TestBuildIndustryDailyReturns::test_returns_schema
+test tests/unit/portfolio/test_industry_returns.py::TestBuildIndustryMonthlyReturns::test_advances_eom_by_one_month
+test tests/unit/portfolio/test_industry_returns.py::TestBuildIndustryMonthlyReturns::test_bp_min_n_filters_small_groups
+test tests/unit/portfolio/test_industry_returns.py::TestBuildIndustryMonthlyReturns::test_groups_by_industry_and_eom
+test tests/unit/portfolio/test_industry_returns.py::TestBuildIndustryMonthlyReturns::test_industry_transform_applied
+test tests/unit/portfolio/test_industry_returns.py::TestBuildIndustryMonthlyReturns::test_returns_schema
+test tests/unit/portfolio/test_industry_returns.py::TestBuildIndustryMonthlyReturns::test_uppercase_excntry
+test tests/unit/portfolio/test_industry_returns.py::TestExcntryGating::test_usa_gating_case_insensitive
+test tests/unit/portfolio/test_industry_returns.py::TestPortfoliosIndustry::test_ff49_daily_present_for_usa
+test tests/unit/portfolio/test_industry_returns.py::TestPortfoliosIndustry::test_ff49_returns_only_for_usa
+test tests/unit/portfolio/test_industry_returns.py::TestPortfoliosIndustry::test_ff49_returns_present_for_usa
+test tests/unit/portfolio/test_industry_returns.py::TestPortfoliosIndustry::test_gics_first_2_digits_extracted_as_int
+test tests/unit/portfolio/test_industry_returns.py::TestPortfoliosIndustry::test_ind_returns_filter_by_bp_min_n
+test tests/unit/portfolio/test_output_format.py::TestOutputFormatIntegration::test_csv_format_passed_through
+test tests/unit/portfolio/test_output_format.py::TestOutputFormatIntegration::test_default_format_is_parquet
+test tests/unit/portfolio/test_portfolios_core.py::TestPortfoliosCore::test_pf_monotone_signal_medians_within_eom_char
+test tests/unit/portfolio/test_portfolios_core.py::TestPortfoliosCore::test_pf_returns_schema_and_columns
+test tests/unit/portfolio/test_portfolios_core.py::TestPortfoliosCore::test_pf_values_in_1_to_pfs_range
+test tests/unit/portfolio/test_portfolios_core.py::TestPortfoliosCore::test_ret_exc_lead1m_winsorized_for_compustat
+test tests/unit/portfolio/test_portfolios_core.py::TestPortfoliosDaily::test_pf_daily_dates_are_weekdays
+test tests/unit/portfolio/test_portfolios_core.py::TestPortfoliosDaily::test_pf_daily_has_expected_columns
+test tests/unit/portfolio/test_regional_data.py::TestRegionalData::test_n_countries_filter_respected
+test tests/unit/portfolio/test_regional_data.py::TestRegionalData::test_periods_min_filter
+test tests/unit/portfolio/test_regional_data.py::TestRegionalData::test_weighting_modes_run_without_error
+test tests/unit/portfolio/test_regional_data.py::TestRegionalDataFilters::test_drops_rows_missing_mkt_vw_exc
+test tests/unit/portfolio/test_regional_data.py::TestRegionalDataFilters::test_excludes_countries_outside_set
+test tests/unit/portfolio/test_regional_data.py::TestRegionalDataFilters::test_periods_min_filters_chars
+test tests/unit/portfolio/test_regional_data.py::TestRegionalDataFilters::test_stocks_min_filters_per_country_rows
+test tests/unit/portfolio/test_regional_data.py::TestRegionalDataWeightingParity::test_weighting_ew_matches_simple_mean
+test tests/unit/portfolio/test_regional_data.py::TestRegionalDataWeightingParity::test_weighting_market_cap_matches_me_weighted_mean
+test tests/unit/portfolio/test_regional_data.py::TestRegionalDataWeightingParity::test_weighting_stocks_matches_stocks_weighted_mean
+test tests/unit/portfolio/test_signals_branch.py::TestSignalsBranch::test_signals_false_omits_signals_key
+test tests/unit/portfolio/test_signals_branch.py::TestSignalsBranch::test_signals_true_adds_signals_key_to_output
+test tests/unit/portfolio/test_signals_branch.py::TestSignalsBranch::test_signals_true_per_char_per_eom_per_pf_rows
+test tests/unit/portfolio/test_signals_branch.py::TestSignalsBranch::test_signals_w_modes_run
+test tests/unit/portfolio/test_signals_branch.py::TestSignalsBranch::test_signals_with_daily_pf_emits_daily_signals
+test tests/unit/portfolio/test_signals_branch.py::TestSignalsStandardize::test_standardize_false_preserves_raw_chars
+test tests/unit/portfolio/test_signals_branch.py::TestSignalsStandardize::test_standardize_produces_signals_in_unit_interval
+test tests/unit/portfolio/test_stack_outputs.py::TestStackOutputs::test_cmp_only_for_usa_in_stacked
+test tests/unit/portfolio/test_stack_outputs.py::TestStackOutputs::test_empty_country_yields_empty_or_omitted
+test tests/unit/portfolio/test_stack_outputs.py::TestStackOutputs::test_ff49_only_for_usa_in_stacked
+test tests/unit/portfolio/test_stack_outputs.py::TestStackOutputs::test_stack_single_country
+test tests/unit/portfolio/test_stack_outputs.py::TestStackOutputs::test_stack_two_countries_pf_returns
+test tests/unit/portfolio/test_winsorization.py::TestWinsorization::test_wins_ret_false_retains_extreme_returns
+test tests/unit/portfolio/test_winsorization.py::TestWinsorization::test_wins_ret_true_clips_compustat_rows_only
+test tests/unit/portfolio/test_winsorization.py::TestWinsorization::test_wins_ret_true_compustat_lower_clip
+test tests/unit/portfolio/test_winsorization.py::TestWinsorization::test_wins_ret_true_daily_branch
+test tests/unit/portfolio/test_writers.py::TestWriteFiltered::test_empty_input_writes_empty_parquet
+test tests/unit/portfolio/test_writers.py::TestWriteFiltered::test_filters_rows_after_end_date
+test tests/unit/portfolio/test_writers.py::TestWriteFiltered::test_preserves_schema_and_dtypes
+test tests/unit/portfolio/test_writers.py::TestWriteSplitByKey::test_drops_empty_string_keys
+test tests/unit/portfolio/test_writers.py::TestWriteSplitByKey::test_drops_null_keys
+test tests/unit/portfolio/test_writers.py::TestWriteSplitByKey::test_empty_input_creates_folder_no_files
+test tests/unit/portfolio/test_writers.py::TestWriteSplitByKey::test_filename_is_flat_not_hive
+test tests/unit/portfolio/test_writers.py::TestWriteSplitByKey::test_filters_rows_after_end_date
+test tests/unit/portfolio/test_writers.py::TestWriteSplitByKey::test_keeps_numeric_zero_keys
+test tests/unit/portfolio/test_writers.py::TestWriteSplitByKey::test_one_file_per_unique_key
+test tests/unit/test_accounting_formulas.py::TestAltmanZ::test_zscore_coefficients_are_correct
+test tests/unit/test_accounting_formulas.py::TestAltmanZ::test_zscore_interpretation_zones
+test tests/unit/test_accounting_formulas.py::TestAltmanZ::test_zscore_null_when_assets_zero
+test tests/unit/test_accounting_formulas.py::TestAltmanZ::test_zscore_with_known_values
+test tests/unit/test_accounting_formulas.py::TestIntrinsicValue::test_intrinsic_value_custom_discount_rate
+test tests/unit/test_accounting_formulas.py::TestIntrinsicValue::test_intrinsic_value_null_when_negative
+test tests/unit/test_accounting_formulas.py::TestIntrinsicValue::test_intrinsic_value_positive_for_profitable_firms
+test tests/unit/test_accounting_formulas.py::TestKZIndex::test_kz_coefficients_signs
+test tests/unit/test_accounting_formulas.py::TestKZIndex::test_kz_null_when_ppent_lag_zero
+test tests/unit/test_accounting_formulas.py::TestKZIndex::test_kz_requires_lagged_ppent
+test tests/unit/test_accounting_formulas.py::TestOhlsonO::test_oscore_higher_for_distressed_firms
+test tests/unit/test_accounting_formulas.py::TestOhlsonO::test_oscore_requires_history
+test tests/unit/test_accounting_formulas.py::TestOhlsonO::test_oscore_returns_continuous_value
+test tests/unit/test_accounting_formulas.py::TestPiotroskiF::test_fscore_custom_name
+test tests/unit/test_accounting_formulas.py::TestPiotroskiF::test_fscore_is_integer
+test tests/unit/test_accounting_formulas.py::TestPiotroskiF::test_fscore_no_equity_issuance_adds_point
+test tests/unit/test_accounting_formulas.py::TestPiotroskiF::test_fscore_range_is_valid
+test tests/unit/test_accounting_formulas.py::TestPiotroskiF::test_fscore_requires_sufficient_history
+test tests/unit/test_aug_msf_v2.py::TestAugMsfV2::test_askhi_bidlo_null_for_non_tr_rows
+test tests/unit/test_aug_msf_v2.py::TestAugMsfV2::test_askhi_bidlo_values_for_tr_rows
+test tests/unit/test_aug_msf_v2.py::TestAugMsfV2::test_idempotent_on_rerun
+test tests/unit/test_aug_msf_v2.py::TestAugMsfV2::test_output_has_askhi_bidlo_columns
+test tests/unit/test_aug_msf_v2.py::TestAugMsfV2::test_preserves_original_columns
+test tests/unit/test_aux_functions.py::TestRollWindowEquivalence::test_gen_aux_windows_matches_legacy_maps
+test tests/unit/test_aux_functions.py::TestRollWindowEquivalence::test_process_window_aux_date_dtype
+test tests/unit/test_aux_functions.py::TestRollWindowEquivalence::test_process_window_matches_legacy
+test tests/unit/test_aux_functions.py::test_aug_msf_v2_writes_augmented_file_and_is_idempotent
+test tests/unit/test_aux_functions.py::test_dsf1_unique_id_int_date
+test tests/unit/test_aux_functions.py::test_gen_crsp_sf_exposes_ticker_after_senames_join
+test tests/unit/test_aux_functions.py::test_merge_roll_apply_daily_results_writes_once_with_deterministic_order
+test tests/unit/test_cli.py::TestBuildCommand::test_build_calls_run_pipeline
+test tests/unit/test_cli.py::TestBuildCommand::test_build_download_workers
+test tests/unit/test_cli.py::TestBuildCommand::test_build_download_workers_short
+test tests/unit/test_cli.py::TestBuildCommand::test_build_missing_output_dir
+test tests/unit/test_cli.py::TestBuildCommand::test_build_persistent_connection
+test tests/unit/test_cli.py::TestBuildCommand::test_build_persistent_connection_short
+test tests/unit/test_cli.py::TestCliHelp::test_build_help
+test tests/unit/test_cli.py::TestCliHelp::test_connect_help
+test tests/unit/test_cli.py::TestCliHelp::test_connect_surfaces_actionable_error_cleanly
+test tests/unit/test_cli.py::TestCliHelp::test_main_help
+test tests/unit/test_cli.py::TestCliHelp::test_portfolio_help
+test tests/unit/test_cli.py::TestConnectCommand::test_connect_reset
+test tests/unit/test_cli.py::TestConnectCommand::test_connect_reset_short
+test tests/unit/test_cli.py::TestConnectCommand::test_connect_shows_username
+test tests/unit/test_cli.py::TestPortfolioCommand::test_portfolio_calls_run_portfolio
+test tests/unit/test_cli.py::TestPortfolioCommand::test_portfolio_csv_format
+test tests/unit/test_cli.py::TestPortfolioCommand::test_portfolio_missing_output_dir
+test tests/unit/test_cli.py::TestVersionFlag::test_version_attribute_resolves_from_metadata
+test tests/unit/test_cli.py::TestVersionFlag::test_version_does_not_invoke_subcommand
+test tests/unit/test_cli.py::TestVersionFlag::test_version_prints_package_version
+test tests/unit/test_combine_crsp_comp_sf.py::TestCompNormalization::test_comp_dsf_eom_computed
+test tests/unit/test_combine_crsp_comp_sf.py::TestCompNormalization::test_comp_dsf_tvol_from_cshtrd
+test tests/unit/test_combine_crsp_comp_sf.py::TestCompNormalization::test_comp_msf_bidask_flag
+test tests/unit/test_combine_crsp_comp_sf.py::TestCompNormalization::test_comp_msf_common_flag
+test tests/unit/test_combine_crsp_comp_sf.py::TestCompNormalization::test_comp_msf_id_construction
+test tests/unit/test_combine_crsp_comp_sf.py::TestCompNormalization::test_comp_msf_id_prefix_adr
+test tests/unit/test_combine_crsp_comp_sf.py::TestCompNormalization::test_comp_msf_id_prefix_common
+test tests/unit/test_combine_crsp_comp_sf.py::TestCompNormalization::test_comp_msf_id_prefix_when_issued
+test tests/unit/test_combine_crsp_comp_sf.py::TestCompNormalization::test_comp_msf_null_columns
+test tests/unit/test_combine_crsp_comp_sf.py::TestCompNormalization::test_comp_msf_source_crsp_is_zero
+test tests/unit/test_combine_crsp_comp_sf.py::TestCrspNormalization::test_crsp_dsf_normalization
+test tests/unit/test_combine_crsp_comp_sf.py::TestCrspNormalization::test_crsp_msf_ciz_field_passthrough
+test tests/unit/test_combine_crsp_comp_sf.py::TestCrspNormalization::test_crsp_msf_common_flag
+test tests/unit/test_combine_crsp_comp_sf.py::TestCrspNormalization::test_crsp_msf_constants
+test tests/unit/test_combine_crsp_comp_sf.py::TestCrspNormalization::test_crsp_msf_eom_is_month_end
+test tests/unit/test_combine_crsp_comp_sf.py::TestCrspNormalization::test_crsp_msf_excntry_is_usa
+test tests/unit/test_combine_crsp_comp_sf.py::TestCrspNormalization::test_crsp_msf_id_equals_permno
+test tests/unit/test_combine_crsp_comp_sf.py::TestCrspNormalization::test_crsp_msf_null_columns
+test tests/unit/test_combine_crsp_comp_sf.py::TestCrspNormalization::test_crsp_msf_prc_local_equals_prc
+test tests/unit/test_combine_crsp_comp_sf.py::TestCrspNormalization::test_crsp_msf_ret_local_equals_ret
+test tests/unit/test_combine_crsp_comp_sf.py::TestDedupDeterminism::test_dedup_daily_sorted
+test tests/unit/test_combine_crsp_comp_sf.py::TestDedupDeterminism::test_dedup_monthly_sorted
+test tests/unit/test_combine_crsp_comp_sf.py::TestDedupDeterminism::test_dedup_prefers_primary_sec_daily
+test tests/unit/test_combine_crsp_comp_sf.py::TestDedupDeterminism::test_dedup_prefers_primary_sec_monthly
+test tests/unit/test_combine_crsp_comp_sf.py::TestDedupDeterminism::test_no_duplicates_daily
+test tests/unit/test_combine_crsp_comp_sf.py::TestDedupDeterminism::test_no_duplicates_monthly
+test tests/unit/test_combine_crsp_comp_sf.py::TestEdgeCases::test_all_ids_have_gaps
+test tests/unit/test_combine_crsp_comp_sf.py::TestEdgeCases::test_empty_compustat_files
+test tests/unit/test_combine_crsp_comp_sf.py::TestEdgeCases::test_leap_year_eom
+test tests/unit/test_combine_crsp_comp_sf.py::TestEdgeCases::test_single_row_inputs
+test tests/unit/test_combine_crsp_comp_sf.py::TestEndToEnd::test_daily_key_set_matches
+test tests/unit/test_combine_crsp_comp_sf.py::TestEndToEnd::test_daily_row_count_matches
+test tests/unit/test_combine_crsp_comp_sf.py::TestEndToEnd::test_daily_schema_matches
+test tests/unit/test_combine_crsp_comp_sf.py::TestEndToEnd::test_monthly_categorical_values_match
+test tests/unit/test_combine_crsp_comp_sf.py::TestEndToEnd::test_monthly_key_set_matches
+test tests/unit/test_combine_crsp_comp_sf.py::TestEndToEnd::test_monthly_numerical_values_match
+test tests/unit/test_combine_crsp_comp_sf.py::TestEndToEnd::test_monthly_row_count_matches
+test tests/unit/test_combine_crsp_comp_sf.py::TestEndToEnd::test_monthly_schema_matches
+test tests/unit/test_combine_crsp_comp_sf.py::TestObsMain::test_obs_main_applied_to_daily
+test tests/unit/test_combine_crsp_comp_sf.py::TestObsMain::test_obs_main_null_gvkey_gets_one
+test tests/unit/test_combine_crsp_comp_sf.py::TestObsMain::test_obs_main_single_observation_gets_one
+test tests/unit/test_combine_crsp_comp_sf.py::TestObsMain::test_obs_main_values_are_binary
+test tests/unit/test_combine_crsp_comp_sf.py::TestUnionAndLead::test_ret_exc_lead1m_contiguous
+test tests/unit/test_combine_crsp_comp_sf.py::TestUnionAndLead::test_ret_exc_lead1m_cross_id_boundary
+test tests/unit/test_combine_crsp_comp_sf.py::TestUnionAndLead::test_ret_exc_lead1m_gap
+test tests/unit/test_combine_crsp_comp_sf.py::TestUnionAndLead::test_ret_exc_lead1m_last_row_per_id
+test tests/unit/test_combine_crsp_comp_sf.py::TestUnionAndLead::test_ret_exc_lead1m_not_in_daily
+test tests/unit/test_combine_crsp_comp_sf.py::TestUnionAndLead::test_union_column_set_daily
+test tests/unit/test_combine_crsp_comp_sf.py::TestUnionAndLead::test_union_column_set_monthly
+test tests/unit/test_combine_crsp_comp_sf.py::TestUnionAndLead::test_union_preserves_source_crsp
+test tests/unit/test_combine_crsp_comp_sf.py::TestUnionAndLead::test_union_row_count
+test tests/unit/test_comp_hgics.py::TestCompHgics::test_all_null_indfrom_does_not_crash
+test tests/unit/test_comp_hgics.py::TestCompHgics::test_empty_input_produces_typed_empty_output
+test tests/unit/test_comp_hgics.py::TestCompHgics::test_independent_of_wall_clock
+test tests/unit/test_comp_industry.py::TestCompIndustry::test_comp_industry_golden_fixture
+test tests/unit/test_comp_industry.py::TestCompIndustry::test_full_outer_join_disjoint_dates
+test tests/unit/test_comp_industry.py::TestCompIndustry::test_gap_fill_continuity
+test tests/unit/test_comp_industry.py::TestCompIndustry::test_gap_fill_multi_span_chaining
+test tests/unit/test_comp_industry.py::TestCompIndustry::test_gap_fill_partitioned_by_gvkey
+test tests/unit/test_comp_industry.py::TestCompIndustry::test_runs_despite_stale_aux_ddb
+test tests/unit/test_comp_industry.py::TestCompIndustry::test_same_date_coalesces_both_sources
+test tests/unit/test_comp_industry.py::TestCompIndustry::test_single_date_gvkey_both_sources
+test tests/unit/test_comp_industry.py::TestCompIndustry::test_single_date_gvkey_one_source_only
+test tests/unit/test_comp_industry.py::TestCompIndustry::test_sort_invariant
+test tests/unit/test_comp_industry.py::TestCompIndustry::test_terminal_row_preserved_for_multi_date_gvkey
+test tests/unit/test_comp_industry.py::TestCompIndustry::test_unique_gvkey_date_invariant
+test tests/unit/test_comp_industry_legacy_equivalence.py::TestCompIndustryEquivalence::test_matches_legacy_duckdb_output
+test tests/unit/test_comp_industry_legacy_equivalence.py::TestCompIndustryEquivalence::test_no_duplicate_keys
+test tests/unit/test_comp_sic_naics.py::TestCompSicNaics::test_coalesce_na_takes_precedence_over_gl
+test tests/unit/test_comp_sic_naics.py::TestCompSicNaics::test_coalesce_prefers_non_null_sic
+test tests/unit/test_comp_sic_naics.py::TestCompSicNaics::test_comp_sic_naics_golden_fixture
+test tests/unit/test_comp_sic_naics.py::TestCompSicNaics::test_daily_expansion_closed_left
+test tests/unit/test_comp_sic_naics.py::TestCompSicNaics::test_dedup_and_sort_invariants
+test tests/unit/test_comp_sic_naics.py::TestCompSicNaics::test_distinct_on_picks_lowest_sic
+test tests/unit/test_comp_sic_naics.py::TestCompSicNaics::test_gl_only_gvkey
+test tests/unit/test_comp_sic_naics.py::TestCompSicNaics::test_gvkey_zero_padded_to_six_chars
+test tests/unit/test_comp_sic_naics.py::TestCompSicNaics::test_hardcoded_175650_row_dropped
+test tests/unit/test_comp_sic_naics.py::TestCompSicNaics::test_na_only_gvkey
+test tests/unit/test_compustat_correction.py::TestDecimalCorrection::test_clean_series_unchanged
+test tests/unit/test_compustat_correction.py::TestDecimalCorrection::test_determinism_rerun
+test tests/unit/test_compustat_correction.py::TestDecimalCorrection::test_floor_skips_multiply_direction
+test tests/unit/test_compustat_correction.py::TestDecimalCorrection::test_interpolation_uses_endpoint_geomean
+test tests/unit/test_compustat_correction.py::TestDecimalCorrection::test_multi_period_span_corrected
+test tests/unit/test_compustat_correction.py::TestDecimalCorrection::test_rejects_unknown_method
+test tests/unit/test_compustat_correction.py::TestDecimalCorrection::test_requires_spill_dir
+test tests/unit/test_compustat_correction.py::TestDecimalCorrection::test_single_period_high_100x_corrected
+test tests/unit/test_compustat_correction.py::TestDecimalCorrection::test_single_period_high_10x_corrected
+test tests/unit/test_compustat_correction.py::TestDecimalCorrection::test_single_period_low_10x_corrected
+test tests/unit/test_compustat_correction.py::TestDecimalCorrection::test_trfd_corrected
+test tests/unit/test_compustat_correction.py::TestObservationFilters::test_clean_high_volume_security_fully_kept
+test tests/unit/test_compustat_correction.py::TestObservationFilters::test_determinism_rerun
+test tests/unit/test_compustat_correction.py::TestObservationFilters::test_initial_low_price_drops_security
+test tests/unit/test_compustat_correction.py::TestObservationFilters::test_low_volume_trims_lowest_volume_security
+test tests/unit/test_compustat_correction.py::TestObservationFilters::test_requires_spill_dir
+test tests/unit/test_compustat_correction.py::TestObservationFilters::test_zero_ajexdi_drops_security
+test tests/unit/test_crsp_industry.py::TestCrspIndustry::test_crsp_industry_golden_fixture
+test tests/unit/test_crsp_industry.py::TestCrspIndustry::test_date_range_expansion
+test tests/unit/test_crsp_industry.py::TestCrspIndustry::test_multiple_non_overlapping_spans_per_permno
+test tests/unit/test_crsp_industry.py::TestCrspIndustry::test_null_naics_preserved
+test tests/unit/test_crsp_industry.py::TestCrspIndustry::test_overlapping_spans_deduplicated
+test tests/unit/test_crsp_industry.py::TestCrspIndustry::test_preserves_permco
+test tests/unit/test_crsp_industry.py::TestCrspIndustry::test_sic_zero_becomes_null
+test tests/unit/test_crsp_industry.py::TestCrspIndustry::test_sorted_by_permno_date
+test tests/unit/test_deterministic_dedup.py::TestAddPrimarySecDedup::test_non_primary_stays_zero
+test tests/unit/test_deterministic_dedup.py::TestAddPrimarySecDedup::test_primary_sec_prefers_one
+test tests/unit/test_deterministic_dedup.py::TestGenReturnsDfDedup::test_keeps_highest_prcstd
+test tests/unit/test_deterministic_dedup.py::TestGenReturnsDfDedup::test_no_duplicates_unchanged
+test tests/unit/test_deterministic_dedup.py::TestGenReturnsDfDedup::test_nulls_return_above_10x
+test tests/unit/test_download_and_config.py::TestConfig::test_accounting_start_date_is_polars_expr
+test tests/unit/test_download_and_config.py::TestConfig::test_accounting_start_date_value
+test tests/unit/test_download_and_config.py::TestConfig::test_collect_chunk_size_is_positive_int
+test tests/unit/test_download_and_config.py::TestConfig::test_end_date_is_date
+test tests/unit/test_download_and_config.py::TestConfig::test_end_date_is_month_end
+test tests/unit/test_download_and_config.py::TestConfig::test_main_filters_has_expected_keys
+test tests/unit/test_download_and_config.py::TestConfig::test_main_filters_is_dict
+test tests/unit/test_download_and_config.py::TestConfig::test_main_filters_values_are_one
+test tests/unit/test_download_and_config.py::TestConfig::test_portfolio_bp_min_n_value
+test tests/unit/test_download_and_config.py::TestConfig::test_portfolio_chars_is_unique_nonempty_str_list
+test tests/unit/test_download_and_config.py::TestConfig::test_portfolio_chars_known_anchors
+test tests/unit/test_download_and_config.py::TestConfig::test_portfolio_pfs_value
+test tests/unit/test_download_and_config.py::TestConfig::test_portfolio_settings_nested_keys
+test tests/unit/test_download_and_config.py::TestConfig::test_portfolio_settings_top_level_shape
+test tests/unit/test_download_and_config.py::TestConfig::test_regional_countries_min_value
+test tests/unit/test_download_and_config.py::TestConfig::test_regional_country_excl_is_immutable
+test tests/unit/test_download_and_config.py::TestConfig::test_regional_country_excl_value
+test tests/unit/test_download_and_config.py::TestConfig::test_regional_months_min_value
+test tests/unit/test_download_and_config.py::TestConfig::test_regional_stocks_min_value
+test tests/unit/test_download_and_config.py::TestDownloadRawDataTables::test_all_expected_tables_downloaded
+test tests/unit/test_download_and_config.py::TestDownloadRawDataTables::test_date_filtered_tables_get_date_column
+test tests/unit/test_download_and_config.py::TestDownloadRawDataTables::test_end_date_passed_to_all_calls
+test tests/unit/test_download_and_config.py::TestDownloadRawDataTables::test_reference_tables_get_no_date_column
+test tests/unit/test_download_and_config.py::TestDownloadWrdsTable::test_no_date_filter_when_only_date_column
+test tests/unit/test_download_and_config.py::TestDownloadWrdsTable::test_no_date_filter_when_only_end_date
+test tests/unit/test_download_and_config.py::TestDownloadWrdsTable::test_no_date_filter_when_params_absent
+test tests/unit/test_download_and_config.py::TestDownloadWrdsTable::test_sql_outputs_to_correct_filename
+test tests/unit/test_download_and_config.py::TestDownloadWrdsTable::test_sql_targets_correct_table
+test tests/unit/test_download_and_config.py::TestDownloadWrdsTable::test_where_clause_uses_correct_column_name
+test tests/unit/test_download_and_config.py::TestDownloadWrdsTable::test_where_clause_when_both_params_provided
+test tests/unit/test_download_and_config.py::TestFilterFunctions::test_filter_all_pass
+test tests/unit/test_download_and_config.py::TestFilterFunctions::test_filter_does_not_modify_source
+test tests/unit/test_download_and_config.py::TestFilterFunctions::test_filter_dsf_keeps_only_passing_rows
+test tests/unit/test_download_and_config.py::TestFilterFunctions::test_filter_is_idempotent
+test tests/unit/test_download_and_config.py::TestFilterFunctions::test_filter_msf_keeps_only_passing_rows
+test tests/unit/test_download_and_config.py::TestFilterFunctions::test_filter_none_pass
+test tests/unit/test_download_and_config.py::TestFilterFunctions::test_filter_preserves_all_columns
+test tests/unit/test_download_and_config.py::TestFilterFunctions::test_filter_world_keeps_only_passing_rows
+test tests/unit/test_download_and_config.py::TestRollingDailySpecs::test_is_nonempty_list
+test tests/unit/test_download_and_config.py::TestRollingDailySpecs::test_min_obs_positive_int
+test tests/unit/test_download_and_config.py::TestRollingDailySpecs::test_suffixes_are_known
+test tests/unit/test_download_and_config.py::TestRollingDailySpecs::test_suffixes_are_unique
+test tests/unit/test_download_and_config.py::TestRollingDailySpecs::test_variables_are_nonempty_str_lists
+test tests/unit/test_download_and_config.py::TestSaveMainData::test_accepts_paths_parameter
+test tests/unit/test_download_and_config.py::TestSaveMainData::test_all_rows_pass_through
+test tests/unit/test_download_and_config.py::TestSaveMainData::test_me_lag1_computed
+test tests/unit/test_download_and_config.py::TestSaveMainData::test_no_eom_date_filter
+test tests/unit/test_expressions.py::TestBoFalse::test_bo_false_in_filter
+test tests/unit/test_expressions.py::TestBoFalse::test_bo_false_returns_false
+test tests/unit/test_expressions.py::TestExpressionChaining::test_multiple_expressions_in_select
+test tests/unit/test_expressions.py::TestExpressionChaining::test_sum_sas_chained_with_safe_div
+test tests/unit/test_expressions.py::TestFlNone::test_fl_none_dtype_consistency
+test tests/unit/test_expressions.py::TestFlNone::test_fl_none_in_when_expression
+test tests/unit/test_expressions.py::TestFlNone::test_fl_none_returns_null
+test tests/unit/test_expressions.py::TestSafeDivEdgeCases::test_safe_div_null_denominator
+test tests/unit/test_expressions.py::TestSafeDivEdgeCases::test_safe_div_null_numerator
+test tests/unit/test_expressions.py::TestSafeDivEdgeCases::test_safe_div_output_column_name
+test tests/unit/test_expressions.py::TestSafeDivEdgeCases::test_safe_div_very_small_denominator
+test tests/unit/test_expressions.py::TestSafeDivMode1::test_safe_div_mode1_negative_denominator
+test tests/unit/test_expressions.py::TestSafeDivMode1::test_safe_div_mode1_normal_division
+test tests/unit/test_expressions.py::TestSafeDivMode1::test_safe_div_mode1_zero_denominator
+test tests/unit/test_expressions.py::TestSafeDivMode2::test_safe_div_mode2_uses_absolute_denominator
+test tests/unit/test_expressions.py::TestSafeDivMode2::test_safe_div_mode2_zero_protected
+test tests/unit/test_expressions.py::TestSafeDivMode3::test_safe_div_mode3_positive_denominator
+test tests/unit/test_expressions.py::TestSafeDivMode8::test_safe_div_mode8_both_positive
+test tests/unit/test_expressions.py::TestSubSas::test_sub_sas_both_non_null
+test tests/unit/test_expressions.py::TestSubSas::test_sub_sas_both_null
+test tests/unit/test_expressions.py::TestSubSas::test_sub_sas_first_null
+test tests/unit/test_expressions.py::TestSubSas::test_sub_sas_second_null
+test tests/unit/test_expressions.py::TestSumSas::test_sum_sas_both_non_null
+test tests/unit/test_expressions.py::TestSumSas::test_sum_sas_both_null
+test tests/unit/test_expressions.py::TestSumSas::test_sum_sas_first_null
+test tests/unit/test_expressions.py::TestSumSas::test_sum_sas_second_null
+test tests/unit/test_expressions.py::TestSumSas::test_sum_sas_with_negative_values
+test tests/unit/test_expressions.py::TestSumSas::test_sum_sas_with_zeros
+test tests/unit/test_ff_ind_class.py::TestFFIndClass::test_mapped_sic_gets_classification
+test tests/unit/test_ff_ind_class.py::TestFFIndClass::test_null_sic_gets_null
+test tests/unit/test_ff_ind_class.py::TestFFIndClass::test_preserves_all_input_rows
+test tests/unit/test_ff_ind_class.py::TestFFIndClass::test_preserves_existing_columns
+test tests/unit/test_ff_ind_class.py::TestFFIndClass::test_unmapped_sic_gets_null
+test tests/unit/test_ff_ind_class.py::TestParseSiccodesFile::test_category_assignment
+test tests/unit/test_ff_ind_class.py::TestParseSiccodesFile::test_no_duplicate_sics
+test tests/unit/test_ff_ind_class.py::TestParseSiccodesFile::test_output_dtypes
+test tests/unit/test_ff_ind_class.py::TestParseSiccodesFile::test_parses_correct_columns
+test tests/unit/test_ff_ind_class.py::TestParseSiccodesFile::test_sic_range_expansion
+test tests/unit/test_firm_age.py::test_accounting_adjustment_snaps_to_prior_year_dec31
+test tests/unit/test_firm_age.py::test_all_three_sources_crsp_earliest_wins
+test tests/unit/test_firm_age.py::test_comp_acc_union_min_across_files_is_symmetric
+test tests/unit/test_firm_age.py::test_comp_acc_wins_with_negative_month_diff
+test tests/unit/test_firm_age.py::test_comp_g_funda_contributes_to_acc_union
+test tests/unit/test_firm_age.py::test_comp_ret_adjustment_snaps_to_prior_year_dec31
+test tests/unit/test_firm_age.py::test_comp_ret_only_monthend_filter_is_load_bearing
+test tests/unit/test_firm_age.py::test_comp_ret_union_min_across_files_is_symmetric
+test tests/unit/test_firm_age.py::test_comp_secm_alone_is_the_minimum_source
+test tests/unit/test_firm_age.py::test_crsp_first_is_per_permco_not_global
+test tests/unit/test_firm_age.py::test_crsp_only_age_zero_at_first_month
+test tests/unit/test_firm_age.py::test_empty_world_msf_yields_empty_typed_output
+test tests/unit/test_firm_age.py::test_first_alt_caps_later_non_null_first_obs
+test tests/unit/test_firm_age.py::test_first_alt_is_per_id_not_global
+test tests/unit/test_firm_age.py::test_first_obs_equal_to_first_alt_tie
+test tests/unit/test_firm_age.py::test_full_six_entity_set_matches_expected
+test tests/unit/test_firm_age.py::test_no_source_falls_back_to_first_alt
+test tests/unit/test_firm_age.py::test_null_permco_does_not_match_crsp
+test tests/unit/test_hgics_join.py::TestHgicsJoin::test_date_range_expansion
+test tests/unit/test_hgics_join.py::TestHgicsJoin::test_dedup_and_sort_invariants
+test tests/unit/test_hgics_join.py::TestHgicsJoin::test_dedup_with_duplicate_expanded_inputs
+test tests/unit/test_hgics_join.py::TestHgicsJoin::test_global_only_gvkey_preserved
+test tests/unit/test_hgics_join.py::TestHgicsJoin::test_hgics_join_golden_fixture
+test tests/unit/test_hgics_join.py::TestHgicsJoin::test_independent_of_wall_clock
+test tests/unit/test_hgics_join.py::TestHgicsJoin::test_minus_999_sentinel_passthrough
+test tests/unit/test_hgics_join.py::TestHgicsJoin::test_national_only_gvkey_preserved
+test tests/unit/test_hgics_join.py::TestHgicsJoin::test_national_wins_coalesce
+test tests/unit/test_market_beta.py::test_capm_beta_and_ivol_match_numpy_oracle
+test tests/unit/test_market_beta.py::test_capm_math_recovery
+test tests/unit/test_market_beta.py::test_empty_input
+test tests/unit/test_market_beta.py::test_horizon_parametrization
+test tests/unit/test_market_beta.py::test_min_obs_60m_boundary
+test tests/unit/test_market_beta.py::test_min_obs_boundary
+test tests/unit/test_market_beta.py::test_mktrf_null_factor_month_drops_obs
+test tests/unit/test_market_beta.py::test_multi_country_join
+test tests/unit/test_market_beta.py::test_output_schema_and_ordering
+test tests/unit/test_market_beta.py::test_ret_exc_null_alone_gates_min_obs
+test tests/unit/test_market_beta.py::test_ret_lag_dif_row_excluded_from_beta
+test tests/unit/test_market_beta.py::test_ret_local_zero_row_excluded_from_beta
+test tests/unit/test_market_beta.py::test_where_filters_gate_obs_count
+test tests/unit/test_output_writer.py::TestCollectDataframe::test_collect_dataframe_from_dataframe
+test tests/unit/test_output_writer.py::TestCollectDataframe::test_collect_dataframe_from_lazyframe
+test tests/unit/test_output_writer.py::TestCollectDataframe::test_collect_dataframe_with_shrink_dtype
+test tests/unit/test_output_writer.py::TestCollectDataframe::test_collect_dataframe_with_streaming
+test tests/unit/test_output_writer.py::TestConvertOutputsToCsv::test_converts_multiple_directories
+test tests/unit/test_output_writer.py::TestConvertOutputsToCsv::test_converts_parquet_to_csv
+test tests/unit/test_output_writer.py::TestConvertOutputsToCsv::test_converts_to_separate_output_dir
+test tests/unit/test_output_writer.py::TestConvertOutputsToCsv::test_csv_leading_zeros_quoted
+test tests/unit/test_output_writer.py::TestConvertOutputsToCsv::test_csv_null_values_empty
+test tests/unit/test_output_writer.py::TestConvertOutputsToCsv::test_no_parquet_files_to_convert
+test tests/unit/test_output_writer.py::TestConvertOutputsToCsv::test_skips_conversion_when_parquet_format
+test tests/unit/test_output_writer.py::TestOutputFormatConfiguration::test_configure_format_to_csv
+test tests/unit/test_output_writer.py::TestOutputFormatConfiguration::test_configure_format_to_parquet
+test tests/unit/test_output_writer.py::TestOutputFormatConfiguration::test_default_format_is_parquet
+test tests/unit/test_output_writer.py::TestOutputFormatConfiguration::test_invalid_format_raises_error
+test tests/unit/test_output_writer.py::TestOutputFormatConfiguration::test_reconfigure_raises_error
+test tests/unit/test_output_writer.py::TestShrinkDtype::test_shrink_dtype_reduces_size
+test tests/unit/test_output_writer.py::TestShrinkDtype::test_shrink_dtype_with_lazyframe
+test tests/unit/test_output_writer.py::TestStreamingMode::test_streaming_collection
+test tests/unit/test_output_writer.py::TestWriteDataframe::test_creates_parent_directory
+test tests/unit/test_output_writer.py::TestWriteDataframe::test_csv_format_still_writes_parquet
+test tests/unit/test_output_writer.py::TestWriteDataframe::test_extension_correction_to_parquet
+test tests/unit/test_output_writer.py::TestWriteDataframe::test_lazyframe_collection
+test tests/unit/test_output_writer.py::TestWriteDataframe::test_write_parquet
+test tests/unit/test_paths.py::TestDataPaths::test_frozen
+test tests/unit/test_paths.py::TestDataPaths::test_interim_dir
+test tests/unit/test_paths.py::TestDataPaths::test_processed_dir
+test tests/unit/test_paths.py::TestDataPaths::test_raw_dir
+test tests/unit/test_paths.py::TestDataPaths::test_raw_tables_dir
+test tests/unit/test_paths.py::TestResourcePaths::test_cluster_labels_exists
+test tests/unit/test_paths.py::TestResourcePaths::test_country_classification_exists
+test tests/unit/test_paths.py::TestResourcePaths::test_data_readme_exists
+test tests/unit/test_paths.py::TestResourcePaths::test_factor_details_exists
+test tests/unit/test_paths.py::TestResourcePaths::test_siccodes_exists
+test tests/unit/test_paths.py::TestResourcePaths::test_siccodes_is_readable
+test tests/unit/test_prepare_crsp_sf.py::test_bad_delist_imputes_minus_030
+test tests/unit/test_prepare_crsp_sf.py::test_both_freq_filename_and_columns
+test tests/unit/test_prepare_crsp_sf.py::test_c2_near_miss_not_imputed
+test tests/unit/test_prepare_crsp_sf.py::test_c3_every_reason_code_imputes
+test tests/unit/test_prepare_crsp_sf.py::test_c3_near_miss_wrong_action_not_imputed
+test tests/unit/test_prepare_crsp_sf.py::test_daily_delist_date_mismatch_no_join
+test tests/unit/test_prepare_crsp_sf.py::test_daily_delist_exact_date_join
+test tests/unit/test_prepare_crsp_sf.py::test_daily_vol_not_scaled_by_100
+test tests/unit/test_prepare_crsp_sf.py::test_div_tot
+test tests/unit/test_prepare_crsp_sf.py::test_empty_daily_input_yields_typed_empty
+test tests/unit/test_prepare_crsp_sf.py::test_empty_input_yields_typed_empty_output
+test tests/unit/test_prepare_crsp_sf.py::test_me_company
+test tests/unit/test_prepare_crsp_sf.py::test_me_company_mixed_null_coalesces_to_zero
+test tests/unit/test_prepare_crsp_sf.py::test_monthly_delist_month_mismatch_no_join
+test tests/unit/test_prepare_crsp_sf.py::test_monthly_scaling_and_vol_dtype
+test tests/unit/test_prepare_crsp_sf.py::test_nasdaq_condition_gate
+test tests/unit/test_prepare_crsp_sf.py::test_nasdaq_volume_window_boundaries
+test tests/unit/test_prepare_crsp_sf.py::test_nasdaq_volume_windows
+test tests/unit/test_prepare_crsp_sf.py::test_no_delist_leaves_ret_unchanged
+test tests/unit/test_prepare_crsp_sf.py::test_non_bad_null_delist_not_imputed
+test tests/unit/test_prepare_crsp_sf.py::test_output_dtypes
+test tests/unit/test_prepare_crsp_sf.py::test_output_unique_and_sorted
+test tests/unit/test_prepare_crsp_sf.py::test_present_delret_in_bad_bucket_not_overwritten
+test tests/unit/test_prepare_crsp_sf.py::test_ret_backfill_when_missing
+test tests/unit/test_prepare_crsp_sf.py::test_ret_exc_scale_and_coalesce
+test tests/unit/test_prepare_crsp_sf.py::test_ret_null_no_delist_stays_null
+test tests/unit/test_public_api.py::TestLazyImportBehavior::test_bare_import_does_not_pull_polars
+test tests/unit/test_public_api.py::TestLazyImportBehavior::test_run_pipeline_access_does_pull_polars
+test tests/unit/test_public_api.py::TestLazyImportBehavior::test_version_lookup_does_not_pull_polars
+test tests/unit/test_public_api.py::TestPublicApiSurface::test_all_matches_expected
+test tests/unit/test_public_api.py::TestPublicApiSurface::test_dir_advertises_public_api_and_hides_internals
+test tests/unit/test_public_api.py::TestPublicApiSurface::test_each_name_resolves
+test tests/unit/test_public_api.py::TestPublicApiSurface::test_star_import_exposes_exactly_all
+test tests/unit/test_public_api.py::TestPublicApiSurface::test_unknown_attribute_raises
+test tests/unit/test_quality_minus_junk.py::TestOutputAndIdempotency::test_group_at_min_stks_present
+test tests/unit/test_quality_minus_junk.py::TestOutputAndIdempotency::test_group_below_min_stks_has_null_qmj
+test tests/unit/test_quality_minus_junk.py::TestOutputAndIdempotency::test_idempotency
+test tests/unit/test_quality_minus_junk.py::TestOutputAndIdempotency::test_output_columns_exact
+test tests/unit/test_quality_minus_junk.py::TestOutputAndIdempotency::test_output_dtypes
+test tests/unit/test_quality_minus_junk.py::TestQmjAggregation::test_all_safety_vars_null_gives_null_qmj
+test tests/unit/test_quality_minus_junk.py::TestQmjAggregation::test_country_b_does_not_affect_country_a
+test tests/unit/test_quality_minus_junk.py::TestQmjAggregation::test_hand_computed_pipeline_single_group
+test tests/unit/test_quality_minus_junk.py::TestQualityMinusJunkFilter::test_all_gates_pass_included
+test tests/unit/test_quality_minus_junk.py::TestQualityMinusJunkFilter::test_gate_zero_excluded
+test tests/unit/test_quality_minus_junk.py::TestQualityMinusJunkFilter::test_null_me_excluded
+test tests/unit/test_quality_minus_junk.py::TestQualityMinusJunkFilter::test_null_ret_exc_excluded
+test tests/unit/test_quality_minus_junk.py::TestZRanks::test_all_equal_values_returns_empty
+test tests/unit/test_quality_minus_junk.py::TestZRanks::test_ascending_hand_computed
+test tests/unit/test_quality_minus_junk.py::TestZRanks::test_descending_reverses_sign
+test tests/unit/test_quality_minus_junk.py::TestZRanks::test_group_at_min_threshold_kept
+test tests/unit/test_quality_minus_junk.py::TestZRanks::test_group_below_min_threshold_dropped
+test tests/unit/test_quality_minus_junk.py::TestZRanks::test_nan_row_filtered_and_not_counted
+test tests/unit/test_quality_minus_junk.py::TestZRanks::test_null_row_filtered_same_as_nan
+test tests/unit/test_quality_minus_junk.py::TestZRanks::test_output_columns_exact
+test tests/unit/test_quality_minus_junk.py::TestZRanks::test_single_stock_dropped_with_min_2
+test tests/unit/test_quality_minus_junk.py::TestZRanks::test_single_stock_kept_with_min_1
+test tests/unit/test_quality_minus_junk.py::TestZRanks::test_ties_get_equal_rank_and_z
+test tests/unit/test_quality_minus_junk.py::TestZRanks::test_two_countries_independent
+test tests/unit/test_quality_minus_junk.py::TestZVarsAndComposites::test_all_prof_vars_null_gives_null_qmj_prof
+test tests/unit/test_quality_minus_junk.py::TestZVarsAndComposites::test_descending_safety_var_direction
+test tests/unit/test_quality_minus_junk.py::TestZVarsAndComposites::test_evol_fallback_to_roe_be_std
+test tests/unit/test_quality_minus_junk.py::TestZVarsAndComposites::test_evol_uses_2x_roeq_multiplier
+test tests/unit/test_quality_minus_junk.py::TestZVarsAndComposites::test_mean_horizontal_skips_one_null
+test tests/unit/test_residual_momentum.py::test_determinism_rerun
+test tests/unit/test_residual_momentum.py::test_empty_input
+test tests/unit/test_residual_momentum.py::test_hml_null_branch
+test tests/unit/test_residual_momentum.py::test_horizons_distinct
+test tests/unit/test_residual_momentum.py::test_min_obs_23_excluded
+test tests/unit/test_residual_momentum.py::test_min_obs_24_boundary_value
+test tests/unit/test_residual_momentum.py::test_min_obs_boundary
+test tests/unit/test_residual_momentum.py::test_min_obs_exclusion
+test tests/unit/test_residual_momentum.py::test_output_schema_and_sort
+test tests/unit/test_residual_momentum.py::test_output_unique_id_eom
+test tests/unit/test_residual_momentum.py::test_single_month_removal_crosses_min_obs_boundary
+test tests/unit/test_residual_momentum.py::test_value_correctness_12_1
+test tests/unit/test_residual_momentum.py::test_value_correctness_6_1
+test tests/unit/test_residual_momentum.py::test_value_correctness_ca_partition
+test tests/unit/test_residual_momentum.py::test_value_correctness_nonterminal
+test tests/unit/test_ret_exc_wins.py::TestAddRetExcWinsDaily::test_compustat_outlier_clipped
+test tests/unit/test_ret_exc_wins.py::TestAddRetExcWinsDaily::test_crsp_stocks_unchanged
+test tests/unit/test_ret_exc_wins.py::TestAddRetExcWinsMonthly::test_compustat_normal_unchanged
+test tests/unit/test_ret_exc_wins.py::TestAddRetExcWinsMonthly::test_compustat_outlier_clipped_high
+test tests/unit/test_ret_exc_wins.py::TestAddRetExcWinsMonthly::test_compustat_outlier_clipped_low
+test tests/unit/test_ret_exc_wins.py::TestAddRetExcWinsMonthly::test_crsp_stocks_unchanged
+test tests/unit/test_ret_exc_wins.py::TestAddRetExcWinsMonthly::test_custom_percentiles
+test tests/unit/test_ret_exc_wins.py::TestAddRetExcWinsMonthly::test_idempotent
+test tests/unit/test_ret_exc_wins.py::TestAddRetExcWinsMonthly::test_multiple_eom_periods
+test tests/unit/test_ret_exc_wins.py::TestAddRetExcWinsMonthly::test_null_ret_exc_stays_null
+test tests/unit/test_ret_exc_wins.py::TestAddRetExcWinsMonthly::test_source_crsp_boundary
+test tests/unit/test_ret_exc_wins.py::TestAddRetExcWinsValidation::test_lower_gte_upper_raises
+test tests/unit/test_ret_exc_wins.py::TestAddRetExcWinsValidation::test_lower_negative_raises
+test tests/unit/test_ret_exc_wins.py::TestAddRetExcWinsValidation::test_unsupported_percentile_raises
+test tests/unit/test_ret_exc_wins.py::TestAddRetExcWinsValidation::test_upper_above_one_raises
+test tests/unit/test_rolling_daily_metrics.py::TestAmi::test_ami_all_zero_dollar_volume_gives_null
+test tests/unit/test_rolling_daily_metrics.py::TestAmi::test_ami_empty_input_returns_empty
+test tests/unit/test_rolling_daily_metrics.py::TestAmi::test_ami_zero_dollar_volume_ignored_and_min_filter_applied
+test tests/unit/test_rolling_daily_metrics.py::TestCapm::test_capm_constant_market_factor_is_undefined
+test tests/unit/test_rolling_daily_metrics.py::TestCapm::test_capm_empty_input_returns_empty
+test tests/unit/test_rolling_daily_metrics.py::TestCapm::test_capm_ignores_min_parameter
+test tests/unit/test_rolling_daily_metrics.py::TestCapm::test_capm_perfect_linear_relation
+test tests/unit/test_rolling_daily_metrics.py::TestCapmExt::test_capm_ext_constant_market_has_undefined_outputs
+test tests/unit/test_rolling_daily_metrics.py::TestCapmExt::test_capm_ext_empty_input_returns_empty
+test tests/unit/test_rolling_daily_metrics.py::TestCapmExt::test_capm_ext_ignores_min_parameter
+test tests/unit/test_rolling_daily_metrics.py::TestCapmExt::test_capm_ext_ivol_zero_when_ret_equals_market
+test tests/unit/test_rolling_daily_metrics.py::TestCapmExt::test_capm_ext_outputs_expected_columns_and_reasonable_values
+test tests/unit/test_rolling_daily_metrics.py::TestCapmExt::test_capm_ext_single_observation_is_undefined
+test tests/unit/test_rolling_daily_metrics.py::TestDimsonbeta::test_dimsonbeta_drops_undersized_via_apply_group_filter
+test tests/unit/test_rolling_daily_metrics.py::TestDimsonbeta::test_dimsonbeta_empty_input_returns_empty
+test tests/unit/test_rolling_daily_metrics.py::TestDimsonbeta::test_dimsonbeta_enforces_min_parameter
+test tests/unit/test_rolling_daily_metrics.py::TestDimsonbeta::test_dimsonbeta_handles_singular_design
+test tests/unit/test_rolling_daily_metrics.py::TestDimsonbeta::test_dimsonbeta_long_window_produces_output
+test tests/unit/test_rolling_daily_metrics.py::TestDimsonbeta::test_dimsonbeta_sums_market_coefficients
+test tests/unit/test_rolling_daily_metrics.py::TestDolvol::test_dolvol_empty_input_returns_empty
+test tests/unit/test_rolling_daily_metrics.py::TestDolvol::test_dolvol_ignores_min_parameter
+test tests/unit/test_rolling_daily_metrics.py::TestDolvol::test_dolvol_mean_and_variability
+test tests/unit/test_rolling_daily_metrics.py::TestDolvol::test_dolvol_single_observation_variability_is_null
+test tests/unit/test_rolling_daily_metrics.py::TestDownbeta::test_downbeta_empty_input_returns_empty
+test tests/unit/test_rolling_daily_metrics.py::TestDownbeta::test_downbeta_no_negative_market_days_returns_empty
+test tests/unit/test_rolling_daily_metrics.py::TestDownbeta::test_downbeta_uses_only_negative_market_days_and_threshold
+test tests/unit/test_rolling_daily_metrics.py::TestFf3::test_ff3_all_rows_missing_factors_returns_empty
+test tests/unit/test_rolling_daily_metrics.py::TestFf3::test_ff3_drops_rows_with_missing_factors
+test tests/unit/test_rolling_daily_metrics.py::TestFf3::test_ff3_empty_input_returns_empty
+test tests/unit/test_rolling_daily_metrics.py::TestFf3::test_ff3_ignores_min_parameter
+test tests/unit/test_rolling_daily_metrics.py::TestFf3::test_ff3_zero_residual_for_exact_linear_model
+test tests/unit/test_rolling_daily_metrics.py::TestHxz4::test_hxz4_empty_input_returns_empty
+test tests/unit/test_rolling_daily_metrics.py::TestHxz4::test_hxz4_ignores_min_parameter
+test tests/unit/test_rolling_daily_metrics.py::TestHxz4::test_hxz4_zero_residual_for_exact_linear_model
+test tests/unit/test_rolling_daily_metrics.py::TestMktcorr::test_mktcorr_below_min_group_dropped
+test tests/unit/test_rolling_daily_metrics.py::TestMktcorr::test_mktcorr_computation_and_min_filter
+test tests/unit/test_rolling_daily_metrics.py::TestMktcorr::test_mktcorr_constant_series_is_undefined
+test tests/unit/test_rolling_daily_metrics.py::TestMktcorr::test_mktcorr_empty_input_returns_empty
+test tests/unit/test_rolling_daily_metrics.py::TestMktcorr::test_mktcorr_equivalence_null_free_input
+test tests/unit/test_rolling_daily_metrics.py::TestMktcorr::test_mktcorr_multi_group_mixed_sizes
+test tests/unit/test_rolling_daily_metrics.py::TestMktrfVol::test_mktrf_vol_empty_input_returns_empty
+test tests/unit/test_rolling_daily_metrics.py::TestMktrfVol::test_mktrf_vol_grouped_std
+test tests/unit/test_rolling_daily_metrics.py::TestMktrfVol::test_mktrf_vol_ignores_min_parameter
+test tests/unit/test_rolling_daily_metrics.py::TestMktrfVol::test_mktrf_vol_single_observation_is_null
+test tests/unit/test_rolling_daily_metrics.py::TestPrcToHigh::test_prc_to_high_empty_input_returns_empty
+test tests/unit/test_rolling_daily_metrics.py::TestPrcToHigh::test_prc_to_high_filter_boundary
+test tests/unit/test_rolling_daily_metrics.py::TestPrcToHigh::test_prc_to_high_golden_fixture
+test tests/unit/test_rolling_daily_metrics.py::TestPrcToHigh::test_prc_to_high_sorts_by_date_and_applies_min_filter
+test tests/unit/test_rolling_daily_metrics.py::TestPrcToHigh::test_prc_to_high_within_group_date_order_parity
+test tests/unit/test_rolling_daily_metrics.py::TestPrcToHigh::test_prc_to_high_zero_prices_yield_undefined_ratio
+test tests/unit/test_rolling_daily_metrics.py::TestPrepareDailyCorr::test_corr_data_null_free_and_zero_obs_filtered
+test tests/unit/test_rolling_daily_metrics.py::TestRmax::test_rmax_empty_input_returns_empty
+test tests/unit/test_rolling_daily_metrics.py::TestRmax::test_rmax_grouped_top5_mean_and_max
+test tests/unit/test_rolling_daily_metrics.py::TestRmax::test_rmax_handles_null_returns
+test tests/unit/test_rolling_daily_metrics.py::TestRmax::test_rmax_ignores_min_parameter
+test tests/unit/test_rolling_daily_metrics.py::TestRmax::test_rmax_with_fewer_than_five_values_uses_available_values
+test tests/unit/test_rolling_daily_metrics.py::TestRvol::test_rvol_does_not_apply_min_filter_parameter
+test tests/unit/test_rolling_daily_metrics.py::TestRvol::test_rvol_empty_input_returns_empty
+test tests/unit/test_rolling_daily_metrics.py::TestRvol::test_rvol_grouped_std_computation
+test tests/unit/test_rolling_daily_metrics.py::TestRvol::test_rvol_single_observation_group_returns_null
+test tests/unit/test_rolling_daily_metrics.py::TestRvol::test_rvol_uses_suffix_for_output_name
+test tests/unit/test_rolling_daily_metrics.py::TestSkew::test_skew_constant_series_is_undefined
+test tests/unit/test_rolling_daily_metrics.py::TestSkew::test_skew_empty_input_returns_empty
+test tests/unit/test_rolling_daily_metrics.py::TestSkew::test_skew_ignores_min_parameter
+test tests/unit/test_rolling_daily_metrics.py::TestSkew::test_skew_symmetric_returns_zero
+test tests/unit/test_rolling_daily_metrics.py::TestTurnover::test_turnover_all_zero_shares_gives_null_metrics
+test tests/unit/test_rolling_daily_metrics.py::TestTurnover::test_turnover_computation_and_min_filter
+test tests/unit/test_rolling_daily_metrics.py::TestTurnover::test_turnover_empty_input_returns_empty
+test tests/unit/test_rolling_daily_metrics.py::TestTurnover::test_turnover_float_order_sensitivity
+test tests/unit/test_rolling_daily_metrics.py::TestTurnover::test_turnover_golden_fixture
+test tests/unit/test_rolling_daily_metrics.py::TestTurnover::test_turnover_hand_computed_mean_std
+test tests/unit/test_rolling_daily_metrics.py::TestTurnover::test_turnover_min_boundary
+test tests/unit/test_rolling_daily_metrics.py::TestTurnover::test_turnover_mixed_null_and_nonnull
+test tests/unit/test_rolling_daily_metrics.py::TestZeroTrades::test_zero_trades_all_shares_zero_null_composite
+test tests/unit/test_rolling_daily_metrics.py::TestZeroTrades::test_zero_trades_all_zero_tvol
+test tests/unit/test_rolling_daily_metrics.py::TestZeroTrades::test_zero_trades_composite_rank_plus_zero_days
+test tests/unit/test_rolling_daily_metrics.py::TestZeroTrades::test_zero_trades_cross_group_rank_divisor
+test tests/unit/test_rolling_daily_metrics.py::TestZeroTrades::test_zero_trades_empty_input_returns_empty
+test tests/unit/test_rolling_daily_metrics.py::TestZeroTrades::test_zero_trades_golden_fixture
+test tests/unit/test_rolling_daily_metrics.py::TestZeroTrades::test_zero_trades_ignores_min_parameter
+test tests/unit/test_rolling_daily_metrics.py::TestZeroTrades::test_zero_trades_shares_zero_skipped_in_mean
+test tests/unit/test_rolling_daily_metrics.py::TestZeroTrades::test_zero_trades_tied_turnover_ranks
+test tests/unit/test_scaling_ratios.py::TestCalculateConsecutiveEarningsIncreases::test_count_below_33_returns_null
+test tests/unit/test_scaling_ratios.py::TestCalculateConsecutiveEarningsIncreases::test_count_gate_boundary
+test tests/unit/test_scaling_ratios.py::TestCalculateConsecutiveEarningsIncreases::test_decrease_at_end_zeros_streak
+test tests/unit/test_scaling_ratios.py::TestCalculateConsecutiveEarningsIncreases::test_decrease_mid_window_partial_streak
+test tests/unit/test_scaling_ratios.py::TestCalculateConsecutiveEarningsIncreases::test_eight_consecutive_increases
+test tests/unit/test_scaling_ratios.py::TestCalculateConsecutiveEarningsIncreases::test_flat_earnings_zero_streak
+test tests/unit/test_scaling_ratios.py::TestCalculateConsecutiveEarningsIncreases::test_input_columns_preserved
+test tests/unit/test_scaling_ratios.py::TestCalculateConsecutiveEarningsIncreases::test_intermediate_columns_dropped
+test tests/unit/test_scaling_ratios.py::TestCalculateConsecutiveEarningsIncreases::test_multi_firm_independent
+test tests/unit/test_scaling_ratios.py::TestCalculateConsecutiveEarningsIncreases::test_null_ni_x_in_lag_window_returns_null
+test tests/unit/test_scaling_ratios.py::TestCalculateConsecutiveEarningsIncreases::test_output_sorted
+test tests/unit/test_scaling_ratios.py::TestCalculateConsecutiveEarningsIncreases::test_short_history_returns_null
+test tests/unit/test_scaling_ratios.py::TestComputeCapexAbn::test_constant_ratio_returns_zero
+test tests/unit/test_scaling_ratios.py::TestComputeCapexAbn::test_count_above_threshold_returns_value
+test tests/unit/test_scaling_ratios.py::TestComputeCapexAbn::test_count_at_threshold_returns_null
+test tests/unit/test_scaling_ratios.py::TestComputeCapexAbn::test_doubled_current_ratio
+test tests/unit/test_scaling_ratios.py::TestComputeCapexAbn::test_halved_current_ratio
+test tests/unit/test_scaling_ratios.py::TestComputeCapexAbn::test_helper_column_dropped
+test tests/unit/test_scaling_ratios.py::TestComputeCapexAbn::test_multi_firm_independent
+test tests/unit/test_scaling_ratios.py::TestComputeCapexAbn::test_negative_sale_returns_null
+test tests/unit/test_scaling_ratios.py::TestComputeCapexAbn::test_null_capx_propagates
+test tests/unit/test_scaling_ratios.py::TestComputeCapexAbn::test_output_sorted
+test tests/unit/test_scaling_ratios.py::TestComputeCapexAbn::test_zero_sale_at_current_returns_null
+test tests/unit/test_scaling_ratios.py::TestComputeCapexAbn::test_zero_sale_in_lag_window_returns_null
+test tests/unit/test_scaling_ratios.py::TestMeanYear::test_both_null_returns_null
+test tests/unit/test_scaling_ratios.py::TestMeanYear::test_both_present_returns_average
+test tests/unit/test_scaling_ratios.py::TestMeanYear::test_does_not_cross_curcd_boundary
+test tests/unit/test_scaling_ratios.py::TestMeanYear::test_does_not_cross_gvkey_boundary
+test tests/unit/test_scaling_ratios.py::TestMeanYear::test_full_panel_values
+test tests/unit/test_scaling_ratios.py::TestMeanYear::test_negative_values_average_to_zero
+test tests/unit/test_scaling_ratios.py::TestMeanYear::test_only_current_returns_current
+test tests/unit/test_scaling_ratios.py::TestMeanYear::test_only_lag_returns_lag
+test tests/unit/test_scaling_ratios.py::TestMeanYear::test_partial_history_returns_current
+test tests/unit/test_scaling_ratios.py::TestScaleMe::test_alias_no_x_suffix
+test tests/unit/test_scaling_ratios.py::TestScaleMe::test_alias_strips_x_suffix
+test tests/unit/test_scaling_ratios.py::TestScaleMe::test_alias_substring_replace_is_literal
+test tests/unit/test_scaling_ratios.py::TestScaleMe::test_basic_positive
+test tests/unit/test_scaling_ratios.py::TestScaleMe::test_extreme_values
+test tests/unit/test_scaling_ratios.py::TestScaleMe::test_fx_greater_than_one
+test tests/unit/test_scaling_ratios.py::TestScaleMe::test_fx_less_than_one
+test tests/unit/test_scaling_ratios.py::TestScaleMe::test_fx_zero_returns_zero
+test tests/unit/test_scaling_ratios.py::TestScaleMe::test_multi_row
+test tests/unit/test_scaling_ratios.py::TestScaleMe::test_negative_me_company_flows_through
+test tests/unit/test_scaling_ratios.py::TestScaleMe::test_negative_var_flows_through
+test tests/unit/test_scaling_ratios.py::TestScaleMe::test_null_fx_propagates
+test tests/unit/test_scaling_ratios.py::TestScaleMe::test_null_me_company_returns_null
+test tests/unit/test_scaling_ratios.py::TestScaleMe::test_null_var_propagates
+test tests/unit/test_scaling_ratios.py::TestScaleMe::test_zero_denominator_returns_null
+test tests/unit/test_scaling_ratios.py::TestScaleMev::test_alias_no_x_suffix
+test tests/unit/test_scaling_ratios.py::TestScaleMev::test_alias_strips_x_suffix
+test tests/unit/test_scaling_ratios.py::TestScaleMev::test_basic_positive
+test tests/unit/test_scaling_ratios.py::TestScaleMev::test_fx_scaling
+test tests/unit/test_scaling_ratios.py::TestScaleMev::test_multi_row
+test tests/unit/test_scaling_ratios.py::TestScaleMev::test_negative_mev_flows_through
+test tests/unit/test_scaling_ratios.py::TestScaleMev::test_negative_var_flows_through
+test tests/unit/test_scaling_ratios.py::TestScaleMev::test_null_fx_propagates
+test tests/unit/test_scaling_ratios.py::TestScaleMev::test_null_mev_returns_null
+test tests/unit/test_scaling_ratios.py::TestScaleMev::test_null_var_propagates
+test tests/unit/test_scaling_ratios.py::TestScaleMev::test_zero_denominator_returns_null
+test tests/unit/test_scaling_ratios.py::TestTempLiqRat::test_alias_parameter_respected
+test tests/unit/test_scaling_ratios.py::TestTempLiqRat::test_count_at_threshold_returns_null
+test tests/unit/test_scaling_ratios.py::TestTempLiqRat::test_count_just_above_threshold
+test tests/unit/test_scaling_ratios.py::TestTempLiqRat::test_negative_denominator_flows_through
+test tests/unit/test_scaling_ratios.py::TestTempLiqRat::test_normal_ratio
+test tests/unit/test_scaling_ratios.py::TestTempLiqRat::test_null_count_column_returns_null
+test tests/unit/test_scaling_ratios.py::TestTempLiqRat::test_null_history_returns_null
+test tests/unit/test_scaling_ratios.py::TestTempLiqRat::test_zero_denominator_returns_null
+test tests/unit/test_scaling_ratios.py::TestTempRatOther::test_alias_parameter_respected
+test tests/unit/test_scaling_ratios.py::TestTempRatOther::test_count_above_threshold_returns_value
+test tests/unit/test_scaling_ratios.py::TestTempRatOther::test_count_at_threshold_returns_null
+test tests/unit/test_scaling_ratios.py::TestTempRatOther::test_negative_numerator_flows_through
+test tests/unit/test_scaling_ratios.py::TestTempRatOther::test_normal_ratio
+test tests/unit/test_scaling_ratios.py::TestTempRatOther::test_null_numerator_returns_null
+test tests/unit/test_scaling_ratios.py::TestTempRatOther::test_zero_mean_denominator_returns_null
+test tests/unit/test_scaling_ratios.py::TestTempRatOtherSpc::test_alias_is_ap_turnover
+test tests/unit/test_scaling_ratios.py::TestTempRatOtherSpc::test_count_at_threshold_returns_null
+test tests/unit/test_scaling_ratios.py::TestTempRatOtherSpc::test_does_not_cross_gvkey
+test tests/unit/test_scaling_ratios.py::TestTempRatOtherSpc::test_normal_ratio
+test tests/unit/test_scaling_ratios.py::TestTempRatOtherSpc::test_null_cogs_propagates
+test tests/unit/test_scaling_ratios.py::TestTempRatOtherSpc::test_null_invt_lag_propagates
+test tests/unit/test_scaling_ratios.py::TestTempRatOtherSpc::test_zero_mean_ap_returns_null
+test tests/unit/test_scaling_ratios.py::TestUpdateNiIncAndDecrease::test_idempotent_when_no_decrease_zero
+test tests/unit/test_scaling_ratios.py::TestUpdateNiIncAndDecrease::test_increments_when_both_conditions_met_lag0
+test tests/unit/test_scaling_ratios.py::TestUpdateNiIncAndDecrease::test_lag_nonzero_uses_shift
+test tests/unit/test_scaling_ratios.py::TestUpdateNiIncAndDecrease::test_multi_firm_shift_is_global
+test tests/unit/test_scaling_ratios.py::TestUpdateNiIncAndDecrease::test_null_shifted_value_resets_no_decrease
+test tests/unit/test_scaling_ratios.py::TestUpdateNiIncAndDecrease::test_preserves_when_already_broken
+test tests/unit/test_scaling_ratios.py::TestUpdateNiIncAndDecrease::test_resets_no_decrease_when_ni_inc_zero
+test tests/unit/test_scaling_ratios.py::TestUpdateNiIncAndDecrease::test_returns_sorted_output
+test tests/unit/test_winsorization.py::TestAddCutoffsAndWinsorize::test_compustat_non_outliers_unchanged
+test tests/unit/test_winsorization.py::TestAddCutoffsAndWinsorize::test_compustat_outliers_are_clipped
+test tests/unit/test_winsorization.py::TestAddCutoffsAndWinsorize::test_crsp_rows_unchanged_regardless_of_outliers
+test tests/unit/test_winsorization.py::TestAddCutoffsAndWinsorize::test_missing_cutoff_rows_preserve_original_returns
+test tests/unit/test_winsorization.py::TestAddCutoffsAndWinsorize::test_no_year_month_columns_in_output
+test tests/unit/test_winsorization.py::TestDropNonTradingDays::test_drops_low_coverage_day
+test tests/unit/test_winsorization.py::TestDropNonTradingDays::test_eom_preserved_in_output
+test tests/unit/test_winsorization.py::TestDropNonTradingDays::test_keeps_high_coverage_days
+test tests/unit/test_winsorization.py::TestDropNonTradingDays::test_no_year_month_columns_in_output
+test tests/unit/test_winsorization.py::TestInlineWinsorization::test_custom_thresholds
+test tests/unit/test_winsorization.py::TestInlineWinsorization::test_greatest_least_matches_case
+test tests/unit/test_winsorization.py::TestInlineWinsorization::test_non_outliers_unchanged
+test tests/unit/test_winsorization.py::TestInlineWinsorization::test_outliers_clipped_to_bounds
+test tests/unit/test_winsorization.py::TestInlineWinsorization::test_per_group_winsorization
+test tests/unit/test_winsorization.py::TestInlineWinsorization::test_single_eom_group
+test tests/unit/test_winsorization.py::TestLoadMktReturnsParams::test_daily_group_vars_is_eom
+test tests/unit/test_winsorization.py::TestLoadMktReturnsParams::test_eom_in_comm_stocks_cols
+test tests/unit/test_winsorization.py::TestLoadMktReturnsParams::test_monthly_group_vars_is_eom
+test tests/unit/test_winsorization.py::TestLoadMktReturnsParams::test_no_year_month_in_group_vars
+test tests/unit/test_winsorization.py::TestPortfolioDailyJoin::test_compustat_outliers_clipped
+test tests/unit/test_winsorization.py::TestPortfolioDailyJoin::test_crsp_rows_unchanged
+test tests/unit/test_winsorization.py::TestPortfolioDailyJoin::test_no_year_month_in_output
+test tests/unit/test_winsorization.py::TestWinsorizeEquivalence::test_group_count_matches
+test tests/unit/test_winsorization.py::TestWinsorizeEquivalence::test_quantile_bounds_identical
+test tests/unit/test_wrds_credentials.py::test_atomic_write_warns_when_replacing_symlink
+test tests/unit/test_wrds_credentials.py::test_empty_cached_username_treated_as_missing
+test tests/unit/test_wrds_credentials.py::test_empty_env_vars_treated_as_unset
+test tests/unit/test_wrds_credentials.py::test_empty_legacy_username_file_treated_as_missing
+test tests/unit/test_wrds_credentials.py::test_empty_prompt_input_is_rejected_and_not_cached
+test tests/unit/test_wrds_credentials.py::test_empty_prompt_password_is_rejected
+test tests/unit/test_wrds_credentials.py::test_env_username_alone_used_with_keyring_password
+test tests/unit/test_wrds_credentials.py::test_env_vars_take_precedence
+test tests/unit/test_wrds_credentials.py::test_escape_keyring_option_format
+test tests/unit/test_wrds_credentials.py::test_exact_above_wildcard_does_not_warn
+test tests/unit/test_wrds_credentials.py::test_exact_pgpass_entry_does_not_warn
+test tests/unit/test_wrds_credentials.py::test_keyring_password_cleans_up_lingering_legacy_section
+test tests/unit/test_wrds_credentials.py::test_legacy_keyring_file_removed_when_only_our_section
+test tests/unit/test_wrds_credentials.py::test_legacy_keyring_migrates_to_pgpass_and_removes_only_our_section
+test tests/unit/test_wrds_credentials.py::test_legacy_keyring_path_uses_keyring_convention
+test tests/unit/test_wrds_credentials.py::test_legacy_username_file_migrates_to_state_dir
+test tests/unit/test_wrds_credentials.py::test_load_legacy_cfg
+test tests/unit/test_wrds_credentials.py::test_locked_keyring_warns_and_falls_through
+test tests/unit/test_wrds_credentials.py::test_migration_corrupt_non_utf8_keyring_falls_through
+test tests/unit/test_wrds_credentials.py::test_migration_defers_to_wildcard_pgpass_entry
+test tests/unit/test_wrds_credentials.py::test_migration_does_not_overwrite_loose_perm_pgpass
+test tests/unit/test_wrds_credentials.py::test_migration_handles_real_keyring_on_disk_format
+test tests/unit/test_wrds_credentials.py::test_migration_ignores_entry_under_mismatched_key
+test tests/unit/test_wrds_credentials.py::test_migration_io_failure_does_not_abort_resolution
+test tests/unit/test_wrds_credentials.py::test_migration_matches_escaped_username_key
+test tests/unit/test_wrds_credentials.py::test_migration_newline_legacy_password_discarded_and_idempotent
+test tests/unit/test_wrds_credentials.py::test_migration_pgpass_write_error_is_caught
+test tests/unit/test_wrds_credentials.py::test_migration_precheck_does_not_touch_other_users
+test tests/unit/test_wrds_credentials.py::test_migration_preserves_existing_pgpass_entry
+test tests/unit/test_wrds_credentials.py::test_migration_preserves_other_users_legacy_entries
+test tests/unit/test_wrds_credentials.py::test_no_credentials_non_interactive_raises_guidance
+test tests/unit/test_wrds_credentials.py::test_password_from_env_with_username_from_file
+test tests/unit/test_wrds_credentials.py::test_password_from_keyring
+test tests/unit/test_wrds_credentials.py::test_password_from_pgpass_returns_none_password
+test tests/unit/test_wrds_credentials.py::test_pgpass_escapes_special_characters
+test tests/unit/test_wrds_credentials.py::test_pgpass_escapes_special_username
+test tests/unit/test_wrds_credentials.py::test_pgpass_ignored_when_permissions_too_open
+test tests/unit/test_wrds_credentials.py::test_pgpass_not_utf8_is_ignored_with_warning
+test tests/unit/test_wrds_credentials.py::test_pgpass_wildcard_entry_matches
+test tests/unit/test_wrds_credentials.py::test_prompt_and_store_falls_back_to_pgpass_without_keyring
+test tests/unit/test_wrds_credentials.py::test_prompt_and_store_persists_username_for_reset
+test tests/unit/test_wrds_credentials.py::test_prompt_and_store_uses_keyring_when_available
+test tests/unit/test_wrds_credentials.py::test_prompt_stores_to_pgpass_when_keyring_locked
+test tests/unit/test_wrds_credentials.py::test_remove_pgpass_entry_preserves_comments_and_others
+test tests/unit/test_wrds_credentials.py::test_remove_pgpass_not_utf8_gives_actionable_error
+test tests/unit/test_wrds_credentials.py::test_remove_pgpass_unreadable_file_gives_actionable_error
+test tests/unit/test_wrds_credentials.py::test_reset_clears_legacy_even_when_pgpass_removal_fails
+test tests/unit/test_wrds_credentials.py::test_reset_clears_legacy_keyring_section
+test tests/unit/test_wrds_credentials.py::test_reset_empty_username_cache_falls_through_to_legacy
+test tests/unit/test_wrds_credentials.py::test_reset_keeps_username_cache_when_pgpass_removal_fails
+test tests/unit/test_wrds_credentials.py::test_reset_no_username_is_handled
+test tests/unit/test_wrds_credentials.py::test_reset_removes_username_keyring_and_pgpass
+test tests/unit/test_wrds_credentials.py::test_reset_warns_when_keyring_unreachable
+test tests/unit/test_wrds_credentials.py::test_username_from_state_file
+test tests/unit/test_wrds_credentials.py::test_whitespace_env_username_treated_as_missing
+test tests/unit/test_wrds_credentials.py::test_wildcard_above_exact_still_warns
+test tests/unit/test_wrds_credentials.py::test_wildcard_only_pgpass_warns
+test tests/unit/test_wrds_credentials.py::test_write_pgpass_is_mode_600
+test tests/unit/test_wrds_credentials.py::test_write_pgpass_not_utf8_gives_actionable_error
+test tests/unit/test_wrds_credentials.py::test_write_pgpass_preserves_comments_blanks_and_wildcards
+test tests/unit/test_wrds_credentials.py::test_write_pgpass_preserves_other_entries
+test tests/unit/test_wrds_credentials.py::test_write_pgpass_rejects_newline_password
+test tests/unit/test_wrds_credentials.py::test_write_pgpass_replaces_our_line_in_place
+test tests/unit/test_wrds_credentials.py::test_write_pgpass_unreadable_file_gives_actionable_error
+test tests/unit/test_wrds_download.py::TestAttachWrds::test_passes_through_non_password_error
+test tests/unit/test_wrds_download.py::TestAttachWrds::test_redacts_password_on_attach_error
+test tests/unit/test_wrds_download.py::TestAttachWrds::test_redacts_special_char_password_on_attach_error
+test tests/unit/test_wrds_download.py::TestBuildProjection::test_multiple_special_columns
+test tests/unit/test_wrds_download.py::TestBuildProjection::test_no_special_columns
+test tests/unit/test_wrds_download.py::TestBuildProjection::test_permno_column_cast
+test tests/unit/test_wrds_download.py::TestDateRangeSplitting::test_balanced_chunks_cover_and_balance
+test tests/unit/test_wrds_download.py::TestDateRangeSplitting::test_balanced_chunks_degenerate_cases
+test tests/unit/test_wrds_download.py::TestDateRangeSplitting::test_balanced_chunks_skewed_distribution
+test tests/unit/test_wrds_download.py::TestDateRangeSplitting::test_build_tasks_no_split_without_histogram
+test tests/unit/test_wrds_download.py::TestDateRangeSplitting::test_build_tasks_splits_only_split_tables
+test tests/unit/test_wrds_download.py::TestDateRangeSplitting::test_compute_histograms_attach_failure_is_redacted
+test tests/unit/test_wrds_download.py::TestDateRangeSplitting::test_concat_chunks_combines_and_removes
+test tests/unit/test_wrds_download.py::TestDateRangeSplitting::test_date_where_clause
+test tests/unit/test_wrds_download.py::TestDateRangeSplitting::test_download_attached_emits_date_range
+test tests/unit/test_wrds_download.py::TestDateRangeSplitting::test_parallel_download_aggregates_concat_failures
+test tests/unit/test_wrds_download.py::TestDateRangeSplitting::test_parallel_download_concatenates_each_split_table
+test tests/unit/test_wrds_download.py::TestDateRangeSplitting::test_parallel_download_splits_giant_tables
+test tests/unit/test_wrds_download.py::TestDateRangeSplitting::test_remove_chunk_parts
+test tests/unit/test_wrds_download.py::TestDownloadRawDataTablesBranching::test_connection_closed_after_download
+test tests/unit/test_wrds_download.py::TestDownloadRawDataTablesBranching::test_persistent_connection_false_uses_postgres_scan
+test tests/unit/test_wrds_download.py::TestDownloadRawDataTablesBranching::test_persistent_connection_true_single_attach
+test tests/unit/test_wrds_download.py::TestDownloadRawDataTablesBranching::test_persistent_connection_true_uses_attach
+test tests/unit/test_wrds_download.py::TestDownloadWrdsTableAttached::test_copies_to_parquet
+test tests/unit/test_wrds_download.py::TestEffectiveDownloadWorkers::test_clamped_to_connection_limit
+test tests/unit/test_wrds_download.py::TestEffectiveDownloadWorkers::test_never_more_workers_than_tables
+test tests/unit/test_wrds_download.py::TestEffectiveDownloadWorkers::test_one_or_less_means_sequential
+test tests/unit/test_wrds_download.py::TestEffectiveDownloadWorkers::test_passthrough_within_bounds
+test tests/unit/test_wrds_download.py::TestGenWrdsConnectionInfo::test_connection_string_format
+test tests/unit/test_wrds_download.py::TestGenWrdsConnectionInfo::test_conninfo_embeds_in_sql_without_parse_error
+test tests/unit/test_wrds_download.py::TestGenWrdsConnectionInfo::test_password_masking_matches_libpq_escaped_form
+test tests/unit/test_wrds_download.py::TestGenWrdsConnectionInfo::test_password_masking_matches_sql_doubled_form
+test tests/unit/test_wrds_download.py::TestGenWrdsConnectionInfo::test_password_omitted_when_none
+test tests/unit/test_wrds_download.py::TestGenWrdsConnectionInfo::test_password_with_special_characters_is_quoted_and_escaped
+test tests/unit/test_wrds_download.py::TestGenWrdsConnectionInfo::test_sql_literal_escapes_conninfo_for_embedding
+test tests/unit/test_wrds_download.py::TestGenWrdsConnectionInfo::test_username_with_special_characters_is_quoted_and_escaped
+test tests/unit/test_wrds_download.py::TestGetColumnsAttached::test_queries_attached_database
+test tests/unit/test_wrds_download.py::TestGetColumnsAttached::test_returns_column_names
+test tests/unit/test_wrds_download.py::TestMapInterruptible::test_preserves_order_and_returns_results
+test tests/unit/test_wrds_download.py::TestMapInterruptible::test_propagates_keyboard_interrupt
+test tests/unit/test_wrds_download.py::TestMapInterruptible::test_propagates_task_exception
+test tests/unit/test_wrds_download.py::TestParallelDownload::test_all_attach_failures_raise
+test tests/unit/test_wrds_download.py::TestParallelDownload::test_one_attach_failure_is_non_fatal_when_queue_drains
+test tests/unit/test_wrds_download.py::TestParallelDownload::test_one_connection_per_worker_with_attach_detach
+test tests/unit/test_wrds_download.py::TestParallelDownload::test_parallel_covers_same_tables_as_sequential
+test tests/unit/test_wrds_download.py::TestParallelDownload::test_password_not_leaked_in_aggregated_error
+test tests/unit/test_wrds_download.py::TestParallelDownload::test_persistent_connection_forces_sequential
+test tests/unit/test_wrds_download.py::TestParallelDownload::test_special_char_password_not_leaked_in_aggregated_error
+test tests/unit/test_wrds_download.py::TestParallelDownload::test_table_failure_is_aggregated
+test tests/unit/test_wrds_download.py::TestParallelDownload::test_worker_count_clamped_to_connection_limit
+test tests/unit/test_wrds_download.py::TestParallelDownload::test_worker_respects_stop_event
