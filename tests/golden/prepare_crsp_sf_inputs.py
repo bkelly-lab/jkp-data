@@ -56,6 +56,7 @@ SCHEMA_CRSP_SF: dict[str, pl.DataType] = {
     "vol": pl.Int64,
     "prc_high": pl.Float64,
     "prc_low": pl.Float64,
+    "del_flag": pl.Utf8,
     "common": pl.Int32,
     "primaryexch": pl.Utf8,
     "conditionaltype": pl.Utf8,
@@ -66,6 +67,10 @@ SCHEMA_CRSP_SF: dict[str, pl.DataType] = {
     "me": pl.Float64,
     "ticker": pl.Utf8,
 }
+
+# Daily variant: gen_crsp_sf now emits del_flag (DlyDelFlg) for freq="d" too,
+# so the daily path can apply the same flag-conditional delist adjustment.
+SCHEMA_CRSP_DSF: dict[str, pl.DataType] = dict(SCHEMA_CRSP_SF)
 
 SCHEMA_SEDELIST: dict[str, pl.DataType] = {
     "delret": pl.Float64,
@@ -94,6 +99,7 @@ def _crsp_row(
     me: float | None,
     *,
     nasdaq: bool,
+    del_flag: str | None = None,
     prc_open: float | None = None,
     prc_close: float | None = None,
 ) -> dict[str, object]:
@@ -114,6 +120,7 @@ def _crsp_row(
         "vol": vol,
         "prc_high": prc + 1.0,
         "prc_low": prc - 1.0,
+        "del_flag": del_flag,
         "common": 1,
         "primaryexch": "Q" if nasdaq else "N",
         "conditionaltype": "RW",
@@ -248,16 +255,60 @@ def build_crsp_sf_input(freq: str) -> pl.DataFrame:
                 10003, 103, date(2005, 3, 31), 15.0, 0.0, 0.02, 0.02, 300, 50.0, nasdaq=False
             ),
             _crsp_row(
-                10003, 103, date(2005, 4, 29), 16.0, 1.0, 0.04, 0.03, 310, 52.0, nasdaq=False
+                10003,
+                103,
+                date(2005, 4, 29),
+                16.0,
+                1.0,
+                0.04,
+                0.03,
+                310,
+                52.0,
+                nasdaq=False,
+                del_flag="M",
             ),
             # 10004 permco 104: c3 (reason BKPY) delret imputation.
-            _crsp_row(10004, 104, date(2006, 5, 31), 8.0, 1.0, 0.05, 0.05, 200, 30.0, nasdaq=False),
+            _crsp_row(
+                10004,
+                104,
+                date(2006, 5, 31),
+                8.0,
+                1.0,
+                0.05,
+                0.05,
+                200,
+                30.0,
+                nasdaq=False,
+                del_flag="M",
+            ),
             # 10005 permco 105: delret present, non-bad codes -> kept as-is.
             _crsp_row(
-                10005, 105, date(2007, 6, 29), 12.0, 1.0, 0.03, 0.03, 250, 40.0, nasdaq=False
+                10005,
+                105,
+                date(2007, 6, 29),
+                12.0,
+                1.0,
+                0.03,
+                0.03,
+                250,
+                40.0,
+                nasdaq=False,
+                del_flag="M",
             ),
             # 10006 permco 106: ret null + delret present -> c7 backfill.
-            _crsp_row(10006, 106, date(2008, 7, 31), 5.0, 1.0, None, None, 150, 20.0, nasdaq=False),
+            _crsp_row(
+                10006,
+                106,
+                date(2008, 7, 31),
+                5.0,
+                1.0,
+                None,
+                None,
+                150,
+                20.0,
+                nasdaq=False,
+                del_flag="M",
+            ),
             # 10007 permco 107: rf-only month, then neither-rf-nor-t30ret + me null.
             _crsp_row(10007, 107, date(2009, 8, 31), 7.0, 1.0, 0.02, 0.02, 100, 25.0, nasdaq=False),
             _crsp_row(10007, 107, date(2009, 9, 30), 8.0, 1.0, 0.01, 0.01, 110, None, nasdaq=False),
@@ -276,15 +327,30 @@ def build_crsp_sf_input(freq: str) -> pl.DataFrame:
             ),
             # 20002 permco 200 NYSE, same day as 20001 d3 -> me_company daily sum.
             _crsp_row(20002, 200, date(2000, 1, 5), 20.0, 1.0, 0.02, 0.02, 500, 80.0, nasdaq=False),
-            # 20003 permco 203: delist only on the exact day 2000-01-07 (c2).
+            # 20003 permco 203: two consecutive days; second is delist day
+            # with DlyDelFlg=N (ordinary return) + bad-delist sedelist match
+            # → impute −0.30 and compound.
             _crsp_row(20003, 203, date(2000, 1, 6), 15.0, 1.0, 0.03, 0.03, 300, 50.0, nasdaq=False),
-            _crsp_row(20003, 203, date(2000, 1, 7), 15.0, 1.0, 0.04, 0.04, 310, 52.0, nasdaq=False),
+            _crsp_row(
+                20003,
+                203,
+                date(2000, 1, 7),
+                15.0,
+                1.0,
+                0.04,
+                0.04,
+                310,
+                52.0,
+                nasdaq=False,
+                del_flag="N",
+            ),
             # 20004 permco 204: t30ret present -> ret_exc = ret - t30ret/21.
             _crsp_row(20004, 204, date(2000, 1, 4), 9.0, 1.0, 0.05, 0.05, 90, 60.0, nasdaq=False),
         ]
     else:
         rows = []
-    return pl.DataFrame(rows + _build_bulk_rows(freq), schema=SCHEMA_CRSP_SF)
+    schema = SCHEMA_CRSP_SF if freq == "m" else SCHEMA_CRSP_DSF
+    return pl.DataFrame(rows + _build_bulk_rows(freq), schema=schema)
 
 
 def _del_row(
@@ -312,11 +378,12 @@ def build_sedelist_input(freq: str) -> pl.DataFrame:
 
     Description:
         Monthly rows join on (permno, delist-month); daily rows join on the
-        exact (permno, delistingdt) day.
+        exact (permno, delistingdt) day.  Both frequencies apply the same
+        flag-conditional imputation / compounding.
     Steps:
         1) Emit c2 (UNAV/GDR/PRCF/VCL), c3 (BKPY), a non-bad (MERG) and a
-           plain-delret row for the monthly panel; a single c2 exact-day row
-           for the daily panel.
+           plain-delret row for the monthly panel; a c2 exact-day row for the
+           daily panel (matches permno 20003 on 2000-01-07).
         2) Return a typed DataFrame.
     Output:
         pl.DataFrame with SCHEMA_SEDELIST columns/dtypes.
@@ -389,12 +456,18 @@ def build_ff_input() -> pl.DataFrame:
     )
 
 
+def _sedelist_filename(freq: str) -> str:
+    """Return the interim sedelist filename for *freq* (``crsp_msedelist`` or ``crsp_dsedelist``)."""
+    return "crsp_msedelist.parquet" if freq == "m" else "crsp_dsedelist.parquet"
+
+
 def write_all_inputs(paths: DataPaths, freq: str) -> None:
-    """Write the six input parquets ``prepare_crsp_sf`` reads for one freq.
+    """Write the input parquets ``prepare_crsp_sf`` reads for one freq.
 
     Description:
-        Materialize the freq-specific panel + delist and the two shared monthly
-        rf tables to the exact interim/raw_data_dfs paths the function scans.
+        Materialize the freq-specific panel, the two shared monthly rf tables,
+        and the sedelist to the exact interim/raw_data_dfs paths the function
+        scans.  Both frequencies now join the sedelist for delist adjustment.
     Steps:
         1) Ensure interim/raw_data_dfs exists.
         2) Write __crsp_sf_{freq}, crsp_{freq}sedelist, crsp_mcti_t30ret,
@@ -405,13 +478,13 @@ def write_all_inputs(paths: DataPaths, freq: str) -> None:
     raw_dir = paths.interim_dir / "raw_data_dfs"
     raw_dir.mkdir(parents=True, exist_ok=True)
     build_crsp_sf_input(freq).write_parquet(raw_dir / f"__crsp_sf_{freq}.parquet")
-    build_sedelist_input(freq).write_parquet(raw_dir / f"crsp_{freq}sedelist.parquet")
+    build_sedelist_input(freq).write_parquet(raw_dir / _sedelist_filename(freq))
     build_mcti_input().write_parquet(raw_dir / "crsp_mcti_t30ret.parquet")
     build_ff_input().write_parquet(raw_dir / "ff_factors_monthly.parquet")
 
 
 def write_empty_inputs(paths: DataPaths, freq: str) -> None:
-    """Write 0-row typed versions of the four input parquets for one freq.
+    """Write 0-row typed versions of the input parquets for one freq.
 
     Description:
         Materialize empty but fully-typed inputs so tests can assert that
@@ -419,12 +492,14 @@ def write_empty_inputs(paths: DataPaths, freq: str) -> None:
     Steps:
         1) Ensure interim/raw_data_dfs exists.
         2) Write each table as an empty DataFrame carrying its schema.
+        3) Write the empty sedelist for both frequencies.
     Output:
         None (side effect: 0-row parquet files on disk).
     """
     raw_dir = paths.interim_dir / "raw_data_dfs"
     raw_dir.mkdir(parents=True, exist_ok=True)
-    pl.DataFrame(schema=SCHEMA_CRSP_SF).write_parquet(raw_dir / f"__crsp_sf_{freq}.parquet")
-    pl.DataFrame(schema=SCHEMA_SEDELIST).write_parquet(raw_dir / f"crsp_{freq}sedelist.parquet")
+    sf_schema = SCHEMA_CRSP_SF if freq == "m" else SCHEMA_CRSP_DSF
+    pl.DataFrame(schema=sf_schema).write_parquet(raw_dir / f"__crsp_sf_{freq}.parquet")
+    pl.DataFrame(schema=SCHEMA_SEDELIST).write_parquet(raw_dir / _sedelist_filename(freq))
     pl.DataFrame(schema=SCHEMA_MCTI).write_parquet(raw_dir / "crsp_mcti_t30ret.parquet")
     pl.DataFrame(schema=SCHEMA_FF).write_parquet(raw_dir / "ff_factors_monthly.parquet")
