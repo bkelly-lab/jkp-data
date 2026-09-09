@@ -61,6 +61,7 @@ The pipeline has two entry points that run sequentially:
 - `src/jkp/data/aux_functions.py` — Core library: all characteristic calculations, data transformations, and I/O utilities
 - `src/jkp/data/portfolio.py` — Standalone factor portfolio construction script
 - `src/jkp/data/wrds_credentials.py` — WRDS credential resolution (env vars, system keyring, and the libpq `~/.pgpass` file)
+- `src/jkp/data/wrds_connection.py` — WRDS connection construction and verification (`gen_wrds_connection_info`, `verify_wrds_connection`), with password redaction on failure paths
 
 ### Data flow
 
