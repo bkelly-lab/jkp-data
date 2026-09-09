@@ -19,6 +19,11 @@ app = typer.Typer(
     name="jkp",
     help="JKP Factor Data generation pipeline.",
     no_args_is_help=True,
+    # Defense in depth: never render frame locals in tracebacks. A WRDS
+    # Credentials object bound in a command frame would otherwise be exposed to
+    # Typer's pretty exception handler. Typer only defaulted this off in 0.23.0
+    # and the project floor is typer>=0.15.0, so set it explicitly.
+    pretty_exceptions_show_locals=False,
 )
 
 
