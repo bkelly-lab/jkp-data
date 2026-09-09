@@ -106,7 +106,8 @@ jkp-data/
 │           ├── main.py          # Pipeline orchestration
 │           ├── portfolio.py     # Factor portfolio construction
 │           ├── config.py        # Pipeline configuration
-│           └── wrds_credentials.py # WRDS credential management
+│           ├── wrds_credentials.py # WRDS credential management
+│           └── wrds_connection.py  # WRDS connection setup and verification
 ├── tests/                   # Test suite
 │   ├── conftest.py          # Shared fixtures
 │   └── unit/                # Unit tests

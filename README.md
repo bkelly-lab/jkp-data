@@ -31,7 +31,13 @@ If you do not have a WRDS subscription, you can still access pre-computed factor
      ```
      Kindly follow the prompts.
 
-     Note: If you need to change your password or credentials, run `jkp connect --reset` and then `jkp connect`
+     `jkp connect` opens a real WRDS connection, so a successful run confirms
+     that your credentials, connectivity, and MFA all work. A password typed at
+     the prompt is verified before it is stored, so a typo is never saved: just
+     run `jkp connect` again and re-enter it.
+
+     Note: if you have changed your password at WRDS, run `jkp connect --reset`
+     and then `jkp connect`.
 
    - **Credential precedence.** When the pipeline needs WRDS credentials, it
      resolves them from the `WRDS_USERNAME`/`WRDS_PASSWORD` environment
