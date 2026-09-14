@@ -373,6 +373,7 @@ class TestRollWindowEquivalence:
         rows: dict[str, list] = {
             "id_int": [],
             "aux_date": [],
+            "ret": [],
             "ret_exc": [],
             "tvol": [],
             "shares": [],
@@ -380,9 +381,11 @@ class TestRollWindowEquivalence:
         for id_int, n_days in [(1, 8), (2, 8), (3, 2)]:
             for month in range(23113, 23153):
                 for day in range(n_days):
+                    ret_exc = ((id_int * 7 + month * 3 + day * 5) % 11 - 5) / 100
                     rows["id_int"].append(id_int)
                     rows["aux_date"].append(month)
-                    rows["ret_exc"].append(((id_int * 7 + month * 3 + day * 5) % 11 - 5) / 100)
+                    rows["ret"].append(ret_exc + 0.001)
+                    rows["ret_exc"].append(ret_exc)
                     rows["tvol"].append(float((id_int + month + day) % 4))
                     rows["shares"].append(100.0 + id_int)
         return pl.DataFrame(rows).with_columns(pl.col("aux_date").cast(pl.Int32)).lazy()

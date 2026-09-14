@@ -7546,7 +7546,9 @@ def prep_data_factor_regs(
         Prepare monthly panel for factor regressions (join data with factors, filter, winsorize).
 
     Steps:
-        1) Create __msf1: join msf with factors on (excntry, eom); keep ret_exc, mktrf, hml, smb_ff and valid monthly obs.
+        1) Create __msf1: join msf with factors on (excntry, eom); keep ret, ret_exc,
+           mktrf, hml, smb_ff and valid monthly obs. Raw ``ret`` is retained so
+           rolling CAPM / factor-reg stats can apply the constant-return guard.
         2) Add integer date (aux_date) and cast id_int.
         3) Winsorize ret_exc by eom at configurable percentile bounds into __msf2.
 
@@ -7576,6 +7578,7 @@ def prep_data_factor_regs(
         a.id,
         CAST(a.id AS INTEGER) AS id_int,
         a.eom,
+        a.ret,
         a.ret_exc,
         a.ret_lag_dif,
         b.mktrf,
@@ -7598,7 +7601,7 @@ def prep_data_factor_regs(
         AND b.mktrf    IS NOT NULL
     )
     SELECT
-        id, id_int, eom, ret_lag_dif, mktrf, hml, smb_ff, aux_date,
+        id, id_int, eom, ret, ret_lag_dif, mktrf, hml, smb_ff, aux_date,
         GREATEST(
             QUANTILE_DISC(ret_exc, {lower}) OVER w,
             LEAST(

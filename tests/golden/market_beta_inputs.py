@@ -43,6 +43,7 @@ WORLD_MSF_INPUT_SCHEMA: dict[str, pl.DataType] = {
     "id": pl.Int64,
     "excntry": pl.String,
     "eom": pl.Date,
+    "ret": pl.Float64,
     "ret_exc": pl.Float64,
     "ret_local": pl.Float64,
     "ret_lag_dif": pl.Int64,
@@ -176,6 +177,7 @@ def build_world_msf_input(seed: int = 42) -> pl.DataFrame:
     ids: list[int] = []
     excntry: list[str] = []
     eom: list[date] = []
+    ret: list[float | None] = []
     ret_exc: list[float | None] = []
     ret_local: list[float] = []
     ret_lag_dif: list[int] = []
@@ -196,6 +198,9 @@ def build_world_msf_input(seed: int = 42) -> pl.DataFrame:
             ids.append(firm_id)
             excntry.append(_EXCNTRY)
             eom.append(dates[m])
+            # Raw ret tracks ret_exc (+ tiny RF wedge) so the constant-ret guard
+            # sees the same variation as the CAPM target series.
+            ret.append(None if re is None else re + 0.001)
             ret_exc.append(re)
             ret_local.append(rl)
             ret_lag_dif.append(lag)
@@ -209,6 +214,7 @@ def build_world_msf_input(seed: int = 42) -> pl.DataFrame:
             "id": ids,
             "excntry": excntry,
             "eom": eom,
+            "ret": ret,
             "ret_exc": ret_exc,
             "ret_local": ret_local,
             "ret_lag_dif": ret_lag_dif,
@@ -251,6 +257,7 @@ def _build_bulk_msf() -> pl.DataFrame:
             "id": firm_ids.astype(np.int64),
             "excntry": [_BULK_EXCNTRY] * total,
             "eom": dates * _N_BULK_FIRMS,
+            "ret": ret_exc + 0.001,
             "ret_exc": ret_exc,
             "ret_local": ret_exc + 0.02,
             "ret_lag_dif": np.ones(total, dtype=np.int64),
