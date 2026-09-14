@@ -567,6 +567,7 @@ def gen_crsp_sf(paths: DataPaths, freq):
         cfacshr_expr = sf.mthcumfacshr
         askhi_expr = sf.mthaskhi
         bidlo_expr = sf.mthbidlo
+        del_flag_expr = sf.mthdelflg
         open_expr = None
         close_expr = None
     else:  # freq == "d", validated above
@@ -581,6 +582,7 @@ def gen_crsp_sf(paths: DataPaths, freq):
         bidlo_expr = sf.dlylow
         open_expr = sf.dlyopen
         close_expr = sf.dlyclose
+        del_flag_expr = sf.dlydelflg
 
     sf_senames_join = sf.join(
         senames,
@@ -643,54 +645,59 @@ def gen_crsp_sf(paths: DataPaths, freq):
         else ibis.null()
     )
 
-    result = full_join.mutate(
-        date=date_expr,
-        bidask=bidask_expr,
-        prc=prc_expr,
-        shrout=(sf.shrout / 1000),
-        me=(prc_expr * (sf.shrout / 1000)),
-        prc_high=ibis.cases(((prc_expr > 0) & (askhi_expr > 0), askhi_expr), else_=ibis.null()),
-        prc_low=ibis.cases(((prc_expr > 0) & (bidlo_expr > 0), bidlo_expr), else_=ibis.null()),
-        prc_open=prc_open_mutate,
-        prc_close=prc_close_mutate,
-        iid=ccmxpf_lnkhist.liid,
-        ret=ret_expr,
-        retx=retx_expr,
-        cfacshr=cfacshr_expr,
-        vol=vol_expr,
-        common=is_common_expr.cast("int32"),
-        primaryexch=primaryexch_expr,
-        conditionaltype=conditionaltype_expr,
-        exch_main=exch_main_expr,
-        crsp_nyse=crsp_nyse_expr,
-        gvkey=ccmxpf_lnkhist.gvkey,
-    ).select(
-        [
-            "permno",
-            "permco",
-            "date",
-            "bidask",
-            "prc",
-            "prc_open",
-            "prc_close",
-            "shrout",
-            "ret",
-            "retx",
-            "cfacshr",
-            "vol",
-            "prc_high",
-            "prc_low",
-            "common",
-            "primaryexch",
-            "conditionaltype",
-            "crsp_nyse",
-            "gvkey",
-            "iid",
-            "exch_main",
-            "me",
-            "ticker",
-        ]
-    )
+    mutate_fields = {
+        "date": date_expr,
+        "bidask": bidask_expr,
+        "prc": prc_expr,
+        "shrout": (sf.shrout / 1000),
+        "me": (prc_expr * (sf.shrout / 1000)),
+        "prc_high": ibis.cases(((prc_expr > 0) & (askhi_expr > 0), askhi_expr), else_=ibis.null()),
+        "prc_low": ibis.cases(((prc_expr > 0) & (bidlo_expr > 0), bidlo_expr), else_=ibis.null()),
+        "prc_open": prc_open_mutate,
+        "prc_close": prc_close_mutate,
+        "iid": ccmxpf_lnkhist.liid,
+        "ret": ret_expr,
+        "retx": retx_expr,
+        "cfacshr": cfacshr_expr,
+        "vol": vol_expr,
+        "common": is_common_expr.cast("int32"),
+        "primaryexch": primaryexch_expr,
+        "conditionaltype": conditionaltype_expr,
+        "exch_main": exch_main_expr,
+        "crsp_nyse": crsp_nyse_expr,
+        "gvkey": ccmxpf_lnkhist.gvkey,
+    }
+    select_cols = [
+        "permno",
+        "permco",
+        "date",
+        "bidask",
+        "prc",
+        "prc_open",
+        "prc_close",
+        "shrout",
+        "ret",
+        "retx",
+        "cfacshr",
+        "vol",
+        "prc_high",
+        "prc_low",
+        "common",
+        "primaryexch",
+        "conditionaltype",
+        "crsp_nyse",
+        "gvkey",
+        "iid",
+        "exch_main",
+        "me",
+        "ticker",
+    ]
+    # del_flag gates the CIZ delisting-return adjustment in prepare_crsp_sf
+    # for both monthly (MthDelFlg) and daily (DlyDelFlg) frequencies.
+    mutate_fields["del_flag"] = del_flag_expr
+    select_cols.insert(select_cols.index("common"), "del_flag")
+
+    result = full_join.mutate(**mutate_fields).select(select_cols)
     return result
 
 
@@ -2713,8 +2720,11 @@ def prepare_crsp_sf(paths: DataPaths, freq):
     Steps:
         1) Read raw_data_dfs/__crsp_sf_{freq}.parquet; cast key numeric columns; apply NASDAQ volume adjustment.
         2) Compute dollar volume and infer dividend totals from (ret − retx) scaled by lagged price and split factors.
-        3) Join CRSP delists (crsp_{freq}sedelist); impute missing delret = −0.30 for “bad delist” buckets defined by CIZ codes;
-           set ret=0 when ret is missing but delret exists; compound ret with delret.
+        3) Join CRSP delists (crsp_{freq}sedelist); apply CIZ flag-conditional
+           delisting-return adjustment — compound delret into ret unless del_flag
+           indicates the payoff is already in the return field (monthly: A/P;
+           daily: Y), preserving the −0.30 imputation for bad-delist buckets.
+           Monthly joins on (permno, MMYY); daily joins on exact (permno, date).
         4) Join risk-free proxies (CRSP T-bill and FF RF) and compute excess return ret_exc; compute company ME by summing ME across permnos within permco-date.
         5) If daily, compute LPS (2019) overnight/intraday returns (USD and local).
         6) If monthly, rescale vol and dolvol for unit alignment.
@@ -2770,22 +2780,84 @@ def prepare_crsp_sf(paths: DataPaths, freq):
         )
     )
 
-    crsp_sedelist_aux_col = (
-        [gen_MMYY_column("delistingdt").alias("merge_aux")]
-        if (freq == "m")
-        else [col("delistingdt").alias("date")]
-    )
-
-    crsp_sedelist = pl.scan_parquet(
-        paths.interim_dir / "raw_data_dfs" / f"crsp_{freq}sedelist.parquet"
-    ).with_columns(crsp_sedelist_aux_col)
-
     crsp_mcti = add_MMYY_column_drop_original(
         pl.scan_parquet(paths.interim_dir / "raw_data_dfs" / "crsp_mcti_t30ret.parquet"), "caldt"
     )
     ff_factors_monthly = add_MMYY_column_drop_original(
         pl.scan_parquet(paths.interim_dir / "raw_data_dfs" / "ff_factors_monthly.parquet"), "date"
     )
+
+    me_company_exp = (
+        pl.when(pl.count("me").over(["permco", "date"]) != 0)
+        .then(pl.coalesce(["me", 0.0]).sum().over(["permco", "date"]))
+        .otherwise(fl_none())
+    )
+
+    scale = 1 if (freq == "m") else 21
+    ret_exc_exp = col("ret") - pl.coalesce(["t30ret", "rf"]) / scale
+
+    # CIZ flag-conditional delisting-return adjustment (Xia 2026, SSRN 7243220).
+    #
+    # Both monthly and daily paths join crsp.stkdelists and apply the same
+    # imputation / compounding logic, gated by the frequency-specific del_flag.
+    #
+    # Monthly — MthDelFlg (propagated as del_flag):
+    #   A/P — payoff already compounded into MthRet → skip compounding
+    #   M   — delisting return missing          → compound (+ impute −0.30
+    #         for bad-delist buckets when delret is null)
+    #   G   — delisting return excluded (date gap >10 trading days) → compound
+    #   N   — no delist this period (delret typically null after join) → compound
+    #         is a no-op in practice
+    #   null — no delisting event in the stock file → treated as "needs
+    #          compound" (fill_null makes the gate true); in practice delret is
+    #          null after the left join so compounding is a no-op, but if a
+    #          sedelist row does join the payoff is correctly folded in
+    #
+    # Daily — DlyDelFlg (propagated as del_flag):
+    #   Y   — delisting return already in DlyRet → skip compounding
+    #   N   — ordinary return; on the exact delistingdt the sedelist may
+    #         match, so compounding is applied (+ −0.30 imputation for
+    #         bad-delist buckets when delret is null)
+    #   null — no delisting event → same no-op treatment as monthly null
+    #
+    # The "payoff already in return" flags differ by frequency but the
+    # downstream logic (imputation + compounding) is identical.  This keeps
+    # the daily rolling-window characteristics (rvol, beta, skew, 21d–1260d)
+    # consistent with the monthly file and with the Compustat daily path
+    # (gen_temporary_sf), which already stamps delisting returns on the
+    # exact delist date.
+
+    # --- sedelist join (frequency-specific key) ---
+    if freq == "m":
+        crsp_sedelist = pl.scan_parquet(
+            paths.interim_dir / "raw_data_dfs" / "crsp_msedelist.parquet"
+        ).with_columns(gen_MMYY_column("delistingdt").alias("merge_aux"))
+    else:
+        crsp_sedelist = pl.scan_parquet(
+            paths.interim_dir / "raw_data_dfs" / "crsp_dsedelist.parquet"
+        ).rename({"delistingdt": "date"})
+
+    __crsp_sf = __crsp_sf.join(crsp_sedelist, how="left", on=merge_vars)
+
+    # --- validate del_flag values ---
+    if freq == "m":
+        _KNOWN_DEL_FLAGS = {"A", "P", "M", "G", "N", "V"}
+        _flag_label = "MthDelFlg"
+    else:
+        _KNOWN_DEL_FLAGS = {"Y", "N"}
+        _flag_label = "DlyDelFlg"
+
+    _observed_flags = (
+        __crsp_sf.select(col("del_flag").drop_nulls().unique()).collect().to_series().to_list()
+    )
+    _unexpected = set(_observed_flags) - _KNOWN_DEL_FLAGS
+    if _unexpected:
+        warnings.warn(
+            f"Unexpected {_flag_label} values {sorted(_unexpected)!r} in CRSP stock file; "
+            "these will be compounded with delret (not in exclusion list). "
+            "Review CRSP documentation and update the gate if needed.",
+            stacklevel=2,
+        )
 
     c1 = col("delret").is_null()
 
@@ -2829,23 +2901,32 @@ def prepare_crsp_sf(paths: DataPaths, freq):
     c6 = col("delret").is_not_null()
     c7 = c5 & c6
 
-    me_company_exp = (
-        pl.when(pl.count("me").over(["permco", "date"]) != 0)
-        .then(pl.coalesce(["me", 0.0]).sum().over(["permco", "date"]))
-        .otherwise(fl_none())
+    # Gate: compound unless the flag says the payoff is already in the
+    # return field.  Monthly excludes A/P; daily excludes Y.
+    # fill_null(False) ensures null del_flag (no delisting event in the
+    # stock file) enters the compound branch — for these rows delret is
+    # typically null (no sedelist match), so coalesce(delret, 0) yields 1
+    # and compounding is a no-op.
+    _ALREADY_IN_RET = ["A", "P"] if freq == "m" else ["Y"]
+    needs_compound = ~col("del_flag").is_in(_ALREADY_IN_RET).fill_null(False)
+    __crsp_sf = (
+        __crsp_sf
+        # impute missing delret to -0.30 for "bad delist" buckets
+        .with_columns(
+            delret=pl.when(needs_compound & c4).then(pl.lit(-0.3)).otherwise(col("delret"))
+        )
+        # if ret missing but delret exists, set ret=0 so compounding works
+        .with_columns(ret=pl.when(needs_compound & c7).then(pl.lit(0.0)).otherwise(col("ret")))
+        # compound ret with delret unless payoff is already in return field
+        .with_columns(
+            ret=pl.when(needs_compound)
+            .then((col("ret") + 1) * (pl.coalesce(["delret", 0.0]) + 1) - 1)
+            .otherwise(col("ret"))
+        )
     )
 
-    scale = 1 if (freq == "m") else 21
-    ret_exc_exp = col("ret") - pl.coalesce(["t30ret", "rf"]) / scale
-
     __crsp_sf = (
-        __crsp_sf.join(crsp_sedelist, how="left", on=merge_vars)
-        # impute missing delret to -0.30 for the “bad delist” buckets
-        .with_columns(delret=pl.when(c4).then(pl.lit(-0.3)).otherwise(col("delret")))
-        # if ret missing but delret exists, set ret=0 so compounding works
-        .with_columns(ret=pl.when(c7).then(pl.lit(0.0)).otherwise(col("ret")))
-        # compound ret with delret
-        .with_columns(ret=((col("ret") + 1) * (pl.coalesce(["delret", 0.0]) + 1) - 1))
+        __crsp_sf
         # rf joins
         .join(crsp_mcti, how="left", on="merge_aux")
         .join(ff_factors_monthly, how="left", on="merge_aux")
@@ -2882,23 +2963,21 @@ def prepare_crsp_sf(paths: DataPaths, freq):
             [(col(var) * 100).alias(var) for var in ["vol", "dolvol"]]
         )
 
-    __crsp_sf = (
-        __crsp_sf.drop(
-            [
-                "rf",
-                "t30ret",
-                "merge_aux",
-                "delret",
-                "delistingdt",
-                "delreasontype",
-                "delactiontype",
-                "delpaymenttype",
-                "delstatustype",
-            ]
-        )
-        .unique(["permno", "date"])
-        .sort(["permno", "date"])
-    )
+    drop_cols = [
+        "rf",
+        "t30ret",
+        "merge_aux",
+        "del_flag",
+        "delret",
+        "delreasontype",
+        "delactiontype",
+        "delpaymenttype",
+        "delstatustype",
+    ]
+    if freq == "m":
+        drop_cols.append("delistingdt")
+
+    __crsp_sf = __crsp_sf.drop(drop_cols).unique(["permno", "date"]).sort(["permno", "date"])
 
     __crsp_sf.collect().write_parquet(paths.interim_dir / f"crsp_{freq}sf.parquet")
 
@@ -7742,7 +7821,8 @@ def prepare_daily(paths: DataPaths, data_path, fcts_path):
         3) Write dsf1.parquet and id_int_key.parquet.
         4) Build market lead/lag series per day (dropping null mktrf) and write mkt_lead_lag.parquet.
         5) Build 3-day rolling sums for stock and market excess returns; filter to non-null
-           sums and zero_obs_gate_ok(); write corr_data.parquet.
+           sums and zero_obs_gate_ok(); keep raw ``ret`` for constant-window guards;
+           write corr_data.parquet.
 
     Output:
         Parquets: dsf1.parquet, id_int_key.parquet, mkt_lead_lag.parquet, corr_data.parquet.
@@ -7809,7 +7889,7 @@ def prepare_daily(paths: DataPaths, data_path, fcts_path):
 
     corr_data = (
         pl.scan_parquet(paths.interim_dir / "dsf1.parquet")
-        .select(["ret_exc", "id_int", "date", "mktrf", "eom", "zero_obs", "source_crsp"])
+        .select(["ret_exc", "ret", "id_int", "date", "mktrf", "eom", "zero_obs", "source_crsp"])
         .sort(["id_int", "date"])
         .with_columns(
             ret_exc_3l=(col("ret_exc") + col("ret_exc").shift(1) + col("ret_exc").shift(2)).over(
@@ -7822,7 +7902,8 @@ def prepare_daily(paths: DataPaths, data_path, fcts_path):
         .filter(
             col("ret_exc_3l").is_not_null() & col("mkt_exc_3l").is_not_null() & zero_obs_gate_ok()
         )
-        .select(["id_int", "eom", "ret_exc_3l", "mkt_exc_3l"])
+        # Keep raw `ret` so mktcorr can guard on RF-immune constantness.
+        .select(["id_int", "eom", "ret_exc_3l", "mkt_exc_3l", "ret"])
         .select(pl.all().shrink_dtype())
         .sort(["id_int", "eom"])
     )
@@ -8554,6 +8635,7 @@ def finish_daily_chars(paths: DataPaths, output_path):
         2) Outer join on (id, eom).
         3) Add betabab (beta * rvol / mktvol) and rmax5_rvol ratio.
         4) Drop helper columns.
+        5) Scrub residual NaN/inf across all float columns to null.
 
     Output:
         '{output_path}' parquet with final daily characteristics.
@@ -8568,6 +8650,8 @@ def finish_daily_chars(paths: DataPaths, output_path):
         rmax5_rvol_21d=col("rmax5_21d") / col("rvol_252d"),
     ).drop("__mktvol_252d")
 
+    # Scrub residual NaN/inf across float columns (backstop for edge cases the
+    # per-characteristic constant-window guards do not catch).
     float_cols = [name for name, dtype in daily_chars.collect_schema().items() if dtype.is_float()]
     daily_chars = daily_chars.with_columns(
         pl.when(pl.col(c).is_finite()).then(pl.col(c)).otherwise(None).alias(c) for c in float_cols
@@ -9392,15 +9476,38 @@ def res_mom(df, sfx, __min, incl, skip):
     return df
 
 
-def _guard_constant(input_col: str, stat_expr: pl.Expr) -> pl.Expr:
-    """Null the stat when the input series is constant within a group_by group.
+# Maximum fraction of exact-zero observations allowed in a rolling window before
+# a return-based statistic is nulled. Catches near-dead stocks (e.g. one trade
+# in 21 days ≈ 0.95 zeros) that bit-exact min!=max would miss.
+CONSTANT_MAX_ZERO_FRAC = 0.9
 
-    Uses min() != max() — two cheap aggregations that piggyback on the
-    existing group_by, exact for bit-identical values (the dead-stock case).
+
+def _guard_constant(
+    input_col: str,
+    stat_expr: pl.Expr,
+    *,
+    max_zero_frac: float | None = CONSTANT_MAX_ZERO_FRAC,
+) -> pl.Expr:
     """
-    return (
-        pl.when(pl.col(input_col).min() != pl.col(input_col).max()).then(stat_expr).otherwise(None)
-    )
+    Description:
+        Null ``stat_expr`` when ``input_col`` is degenerate within a group_by group.
+
+    Steps:
+        1) Require min(input_col) != max(input_col) (perfectly constant → null).
+        2) If max_zero_frac is set, also require mean(input_col == 0) < max_zero_frac
+           so near-dead windows are nulled (window-level analogue of zero_obs /
+           zero_trades). Pass max_zero_frac=None for non-return columns (prices,
+           volumes) where a zero-fraction screen is not meaningful.
+
+    Output:
+        Polars expression usable inside .agg().
+    """
+    varying = pl.col(input_col).min() != pl.col(input_col).max()
+    if max_zero_frac is None:
+        ok = varying
+    else:
+        ok = varying & ((pl.col(input_col) == 0).mean() < max_zero_frac)
+    return pl.when(ok).then(stat_expr).otherwise(None)
 
 
 def rvol(df, sfx, __min):
@@ -9410,13 +9517,13 @@ def rvol(df, sfx, __min):
 
     Steps:
         1) Group by (id_int, group_number).
-        2) Compute std(ret_exc).
+        2) Compute std(ret_exc); null when raw ``ret`` is constant / near-dead.
 
     Output:
         LazyFrame with f'rvol{sfx}'.
     """
     df = df.group_by(["id_int", "group_number"]).agg(
-        _guard_constant("ret_exc", col("ret_exc").cast(pl.Float64).std()).alias(f"rvol{sfx}")
+        _guard_constant("ret", col("ret_exc").cast(pl.Float64).std()).alias(f"rvol{sfx}")
     )
     return df
 
@@ -9428,7 +9535,8 @@ def rmax(df, sfx, __min):
 
     Steps:
         1) Group by (id_int,group_number).
-        2) Compute mean of top 5 returns and max return.
+        2) Compute mean of top 5 returns and max return; null when ``ret`` is
+           constant / near-dead.
 
     Output:
         LazyFrame with f'rmax5{sfx}' and f'rmax1{sfx}'.
@@ -9449,13 +9557,14 @@ def skew(df, sfx, __min):
 
     Steps:
         1) Group by (id_int,group_number).
-        2) Compute unbiased skew(ret_exc).
+        2) Compute unbiased skew(ret_exc); null when raw ``ret`` is constant /
+           near-dead (does not rely on Polars emitting NaN).
 
     Output:
         LazyFrame with f'rskew{sfx}'.
     """
     df = df.group_by(["id_int", "group_number"]).agg(
-        col("ret_exc").skew(bias=False).fill_nan(None).alias(f"rskew{sfx}")
+        _guard_constant("ret", col("ret_exc").skew(bias=False)).alias(f"rskew{sfx}")
     )
     return df
 
@@ -9467,7 +9576,7 @@ def prc_to_high(df, sfx, __min):
 
     Steps:
         1) For each (id_int,group_number), compute last(prc_adj sorted by date)/max(prc_adj)
-           and count.
+           and count; null when prc_adj is constant.
         2) Keep groups with n ≥ __min.
 
     Output:
@@ -9485,6 +9594,7 @@ def prc_to_high(df, sfx, __min):
                 _guard_constant(
                     "prc_adj",
                     col("prc_adj").sort_by("date").last() / col("prc_adj").max(),
+                    max_zero_frac=None,
                 ).alias(f"prc_highprc{sfx}"),
                 pl.count("prc_adj").alias("n"),
             ]
@@ -9503,6 +9613,7 @@ def capm(df, sfx, __min):
     Steps:
         1) For each (id_int,group_number), compute beta = cov(ret_exc,mktrf)/var(mktrf).
         2) Compute residuals and their std as ivol_capm.
+        3) Null beta and ivol when raw ``ret`` is constant / near-dead.
 
     Output:
         LazyFrame with f'beta{sfx}' and f'ivol_capm{sfx}'.
@@ -9511,19 +9622,15 @@ def capm(df, sfx, __min):
     # multithreaded DuckDB scan whose row order is nondeterministic, and cov/var/
     # std are float-order-sensitive, so an unsorted input yields byte-different
     # betas across runs.
+    beta_expr = pl.cov("ret_exc", "mktrf") / pl.var("mktrf")
+    ivol_expr = (col("ret_exc") - col("mktrf") * beta_expr).std()
     df = (
         df.sort(["id_int", "group_number", "aux_date"])
         .group_by(["id_int", "group_number"])
         .agg(
             [
-                (pl.cov("ret_exc", "mktrf") / pl.var("mktrf")).alias(f"beta{sfx}"),
-                _guard_constant(
-                    "ret_exc",
-                    (
-                        col("ret_exc")
-                        - col("mktrf") * (pl.cov("ret_exc", "mktrf") / pl.var("mktrf"))
-                    ).std(),
-                ).alias(f"ivol_capm{sfx}"),
+                _guard_constant("ret", beta_expr).alias(f"beta{sfx}"),
+                _guard_constant("ret", ivol_expr).alias(f"ivol_capm{sfx}"),
             ]
         )
     )
@@ -9537,7 +9644,8 @@ def ami(df, sfx, __min):
 
     Steps:
         1) Define dolvol guard (None if zero).
-        2) Group by (id_int,group_number); compute mean(|ret|/dolvol * 1e6) and count.
+        2) Group by (id_int,group_number); compute mean(|ret|/dolvol * 1e6) and count;
+           null when raw ``ret`` is constant / near-dead (avoids ami=0 for dead stocks).
         3) Keep groups with n ≥ __min.
 
     Output:
@@ -9548,7 +9656,7 @@ def ami(df, sfx, __min):
         df.group_by(["id_int", "group_number"])
         .agg(
             [
-                (col("ret").abs() / aux_1 * 1e6).mean().fill_nan(None).alias(f"ami{sfx}"),
+                _guard_constant("ret", (col("ret").abs() / aux_1 * 1e6).mean()).alias(f"ami{sfx}"),
                 pl.count("dolvol_d").alias("n"),
             ]
         )
@@ -9565,7 +9673,8 @@ def downbeta(df, sfx, __min):
 
     Steps:
         1) Filter mktrf < 0.
-        2) Group by (id_int,group_number); compute beta as cov/var; require n ≥ __min/2.
+        2) Group by (id_int,group_number); compute beta as cov/var; require n ≥ __min/2;
+           null when raw ``ret`` is constant / near-dead.
 
     Output:
         LazyFrame with f'betadown{sfx}'.
@@ -9575,7 +9684,9 @@ def downbeta(df, sfx, __min):
         .group_by(["id_int", "group_number"])
         .agg(
             [
-                (pl.cov("ret_exc", "mktrf") / pl.var("mktrf")).alias(f"betadown{sfx}"),
+                _guard_constant("ret", pl.cov("ret_exc", "mktrf") / pl.var("mktrf")).alias(
+                    f"betadown{sfx}"
+                ),
                 pl.count("ret_exc").alias("n"),
             ]
         )
@@ -9611,6 +9722,7 @@ def capm_ext(df, sfx, __min):
     Steps:
         1) Compute beta and alpha; residuals = ret_exc − (alpha + beta*mktrf).
         2) Aggregate per (id_int,group_number): std(res), skew(res), coskew = E[res*(mktrf−E mktrf)^2]/(sqrt(E[res^2])*sqrt(E[(mktrf−E)^2])).
+        3) Null all columns when raw ``ret`` is constant / near-dead.
 
     Output:
         LazyFrame with [f'beta_{sfx}', f'ivol_capm{sfx}', f'iskew_capm{sfx}', f'coskew{sfx}'].
@@ -9624,14 +9736,10 @@ def capm_ext(df, sfx, __min):
 
     df = df.group_by(["id_int", "group_number"]).agg(
         [
-            beta_col.cast(pl.Float64).alias(f"beta{sfx}"),
-            _guard_constant("ret_exc", residual_col.std()).alias(f"ivol_capm{sfx}"),
-            _guard_constant("ret_exc", residual_col.skew(bias=False))
-            .fill_nan(None)
-            .alias(f"iskew_capm{sfx}"),
-            _guard_constant("ret_exc", exp_coskew1 / exp_coskew2)
-            .fill_nan(None)
-            .alias(f"coskew{sfx}"),
+            _guard_constant("ret", beta_col.cast(pl.Float64)).alias(f"beta{sfx}"),
+            _guard_constant("ret", residual_col.std()).alias(f"ivol_capm{sfx}"),
+            _guard_constant("ret", residual_col.skew(bias=False)).alias(f"iskew_capm{sfx}"),
+            _guard_constant("ret", exp_coskew1 / exp_coskew2).alias(f"coskew{sfx}"),
         ]
     )
     return df
@@ -9644,7 +9752,8 @@ def ff3(df, sfx, __min):
 
     Steps:
         1) OLS: ret_exc ~ mktrf + smb_ff + hml; require factors present.
-        2) Aggregate per (id_int,group_number): std(residuals, ddof=3), skew(residuals).
+        2) Aggregate per (id_int,group_number): std(residuals, ddof=3), skew(residuals);
+           null when raw ``ret`` is constant / near-dead.
 
     Output:
         LazyFrame with [f'ivol_ff3{sfx}', f'iskew_ff3{sfx}'].
@@ -9656,10 +9765,8 @@ def ff3(df, sfx, __min):
         df.filter(col("smb_ff").is_not_null() & col("hml").is_not_null())
         .group_by(["id_int", "group_number"])
         .agg(
-            _guard_constant("ret_exc", res_exp.std(ddof=3)).alias(f"ivol_ff3{sfx}"),
-            _guard_constant("ret_exc", res_exp.skew(bias=False))
-            .fill_nan(None)
-            .alias(f"iskew_ff3{sfx}"),
+            _guard_constant("ret", res_exp.std(ddof=3)).alias(f"ivol_ff3{sfx}"),
+            _guard_constant("ret", res_exp.skew(bias=False)).alias(f"iskew_ff3{sfx}"),
         )
     )
     return df
@@ -9672,7 +9779,8 @@ def hxz4(df, sfx, __min):
 
     Steps:
         1) OLS: ret_exc ~ mktrf + smb_hxz + roe + inv; require all factors.
-        2) Aggregate per (id_int,group_number): std(residuals, ddof=4), skew(residuals).
+        2) Aggregate per (id_int,group_number): std(residuals, ddof=4), skew(residuals);
+           null when raw ``ret`` is constant / near-dead.
 
     Output:
         LazyFrame with [f'ivol_hxz4{sfx}', f'iskew_hxz4{sfx}'].
@@ -9686,10 +9794,8 @@ def hxz4(df, sfx, __min):
         )
         .group_by(["id_int", "group_number"])
         .agg(
-            _guard_constant("ret_exc", res_exp.std(ddof=4)).alias(f"ivol_hxz4{sfx}"),
-            _guard_constant("ret_exc", res_exp.skew(bias=False))
-            .fill_nan(None)
-            .alias(f"iskew_hxz4{sfx}"),
+            _guard_constant("ret", res_exp.std(ddof=4)).alias(f"ivol_hxz4{sfx}"),
+            _guard_constant("ret", res_exp.skew(bias=False)).alias(f"iskew_hxz4{sfx}"),
         )
     )
     return df
@@ -9745,19 +9851,21 @@ def dolvol(df, sfx, __min):
 
     Steps:
         1) Group by (id_int,group_number); compute mean(dolvol_d).
-        2) Compute std/mean as variability (guard when mean==0).
+        2) Compute std/mean as variability; null when dolvol_d is constant
+           (avoids dolvol_var = 0.0 for non-trading stocks).
 
     Output:
         LazyFrame with [f'dolvol{sfx}', f'dolvol_var{sfx}'].
     """
+    var_expr = (
+        pl.when(col("dolvol_d").mean() != 0)
+        .then(col("dolvol_d").std() / col("dolvol_d").mean())
+        .otherwise(fl_none())
+    )
     df = df.group_by(["id_int", "group_number"]).agg(
         [
             col("dolvol_d").mean().alias(f"dolvol{sfx}"),
-            pl.when(col("dolvol_d").mean() != 0)
-            .then(col("dolvol_d").std() / col("dolvol_d").mean())
-            .otherwise(fl_none())
-            .fill_nan(None)
-            .alias(f"dolvol_var{sfx}"),
+            _guard_constant("dolvol_d", var_expr, max_zero_frac=None).alias(f"dolvol_var{sfx}"),
         ]
     )
     return df
@@ -9769,30 +9877,36 @@ def turnover(df, sfx, __min):
         Turnover level and variability within window.
 
     Steps:
-        1) Compute scalar mean and std of turnover_d = tvol/(shares*1e6) (guard shares>0)
-           and total row count n per (id_int,group_number) in one .agg call.
-        2) Derive variability ratio std/mean; require n ≥ __min.
+        1) Attach daily turnover_d = tvol/(shares*1e6) (guard shares>0).
+        2) Aggregate mean/std and total row count n per (id_int,group_number).
+        3) Derive variability ratio std/mean; null when turnover_d is constant;
+           require n ≥ __min.
 
     Output:
         LazyFrame with [f'turnover{sfx}', f'turnover_var{sfx}'].
     """
-    turnover_d = _turnover_d_expr()
     df = (
-        df.group_by(["id_int", "group_number"])
+        df.with_columns(turnover_d=_turnover_d_expr())
+        .group_by(["id_int", "group_number"])
         .agg(
-            turnover_d.mean().alias(f"turnover{sfx}"),
-            turnover_d.std().alias("turnover_std"),
+            col("turnover_d").mean().alias(f"turnover{sfx}"),
+            col("turnover_d").std().alias("turnover_std"),
+            col("turnover_d").min().alias("_tmin"),
+            col("turnover_d").max().alias("_tmax"),
             pl.len().alias("n"),
         )
         .with_columns(
-            pl.when(col(f"turnover{sfx}") != 0)
+            pl.when(
+                (col("_tmin") != col("_tmax"))
+                & col(f"turnover{sfx}").is_not_null()
+                & (col(f"turnover{sfx}") != 0)
+            )
             .then(col("turnover_std") / col(f"turnover{sfx}"))
             .otherwise(fl_none())
-            .fill_nan(None)
             .alias(f"turnover_var{sfx}"),
         )
         .filter(col("n") >= __min)
-        .drop(["turnover_std", "n"])
+        .drop(["turnover_std", "n", "_tmin", "_tmax"])
     )
     return df
 
@@ -9804,7 +9918,8 @@ def mktcorr(df, sfx, __min):
 
     Steps:
         1) Group by (id_int, group_number); count rows.
-        2) Require count >= __min; compute Pearson corr.
+        2) Require count >= __min; compute Pearson corr; null when raw ``ret`` is
+           constant / near-dead (RF-immune; avoids finite junk corr at _1260d).
 
     Output:
         LazyFrame with f'corr{sfx}'.
@@ -9813,7 +9928,7 @@ def mktcorr(df, sfx, __min):
         df.group_by(["id_int", "group_number"])
         .agg(
             pl.len().alias("n"),
-            pl.corr("ret_exc_3l", "mkt_exc_3l").fill_nan(None).alias(f"corr{sfx}"),
+            _guard_constant("ret", pl.corr("ret_exc_3l", "mkt_exc_3l")).alias(f"corr{sfx}"),
         )
         .filter(col("n") >= __min)
         .drop("n")
@@ -9826,12 +9941,15 @@ def dimsonbeta(
     """
     Description:
         Dimson β = sum of slopes from OLS ret_exc ~ mktrf_{-1,0,+1} per
-        (id_int, group_number) via polars-ds `pds.lin_reg`.
+        (id_int, group_number) via polars-ds `pds.lin_reg`. Null when raw ``ret``
+        is constant / near-dead.
     Output:
         LazyFrame with f'beta_dimson{sfx}'.
     """
     name = f"beta_dimson{sfx}"
     beta_expr = pl.col("coeffs").list.head(3).list.sum()
+    varying = pl.col("ret").min() != pl.col("ret").max()
+    not_near_dead = (pl.col("ret") == 0).mean() < CONSTANT_MAX_ZERO_FRAC
     return (
         df.group_by(["id_int", "group_number"])
         .agg(
@@ -9842,9 +9960,14 @@ def dimsonbeta(
                 target="ret_exc",
                 add_bias=True,
                 solver="cholesky",
-            )
+            ),
+            ret_ok=(varying & not_near_dead),
         )
-        .select("id_int", "group_number", beta_expr.alias(name))
+        .select(
+            "id_int",
+            "group_number",
+            pl.when(pl.col("ret_ok")).then(beta_expr).otherwise(None).alias(name),
+        )
         .filter(pl.col(name).is_not_null() & pl.col(name).is_not_nan())
     )
 
