@@ -56,6 +56,7 @@ SCHEMA_CRSP_SF: dict[str, pl.DataType] = {
     "vol": pl.Int64,
     "prc_high": pl.Float64,
     "prc_low": pl.Float64,
+    "del_flag": pl.Utf8,  # MthDelFlg / DlyDelFlg from gen_crsp_sf
     "common": pl.Int32,
     "primaryexch": pl.Utf8,
     "conditionaltype": pl.Utf8,
@@ -66,6 +67,9 @@ SCHEMA_CRSP_SF: dict[str, pl.DataType] = {
     "me": pl.Float64,
     "ticker": pl.Utf8,
 }
+
+# Daily __crsp_sf_d uses the same gen_crsp_sf select list as monthly.
+SCHEMA_CRSP_DSF: dict[str, pl.DataType] = SCHEMA_CRSP_SF
 
 SCHEMA_SEDELIST: dict[str, pl.DataType] = {
     "delret": pl.Float64,
@@ -96,9 +100,15 @@ def _crsp_row(
     nasdaq: bool,
     prc_open: float | None = None,
     prc_close: float | None = None,
+    del_flag: str | None = None,
 ) -> dict[str, object]:
     """Build one ``__crsp_sf`` row; pass-through payload columns get stable
-    deterministic fillers so golden bytes are reproducible."""
+    deterministic fillers so golden bytes are reproducible.
+
+    ``del_flag`` defaults to null (no delisting event). Monthly tests that
+    exercise compounding/imputation pass ``"M"`` / ``"A"`` / ``"P"`` / etc.;
+    daily tests use ``"N"`` / ``"Y"``.
+    """
     return {
         "permno": permno,
         "permco": permco,
@@ -114,6 +124,7 @@ def _crsp_row(
         "vol": vol,
         "prc_high": prc + 1.0,
         "prc_low": prc - 1.0,
+        "del_flag": del_flag,
         "common": 1,
         "primaryexch": "Q" if nasdaq else "N",
         "conditionaltype": "RW",
