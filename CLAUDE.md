@@ -61,12 +61,13 @@ The pipeline has two entry points that run sequentially:
 - `src/jkp/data/aux_functions.py` — Core library: all characteristic calculations, data transformations, and I/O utilities
 - `src/jkp/data/portfolio.py` — Standalone factor portfolio construction script
 - `src/jkp/data/wrds_credentials.py` — WRDS credential resolution (env vars, system keyring, and the libpq `~/.pgpass` file)
+- `src/jkp/data/wrds_connection.py` — WRDS connection construction and verification (`gen_wrds_connection_info`, `verify_wrds_connection`), with password redaction on failure paths
 
 ### Data flow
 
 Raw WRDS data → `data/raw/` → intermediate processing in `data/interim/` → final outputs in `data/processed/` (subdirectories: `characteristics/`, `portfolios/`, `return_data/`, `accounting_data/`, `other_output/`).
 
-Static reference data (`data/cluster_labels.csv`, `data/country_classification.xlsx`, `data/factor_details.xlsx`) is checked into the repo and used by the pipeline.
+Static reference data (`src/jkp/data/resources/cluster_labels.csv`, `src/jkp/data/resources/country_classification.xlsx`, `src/jkp/data/resources/factor_details.xlsx`) is packaged with the code and loaded via `_resource_path()` in `paths.py`, not read from the output directory.
 
 ## Code Conventions
 

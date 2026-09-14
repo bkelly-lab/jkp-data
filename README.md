@@ -31,7 +31,13 @@ If you do not have a WRDS subscription, you can still access pre-computed factor
      ```
      Kindly follow the prompts.
 
-     Note: If you need to change your password or credentials, run `jkp connect --reset` and then `jkp connect`
+     `jkp connect` opens a real WRDS connection, so a successful run confirms
+     that your credentials, connectivity, and MFA all work. A password typed at
+     the prompt is verified before it is stored, so a typo is never saved: just
+     run `jkp connect` again and re-enter it.
+
+     Note: if you have changed your password at WRDS, run `jkp connect --reset`
+     and then `jkp connect`.
 
    - **Credential precedence.** When the pipeline needs WRDS credentials, it
      resolves them from the `WRDS_USERNAME`/`WRDS_PASSWORD` environment
@@ -55,6 +61,14 @@ If you do not have a WRDS subscription, you can still access pre-computed factor
      sbatch slurm/submit_job_som_hpc.slurm
      ```
      to create the factor returns, stock returns, and firm characteristics.
+     The script writes to `data/` by default. To use a different output directory, pass
+     `--output-dir`: `sbatch slurm/submit_job_som_hpc.slurm --output-dir /path/to/output`.
+     Relative paths resolve against the directory you submit from, and the resolved
+     destination is echoed in the job log. The script rejects unrecognized options and
+     stray arguments, so a mistyped flag or an unquoted path containing a space fails
+     immediately instead of writing to the wrong place. It parses options with the
+     enhanced (util-linux) `getopt`, which is present by default on mainstream Linux
+     distributions but is not a dependency of the `jkp` package itself.
      Note that the batch script passes `--force` to `jkp build`, so it overwrites an
      existing output directory without prompting (an interactive `jkp build` asks first).
 
@@ -71,7 +85,7 @@ If you do not have a WRDS subscription, you can still access pre-computed factor
    **IMPORTANT:** When starting the code, you may be prompted to grant access to WRDS using two-factor authentication, for example via a Duo notification. You need to approve this request, as the program will otherwise fail. After a few seconds or minutes, you should see data being created in the output directory. If that is not the case, please check your internet connection or credentials.
 
 When the code is finished, you can find the output in the `processed/` subdirectory of your output directory (e.g. `data/processed/`).
-Please see the release notes (`documentation/release_notes.html`) for a description of the output files and a comparison between the output of the SAS/R codebase and the new Python codebase.
+Please see the release notes (`documentation/sas_to_python/release_notes.html`) for a description of the output files and a comparison between the output of the SAS/R codebase and the new Python codebase.
 
 ## Notes
 - By default, output files are written in Parquet format. To output CSV files instead (with quoted strings to preserve leading zeros in identifiers like `gvkey`), run:
@@ -90,6 +104,9 @@ Please see the release notes (`documentation/release_notes.html`) for a descript
 
   # Slurm job (set environment variable)
   sbatch --export=ALL,PERSISTENT_WRDS_CONNECTION=1 slurm/submit_job_som_hpc.slurm
+
+  # Slurm job with a custom output directory
+  sbatch --export=ALL,PERSISTENT_WRDS_CONNECTION=1 slurm/submit_job_som_hpc.slurm --output-dir /path/to/output
   ```
   This reduces MFA prompts from ~26 (one per table) to just 1 (at connection time).
 
