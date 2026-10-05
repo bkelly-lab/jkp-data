@@ -377,7 +377,7 @@ def test_monthly_delist_month_mismatch_no_join(test_paths: DataPaths) -> None:
 
 
 def test_daily_known_delret_not_double_counted(test_paths: DataPaths) -> None:
-    """CRSP books a known delret in DlyRet on the Y row (dlpdt), so the last
+    """CRSP books a known delret in DlyRet on the Y row (deldlydt), so the last
     trading day (delistingdt, flag N) keeps its plain return."""
     d_n, d_y = date(2000, 1, 6), date(2000, 1, 7)
     rows = [
