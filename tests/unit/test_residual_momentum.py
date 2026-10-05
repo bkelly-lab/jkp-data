@@ -177,6 +177,7 @@ def _custom_frames(
                 "id": sid,
                 "eom": grid[i],
                 "excntry": country,
+                "ret": None if rexc is None else rexc + 0.001,
                 "ret_exc": rexc,
                 "ret_lag_dif": rld,
                 "ret_local": rloc,
