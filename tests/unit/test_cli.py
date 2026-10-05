@@ -165,13 +165,17 @@ class TestPortfolioCommand:
 class TestConnectCommand:
     """Test the connect command routes to wrds_credentials correctly."""
 
+    @patch("jkp.data.wrds_connection.verify_wrds_connection")
     @patch("jkp.data.wrds_credentials.get_wrds_credentials")
-    def test_connect_shows_username(self, mock_get_creds):
+    def test_connect_shows_username(self, mock_get_creds, mock_verify):
         mock_get_creds.return_value = MagicMock(username="testuser")
         result = runner.invoke(app, ["connect"])
         assert result.exit_code == 0
         assert "testuser" in result.output
-        mock_get_creds.assert_called_once()
+        # The verifier is handed to the resolver rather than called on its result, so
+        # the freshly-prompted path can run it between the prompt and the store.
+        mock_get_creds.assert_called_once_with(verify=mock_verify)
+        mock_verify.assert_not_called()
 
     @patch("jkp.data.wrds_credentials.reset_credentials")
     def test_connect_reset(self, mock_reset):
@@ -185,3 +189,15 @@ class TestConnectCommand:
         result = runner.invoke(app, ["connect", "-r"])
         assert result.exit_code == 0
         mock_reset.assert_called_once_with(full_reset=True)
+
+
+@pytest.mark.unit
+class TestCliAppConfig:
+    """Guard the app-level configuration that hardens credential handling."""
+
+    def test_pretty_exceptions_show_locals_disabled(self) -> None:
+        """Frame locals must never be rendered in tracebacks: a WRDS Credentials
+        object bound in a command frame would otherwise be exposed to Typer's
+        pretty exception handler. This pins the setting so a future refactor of
+        the Typer(...) constructor cannot silently drop it."""
+        assert app.pretty_exceptions_show_locals is False
