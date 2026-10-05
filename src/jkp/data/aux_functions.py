@@ -2814,10 +2814,10 @@ def prepare_crsp_sf(paths: DataPaths, freq):
     #          sedelist row does join the payoff is correctly folded in
     #
     # Daily — DlyDelFlg (propagated as del_flag):
-    #   Y   — delisting return already in DlyRet → skip compounding
-    #   N   — ordinary return; on the exact delistingdt the sedelist may
-    #         match, so compounding is applied (+ −0.30 imputation for
-    #         bad-delist buckets when delret is null)
+    #   Y   — row on deldlydt; CRSP already books a known delret in DlyRet
+    #         → skip compounding
+    #   N   — last trading day (delistingdt); only delistings with a missing
+    #         delret join here, and bad-delist buckets get the −0.30 imputation
     #   null — no delisting event → same no-op treatment as monthly null
     #
     # The "payoff already in return" flags differ by frequency but the
