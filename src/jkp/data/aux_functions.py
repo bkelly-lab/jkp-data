@@ -2833,9 +2833,13 @@ def prepare_crsp_sf(paths: DataPaths, freq):
             paths.interim_dir / "raw_data_dfs" / "crsp_msedelist.parquet"
         ).with_columns(gen_MMYY_column("delistingdt").alias("merge_aux"))
     else:
-        crsp_sedelist = pl.scan_parquet(
-            paths.interim_dir / "raw_data_dfs" / "crsp_dsedelist.parquet"
-        ).rename({"delistingdt": "date"})
+        # CRSP already books a known delret in DlyRet on the DlyDelFlg = Y row
+        # (deldlydt), so only delistings with a missing delret join here.
+        crsp_sedelist = (
+            pl.scan_parquet(paths.interim_dir / "raw_data_dfs" / "crsp_dsedelist.parquet")
+            .filter(pl.col("delret").is_null())
+            .rename({"delistingdt": "date"})
+        )
 
     __crsp_sf = __crsp_sf.join(crsp_sedelist, how="left", on=merge_vars)
 
