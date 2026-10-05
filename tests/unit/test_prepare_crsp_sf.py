@@ -552,13 +552,14 @@ def test_daily_date_mismatch_no_join(test_paths: DataPaths) -> None:
     assert _val(df, 1, d, "ret") == pytest.approx(0.02)
 
 
-def test_daily_ret_backfill_when_missing(test_paths: DataPaths) -> None:
-    """Daily: ret null + delret present under N flag -> ret set to 0 then compounded."""
+def test_daily_known_delret_does_not_backfill(test_paths: DataPaths) -> None:
+    """Daily: ret null + known delret under N flag stays null; the delisting
+    return lives on the Y row, so it is not backfilled onto delistingdt."""
     d = date(2000, 1, 7)
     rows = [_crsp_row(1, 1, d, 10.0, 1.0, None, None, 100, 1.0, nasdaq=False, del_flag="N")]
     dels = [_del_row(1, d, -0.2, None, None, None, None)]
     df = _run(test_paths, "d", rows, dels)
-    assert _val(df, 1, d, "ret") == pytest.approx(-0.2)
+    assert _val(df, 1, d, "ret") is None
 
 
 def test_daily_unexpected_del_flag_warns(test_paths: DataPaths) -> None:
