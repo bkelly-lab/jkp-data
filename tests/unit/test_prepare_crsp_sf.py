@@ -376,13 +376,18 @@ def test_monthly_delist_month_mismatch_no_join(test_paths: DataPaths) -> None:
     assert _val(df, 1, d, "ret") == pytest.approx(0.02)
 
 
-def test_daily_delist_N_compounds_on_exact_date(test_paths: DataPaths) -> None:
-    """DlyDelFlg=N on the exact delistingdt: sedelist joins and delret is compounded."""
-    d = date(2000, 1, 6)
-    rows = [_crsp_row(1, 1, d, 10.0, 1.0, 0.03, 0.03, 100, 1.0, nasdaq=False, del_flag="N")]
-    dels = [_del_row(1, d, -0.20, "MERG", None, None, None)]
+def test_daily_known_delret_not_double_counted(test_paths: DataPaths) -> None:
+    """CRSP books a known delret in DlyRet on the Y row (dlpdt), so the last
+    trading day (delistingdt, flag N) keeps its plain return."""
+    d_n, d_y = date(2000, 1, 6), date(2000, 1, 7)
+    rows = [
+        _crsp_row(1, 1, d_n, 10.0, 1.0, 0.03, 0.03, 100, 1.0, nasdaq=False, del_flag="N"),
+        _crsp_row(1, 1, d_y, 8.0, 1.0, -0.20, -0.20, 100, 1.0, nasdaq=False, del_flag="Y"),
+    ]
+    dels = [_del_row(1, d_n, -0.20, "MERG", None, None, None)]
     df = _run(test_paths, "d", rows, dels)
-    assert _val(df, 1, d, "ret") == pytest.approx((0.03 + 1) * (-0.20 + 1) - 1)
+    assert _val(df, 1, d_n, "ret") == pytest.approx(0.03)
+    assert _val(df, 1, d_y, "ret") == pytest.approx(-0.20)
 
 
 def test_ret_null_no_delist_stays_null(test_paths: DataPaths) -> None:
