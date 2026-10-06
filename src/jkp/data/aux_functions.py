@@ -37,9 +37,9 @@ from .paths import DataPaths
 from .wrds_connection import (
     _attach_wrds,
     _install_postgres_extension,
-    _redact_password,
     _sql_literal,
     gen_wrds_connection_info,
+    wrds_password_env,
 )
 
 
@@ -942,7 +942,6 @@ def _compute_histograms(
     date_columns: dict[str, str],
     end_date: date | None,
     max_conns: int,
-    password: str | None,
 ) -> dict[str, list[tuple[int, int]]]:
     """Concurrently compute per-year row histograms for ``tables`` (each over its own connection).
 
@@ -957,7 +956,7 @@ def _compute_histograms(
         with duckdb.connect(":memory:") as con:
             con.execute("SET threads TO 1")
             con.execute("LOAD postgres;")  # extension installed once up front by the caller
-            _attach_wrds(con, conninfo, password)
+            _attach_wrds(con, conninfo)
             try:
                 return table, _year_histogram(con, "wrds", lib, tbl, date_columns[table], end_date)
             finally:
@@ -1037,7 +1036,6 @@ def _remove_chunk_parts(filename: str) -> None:
 def _attach_download_worker(
     task_queue: queue.Queue[_DownloadTask],
     conninfo: str,
-    password: str | None,
     task_errors: list[str],
     startup_errors: list[str],
     errors_lock: threading.Lock,
@@ -1049,7 +1047,7 @@ def _attach_download_worker(
     connection (``threads=1`` keeps DuckDB from opening extra connections for a parallel scan)
     and reuses it. It stops pulling new tasks once ``stop_event`` is set (used to unwind on Ctrl-C).
 
-    Failures are recorded (password-redacted) instead of raised, so one bad task doesn't abandon
+    Failures are recorded instead of raised, so one bad task doesn't abandon
     the rest. Worker-startup failures (LOAD/ATTACH) and download (task) failures are kept in separate
     lists: because the task queue is shared, a worker that fails to start is not fatal as long as the
     surviving workers still drain the queue, whereas a failed download leaves a table missing. The
@@ -1060,11 +1058,10 @@ def _attach_download_worker(
         try:
             con.execute("SET threads TO 1")
             con.execute("LOAD postgres;")  # extension installed once up front by the caller
-            _attach_wrds(con, conninfo, password)
+            _attach_wrds(con, conninfo)
         except Exception as e:  # noqa: BLE001
-            # _attach_wrds already raises a password-free error, and LOAD/SET can't leak the
-            # password; warn now so the user knows the run is proceeding under-provisioned rather
-            # than silently losing a worker.
+            # Warn now so the user knows the run is proceeding under-provisioned rather than
+            # silently losing a worker.
             with errors_lock:
                 startup_errors.append(str(e))
                 print(
@@ -1091,10 +1088,8 @@ def _attach_download_worker(
                         start_date=task.start_date,
                     )
                 except Exception as e:  # noqa: BLE001
-                    # Redact only the credential, keeping the rest of the error for diagnostics.
-                    msg = _redact_password(str(e), password) if password else str(e)
                     with errors_lock:
-                        task_errors.append(f"{task.table} ({Path(task.out).name}): {msg}")
+                        task_errors.append(f"{task.table} ({Path(task.out).name}): {e}")
         finally:
             with contextlib.suppress(Exception):
                 con.execute("DETACH wrds")
@@ -1106,7 +1101,6 @@ def _download_tables_parallel(
     conninfo: str,
     date_columns: dict[str, str],
     end_date: date | None,
-    password: str | None,
     workers: int,
     split_tables: frozenset[str] = frozenset(),
     n_chunks: int = 1,
@@ -1128,7 +1122,7 @@ def _download_tables_parallel(
         t for t in table_names if t in split_tables and date_columns.get(t) and end_date is not None
     ]
     histograms = (
-        _compute_histograms(conninfo, split_present, date_columns, end_date, workers, password)
+        _compute_histograms(conninfo, split_present, date_columns, end_date, workers)
         if split_present and n_chunks > 1
         else {}
     )
@@ -1156,7 +1150,6 @@ def _download_tables_parallel(
             args=(
                 task_queue,
                 conninfo,
-                password,
                 task_errors,
                 startup_errors,
                 errors_lock,
@@ -1323,7 +1316,7 @@ def download_raw_data_tables(
         "comp.g_fundq": "datadate",
     }
 
-    conninfo = gen_wrds_connection_info(username, password)
+    conninfo = gen_wrds_connection_info(username)
     filenames = {
         table: str(paths.raw_tables_dir / (table.replace(".", "_") + ".parquet"))
         for table in table_names
@@ -1342,54 +1335,56 @@ def download_raw_data_tables(
             flush=True,
         )
         workers = 1
-    if workers > 1:
-        # Parallel: each worker holds its own persistent ATTACH connection and drains a queue.
-        # The giant daily tables (SPLIT_TABLES) are split into `workers` date-range chunks so one
-        # huge table doesn't bottleneck the pool, then concatenated back into one parquet.
-        _download_tables_parallel(
-            table_names,
-            filenames,
-            conninfo,
-            date_columns,
-            end_date,
-            password,
-            workers,
-            split_tables=SPLIT_TABLES,
-            n_chunks=workers,
-        )
-        return
+    # libpq reads the password from PGPASSWORD for every connection opened in here, so it
+    # never appears in the conninfo, the SQL, or DuckDB's error text.
+    with wrds_password_env(password):
+        if workers > 1:
+            # Parallel: each worker holds its own persistent ATTACH connection and drains a queue.
+            # The giant daily tables (SPLIT_TABLES) are split into `workers` date-range chunks so one
+            # huge table doesn't bottleneck the pool, then concatenated back into one parquet.
+            _download_tables_parallel(
+                table_names,
+                filenames,
+                conninfo,
+                date_columns,
+                end_date,
+                workers,
+                split_tables=SPLIT_TABLES,
+                n_chunks=workers,
+            )
+            return
 
-    con = duckdb.connect(":memory:")
-    con.execute("INSTALL postgres; LOAD postgres;")
+        con = duckdb.connect(":memory:")
+        con.execute("INSTALL postgres; LOAD postgres;")
 
-    if persistent_connection:
-        # Use ATTACH for a single persistent connection (reduces MFA on NAT-rotated networks).
-        _attach_wrds(con, conninfo, password)
-        try:
+        if persistent_connection:
+            # Use ATTACH for a single persistent connection (reduces MFA on NAT-rotated networks).
+            _attach_wrds(con, conninfo)
+            try:
+                for table in table_names:
+                    download_wrds_table_attached(
+                        con,
+                        "wrds",
+                        table,
+                        filenames[table],
+                        date_column=date_columns.get(table),
+                        end_date=end_date,
+                    )
+            finally:
+                con.execute("DETACH wrds")
+        else:
+            # Use postgres_scan() which creates a new connection per query (default)
             for table in table_names:
-                download_wrds_table_attached(
+                download_wrds_table(
+                    conninfo,
                     con,
-                    "wrds",
                     table,
                     filenames[table],
                     date_column=date_columns.get(table),
                     end_date=end_date,
                 )
-        finally:
-            con.execute("DETACH wrds")
-    else:
-        # Use postgres_scan() which creates a new connection per query (default)
-        for table in table_names:
-            download_wrds_table(
-                conninfo,
-                con,
-                table,
-                filenames[table],
-                date_column=date_columns.get(table),
-                end_date=end_date,
-            )
 
-    con.close()
+        con.close()
 
 
 def aug_msf_v2(paths: DataPaths):

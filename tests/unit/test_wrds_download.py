@@ -6,6 +6,7 @@ particularly the persistent connection feature that uses ATTACH instead of postg
 """
 
 import datetime as dt
+import os
 import threading
 from collections import Counter
 from unittest.mock import MagicMock, patch
@@ -339,45 +340,31 @@ class TestParallelDownload:
             download_raw_data_tables(test_paths, "user", "pass", max_workers=4)
 
     @patch("jkp.data.aux_functions.download_wrds_table_attached")
-    def test_password_not_leaked_in_aggregated_error(self, mock_dl, mock_duckdb_multi, test_paths):
-        from jkp.data.aux_functions import download_raw_data_tables
-
-        def fail_with_secret(con, alias, table, filename, **kwargs):
-            raise ValueError("connection failed for password=hunter2secret while reading")
-
-        mock_dl.side_effect = fail_with_secret
-
-        with pytest.raises(RuntimeError) as exc_info:
-            download_raw_data_tables(test_paths, "user", "hunter2secret", max_workers=2)
-
-        err = str(exc_info.value)
-        assert "hunter2secret" not in err  # credential redacted
-        assert "***" in err  # ... replaced in place
-        assert "connection failed" in err and "while reading" in err  # ... diagnostic preserved
-
-    @patch("jkp.data.aux_functions.download_wrds_table_attached")
-    def test_special_char_password_not_leaked_in_aggregated_error(
-        self, mock_dl, mock_duckdb_multi, test_paths
+    @patch("jkp.data.aux_functions._attach_wrds")
+    def test_password_reaches_libpq_via_pgpassword_only(
+        self, mock_attach, mock_dl, mock_duckdb_multi, test_paths, monkeypatch
     ):
-        """A password with a quote/backslash appears in DuckDB errors in its
-        libpq-escaped form, so redaction must scrub that form too — a raw
-        ``str(e).replace(password, ...)`` would miss it and leak the secret."""
+        """Workers attach with a password-free conninfo while PGPASSWORD holds the
+        password, and the variable is restored once the download finishes."""
         from jkp.data.aux_functions import download_raw_data_tables
 
-        def fail_with_secret(con, alias, table, filename, **kwargs):
-            # the libpq-escaped form is what a real DuckDB error would contain
-            raise ValueError(r"connection failed for password='ab\'cd' while reading")
+        monkeypatch.delenv("PGPASSWORD", raising=False)
+        attached: list[tuple[str, str | None]] = []
+        attach_lock = threading.Lock()
 
-        mock_dl.side_effect = fail_with_secret
+        def attach(con, conninfo):
+            with attach_lock:
+                attached.append((conninfo, os.environ.get("PGPASSWORD")))
 
-        with pytest.raises(RuntimeError) as exc_info:
-            download_raw_data_tables(test_paths, "user", "ab'cd", max_workers=2)
+        mock_attach.side_effect = attach
+        self._record_tables(mock_dl)
 
-        err = str(exc_info.value)
-        assert "ab'cd" not in err  # raw form absent
-        assert r"ab\'cd" not in err  # libpq-escaped form absent (the form that appeared)
-        assert "***" in err
-        assert "connection failed" in err and "while reading" in err
+        download_raw_data_tables(test_paths, "user", "hunter2secret", max_workers=2)
+
+        assert attached
+        assert all("hunter2secret" not in conninfo for conninfo, _ in attached)
+        assert all(env == "hunter2secret" for _, env in attached)
+        assert "PGPASSWORD" not in os.environ
 
     @patch("jkp.data.aux_functions.download_wrds_table_attached")
     @patch("jkp.data.aux_functions._attach_wrds")
@@ -390,7 +377,7 @@ class TestParallelDownload:
         seen = {"n": 0}
         seen_lock = threading.Lock()
 
-        def attach(con, conninfo, password):
+        def attach(con, conninfo):
             with seen_lock:
                 seen["n"] += 1
                 first = seen["n"] == 1
@@ -434,7 +421,7 @@ class TestParallelDownload:
         stop_event = threading.Event()
         stop_event.set()  # already asked to stop
 
-        _attach_download_worker(task_queue, "conninfo", "pw", [], [], threading.Lock(), stop_event)
+        _attach_download_worker(task_queue, "conninfo", [], [], threading.Lock(), stop_event)
 
         mock_dl.assert_not_called()  # nothing pulled/downloaded
         assert task_queue.qsize() == 1  # task left un-pulled
@@ -704,70 +691,6 @@ class TestDateRangeSplitting:
             assert len(chunk_files) == 4
             assert chunk_files == sorted(chunk_files)  # chunks concatenated in part00..part03 order
             assert all(".part" in cf for cf in chunk_files)
-
-    def test_compute_histograms_attach_failure_is_redacted(self):
-        """A histogram-phase ATTACH failure must not leak the password (regression for M1)."""
-        from jkp.data.aux_functions import _compute_histograms
-
-        password = "topsecret"  # noqa: S105
-
-        def execute(sql, *args):
-            if "ATTACH" in sql:
-                raise RuntimeError(f"Connection failed: host=x password={password} dbname=wrds")
-            return MagicMock()
-
-        with patch("jkp.data.aux_functions.duckdb") as mock_duckdb:
-            con = MagicMock()
-            con.__enter__.return_value = con
-            con.execute.side_effect = execute
-            mock_duckdb.connect.return_value = con
-            with pytest.raises(Exception) as exc_info:  # noqa: PT011
-                _compute_histograms(
-                    f"host=x password={password}",
-                    ["crsp.dsf_v2"],
-                    {"crsp.dsf_v2": "dlycaldt"},
-                    dt.date(2025, 12, 31),
-                    4,
-                    password,
-                )
-        assert password not in str(exc_info.value)
-
-
-class TestAttachWrds:
-    """The shared WRDS ATTACH helper (password redaction)."""
-
-    def test_redacts_password_on_attach_error(self):
-        from jkp.data.aux_functions import _attach_wrds
-
-        con = MagicMock()
-        con.execute.side_effect = RuntimeError("ATTACH failed: host=x password=hunter2 dbname=wrds")
-        with pytest.raises(RuntimeError) as exc_info:
-            _attach_wrds(con, "host=x password=hunter2", "hunter2")
-        assert "hunter2" not in str(exc_info.value)
-        assert "credentials" in str(exc_info.value).lower()
-
-    def test_redacts_special_char_password_on_attach_error(self):
-        """The escaped form of a special-character password is what appears in the
-        ATTACH error, so detection must match it — a raw ``password in str(e)``
-        would miss it and re-raise the secret."""
-        from jkp.data.aux_functions import _attach_wrds
-
-        con = MagicMock()
-        con.execute.side_effect = RuntimeError(r"ATTACH failed: password='ab\'cd' dbname=wrds")
-        with pytest.raises(RuntimeError) as exc_info:
-            _attach_wrds(con, r"host=x password='ab\'cd'", "ab'cd")
-        msg = str(exc_info.value)
-        assert "ab'cd" not in msg and r"ab\'cd" not in msg  # neither form leaks
-        assert "credentials" in msg.lower()
-
-    def test_passes_through_non_password_error(self):
-        from jkp.data.aux_functions import _attach_wrds
-
-        con = MagicMock()
-        con.execute.side_effect = RuntimeError("FATAL: too many connections for role")
-        # A non-credential error (no password in it) propagates unchanged.
-        with pytest.raises(RuntimeError, match="too many connections"):
-            _attach_wrds(con, "host=x password=hunter2", "hunter2")
 
 
 class TestMapInterruptible:
