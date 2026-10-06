@@ -23,6 +23,8 @@ class TestGenWrdsConnectionInfo:
         assert "dbname=wrds" in result
         assert "user='testuser'" in result
         assert "password='testpass'" in result
+        # Masked in repr so frame-locals renderers can't print the password.
+        assert "testpass" not in repr(result)
         assert "sslmode=require" in result
 
     def test_password_with_special_characters_is_quoted_and_escaped(self):
@@ -323,3 +325,38 @@ class TestVerifyWrdsConnection:
             mod.verify_wrds_connection("testuser", "pw", connect_timeout=1)  # noqa: S106
 
         assert "wrds" in str(exc_info.value).lower()
+
+
+class TestPasswordMaskedInFrameLocals:
+    """Regression for #281: tools that render frame locals must not print the
+    password carried by the conninfo through the download helpers."""
+
+    def _raise_from_download(self, password):
+        from types import SimpleNamespace
+
+        from jkp.data.aux_functions import download_wrds_table
+        from jkp.data.wrds_connection import gen_wrds_connection_info
+
+        conninfo = gen_wrds_connection_info("someuser", password)
+        # Stand in for DuckDB's execute with a C builtin that raises, so (as with the
+        # real C extension) no mock-internal Python frame holds the SQL argument.
+        con = SimpleNamespace(execute=[].pop)
+        with pytest.raises(TypeError) as exc_info:
+            download_wrds_table(conninfo, con, "crsp.msf_v2", "out.parquet")
+        exc = exc_info.value
+        # Start the traceback at download_wrds_table: this test frame holds the
+        # plaintext password by construction and is not what's under test.
+        return exc, exc.__traceback__.tb_next
+
+    def test_stdlib_capture_locals(self):
+        """traceback's capture_locals renders locals via repr(), as pytest
+        --showlocals and pdb do."""
+        import traceback
+
+        password = "hunter2-very-secret"  # noqa: S105
+        exc, tb = self._raise_from_download(password)
+        text = "".join(
+            traceback.TracebackException(type(exc), exc, tb, capture_locals=True).format()
+        )
+        assert "conninfo" in text
+        assert password not in text

@@ -9,11 +9,13 @@ Password handling: the password only ever appears inside the conninfo and the
 DuckDB ATTACH statement. DuckDB's postgres extension echoes the full connection
 string (password included) in ATTACH error text, so the masking helpers here
 detect and redact every escaped form the password can take in an error message.
+The conninfo is returned as a ``SecretStr`` so it is also masked in rendered
+frame locals.
 """
 
 import duckdb
 
-from .wrds_credentials import WRDS_DB, WRDS_HOST, WRDS_PORT
+from .wrds_credentials import WRDS_DB, WRDS_HOST, WRDS_PORT, SecretStr
 
 
 def _pg_escape_value(value: str) -> str:
@@ -66,7 +68,7 @@ def gen_wrds_connection_info(
     parts.append("sslmode=require")
     if connect_timeout is not None:
         parts.append(f"connect_timeout={connect_timeout}")
-    return " ".join(parts)
+    return SecretStr(" ".join(parts))
 
 
 def _password_forms(password: str) -> tuple[str, str, str]:

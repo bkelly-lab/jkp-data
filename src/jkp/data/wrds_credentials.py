@@ -74,6 +74,20 @@ _LEGACY_KEYRING_FILE = Path(_keyring_data_root()) / "keyring_pass.cfg"
 VerifyConnection = Callable[[str, str | None], None]
 
 
+class SecretStr(str):
+    """A str whose repr is masked, so tools that render frame locals can't print it.
+
+    Pretty tracebacks, pytest ``--showlocals``, debuggers and crash reporters render
+    locals via repr(); wrapping the password (and the conninfo embedding it) where it
+    is created keeps it out of every frame it is passed through. It is still a real
+    str, so f-strings, str(), ==, keyring and DuckDB calls all see the value. Strings
+    derived by str methods are plain str, so wrap any such value bound to a local.
+    """
+
+    def __repr__(self) -> str:
+        return "'***'"
+
+
 @dataclass(frozen=True)
 class Credentials:
     username: str
@@ -136,7 +150,8 @@ def _atomic_write(path: Path, text: str) -> None:
 
 def _keyring_get(username: str) -> str | None:
     try:
-        return keyring.get_password(SERVICE_NAME, username)
+        stored = keyring.get_password(SERVICE_NAME, username)
+        return SecretStr(stored) if stored is not None else None
     except keyring.errors.NoKeyringError:
         return None  # no backend at all — the normal headless case
     except keyring.errors.KeyringError as exc:
@@ -227,7 +242,9 @@ def _esc_pgpass(value: str) -> str:
 
 
 def _pgpass_line(username: str, password: str) -> str:
-    return ":".join(_esc_pgpass(v) for v in (WRDS_HOST, WRDS_PORT, WRDS_DB, username, password))
+    return SecretStr(
+        ":".join(_esc_pgpass(v) for v in (WRDS_HOST, WRDS_PORT, WRDS_DB, username, password))
+    )
 
 
 def _is_wrds_line(fields: list[str], username: str) -> bool:
@@ -361,7 +378,7 @@ def _write_pgpass(username: str, password: str) -> Path:
                 out.append(raw)
     if not replaced:
         out.append(new_line)
-    _atomic_write(path, "\n".join(out) + "\n")
+    _atomic_write(path, SecretStr("\n".join(out) + "\n"))
     return path
 
 
@@ -506,7 +523,7 @@ def _migrate_legacy_keyring(username: str) -> None:
     if not value:
         return
     try:
-        password = base64.decodebytes(value.encode()).decode("utf-8")
+        password = SecretStr(base64.decodebytes(value.encode()).decode("utf-8"))
     except (binascii.Error, ValueError, UnicodeDecodeError):
         return
 
@@ -571,7 +588,7 @@ def _prompt_verify_store(username: str, verify: VerifyConnection | None = None) 
     conninfo and the ``~/.pgpass`` line is written afterwards, so it proves the
     credential rather than the written file.
     """
-    password = getpass.getpass(f"Password or token for {username} at {SERVICE_NAME}: ")
+    password = SecretStr(getpass.getpass(f"Password or token for {username} at {SERVICE_NAME}: "))
     if not password:
         # An empty password would be stored as a junk ``…:username:`` pgpass line
         # that later "resolves" while auth silently fails — reject it, mirroring
@@ -638,7 +655,7 @@ def get_wrds_credentials(verify: VerifyConnection | None = None) -> Credentials:
     # Strip before the truthiness check so WRDS_USERNAME="   " is treated as
     # unset rather than accepted as username="".
     env_user = (os.environ.get(ENV_USERNAME) or "").strip() or None
-    env_pw = os.environ.get(ENV_PASSWORD)
+    env_pw = SecretStr(os.environ.get(ENV_PASSWORD, ""))
     if env_user and env_pw:
         # Literal env-var names in the log message (not the ENV_* constants) so no
         # "password"-named identifier flows into a logging sink — the value is
