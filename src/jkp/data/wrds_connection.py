@@ -5,27 +5,27 @@ on a DuckDB connection, and verifies connectivity. Kept separate from the heavy
 ``aux_functions`` pipeline module so the CLI's ``jkp connect`` command can check
 a connection without importing the whole pipeline.
 
-Password handling: the password only ever appears inside the conninfo and the
-DuckDB ATTACH statement. DuckDB's postgres extension echoes the full connection
-string (password included) in ATTACH error text, so the masking helpers here
-detect and redact every escaped form the password can take in an error message.
-The conninfo is returned as a ``SecretStr`` so it is also masked in rendered
-frame locals.
+Password handling: the password is never put in the conninfo. It reaches libpq
+through the ``PGPASSWORD`` environment variable (see :func:`wrds_password_env`),
+so it can't show up in the ATTACH / postgres_scan SQL or in DuckDB's error text,
+which echoes the full connection string.
 """
+
+import contextlib
+import os
+from collections.abc import Iterator
 
 import duckdb
 
-from .wrds_credentials import WRDS_DB, WRDS_HOST, WRDS_PORT, SecretStr
+from .wrds_credentials import WRDS_DB, WRDS_HOST, WRDS_PORT
 
 
 def _pg_escape_value(value: str) -> str:
-    """libpq-escape a conninfo value (user or password) for a single-quoted field.
+    """libpq-escape a conninfo value for a single-quoted field.
 
     libpq accepts single-quoted values with backslash-escaped ``\\`` and ``'``,
     so quoting lets a value hold spaces or special characters without breaking the
-    conninfo. For the password this is also the form that appears in any error text
-    echoing the connection string, so the credential-masking checks reuse it rather
-    than matching the raw password.
+    conninfo.
     """
     return value.replace("\\", "\\\\").replace("'", "\\'")
 
@@ -34,87 +34,62 @@ def _sql_literal(value: str) -> str:
     """Escape a string for embedding inside a single-quoted DuckDB SQL literal.
 
     The conninfo is interpolated into ``ATTACH '...'`` / ``postgres_scan('...')``
-    SQL, so any single quote it contains (e.g. around a libpq-quoted password)
+    SQL, so any single quote it contains (e.g. around a libpq-quoted username)
     must be doubled or it terminates the SQL string literal.
     """
     return value.replace("'", "''")
 
 
-def gen_wrds_connection_info(
-    user: str, password: str | None = None, *, connect_timeout: int | None = None
-) -> str:
+def gen_wrds_connection_info(user: str, *, connect_timeout: int | None = None) -> str:
     """Build a libpq conninfo for WRDS.
 
-    When ``password`` is ``None`` the ``password=`` field is omitted, so libpq
-    authenticates from ``$PGPASSFILE`` / ``~/.pgpass`` instead. When
-    ``connect_timeout`` is set, libpq gives up after that many seconds rather than
-    hanging on an unreachable host.
+    The conninfo never carries the password: libpq reads it from ``PGPASSWORD``
+    (set by :func:`wrds_password_env`) or, failing that, from ``$PGPASSFILE`` /
+    ``~/.pgpass``. When ``connect_timeout`` is set, libpq gives up after that many
+    seconds rather than hanging on an unreachable host.
     """
     parts = [
         f"host={WRDS_HOST}",
         f"port={WRDS_PORT}",
         f"dbname={WRDS_DB}",
-        # Quote the username too: a space or quote in it would otherwise break
-        # libpq's conninfo parsing exactly as an unquoted password would.
+        # Quote the username: a space or quote in it would otherwise break
+        # libpq's conninfo parsing. The conninfo is itself embedded in a
+        # single-quoted SQL literal at each use site, so callers must
+        # additionally pass it through _sql_literal.
         f"user='{_pg_escape_value(user)}'",
+        "sslmode=require",
     ]
-    if password is not None:
-        # Single-quote and escape so a password containing spaces or special
-        # characters can't break the conninfo (or split the value, which would
-        # defeat the password-masking check in _attach_wrds). The conninfo is
-        # itself embedded in a single-quoted SQL literal at each use site, so
-        # callers must additionally pass it through _sql_literal.
-        parts.append(f"password='{_pg_escape_value(password)}'")
-    parts.append("sslmode=require")
     if connect_timeout is not None:
         parts.append(f"connect_timeout={connect_timeout}")
-    return SecretStr(" ".join(parts))
+    return " ".join(parts)
 
 
-def _password_forms(password: str) -> tuple[str, str, str]:
-    """The forms the password can take on its way into an error message: raw, the
-    libpq-escaped conninfo form (echoed by a connection IOException), and the
-    SQL-escaped-then-libpq-escaped form (echoed from the raw statement text by a
-    parser error). Ordered most-escaped first so redaction replaces the longest
-    match before its shorter substrings."""
-    escaped = _pg_escape_value(password)
-    return (_sql_literal(escaped), escaped, password)
+@contextlib.contextmanager
+def wrds_password_env(password: str | None) -> Iterator[None]:
+    """Expose the password to libpq via ``PGPASSWORD`` for the duration of the block.
 
-
-def _password_in_error(text: str, password: str) -> bool:
-    """True if the password appears in ``text`` in any of the forms it can take in
-    an error message (see :func:`_password_forms`)."""
-    return any(form in text for form in _password_forms(password))
-
-
-def _redact_password(text: str, password: str) -> str:
-    """Replace the password with ``***`` in every form it can take in an error
-    message (see :func:`_password_forms`)."""
-    for form in _password_forms(password):
-        text = text.replace(form, "***")
-    return text
-
-
-def _attach_wrds(con: duckdb.DuckDBPyConnection, conninfo: str, password: str | None) -> None:
-    """ATTACH the WRDS Postgres database read-only on an existing DuckDB connection.
-
-    DuckDB's postgres extension embeds the full connection string (including the password) in
-    ATTACH error text, so on failure drop the original exception and raise a generic,
-    password-free error. Errors that don't contain the password propagate unchanged.
+    Keeps the password out of the conninfo, and so out of the SQL and DuckDB's
+    error text. With ``None`` nothing is set and libpq falls back to ``~/.pgpass``.
+    Set before any worker thread starts and restored after they finish, so the
+    process-wide environment is never mutated concurrently.
     """
-    leaked = False
+    if password is None:
+        yield
+        return
+    previous = os.environ.get("PGPASSWORD")
+    os.environ["PGPASSWORD"] = password
     try:
-        con.execute(f"ATTACH '{_sql_literal(conninfo)}' AS wrds (TYPE postgres, READ_ONLY)")
-    except Exception as e:
-        if not (password and _password_in_error(str(e), password)):
-            raise
-        leaked = True
-    if leaked:
-        # Raised after the except block exits rather than with `from None` inside it. The
-        # interpreter clears the handled exception on exit, so __context__ is None here;
-        # `from None` only hides the chain from printed tracebacks, leaving the DuckDB
-        # error (whose text embeds the password) reachable on the exception object.
-        raise RuntimeError("Failed to attach WRDS connection. Check credentials and MFA approval.")
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("PGPASSWORD", None)
+        else:
+            os.environ["PGPASSWORD"] = previous
+
+
+def _attach_wrds(con: duckdb.DuckDBPyConnection, conninfo: str) -> None:
+    """ATTACH the WRDS Postgres database read-only on an existing DuckDB connection."""
+    con.execute(f"ATTACH '{_sql_literal(conninfo)}' AS wrds (TYPE postgres, READ_ONLY)")
 
 
 def _install_postgres_extension() -> None:
@@ -137,35 +112,22 @@ def verify_wrds_connection(
     Attaches the WRDS Postgres database read-only and runs a trivial query against
     it. The ATTACH authenticates eagerly (opening the libpq connection triggers the
     WRDS Duo MFA push), so a successful return means credentials, connectivity, and
-    MFA all succeeded. Raises :class:`RuntimeError` with a password-free message on
-    any failure. ``connect_timeout`` bounds how long libpq waits before failing —
-    it must leave the user time to approve the Duo MFA push, so it defaults to 25s.
+    MFA all succeeded. Raises :class:`RuntimeError` on any failure, so `jkp connect`
+    can print one actionable message instead of a traceback. ``connect_timeout``
+    bounds how long libpq waits before failing — it must leave the user time to
+    approve the Duo MFA push, so it defaults to 25s.
     """
-    conninfo = gen_wrds_connection_info(username, password, connect_timeout=connect_timeout)
-    failed = False
+    conninfo = gen_wrds_connection_info(username, connect_timeout=connect_timeout)
     try:
-        # Inside the try: INSTALL can itself fail (e.g. no network to DuckDB's
-        # extension repo, plausible on the headless HPC nodes this targets), and
-        # that must be wrapped too, not left to escape as a raw traceback.
-        _install_postgres_extension()
-        with duckdb.connect(":memory:") as con:
-            con.execute("LOAD postgres;")
-            _attach_wrds(con, conninfo, password)
-            con.execute("SELECT 1 FROM wrds.information_schema.schemata LIMIT 1")
-    except RuntimeError:
-        # _attach_wrds already raises a friendly, password-free RuntimeError when
-        # the failure text embeds the password; pass it through unchanged.
-        raise
-    except Exception:
-        # Any other failure (a failed INSTALL/LOAD, the ~/.pgpass auth path where password
-        # is None and _attach_wrds re-raises the raw DuckDB exception, or the probe query
-        # failing). Recorded here and raised below.
-        failed = True
-    if failed:
-        # Raised outside the handler for the same reason as in _attach_wrds: the raw DuckDB
-        # error can embed the conninfo and password, and `from None` would leave it on
-        # __context__. One actionable, password-free message also lets callers that only
-        # handle RuntimeError (e.g. `jkp connect`) exit cleanly instead of dumping a traceback.
+        with wrds_password_env(password):
+            # Inside the try: INSTALL can itself fail (e.g. no network to DuckDB's
+            # extension repo, plausible on the headless HPC nodes this targets).
+            _install_postgres_extension()
+            with duckdb.connect(":memory:") as con:
+                con.execute("LOAD postgres;")
+                _attach_wrds(con, conninfo)
+                con.execute("SELECT 1 FROM wrds.information_schema.schemata LIMIT 1")
+    except Exception as e:
         raise RuntimeError(
-            "Failed to connect to WRDS. Check your network, credentials, and MFA approval."
-        )
+            f"Failed to connect to WRDS ({e}). Check your network, credentials, and MFA approval."
+        ) from e

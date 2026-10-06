@@ -78,8 +78,8 @@ class SecretStr(str):
     """A str whose repr is masked, so tools that render frame locals can't print it.
 
     Pretty tracebacks, pytest ``--showlocals``, debuggers and crash reporters render
-    locals via repr(); wrapping the password (and the conninfo embedding it) where it
-    is created keeps it out of every frame it is passed through. It is still a real
+    locals via repr(); wrapping the password where it is created keeps it out of
+    every frame it is passed through. It is still a real
     str, so f-strings, str(), ==, keyring and DuckDB calls all see the value. Strings
     derived by str methods are plain str, so wrap any such value bound to a local.
     """
