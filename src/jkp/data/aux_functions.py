@@ -2720,10 +2720,12 @@ def prepare_crsp_sf(paths: DataPaths, freq):
     #          sedelist row does join the payoff is correctly folded in
     #
     # Daily — DlyDelFlg (propagated as del_flag):
-    #   Y   — row on deldlydt; CRSP already books a known delret in DlyRet
-    #         → skip compounding
-    #   N   — last trading day (delistingdt); only delistings with a missing
-    #         delret join here, and bad-delist buckets get the −0.30 imputation
+    #   Y   — post-delisting row on deldlydt carrying delret in DlyRet → skip
+    #         compounding. It is off the main exchange (exch_main = 0), so it
+    #         never reaches world_dsf.
+    #   N   — last trading day (delistingdt): sedelist joins here and delret is
+    #         compounded (+ −0.30 imputation for bad-delist buckets when delret
+    #         is null), so the delisting return is counted once in world_dsf
     #   null — no delisting event → same no-op treatment as monthly null
     #
     # The "payoff already in return" flags differ by frequency but the
@@ -2739,13 +2741,9 @@ def prepare_crsp_sf(paths: DataPaths, freq):
             paths.interim_dir / "raw_data_dfs" / "crsp_msedelist.parquet"
         ).with_columns(gen_MMYY_column("delistingdt").alias("merge_aux"))
     else:
-        # CRSP already books a known delret in DlyRet on the DlyDelFlg = Y row
-        # (deldlydt), so only delistings with a missing delret join here.
-        crsp_sedelist = (
-            pl.scan_parquet(paths.interim_dir / "raw_data_dfs" / "crsp_dsedelist.parquet")
-            .filter(pl.col("delret").is_null())
-            .rename({"delistingdt": "date"})
-        )
+        crsp_sedelist = pl.scan_parquet(
+            paths.interim_dir / "raw_data_dfs" / "crsp_dsedelist.parquet"
+        ).rename({"delistingdt": "date"})
 
     __crsp_sf = __crsp_sf.join(crsp_sedelist, how="left", on=merge_vars)
 

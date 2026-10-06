@@ -376,9 +376,10 @@ def test_monthly_delist_month_mismatch_no_join(test_paths: DataPaths) -> None:
     assert _val(df, 1, d, "ret") == pytest.approx(0.02)
 
 
-def test_daily_known_delret_not_double_counted(test_paths: DataPaths) -> None:
-    """CRSP books a known delret in DlyRet on the Y row (deldlydt), so the last
-    trading day (delistingdt, flag N) keeps its plain return."""
+def test_daily_delist_N_compounds_on_exact_date(test_paths: DataPaths) -> None:
+    """DlyDelFlg=N on the exact delistingdt: sedelist joins and delret is compounded.
+    CRSP's Y row on deldlydt is left as is; it is off the main exchange and never
+    reaches world_dsf, so the delisting return is counted once downstream."""
     d_n, d_y = date(2000, 1, 6), date(2000, 1, 7)
     rows = [
         _crsp_row(1, 1, d_n, 10.0, 1.0, 0.03, 0.03, 100, 1.0, nasdaq=False, del_flag="N"),
@@ -386,7 +387,7 @@ def test_daily_known_delret_not_double_counted(test_paths: DataPaths) -> None:
     ]
     dels = [_del_row(1, d_n, -0.20, "MERG", None, None, None)]
     df = _run(test_paths, "d", rows, dels)
-    assert _val(df, 1, d_n, "ret") == pytest.approx(0.03)
+    assert _val(df, 1, d_n, "ret") == pytest.approx((0.03 + 1) * (-0.20 + 1) - 1)
     assert _val(df, 1, d_y, "ret") == pytest.approx(-0.20)
 
 
@@ -557,14 +558,13 @@ def test_daily_date_mismatch_no_join(test_paths: DataPaths) -> None:
     assert _val(df, 1, d, "ret") == pytest.approx(0.02)
 
 
-def test_daily_known_delret_does_not_backfill(test_paths: DataPaths) -> None:
-    """Daily: ret null + known delret under N flag stays null; the delisting
-    return lives on the Y row, so it is not backfilled onto delistingdt."""
+def test_daily_ret_backfill_when_missing(test_paths: DataPaths) -> None:
+    """Daily: ret null + delret present under N flag -> ret set to 0 then compounded."""
     d = date(2000, 1, 7)
     rows = [_crsp_row(1, 1, d, 10.0, 1.0, None, None, 100, 1.0, nasdaq=False, del_flag="N")]
     dels = [_del_row(1, d, -0.2, None, None, None, None)]
     df = _run(test_paths, "d", rows, dels)
-    assert _val(df, 1, d, "ret") is None
+    assert _val(df, 1, d, "ret") == pytest.approx(-0.2)
 
 
 def test_daily_unexpected_del_flag_warns(test_paths: DataPaths) -> None:
