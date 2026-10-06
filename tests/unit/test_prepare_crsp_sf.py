@@ -16,7 +16,6 @@ import pytest
 from jkp.data.aux_functions import prepare_crsp_sf
 from jkp.data.paths import DataPaths
 from tests.golden.prepare_crsp_sf_inputs import (
-    SCHEMA_CRSP_DSF,
     SCHEMA_CRSP_SF,
     SCHEMA_FF,
     SCHEMA_MCTI,
@@ -37,10 +36,10 @@ def _run(
     """Write minimal inputs, run prepare_crsp_sf(freq), return the output frame."""
     raw = paths.interim_dir / "raw_data_dfs"
     raw.mkdir(parents=True, exist_ok=True)
-    sf_schema = SCHEMA_CRSP_SF if freq == "m" else SCHEMA_CRSP_DSF
-    pl.DataFrame(crsp_rows, schema=sf_schema).write_parquet(raw / f"__crsp_sf_{freq}.parquet")
-    sedelist_file = "crsp_msedelist.parquet" if freq == "m" else "crsp_dsedelist.parquet"
-    pl.DataFrame(del_rows or [], schema=SCHEMA_SEDELIST).write_parquet(raw / sedelist_file)
+    pl.DataFrame(crsp_rows, schema=SCHEMA_CRSP_SF).write_parquet(raw / f"__crsp_sf_{freq}.parquet")
+    pl.DataFrame(del_rows or [], schema=SCHEMA_SEDELIST).write_parquet(
+        raw / f"crsp_{freq}sedelist.parquet"
+    )
     pl.DataFrame(
         {"caldt": [r[0] for r in (mcti_rows or [])], "t30ret": [r[1] for r in (mcti_rows or [])]},
         schema=SCHEMA_MCTI,
@@ -451,10 +450,10 @@ def test_empty_daily_input_yields_typed_empty(test_paths: DataPaths) -> None:
 # --- CIZ flag-conditional delisting (Xia 2026, SSRN 7243220) ----------------
 
 
-@pytest.mark.parametrize("flag", ["A", "P"])
-def test_monthly_flag_AP_no_double_count(test_paths: DataPaths, flag: str) -> None:
-    """A/P flags indicate DelRet is already in MthRet; ret stays as-is even
-    when a non-null delret is present from stkdelists."""
+@pytest.mark.parametrize("flag", ["A", "P", "V"])
+def test_monthly_flag_APV_no_double_count(test_paths: DataPaths, flag: str) -> None:
+    """A/P/V flags mean the delisting return is already in MthRet; ret stays
+    as-is even when a non-null delret is present from stkdelists."""
     d = date(2001, 1, 31)
     rows = [_crsp_row(1, 1, d, 10.0, 1.0, -0.40, -0.40, 100, 1.0, nasdaq=False, del_flag=flag)]
     dels = [_del_row(1, date(2001, 1, 15), -0.50, "GDR", "VCL", "UNAV", "PRCF")]
@@ -462,18 +461,9 @@ def test_monthly_flag_AP_no_double_count(test_paths: DataPaths, flag: str) -> No
     assert _val(df, 1, d, "ret") == pytest.approx(-0.40)
 
 
-def test_monthly_flag_V_compounds_delret(test_paths: DataPaths) -> None:
-    """V flag is not A/P, so the compound-unless-A/P gate fires."""
-    d = date(2001, 1, 31)
-    rows = [_crsp_row(1, 1, d, 10.0, 1.0, -0.40, -0.40, 100, 1.0, nasdaq=False, del_flag="V")]
-    dels = [_del_row(1, date(2001, 1, 15), -0.50, "GDR", "VCL", "UNAV", "PRCF")]
-    df = _run(test_paths, "m", rows, dels)
-    assert _val(df, 1, d, "ret") == pytest.approx((-0.40 + 1) * (-0.50 + 1) - 1)
-
-
 def test_monthly_flag_G_compounds_delret(test_paths: DataPaths) -> None:
-    """G flag (date gap >10 trading days): MthRet does NOT include delret,
-    so compounding is needed — same as M."""
+    """G flag (delisting return more than 10 days from the delisting date):
+    MthRet excludes it, so it is compounded — same as M."""
     d = date(2001, 1, 31)
     rows = [_crsp_row(1, 1, d, 10.0, 1.0, -0.10, -0.10, 100, 1.0, nasdaq=False, del_flag="G")]
     dels = [_del_row(1, date(2001, 1, 15), -0.50, "GDR", "VCL", "UNAV", "PRCF")]
@@ -482,9 +472,9 @@ def test_monthly_flag_G_compounds_delret(test_paths: DataPaths) -> None:
 
 
 def test_monthly_flag_N_compounds_when_delret_present(test_paths: DataPaths) -> None:
-    """N flag (no delist): in practice delret is null after the left join so
-    compounding is a no-op.  When a sedelist row does join (synthetic scenario),
-    the compound-unless-A/P gate fires and delret is folded in."""
+    """N flag (security active): in practice delret is null after the left join
+    so compounding is a no-op.  When a sedelist row does join (synthetic
+    scenario), the gate fires and delret is folded in."""
     d = date(2001, 1, 31)
     rows = [_crsp_row(1, 1, d, 10.0, 1.0, 0.05, 0.05, 100, 1.0, nasdaq=False, del_flag="N")]
     dels = [_del_row(1, date(2001, 1, 15), -0.30, None, None, None, None)]
@@ -493,7 +483,7 @@ def test_monthly_flag_N_compounds_when_delret_present(test_paths: DataPaths) -> 
 
 
 def test_monthly_flag_M_preserves_imputation(test_paths: DataPaths) -> None:
-    """M flag (unobserved payoff): existing imputation + compounding is
+    """M flag (delisting return missing): existing imputation + compounding is
     preserved, matching pre-fix behavior for this flag."""
     d = date(2001, 1, 31)
     rows = [_crsp_row(1, 1, d, 10.0, 1.0, 0.02, 0.02, 100, 1.0, nasdaq=False, del_flag="M")]
@@ -503,7 +493,7 @@ def test_monthly_flag_M_preserves_imputation(test_paths: DataPaths) -> None:
 
 
 def test_monthly_null_flag_compounds_when_delret_present(test_paths: DataPaths) -> None:
-    """Null del_flag with a sedelist match: the compound-unless-A/P gate
+    """Null del_flag with a sedelist match: the compound-unless-A/P/V gate
     (with fill_null) treats null as 'needs compound', so delret is folded in."""
     d = date(2001, 1, 31)
     rows = [_crsp_row(1, 1, d, 10.0, 1.0, 0.04, 0.04, 100, 1.0, nasdaq=False)]

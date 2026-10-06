@@ -20,7 +20,7 @@ import pytest
 from tests.conftest import ToleranceSpec
 
 # ---------------------------------------------------------------------------
-# Pure-formula tests
+# Pure-formula tests (no pipeline dependency)
 # ---------------------------------------------------------------------------
 
 
@@ -363,7 +363,6 @@ class TestPrepareCrspSfIntegration:
     ) -> pl.DataFrame:
         from jkp.data.aux_functions import prepare_crsp_sf
         from tests.golden.prepare_crsp_sf_inputs import (
-            SCHEMA_CRSP_DSF,
             SCHEMA_CRSP_SF,
             SCHEMA_FF,
             SCHEMA_MCTI,
@@ -372,10 +371,10 @@ class TestPrepareCrspSfIntegration:
 
         raw = paths.interim_dir / "raw_data_dfs"
         raw.mkdir(parents=True, exist_ok=True)
-        sf_schema = SCHEMA_CRSP_SF if freq == "m" else SCHEMA_CRSP_DSF
-        pl.DataFrame(crsp_rows, schema=sf_schema).write_parquet(raw / f"__crsp_sf_{freq}.parquet")
-        sedelist_file = "crsp_msedelist.parquet" if freq == "m" else "crsp_dsedelist.parquet"
-        pl.DataFrame([], schema=SCHEMA_SEDELIST).write_parquet(raw / sedelist_file)
+        pl.DataFrame(crsp_rows, schema=SCHEMA_CRSP_SF).write_parquet(
+            raw / f"__crsp_sf_{freq}.parquet"
+        )
+        pl.DataFrame([], schema=SCHEMA_SEDELIST).write_parquet(raw / f"crsp_{freq}sedelist.parquet")
         pl.DataFrame(schema=SCHEMA_MCTI).write_parquet(raw / "crsp_mcti_t30ret.parquet")
         pl.DataFrame(schema=SCHEMA_FF).write_parquet(raw / "ff_factors_monthly.parquet")
         prepare_crsp_sf(paths, freq)
