@@ -123,6 +123,9 @@ Jensen is at Yale School of Management; \url{www.tijensen.com}. Kelly is at AQR 
 \textbf{Date} & \textbf{Changes} \\
 \hline
 \endhead
+09-02-2026 & \textbullet~Fixed double-counting of CRSP CIZ monthly delisting returns. \texttt{MthRet} already includes the delisting return when \texttt{MthDelFlg} is \texttt{A}, \texttt{P}, or \texttt{V}, but the pipeline compounded \href{https://wrds-www.wharton.upenn.edu/data-dictionary/crsp_m_stock/dsedelist/dlret/}{DLRET} into it again; it now skips the compounding for those flags. Flags \texttt{M} (delisting return missing) and \texttt{G} (delisting return more than 10 days from the delisting date) are still compounded, with missing \texttt{delret} imputed at $-0.30$ for performance-related delistings. Daily returns are unchanged: they are compounded with \texttt{DLRET} on the last trading day (\texttt{delistingdt}), and CRSP's own delisting row (\texttt{DlyDelFlg} = \texttt{Y}, dated \texttt{deldlydt}) is off the main exchange and not in \texttt{world\_dsf}, so the delisting return is counted once. See Xia (2026, SSRN 7243220) for background. \\
+& \textbullet~Affected output files: \texttt{return\_data/world\_ret\_monthly.parquet}, and downstream monthly characteristics and factor portfolios. Daily returns are unchanged. \\
+\hline
 07-30-2026 & \textbullet~Added daily overnight/intraday factor portfolios in USD and local currency under \texttt{portfolios/} for components \texttt{overnight}, \texttt{intraday}, \texttt{overnight\_local}, and \texttt{intraday\_local} (files \texttt{pfs\_\{component\}}, \texttt{hml\_\{component\}}, \texttt{lms\_\{component\}}, \texttt{clusters\_\{component\}}, plus regional and country-factor directories). Sorting uses the standard \texttt{ret\_exc\_lead1m} characteristic sorts; only the daily return leg changes. \\
 & \textbullet~Affected output files: \texttt{portfolios/pfs\_\{overnight,intraday,overnight\_local,intraday\_local\}.parquet}, and the corresponding \texttt{hml\_}, \texttt{lms\_}, \texttt{clusters\_}, \texttt{regional\_factors\_}, \texttt{regional\_clusters\_}, and \texttt{country\_factors\_} outputs. \\
 \hline
@@ -1951,7 +1954,6 @@ $\\
 	\item COMP.G\_SECURITY
 \end{itemize}
 
-```latex
 \noindent\textbf{Overnight and Intraday Returns}
 
 Following \citeA{LouPolkSkouras2019}, we decompose daily close-to-close returns into overnight and intraday components in both U.S. dollars and local currency:
@@ -2051,12 +2053,15 @@ These stock-level columns are also used as the daily return leg when constructin
     Dollar Volume & dolvol\mbox{*} & We use 
     TVOL\mbox{*}$\times$PRC\mbox{*}\\
     
-    Return & RET\mbox{*} & We use 
-    \href{https://wrds-www.wharton.upenn.edu/data-dictionary/form_metadata/crsp_a_stock_msf_timeseriesinformation/ret/}{RET}. In case of delisting, we calculate as (1+\href{https://wrds-www.wharton.upenn.edu/data-dictionary/form_metadata/crsp_a_stock_msf_timeseriesinformation/ret/}{RET})*(1+\href{https://wrds-www.wharton.upenn.edu/data-dictionary/crsp_m_stock/dsedelist/dlret/}{DLRET})-1\\
+    Return & RET\mbox{*} & We use
+    \href{https://wrds-www.wharton.upenn.edu/data-dictionary/form_metadata/crsp_a_stock_msf_timeseriesinformation/ret/}{RET}.
+    Under the CRSP CIZ format, \texttt{MthRet}/\texttt{DlyRet} may already include the delisting payoff depending on \texttt{MthDelFlg}/\texttt{DlyDelFlg}.
+    For monthly returns, we compound with
+    \href{https://wrds-www.wharton.upenn.edu/data-dictionary/crsp_m_stock/dsedelist/dlret/}{DLRET} as $(1+\text{RET})(1+\text{DLRET})-1$ unless \texttt{MthDelFlg} is \texttt{A}, \texttt{P}, or \texttt{V} (delisting return already included in \texttt{MthRet}); flags \texttt{M} (delisting return missing), \texttt{G} (delisting return more than 10 days from the delisting date), \texttt{N} (security active), and rows with no flag are compounded.\footnote{When \texttt{delret} is missing and the CIZ reason/action/status codes indicate a performance-related delisting (equivalent to legacy \texttt{DLSTCD} 500 or 520--584), we impute $\text{DLRET}=-0.30$. For monthly returns, this imputation applies whenever \texttt{MthDelFlg} is not \texttt{A}, \texttt{P}, or \texttt{V}; for daily returns, it applies on the last trading day.}
+    Daily returns are compounded with \texttt{DLRET} on the last trading day (\texttt{delistingdt}). CRSP's own delisting row (\texttt{DlyDelFlg} = \texttt{Y}, dated \texttt{deldlydt}, typically one to two trading days later) is off the main exchange and is dropped, so the delisting return is counted once, on the last trading day rather than on \texttt{deldlydt}.\\
     
-    Local Return & ret\_local\mbox{*} & We use 
-    \href{https://wrds-www.wharton.upenn.edu/data-dictionary/form_metadata/crsp_a_stock_msf_timeseriesinformation/ret/}{RET}. In case of delisting, we calculate as (1+\href{https://wrds-www.wharton.upenn.edu/data-dictionary/form_metadata/crsp_a_stock_msf_timeseriesinformation/ret/}{RET})*(1+\href{https://wrds-www.wharton.upenn.edu/data-dictionary/crsp_m_stock/dsedelist/dlret/}{DLRET})-1\\
-    
+    Local Return & ret\_local\mbox{*} & Equal to RET\mbox{*} for CRSP (USD is the local currency). Delisting treatment is identical to RET\mbox{*}: monthly compounding with \href{https://wrds-www.wharton.upenn.edu/data-dictionary/crsp_m_stock/dsedelist/dlret/}{DLRET} unless \texttt{MthDelFlg} is \texttt{A}, \texttt{P}, or \texttt{V}; daily returns are compounded with \texttt{DLRET} on the last trading day.\\
+     
     Excess Return & ret\_exc\mbox{*} & We use RET\mbox{*}-\href{https://wrds-www.wharton.upenn.edu/data-dictionary/crsp_a_indexes/mcti/#row-t30ret}{T30RET}/21. If T30RET is unavailable, we use 
     \href{https://wrds-www.wharton.upenn.edu/data-dictionary/ff_all/factors_monthly/#row-rf}{RF}. If the return is a monthly return rather than a daily return, the T30RET is divided by 1 rather than 21. \\
     
