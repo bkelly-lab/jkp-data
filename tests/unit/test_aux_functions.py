@@ -79,7 +79,7 @@ def _write_sf_fixture(raw_tables: Path, freq: str) -> tuple[date, date]:
                 "mthretx": [0.09, 0.01],
                 "mthvol": [1000, 1100],
                 "mthcumfacshr": [1.0, 1.0],
-                "mthdelflg": [None, None],
+                "mthdelflg": [None, "A"],
                 "mthaskhi": [10.5, 11.5],
                 "mthbidlo": [9.5, 10.5],
             }
@@ -102,7 +102,7 @@ def _write_sf_fixture(raw_tables: Path, freq: str) -> tuple[date, date]:
             "dlyretx": [0.009, 0.018],
             "dlyvol": [200, 300],
             "dlycumfacshr": [1.0, 1.0],
-            "dlydelflg": [None, None],
+            "dlydelflg": [None, "Y"],
             "dlyhigh": [20.5, 21.5],
             "dlylow": [19.5, 20.5],
             "dlyopen": [19.8, 20.8],
@@ -150,6 +150,21 @@ def test_gen_crsp_sf_exposes_ticker_after_senames_join(freq: str, test_paths) ->
     assert ticker_by_date[unmatched_date] is None, (
         f"Expected null ticker on {unmatched_date}, got {ticker_by_date[unmatched_date]!r}"
     )
+
+
+@pytest.mark.parametrize(("freq", "flag"), [("m", "A"), ("d", "Y")])
+def test_gen_crsp_sf_propagates_del_flag(freq: str, flag: str, test_paths) -> None:
+    """gen_crsp_sf() carries MthDelFlg/DlyDelFlg through as del_flag, which
+    prepare_crsp_sf() uses to gate delisting-return compounding."""
+    raw_tables = test_paths.raw_tables_dir
+    _write_lookup_tables(raw_tables)
+    matched_date, unmatched_date = _write_sf_fixture(raw_tables, freq)
+
+    df = gen_crsp_sf(test_paths, freq).to_polars()
+
+    flags = dict(df.select(["date", "del_flag"]).iter_rows())
+    assert flags[matched_date] is None
+    assert flags[unmatched_date] == flag
 
 
 def _write_aug_msf_v2_fixtures(raw_tables: Path) -> None:
