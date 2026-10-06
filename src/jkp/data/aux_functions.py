@@ -2720,9 +2720,8 @@ def prepare_crsp_sf(paths: DataPaths, freq):
     #          sedelist row does join the payoff is correctly folded in
     #
     # Daily — DlyDelFlg (propagated as del_flag):
-    #   Y   — post-delisting row on deldlydt carrying delret in DlyRet → skip
-    #         compounding. It is off the main exchange (exch_main = 0), so it
-    #         never reaches world_dsf.
+    #   Y   — post-delisting row on deldlydt repeating delret in DlyRet. It is
+    #         off the main exchange (exch_main = 0) and is dropped below.
     #   N   — last trading day (delistingdt): sedelist joins here and delret is
     #         compounded (+ −0.30 imputation for bad-delist buckets when delret
     #         is null), so the delisting return is counted once in world_dsf
@@ -2884,6 +2883,9 @@ def prepare_crsp_sf(paths: DataPaths, freq):
     ]
     if freq == "m":
         drop_cols.append("delistingdt")
+    else:
+        # delret is already compounded into the last trading day
+        __crsp_sf = __crsp_sf.filter(pl.col("del_flag").ne_missing("Y"))
 
     __crsp_sf = __crsp_sf.drop(drop_cols).unique(["permno", "date"]).sort(["permno", "date"])
 

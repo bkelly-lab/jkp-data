@@ -378,8 +378,7 @@ def test_monthly_delist_month_mismatch_no_join(test_paths: DataPaths) -> None:
 
 def test_daily_delist_N_compounds_on_exact_date(test_paths: DataPaths) -> None:
     """DlyDelFlg=N on the exact delistingdt: sedelist joins and delret is compounded.
-    CRSP's Y row on deldlydt is left as is; it is off the main exchange and never
-    reaches world_dsf, so the delisting return is counted once downstream."""
+    CRSP's Y row on deldlydt repeats delret, so it is dropped."""
     d_n, d_y = date(2000, 1, 6), date(2000, 1, 7)
     rows = [
         _crsp_row(1, 1, d_n, 10.0, 1.0, 0.03, 0.03, 100, 1.0, nasdaq=False, del_flag="N"),
@@ -388,7 +387,7 @@ def test_daily_delist_N_compounds_on_exact_date(test_paths: DataPaths) -> None:
     dels = [_del_row(1, d_n, -0.20, "MERG", None, None, None)]
     df = _run(test_paths, "d", rows, dels)
     assert _val(df, 1, d_n, "ret") == pytest.approx((0.03 + 1) * (-0.20 + 1) - 1)
-    assert _val(df, 1, d_y, "ret") == pytest.approx(-0.20)
+    assert df.filter(pl.col("date") == d_y).is_empty()
 
 
 def test_ret_null_no_delist_stays_null(test_paths: DataPaths) -> None:
@@ -513,14 +512,14 @@ def test_monthly_null_flag_compounds_when_delret_present(test_paths: DataPaths) 
     assert _val(df, 1, d, "ret") == pytest.approx((0.04 + 1) * (-0.50 + 1) - 1)
 
 
-def test_daily_flag_Y_no_double_count(test_paths: DataPaths) -> None:
-    """DlyDelFlg=Y: delisting return already in DlyRet, so ret stays as-is
-    even when a non-null delret is present from stkdelists."""
+def test_daily_flag_Y_row_dropped(test_paths: DataPaths) -> None:
+    """DlyDelFlg=Y: CRSP's post-delisting row repeats delret, which is compounded
+    into the last trading day instead, so the Y row is dropped."""
     d = date(2000, 1, 7)
     rows = [_crsp_row(1, 1, d, 10.0, 1.0, -0.40, -0.40, 100, 1.0, nasdaq=False, del_flag="Y")]
     dels = [_del_row(1, d, -0.50, "GDR", "VCL", "UNAV", "PRCF")]
     df = _run(test_paths, "d", rows, dels)
-    assert _val(df, 1, d, "ret") == pytest.approx(-0.40)
+    assert df.is_empty()
 
 
 def test_unexpected_del_flag_warns(test_paths: DataPaths) -> None:
