@@ -4077,6 +4077,8 @@ def standardized_accounting_data(
 
     Output:
         Two Parquet files: 'acc_std_ann.parquet' (annual) and 'acc_std_qtr.parquet' (quarterly) standardized accounting data.
+        Minority interest is carried as mib, mibt and mibn: since 2009 Compustat reports the
+        redeemable (mib) and non-redeemable (mibn) parts separately, with mibt their total.
     """
     g_fundq_cols = (
         pl.scan_parquet(paths.raw_tables_dir / "comp_g_fundq.parquet").collect_schema().names()
@@ -4165,6 +4167,8 @@ def standardized_accounting_data(
         "pstkl",
         "pstk",
         "mib",
+        "mibt",
+        "mibn",
         "icapt",
     ]  # Liabilities
     # Variables in avars_other are not measured in currency units, and only available in annual data
@@ -4371,6 +4375,8 @@ def standardized_accounting_data(
         "pstkq",
         "icaptq",
         "mibq",
+        "mibtq",
+        "mibnq",
         "gdwlq",
         "req",
         "atq",
@@ -8741,13 +8747,17 @@ def _mp_anomaly_pct_panel(
     id_cols: list[str],
     group_keys: list[str],
     anom_source: Callable[[str], pl.DataFrame | None],
+    universe: pl.Expr | None = None,
 ) -> pl.DataFrame:
     """Per-group percentile-rank each anomaly and left-join (value, pct) onto
-    the base return panel. Base universe: lag_prc > 5, mktcap > 0, non-null ret.
+    the base return panel. Base universe: `universe` (default: the SY $5 floor,
+    lag_prc > 5), mktcap > 0, non-null ret.
     anom_source(anom) returns a (id, eom, rank_var) frame or None to skip.
     pct nulled when effective group count < min_stks.
     Returns panel_cols plus one (anom, pct_anom) column pair per available anomaly."""
-    base = me_panel.filter((col("lag_prc") > 5) & (col("mktcap") > 0) & col("ret").is_not_null())
+    if universe is None:
+        universe = col("lag_prc") > 5
+    base = me_panel.filter(universe & (col("mktcap") > 0) & col("ret").is_not_null())
     panel = base.select(*panel_cols).sort(*sort_keys)
     src_join = [*id_cols, "eom"]  # anomaly frames are keyed by (id, eom) only
     panel_join = [*id_cols, *group_keys]
@@ -9813,20 +9823,21 @@ def _mp_world_build_anomalies_panel(
 
 
 def _mp_world_monthly_lagged_me_panel(world_monthly: pl.DataFrame) -> pl.DataFrame:
-    """Lag-ME panel for world: id, eom, excntry, prc, ret, ME, mktcap, lag_prc."""
+    """Lag-ME panel for world: id, eom, excntry, prc, ret, ME, mktcap, lag_prc, lag_size_grp."""
     return (
-        world_monthly.select("id", "eom", "excntry", "prc", "ret", "me")
+        world_monthly.select("id", "eom", "excntry", "prc", "ret", "me", "size_grp")
         .rename({"prc": "prc", "ret": "ret", "me": "ME"})
         .with_columns(prc=col("prc").abs())
         .sort("id", "eom")
         .with_columns(
             mktcap=col("ME").shift(1).over("id"),
             lag_prc=col("prc").shift(1).over("id"),
+            lag_size_grp=col("size_grp").shift(1).over("id"),
         )
         .filter(
             col("ret").is_not_null() & col("mktcap").is_not_null() & col("lag_prc").is_not_null()
         )
-        .select("eom", "id", "excntry", "prc", "ret", "ME", "mktcap", "lag_prc")
+        .select("eom", "id", "excntry", "prc", "ret", "ME", "mktcap", "lag_prc", "lag_size_grp")
     )
 
 
@@ -9836,7 +9847,13 @@ def _mp_world_percentile_rank_anomalies(
     min_stks: int,
     mp_con: duckdb.DuckDBPyConnection,
 ) -> pl.DataFrame:
-    """Per-(excntry, eom) percentile rank for each world anomaly value."""
+    """Per-(excntry, eom) percentile rank for each world anomaly value.
+
+    Universe screen: prior-month size_grp != "nano" (ME below the NYSE 1st
+    percentile) instead of the US $5 floor. A USD price floor is not comparable
+    across currencies (it drops ~71% of CHN cap); excluding nano reproduces what
+    $5 does in the US (keeps micro caps, removes ~80% of nano caps).
+    """
 
     def anom_source(anom: str) -> pl.DataFrame | None:
         if anom not in anomalies:
@@ -9854,6 +9871,7 @@ def _mp_world_percentile_rank_anomalies(
         id_cols=["id"],
         group_keys=["excntry", "eom"],
         anom_source=anom_source,
+        universe=col("lag_size_grp") != "nano",
     )
 
 
@@ -9970,7 +9988,17 @@ def gen_mispricing_data(
         )
         us_smb = _mp_smb_panel_from_legs(us_legs, key_cols=("permno",))
         world_monthly = world_data.select(
-            "id", "permno", "gvkey", "excntry", "eom", "me", "prc", "ret", "adjfct", "shares"
+            "id",
+            "permno",
+            "gvkey",
+            "excntry",
+            "eom",
+            "me",
+            "prc",
+            "ret",
+            "adjfct",
+            "shares",
+            "size_grp",
         )
         world_panel = _mp_world_build_mispricing_panel(
             world_monthly,
@@ -11983,13 +12011,16 @@ def _ff_us_accounting(raw_dir: Path, ff5: bool) -> pl.LazyFrame:
 
     BE = SHE + txditc_FASB109 − coalesce(pstkrv, pstkl, pstk, 0),
     SHE = coalesce(seq, ceq + pstk, at − lt) per French's ladder; null when BE < 0.
-    ff5: OP = (revt − cogs − xsga − xint) / (BE + mib),
+    ff5: OP = (revt − cogs − xsga − xint) / (BE + MI), with total minority interest
+    MI = coalesce(mibt, mib + mibn). Since 2009 Compustat splits minority interest
+    into redeemable (mib) and non-redeemable (mibn) parts, with mibt = mib + mibn;
+    before 2009 mib is the total.
     INV = Δat / at_lag with strict 1-year FY gap.
 
     Output: Lazy [gvkey, datadate, year, be, (op, inv,) count].
     """
     base = ["pstkrv", "pstkl", "pstk", "seq", "ceq", "lt", "at", "txditc"]
-    extra = ["revt", "cogs", "xsga", "xint", "mib"]
+    extra = ["revt", "cogs", "xsga", "xint", "mib", "mibt", "mibn"]
     floats = base + (extra if ff5 else [])
     # Stockholders' equity ladder per French (data library / DFF 2000):
     # seq, else ceq + pstk, else at - lt. ceq + pstk nulls when pstk is
@@ -12034,10 +12065,13 @@ def _ff_us_accounting(raw_dir: Path, ff5: bool) -> pl.LazyFrame:
         )
         fy_gap = pl.col("datadate").dt.year() - pl.col("datadate_lag").dt.year()
         # OP denominator per French's variable definitions: book equity plus
-        # minority interest; the positive-BE screen stays on BE alone.
+        # (total) minority interest; the positive-BE screen stays on BE alone.
+        mi = pl.coalesce(
+            pl.col("mibt"), pl.col("mib").fill_null(0.0) + pl.col("mibn").fill_null(0.0)
+        )
         lf = lf.with_columns(
             op=pl.when(op_elig & (pl.col("be") > 0))
-            .then(safe_div(op_num, pl.col("be") + pl.coalesce("mib", pl.lit(0.0)), "op"))
+            .then(safe_div(op_num, pl.col("be") + mi, "op"))
             .otherwise(None),
             at_lag=pl.col("at").shift(1).over("gvkey"),
             datadate_lag=pl.col("datadate").shift(1).over("gvkey"),
@@ -12654,17 +12688,18 @@ def _ff_load_funda_global(raw_dir: Path) -> pl.LazyFrame:
 
 def _jkp_annual_acc(interim_dir: Path) -> pl.DataFrame:
     """jkp standardized annual accounting at the fiscal-report rows, for the ROW FF/HXZ
-    loaders: book equity (be_x, nulled when <=0), operating-profit numerator (ope_x), asset
-    growth (at_gr1 = at_x/at_x.shift(12)-1, replicated exactly from create_acc_chars), and
-    net income (ni_x, the ROW HXZ ROE numerator).
+    loaders: book equity (be_x, nulled when <=0), the operating-profit inputs (ebitda_x,
+    xint) and minority interest (mib, mibt, mibn) for the ROW FF OP, asset growth
+    (at_gr1 = at_x/at_x.shift(12)-1, replicated exactly from create_acc_chars), and net
+    income (ni_x, the ROW HXZ ROE numerator).
 
     acc_std_ann is monthly-expanded with the _x fields populated only on report months
     (source not null); at_gr1 is computed on the full monthly grid (count = cum rows per
     gvkey/curcd, guard count>12 & at_x_-12>0), then only real fiscal rows are kept, so every
     value sits at the fiscal-year-end datadate. Keyed (gvkey, datadate).
 
-    acc_std_ann is built with convert_to_usd=1 (main.py), so be_x/ope_x/at_x/ni_x are already
-    USD-denominated (curcd == "USD" for every row); no further FX conversion is applied.
+    acc_std_ann is built with convert_to_usd=1 (main.py), so every monetary field here is
+    already USD-denominated (curcd == "USD" for every row); no further FX conversion is applied.
     """
     return (
         pl.scan_parquet(interim_dir / "acc_std_ann.parquet")
@@ -12678,7 +12713,9 @@ def _jkp_annual_acc(interim_dir: Path) -> pl.DataFrame:
             .otherwise(None)
         )
         .filter(pl.col("source").is_not_null())
-        .select("gvkey", "datadate", "be_x", "ope_x", "at_gr1", "ni_x")
+        .select(
+            "gvkey", "datadate", "be_x", "ebitda_x", "xint", "mib", "mibt", "mibn", "at_gr1", "ni_x"
+        )
         .collect()
     )
 
@@ -12699,8 +12736,11 @@ def ff_load_world_compustat(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
 
     Book equity, operating profitability, and investment are all sourced from jkp's
     standardized panel rather than the raw-funda formulas: be = be_x (nulled when BE<=0),
-    op = jkp ope_x / be_x (full ope_be), inv = jkp at_gr1 (at_x growth). So HML/RMW share
-    one jkp book-equity definition and CMA uses jkp asset growth. acc_std_ann is already
+    op = (ebitda_x - xint) / (be_x + MI), inv = jkp at_gr1 (at_x growth). So HML/RMW share
+    one jkp book-equity definition and CMA uses jkp asset growth. OP follows the US FF
+    construction: a missing xint counts as zero (French's missing-component rule) and the
+    denominator adds total minority interest MI = coalesce(mibt, mib + mibn), missing parts
+    zero; the positive-BE screen stays on be_x alone. acc_std_ann is already
     USD-denominated (built with convert_to_usd=1), so be = be_x directly with no FX step.
     All three are read/computed at the fiscal-year-end datadate, so the June(t)/Dec(t-1)
     timing in _ff_build_freq is unchanged. USA is unaffected (this loader feeds only ROW).
@@ -12718,6 +12758,7 @@ def ff_load_world_compustat(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
         .collect()
     )
     acc = _jkp_annual_acc(interim_dir)
+    mi = pl.coalesce(pl.col("mibt"), pl.col("mib").fill_null(0.0) + pl.col("mibn").fill_null(0.0))
     combined = (
         ff_side.join(acc, on=["gvkey", "datadate"], how="full", coalesce=True)
         .with_columns(
@@ -12725,8 +12766,14 @@ def ff_load_world_compustat(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
             _src=pl.coalesce("_src", pl.lit(2)),  # acc-only rows least preferred in dedup
         )
         .with_columns(
-            op=pl.when((pl.col("be_x") > 0) & pl.col("ope_x").is_not_null())
-            .then(safe_div(pl.col("ope_x"), pl.col("be_x"), "op"))
+            op=pl.when((pl.col("be_x") > 0) & pl.col("ebitda_x").is_not_null())
+            .then(
+                safe_div(
+                    pl.col("ebitda_x") - pl.col("xint").fill_null(0.0),
+                    pl.col("be_x") + mi,
+                    "op",
+                )
+            )
             .otherwise(None)
         )
         # one fiscal record per (gvkey, year): prefer funda-sourced rows, then latest
@@ -12734,7 +12781,7 @@ def ff_load_world_compustat(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
         .sort(["gvkey", "year", "_src", "datadate"], descending=[False, False, False, True])
         .unique(subset=["gvkey", "year"], keep="first")
         .rename({"at_gr1": "inv"})
-        .drop("_src", "ope_x")
+        .drop("_src", "ebitda_x", "xint", "mib", "mibt", "mibn")
     )
     return (
         # be_x is already USD (acc_std_ann built convert_to_usd=1), so no FX conversion.
@@ -13128,11 +13175,19 @@ def _ff_neg99_to_zero(expr: pl.Expr) -> pl.Expr:
     )
 
 
-def _ff_mom_signal_monthly(panel: pl.LazyFrame) -> pl.LazyFrame:
+def _ff_mom_signal_monthly(panel: pl.LazyFrame, jkp_mom: pl.LazyFrame) -> pl.LazyFrame:
+    """Monthly UMD signal: JKP's ret_12_1 under French's eligibility gate.
+
+    jkp_mom: [id, mth_idx, ret_12_1] keyed by holding month (JKP eom t-1 -> t).
+    The value is JKP's compounded t-12..t-2 return (missing months count as 0,
+    as in French). Eligibility, for every country: positive ME at t-1, ME at
+    t-13, a good return at t-2 and a row on file in every month t-12..t-3.
+    """
     L = FF_UMD_MONTHLY_LOOKBACK
     skip = FF_UMD_MONTHLY_SKIP
     by = ["excntry", "id"]
     idx = pl.col("date").dt.year() * 12 + pl.col("date").dt.month()
+    r2 = f"ret_lag{skip + 1}"
 
     df = (
         panel.with_columns(mth_idx=idx.cast(pl.Int64))
@@ -13140,7 +13195,7 @@ def _ff_mom_signal_monthly(panel: pl.LazyFrame) -> pl.LazyFrame:
         .with_columns(
             pl.col("me").shift(1).over(by).alias("me_lag1"),
             pl.col("me").shift(L + 1).over(by).alias(f"me_lag{L + 1}"),
-            *[pl.col("ret").shift(k).over(by).alias(f"ret_lag{k}") for k in range(1, L + 1)],
+            pl.col("ret").shift(skip + 1).over(by).alias(r2),
             *[
                 (pl.col("mth_idx") - pl.col("mth_idx").shift(k).over(by)).alias(f"gap{k}")
                 for k in (*range(1, L + 1), L + 1)
@@ -13152,41 +13207,29 @@ def _ff_mom_signal_monthly(panel: pl.LazyFrame) -> pl.LazyFrame:
             .then(pl.col(f"me_lag{L + 1}"))
             .otherwise(None)
             .alias(f"me_lag{L + 1}"),
-            *[
-                pl.when(pl.col(f"gap{k}") == k)
-                .then(pl.col(f"ret_lag{k}"))
-                .otherwise(None)
-                .alias(f"ret_lag{k}")
-                for k in range(1, L + 1)
-            ],
+            pl.when(pl.col(f"gap{skip + 1}") == skip + 1)
+            .then(pl.col(r2))
+            .otherwise(None)
+            .alias(r2),
         )
+        .join(jkp_mom, on=["id", "mth_idx"], how="left")
     )
 
-    elig = (
+    # French requires the row on file for t-12..t-3 but tolerates a missing price
+    # there (-99.0 on CRSP; null under CIZ); ret_12_1 counts those months as 0.
+    elig = functools.reduce(
+        operator.and_,
+        [pl.col(f"gap{k}") == k for k in range(skip + 2, L + 1)],
         pl.col("me_lag1").is_not_null()
         & (pl.col("me_lag1") > 0)
         & pl.col(f"me_lag{L + 1}").is_not_null()
-        & pl.col(f"ret_lag{skip + 1}").is_not_null()
-        & ~_ff_is_neg99(f"ret_lag{skip + 1}")
+        & pl.col(r2).is_not_null()
+        & ~_ff_is_neg99(r2),
     )
-    # Interior months (t-12..t-3): French requires the row on file but tolerates a
-    # missing price (-99.0 on CRSP; null under CIZ), so the US gate needs only gap==k
-    # and the compounding below zero-fills. ROW keeps the strict non-null gate (JKP).
-    is_us = pl.col("excntry") == US_EXCNTRY
-    for k in range(skip + 2, L + 1):
-        elig = elig & pl.when(is_us).then(pl.col(f"gap{k}") == k).otherwise(
-            pl.col(f"ret_lag{k}").is_not_null()
-        )
-
-    terms = [
-        1.0 + _ff_neg99_to_zero(pl.col(f"ret_lag{k}")).fill_null(0.0)
-        for k in range(skip + 1, L + 1)
-    ]
-    mom_expr = functools.reduce(operator.mul, terms) - 1.0
 
     return df.with_columns(
         eligible_mom=elig,
-        mom_2_12=pl.when(elig).then(mom_expr).otherwise(None),
+        mom_2_12=pl.when(elig).then(pl.col("ret_12_1")).otherwise(None),
     ).select(
         "excntry",
         "id",
@@ -13213,41 +13256,22 @@ def _ff_mom_signal_daily(panel: pl.LazyFrame) -> pl.LazyFrame:
         .sort(["excntry", "date"])
         .with_columns(tidx=pl.int_range(0, pl.len()).cast(pl.Int64).over("excntry"))
     )
-    # US window (French daily detail): returns t-250..t-21 (t-21 the last day, mirrors
+    # Window (French daily detail): returns t-250..t-21 (t-21 the last day, mirrors
     # monthly t-2), price anchor t-251, interior missing days tolerated (-99.0/CIZ-null,
-    # log_eff zero-fills). ROW keeps the legacy t-251..t-22 window + zero-missing gate.
-    is_us = pl.col("excntry") == US_EXCNTRY
-    skip_eff = pl.when(is_us).then(skip).otherwise(skip + 1)
-
-    def _us_row_lag(col: str, us_n: int) -> pl.Expr:
-        """Lag by us_n (US) / us_n + 1 (ROW) — the window anchors above."""
-        return (
-            pl.when(is_us)
-            .then(pl.col(col).shift(us_n).over(by))
-            .otherwise(pl.col(col).shift(us_n + 1).over(by))
-        )
-
+    # log_eff zero-fills). Same rule for every country.
     df = (
         panel.join(trading_idx, on=["excntry", "date"], how="left")
         .sort([*by, "tidx"])
         .with_columns(
-            is_null_ret=pl.col("ret").is_null(),
             log_eff=(1.0 + _ff_neg99_to_zero(pl.col("ret")).fill_null(0.0)).log(),
         )
-        .with_columns(
-            cum_log=pl.col("log_eff").cum_sum().over(by),
-            cum_null=pl.col("is_null_ret").cast(pl.Int64).cum_sum().over(by),
-        )
+        .with_columns(cum_log=pl.col("log_eff").cum_sum().over(by))
         .with_columns(
             gap_one=pl.col("tidx") - pl.col("tidx").shift(1).over(by),
-            gap_skip=pl.col("tidx") - _us_row_lag("tidx", skip),
+            gap_skip=pl.col("tidx") - pl.col("tidx").shift(skip).over(by),
             gap_look=pl.col("tidx") - pl.col("tidx").shift(look).over(by),
-            cum_log_lag_skip=_us_row_lag("cum_log", skip),
-            cum_log_lag_look=_us_row_lag("cum_log", look),
-            nulls_in_window=(
-                pl.col("cum_null").shift(skip + 1).over(by)
-                - pl.col("cum_null").shift(look + 1).over(by)
-            ),
+            cum_log_lag_skip=pl.col("cum_log").shift(skip).over(by),
+            cum_log_lag_look=pl.col("cum_log").shift(look).over(by),
             ret_lag_skip=pl.col("ret").shift(skip).over(by),
             me_lag1=pl.col("me").shift(1).over(by),
             me_lag_look=pl.col("me").shift(look).over(by),
@@ -13255,14 +13279,13 @@ def _ff_mom_signal_daily(panel: pl.LazyFrame) -> pl.LazyFrame:
     )
     elig = (
         (pl.col("gap_one") == 1)
-        & (pl.col("gap_skip") == skip_eff)
+        & (pl.col("gap_skip") == skip)
         & (pl.col("gap_look") == look)
         & pl.col("me_lag1").is_not_null()
         & (pl.col("me_lag1") > 0)
         & pl.col("ret_lag_skip").is_not_null()
         & ~_ff_is_neg99("ret_lag_skip")
         & pl.col("me_lag_look").is_not_null()
-        & (is_us | (pl.col("nulls_in_window") == 0))
     )
     mom_raw = (pl.col("cum_log_lag_skip") - pl.col("cum_log_lag_look")).exp() - 1.0
     return df.with_columns(
@@ -13283,20 +13306,28 @@ def _ff_mom_signal_daily(panel: pl.LazyFrame) -> pl.LazyFrame:
     )
 
 
-def ff_build_mom_signal(panel: pl.DataFrame, freq: Literal["monthly", "daily"]) -> pl.DataFrame:
+def ff_build_mom_signal(
+    panel: pl.DataFrame, freq: Literal["monthly", "daily"], interim_dir: Path
+) -> pl.DataFrame:
     """Per-(excntry, id) prior (2-12) return signal + eligibility.
 
-    Dispatches to monthly (calendar-month-indexed lags, sentinel-aware
-    compound product) or daily (per-excntry trading-day rank, cum_log
-    diff; US window t-250..t-21 with interior missing-price tolerance
-    per French's detail pages, ROW t-251..t-22 zero-missing per the
-    JKP convention). Builds lazily and collects once at the boundary —
+    Dispatches to monthly (JKP ret_12_1 from market_chars_m under French's
+    eligibility gate) or daily (per-excntry trading-day rank, cum_log
+    diff; window t-250..t-21 with interior missing-price tolerance
+    per French's detail pages, same for every country). Builds lazily and collects once at the boundary —
     Polars fuses the chained with_columns into one streaming pass.
 
     Output: panel + [me_lag1, mom_2_12, eligible_mom].
     """
     lf = panel.lazy()
-    out = _ff_mom_signal_monthly(lf) if freq == "monthly" else _ff_mom_signal_daily(lf)
+    if freq == "monthly":
+        eom_idx = pl.col("eom").dt.year() * 12 + pl.col("eom").dt.month()
+        jkp_mom = pl.scan_parquet(interim_dir / "market_chars_m.parquet").select(
+            pl.col("id").cast(pl.Int64), "ret_12_1", mth_idx=(eom_idx + 1).cast(pl.Int64)
+        )
+        out = _ff_mom_signal_monthly(lf, jkp_mom)
+    else:
+        out = _ff_mom_signal_daily(lf)
     # Streaming engine: ~35% faster on the daily panel (312M rows) and
     # verified bit-identical to the in-memory engine on full data.
     return out.collect(engine="streaming")
@@ -13410,7 +13441,7 @@ def _ff_build_freq(
     # UMD: same per-country breakpoints + ROW gates as the other FF sorts, but size is
     # ME at t-1, so swap me ← me_lag1 first. mom_signal feeds ff_build_characteristics'
     # umd_ff column.
-    mom_signal = ff_build_mom_signal(panel, freq).with_columns(me=pl.col("me_lag1"))
+    mom_signal = ff_build_mom_signal(panel, freq, interim_dir).with_columns(me=pl.col("me_lag1"))
     ports_mom = ff_assign_mom_portfolios(mom_signal, _ff_mom_breaks(mom_signal, min_stocks_bp))
     umd = ff_compute_umd_factor(
         mom_signal.join(
@@ -15717,9 +15748,16 @@ def _dhs_wd_idx(col: pl.Expr) -> pl.Expr:
     return weeks * 5 + pl.min_horizontal(n - weeks * 7, pl.lit(4))
 
 
-def _dhs_non_financial(col: str = "siccd") -> pl.Expr:
-    """Keep non-financials: drop SIC 6000-6999, but KEEP a missing SIC."""
-    return pl.col(col).is_null() | ~((pl.col(col) >= 6000) & (pl.col(col) <= 6999))
+def _dhs_non_financial() -> pl.Expr:
+    """Keep non-financials: drop NAICS sector 52-53; when NAICS is missing, drop
+    SIC 6000-6999. A firm missing both is KEPT. US rows carry a null naics, so the
+    US screen is SIC only; ROW uses the same rule as HXZ."""
+    is_fin = (
+        pl.when(pl.col("naics").is_not_null())
+        .then(pl.col("naics").cast(pl.Utf8).str.slice(0, 2).is_in(["52", "53"]))
+        .otherwise(pl.col("siccd").is_between(6000, 6999))
+    )
+    return ~is_fin.fill_null(False)
 
 
 def _dhs_size_group(me: str, p50: str = "P50") -> pl.Expr:
@@ -15882,6 +15920,7 @@ def _dhs_monthly_panel(msf: pl.DataFrame, beg: int, end: int) -> pl.DataFrame:
             "lagCRSPSIZE",
             "primaryexch",
             "siccd",
+            pl.lit(None, dtype=pl.Utf8).alias("naics"),
             "size_grp",
         )
     )
@@ -15904,12 +15943,22 @@ def _dhs_load_row_panel(interim_dir: Path, beg: int, end: int) -> pl.DataFrame:
     """ROW (ex-US) monthly panel from jkp's world_data, in the SAME schema as the
     US _dhs_monthly_panel so the two concat. me -> CRSPSIZE; lagCRSPSIZE = prior-
     month me nulled across a calendar gap (world_msf has no me_lag1, so it is
-    computed like the US panel); sic (from world_msf) -> siccd; primaryexch null
+    computed like the US panel); sic, naics (from world_msf) -> siccd, naics, one
+    record per (id, eom) with the HXZ tie-break; primaryexch null
     (ROW has no NYSE; the FIN breakpoint pool uses size_grp). cyear maps
     July(t)..June(t+1) to t in [beg, end]. Dtypes match the US panel's so
     pl.concat(vertical) leaves US bytes intact."""
-    sic = pl.scan_parquet(interim_dir / "world_msf.parquet").select(
-        "id", "eom", pl.col("sic").cast(pl.Int64).alias("siccd")
+    sic = (
+        pl.scan_parquet(interim_dir / "world_msf.parquet")
+        .select("id", "eom", "naics", pl.col("sic").cast(pl.Int64).alias("siccd"))
+        .with_columns(_naics_null=pl.col("naics").is_null())
+        .sort(
+            ["id", "eom", "_naics_null", "naics", "siccd"],
+            descending=[False, False, False, True, True],
+            nulls_last=True,
+        )
+        .unique(subset=["id", "eom"], keep="first", maintain_order=True)
+        .drop("_naics_null")
     )
     cbase = pl.when(pl.col("month") >= 7).then(pl.col("year")).otherwise(pl.col("year") - 1)
     reportbreak = 12 * (pl.col("year") - pl.col("year").shift(1).over("id")) + (
@@ -15944,6 +15993,7 @@ def _dhs_load_row_panel(interim_dir: Path, beg: int, end: int) -> pl.DataFrame:
             "lagCRSPSIZE",
             pl.lit(None, dtype=pl.String).alias("primaryexch"),
             "siccd",
+            pl.col("naics").cast(pl.Utf8),
             pl.col("size_grp").cast(pl.String),
         )
         .collect()
@@ -16241,13 +16291,13 @@ def _dhs_align_abr(panel_rows: pl.DataFrame, abr: pl.DataFrame) -> pl.DataFrame:
     carrying the later Abr as lagAbr, and the forward-fill feeds the earlier quarter's
     DATADATE into the staleness test. `panel_rows` must carry [excntry, eom,
     id, primaryexch, lagCRSPSIZE, siccd, size_grp, year, month, CRSPDATE, ret]; `abr`
-    is [id, DATADATE, RDQ, Abr, eom] plus an optional Boolean `san` (semiannual
-    periodicity; treated as False when absent or null). The staleness gate keeps a
-    period-end-to-CRSP-month gap of up to 9 months for SAN announcements (semiannual
-    cycles run 7-9 months to the next announcement) and 6 otherwise. Per-firm ops
-    partition on the globally-unique id."""
-    if "san" not in abr.columns:
-        abr = abr.with_columns(san=pl.lit(False))
+    is [id, DATADATE, RDQ, Abr, eom] plus an optional integer `gate` (staleness limit
+    in months; 6 when absent or null). The staleness gate keeps a period-end-to-CRSP-
+    month gap of up to `gate` months: 6 for quarterly announcements, 9 for semiannual
+    (cycles run 7-9 months to the next announcement), 15 for annual-only (12-month
+    cycle + reporting lag). Per-firm ops partition on the globally-unique id."""
+    if "gate" not in abr.columns:
+        abr = abr.with_columns(gate=pl.lit(6))
     filled_datadate = pl.col("DATADATE").forward_fill().over("id")
     mreportbreak = 12 * (pl.col("year") - pl.col("year").shift(1).over("id")) + (
         pl.col("month") - pl.col("month").shift(1).over("id")
@@ -16255,46 +16305,46 @@ def _dhs_align_abr(panel_rows: pl.DataFrame, abr: pl.DataFrame) -> pl.DataFrame:
     return (
         panel_rows.join(abr, on=["id", "eom"], how="left")
         .sort(["id", "CRSPDATE", "RDQ", "DATADATE"], descending=[False, False, True, True])
-        # fill DATADATE/RDQ/san, then the fiscal-period->CRSP-month gap off the FILLED DATADATE
+        # fill DATADATE/RDQ/gate, then the fiscal-period->CRSP-month gap off the FILLED DATADATE
         .with_columns(
             DATADATE=filled_datadate,
             RDQ=pl.col("RDQ").forward_fill().over("id"),
-            san=pl.col("san").forward_fill().over("id").fill_null(False),
+            gate=pl.col("gate").forward_fill().over("id").fill_null(6),
             gap_crsp_fqtr=(pl.col("CRSPDATE").dt.year() - filled_datadate.dt.year()) * 12
             + (pl.col("CRSPDATE").dt.month() - filled_datadate.dt.month()),
         )
         # keep rows within the periodicity gate; rows with a missing gap are also kept
-        .filter(
-            pl.col("gap_crsp_fqtr").is_null()
-            | (pl.col("gap_crsp_fqtr") <= pl.when(pl.col("san")).then(9).otherwise(6))
-        )
+        .filter(pl.col("gap_crsp_fqtr").is_null() | (pl.col("gap_crsp_fqtr") <= pl.col("gate")))
         # Abr fill runs AFTER the gap filter (on the surviving rows)
         .with_columns(Abr=pl.col("Abr").forward_fill().over("id"))
         .sort(["id", "eom", "RDQ", "DATADATE"], descending=[False, False, True, True])
         .with_columns(
             lagAbr=pl.when(mreportbreak > 1).then(None).otherwise(pl.col("Abr").shift(1).over("id"))
         )
-        # drop financials (SIC 6000-6999, missing siccd KEPT) AND require non-null lagAbr
+        # drop financials (NAICS 52-53, else SIC 6000-6999) AND require non-null lagAbr
         .filter(_dhs_non_financial() & pl.col("lagAbr").is_not_null())
-        .drop("san")  # gate-only column; output schema unchanged
+        .drop("gate")  # gate-only column; output schema unchanged
     )
 
 
 def _dhs_ibes_announcements(raw_dir: Path, interim_dir: Path, beg: int, end: int) -> pl.DataFrame:
     """IBES international announcement dates bridged to the world `id`.
-    Compustat g_fundq has no rdq ex-US, so ibes.actu_epsint (usfirm=0, QTR or SAN
-    periodicity, any measure — only anndats is needed and e.g. REITs report FFO)
+    Compustat g_fundq has no rdq ex-US, so ibes.actu_epsint (usfirm=0, QTR, SAN or
+    ANN periodicity, any measure — only anndats is needed and e.g. REITs report FFO)
     supplies anndats (announcement date, the ex-US RDQ) and pends (fiscal period
     end). SAN (semiannual) is admitted because semiannual-reporting markets (UK,
     much of Europe) carry their interim announcements under SAN — QTR-only starves
-    their PEAD pools below the min-stocks gate. The IBES ticker is linked to gvkey
+    their PEAD pools below the min-stocks gate. ANN (annual) is admitted so that
+    annual-only reporters get an announcement at all; for QTR/SAN reporters the
+    fiscal year-end ANN row shares its pends with Q4/H2 and collapses below. The IBES ticker is linked to gvkey
     via the ibtic column (the vendor-maintained IBES link) of BOTH Compustat
     security masters (global and North America — cross-listed ROW firms can sit in
     either), then to the world id of the gvkey's primary security. Bridges are
     deduped one-to-one (deterministic sort + keep-first). One (id, period-end) row
-    keeps the EARLIEST anndats (QTR wins a same-day tie), which also collapses a
-    period reported under both periodicities or multiple measures. Returns [id,
-    datadate (=pends), rdq (=anndats), san (kept row has SAN periodicity)]."""
+    keeps the EARLIEST anndats (same-day tie: QTR, then SAN, then ANN), which also
+    collapses a period reported under several periodicities or measures. Returns
+    [id, datadate (=pends), rdq (=anndats), gate (staleness months of the kept row's
+    periodicity: QTR 6, SAN 9, ANN 15)]."""
     # ibtic (IBES ticker) -> gvkey, one gvkey per ticker; both security masters
     ibtic_gv = (
         pl.concat(
@@ -16322,7 +16372,7 @@ def _dhs_ibes_announcements(raw_dir: Path, interim_dir: Path, beg: int, end: int
         pl.scan_parquet(raw_dir / "ibes_actu_epsint.parquet")
         .filter(
             (pl.col("usfirm") == 0)
-            & pl.col("pdicity").is_in(["QTR", "SAN"])
+            & pl.col("pdicity").is_in(["QTR", "SAN", "ANN"])
             & pl.col("ticker").is_not_null()
             & pl.col("anndats").is_not_null()
             & pl.col("pends").is_not_null()
@@ -16331,14 +16381,14 @@ def _dhs_ibes_announcements(raw_dir: Path, interim_dir: Path, beg: int, end: int
             "ticker",
             pl.col("anndats").cast(pl.Date).alias("rdq"),
             pl.col("pends").cast(pl.Date).alias("datadate"),
-            (pl.col("pdicity") == "SAN").alias("san"),
+            pl.col("pdicity").replace_strict({"QTR": 6, "SAN": 9, "ANN": 15}).alias("gate"),
         )
         .filter(pl.col("rdq").dt.year().is_between(beg, end))
         .join(ibtic_gv, on="ticker", how="inner")
         .join(gv_id, on="gvkey", how="inner")
-        .select("id", "datadate", "rdq", "san")
-        # earliest announcement per (id, period-end); QTR (san=False) wins a tie
-        .sort(["id", "datadate", "rdq", "san"])
+        .select("id", "datadate", "rdq", "gate")
+        # earliest announcement per (id, period-end); shortest gate (QTR) wins a tie
+        .sort(["id", "datadate", "rdq", "gate"])
         .unique(subset=["id", "datadate"], keep="first", maintain_order=True)
         .collect()
     )
@@ -16356,9 +16406,9 @@ def _dhs_row_announcement_returns(
     announcement date is IBES anndats (bridged to the world id via ibtic->gvkey);
     Abr is the [anndats-2, anndats+1] weekday CAR of world_dsf daily returns net of
     the per-country market_returns_daily benchmark, aligned to the ROW monthly panel
-    exactly like the US path — except that the announcement's `san` flag rides along
-    so the staleness gate in _dhs_align_abr widens to 9 months for semiannual
-    reporters."""
+    exactly like the US path — except that the announcement's `gate` rides along so
+    the staleness gate in _dhs_align_abr widens to 9 months for semiannual and 15 for
+    annual-only reporters."""
     row_panel = monthly_panel.filter(pl.col("excntry") != US_EXCNTRY)
     # ROW daily returns net of the per-country market benchmark: [id, date, ret, mkt]
     daily = (
@@ -16368,10 +16418,10 @@ def _dhs_row_announcement_returns(
         .select("id", "date", "ret", "mkt")
     )
     ann = _dhs_ibes_announcements(raw_dir, interim_dir, beg, end)
-    # re-attach the periodicity flag: ann is unique per (id, datadate), so the join
+    # re-attach the staleness gate: ann is unique per (id, datadate), so the join
     # is one-to-one on the window output's (id, DATADATE)
     abr = _dhs_abr_window(ann, daily).join(
-        ann.select("id", pl.col("datadate").alias("DATADATE"), "san"),
+        ann.select("id", pl.col("datadate").alias("DATADATE"), "gate"),
         on=["id", "DATADATE"],
         how="left",
     )
@@ -16383,6 +16433,7 @@ def _dhs_row_announcement_returns(
             "primaryexch",
             "lagCRSPSIZE",
             "siccd",
+            "naics",
             "size_grp",
             "year",
             "month",
@@ -16491,6 +16542,7 @@ def _dhs_announcement_returns(
             "primaryexch",
             "lagCRSPSIZE",
             "siccd",
+            "naics",
             "size_grp",
             "year",
             "month",
@@ -16569,9 +16621,9 @@ def _dhs_fin_factor(
     )
     ir_chars = annual_chars.select(keep + ["IR"]).filter(lagbe_ok & pl.col("IR").is_not_null())
 
-    non_fin = _dhs_non_financial()  # drop financials (SIC 6000-6999), missing siccd KEPT
+    non_fin = _dhs_non_financial()  # drop financials (NAICS 52-53, else SIC 6000-6999)
     crsp_cols = monthly_panel.select(
-        "excntry", "id", "eom", "cyear", "primaryexch", "siccd", "size_grp"
+        "excntry", "id", "eom", "cyear", "primaryexch", "siccd", "naics", "size_grp"
     )
     ns_panel = (
         ns_chars.join(crsp_cols, on="id", how="inner")

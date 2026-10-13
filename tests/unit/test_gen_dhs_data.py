@@ -5,7 +5,7 @@ Covers _dhs_row_chars: NS = log(1 + chcsho_12m), IR = -eqnpo_60m (both sampled
 at June rows), the YEAR relabel split (IR emitted at YEAR=t, NS at YEAR=t-1),
 and the lagBE join (be_x of the fiscal year ending in calendar YEAR-1, latest
 statement per gvkey-fiscal-year). Also covers _dhs_ibes_announcements (ticker
-bridging via both security masters, measure-agnostic filter, san periodicity
+bridging via both security masters, measure-agnostic filter, periodicity gate
 flag) and the periodicity-aware staleness gate in _dhs_align_abr.
 """
 
@@ -17,7 +17,12 @@ from datetime import date
 import polars as pl
 import pytest
 
-from jkp.data.aux_functions import _dhs_align_abr, _dhs_ibes_announcements, _dhs_row_chars
+from jkp.data.aux_functions import (
+    _dhs_align_abr,
+    _dhs_ibes_announcements,
+    _dhs_non_financial,
+    _dhs_row_chars,
+)
 from jkp.data.config import US_EXCNTRY
 
 
@@ -61,6 +66,20 @@ def dhs_interim_dir(tmp_path):
     )
     acc.write_parquet(tmp_path / "acc_std_ann.parquet")
     return tmp_path
+
+
+class TestDhsNonFinancial:
+    """NAICS 52-53 when NAICS is present, else SIC 6000-6999; missing both is kept."""
+
+    def test_naics_first_then_sic_fallback(self):
+        df = pl.DataFrame(
+            {
+                "naics": ["522110", "531120", "334111", "334111", None, None, None],
+                "siccd": [3711, 3711, 6020, None, 6020, 3711, None],
+            }
+        )
+        kept = df.select(_dhs_non_financial().alias("keep"))["keep"].to_list()
+        assert kept == [False, False, True, True, False, True, True]
 
 
 class TestDhsRowChars:
@@ -125,7 +144,7 @@ def ibes_dirs(tmp_path):
             # T5: non-EPS measure (FFO) must still supply an announcement
             "measure": ["EPS"] * 6 + ["EPS", "FFO"],
             # T1: SAN row must be admitted; T2: QTR+SAN same pends dedupe to the
-            # earliest anndats; T3: usfirm==1 and ANN both excluded.
+            # earliest anndats; T3: usfirm==1 excluded, ANN admitted.
             "pdicity": ["QTR", "SAN", "QTR", "SAN", "QTR", "ANN", "QTR", "SAN"],
             "anndats": [
                 date(2010, 5, 3),
@@ -166,7 +185,7 @@ def ibes_dirs(tmp_path):
 
 
 class TestDhsIbesAnnouncements:
-    def test_san_admitted_qtr_san_deduped_ann_usfirm_excluded(self, ibes_dirs):
+    def test_san_ann_admitted_qtr_san_deduped_usfirm_excluded(self, ibes_dirs):
         raw, interim = ibes_dirs
         out = _dhs_ibes_announcements(raw, interim, 2000, 2020)
         # T1: both its QTR and SAN announcements survive (distinct period-ends)
@@ -177,8 +196,9 @@ class TestDhsIbesAnnouncements:
         t2 = out.filter(pl.col("id") == 320002000)
         assert t2.height == 1
         assert t2["rdq"][0] == date(2010, 7, 20)
-        # T3: usfirm==1 (QTR) and ANN rows are both excluded
-        assert out.filter(pl.col("id") == 330003000).height == 0
+        # T3: the usfirm==1 QTR row is excluded; its usfirm==0 ANN row is admitted
+        t3 = out.filter(pl.col("id") == 330003000)
+        assert t3["rdq"].to_list() == [date(2010, 5, 1)]
 
     def test_comp_security_only_ticker_bridged(self, ibes_dirs):
         raw, interim = ibes_dirs
@@ -196,23 +216,32 @@ class TestDhsIbesAnnouncements:
         assert t5.height == 1
         assert t5["rdq"][0] == date(2010, 9, 15)
 
-    def test_san_column_reflects_periodicity_of_kept_row(self, ibes_dirs):
+    def test_gate_reflects_periodicity_of_kept_row(self, ibes_dirs):
         raw, interim = ibes_dirs
         out = _dhs_ibes_announcements(raw, interim, 2000, 2020)
-        assert out.schema["san"] == pl.Boolean
         t1 = out.filter(pl.col("id") == 310001000).sort("datadate")
-        assert t1["san"].to_list() == [False, True]  # QTR then SAN period-end
-        # T2's kept row is the earlier-anndats SAN one; T4 QTR; T5 SAN
-        assert out.filter(pl.col("id") == 320002000)["san"].to_list() == [True]
-        assert out.filter(pl.col("id") == 340004000)["san"].to_list() == [False]
-        assert out.filter(pl.col("id") == 350005000)["san"].to_list() == [True]
+        assert t1["gate"].to_list() == [6, 9]  # QTR then SAN period-end
+        # T2's kept row is the earlier-anndats SAN one; T3 ANN; T4 QTR; T5 SAN
+        assert out.filter(pl.col("id") == 320002000)["gate"].to_list() == [9]
+        assert out.filter(pl.col("id") == 330003000)["gate"].to_list() == [15]
+        assert out.filter(pl.col("id") == 340004000)["gate"].to_list() == [6]
+        assert out.filter(pl.col("id") == 350005000)["gate"].to_list() == [9]
+
+    def test_same_day_tie_keeps_shortest_gate(self, ibes_dirs):
+        raw, interim = ibes_dirs
+        # T4 also files the same period-end, same day, as ANN: the QTR row must win
+        ib = pl.read_parquet(raw / "ibes_actu_epsint.parquet")
+        extra = ib.filter(pl.col("ticker") == "T4").with_columns(pdicity=pl.lit("ANN"))
+        pl.concat([ib, extra]).write_parquet(raw / "ibes_actu_epsint.parquet")
+        out = _dhs_ibes_announcements(raw, interim, 2000, 2020)
+        assert out.filter(pl.col("id") == 340004000)["gate"].to_list() == [6]
 
 
-def _align_abr_frames(stock_id: int, san: bool) -> tuple[pl.DataFrame, pl.DataFrame]:
+def _align_abr_frames(stock_id: int, gate: int) -> tuple[pl.DataFrame, pl.DataFrame]:
     """Minimal (panel_rows, abr) pair for _dhs_align_abr: one non-financial id with
-    monthly panel rows Jun-2010..May-2011 and a single Jun-2010 period-end announced
-    2010-07-05, so the period-end-to-CRSP-month gap runs 1..11 across the panel."""
-    eoms = pl.date_range(date(2010, 6, 1), date(2011, 5, 1), "1mo", eager=True).dt.month_end()
+    monthly panel rows Jun-2010..Dec-2011 and a single Jun-2010 period-end announced
+    2010-07-05, so the period-end-to-CRSP-month gap runs 0..18 across the panel."""
+    eoms = pl.date_range(date(2010, 6, 1), date(2011, 12, 1), "1mo", eager=True).dt.month_end()
     panel_rows = pl.DataFrame(
         {
             "excntry": ["GBR"] * len(eoms),
@@ -221,6 +250,7 @@ def _align_abr_frames(stock_id: int, san: bool) -> tuple[pl.DataFrame, pl.DataFr
             "primaryexch": ["L"] * len(eoms),
             "lagCRSPSIZE": [100.0] * len(eoms),
             "siccd": [3711] * len(eoms),
+            "naics": [None] * len(eoms),
             "size_grp": ["large"] * len(eoms),
             "year": eoms.dt.year(),
             "month": eoms.dt.month(),
@@ -235,7 +265,7 @@ def _align_abr_frames(stock_id: int, san: bool) -> tuple[pl.DataFrame, pl.DataFr
             "RDQ": [date(2010, 7, 5)],
             "Abr": [0.05],
             "eom": [date(2010, 7, 31)],
-            "san": [san],
+            "gate": [gate],
         }
     )
     return panel_rows, abr
@@ -243,22 +273,28 @@ def _align_abr_frames(stock_id: int, san: bool) -> tuple[pl.DataFrame, pl.DataFr
 
 class TestDhsAlignAbr:
     def test_san_row_survives_gap_7_to_9_qtr_does_not(self):
-        # QTR (san=False): forward-filled rows drop once the gap exceeds 6 months
-        panel_q, abr_q = _align_abr_frames(1, san=False)
+        # QTR (gate 6): forward-filled rows drop once the gap exceeds 6 months
+        panel_q, abr_q = _align_abr_frames(1, gate=6)
         out_q = _dhs_align_abr(panel_q, abr_q)
         assert out_q["eom"].max() == date(2010, 12, 31)  # gap 6 kept, gap 7 dropped
-        # SAN (san=True): the gate widens to 9 months
-        panel_s, abr_s = _align_abr_frames(2, san=True)
+        # SAN (gate 9): the gate widens to 9 months
+        panel_s, abr_s = _align_abr_frames(2, gate=9)
         out_s = _dhs_align_abr(panel_s, abr_s)
         assert out_s["eom"].max() == date(2011, 3, 31)  # gap 9 kept, gap 10 dropped
         gaps_7_to_9 = out_s.filter(pl.col("eom") > date(2010, 12, 31))
         assert gaps_7_to_9.height == 3
         assert gaps_7_to_9["lagAbr"].null_count() == 0
 
-    def test_missing_san_column_defaults_to_six_month_gate(self):
-        # the US path passes abr without a san column; behavior must match san=False
-        panel_rows, abr = _align_abr_frames(1, san=False)
-        out_without = _dhs_align_abr(panel_rows, abr.drop("san"))
+    def test_ann_row_survives_gap_to_15(self):
+        # ANN (gate 15): annual-only reporters carry Abr to the next annual announcement
+        panel_a, abr_a = _align_abr_frames(3, gate=15)
+        out_a = _dhs_align_abr(panel_a, abr_a)
+        assert out_a["eom"].max() == date(2011, 9, 30)  # gap 15 kept, gap 16 dropped
+
+    def test_missing_gate_column_defaults_to_six_month_gate(self):
+        # the US path passes abr without a gate column; behavior must match gate=6
+        panel_rows, abr = _align_abr_frames(1, gate=6)
+        out_without = _dhs_align_abr(panel_rows, abr.drop("gate"))
         out_with = _dhs_align_abr(panel_rows, abr)
         assert out_without.equals(out_with)
         assert out_without["eom"].max() == date(2010, 12, 31)

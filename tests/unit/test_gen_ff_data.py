@@ -22,6 +22,7 @@ from datetime import date
 
 import numpy as np
 import polars as pl
+import pytest
 
 from jkp.data.aux_functions import (
     _ff_bm_breaks,
@@ -1609,6 +1610,23 @@ def _make_monthly_panel(
     )
 
 
+def _jkp_mom(panel: pl.LazyFrame) -> pl.LazyFrame:
+    """JKP ret_12_1 keyed by holding month, as market_chars_monthly builds it:
+    return index over zero-filled returns, ri[t-2] / ri[t-13] - 1."""
+    by = ["excntry", "id"]
+    r = pl.col("ret")
+    r0 = pl.when((r - FF_MISSING_RET_CODE).abs() < 1e-9).then(0.0).otherwise(r).fill_null(0.0)
+    return (
+        panel.sort([*by, "date"])
+        .with_columns(ri=(1.0 + r0).cum_prod().over(by))
+        .select(
+            pl.col("id").cast(pl.Int64),
+            mth_idx=(pl.col("date").dt.year() * 12 + pl.col("date").dt.month()).cast(pl.Int64),
+            ret_12_1=(pl.col("ri").shift(2) / pl.col("ri").shift(13) - 1.0).over(by),
+        )
+    )
+
+
 class TestFFMomSignalMonthly:
     """Tests for _ff_mom_signal_monthly()."""
 
@@ -1616,7 +1634,7 @@ class TestFFMomSignalMonthly:
         """Output has the expected 11 columns of the mom-signal output schema."""
         panel = _make_monthly_panel(months=20)
         lf = panel.lazy()
-        result = _ff_mom_signal_monthly(lf).collect()
+        result = _ff_mom_signal_monthly(lf, _jkp_mom(lf)).collect()
         expected_cols = {
             "excntry",
             "id",
@@ -1636,7 +1654,7 @@ class TestFFMomSignalMonthly:
         """Less than 13 months of data → mom_2_12 is null (not enough lags)."""
         panel = _make_monthly_panel(months=12)
         lf = panel.lazy()
-        result = _ff_mom_signal_monthly(lf).collect()
+        result = _ff_mom_signal_monthly(lf, _jkp_mom(lf)).collect()
         # All rows should have null mom_2_12 (need 13 months for lag 1..12)
         assert result["mom_2_12"].is_null().all()
 
@@ -1644,7 +1662,7 @@ class TestFFMomSignalMonthly:
         """13+ months of data → later rows have non-null mom_2_12."""
         panel = _make_monthly_panel(months=20)
         lf = panel.lazy()
-        result = _ff_mom_signal_monthly(lf).collect()
+        result = _ff_mom_signal_monthly(lf, _jkp_mom(lf)).collect()
         non_null = result.filter(pl.col("mom_2_12").is_not_null())
         assert len(non_null) > 0
 
@@ -1653,7 +1671,7 @@ class TestFFMomSignalMonthly:
         # Build 20-month panel with -99 at position 5 (will be a lagged return)
         panel = _make_monthly_panel(months=20, base_ret=0.0, include_missing_sentinel=True)
         lf = panel.lazy()
-        result = _ff_mom_signal_monthly(lf).collect()
+        result = _ff_mom_signal_monthly(lf, _jkp_mom(lf)).collect()
         # Should still compute (sentinel becomes 0, doesn't make mom null)
         non_null = result.filter(pl.col("mom_2_12").is_not_null())
         assert len(non_null) > 0
@@ -1665,20 +1683,27 @@ class TestFFMomSignalMonthly:
         missing-price month that legacy CRSP coded -99)."""
         return _make_monthly_panel(months=20, excntry=excntry, ret_overrides={10: None}).lazy()
 
+    @staticmethod
+    def _with_jkp(lf: pl.LazyFrame) -> tuple[pl.LazyFrame, pl.LazyFrame]:
+        return lf, _jkp_mom(lf)
+
     def test_us_interior_null_month_tolerated(self, tolerance):
         """US: a null interior window month (row present) stays eligible and
         compounds as 0, per French's -99 tolerance for t-12..t-3."""
-        result = _ff_mom_signal_monthly(self._interior_null_panel(US_EXCNTRY)).collect()
+        result = _ff_mom_signal_monthly(
+            *self._with_jkp(self._interior_null_panel(US_EXCNTRY))
+        ).collect()
         last_row = result.sort("date").tail(1)
         assert last_row["eligible_mom"][0] is True
         # 11 window months, one zeroed: (1.01)^10 - 1
         np.testing.assert_allclose(last_row["mom_2_12"][0], 1.01**10 - 1, **tolerance.STANDARD)
 
-    def test_row_interior_null_month_ineligible(self):
-        """ROW: interior null month keeps the strict JKP gate."""
-        result = _ff_mom_signal_monthly(self._interior_null_panel("GBR")).collect()
+    def test_row_interior_null_month_tolerated(self, tolerance):
+        """ROW: same gate as the US; the null month counts as 0 in ret_12_1."""
+        result = _ff_mom_signal_monthly(*self._with_jkp(self._interior_null_panel("GBR"))).collect()
         last_row = result.sort("date").tail(1)
-        assert last_row["eligible_mom"][0] is not True
+        assert last_row["eligible_mom"][0] is True
+        np.testing.assert_allclose(last_row["mom_2_12"][0], 1.01**10 - 1, **tolerance.STANDARD)
 
     def test_me_lag1_null_when_gap(self):
         """me_lag1 is null when there's a calendar month gap."""
@@ -1696,7 +1721,7 @@ class TestFFMomSignalMonthly:
             }
         )
         lf = panel.lazy()
-        result = _ff_mom_signal_monthly(lf).collect().sort("date")
+        result = _ff_mom_signal_monthly(lf, _jkp_mom(lf)).collect().sort("date")
         # March row: gap1 = (2020*12+3) - (2020*12+1) = 2 ≠ 1 → me_lag1 null
         mar_row = result.filter(pl.col("date") == date(2020, 3, 31))
         assert mar_row["me_lag1"][0] is None
@@ -1705,7 +1730,7 @@ class TestFFMomSignalMonthly:
         """With constant 2% monthly return, compounded 2-12 (skip 1) ≈ 1.02^11 - 1."""
         panel = _make_monthly_panel(months=24, base_ret=0.02)
         lf = panel.lazy()
-        result = _ff_mom_signal_monthly(lf).collect()
+        result = _ff_mom_signal_monthly(lf, _jkp_mom(lf)).collect()
         non_null = result.filter(pl.col("mom_2_12").is_not_null())
         assert len(non_null) > 0
         # 11 months compounded: lags 2 through 12 = 11 months
@@ -1718,7 +1743,7 @@ class TestFFMomSignalMonthly:
         p2 = _make_monthly_panel(months=20, base_ret=0.05, stock_id=2)
         panel = pl.concat([p1, p2])
         lf = panel.lazy()
-        result = _ff_mom_signal_monthly(lf).collect()
+        result = _ff_mom_signal_monthly(lf, _jkp_mom(lf)).collect()
         s1 = result.filter(pl.col("id") == 1).filter(pl.col("mom_2_12").is_not_null())
         s2 = result.filter(pl.col("id") == 2).filter(pl.col("mom_2_12").is_not_null())
         assert len(s1) > 0 and len(s2) > 0
@@ -1835,37 +1860,31 @@ class TestFFMomSignalDaily:
         for the last row."""
         return _make_daily_panel(n_days=300, excntry=excntry, ret_overrides={200: None}).lazy()
 
-    def test_row_null_ret_in_window_makes_ineligible(self):
-        """ROW: a null return in the lookback window → ineligible (JKP)."""
-        result = _ff_mom_signal_daily(self._null_in_window_panel("GBR")).collect()
-        last_row = result.sort("date").tail(1)
-        assert last_row["eligible_mom"][0] is False
-
-    def test_us_null_ret_in_window_tolerated(self, tolerance):
-        """US: interior missing-price day is allowed and compounds as 0
+    @pytest.mark.parametrize("excntry", [US_EXCNTRY, "GBR"])
+    def test_null_ret_in_window_tolerated(self, excntry, tolerance):
+        """Interior missing-price day is allowed and compounds as 0, in every country
         (French: 'any missing returns from day t-250 to t-22 must be -99.0')."""
-        result = _ff_mom_signal_daily(self._null_in_window_panel(US_EXCNTRY)).collect()
+        result = _ff_mom_signal_daily(self._null_in_window_panel(excntry)).collect()
         last_row = result.sort("date").tail(1)
         assert last_row["eligible_mom"][0] is True
         # 230-day window with one zeroed day: (1.001)^229 - 1
         np.testing.assert_allclose(last_row["mom_2_12"][0], 1.001**229 - 1, **tolerance.STANDARD)
 
-    def test_us_window_includes_skip_day_row_excludes_it(self):
-        """Window pin: a spike at t-21 is inside the US window (t-250..t-21,
-        per French's daily detail) but outside the ROW legacy window
-        (t-251..t-22)."""
+    @pytest.mark.parametrize("excntry", [US_EXCNTRY, "GBR"])
+    def test_window_includes_skip_day(self, excntry):
+        """Window pin: a spike at t-21 is inside the window (t-250..t-21, per
+        French's daily detail) in every country."""
         n = 300
-        for excntry, expected in ((US_EXCNTRY, 0.5), ("GBR", 0.0)):
-            panel = _make_daily_panel(
-                n_days=n,
-                base_ret=0.0,
-                excntry=excntry,
-                ret_overrides={n - 1 - 21: 0.5},  # day t-21 for the last row
-            )
-            result = _ff_mom_signal_daily(panel.lazy()).collect()
-            last_row = result.sort("date").tail(1)
-            assert last_row["eligible_mom"][0] is True
-            assert abs(last_row["mom_2_12"][0] - expected) < 1e-9, excntry
+        panel = _make_daily_panel(
+            n_days=n,
+            base_ret=0.0,
+            excntry=excntry,
+            ret_overrides={n - 1 - 21: 0.5},  # day t-21 for the last row
+        )
+        result = _ff_mom_signal_daily(panel.lazy()).collect()
+        last_row = result.sort("date").tail(1)
+        assert last_row["eligible_mom"][0] is True
+        assert abs(last_row["mom_2_12"][0] - 0.5) < 1e-9
 
     def test_multi_country_independent(self):
         """Two countries compute trading-day index independently."""

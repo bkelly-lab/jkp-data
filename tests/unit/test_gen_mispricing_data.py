@@ -34,6 +34,7 @@ import pytest
 # ---------------------------------------------------------------------------
 from jkp.data.aux_functions import (
     _mp_add_leg_score,
+    _mp_anomaly_pct_panel,
     _mp_diff_legs,
     _mp_distress_book_equity_mb,
     _mp_distress_exretavg,
@@ -47,6 +48,7 @@ from jkp.data.aux_functions import (
     _mp_spread_per_size_then_diff,
     _mp_truncate_thin,
     _mp_vw_monthly,
+    _mp_world_monthly_lagged_me_panel,
     _mp_world_percentile_rank_anomalies,
 )
 from jkp.data.config import (
@@ -1895,6 +1897,7 @@ class TestMpWorldPercentileRankAnomalies:
                         "eom": eom,
                         "ret": 0.01 + i * 0.001,
                         "lag_prc": 10.0 + i,
+                        "lag_size_grp": "small",
                         "mktcap": float(100 + i * 10),
                         "ME": float(110 + i * 10),
                     }
@@ -1936,6 +1939,7 @@ class TestMpWorldPercentileRankAnomalies:
                 "eom": eom,
                 "ret": 0.01,
                 "lag_prc": 10.0,
+                "lag_size_grp": "small",
                 "mktcap": float(100 + i * 10),
                 "ME": 110.0,
             }
@@ -1948,6 +1952,7 @@ class TestMpWorldPercentileRankAnomalies:
                 "eom": eom,
                 "ret": 0.01,
                 "lag_prc": 10.0,
+                "lag_size_grp": "small",
                 "mktcap": float(100 + i * 10),
                 "ME": 110.0,
             }
@@ -2005,6 +2010,85 @@ class TestMpWorldPercentileRankAnomalies:
             ):
                 # Descending: highest gp_adj → lowest pct; lowest gp_adj → highest pct
                 assert row0["pct_GP_ADJ"][0] <= row_last["pct_GP_ADJ"][0]
+
+    def test_world_universe_excludes_nano_not_low_price(self):
+        """World screen drops prior-month nano caps but keeps sub-$5 stocks."""
+        import duckdb
+
+        eom = _eom(2000, 6)
+        rows = [
+            {
+                "id": f"GBR_{i}",
+                "excntry": "GBR",
+                "eom": eom,
+                "ret": 0.01,
+                "lag_prc": 1.0 if i < 10 else 10.0,  # 10 sub-$5 stocks
+                "lag_size_grp": "nano" if i >= 15 else "small",  # 5 nano stocks
+                "mktcap": float(100 + i * 10),
+                "ME": 110.0,
+            }
+            for i in range(20)
+        ]
+        me_panel = pl.DataFrame(rows)
+        anom_df = pl.DataFrame(
+            {
+                "id": [f"GBR_{i}" for i in range(20)],
+                "eom": [eom] * 20,
+                "excntry": ["GBR"] * 20,
+                "accrual_adj": [float(i) for i in range(20)],
+            }
+        )
+        con = duckdb.connect()
+        result = _mp_world_percentile_rank_anomalies(
+            me_panel, {"ACCRUAL_ADJ": anom_df}, min_stks=10, mp_con=con
+        )
+        assert set(result["id"]) == {f"GBR_{i}" for i in range(15)}
+
+
+class TestMpUniverseScreens:
+    """US keeps the $5 floor; the world lag panel carries the prior-month size_grp."""
+
+    def test_us_default_keeps_five_dollar_floor(self):
+        import duckdb
+
+        eom = _eom(2000, 6)
+        me_panel = pl.DataFrame(
+            {
+                "permno": list(range(20)),
+                "eom": [eom] * 20,
+                "ret": [0.01] * 20,
+                "lag_prc": [4.0] * 5 + [10.0] * 15,
+                "mktcap": [100.0] * 20,
+                "exchcd": [1] * 20,
+            }
+        )
+        result = _mp_anomaly_pct_panel(
+            me_panel,
+            10,
+            duckdb.connect(),
+            panel_cols=["permno", "eom", "ret", "lag_prc", "mktcap", "exchcd"],
+            sort_keys=["permno", "eom"],
+            id_cols=["permno"],
+            group_keys=["eom"],
+            anom_source=lambda anom: None,
+        )
+        assert result["permno"].to_list() == list(range(5, 20))
+
+    def test_world_lag_panel_lags_size_grp(self):
+        world_monthly = pl.DataFrame(
+            {
+                "id": [1, 1, 1],
+                "eom": [_eom(2000, 1), _eom(2000, 2), _eom(2000, 3)],
+                "excntry": ["GBR"] * 3,
+                "prc": [2.0, 2.0, 2.0],
+                "ret": [0.01, 0.02, 0.03],
+                "me": [10.0, 500.0, 600.0],
+                "size_grp": ["nano", "small", "small"],
+            }
+        )
+        result = _mp_world_monthly_lagged_me_panel(world_monthly)
+        assert result["eom"].to_list() == [_eom(2000, 2), _eom(2000, 3)]
+        assert result["lag_size_grp"].to_list() == ["nano", "small"]
 
 
 # ===========================================================================

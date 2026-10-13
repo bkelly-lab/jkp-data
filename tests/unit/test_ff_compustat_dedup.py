@@ -25,6 +25,7 @@ from jkp.data.aux_functions import (
     _ff_global_be_op_inv,
     _ff_load_funda_global,
     ff_load_compustat_us,
+    ff_load_world_compustat,
 )
 
 # Every float column either loader casts, defaulted to None so callers can
@@ -49,6 +50,8 @@ _FLOAT_COLS = [
     "pstkl",
     "itcb",
     "mib",
+    "mibt",
+    "mibn",
 ]
 
 
@@ -212,6 +215,18 @@ class TestUsBeLadder:
         out = self._be(tmp_path, seq=None, ceq=None, pstk=None, lt=30.0, revt=20.0, cogs=5.0)
         assert abs(out["op"][0] - 15.0 / 70.0) < 1e-12
 
+    def test_op_denominator_uses_total_minority_interest(self, tmp_path):
+        # be = seq = 50; mibt (total) wins over mib (redeemable only)
+        out = self._be(tmp_path, revt=20.0, cogs=5.0, mib=2.0, mibn=8.0, mibt=10.0)
+        assert abs(out["op"][0] - 15.0 / 60.0) < 1e-12
+
+    def test_op_denominator_sums_parts_when_mibt_missing(self, tmp_path):
+        out = self._be(tmp_path, revt=20.0, cogs=5.0, mib=2.0, mibn=8.0)
+        assert abs(out["op"][0] - 15.0 / 60.0) < 1e-12
+        # no minority-interest fields at all -> denominator is BE alone
+        out = self._be(tmp_path, revt=20.0, cogs=5.0)
+        assert abs(out["op"][0] - 15.0 / 50.0) < 1e-12
+
 
 # =============================================================================
 # CCM backfill rescue (FF_CCM_BACKDATE_*): June 1963-66 formations may use
@@ -309,3 +324,59 @@ class TestCcmBackdateRescue:
         rows = out.filter((pl.col("permno") == 10001) & (pl.col("year") == 1962))
         assert rows.height == 1
         assert rows["gvkey"][0] == "001"
+
+
+# =============================================================================
+# ROW FF OP: (ebitda_x - coalesce(xint, 0)) / (be_x + coalesce(mibt, mib + mibn))
+# from jkp's standardized panel (acc_std_ann), mirroring the US construction.
+# =============================================================================
+
+
+def _write_acc_std_ann(path, rows):
+    """rows: (gvkey, be_x, ebitda_x, xint, mib, mibt, mibn) on a 2019-12-31 report row."""
+    pl.DataFrame(
+        {
+            "gvkey": [r[0] for r in rows],
+            "curcd": ["USD"] * len(rows),
+            "datadate": [date(2019, 12, 31)] * len(rows),
+            "source": ["GLOBAL"] * len(rows),
+            "be_x": [r[1] for r in rows],
+            "ebitda_x": [r[2] for r in rows],
+            "xint": [r[3] for r in rows],
+            "mib": [r[4] for r in rows],
+            "mibt": [r[5] for r in rows],
+            "mibn": [r[6] for r in rows],
+            "at_x": [100.0] * len(rows),
+            "ni_x": [1.0] * len(rows),
+        },
+        schema_overrides=dict.fromkeys(
+            ["be_x", "ebitda_x", "xint", "mib", "mibt", "mibn"], pl.Float64
+        ),
+    ).write_parquet(path)
+
+
+def test_ff_load_world_compustat_op_definition(tmp_path):
+    gvkeys = ["101", "102", "103", "104", "105"]
+    _write_funda(
+        tmp_path / "comp_g_funda.parquet",
+        [_funda_row(g, date(2019, 12, 31), 100.0, indl=False) for g in gvkeys],
+    )
+    _write_funda(
+        tmp_path / "comp_funda.parquet", [_funda_row("999", date(2019, 12, 31), 100.0, indl=True)]
+    )
+    _write_acc_std_ann(
+        tmp_path / "acc_std_ann.parquet",
+        [
+            ("101", 50.0, 15.0, None, None, None, None),  # xint missing -> 0
+            ("102", 50.0, 15.0, 5.0, 2.0, 10.0, 8.0),  # mibt wins
+            ("103", 50.0, 15.0, 5.0, 2.0, None, 8.0),  # mib + mibn
+            ("104", 50.0, 15.0, 5.0, None, None, None),  # no minority interest
+            ("105", -5.0, 15.0, 5.0, None, None, None),  # non-positive BE -> null
+        ],
+    )
+    op = dict(ff_load_world_compustat(tmp_path, tmp_path).select("gvkey", "op").iter_rows())
+    assert abs(op["101"] - 15.0 / 50.0) < 1e-12
+    assert abs(op["102"] - 10.0 / 60.0) < 1e-12
+    assert abs(op["103"] - 10.0 / 60.0) < 1e-12
+    assert abs(op["104"] - 10.0 / 50.0) < 1e-12
+    assert op.get("105") is None

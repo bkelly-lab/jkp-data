@@ -517,6 +517,9 @@ def _gen_funda(reg: pl.DataFrame, rng: np.random.Generator, is_global: bool) -> 
                 "lct": lct,
                 "lt": lt,
                 "mib": mib,
+                # pre-2009 convention: mib is the total, mibt == mib, mibn absent
+                "mibt": mib,
+                "mibn": None,
                 "ni": ni,
                 "oancf": oancf,
                 "oibdp": oibdp,
@@ -550,6 +553,8 @@ def _gen_funda(reg: pl.DataFrame, rng: np.random.Generator, is_global: bool) -> 
                     "itcb",
                     "lct",
                     "mib",
+                    "mibt",
+                    "mibn",
                     "ni",
                     "oancf",
                     "pi",
@@ -1043,11 +1048,12 @@ def _write(df: pl.DataFrame, name: str) -> None:
 def gen_acc_std_ann(funda: pl.DataFrame, g_funda: pl.DataFrame) -> pl.DataFrame:
     """Synthesize jkp's standardized annual accounting panel (``acc_std_ann``).
 
-    The ROW FF/HXZ loaders read book equity (be_x), operating-profit numerator
-    (ope_x), assets (at_x -> asset growth) and net income (ni_x) from this panel
-    via ``_jkp_annual_acc``. The real builder (``standardized_accounting_data``)
-    pulls ~40 Compustat vars this synthetic fixture doesn't carry, so instead we
-    reproduce the panel's *shape and the four fields the loaders consume*:
+    The ROW FF/HXZ loaders read book equity (be_x), the operating-profit inputs
+    (ebitda_x, xint), minority interest (mib, mibt, mibn), assets (at_x -> asset
+    growth) and net income (ni_x) from this panel via ``_jkp_annual_acc``. The real
+    builder (``standardized_accounting_data``) pulls ~40 Compustat vars this synthetic
+    fixture doesn't carry, so instead we reproduce the panel's *shape and the fields
+    the loaders consume*:
 
       * monthly-expanded grid per (gvkey, curcd) from the firm's first to last
         fiscal report (so the loader's ``at_x.shift(12)`` sees the prior-year
@@ -1077,6 +1083,9 @@ def gen_acc_std_ann(funda: pl.DataFrame, g_funda: pl.DataFrame) -> pl.DataFrame:
         "ebitda",
         "oibdp",
         "ib",
+        "mib",
+        "mibt",
+        "mibn",
     ]
 
     def _report_rows(df: pl.DataFrame, source: str) -> pl.DataFrame:
@@ -1095,6 +1104,11 @@ def gen_acc_std_ann(funda: pl.DataFrame, g_funda: pl.DataFrame) -> pl.DataFrame:
             source=pl.lit(source),
             be_x=pl.when(be_x > 0).then(be_x).otherwise(None),
             ope_x=ebitda_x - pl.col("xint"),
+            ebitda_x=ebitda_x,
+            xint=pl.col("xint"),
+            mib=pl.col("mib"),
+            mibt=pl.col("mibt"),
+            mibn=pl.col("mibn"),
             at_x=pl.col("at"),
             ni_x=pl.col("ib"),
         )
