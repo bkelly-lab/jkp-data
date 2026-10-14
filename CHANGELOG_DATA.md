@@ -3,6 +3,15 @@ This change log keeps track of changes to the underlying data set. In brackets, 
 
 This repository ports the original SAS pipeline ([ReplicationCrisis](https://github.com/bkelly-lab/ReplicationCrisis)) to Python using Polars. Entries up to and including 05-03-2025 are from the original change log.
 
+## 14-10-2026
+__Changes__:
+- ROW DHS PEAD: the IBES ticker is now linked to the Compustat gvkey by SEDOL first, then CUSIP, then Compustat `ibtic`. Previously only `ibtic` was used, with the lowest gvkey kept per ticker. The IBES `cusip` field holds either a country code plus the first six SEDOL characters (matched to Compustat `sedol`) or an 8-character CUSIP (mostly Canada, matched to Compustat `cusip`). `ibtic` now only fills tickers that neither identifier links. Where the links disagree, `ibtic` often points to a renamed successor or an unrelated firm. Non-US IBES tickers reaching a world security: 44,935 → 54,941.
+
+__Impact__:
+- ROW PEAD (`pead_dhs`; characteristic `abr_dhs`), 2000–2025: ex-US market cap with an announcement return 58.4% → 62.7% (SAU 22.4% → 71.3%, CHN 50.9% → 61.0%, ARE 19.4% → 36.5%, NLD 55.5% → 63.3%, KOR 73.5% → 80.3%, IND 67.1% → 72.9%). 99.92% of existing `abr_dhs` stock-months are kept, 3,207 values change and 374k stock-months are new.
+- PEAD factor months: MEX 160 → 175, NLD 184 → 197, ISR 34 → 46, BEL 38 → 45, SAU 153 → 159, IDN 168 → 174; ARE gains 15; ESP 219 → 216, DNK 118 → 115, SWE 278 → 277. Monthly correlation of `pead_dhs` with the previous series is 0.96–0.995 in the large markets (CAN 0.967, SAU 0.861).
+- US PEAD and all other outputs are unchanged.
+
 ## 05-10-2026
 This entry covers four international-coverage and definition changes to the factor-model outputs on the `factors_rep` branch. US factor returns are unchanged except US `rmw_ff`/`smb_ff5` from 2010-07 (item 3).
 

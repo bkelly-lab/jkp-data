@@ -16327,6 +16327,61 @@ def _dhs_align_abr(panel_rows: pl.DataFrame, abr: pl.DataFrame) -> pl.DataFrame:
     )
 
 
+def _dhs_ibes_id_link(
+    ibes: pl.LazyFrame, sec: pl.LazyFrame, ibes_key: pl.Expr, comp_key: pl.Expr
+) -> pl.LazyFrame:
+    """IBES ticker -> gvkey through one identifier: IBES rows keyed by `ibes_key`
+    joined to security-master rows keyed by `comp_key`; per ticker the gvkey with
+    the most matching IBES rows wins, then the lowest gvkey. Returns [ticker, gvkey]."""
+    keys = sec.filter(comp_key.is_not_null()).select(comp_key.alias("k"), "gvkey").unique()
+    return (
+        ibes.filter(pl.col("cusip").is_not_null())
+        .select("ticker", ibes_key.alias("k"))
+        .join(keys, on="k", how="inner")
+        .group_by("ticker", "gvkey")
+        .agg(n=pl.len())
+        .sort(["ticker", "n", "gvkey"], descending=[False, True, False])
+        .unique(subset=["ticker"], keep="first", maintain_order=True)
+        .select("ticker", "gvkey")
+    )
+
+
+def _dhs_ibes_gvkey_link(ibes: pl.LazyFrame, raw_dir: Path) -> pl.LazyFrame:
+    """IBES ticker -> gvkey, one gvkey per ticker, by identifier precedence:
+    SEDOL, then CUSIP, then Compustat ibtic. The IBES cusip field holds either a
+    2-letter country code plus the first 6 SEDOL characters (matched to sedol[:6])
+    or an 8-character CUSIP (matched to cusip[:8]); both Compustat security masters
+    (global and North America) are searched. ibtic (lowest gvkey per ticker) fills
+    only tickers neither identifier links. Returns [ticker, gvkey]."""
+    sec = pl.concat(
+        [
+            pl.scan_parquet(raw_dir / f).select("gvkey", "ibtic", "sedol", "cusip")
+            for f in ("comp_g_security.parquet", "comp_security.parquet")
+        ]
+    ).with_columns(pl.col("gvkey").cast(pl.Utf8))
+    sedol_form = pl.col("cusip").str.contains(r"^[A-Z]{2}[0-9A-Z]{6}$")
+    by_sedol = _dhs_ibes_id_link(
+        ibes.filter(sedol_form),
+        sec,
+        pl.col("cusip").str.slice(2, 6),
+        pl.col("sedol").str.slice(0, 6),
+    )
+    by_cusip = _dhs_ibes_id_link(
+        ibes.filter(~sedol_form), sec, pl.col("cusip"), pl.col("cusip").str.slice(0, 8)
+    )
+    by_ibtic = (
+        sec.filter(pl.col("ibtic").is_not_null() & pl.col("gvkey").is_not_null())
+        .select(pl.col("ibtic").alias("ticker"), "gvkey")
+        .unique()
+        .sort(["ticker", "gvkey"])
+        .unique(subset=["ticker"], keep="first", maintain_order=True)
+    )
+    link = by_sedol
+    for nxt in (by_cusip, by_ibtic):
+        link = pl.concat([link, nxt.join(link, on="ticker", how="anti")])
+    return link
+
+
 def _dhs_ibes_announcements(raw_dir: Path, interim_dir: Path, beg: int, end: int) -> pl.DataFrame:
     """IBES international announcement dates bridged to the world `id`.
     Compustat g_fundq has no rdq ex-US, so ibes.actu_epsint (usfirm=0, QTR, SAN or
@@ -16337,27 +16392,19 @@ def _dhs_ibes_announcements(raw_dir: Path, interim_dir: Path, beg: int, end: int
     their PEAD pools below the min-stocks gate. ANN (annual) is admitted so that
     annual-only reporters get an announcement at all; for QTR/SAN reporters the
     fiscal year-end ANN row shares its pends with Q4/H2 and collapses below. The IBES ticker is linked to gvkey
-    via the ibtic column (the vendor-maintained IBES link) of BOTH Compustat
-    security masters (global and North America — cross-listed ROW firms can sit in
-    either), then to the world id of the gvkey's primary security. Bridges are
+    by SEDOL, then CUSIP, then Compustat ibtic (_dhs_ibes_gvkey_link), then to the
+    world id of the gvkey's primary security. Bridges are
     deduped one-to-one (deterministic sort + keep-first). One (id, period-end) row
     keeps the EARLIEST anndats (same-day tie: QTR, then SAN, then ANN), which also
     collapses a period reported under several periodicities or measures. Returns
     [id, datadate (=pends), rdq (=anndats), gate (staleness months of the kept row's
     periodicity: QTR 6, SAN 9, ANN 15)]."""
-    # ibtic (IBES ticker) -> gvkey, one gvkey per ticker; both security masters
-    ibtic_gv = (
-        pl.concat(
-            [
-                pl.scan_parquet(raw_dir / "comp_g_security.parquet").select("ibtic", "gvkey"),
-                pl.scan_parquet(raw_dir / "comp_security.parquet").select("ibtic", "gvkey"),
-            ]
-        )
-        .filter(pl.col("ibtic").is_not_null() & pl.col("gvkey").is_not_null())
-        .select(pl.col("ibtic").alias("ticker"), pl.col("gvkey").cast(pl.Utf8))
-        .unique()
-        .sort(["ticker", "gvkey"])
-        .unique(subset=["ticker"], keep="first", maintain_order=True)
+    ibes = pl.scan_parquet(raw_dir / "ibes_actu_epsint.parquet").filter(
+        (pl.col("usfirm") == 0)
+        & pl.col("pdicity").is_in(["QTR", "SAN", "ANN"])
+        & pl.col("ticker").is_not_null()
+        & pl.col("anndats").is_not_null()
+        & pl.col("pends").is_not_null()
     )
     # gvkey -> world id (primary security in the ROW universe), one id per gvkey
     gv_id = (
@@ -16369,22 +16416,14 @@ def _dhs_ibes_announcements(raw_dir: Path, interim_dir: Path, beg: int, end: int
         .unique(subset=["gvkey"], keep="first", maintain_order=True)
     )
     return (
-        pl.scan_parquet(raw_dir / "ibes_actu_epsint.parquet")
-        .filter(
-            (pl.col("usfirm") == 0)
-            & pl.col("pdicity").is_in(["QTR", "SAN", "ANN"])
-            & pl.col("ticker").is_not_null()
-            & pl.col("anndats").is_not_null()
-            & pl.col("pends").is_not_null()
-        )
-        .select(
+        ibes.select(
             "ticker",
             pl.col("anndats").cast(pl.Date).alias("rdq"),
             pl.col("pends").cast(pl.Date).alias("datadate"),
             pl.col("pdicity").replace_strict({"QTR": 6, "SAN": 9, "ANN": 15}).alias("gate"),
         )
         .filter(pl.col("rdq").dt.year().is_between(beg, end))
-        .join(ibtic_gv, on="ticker", how="inner")
+        .join(_dhs_ibes_gvkey_link(ibes, raw_dir), on="ticker", how="inner")
         .join(gv_id, on="gvkey", how="inner")
         .select("id", "datadate", "rdq", "gate")
         # earliest announcement per (id, period-end); shortest gate (QTR) wins a tie
@@ -16403,7 +16442,7 @@ def _dhs_row_announcement_returns(
 ) -> pl.DataFrame:
     """ROW (ex-US) announcement returns (Abr) for international PEAD, in the SAME
     schema as the US _dhs_announcement_returns abr_panel so the two concat. The
-    announcement date is IBES anndats (bridged to the world id via ibtic->gvkey);
+    announcement date is IBES anndats (bridged to the world id via SEDOL/CUSIP/ibtic->gvkey);
     Abr is the [anndats-2, anndats+1] weekday CAR of world_dsf daily returns net of
     the per-country market_returns_daily benchmark, aligned to the ROW monthly panel
     exactly like the US path — except that the announcement's `gate` rides along so
@@ -17020,7 +17059,7 @@ def gen_dhs_data(
         monthly_panel, raw_dir, interim_dir, beg, end, beg_q, end_q
     )
     # International PEAD: append the ROW announcement panel (IBES anndats bridged via
-    # ibtic->gvkey->id, Abr on world_dsf) when the ex-US daily + IBES inputs are
+    # SEDOL/CUSIP/ibtic->gvkey->id, Abr on world_dsf) when the ex-US daily + IBES inputs are
     # present; without them ROW pead_dhs stays null (FIN-international is unaffected).
     if (
         row

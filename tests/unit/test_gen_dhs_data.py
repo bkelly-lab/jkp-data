@@ -5,8 +5,9 @@ Covers _dhs_row_chars: NS = log(1 + chcsho_12m), IR = -eqnpo_60m (both sampled
 at June rows), the YEAR relabel split (IR emitted at YEAR=t, NS at YEAR=t-1),
 and the lagBE join (be_x of the fiscal year ending in calendar YEAR-1, latest
 statement per gvkey-fiscal-year). Also covers _dhs_ibes_announcements (ticker
-bridging via both security masters, measure-agnostic filter, periodicity gate
-flag) and the periodicity-aware staleness gate in _dhs_align_abr.
+bridging via both security masters, SEDOL > CUSIP > ibtic link precedence,
+measure-agnostic filter, periodicity gate flag) and the periodicity-aware
+staleness gate in _dhs_align_abr.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ import pytest
 from jkp.data.aux_functions import (
     _dhs_align_abr,
     _dhs_ibes_announcements,
+    _dhs_ibes_gvkey_link,
     _dhs_non_financial,
     _dhs_row_chars,
 )
@@ -122,6 +124,25 @@ class TestDhsRowChars:
         assert null_row["IR"].null_count() == null_row.height
 
 
+def _security(
+    gvkey: list[str],
+    ibtic: list[str | None] | None = None,
+    sedol: list[str | None] | None = None,
+    cusip: list[str | None] | None = None,
+) -> pl.DataFrame:
+    """Toy Compustat security master; omitted identifier columns are all null."""
+    n = len(gvkey)
+    return pl.DataFrame(
+        {
+            "gvkey": gvkey,
+            "ibtic": ibtic or [None] * n,
+            "sedol": sedol or [None] * n,
+            "cusip": cusip or [None] * n,
+        },
+        schema={"gvkey": pl.Utf8, "ibtic": pl.Utf8, "sedol": pl.Utf8, "cusip": pl.Utf8},
+    )
+
+
 @pytest.fixture
 def ibes_dirs(tmp_path):
     """raw + interim dirs with toy comp_g_security / comp_security /
@@ -130,13 +151,12 @@ def ibes_dirs(tmp_path):
     interim = tmp_path / "interim"
     raw.mkdir()
     interim.mkdir()
-    pl.DataFrame(
-        {"ibtic": ["T1", "T2", "T3", "T5"], "gvkey": ["001000", "002000", "003000", "005000"]}
+    # no SEDOL/CUSIP matches here: these tickers bridge through the ibtic fallback
+    _security(
+        ibtic=["T1", "T2", "T3", "T5"], gvkey=["001000", "002000", "003000", "005000"]
     ).write_parquet(raw / "comp_g_security.parquet")
     # T4 is bridged ONLY via the North America security master
-    pl.DataFrame({"ibtic": ["T4"], "gvkey": ["004000"]}).write_parquet(
-        raw / "comp_security.parquet"
-    )
+    _security(ibtic=["T4"], gvkey=["004000"]).write_parquet(raw / "comp_security.parquet")
     pl.DataFrame(
         {
             "ticker": ["T1", "T1", "T2", "T2", "T3", "T3", "T4", "T5"],
@@ -166,6 +186,7 @@ def ibes_dirs(tmp_path):
                 date(2010, 3, 31),
                 date(2010, 6, 30),
             ],
+            "cusip": pl.Series([None] * 8, dtype=pl.Utf8),
         }
     ).write_parquet(raw / "ibes_actu_epsint.parquet")
     pl.DataFrame(
@@ -235,6 +256,58 @@ class TestDhsIbesAnnouncements:
         pl.concat([ib, extra]).write_parquet(raw / "ibes_actu_epsint.parquet")
         out = _dhs_ibes_announcements(raw, interim, 2000, 2020)
         assert out.filter(pl.col("id") == 340004000)["gate"].to_list() == [6]
+
+
+class TestDhsIbesGvkeyLink:
+    """Identifier precedence SEDOL > CUSIP > ibtic; majority vote within one identifier."""
+
+    @pytest.fixture
+    def link(self, tmp_path):
+        _security(
+            gvkey=["001000", "002000", "003000", "004000", "005000"],
+            ibtic=["X1", "X2", None, None, None],
+            sedol=["9999999", "1234567", "7654321", "1111111", "2222222"],
+            cusip=[None, None, None, "87654321X", "GB555555X"],
+        ).write_parquet(tmp_path / "comp_g_security.parquet")
+        _security(
+            gvkey=["006000", "009000", "008000"],
+            sedol=[None, "3333333", "4444444"],
+            cusip=["12345678Z", None, None],
+        ).write_parquet(tmp_path / "comp_security.parquet")
+        ibes = pl.LazyFrame(
+            {
+                "ticker": ["X1", "X2", "X3", "X3", "X4", "X4", "X4", "X5", "X5", "X6"],
+                "cusip": [
+                    "GB123456",  # X1: SEDOL of 002000 beats ibtic -> 001000
+                    "12345678",  # X2: CUSIP of 006000 beats ibtic -> 002000
+                    "GB765432",  # X3: SEDOL of 003000 ...
+                    "87654321",  # ... beats CUSIP of 004000
+                    "GB111111",  # X4: two rows -> 004000
+                    "GB111111",
+                    "GB222222",  # one row -> 005000
+                    "GB333333",  # X5: tie 009000 vs 008000 -> lowest gvkey
+                    "GB444444",
+                    "GB555555",  # X6: SEDOL form never matched as a CUSIP
+                ],
+            }
+        )
+        return dict(_dhs_ibes_gvkey_link(ibes, tmp_path).collect().iter_rows())
+
+    def test_sedol_beats_ibtic(self, link):
+        assert link["X1"] == "002000"
+
+    def test_cusip_beats_ibtic(self, link):
+        assert link["X2"] == "006000"
+
+    def test_sedol_beats_cusip(self, link):
+        assert link["X3"] == "003000"
+
+    def test_majority_vote_then_lowest_gvkey(self, link):
+        assert link["X4"] == "004000"
+        assert link["X5"] == "008000"
+
+    def test_sedol_form_not_tried_as_cusip(self, link):
+        assert "X6" not in link
 
 
 def _align_abr_frames(stock_id: int, gate: int) -> tuple[pl.DataFrame, pl.DataFrame]:
