@@ -3,6 +3,27 @@ This change log keeps track of changes to the underlying data set. In brackets, 
 
 This repository ports the original SAS pipeline ([ReplicationCrisis](https://github.com/bkelly-lab/ReplicationCrisis)) to Python using Polars. Entries up to and including 05-03-2025 are from the original change log.
 
+## 05-10-2026
+This entry covers four international-coverage and definition changes to the factor-model outputs on the `factors_rep` branch. US factor returns are unchanged except US `rmw_ff`/`smb_ff5` from 2010-07 (item 3).
+
+__Changes__:
+1. World Stambaugh-Yuan mispricing universe: stocks whose prior-month market equity is below the NYSE 1st percentile (`size_grp == "nano"`) are excluded, instead of the $5 USD price floor. A USD price floor is not comparable across currencies (it removed 71% of Chinese, 59% of Hong Kong and 96% of Indonesian market cap); excluding nano caps reproduces what the $5 floor does in the US (micro caps stay, ~80% of nano caps go). The US keeps the $5 floor.
+2. ROW DHS PEAD announcement dates now include annual (ANN) IBES records alongside quarterly (QTR) and semiannual (SAN). Each announcement carries a staleness limit by periodicity (QTR 6, SAN 9, ANN 15 months); one announcement per fiscal period end, earliest date first.
+3. US FF operating profitability (`op_ff`) uses book equity plus total minority interest, `coalesce(mibt, mib + mibn)`, in the denominator. Since 2009 Compustat reports the redeemable (`mib`) and non-redeemable (`mibn`) parts separately, so `mib` alone missed most minority interest after 2009.
+4. World FF operating profitability (`op_ff`) is now `(ebitda_x − coalesce(xint, 0)) / (be_x + coalesce(mibt, mib + mibn))`: a missing interest expense counts as zero (French's missing-component rule, as in the US) and the denominator adds total minority interest. Previously `ope_x / be_x`, null whenever `xint` was missing.
+5. Standardized accounting data: `mibt` (total minority interest) and `mibn` (non-redeemable minority interest) are added to `acc_std_ann`/`acc_std_qtr`, USD-converted like the other balance-sheet items.
+
+__Output folder__:
+- `accounting_data/annual.parquet` and `accounting_data/quarterly.parquet` — new columns `mibt`, `mibn`.
+- No columns are added or removed elsewhere.
+
+__Impact__:
+- World mispricing (`smb_mispricing`, `mispricing_mgmt`, `mispricing_perf`; characteristics `mispricing_mgmt`/`mispricing_perf`): share of market cap with both scores, 2000–2025, CHN 24% → 83%, HKG 30% → 65%, TWN 32% → 83%, IND 56% → 74%, GBR 64% → 82%; factor months CHN 204 → 312, HKG 18 → 290, TWN 149 → 305, and IDN/SGP/THA/MYS from 0 to ~300. ESP loses months (307 → 288) because admitting more stocks thins a performance-leg bucket.
+- ROW PEAD (`pead_dhs`; characteristic `abr_dhs`): ex-US market cap with an announcement return 54.7% → 57.8%; +696k new stock-months, 20k existing values change (mostly Japan, where the ANN date precedes the QTR fourth-quarter date). PEAD months HKG 232 → 312, AUS 226 → 311, GBR 253 → 307, FRA 247 → 301, DEU 256 → 309.
+- US `rmw_ff`/`smb_ff5` change from 2010-07 (186 months); US RMW correlation with Ken French's series in the 2010s rises from 0.986 to 0.990 and the full-sample annualized mean moves from 3.07% to 3.19% (French: 3.19%, 2026-08 vintage). US `op_ff` changes for affected firms from fiscal 2009.
+- World `op_ff` coverage rises from 92.4% to 94.1% of ex-US market cap (MEX 84% → 93%, CHN 86% → 92%, SAU 88% → 92%); RMW months CHN 294 → 312, SAU 210 → 234, MEX 300 → 312, BRA 222 → 234, ARE 167 → 148. World `rmw_ff`/`smb_ff5` change in every country (RMW correlation with the previous series ≥ 0.93 in most markets).
+- Changed characteristics in `world_data.parquet`: `mispricing_mgmt`, `mispricing_perf`, `abr_dhs`, `op_ff`. No other characteristic reads the changed inputs.
+
 ## 15-07-2026
 __Changes__:
 - Applied the daily `zero_obs < 10` quality screen only to Compustat-sourced rows; CRSP stock-months with many zero-return days are no longer dropped from daily return-based characteristics and market correlation inputs
