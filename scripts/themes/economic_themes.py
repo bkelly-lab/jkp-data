@@ -1,0 +1,704 @@
+"""Economic themes for the JKP characteristics: the source of truth for the themes files.
+
+Description:
+    Groups characteristics by economic meaning into sub-themes, and sub-themes into broad
+    themes. Each characteristic belongs to exactly one sub-theme and each sub-theme to
+    exactly one theme. Three signs, one per level: sub_theme_sign (per characteristic)
+    points the characteristic toward its sub-theme's name, theme_sign (per sub-theme)
+    points the sub-theme toward its theme's name, and return_sign (per theme) points the
+    theme toward higher returns. See README.md in this folder for the versioning rules and
+    CHANGELOG_THEMES.md for what changed in each version.
+Steps:
+    1) Check the grouping: no characteristic in two sub-themes, every sub-theme in exactly
+       one theme, and a description for every theme and sub-theme.
+    2) Write the mapping and the descriptions, both tagged with VERSION.
+Output:
+    src/jkp/data/resources/themes/themes.csv (characteristic, theme, sub_theme, sub_theme_sign,
+    theme_sign, return_sign, version) and
+    src/jkp/data/resources/themes/theme_descriptions.csv (level, name, theme, description,
+    version), plus a console summary.
+
+Run with: uv run python scripts/themes/economic_themes.py
+"""
+
+from pathlib import Path
+
+import polars as pl
+
+VERSION = "v1.0"  # text, so v1.10 never reads as v1.1
+OUT_DIR = Path(__file__).resolve().parents[2] / "src" / "jkp" / "data" / "resources" / "themes"
+
+# Themes: each sub-theme belongs to exactly one -------------------------------------------
+THEMES: dict[str, list[str]] = {
+    "Value": ["Value", "Earnings yield", "Cash flow yield", "Dividend yield", "Equity duration"],
+    "Profitability": ["Profitability", "Profit margins", "Cash flow profitability"],
+    "Fundamental momentum": ["Profit growth", "Earnings surprise"],
+    "Earnings quality": ["Accruals", "Special items", "Earnings persistence", "Tax burden"],
+    "Investment": [
+        "Asset growth",
+        "Capex growth",
+        "Working capital growth",
+        "Operating payables growth",
+        "Book equity growth",
+        "Long-term investment growth",
+        "Financial asset growth",
+        "Operating growth",
+    ],
+    "Intangibles": ["R&D intensity", "Advertising intensity"],
+    "Operating efficiency": [
+        "Asset turnover",
+        "Working capital efficiency",
+        "Capital intensity",
+        "Labor intensity",
+        "Labor productivity growth",
+    ],
+    "Financing": [
+        "Equity issuance",
+        "Equity payout",
+        "Debt issuance",
+        "Liability growth",
+        "External financing",
+    ],
+    "Leverage": [
+        "Leverage",
+        "Debt maturity",
+        "Cost of debt",
+        "Preferred stock",
+        "Balance sheet liquidity",
+        "Distress",
+        "Financial constraints",
+    ],
+    "Risk": ["Volatility", "Lottery", "Beta", "Skewness", "Earnings volatility"],
+    "Size": ["Size", "Firm age", "Share price", "Liquidity", "Share turnover"],
+    "Momentum": ["Momentum 2-6", "Momentum 7-12", "Momentum"],
+    "Short-term reversal": ["Short-term reversal"],
+    "Long-term reversal": ["Long-term reversal"],
+    "Seasonality": ["Seasonality"],
+    "Composites": ["Composites"],
+}
+
+# Sub-themes: characteristics in each sub-theme, ordered by theme --------------------
+SUB_THEMES: dict[str, list[str]] = {
+    # Value
+    "Value": ["be_me", "at_me", "sale_me", "be_mev", "bev_mev", "at_mev", "sale_mev", "aliq_mat"],
+    "Earnings yield": [
+        "ni_me",
+        "nix_me",
+        "ope_me",
+        "ebit_me",
+        "ebitda_me",
+        "ebit_mev",
+        "ebitda_mev",
+        "gp_me",
+        "gp_mev",
+        "ival_me",
+    ],
+    "Cash flow yield": ["ocf_me", "ocf_mev", "fcf_me", "fcf_mev", "cop_me", "cop_mev"],
+    "Dividend yield": [
+        "div1m_me",
+        "div3m_me",
+        "div6m_me",
+        "div12m_me",
+        "div_me",
+        "div_at",
+        "div_ni",
+    ],
+    "Equity duration": ["eq_dur"],
+    # Profitability
+    "Profitability": [
+        "gp_at",
+        "gp_atl1",
+        "gp_bev",
+        "op_at",
+        "op_atl1",
+        "ope_be",
+        "ope_bel1",
+        "cop_at",
+        "cop_atl1",
+        "cop_bev",
+        "ebit_at",
+        "ebit_bev",
+        "ebitda_at",
+        "ebitda_bev",
+        "ni_at",
+        "ni_be",
+        "nix_be",
+        "niq_at",
+        "niq_be",
+        "qmj_prof",
+        "fi_at",
+        "fi_bev",
+        "ebit_int",
+        "ebitda_debt",
+        "ebitda_ppen",
+    ],
+    "Profit margins": [
+        "gp_sale",
+        "ebitda_sale",
+        "ebit_sale",
+        "pi_sale",
+        "ni_sale",
+        "nix_sale",
+        "profit_cl",
+        "ni_emp",
+    ],
+    "Cash flow profitability": [
+        "ocf_at",
+        "ocf_be",
+        "fcf_be",
+        "fcf_ocf",
+        "fcf_ppen",
+        "ocf_cl",
+        "fcf_sale",
+        "ocf_debt",
+        "ocf_sale",
+    ],
+    # Fundamental momentum
+    "Profit growth": [
+        "gp_gr1a",
+        "ebitda_gr1a",
+        "ebit_gr1a",
+        "ope_gr1a",
+        "ni_gr1a",
+        "nix_gr1a",
+        "gp_gr3a",
+        "ebitda_gr3a",
+        "ebit_gr3a",
+        "ope_gr3a",
+        "ni_gr3a",
+        "nix_gr3a",
+        "ocf_gr1a",
+        "fcf_gr1a",
+        "ocf_gr3a",
+        "fcf_gr3a",
+        "ocf_at_chg1",
+        "ni_inc8q",
+        "tax_gr1a",
+        "tax_gr3a",
+        "roe_ch5",
+        "roa_ch5",
+        "gpoa_ch5",
+        "cfoa_ch5",
+        "gmar_ch5",
+        "qmj_growth",
+        "dgp_dsale",
+        "dsale_dsga",
+    ],
+    "Earnings surprise": ["niq_su", "saleq_su", "niq_at_chg1", "niq_be_chg1"],
+    # Earnings quality
+    "Accruals": ["oaccruals_at", "oaccruals_ni", "taccruals_at", "taccruals_ni"],
+    "Special items": ["spi_at", "xido_at", "nri_at"],
+    "Earnings persistence": ["ni_ar1"],
+    "Tax burden": ["tax_pi", "pi_nix"],
+    # Investment
+    "Asset growth": [
+        "at_gr1",
+        "at_gr3",
+        "noa_gr1a",
+        "lnoa_gr1a",
+        "ppeinv_gr1a",
+        "nca_gr1",
+        "nca_gr3",
+        "ncoa_gr1a",
+        "nncoa_gr1a",
+        "oa_gr1a",
+        "ncoa_gr3a",
+        "nncoa_gr3a",
+        "oa_gr3a",
+        "noa_at",
+        "ppeg_gr1a",
+        "ppeg_gr3a",
+        "intan_gr1a",
+        "intan_gr3a",
+        "dp_gr1a",
+        "dp_gr3a",
+    ],
+    "Capex growth": ["capx_gr1", "capx_gr2", "capx_gr3", "capx_gr1a", "capx_gr3a", "capex_abn"],
+    "Working capital growth": [
+        "ca_gr1",
+        "ca_gr3",
+        "coa_gr1a",
+        "coa_gr3a",
+        "cowc_gr1a",
+        "cowc_gr3a",
+        "nwc_gr1a",
+        "nwc_gr3a",
+        "inv_gr1",
+        "inv_gr1a",
+        "inv_gr3a",
+        "rec_gr1a",
+        "rec_gr3a",
+        "dsale_dinv",
+        "dsale_drec",
+    ],
+    "Operating payables growth": [
+        "col_gr1a",
+        "ncol_gr1a",
+        "ol_gr1a",
+        "col_gr3a",
+        "ncol_gr3a",
+        "ol_gr3a",
+        "ap_gr1a",
+        "ap_gr3a",
+        "txp_gr1a",
+        "txp_gr3a",
+        "txditc_gr1a",
+        "txditc_gr3a",
+    ],
+    "Book equity growth": ["be_gr1", "be_gr3", "be_gr1a"],
+    "Long-term investment growth": ["lti_gr1a", "lti_gr3a"],
+    "Financial asset growth": ["sti_gr1a", "fna_gr1a", "fna_gr3a"],
+    "Operating growth": [
+        "sale_gr1",
+        "sale_gr3",
+        "saleq_gr1",
+        "cogs_gr1",
+        "sga_gr1",
+        "opex_gr1",
+        "cogs_gr3",
+        "sga_gr3",
+        "opex_gr3",
+        "emp_gr1",
+    ],
+    # Intangibles
+    "R&D intensity": ["rd_at", "rd_sale", "rd_me", "rd5_at"],
+    "Advertising intensity": ["adv_sale"],
+    # Operating efficiency
+    "Asset turnover": ["at_turnover", "sale_bev", "opex_at", "sale_be"],
+    "Working capital efficiency": [
+        "inv_days",
+        "rec_days",
+        "ap_days",
+        "cash_conversion",
+        "inv_turnover",
+        "rec_turnover",
+        "ap_turnover",
+        "inv_act",
+    ],
+    "Capital intensity": ["capx_at", "ppen_mev", "gp_ppen", "lt_ppen"],
+    "Labor intensity": ["staff_sale", "sale_emp"],
+    "Labor productivity growth": ["sale_emp_gr1"],
+    # Financing
+    "Equity issuance": [
+        "chcsho_1m",
+        "chcsho_3m",
+        "chcsho_6m",
+        "chcsho_12m",
+        "eqnpo_1m",
+        "eqnpo_3m",
+        "eqnpo_6m",
+        "eqnpo_12m",
+        "eqis_at",
+        "eqis_me",
+        "eqnetis_at",
+        "eqnetis_me",
+        "eqnpo_at",
+        "eqnpo_me",
+        "eqis_gr1a",
+        "eqis_gr3a",
+        "eqnetis_gr1a",
+        "eqnetis_gr3a",
+        "eqnpo_gr1a",
+        "eqnpo_gr3a",
+    ],
+    "Equity payout": [
+        "eqbb_at",
+        "eqbb_me",
+        "eqpo_me",
+        "eqbb_gr1a",
+        "eqbb_gr3a",
+        "eqpo_gr1a",
+        "eqpo_gr3a",
+        "div_gr1a",
+        "div_gr3a",
+    ],
+    "Debt issuance": [
+        "dbnetis_at",
+        "dltnetis_at",
+        "dstnetis_at",
+        "debt_gr1",
+        "debt_gr3",
+        "debtst_gr1a",
+        "debtst_gr3a",
+        "debtlt_gr1a",
+        "debtlt_gr3a",
+        "dbnetis_mev",
+        "dltnetis_mev",
+        "dstnetis_mev",
+        "dbnetis_gr1a",
+        "dbnetis_gr3a",
+        "dltnetis_gr1a",
+        "dltnetis_gr3a",
+        "dstnetis_gr1a",
+        "dstnetis_gr3a",
+        "fnl_gr1a",
+        "fnl_gr3a",
+        "nfna_gr1a",
+        "nfna_gr3a",
+    ],
+    "Liability growth": ["lt_gr1", "lt_gr3", "ncl_gr1", "ncl_gr3", "cl_gr1", "cl_gr3"],
+    "External financing": [
+        "netis_at",
+        "netis_mev",
+        "fincf_at",
+        "fincf_mev",
+        "netis_gr1a",
+        "netis_gr3a",
+        "fincf_gr1a",
+        "fincf_gr3a",
+    ],
+    # Leverage
+    "Leverage": [
+        "debt_at",
+        "debt_be",
+        "debt_bev",
+        "debtlt_be",
+        "debtlt_bev",
+        "at_be",
+        "be_bev",
+        "debt_me",
+        "debt_mev",
+        "debtlt_mev",
+        "netdebt_me",
+    ],
+    "Debt maturity": ["debtst_debt", "debtlt_debt", "debtst_bev", "debtst_mev", "cl_lt"],
+    "Cost of debt": ["int_debt", "int_debtlt"],
+    "Preferred stock": ["pstk_bev", "pstk_mev", "pstk_gr1", "pstk_gr3"],
+    "Balance sheet liquidity": [
+        "cash_at",
+        "cash_bev",
+        "cash_lt",
+        "cash_cl",
+        "caliq_cl",
+        "ca_cl",
+        "cash_me",
+        "cash_mev",
+        "aliq_at",
+        "nwc_at",
+        "sale_nwc",
+        "cash_gr1a",
+        "cash_gr3a",
+        "rec_act",
+        "tangibility",
+    ],
+    "Distress": ["o_score", "z_score"],
+    "Financial constraints": ["kz_index"],
+    # Risk
+    "Volatility": [
+        "rvol_21d",
+        "rvol_252d",
+        "rvolhl_21d",
+        "ivol_capm_21d",
+        "ivol_capm_252d",
+        "ivol_capm_60m",
+        "ivol_ff3_21d",
+        "ivol_hxz4_21d",
+    ],
+    "Lottery": ["rmax1_21d", "rmax5_21d", "rmax5_rvol_21d"],
+    "Beta": [
+        "beta_60m",
+        "beta_252d",
+        "beta_21d",
+        "beta_dimson_21d",
+        "betadown_252d",
+        "betabab_1260d",
+        "corr_1260d",
+    ],
+    "Skewness": ["rskew_21d", "iskew_capm_21d", "iskew_ff3_21d", "iskew_hxz4_21d", "coskew_21d"],
+    "Earnings volatility": [
+        "earnings_variability",
+        "ni_ivol",
+        "roe_be_std",
+        "roeq_be_std",
+        "niq_saleq_std",
+        "ocfq_saleq_std",
+    ],
+    # Size
+    "Size": [
+        "market_equity",
+        "enterprise_value",
+        "book_equity",
+        "assets",
+        "sales",
+        "net_income",
+        "intrinsic_value",
+    ],
+    "Firm age": ["age"],
+    "Share price": ["prc"],
+    "Liquidity": [
+        "ami_126d",
+        "dolvol_126d",
+        "dolvol_var_126d",
+        "turnover_var_126d",
+        "bidaskhl_21d",
+    ],
+    "Share turnover": ["turnover_126d", "zero_trades_21d", "zero_trades_126d", "zero_trades_252d"],
+    # Momentum
+    "Momentum 2-6": ["ret_2_0", "ret_3_0", "ret_3_1", "ret_6_1", "ret_6_0", "resff3_6_1"],
+    "Momentum 7-12": ["ret_12_7"],
+    "Momentum": [
+        "ret_12_1",
+        "ret_9_1",
+        "resff3_12_1",
+        "ret_9_0",
+        "ret_12_0",
+        "ret_18_1",
+        "ret_24_1",
+        "prc_highprc_252d",
+        "seas_1_1na",
+    ],
+    # Short-term reversal
+    "Short-term reversal": ["ret_1_0"],
+    # Long-term reversal
+    "Long-term reversal": [
+        "ret_60_12",
+        "ret_60_36",
+        "ret_48_12",
+        "ret_36_12",
+        "ret_24_12",
+        "ret_36_1",
+        "ret_48_1",
+        "ret_60_1",
+        "seas_2_5na",
+        "seas_6_10na",
+        "seas_11_15na",
+        "seas_16_20na",
+    ],
+    # Seasonality
+    "Seasonality": [
+        "seas_1_1an",
+        "seas_2_5an",
+        "seas_6_10an",
+        "seas_11_15an",
+        "seas_16_20an",
+    ],
+    # Composites
+    "Composites": ["qmj", "qmj_safety", "f_score", "mispricing_mgmt", "mispricing_perf"],
+}
+
+# Signs ------------------------------------------------------------------------------------
+# Characteristics where a high value means less of what their sub-theme's name says.
+NEGATIVE_IN_SUB_THEME: set[str] = {
+    # Balance sheet liquidity
+    "sale_nwc",
+    "rec_act",
+    # Capital intensity
+    "gp_ppen",
+    "lt_ppen",
+    # Debt issuance
+    "nfna_gr1a",
+    "nfna_gr3a",
+    # Debt maturity (high = longer maturity)
+    "debtst_debt",
+    "debtst_bev",
+    "debtst_mev",
+    "cl_lt",
+    # Distress
+    "z_score",
+    # Equity issuance (net payout is the opposite of net issuance)
+    "eqnpo_1m",
+    "eqnpo_3m",
+    "eqnpo_6m",
+    "eqnpo_12m",
+    "eqnpo_at",
+    "eqnpo_me",
+    "eqnpo_gr1a",
+    "eqnpo_gr3a",
+    # Labor intensity
+    "sale_emp",
+    # Leverage
+    "be_bev",
+    # Liquidity
+    "ami_126d",
+    "dolvol_var_126d",
+    "turnover_var_126d",
+    "bidaskhl_21d",
+    # Share turnover
+    "zero_trades_21d",
+    "zero_trades_126d",
+    "zero_trades_252d",
+    # Working capital efficiency
+    "inv_days",
+    "rec_days",
+    "ap_days",
+    "cash_conversion",
+    "inv_act",
+    # Working capital growth (sales growth minus inventory or receivables growth)
+    "dsale_dinv",
+    "dsale_drec",
+}
+
+# Sub-themes where a high value means less of what their theme's name says.
+NEGATIVE_IN_THEME: set[str] = {
+    "Equity duration",  # Value: long duration is the opposite of a high yield
+    "Equity payout",  # Financing: payout flows to investors, issuance from them
+    "Balance sheet liquidity",  # Leverage
+    "Debt maturity",  # Leverage: longer maturity, less refinancing risk
+    "Accruals",  # Earnings quality
+    "Special items",  # Earnings quality
+    "Capital intensity",  # Operating efficiency: more input per unit of output
+    "Labor intensity",  # Operating efficiency
+}
+
+# Return signs: +1 when a high value of the theme earns higher returns in the literature ----
+# Mostly the majority direction of the theme's factors in Jensen, Kelly and Pedersen (2023).
+RETURN_SIGNS: dict[str, int] = {
+    "Value": 1,
+    "Profitability": 1,
+    "Fundamental momentum": 1,
+    "Earnings quality": 1,
+    "Investment": -1,
+    "Intangibles": 1,
+    "Operating efficiency": 1,
+    "Financing": -1,
+    "Leverage": -1,
+    "Risk": -1,
+    "Size": -1,
+    "Momentum": 1,
+    "Short-term reversal": -1,
+    "Long-term reversal": -1,
+    "Seasonality": 1,
+    "Composites": 1,
+}
+
+# Descriptions -------------------------------------------------------------------------
+THEME_DESCRIPTIONS: dict[str, str] = {
+    "Value": "Price relative to fundamentals.",
+    "Profitability": "How profitable the firm is.",
+    "Fundamental momentum": "Recent improvement in fundamentals.",
+    "Earnings quality": "How reliable reported earnings are.",
+    "Investment": "Growth of the balance sheet and operations.",
+    "Intangibles": "Spending on intangible capital, such as R&D and advertising.",
+    "Operating efficiency": "How the firm uses its assets and labor.",
+    "Financing": "Net flows to and from investors.",
+    "Leverage": "Capital structure and financial strength.",
+    "Risk": "Return and earnings risk.",
+    "Size": "Firm size, age and trading activity.",
+    "Momentum": "Continuation of past returns.",
+    "Short-term reversal": "Reversal of last month's return.",
+    "Long-term reversal": "Reversal of multi-year returns.",
+    "Seasonality": "Returns in the same calendar month in past years.",
+    "Composites": "Multi-signal scores that span several themes.",
+}
+
+SUB_THEME_DESCRIPTIONS: dict[str, str] = {
+    "Value": "Book equity, assets and sales relative to market value.",
+    "Earnings yield": "Earnings, gross profit and intrinsic value relative to price.",
+    "Cash flow yield": "Operating and free cash flow relative to market value.",
+    "Dividend yield": "Dividends relative to price, assets and earnings.",
+    "Equity duration": "How far in the future expected cash flows arrive.",
+    "Profitability": "Profits relative to assets, book equity or PP&E.",
+    "Profit margins": "Profits relative to sales or employees.",
+    "Cash flow profitability": "Cash flow relative to assets, equity, sales or debt.",
+    "Profit growth": "Changes in profits and profitability over one to five years.",
+    "Earnings surprise": "Unexpected quarterly earnings and sales.",
+    "Accruals": "Gap between accounting earnings and cash flow.",
+    "Special items": "Non-recurring and extraordinary items.",
+    "Earnings persistence": "How strongly earnings carry over from year to year.",
+    "Tax burden": "Taxes relative to income.",
+    "Asset growth": "Growth in total, operating and long-lived assets.",
+    "Capex growth": "Growth in capital expenditure.",
+    "Working capital growth": "Growth in inventory, receivables and other working capital.",
+    "Operating payables growth": "Growth in payables to suppliers, accrued expenses and taxes: liabilities that arise from operations.",
+    "Book equity growth": "Growth in book equity.",
+    "Long-term investment growth": "Growth in long-term investments.",
+    "Financial asset growth": "Growth in short-term investments and financial assets.",
+    "Operating growth": "Growth in sales, costs and employees.",
+    "R&D intensity": "R&D spending relative to assets, sales or price.",
+    "Advertising intensity": "Advertising spending relative to sales.",
+    "Asset turnover": "Sales and operating costs relative to assets.",
+    "Working capital efficiency": "Inventory, receivable and payable days.",
+    "Capital intensity": "PP&E and capex relative to assets, price or profit.",
+    "Labor intensity": "Staff costs and sales per employee.",
+    "Labor productivity growth": "Growth in sales per employee.",
+    "Equity issuance": "Net share issuance, from market and accounting data.",
+    "Equity payout": "Buybacks and total payout to shareholders.",
+    "Debt issuance": "Net issuance and growth of debt.",
+    "Liability growth": "Growth in total, current and non-current liabilities, including debt.",
+    "External financing": "Total net financing from debt and equity.",
+    "Leverage": "Debt relative to assets, equity or market value.",
+    "Debt maturity": "Short-term versus long-term debt.",
+    "Cost of debt": "Interest expense relative to debt.",
+    "Preferred stock": "Preferred stock outstanding and its growth.",
+    "Balance sheet liquidity": "Cash and current assets relative to liabilities or assets.",
+    "Distress": "Bankruptcy-risk scores.",
+    "Financial constraints": "Kaplan–Zingales index.",
+    "Volatility": "Total and idiosyncratic return volatility.",
+    "Lottery": "Largest daily returns over the past month.",
+    "Beta": "Sensitivity to and correlation with the market.",
+    "Skewness": "Asymmetry of daily returns.",
+    "Earnings volatility": "Volatility of earnings and cash flow.",
+    "Size": "Market value, book value, assets and sales.",
+    "Firm age": "Months since the firm first appears in the data.",
+    "Share price": "Share price level.",
+    "Liquidity": "Trading volume, illiquidity and bid-ask spreads.",
+    "Share turnover": "Share turnover and days without trading.",
+    "Momentum 2-6": "Returns over windows of up to six months, mostly skipping the last month.",
+    "Momentum 7-12": "Returns over months 7–12.",
+    "Momentum": "Returns over windows of 9 months or longer, and the 52-week high.",
+    "Short-term reversal": "Last month's return.",
+    "Long-term reversal": "Returns over multi-year windows, up to 20 years back.",
+    "Seasonality": "Past returns in the same calendar month.",
+    "Composites": "Scores that combine signals from several themes: QMJ, QMJ safety, F-score and the two Stambaugh–Yuan mispricing factors.",
+}
+
+
+def validate() -> None:
+    """Check that the grouping is a two-level partition with a description for every group."""
+    listed = [s for subs in THEMES.values() for s in subs]
+    assert sorted(listed) == sorted(SUB_THEMES), "each sub-theme must be under exactly one theme"
+    members = [c for chars in SUB_THEMES.values() for c in chars]
+    dup = sorted({c for c in members if members.count(c) > 1})
+    assert not dup, f"characteristics in more than one sub-theme: {dup}"
+    assert set(members) >= NEGATIVE_IN_SUB_THEME, "unknown characteristics in NEGATIVE_IN_SUB_THEME"
+    assert SUB_THEMES.keys() >= NEGATIVE_IN_THEME, "unknown sub-themes in NEGATIVE_IN_THEME"
+    assert RETURN_SIGNS.keys() == THEMES.keys(), "return signs do not match themes"
+    assert THEME_DESCRIPTIONS.keys() == THEMES.keys(), "theme descriptions do not match"
+    assert SUB_THEME_DESCRIPTIONS.keys() == SUB_THEMES.keys(), "sub-theme descriptions do not match"
+
+
+def themes_frame() -> pl.DataFrame:
+    """One row per characteristic: characteristic, theme, sub_theme, the three signs, version."""
+    rows = []
+    for theme, subs in THEMES.items():
+        for sub in subs:
+            for c in SUB_THEMES[sub]:
+                sub_sign = -1 if c in NEGATIVE_IN_SUB_THEME else 1
+                rows.append(
+                    {
+                        "characteristic": c,
+                        "theme": theme,
+                        "sub_theme": sub,
+                        "sub_theme_sign": sub_sign,
+                        "theme_sign": -1 if sub in NEGATIVE_IN_THEME else 1,
+                        "return_sign": RETURN_SIGNS[theme],
+                        "version": VERSION,
+                    }
+                )
+    return pl.DataFrame(rows)
+
+
+def descriptions_frame() -> pl.DataFrame:
+    """One row per theme, followed by its sub-themes: level, name, theme, description, version."""
+    rows = []
+    for theme, subs in THEMES.items():
+        rows.append(("theme", theme, theme, THEME_DESCRIPTIONS[theme]))
+        rows += [("sub_theme", s, theme, SUB_THEME_DESCRIPTIONS[s]) for s in subs]
+    return pl.DataFrame(
+        rows, schema=["level", "name", "theme", "description"], orient="row"
+    ).with_columns(version=pl.lit(VERSION))
+
+
+def main() -> None:
+    validate()
+    themes = themes_frame()
+    themes.write_csv(OUT_DIR / "themes.csv")
+    descriptions_frame().write_csv(OUT_DIR / "theme_descriptions.csv")
+    print(
+        f"Themes {VERSION}: {themes.height} characteristics in {len(SUB_THEMES)} sub-themes, "
+        f"{len(THEMES)} themes. Written to {OUT_DIR}"
+    )
+
+
+if __name__ == "__main__":
+    main()

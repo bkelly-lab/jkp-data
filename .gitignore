@@ -111,6 +111,7 @@ aux_*.ddb
 
 # Bundled package resources (override earlier exclusions)
 !src/jkp/data/resources/*
+!src/jkp/data/resources/themes/**
 
 # Rust plugin build artifacts
 jkp-plugin/target/
