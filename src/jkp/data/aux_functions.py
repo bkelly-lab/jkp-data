@@ -573,6 +573,7 @@ def gen_crsp_sf(paths: DataPaths, freq):
         cfacshr_expr = sf.mthcumfacshr
         askhi_expr = sf.mthaskhi
         bidlo_expr = sf.mthbidlo
+        del_flag_expr = sf.mthdelflg
         open_expr = None
         close_expr = None
     else:  # freq == "d", validated above
@@ -587,6 +588,7 @@ def gen_crsp_sf(paths: DataPaths, freq):
         bidlo_expr = sf.dlylow
         open_expr = sf.dlyopen
         close_expr = sf.dlyclose
+        del_flag_expr = sf.dlydelflg
 
     sf_senames_join = sf.join(
         senames,
@@ -664,6 +666,8 @@ def gen_crsp_sf(paths: DataPaths, freq):
         retx=retx_expr,
         cfacshr=cfacshr_expr,
         vol=vol_expr,
+        # MthDelFlg/DlyDelFlg; gates the delisting-return adjustment in prepare_crsp_sf
+        del_flag=del_flag_expr,
         common=is_common_expr.cast("int32"),
         primaryexch=primaryexch_expr,
         conditionaltype=conditionaltype_expr,
@@ -686,6 +690,7 @@ def gen_crsp_sf(paths: DataPaths, freq):
             "vol",
             "prc_high",
             "prc_low",
+            "del_flag",
             "common",
             "primaryexch",
             "conditionaltype",
@@ -2619,12 +2624,15 @@ def prepare_crsp_sf(paths: DataPaths, freq):
     Steps:
         1) Read raw_data_dfs/__crsp_sf_{freq}.parquet; cast key numeric columns; apply NASDAQ volume adjustment.
         2) Compute dollar volume and infer dividend totals from (ret − retx) scaled by lagged price and split factors.
-        3) Join CRSP delists (crsp_{freq}sedelist); impute missing delret = −0.30 for “bad delist” buckets defined by CIZ codes;
-           set ret=0 when ret is missing but delret exists; compound ret with delret.
+        3) Join CRSP delists (crsp_{freq}sedelist); impute missing delret = −0.30 for “bad delist”
+           buckets defined by CIZ codes; set ret=0 when ret is missing but delret exists; compound
+           ret with delret unless MthDelFlg (del_flag) is A/P/V, meaning the delisting return is
+           already in MthRet. Monthly joins on (permno, MMYY); daily on exact (permno, date).
         4) Join risk-free proxies (CRSP T-bill and FF RF) and compute excess return ret_exc; compute company ME by summing ME across permnos within permco-date.
         5) If daily, compute LPS (2019) overnight/intraday returns (USD and local).
         6) If monthly, rescale vol and dolvol for unit alignment.
-        7) Drop helper columns, deduplicate by (permno, date), sort, and write crsp_{freq}sf.parquet.
+        7) Drop helper columns and, if daily, CRSP's DlyDelFlg = Y rows; deduplicate by (permno, date),
+           sort, and write crsp_{freq}sf.parquet.
 
     Output:
         Writes crsp_msf.parquet (freq="m") or crsp_dsf.parquet (freq="d") with cleaned returns,
@@ -2676,22 +2684,72 @@ def prepare_crsp_sf(paths: DataPaths, freq):
         )
     )
 
-    crsp_sedelist_aux_col = (
-        [gen_MMYY_column("delistingdt").alias("merge_aux")]
-        if (freq == "m")
-        else [col("delistingdt").alias("date")]
-    )
-
-    crsp_sedelist = pl.scan_parquet(
-        paths.interim_dir / "raw_data_dfs" / f"crsp_{freq}sedelist.parquet"
-    ).with_columns(crsp_sedelist_aux_col)
-
     crsp_mcti = add_MMYY_column_drop_original(
         pl.scan_parquet(paths.interim_dir / "raw_data_dfs" / "crsp_mcti_t30ret.parquet"), "caldt"
     )
     ff_factors_monthly = add_MMYY_column_drop_original(
         pl.scan_parquet(paths.interim_dir / "raw_data_dfs" / "ff_factors_monthly.parquet"), "date"
     )
+
+    me_company_exp = (
+        pl.when(pl.count("me").over(["permco", "date"]) != 0)
+        .then(pl.coalesce(["me", 0.0]).sum().over(["permco", "date"]))
+        .otherwise(fl_none())
+    )
+
+    scale = 1 if (freq == "m") else 21
+    ret_exc_exp = col("ret") - pl.coalesce(["t30ret", "rf"]) / scale
+
+    # CIZ flag-conditional delisting-return adjustment (Xia 2026, SSRN 7243220).
+    #
+    # Monthly — MthDelFlg (propagated as del_flag), per CRSP's flag metadata:
+    #   A/P/V — delisting return already included in MthRet → skip compounding
+    #   M     — excluded because the delisting return is missing → compound
+    #           (+ −0.30 imputation for bad-delist buckets)
+    #   G     — excluded because it is more than 10 days from the delisting
+    #           date → compound
+    #   N     — security active this period; delret is null after the join, so
+    #           compounding is a no-op
+    #   null  — no flag; compounded like N
+    #
+    # Daily — DlyDelFlg (propagated as del_flag):
+    #   Y — post-delisting row on deldlydt whose DlyRet is the delisting return.
+    #       It is off the main exchange (exch_main = 0) and is dropped below.
+    #   N — last trading day (delistingdt): sedelist joins here and delret (or
+    #       the −0.30 imputation) is compounded, so the delisting return is
+    #       counted once in world_dsf.
+
+    # --- sedelist join (frequency-specific key) ---
+    if freq == "m":
+        crsp_sedelist = pl.scan_parquet(
+            paths.interim_dir / "raw_data_dfs" / "crsp_msedelist.parquet"
+        ).with_columns(gen_MMYY_column("delistingdt").alias("merge_aux"))
+    else:
+        crsp_sedelist = pl.scan_parquet(
+            paths.interim_dir / "raw_data_dfs" / "crsp_dsedelist.parquet"
+        ).rename({"delistingdt": "date"})
+
+    __crsp_sf = __crsp_sf.join(crsp_sedelist, how="left", on=merge_vars)
+
+    # --- validate del_flag values ---
+    if freq == "m":
+        _KNOWN_DEL_FLAGS = {"A", "P", "M", "G", "N", "V"}
+        _flag_label = "MthDelFlg"
+    else:
+        _KNOWN_DEL_FLAGS = {"Y", "N"}
+        _flag_label = "DlyDelFlg"
+
+    _observed_flags = (
+        __crsp_sf.select(col("del_flag").drop_nulls().unique()).collect().to_series().to_list()
+    )
+    _unexpected = set(_observed_flags) - _KNOWN_DEL_FLAGS
+    if _unexpected:
+        warnings.warn(
+            f"Unexpected {_flag_label} values {sorted(_unexpected)!r} in CRSP stock file; "
+            "these will be compounded with delret (not in exclusion list). "
+            "Review CRSP documentation and update the gate if needed.",
+            stacklevel=2,
+        )
 
     c1 = col("delret").is_null()
 
@@ -2735,23 +2793,27 @@ def prepare_crsp_sf(paths: DataPaths, freq):
     c6 = col("delret").is_not_null()
     c7 = c5 & c6
 
-    me_company_exp = (
-        pl.when(pl.count("me").over(["permco", "date"]) != 0)
-        .then(pl.coalesce(["me", 0.0]).sum().over(["permco", "date"]))
-        .otherwise(fl_none())
+    # Compound unless MthDelFlg says the delisting return is already in MthRet;
+    # a null flag compounds (a no-op when no sedelist row joins).
+    needs_compound = ~col("del_flag").is_in(["A", "P", "V"]).fill_null(False)
+    __crsp_sf = (
+        __crsp_sf
+        # impute missing delret to -0.30 for "bad delist" buckets
+        .with_columns(
+            delret=pl.when(needs_compound & c4).then(pl.lit(-0.3)).otherwise(col("delret"))
+        )
+        # if ret missing but delret exists, set ret=0 so compounding works
+        .with_columns(ret=pl.when(needs_compound & c7).then(pl.lit(0.0)).otherwise(col("ret")))
+        # compound ret with delret unless MthDelFlg is A/P/V
+        .with_columns(
+            ret=pl.when(needs_compound)
+            .then((col("ret") + 1) * (pl.coalesce(["delret", 0.0]) + 1) - 1)
+            .otherwise(col("ret"))
+        )
     )
 
-    scale = 1 if (freq == "m") else 21
-    ret_exc_exp = col("ret") - pl.coalesce(["t30ret", "rf"]) / scale
-
     __crsp_sf = (
-        __crsp_sf.join(crsp_sedelist, how="left", on=merge_vars)
-        # impute missing delret to -0.30 for the “bad delist” buckets
-        .with_columns(delret=pl.when(c4).then(pl.lit(-0.3)).otherwise(col("delret")))
-        # if ret missing but delret exists, set ret=0 so compounding works
-        .with_columns(ret=pl.when(c7).then(pl.lit(0.0)).otherwise(col("ret")))
-        # compound ret with delret
-        .with_columns(ret=((col("ret") + 1) * (pl.coalesce(["delret", 0.0]) + 1) - 1))
+        __crsp_sf
         # rf joins
         .join(crsp_mcti, how="left", on="merge_aux")
         .join(ff_factors_monthly, how="left", on="merge_aux")
@@ -2788,23 +2850,24 @@ def prepare_crsp_sf(paths: DataPaths, freq):
             [(col(var) * 100).alias(var) for var in ["vol", "dolvol"]]
         )
 
-    __crsp_sf = (
-        __crsp_sf.drop(
-            [
-                "rf",
-                "t30ret",
-                "merge_aux",
-                "delret",
-                "delistingdt",
-                "delreasontype",
-                "delactiontype",
-                "delpaymenttype",
-                "delstatustype",
-            ]
-        )
-        .unique(["permno", "date"])
-        .sort(["permno", "date"])
-    )
+    drop_cols = [
+        "rf",
+        "t30ret",
+        "merge_aux",
+        "del_flag",
+        "delret",
+        "delreasontype",
+        "delactiontype",
+        "delpaymenttype",
+        "delstatustype",
+    ]
+    if freq == "m":
+        drop_cols.append("delistingdt")
+    else:
+        # delret is already compounded into the last trading day
+        __crsp_sf = __crsp_sf.filter(pl.col("del_flag").ne_missing("Y"))
+
+    __crsp_sf = __crsp_sf.drop(drop_cols).unique(["permno", "date"]).sort(["permno", "date"])
 
     __crsp_sf.collect().write_parquet(paths.interim_dir / f"crsp_{freq}sf.parquet")
 
