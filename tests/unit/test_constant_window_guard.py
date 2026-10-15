@@ -224,6 +224,15 @@ class TestConstantWindowFf3:
         assert result["ivol_ff3_21d"][0] is None
         assert result["iskew_ff3_21d"][0] is None
 
+    def test_rf_stepped_dead_stock_nulls_ff3_252d(self):
+        df = _rf_stepped_dead_df().with_columns(
+            smb_ff=0.002 * (pl.int_range(pl.len()) % 5 - 2),
+            hml=0.001 * (pl.int_range(pl.len()) % 3 - 1),
+        )
+        result = ff3(df, "_252d", __min=120)
+        assert result["ivol_ff3_252d"][0] is None
+        assert result["iskew_ff3_252d"][0] is None
+
 
 class TestConstantWindowHxz4:
     def _df(self, n: int = N) -> pl.DataFrame:
@@ -244,6 +253,16 @@ class TestConstantWindowHxz4:
         result = hxz4(self._df(), "_21d", __min=15)
         assert result["ivol_hxz4_21d"][0] is None
         assert result["iskew_hxz4_21d"][0] is None
+
+    def test_rf_stepped_dead_stock_nulls_hxz4_252d(self):
+        df = _rf_stepped_dead_df().with_columns(
+            smb_hxz=0.002 * (pl.int_range(pl.len()) % 5 - 2),
+            roe=0.001 * (pl.int_range(pl.len()) % 3 - 1),
+            inv=0.001 * (pl.int_range(pl.len()) % 4 - 2),
+        )
+        result = hxz4(df, "_252d", __min=120)
+        assert result["ivol_hxz4_252d"][0] is None
+        assert result["iskew_hxz4_252d"][0] is None
 
 
 class TestConstantWindowPrcToHigh:
