@@ -47,12 +47,17 @@ def _factor_df(rows: list[tuple[str, int, float | None]]) -> pl.DataFrame:
 
 def _msf_df(rows: list[dict]) -> pl.DataFrame:
     """Build a world_msf frame from a list of row dicts (id, excntry, i, ...)."""
+    ret_exc = [r["ret_exc"] for r in rows]
     return pl.DataFrame(
         {
             "id": [r["id"] for r in rows],
             "excntry": [r["excntry"] for r in rows],
             "eom": [_eom(r["i"]) for r in rows],
-            "ret_exc": [r["ret_exc"] for r in rows],
+            "ret": [
+                r.get("ret", (re + 0.001) if re is not None else None)
+                for r, re in zip(rows, ret_exc, strict=True)
+            ],
+            "ret_exc": ret_exc,
             "ret_local": [
                 r.get("ret_local", (r["ret_exc"] + 0.02) if r["ret_exc"] is not None else 0.02)
                 for r in rows

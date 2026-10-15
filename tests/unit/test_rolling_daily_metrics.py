@@ -50,6 +50,70 @@ def _empty_df(schema: dict[str, Any]) -> pl.DataFrame:
     return pl.DataFrame({k: pl.Series(name=k, values=[], dtype=v) for k, v in schema.items()})
 
 
+def _with_ret(df: pl.DataFrame) -> pl.DataFrame:
+    """Ensure a raw ``ret`` column exists for constant-window guards.
+
+    Production frames from dsf1/corr_data always carry ``ret``. Unit fixtures that
+    only built ``ret_exc`` / ``ret_exc_3l`` get a copy so guards can evaluate.
+    """
+    if "ret" in df.columns:
+        return df
+    if "ret_exc" in df.columns:
+        return df.with_columns(ret=pl.col("ret_exc"))
+    if "ret_exc_3l" in df.columns:
+        return df.with_columns(ret=pl.col("ret_exc_3l"))
+    return df
+
+
+# Wrap rolling helpers so legacy fixtures that omit ``ret`` still exercise the
+# guarded implementations (production always has ``ret`` on dsf1/corr_data).
+_rvol_impl = rvol
+_skew_impl = skew
+_capm_impl = capm
+_capm_ext_impl = capm_ext
+_ff3_impl = ff3
+_hxz4_impl = hxz4
+_downbeta_impl = downbeta
+_mktcorr_impl = mktcorr
+_dimsonbeta_impl = dimsonbeta
+
+
+def rvol(df, *args, **kwargs):
+    return _rvol_impl(_with_ret(df), *args, **kwargs)
+
+
+def skew(df, *args, **kwargs):
+    return _skew_impl(_with_ret(df), *args, **kwargs)
+
+
+def capm(df, *args, **kwargs):
+    return _capm_impl(_with_ret(df), *args, **kwargs)
+
+
+def capm_ext(df, *args, **kwargs):
+    return _capm_ext_impl(_with_ret(df), *args, **kwargs)
+
+
+def ff3(df, *args, **kwargs):
+    return _ff3_impl(_with_ret(df), *args, **kwargs)
+
+
+def hxz4(df, *args, **kwargs):
+    return _hxz4_impl(_with_ret(df), *args, **kwargs)
+
+
+def downbeta(df, *args, **kwargs):
+    return _downbeta_impl(_with_ret(df), *args, **kwargs)
+
+
+def mktcorr(df, *args, **kwargs):
+    return _mktcorr_impl(_with_ret(df), *args, **kwargs)
+
+
+def dimsonbeta(df, *args, **kwargs):
+    return _dimsonbeta_impl(_with_ret(df), *args, **kwargs)
+
+
 def _mktcorr_legacy(df, sfx, __min):
     """Pre-change mktcorr body, kept in tests to assert equivalence on null-free input."""
     return (
@@ -88,14 +152,13 @@ class TestRvol:
         # Polars std() is sample std (ddof=1), so:
         # (1,10): std([1,2,3]) = 1.0
         # (1,20): std([2,4,4]) = sqrt(4/3)
-        # (2,10): std([3,3,3]) = 0.0
+        # (2,10): constant ret → nulled by constant-window guard
         # (2,20): std([-1,0,1]) = 1.0
-        np.testing.assert_allclose(
-            result["rvol_21d"].to_list(),
-            [1.0, np.sqrt(4.0 / 3.0), 0.0, 1.0],
-            **tolerance.STANDARD,
-            err_msg=f"Unexpected rvol values: {result['rvol_21d'].to_list()}",
-        )
+        vals = result["rvol_21d"].to_list()
+        np.testing.assert_allclose(vals[0], 1.0, **tolerance.STANDARD)
+        np.testing.assert_allclose(vals[1], np.sqrt(4.0 / 3.0), **tolerance.STANDARD)
+        assert vals[2] is None, f"Expected null rvol for constant window, got {vals[2]}"
+        np.testing.assert_allclose(vals[3], 1.0, **tolerance.STANDARD)
 
     def test_rvol_uses_suffix_for_output_name(self):
         """rvol output column name should include the provided suffix."""
@@ -1764,6 +1827,61 @@ class TestPrepareDailyCorr:
         corr = pl.read_parquet(test_paths.interim_dir / "corr_data.parquet")
         # 10 days; 3l non-null from index 2 onwards → 8 rows
         assert len(corr) == 8, f"Expected 8 CRSP corr rows, got {len(corr)}"
+
+    def test_corr_data_carries_raw_ret_into_mktcorr(self, test_paths):
+        """corr_data keeps raw ret, so the real mktcorr guard nulls a dead stock.
+
+        ret is 0 every day while ret_exc drifts (as with monthly rf steps); the
+        guard must see raw ret, not ret_exc. Uses the unwrapped mktcorr so no
+        test shim supplies the ret column.
+        """
+        from jkp.data.aux_functions import prepare_daily
+
+        dates = [date(2020, 1, d) for d in range(2, 12)]
+        dsf = pl.DataFrame(
+            {
+                "excntry": ["USA"] * 10,
+                "id": ["CRSP"] * 10,
+                "source_crsp": [1] * 10,
+                "date": dates,
+                "eom": [date(2020, 1, 31)] * 10,
+                "prc": [10.0] * 10,
+                "adjfct": [1.0] * 10,
+                "ret": [0.0] * 10,
+                "ret_exc": [-0.0001 * (i % 3 + 1) for i in range(10)],
+                "dolvol": [1e6] * 10,
+                "shares": [1000.0] * 10,
+                "tvol": [100.0] * 10,
+                "ret_lag_dif": [1] * 10,
+                "ret_local": [0.0] * 10,
+            }
+        )
+        dsf_path = test_paths.interim_dir / "dsf.parquet"
+        dsf.write_parquet(dsf_path)
+
+        fcts = pl.DataFrame(
+            {
+                "excntry": ["USA"] * 10,
+                "date": dates,
+                "mktrf": [0.001 * ((i % 7) - 3) for i in range(10)],
+                "smb": [0.001] * 10,
+                "hml": [0.001] * 10,
+            }
+        )
+        fcts_path = test_paths.interim_dir / "fcts.parquet"
+        fcts.write_parquet(fcts_path)
+
+        prepare_daily(test_paths, dsf_path, fcts_path)
+        corr = pl.read_parquet(test_paths.interim_dir / "corr_data.parquet")
+
+        assert "ret" in corr.columns, "corr_data must carry raw ret for the mktcorr guard"
+        assert corr["ret"].to_list() == [0.0] * len(corr), "corr_data ret must be raw ret"
+
+        result = _mktcorr_impl(
+            corr.lazy().with_columns(group_number=pl.lit(1)), "_21d", __min=5
+        ).collect()
+        assert result.height == 1
+        assert result["corr_21d"][0] is None
 
     def test_prepare_daily_drops_null_mktrf_stock_days(self, test_paths):
         """Stock days whose date has no mktrf are absent from dsf1."""
