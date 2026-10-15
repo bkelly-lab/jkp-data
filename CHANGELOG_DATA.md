@@ -5,7 +5,7 @@ This repository ports the original SAS pipeline ([ReplicationCrisis](https://git
 
 ## 15-10-2026
 __Changes__:
-- Nulled rolling daily characteristics over constant or near-dead (raw `ret` zero-fraction ≥ 0.9) return/price/volume windows; affected columns include `rvol_*`, `ivol_capm_*`, `ivol_ff3_*`, `ivol_hxz4_*`, `beta_*`, `betadown_*`, `beta_dimson_*`, `rmax*`, `rskew_*`, `iskew_*`, `coskew_*`, `corr_*`, `prc_highprc_*`, `ami_*`, `dolvol_var_*`, and `turnover_var_*` ([#269](https://github.com/bkelly-lab/jkp-data/pull/269)). Guards key on raw `ret` (not RF-contaminated `ret_exc`) so multi-month windows (`_252d`, `_1260d`) are covered. Residual NaN/inf values are scrubbed in `finish_daily_chars`.
+- Nulled rolling daily characteristics over constant or near-dead windows ([#269](https://github.com/bkelly-lab/jkp-data/pull/269)). Return-based characteristics (`rvol_*`, `ivol_capm_*`, `ivol_ff3_*`, `ivol_hxz4_*`, `beta_*`, `betadown_*`, `beta_dimson_*`, `rmax*`, `rskew_*`, `iskew_*`, `coskew_*`, `corr_*`, `ami_*`) are nulled when raw `ret` is constant over the window or zero on at least 90% of its days. The check uses raw `ret` rather than `ret_exc`, whose monthly risk-free steps would otherwise hide constant returns over multi-month windows (`_252d`, `_1260d`). `prc_highprc_*`, `dolvol_var_*` and `turnover_var_*` are nulled only when the adjusted price, dollar volume or turnover is exactly constant over the window. The derived `betabab_1260d` and `rmax5_rvol_21d` become null with their inputs. Residual NaN/inf values are scrubbed in `finish_daily_chars`.
 
 ## 02-09-2026
 __Changes__:
