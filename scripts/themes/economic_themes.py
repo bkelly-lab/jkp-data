@@ -1,20 +1,20 @@
 """Economic themes for the JKP characteristics: the source of truth for the themes files.
 
 Description:
-    Groups characteristics by economic meaning into sub-themes, and sub-themes into broad
-    themes. Each characteristic belongs to exactly one sub-theme and each sub-theme to
-    exactly one theme. Three signs, one per level: sub_theme_sign (per characteristic)
-    points the characteristic toward its sub-theme's name, theme_sign (per sub-theme)
-    points the sub-theme toward its theme's name, and factor_sign (per theme) points the
-    theme toward higher returns, the long side of its factor. Each theme and sub-theme also
+    Groups characteristics by economic meaning into subthemes, and subthemes into broad
+    themes. Each characteristic belongs to exactly one subtheme and each subtheme to
+    exactly one theme. Three signs, one per level: subtheme_sign (per characteristic)
+    points the characteristic toward its subtheme's name, theme_sign (per subtheme)
+    points the subtheme toward its theme's name, and factor_sign (per theme) points the
+    theme toward higher returns, the long side of its factor. Each theme and subtheme also
     has a factor name, the usual name of its long-short factor. See README.md in this folder for the versioning rules and
     CHANGELOG_THEMES.md for what changed in each version.
 Steps:
-    1) Check the grouping: no characteristic in two sub-themes, every sub-theme in exactly
-       one theme, and a description for every theme and sub-theme.
+    1) Check the grouping: no characteristic in two subthemes, every subtheme in exactly
+       one theme, and a description for every theme and subtheme.
     2) Write the mapping and the descriptions, both tagged with VERSION.
 Output:
-    src/jkp/data/resources/themes/themes.csv (characteristic, theme, sub_theme, sub_theme_sign,
+    src/jkp/data/resources/themes/themes.csv (characteristic, theme, subtheme, subtheme_sign,
     theme_sign, factor_sign, version) and
     src/jkp/data/resources/themes/theme_descriptions.csv (level, name, factor_name, theme,
     description, version), plus a console summary.
@@ -29,7 +29,7 @@ import polars as pl
 VERSION = "v1.0"  # text, so v1.10 never reads as v1.1
 OUT_DIR = Path(__file__).resolve().parents[2] / "src" / "jkp" / "data" / "resources" / "themes"
 
-# Themes: each sub-theme belongs to exactly one -------------------------------------------
+# Themes: each subtheme belongs to exactly one -------------------------------------------
 THEMES: dict[str, list[str]] = {
     "Value": ["Value", "Earnings yield", "Cash flow yield", "Dividend yield", "Equity duration"],
     "Profitability": ["Profitability", "Profit margins", "Cash flow profitability"],
@@ -78,8 +78,8 @@ THEMES: dict[str, list[str]] = {
     "Composites": ["Composites"],
 }
 
-# Sub-themes: characteristics in each sub-theme, ordered by theme --------------------
-SUB_THEMES: dict[str, list[str]] = {
+# Subthemes: characteristics in each subtheme, ordered by theme --------------------
+SUBTHEMES: dict[str, list[str]] = {
     # Value
     "Value": ["be_me", "at_me", "sale_me", "be_mev", "bev_mev", "at_mev", "sale_mev", "aliq_mat"],
     "Earnings yield": [
@@ -478,8 +478,8 @@ SUB_THEMES: dict[str, list[str]] = {
 }
 
 # Signs ------------------------------------------------------------------------------------
-# Characteristics where a high value means less of what their sub-theme's name says.
-NEGATIVE_IN_SUB_THEME: set[str] = {
+# Characteristics where a high value means less of what their subtheme's name says.
+NEGATIVE_IN_SUBTHEME: set[str] = {
     # Balance sheet liquidity
     "sale_nwc",
     "rec_act",
@@ -529,7 +529,7 @@ NEGATIVE_IN_SUB_THEME: set[str] = {
     "dsale_drec",
 }
 
-# Sub-themes where a high value means less of what their theme's name says.
+# Subthemes where a high value means less of what their theme's name says.
 NEGATIVE_IN_THEME: set[str] = {
     "Equity duration",  # Value: long duration is the opposite of a high yield
     "Equity payout",  # Financing: payout flows to investors, issuance from them
@@ -582,7 +582,7 @@ THEME_DESCRIPTIONS: dict[str, str] = {
     "Composites": "Multi-signal scores that span several themes.",
 }
 
-SUB_THEME_DESCRIPTIONS: dict[str, str] = {
+SUBTHEME_DESCRIPTIONS: dict[str, str] = {
     "Value": "Book equity, assets and sales relative to market value.",
     "Earnings yield": "Earnings, gross profit and intrinsic value relative to price.",
     "Cash flow yield": "Operating and free cash flow relative to market value.",
@@ -643,8 +643,8 @@ SUB_THEME_DESCRIPTIONS: dict[str, str] = {
     "Composites": "Scores that combine signals from several themes: QMJ, QMJ safety, F-score and the two Stambaugh–Yuan mispricing factors.",
 }
 
-# Factor names. By default a factor is named after its theme or sub-theme, with "Low" in
-# front when it goes long low values (factor_sign, times theme_sign for a sub-theme, is -1).
+# Factor names. By default a factor is named after its theme or subtheme, with "Low" in
+# front when it goes long low values (factor_sign, times theme_sign for a subtheme, is -1).
 # Exceptions: established names for past returns, and plain antonyms where they read better.
 FACTOR_NAMES: dict[str, str] = {
     "Size": "Small",
@@ -664,33 +664,33 @@ FACTOR_NAMES: dict[str, str] = {
 def validate() -> None:
     """Check that the grouping is a two-level partition with a description for every group."""
     listed = [s for subs in THEMES.values() for s in subs]
-    assert sorted(listed) == sorted(SUB_THEMES), "each sub-theme must be under exactly one theme"
-    members = [c for chars in SUB_THEMES.values() for c in chars]
+    assert sorted(listed) == sorted(SUBTHEMES), "each subtheme must be under exactly one theme"
+    members = [c for chars in SUBTHEMES.values() for c in chars]
     dup = sorted({c for c in members if members.count(c) > 1})
-    assert not dup, f"characteristics in more than one sub-theme: {dup}"
-    assert set(members) >= NEGATIVE_IN_SUB_THEME, "unknown characteristics in NEGATIVE_IN_SUB_THEME"
-    assert SUB_THEMES.keys() >= NEGATIVE_IN_THEME, "unknown sub-themes in NEGATIVE_IN_THEME"
+    assert not dup, f"characteristics in more than one subtheme: {dup}"
+    assert set(members) >= NEGATIVE_IN_SUBTHEME, "unknown characteristics in NEGATIVE_IN_SUBTHEME"
+    assert SUBTHEMES.keys() >= NEGATIVE_IN_THEME, "unknown subthemes in NEGATIVE_IN_THEME"
     assert FACTOR_SIGNS.keys() == THEMES.keys(), "factor signs do not match themes"
-    assert (THEMES.keys() | SUB_THEMES.keys()) >= FACTOR_NAMES.keys(), (
+    assert (THEMES.keys() | SUBTHEMES.keys()) >= FACTOR_NAMES.keys(), (
         "unknown names in FACTOR_NAMES"
     )
     assert THEME_DESCRIPTIONS.keys() == THEMES.keys(), "theme descriptions do not match"
-    assert SUB_THEME_DESCRIPTIONS.keys() == SUB_THEMES.keys(), "sub-theme descriptions do not match"
+    assert SUBTHEME_DESCRIPTIONS.keys() == SUBTHEMES.keys(), "subtheme descriptions do not match"
 
 
 def themes_frame() -> pl.DataFrame:
-    """One row per characteristic: characteristic, theme, sub_theme, the three signs, version."""
+    """One row per characteristic: characteristic, theme, subtheme, the three signs, version."""
     rows = []
     for theme, subs in THEMES.items():
         for sub in subs:
-            for c in SUB_THEMES[sub]:
-                sub_sign = -1 if c in NEGATIVE_IN_SUB_THEME else 1
+            for c in SUBTHEMES[sub]:
+                sub_sign = -1 if c in NEGATIVE_IN_SUBTHEME else 1
                 rows.append(
                     {
                         "characteristic": c,
                         "theme": theme,
-                        "sub_theme": sub,
-                        "sub_theme_sign": sub_sign,
+                        "subtheme": sub,
+                        "subtheme_sign": sub_sign,
                         "theme_sign": -1 if sub in NEGATIVE_IN_THEME else 1,
                         "factor_sign": FACTOR_SIGNS[theme],
                         "version": VERSION,
@@ -700,19 +700,19 @@ def themes_frame() -> pl.DataFrame:
 
 
 def factor_name(level: str, name: str, theme: str) -> str:
-    """Name of the long-short factor of a theme or sub-theme (see FACTOR_NAMES)."""
+    """Name of the long-short factor of a theme or subtheme (see FACTOR_NAMES)."""
     if name in FACTOR_NAMES:
         return FACTOR_NAMES[name]
-    sign = FACTOR_SIGNS[theme] * (-1 if level == "sub_theme" and name in NEGATIVE_IN_THEME else 1)
+    sign = FACTOR_SIGNS[theme] * (-1 if level == "subtheme" and name in NEGATIVE_IN_THEME else 1)
     return name if sign > 0 else "Low " + name[0].lower() + name[1:]
 
 
 def descriptions_frame() -> pl.DataFrame:
-    """One row per theme, then its sub-themes: level, name, factor_name, theme, description, version."""
+    """One row per theme, then its subthemes: level, name, factor_name, theme, description, version."""
     rows = []
     for theme, subs in THEMES.items():
         rows.append(("theme", theme, theme, THEME_DESCRIPTIONS[theme]))
-        rows += [("sub_theme", s, theme, SUB_THEME_DESCRIPTIONS[s]) for s in subs]
+        rows += [("subtheme", s, theme, SUBTHEME_DESCRIPTIONS[s]) for s in subs]
     return pl.DataFrame(
         [(lvl, n, factor_name(lvl, n, t), t, d) for lvl, n, t, d in rows],
         schema=["level", "name", "factor_name", "theme", "description"],
@@ -726,7 +726,7 @@ def main() -> None:
     themes.write_csv(OUT_DIR / "themes.csv")
     descriptions_frame().write_csv(OUT_DIR / "theme_descriptions.csv")
     print(
-        f"Themes {VERSION}: {themes.height} characteristics in {len(SUB_THEMES)} sub-themes, "
+        f"Themes {VERSION}: {themes.height} characteristics in {len(SUBTHEMES)} subthemes, "
         f"{len(THEMES)} themes. Written to {OUT_DIR}"
     )
 

@@ -35,7 +35,7 @@ WRDS, CRSP, Compustat, or IBES vendor data:
   Jensen, Kelly, and Pedersen.
 - **`themes/themes.csv`** and **`themes/theme_descriptions.csv`** — The
   current version of the economic themes: each characteristic's theme and
-  sub-theme, and a description of each. Earlier versions are kept in
+  subtheme, and a description of each. Earlier versions are kept in
   `themes/superseded_themes/`. Authored by Jensen, Kelly, and Pedersen. See
   `scripts/themes/` in the repository for the versioning rules and changelog.
 - **`country_classification.xlsx`** — Country-to-region mapping used to
