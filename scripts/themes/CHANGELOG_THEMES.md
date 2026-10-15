@@ -38,11 +38,15 @@ would be +1 and `netdebt_me` −1, although the two correlate 0.83.
   `z_score` in Distress and net payout in Equity issuance. The data agree with every sign except
   for four characteristics that barely correlate with their subtheme (`coskew_21d` and the three
   non-annual seasonality measures for years 6–20); these are +1 by definition.
-- 8 subthemes have `theme_sign` −1: Equity duration (Value), Equity payout (Financing),
-  Balance sheet liquidity and Debt maturity (Leverage), Accruals and Special items (Earnings
-  quality), Capital intensity and Labor intensity (Operating efficiency). Where the data say
-  little, these are economic choices: Debt maturity (−1) and Cost of debt (+1) in Leverage, and
-  the Earnings quality and Operating efficiency signs.
+- 7 subthemes have `theme_sign` −1: Equity duration (Value), Equity payout (Financing),
+  Balance sheet liquidity and Debt maturity (Leverage), Accruals (Earnings quality), Capital
+  intensity and Labor intensity (Operating efficiency). Where the data say little, these are
+  economic choices: Debt maturity (−1) and Cost of debt (+1) in Leverage, and the Earnings
+  quality and Operating efficiency signs.
+- Special items have `theme_sign` +1: they are mostly write-downs and other one-off charges,
+  so a high (less negative) value means fewer charges and higher earnings quality. In the data
+  they correlate weakly and negatively with Accruals and Tax burden (−0.19 and −0.16 once
+  signed).
 - `factor_sign` is +1 for Value, Profitability, Fundamental momentum, Earnings quality,
   Intangibles, Operating efficiency, Medium-term returns, Seasonal returns and Composites, and
   −1 for Investment, Financing, Leverage, Risk, Size, Short-term returns and Long-term returns.

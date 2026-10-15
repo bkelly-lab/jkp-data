@@ -109,9 +109,9 @@ oaccruals_at,Earnings quality,Accruals,1,-1,1,v1.0
 oaccruals_ni,Earnings quality,Accruals,1,-1,1,v1.0
 taccruals_at,Earnings quality,Accruals,1,-1,1,v1.0
 taccruals_ni,Earnings quality,Accruals,1,-1,1,v1.0
-spi_at,Earnings quality,Special items,1,-1,1,v1.0
-xido_at,Earnings quality,Special items,1,-1,1,v1.0
-nri_at,Earnings quality,Special items,1,-1,1,v1.0
+spi_at,Earnings quality,Special items,1,1,1,v1.0
+xido_at,Earnings quality,Special items,1,1,1,v1.0
+nri_at,Earnings quality,Special items,1,1,1,v1.0
 ni_ar1,Earnings quality,Earnings persistence,1,1,1,v1.0
 tax_pi,Earnings quality,Tax burden,1,1,1,v1.0
 pi_nix,Earnings quality,Tax burden,1,1,1,v1.0

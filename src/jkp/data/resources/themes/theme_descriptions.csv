@@ -14,7 +14,7 @@ subtheme,Profit growth,Profit growth,Fundamental momentum,Changes in profits and
 subtheme,Earnings surprise,Earnings surprise,Fundamental momentum,Unexpected quarterly earnings and sales.,v1.0
 theme,Earnings quality,Earnings quality,Earnings quality,How reliable reported earnings are.,v1.0
 subtheme,Accruals,Low accruals,Earnings quality,Gap between accounting earnings and cash flow.,v1.0
-subtheme,Special items,Low special items,Earnings quality,Non-recurring and extraordinary items.,v1.0
+subtheme,Special items,Special items,Earnings quality,Non-recurring and extraordinary items.,v1.0
 subtheme,Earnings persistence,Earnings persistence,Earnings quality,How strongly earnings carry over from year to year.,v1.0
 subtheme,Tax burden,Tax burden,Earnings quality,Taxes relative to income.,v1.0
 theme,Investment,Low investment,Investment,Growth of the balance sheet and operations.,v1.0

@@ -534,7 +534,6 @@ NEGATIVE_IN_THEME: set[str] = {
     "Balance sheet liquidity",  # Leverage
     "Debt maturity",  # Leverage: longer maturity, less refinancing risk
     "Accruals",  # Earnings quality
-    "Special items",  # Earnings quality
     "Capital intensity",  # Operating efficiency: more input per unit of output
     "Labor intensity",  # Operating efficiency
 }
