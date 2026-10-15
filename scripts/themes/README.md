@@ -4,25 +4,37 @@ The themes group the JKP characteristics by economic meaning. Each characteristi
 one **subtheme** (for example *Earnings yield*), and each subtheme to one **theme** (for
 example *Value*).
 
-`themes.csv` has one row per characteristic, with three signs, one per level:
+## Signs
 
-| Column | Constant within | Captures |
+Characteristics in the same group do not all point the same way: a high dollar volume means a
+liquid stock, but a high Amihud measure means an illiquid one. `themes.csv` therefore gives
+each characteristic three signs, one per level. Each answers a yes-or-no question, with +1 for
+yes and −1 for no:
+
+| Column | Same for all | Question |
 |---|---|---|
-| `subtheme_sign` | (per characteristic) | +1 if a high value means more of what the subtheme's name says |
-| `theme_sign` | subtheme | +1 if more of the subtheme means more of what the theme's name says |
-| `factor_sign` | theme | +1 if more of the theme earns higher returns in the literature |
+| `subtheme_sign` | (set per characteristic) | Does a high value mean more of the subtheme? |
+| `theme_sign` | characteristics in a subtheme | Does more of the subtheme mean more of the theme? |
+| `factor_sign` | characteristics in a theme | Does more of the theme earn higher returns in the literature? |
 
-To orient a characteristic, multiply it by:
+Multiplying a characteristic by its signs changes what a high value means:
 
-- `subtheme_sign`, to point with its subtheme;
-- `subtheme_sign × theme_sign`, to point with its theme;
-- `subtheme_sign × theme_sign × factor_sign`, to point toward higher returns (the long side of
-  its long-short factor).
+| Multiply by | A high value then means |
+|---|---|
+| `subtheme_sign` | more of the subtheme |
+| `subtheme_sign × theme_sign` | more of the theme |
+| `subtheme_sign × theme_sign × factor_sign` | higher returns in the literature: the side the factor buys |
 
-Example: `ami_126d` (Amihud illiquidity) in Liquidity, theme Size. `subtheme_sign` is
-−1 (high `ami_126d` is low liquidity), `theme_sign` is +1 (liquid stocks are large), and
-`factor_sign` is −1 (small stocks earn more). The product is +1: the factor goes long illiquid
-stocks.
+Example: `ami_126d`, the Amihud illiquidity measure, in subtheme Liquidity and theme Size.
+
+| Sign | Value | Why |
+|---|---|---|
+| `subtheme_sign` | −1 | a high `ami_126d` means low liquidity |
+| `theme_sign` | +1 | liquid stocks are large |
+| `factor_sign` | −1 | small stocks earn more |
+| Product | +1 | the factor buys stocks with high `ami_126d`: illiquid stocks |
+
+## Files
 
 - `economic_themes.py` is the source of truth: the grouping, the signs, the descriptions and
   the version. Running it writes `themes.csv` and `theme_descriptions.csv` to
