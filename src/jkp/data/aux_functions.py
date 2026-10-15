@@ -7530,7 +7530,9 @@ def prep_data_factor_regs(
         Prepare monthly panel for factor regressions (join data with factors, filter, winsorize).
 
     Steps:
-        1) Create __msf1: join msf with factors on (excntry, eom); keep ret_exc, mktrf, hml, smb_ff and valid monthly obs.
+        1) Create __msf1: join msf with factors on (excntry, eom); keep ret, ret_exc,
+           mktrf, hml, smb_ff and valid monthly obs. Raw ``ret`` is retained so
+           rolling CAPM / factor-reg stats can apply the constant-return guard.
         2) Add integer date (aux_date) and cast id_int.
         3) Winsorize ret_exc by eom at configurable percentile bounds into __msf2.
 
@@ -7560,6 +7562,7 @@ def prep_data_factor_regs(
         a.id,
         CAST(a.id AS INTEGER) AS id_int,
         a.eom,
+        a.ret,
         a.ret_exc,
         a.ret_lag_dif,
         b.mktrf,
@@ -7582,7 +7585,7 @@ def prep_data_factor_regs(
         AND b.mktrf    IS NOT NULL
     )
     SELECT
-        id, id_int, eom, ret_lag_dif, mktrf, hml, smb_ff, aux_date,
+        id, id_int, eom, ret, ret_lag_dif, mktrf, hml, smb_ff, aux_date,
         GREATEST(
             QUANTILE_DISC(ret_exc, {lower}) OVER w,
             LEAST(
@@ -7711,7 +7714,8 @@ def prepare_daily(paths: DataPaths, data_path, fcts_path):
         3) Write dsf1.parquet and id_int_key.parquet.
         4) Build market lead/lag series per day (dropping null mktrf) and write mkt_lead_lag.parquet.
         5) Build 3-day rolling sums for stock and market excess returns; filter to non-null
-           sums and zero_obs_gate_ok(); write corr_data.parquet.
+           sums and zero_obs_gate_ok(); keep raw ``ret`` for constant-window guards;
+           write corr_data.parquet.
 
     Output:
         Parquets: dsf1.parquet, id_int_key.parquet, mkt_lead_lag.parquet, corr_data.parquet.
@@ -7778,7 +7782,7 @@ def prepare_daily(paths: DataPaths, data_path, fcts_path):
 
     corr_data = (
         pl.scan_parquet(paths.interim_dir / "dsf1.parquet")
-        .select(["ret_exc", "id_int", "date", "mktrf", "eom", "zero_obs", "source_crsp"])
+        .select(["ret_exc", "ret", "id_int", "date", "mktrf", "eom", "zero_obs", "source_crsp"])
         .sort(["id_int", "date"])
         .with_columns(
             ret_exc_3l=(col("ret_exc") + col("ret_exc").shift(1) + col("ret_exc").shift(2)).over(
@@ -7791,7 +7795,8 @@ def prepare_daily(paths: DataPaths, data_path, fcts_path):
         .filter(
             col("ret_exc_3l").is_not_null() & col("mkt_exc_3l").is_not_null() & zero_obs_gate_ok()
         )
-        .select(["id_int", "eom", "ret_exc_3l", "mkt_exc_3l"])
+        # Keep raw `ret` so mktcorr can guard on RF-immune constantness.
+        .select(["id_int", "eom", "ret_exc_3l", "mkt_exc_3l", "ret"])
         .select(pl.all().shrink_dtype())
         .sort(["id_int", "eom"])
     )
@@ -8523,6 +8528,7 @@ def finish_daily_chars(paths: DataPaths, output_path):
         2) Outer join on (id, eom).
         3) Add betabab (beta * rvol / mktvol) and rmax5_rvol ratio.
         4) Drop helper columns.
+        5) Scrub residual NaN/inf across all float columns to null.
 
     Output:
         '{output_path}' parquet with final daily characteristics.
@@ -8536,6 +8542,14 @@ def finish_daily_chars(paths: DataPaths, output_path):
         betabab_1260d=col("corr_1260d") * col("rvol_252d") / col("__mktvol_252d"),
         rmax5_rvol_21d=col("rmax5_21d") / col("rvol_252d"),
     ).drop("__mktvol_252d")
+
+    # Scrub residual NaN/inf across float columns (backstop for edge cases the
+    # per-characteristic constant-window guards do not catch).
+    float_cols = [name for name, dtype in daily_chars.collect_schema().items() if dtype.is_float()]
+    daily_chars = daily_chars.with_columns(
+        pl.when(pl.col(c).is_finite()).then(pl.col(c)).otherwise(None).alias(c) for c in float_cols
+    )
+
     daily_chars.collect().write_parquet(output_path)
 
 
@@ -9355,6 +9369,40 @@ def res_mom(df, sfx, __min, incl, skip):
     return df
 
 
+# Maximum fraction of exact-zero observations allowed in a rolling window before
+# a return-based statistic is nulled. Catches near-dead stocks (e.g. one trade
+# in 21 days ≈ 0.95 zeros) that bit-exact min!=max would miss.
+CONSTANT_MAX_ZERO_FRAC = 0.9
+
+
+def _guard_constant(
+    input_col: str,
+    stat_expr: pl.Expr,
+    *,
+    max_zero_frac: float | None = CONSTANT_MAX_ZERO_FRAC,
+) -> pl.Expr:
+    """
+    Description:
+        Null ``stat_expr`` when ``input_col`` is degenerate within a group_by group.
+
+    Steps:
+        1) Require min(input_col) != max(input_col) (perfectly constant → null).
+        2) If max_zero_frac is set, also require mean(input_col == 0) < max_zero_frac
+           so near-dead windows are nulled (window-level analogue of zero_obs /
+           zero_trades). Pass max_zero_frac=None for non-return columns (prices,
+           volumes) where a zero-fraction screen is not meaningful.
+
+    Output:
+        Polars expression usable inside .agg().
+    """
+    varying = pl.col(input_col).min() != pl.col(input_col).max()
+    if max_zero_frac is None:
+        ok = varying
+    else:
+        ok = varying & ((pl.col(input_col) == 0).mean() < max_zero_frac)
+    return pl.when(ok).then(stat_expr).otherwise(None)
+
+
 def rvol(df, sfx, __min):
     """
     Description:
@@ -9362,13 +9410,13 @@ def rvol(df, sfx, __min):
 
     Steps:
         1) Group by (id_int, group_number).
-        2) Compute std(ret_exc).
+        2) Compute std(ret_exc); null when raw ``ret`` is constant / near-dead.
 
     Output:
         LazyFrame with f'rvol{sfx}'.
     """
     df = df.group_by(["id_int", "group_number"]).agg(
-        col("ret_exc").cast(pl.Float64).std().alias(f"rvol{sfx}")
+        _guard_constant("ret", col("ret_exc").cast(pl.Float64).std()).alias(f"rvol{sfx}")
     )
     return df
 
@@ -9380,15 +9428,16 @@ def rmax(df, sfx, __min):
 
     Steps:
         1) Group by (id_int,group_number).
-        2) Compute mean of top 5 returns and max return.
+        2) Compute mean of top 5 returns and max return; null when ``ret`` is
+           constant / near-dead.
 
     Output:
         LazyFrame with f'rmax5{sfx}' and f'rmax1{sfx}'.
     """
     df = df.group_by(["id_int", "group_number"]).agg(
         [
-            col("ret").top_k(5).mean().alias(f"rmax5{sfx}"),
-            col("ret").max().alias(f"rmax1{sfx}"),
+            _guard_constant("ret", col("ret").top_k(5).mean()).alias(f"rmax5{sfx}"),
+            _guard_constant("ret", col("ret").max()).alias(f"rmax1{sfx}"),
         ]
     )
     return df
@@ -9401,13 +9450,14 @@ def skew(df, sfx, __min):
 
     Steps:
         1) Group by (id_int,group_number).
-        2) Compute unbiased skew(ret_exc).
+        2) Compute unbiased skew(ret_exc); null when raw ``ret`` is constant /
+           near-dead (does not rely on Polars emitting NaN).
 
     Output:
         LazyFrame with f'rskew{sfx}'.
     """
     df = df.group_by(["id_int", "group_number"]).agg(
-        col("ret_exc").skew(bias=False).alias(f"rskew{sfx}")
+        _guard_constant("ret", col("ret_exc").skew(bias=False)).alias(f"rskew{sfx}")
     )
     return df
 
@@ -9419,7 +9469,7 @@ def prc_to_high(df, sfx, __min):
 
     Steps:
         1) For each (id_int,group_number), compute last(prc_adj sorted by date)/max(prc_adj)
-           and count.
+           and count; null when prc_adj is constant.
         2) Keep groups with n ≥ __min.
 
     Output:
@@ -9434,9 +9484,11 @@ def prc_to_high(df, sfx, __min):
         df.group_by(["id_int", "group_number"])
         .agg(
             [
-                (col("prc_adj").sort_by("date").last() / col("prc_adj").max()).alias(
-                    f"prc_highprc{sfx}"
-                ),
+                _guard_constant(
+                    "prc_adj",
+                    col("prc_adj").sort_by("date").last() / col("prc_adj").max(),
+                    max_zero_frac=None,
+                ).alias(f"prc_highprc{sfx}"),
                 pl.count("prc_adj").alias("n"),
             ]
         )
@@ -9454,6 +9506,7 @@ def capm(df, sfx, __min):
     Steps:
         1) For each (id_int,group_number), compute beta = cov(ret_exc,mktrf)/var(mktrf).
         2) Compute residuals and their std as ivol_capm.
+        3) Null beta and ivol when raw ``ret`` is constant / near-dead.
 
     Output:
         LazyFrame with f'beta{sfx}' and f'ivol_capm{sfx}'.
@@ -9462,15 +9515,15 @@ def capm(df, sfx, __min):
     # multithreaded DuckDB scan whose row order is nondeterministic, and cov/var/
     # std are float-order-sensitive, so an unsorted input yields byte-different
     # betas across runs.
+    beta_expr = pl.cov("ret_exc", "mktrf") / pl.var("mktrf")
+    ivol_expr = (col("ret_exc") - col("mktrf") * beta_expr).std()
     df = (
         df.sort(["id_int", "group_number", "aux_date"])
         .group_by(["id_int", "group_number"])
         .agg(
             [
-                (pl.cov("ret_exc", "mktrf") / pl.var("mktrf")).alias(f"beta{sfx}"),
-                (col("ret_exc") - col("mktrf") * (pl.cov("ret_exc", "mktrf") / pl.var("mktrf")))
-                .std()
-                .alias(f"ivol_capm{sfx}"),
+                _guard_constant("ret", beta_expr).alias(f"beta{sfx}"),
+                _guard_constant("ret", ivol_expr).alias(f"ivol_capm{sfx}"),
             ]
         )
     )
@@ -9484,7 +9537,8 @@ def ami(df, sfx, __min):
 
     Steps:
         1) Define dolvol guard (None if zero).
-        2) Group by (id_int,group_number); compute mean(|ret|/dolvol * 1e6) and count.
+        2) Group by (id_int,group_number); compute mean(|ret|/dolvol * 1e6) and count;
+           null when raw ``ret`` is constant / near-dead (avoids ami=0 for dead stocks).
         3) Keep groups with n ≥ __min.
 
     Output:
@@ -9495,7 +9549,7 @@ def ami(df, sfx, __min):
         df.group_by(["id_int", "group_number"])
         .agg(
             [
-                (col("ret").abs() / aux_1 * 1e6).mean().alias(f"ami{sfx}"),
+                _guard_constant("ret", (col("ret").abs() / aux_1 * 1e6).mean()).alias(f"ami{sfx}"),
                 pl.count("dolvol_d").alias("n"),
             ]
         )
@@ -9512,7 +9566,8 @@ def downbeta(df, sfx, __min):
 
     Steps:
         1) Filter mktrf < 0.
-        2) Group by (id_int,group_number); compute beta as cov/var; require n ≥ __min/2.
+        2) Group by (id_int,group_number); compute beta as cov/var; require n ≥ __min/2;
+           null when raw ``ret`` is constant / near-dead.
 
     Output:
         LazyFrame with f'betadown{sfx}'.
@@ -9522,7 +9577,9 @@ def downbeta(df, sfx, __min):
         .group_by(["id_int", "group_number"])
         .agg(
             [
-                (pl.cov("ret_exc", "mktrf") / pl.var("mktrf")).alias(f"betadown{sfx}"),
+                _guard_constant("ret", pl.cov("ret_exc", "mktrf") / pl.var("mktrf")).alias(
+                    f"betadown{sfx}"
+                ),
                 pl.count("ret_exc").alias("n"),
             ]
         )
@@ -9558,6 +9615,7 @@ def capm_ext(df, sfx, __min):
     Steps:
         1) Compute beta and alpha; residuals = ret_exc − (alpha + beta*mktrf).
         2) Aggregate per (id_int,group_number): std(res), skew(res), coskew = E[res*(mktrf−E mktrf)^2]/(sqrt(E[res^2])*sqrt(E[(mktrf−E)^2])).
+        3) Null all columns when raw ``ret`` is constant / near-dead.
 
     Output:
         LazyFrame with [f'beta_{sfx}', f'ivol_capm{sfx}', f'iskew_capm{sfx}', f'coskew{sfx}'].
@@ -9571,10 +9629,10 @@ def capm_ext(df, sfx, __min):
 
     df = df.group_by(["id_int", "group_number"]).agg(
         [
-            beta_col.cast(pl.Float64).alias(f"beta{sfx}"),
-            residual_col.std().alias(f"ivol_capm{sfx}"),
-            residual_col.skew(bias=False).alias(f"iskew_capm{sfx}"),
-            (exp_coskew1 / exp_coskew2).alias(f"coskew{sfx}"),
+            _guard_constant("ret", beta_col.cast(pl.Float64)).alias(f"beta{sfx}"),
+            _guard_constant("ret", residual_col.std()).alias(f"ivol_capm{sfx}"),
+            _guard_constant("ret", residual_col.skew(bias=False)).alias(f"iskew_capm{sfx}"),
+            _guard_constant("ret", exp_coskew1 / exp_coskew2).alias(f"coskew{sfx}"),
         ]
     )
     return df
@@ -9587,7 +9645,8 @@ def ff3(df, sfx, __min):
 
     Steps:
         1) OLS: ret_exc ~ mktrf + smb_ff + hml; require factors present.
-        2) Aggregate per (id_int,group_number): std(residuals, ddof=3), skew(residuals).
+        2) Aggregate per (id_int,group_number): std(residuals, ddof=3), skew(residuals);
+           null when raw ``ret`` is constant / near-dead.
 
     Output:
         LazyFrame with [f'ivol_ff3{sfx}', f'iskew_ff3{sfx}'].
@@ -9599,8 +9658,8 @@ def ff3(df, sfx, __min):
         df.filter(col("smb_ff").is_not_null() & col("hml").is_not_null())
         .group_by(["id_int", "group_number"])
         .agg(
-            res_exp.std(ddof=3).alias(f"ivol_ff3{sfx}"),
-            res_exp.skew(bias=False).alias(f"iskew_ff3{sfx}"),
+            _guard_constant("ret", res_exp.std(ddof=3)).alias(f"ivol_ff3{sfx}"),
+            _guard_constant("ret", res_exp.skew(bias=False)).alias(f"iskew_ff3{sfx}"),
         )
     )
     return df
@@ -9613,7 +9672,8 @@ def hxz4(df, sfx, __min):
 
     Steps:
         1) OLS: ret_exc ~ mktrf + smb_hxz + roe + inv; require all factors.
-        2) Aggregate per (id_int,group_number): std(residuals, ddof=4), skew(residuals).
+        2) Aggregate per (id_int,group_number): std(residuals, ddof=4), skew(residuals);
+           null when raw ``ret`` is constant / near-dead.
 
     Output:
         LazyFrame with [f'ivol_hxz4{sfx}', f'iskew_hxz4{sfx}'].
@@ -9627,8 +9687,8 @@ def hxz4(df, sfx, __min):
         )
         .group_by(["id_int", "group_number"])
         .agg(
-            res_exp.std(ddof=4).alias(f"ivol_hxz4{sfx}"),
-            res_exp.skew(bias=False).alias(f"iskew_hxz4{sfx}"),
+            _guard_constant("ret", res_exp.std(ddof=4)).alias(f"ivol_hxz4{sfx}"),
+            _guard_constant("ret", res_exp.skew(bias=False)).alias(f"iskew_hxz4{sfx}"),
         )
     )
     return df
@@ -9684,18 +9744,21 @@ def dolvol(df, sfx, __min):
 
     Steps:
         1) Group by (id_int,group_number); compute mean(dolvol_d).
-        2) Compute std/mean as variability (guard when mean==0).
+        2) Compute std/mean as variability; null when dolvol_d is constant
+           (avoids dolvol_var = 0.0 for non-trading stocks).
 
     Output:
         LazyFrame with [f'dolvol{sfx}', f'dolvol_var{sfx}'].
     """
+    var_expr = (
+        pl.when(col("dolvol_d").mean() != 0)
+        .then(col("dolvol_d").std() / col("dolvol_d").mean())
+        .otherwise(fl_none())
+    )
     df = df.group_by(["id_int", "group_number"]).agg(
         [
             col("dolvol_d").mean().alias(f"dolvol{sfx}"),
-            pl.when(col("dolvol_d").mean() != 0)
-            .then(col("dolvol_d").std() / col("dolvol_d").mean())
-            .otherwise(fl_none())
-            .alias(f"dolvol_var{sfx}"),
+            _guard_constant("dolvol_d", var_expr, max_zero_frac=None).alias(f"dolvol_var{sfx}"),
         ]
     )
     return df
@@ -9707,29 +9770,36 @@ def turnover(df, sfx, __min):
         Turnover level and variability within window.
 
     Steps:
-        1) Compute scalar mean and std of turnover_d = tvol/(shares*1e6) (guard shares>0)
-           and total row count n per (id_int,group_number) in one .agg call.
-        2) Derive variability ratio std/mean; require n ≥ __min.
+        1) Attach daily turnover_d = tvol/(shares*1e6) (guard shares>0).
+        2) Aggregate mean/std and total row count n per (id_int,group_number).
+        3) Derive variability ratio std/mean; null when turnover_d is constant;
+           require n ≥ __min.
 
     Output:
         LazyFrame with [f'turnover{sfx}', f'turnover_var{sfx}'].
     """
-    turnover_d = _turnover_d_expr()
     df = (
-        df.group_by(["id_int", "group_number"])
+        df.with_columns(turnover_d=_turnover_d_expr())
+        .group_by(["id_int", "group_number"])
         .agg(
-            turnover_d.mean().alias(f"turnover{sfx}"),
-            turnover_d.std().alias("turnover_std"),
+            col("turnover_d").mean().alias(f"turnover{sfx}"),
+            col("turnover_d").std().alias("turnover_std"),
+            col("turnover_d").min().alias("_tmin"),
+            col("turnover_d").max().alias("_tmax"),
             pl.len().alias("n"),
         )
         .with_columns(
-            pl.when(col(f"turnover{sfx}") != 0)
+            pl.when(
+                (col("_tmin") != col("_tmax"))
+                & col(f"turnover{sfx}").is_not_null()
+                & (col(f"turnover{sfx}") != 0)
+            )
             .then(col("turnover_std") / col(f"turnover{sfx}"))
             .otherwise(fl_none())
             .alias(f"turnover_var{sfx}"),
         )
         .filter(col("n") >= __min)
-        .drop(["turnover_std", "n"])
+        .drop(["turnover_std", "n", "_tmin", "_tmax"])
     )
     return df
 
@@ -9741,7 +9811,8 @@ def mktcorr(df, sfx, __min):
 
     Steps:
         1) Group by (id_int, group_number); count rows.
-        2) Require count >= __min; compute Pearson corr.
+        2) Require count >= __min; compute Pearson corr; null when raw ``ret`` is
+           constant / near-dead (RF-immune; avoids finite junk corr at _1260d).
 
     Output:
         LazyFrame with f'corr{sfx}'.
@@ -9750,7 +9821,7 @@ def mktcorr(df, sfx, __min):
         df.group_by(["id_int", "group_number"])
         .agg(
             pl.len().alias("n"),
-            pl.corr("ret_exc_3l", "mkt_exc_3l").alias(f"corr{sfx}"),
+            _guard_constant("ret", pl.corr("ret_exc_3l", "mkt_exc_3l")).alias(f"corr{sfx}"),
         )
         .filter(col("n") >= __min)
         .drop("n")
@@ -9763,12 +9834,15 @@ def dimsonbeta(
     """
     Description:
         Dimson β = sum of slopes from OLS ret_exc ~ mktrf_{-1,0,+1} per
-        (id_int, group_number) via polars-ds `pds.lin_reg`.
+        (id_int, group_number) via polars-ds `pds.lin_reg`. Null when raw ``ret``
+        is constant / near-dead.
     Output:
         LazyFrame with f'beta_dimson{sfx}'.
     """
     name = f"beta_dimson{sfx}"
     beta_expr = pl.col("coeffs").list.head(3).list.sum()
+    varying = pl.col("ret").min() != pl.col("ret").max()
+    not_near_dead = (pl.col("ret") == 0).mean() < CONSTANT_MAX_ZERO_FRAC
     return (
         df.group_by(["id_int", "group_number"])
         .agg(
@@ -9779,9 +9853,14 @@ def dimsonbeta(
                 target="ret_exc",
                 add_bias=True,
                 solver="cholesky",
-            )
+            ),
+            ret_ok=(varying & not_near_dead),
         )
-        .select("id_int", "group_number", beta_expr.alias(name))
+        .select(
+            "id_int",
+            "group_number",
+            pl.when(pl.col("ret_ok")).then(beta_expr).otherwise(None).alias(name),
+        )
         .filter(pl.col(name).is_not_null() & pl.col(name).is_not_nan())
     )
 
