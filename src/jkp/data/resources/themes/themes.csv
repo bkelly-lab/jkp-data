@@ -1,4 +1,4 @@
-characteristic,theme,sub_theme,sub_theme_sign,theme_sign,return_sign,version
+characteristic,theme,sub_theme,sub_theme_sign,theme_sign,factor_sign,version
 be_me,Value,Value,1,1,1,v1.0
 at_me,Value,Value,1,1,1,v1.0
 sale_me,Value,Value,1,1,1,v1.0
@@ -362,40 +362,40 @@ turnover_126d,Size,Share turnover,1,1,-1,v1.0
 zero_trades_21d,Size,Share turnover,-1,1,-1,v1.0
 zero_trades_126d,Size,Share turnover,-1,1,-1,v1.0
 zero_trades_252d,Size,Share turnover,-1,1,-1,v1.0
-ret_2_0,Momentum,Momentum 2-6,1,1,1,v1.0
-ret_3_0,Momentum,Momentum 2-6,1,1,1,v1.0
-ret_3_1,Momentum,Momentum 2-6,1,1,1,v1.0
-ret_6_1,Momentum,Momentum 2-6,1,1,1,v1.0
-ret_6_0,Momentum,Momentum 2-6,1,1,1,v1.0
-resff3_6_1,Momentum,Momentum 2-6,1,1,1,v1.0
-ret_12_7,Momentum,Momentum 7-12,1,1,1,v1.0
-ret_12_1,Momentum,Momentum,1,1,1,v1.0
-ret_9_1,Momentum,Momentum,1,1,1,v1.0
-resff3_12_1,Momentum,Momentum,1,1,1,v1.0
-ret_9_0,Momentum,Momentum,1,1,1,v1.0
-ret_12_0,Momentum,Momentum,1,1,1,v1.0
-ret_18_1,Momentum,Momentum,1,1,1,v1.0
-ret_24_1,Momentum,Momentum,1,1,1,v1.0
-prc_highprc_252d,Momentum,Momentum,1,1,1,v1.0
-seas_1_1na,Momentum,Momentum,1,1,1,v1.0
-ret_1_0,Short-term reversal,Short-term reversal,1,1,-1,v1.0
-ret_60_12,Long-term reversal,Long-term reversal,1,1,-1,v1.0
-ret_60_36,Long-term reversal,Long-term reversal,1,1,-1,v1.0
-ret_48_12,Long-term reversal,Long-term reversal,1,1,-1,v1.0
-ret_36_12,Long-term reversal,Long-term reversal,1,1,-1,v1.0
-ret_24_12,Long-term reversal,Long-term reversal,1,1,-1,v1.0
-ret_36_1,Long-term reversal,Long-term reversal,1,1,-1,v1.0
-ret_48_1,Long-term reversal,Long-term reversal,1,1,-1,v1.0
-ret_60_1,Long-term reversal,Long-term reversal,1,1,-1,v1.0
-seas_2_5na,Long-term reversal,Long-term reversal,1,1,-1,v1.0
-seas_6_10na,Long-term reversal,Long-term reversal,1,1,-1,v1.0
-seas_11_15na,Long-term reversal,Long-term reversal,1,1,-1,v1.0
-seas_16_20na,Long-term reversal,Long-term reversal,1,1,-1,v1.0
-seas_1_1an,Seasonality,Seasonality,1,1,1,v1.0
-seas_2_5an,Seasonality,Seasonality,1,1,1,v1.0
-seas_6_10an,Seasonality,Seasonality,1,1,1,v1.0
-seas_11_15an,Seasonality,Seasonality,1,1,1,v1.0
-seas_16_20an,Seasonality,Seasonality,1,1,1,v1.0
+ret_1_0,Short-term returns,Short-term returns,1,1,-1,v1.0
+ret_2_0,Medium-term returns,Returns 2-6,1,1,1,v1.0
+ret_3_0,Medium-term returns,Returns 2-6,1,1,1,v1.0
+ret_3_1,Medium-term returns,Returns 2-6,1,1,1,v1.0
+ret_6_1,Medium-term returns,Returns 2-6,1,1,1,v1.0
+ret_6_0,Medium-term returns,Returns 2-6,1,1,1,v1.0
+resff3_6_1,Medium-term returns,Returns 2-6,1,1,1,v1.0
+ret_12_7,Medium-term returns,Returns 7-12,1,1,1,v1.0
+ret_12_1,Medium-term returns,Medium-term returns,1,1,1,v1.0
+ret_9_1,Medium-term returns,Medium-term returns,1,1,1,v1.0
+resff3_12_1,Medium-term returns,Medium-term returns,1,1,1,v1.0
+ret_9_0,Medium-term returns,Medium-term returns,1,1,1,v1.0
+ret_12_0,Medium-term returns,Medium-term returns,1,1,1,v1.0
+ret_18_1,Medium-term returns,Medium-term returns,1,1,1,v1.0
+ret_24_1,Medium-term returns,Medium-term returns,1,1,1,v1.0
+prc_highprc_252d,Medium-term returns,Medium-term returns,1,1,1,v1.0
+seas_1_1na,Medium-term returns,Medium-term returns,1,1,1,v1.0
+ret_60_12,Long-term returns,Long-term returns,1,1,-1,v1.0
+ret_60_36,Long-term returns,Long-term returns,1,1,-1,v1.0
+ret_48_12,Long-term returns,Long-term returns,1,1,-1,v1.0
+ret_36_12,Long-term returns,Long-term returns,1,1,-1,v1.0
+ret_24_12,Long-term returns,Long-term returns,1,1,-1,v1.0
+ret_36_1,Long-term returns,Long-term returns,1,1,-1,v1.0
+ret_48_1,Long-term returns,Long-term returns,1,1,-1,v1.0
+ret_60_1,Long-term returns,Long-term returns,1,1,-1,v1.0
+seas_2_5na,Long-term returns,Long-term returns,1,1,-1,v1.0
+seas_6_10na,Long-term returns,Long-term returns,1,1,-1,v1.0
+seas_11_15na,Long-term returns,Long-term returns,1,1,-1,v1.0
+seas_16_20na,Long-term returns,Long-term returns,1,1,-1,v1.0
+seas_1_1an,Seasonal returns,Seasonal returns,1,1,1,v1.0
+seas_2_5an,Seasonal returns,Seasonal returns,1,1,1,v1.0
+seas_6_10an,Seasonal returns,Seasonal returns,1,1,1,v1.0
+seas_11_15an,Seasonal returns,Seasonal returns,1,1,1,v1.0
+seas_16_20an,Seasonal returns,Seasonal returns,1,1,1,v1.0
 qmj,Composites,Composites,1,1,1,v1.0
 qmj_safety,Composites,Composites,1,1,1,v1.0
 f_score,Composites,Composites,1,1,1,v1.0

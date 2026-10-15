@@ -5,8 +5,9 @@ Description:
     themes. Each characteristic belongs to exactly one sub-theme and each sub-theme to
     exactly one theme. Three signs, one per level: sub_theme_sign (per characteristic)
     points the characteristic toward its sub-theme's name, theme_sign (per sub-theme)
-    points the sub-theme toward its theme's name, and return_sign (per theme) points the
-    theme toward higher returns. See README.md in this folder for the versioning rules and
+    points the sub-theme toward its theme's name, and factor_sign (per theme) points the
+    theme toward higher returns, the long side of its factor. Each theme and sub-theme also
+    has a factor name, the usual name of its long-short factor. See README.md in this folder for the versioning rules and
     CHANGELOG_THEMES.md for what changed in each version.
 Steps:
     1) Check the grouping: no characteristic in two sub-themes, every sub-theme in exactly
@@ -14,9 +15,9 @@ Steps:
     2) Write the mapping and the descriptions, both tagged with VERSION.
 Output:
     src/jkp/data/resources/themes/themes.csv (characteristic, theme, sub_theme, sub_theme_sign,
-    theme_sign, return_sign, version) and
-    src/jkp/data/resources/themes/theme_descriptions.csv (level, name, theme, description,
-    version), plus a console summary.
+    theme_sign, factor_sign, version) and
+    src/jkp/data/resources/themes/theme_descriptions.csv (level, name, factor_name, theme,
+    description, version), plus a console summary.
 
 Run with: uv run python scripts/themes/economic_themes.py
 """
@@ -70,10 +71,10 @@ THEMES: dict[str, list[str]] = {
     ],
     "Risk": ["Volatility", "Lottery", "Beta", "Skewness", "Earnings volatility"],
     "Size": ["Size", "Firm age", "Share price", "Liquidity", "Share turnover"],
-    "Momentum": ["Momentum 2-6", "Momentum 7-12", "Momentum"],
-    "Short-term reversal": ["Short-term reversal"],
-    "Long-term reversal": ["Long-term reversal"],
-    "Seasonality": ["Seasonality"],
+    "Short-term returns": ["Short-term returns"],
+    "Medium-term returns": ["Returns 2-6", "Returns 7-12", "Medium-term returns"],
+    "Long-term returns": ["Long-term returns"],
+    "Seasonal returns": ["Seasonal returns"],
     "Composites": ["Composites"],
 }
 
@@ -433,10 +434,10 @@ SUB_THEMES: dict[str, list[str]] = {
         "bidaskhl_21d",
     ],
     "Share turnover": ["turnover_126d", "zero_trades_21d", "zero_trades_126d", "zero_trades_252d"],
-    # Momentum
-    "Momentum 2-6": ["ret_2_0", "ret_3_0", "ret_3_1", "ret_6_1", "ret_6_0", "resff3_6_1"],
-    "Momentum 7-12": ["ret_12_7"],
-    "Momentum": [
+    # Medium-term returns
+    "Returns 2-6": ["ret_2_0", "ret_3_0", "ret_3_1", "ret_6_1", "ret_6_0", "resff3_6_1"],
+    "Returns 7-12": ["ret_12_7"],
+    "Medium-term returns": [
         "ret_12_1",
         "ret_9_1",
         "resff3_12_1",
@@ -447,10 +448,10 @@ SUB_THEMES: dict[str, list[str]] = {
         "prc_highprc_252d",
         "seas_1_1na",
     ],
-    # Short-term reversal
-    "Short-term reversal": ["ret_1_0"],
-    # Long-term reversal
-    "Long-term reversal": [
+    # Short-term returns
+    "Short-term returns": ["ret_1_0"],
+    # Long-term returns
+    "Long-term returns": [
         "ret_60_12",
         "ret_60_36",
         "ret_48_12",
@@ -464,8 +465,8 @@ SUB_THEMES: dict[str, list[str]] = {
         "seas_11_15na",
         "seas_16_20na",
     ],
-    # Seasonality
-    "Seasonality": [
+    # Seasonal returns
+    "Seasonal returns": [
         "seas_1_1an",
         "seas_2_5an",
         "seas_6_10an",
@@ -540,9 +541,9 @@ NEGATIVE_IN_THEME: set[str] = {
     "Labor intensity",  # Operating efficiency
 }
 
-# Return signs: +1 when a high value of the theme earns higher returns in the literature ----
+# Factor signs: +1 when a high value of the theme earns higher returns in the literature ----
 # Mostly the majority direction of the theme's factors in Jensen, Kelly and Pedersen (2023).
-RETURN_SIGNS: dict[str, int] = {
+FACTOR_SIGNS: dict[str, int] = {
     "Value": 1,
     "Profitability": 1,
     "Fundamental momentum": 1,
@@ -554,10 +555,10 @@ RETURN_SIGNS: dict[str, int] = {
     "Leverage": -1,
     "Risk": -1,
     "Size": -1,
-    "Momentum": 1,
-    "Short-term reversal": -1,
-    "Long-term reversal": -1,
-    "Seasonality": 1,
+    "Short-term returns": -1,
+    "Medium-term returns": 1,
+    "Long-term returns": -1,
+    "Seasonal returns": 1,
     "Composites": 1,
 }
 
@@ -574,10 +575,10 @@ THEME_DESCRIPTIONS: dict[str, str] = {
     "Leverage": "Capital structure and financial strength.",
     "Risk": "Return and earnings risk.",
     "Size": "Firm size, age and trading activity.",
-    "Momentum": "Continuation of past returns.",
-    "Short-term reversal": "Reversal of last month's return.",
-    "Long-term reversal": "Reversal of multi-year returns.",
-    "Seasonality": "Returns in the same calendar month in past years.",
+    "Short-term returns": "Last month's return.",
+    "Medium-term returns": "Returns over the past two months to two years.",
+    "Long-term returns": "Returns over multi-year windows, up to 20 years back.",
+    "Seasonal returns": "Returns in the same calendar month in past years.",
     "Composites": "Multi-signal scores that span several themes.",
 }
 
@@ -633,13 +634,23 @@ SUB_THEME_DESCRIPTIONS: dict[str, str] = {
     "Share price": "Share price level.",
     "Liquidity": "Trading volume, illiquidity and bid-ask spreads.",
     "Share turnover": "Share turnover and days without trading.",
-    "Momentum 2-6": "Returns over windows of up to six months, mostly skipping the last month.",
-    "Momentum 7-12": "Returns over months 7–12.",
-    "Momentum": "Returns over windows of 9 months or longer, and the 52-week high.",
-    "Short-term reversal": "Last month's return.",
-    "Long-term reversal": "Returns over multi-year windows, up to 20 years back.",
-    "Seasonality": "Past returns in the same calendar month.",
+    "Returns 2-6": "Returns over windows of up to six months, mostly skipping the last month.",
+    "Returns 7-12": "Returns over months 7–12.",
+    "Medium-term returns": "Returns over windows of 9 months or longer, and the 52-week high.",
+    "Short-term returns": "Last month's return.",
+    "Long-term returns": "Returns over multi-year windows, up to 20 years back.",
+    "Seasonal returns": "Past returns in the same calendar month.",
     "Composites": "Scores that combine signals from several themes: QMJ, QMJ safety, F-score and the two Stambaugh–Yuan mispricing factors.",
+}
+
+# Factor names that differ from the theme or sub-theme name (all others use the name itself).
+FACTOR_NAMES: dict[str, str] = {
+    "Short-term returns": "Short-term reversal",
+    "Medium-term returns": "Momentum",
+    "Returns 2-6": "Momentum 2-6",
+    "Returns 7-12": "Momentum 7-12",
+    "Long-term returns": "Long-term reversal",
+    "Seasonal returns": "Seasonality",
 }
 
 
@@ -652,7 +663,10 @@ def validate() -> None:
     assert not dup, f"characteristics in more than one sub-theme: {dup}"
     assert set(members) >= NEGATIVE_IN_SUB_THEME, "unknown characteristics in NEGATIVE_IN_SUB_THEME"
     assert SUB_THEMES.keys() >= NEGATIVE_IN_THEME, "unknown sub-themes in NEGATIVE_IN_THEME"
-    assert RETURN_SIGNS.keys() == THEMES.keys(), "return signs do not match themes"
+    assert FACTOR_SIGNS.keys() == THEMES.keys(), "factor signs do not match themes"
+    assert (THEMES.keys() | SUB_THEMES.keys()) >= FACTOR_NAMES.keys(), (
+        "unknown names in FACTOR_NAMES"
+    )
     assert THEME_DESCRIPTIONS.keys() == THEMES.keys(), "theme descriptions do not match"
     assert SUB_THEME_DESCRIPTIONS.keys() == SUB_THEMES.keys(), "sub-theme descriptions do not match"
 
@@ -671,7 +685,7 @@ def themes_frame() -> pl.DataFrame:
                         "sub_theme": sub,
                         "sub_theme_sign": sub_sign,
                         "theme_sign": -1 if sub in NEGATIVE_IN_THEME else 1,
-                        "return_sign": RETURN_SIGNS[theme],
+                        "factor_sign": FACTOR_SIGNS[theme],
                         "version": VERSION,
                     }
                 )
@@ -679,13 +693,15 @@ def themes_frame() -> pl.DataFrame:
 
 
 def descriptions_frame() -> pl.DataFrame:
-    """One row per theme, followed by its sub-themes: level, name, theme, description, version."""
+    """One row per theme, then its sub-themes: level, name, factor_name, theme, description, version."""
     rows = []
     for theme, subs in THEMES.items():
         rows.append(("theme", theme, theme, THEME_DESCRIPTIONS[theme]))
         rows += [("sub_theme", s, theme, SUB_THEME_DESCRIPTIONS[s]) for s in subs]
     return pl.DataFrame(
-        rows, schema=["level", "name", "theme", "description"], orient="row"
+        [(lvl, n, FACTOR_NAMES.get(n, n), t, d) for lvl, n, t, d in rows],
+        schema=["level", "name", "factor_name", "theme", "description"],
+        orient="row",
     ).with_columns(version=pl.lit(VERSION))
 
 

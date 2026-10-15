@@ -10,14 +10,21 @@ characteristic belongs to a sub-theme, and each sub-theme to a theme. Every char
 a v0 theme has a v1.0 theme.
 
 **Themes:** Value, Profitability, Fundamental momentum, Earnings quality, Investment,
-Intangibles, Operating efficiency, Financing, Leverage, Risk, Size, Momentum, Short-term reversal,
-Long-term reversal, Seasonality, Composites. See `theme_descriptions.csv` for the sub-themes.
+Intangibles, Operating efficiency, Financing, Leverage, Risk, Size, Short-term returns,
+Medium-term returns, Long-term returns, Seasonal returns, Composites. See
+`theme_descriptions.csv` for the sub-themes.
+
+**Names.** Theme and sub-theme names describe the characteristics; `factor_name` in
+`theme_descriptions.csv` gives the usual name of the long-short factor. They differ only for
+past returns: Short-term returns (factor: Short-term reversal), Medium-term returns (Momentum,
+with sub-themes Returns 2-6 and Returns 7-12 for Momentum 2-6 and Momentum 7-12), Long-term
+returns (Long-term reversal) and Seasonal returns (Seasonality).
 
 ### Signs
 
 Three signs, one per level: `sub_theme_sign` (per characteristic) is +1 if a high value means
 more of what the sub-theme's name says; `theme_sign` (per sub-theme) is +1 if more of the
-sub-theme means more of what the theme's name says; `return_sign` (per theme) is +1 if more of
+sub-theme means more of what the theme's name says; `factor_sign` (per theme) is +1 if more of
 the theme earns higher returns in the literature. A characteristic's factor goes long the side
 given by the product of the three. v0 instead signed each factor by the direction of its return
 in the original paper; signing characteristics that way would point characteristics in the same
@@ -28,18 +35,14 @@ sub-theme in opposite directions in 8 sub-themes: in Leverage, for example, `deb
   `z_score` in Distress and net payout in Equity issuance. The data agree with every sign except
   for four characteristics that barely correlate with their sub-theme (`coskew_21d` and the three
   non-annual seasonality measures for years 6–20); these are +1 by definition.
-- For past-return characteristics (Momentum, Short-term reversal, Long-term reversal and
-  Seasonality), `sub_theme_sign` is +1: a high value means a high past return. These theme
-  names describe the return pattern found in the literature, not the direction of the
-  characteristic.
 - 8 sub-themes have `theme_sign` −1: Equity duration (Value), Equity payout (Financing),
   Balance sheet liquidity and Debt maturity (Leverage), Accruals and Special items (Earnings
   quality), Capital intensity and Labor intensity (Operating efficiency). Where the data say
   little, these are economic choices: Debt maturity (−1) and Cost of debt (+1) in Leverage, and
   the Earnings quality and Operating efficiency signs.
-- `return_sign` is +1 for Value, Profitability, Fundamental momentum, Earnings quality,
-  Intangibles, Operating efficiency, Momentum, Seasonality and Composites, and −1 for
-  Investment, Financing, Leverage, Risk, Size, Short-term reversal and Long-term reversal.
+- `factor_sign` is +1 for Value, Profitability, Fundamental momentum, Earnings quality,
+  Intangibles, Operating efficiency, Medium-term returns, Seasonal returns and Composites, and
+  −1 for Investment, Financing, Leverage, Risk, Size, Short-term returns and Long-term returns.
 
 For 144 of the 153 v0 factors, the product of the three signs equals the direction used in
 Jensen, Kelly and Pedersen (2023). For nine it is the opposite, because the characteristic sits
@@ -53,14 +56,15 @@ The factor portfolios produced by `jkp portfolio` still use the published direct
 
 - **Naming.** The broad groups are called themes, as in the original JKP paper; the finer
   groups are sub-themes. Names have no "&" or parentheses; a group that needed "&" was split.
-- **Past returns.** Momentum is split by window: months 2–6 (Momentum 2-6), months
-  7–12 (Momentum 7-12), and windows of 9 months or longer plus the 52-week high (Momentum). Returns over months 2–6
-  and 7–12 correlate only 0.07. Last month alone is Short-term reversal; the 2- and 3-month
-  windows that include it go to Momentum 2-6. Multi-year windows go to Long-term reversal.
-- **Seasonality.** Same-month returns are seasonality at every lag. Averages over the other
-  months go with the return window they overlap: year 1 to Momentum, years 2–20 to Long-term
-  reversal. Their correlations with everything are close to zero, and their published
-  direction matches Long-term reversal.
+- **Past returns.** Medium-term returns are split by window: months 2–6 (Returns 2-6),
+  months 7–12 (Returns 7-12), and windows of 9 months or longer plus the 52-week high
+  (Medium-term returns). Returns over months 2–6 and 7–12 correlate only 0.07. Last month alone
+  is Short-term returns; the 2- and 3-month windows that include it go to Returns 2-6.
+  Multi-year windows go to Long-term returns.
+- **Seasonal returns.** Same-month returns are seasonal at every lag. Averages over the other
+  months go with the return window they overlap: year 1 to Medium-term returns, years 2–20 to
+  Long-term returns. Their correlations with everything are close to zero, and their published
+  direction matches long-term reversal.
 - **Investment.** Asset growth is split by what grows: total and long-lived assets, capex,
   working capital and book equity. Individual balance-sheet items go to the sub-theme of their
   item. Long-term investments and financial assets are separate sub-themes.
@@ -97,7 +101,7 @@ each fits its main ingredient better.
 
 | Characteristic | Sub-theme | Fits better with | Why it stays |
 |---|---|---|---|
-| `seas_1_1an` | Seasonality | Momentum 7-12 | A same-month return; its overlap with months 7–12 is mechanical. |
+| `seas_1_1an` | Seasonal returns | Returns 7-12 | A same-month return; its overlap with months 7–12 is mechanical. |
 | `cl_lt` | Debt maturity | Leverage | Measures the maturity of liabilities. |
 | `corr_1260d` | Beta | Liquidity | A component of beta; it co-moves with size in the data. |
 | `bidaskhl_21d` | Liquidity | Volatility | A spread estimate; volatile, low-priced stocks have wide spreads. |

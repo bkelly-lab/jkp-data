@@ -10,24 +10,25 @@ example *Value*).
 |---|---|---|
 | `sub_theme_sign` | (per characteristic) | +1 if a high value means more of what the sub-theme's name says |
 | `theme_sign` | sub-theme | +1 if more of the sub-theme means more of what the theme's name says |
-| `return_sign` | theme | +1 if more of the theme earns higher returns in the literature |
+| `factor_sign` | theme | +1 if more of the theme earns higher returns in the literature |
 
 To orient a characteristic, multiply it by:
 
 - `sub_theme_sign`, to point with its sub-theme;
 - `sub_theme_sign × theme_sign`, to point with its theme;
-- `sub_theme_sign × theme_sign × return_sign`, to point toward higher returns (the long side of
+- `sub_theme_sign × theme_sign × factor_sign`, to point toward higher returns (the long side of
   its long-short factor).
 
 Example: `ami_126d` (Amihud illiquidity) in Liquidity, theme Size. `sub_theme_sign` is
 −1 (high `ami_126d` is low liquidity), `theme_sign` is +1 (liquid stocks are large), and
-`return_sign` is −1 (small stocks earn more). The product is +1: the factor goes long illiquid
+`factor_sign` is −1 (small stocks earn more). The product is +1: the factor goes long illiquid
 stocks.
 
-The signs describe what a characteristic measures; only `return_sign` is about returns. For
-past-return characteristics (Momentum, Short-term reversal, Long-term reversal and
-Seasonality), `sub_theme_sign` is +1: a high value means a high past return. These theme names
-describe the return pattern found in the literature, not the direction of the characteristic.
+The first two signs describe what a characteristic measures; only `factor_sign` is about
+returns. In the same spirit, theme and sub-theme names describe the characteristics, and
+`theme_descriptions.csv` gives each one's `factor_name`, the usual name of its long-short
+factor. The two differ only for past returns: Short-term returns, for example, is the
+characteristic behind the Short-term reversal factor.
 
 - `economic_themes.py` is the source of truth: the grouping, the signs, the descriptions and
   the version. Running it writes `themes.csv` and `theme_descriptions.csv` to
