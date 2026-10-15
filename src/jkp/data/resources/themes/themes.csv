@@ -1,0 +1,403 @@
+characteristic,theme,subtheme,subtheme_sign,theme_sign,factor_sign,version
+be_me,Value,Value,1,1,1,v1.0
+at_me,Value,Value,1,1,1,v1.0
+sale_me,Value,Value,1,1,1,v1.0
+be_mev,Value,Value,1,1,1,v1.0
+bev_mev,Value,Value,1,1,1,v1.0
+at_mev,Value,Value,1,1,1,v1.0
+sale_mev,Value,Value,1,1,1,v1.0
+aliq_mat,Value,Value,1,1,1,v1.0
+ni_me,Value,Earnings yield,1,1,1,v1.0
+nix_me,Value,Earnings yield,1,1,1,v1.0
+ope_me,Value,Earnings yield,1,1,1,v1.0
+ebit_me,Value,Earnings yield,1,1,1,v1.0
+ebitda_me,Value,Earnings yield,1,1,1,v1.0
+ebit_mev,Value,Earnings yield,1,1,1,v1.0
+ebitda_mev,Value,Earnings yield,1,1,1,v1.0
+gp_me,Value,Earnings yield,1,1,1,v1.0
+gp_mev,Value,Earnings yield,1,1,1,v1.0
+ival_me,Value,Earnings yield,1,1,1,v1.0
+ocf_me,Value,Cash flow yield,1,1,1,v1.0
+ocf_mev,Value,Cash flow yield,1,1,1,v1.0
+fcf_me,Value,Cash flow yield,1,1,1,v1.0
+fcf_mev,Value,Cash flow yield,1,1,1,v1.0
+cop_me,Value,Cash flow yield,1,1,1,v1.0
+cop_mev,Value,Cash flow yield,1,1,1,v1.0
+div1m_me,Value,Dividend yield,1,1,1,v1.0
+div3m_me,Value,Dividend yield,1,1,1,v1.0
+div6m_me,Value,Dividend yield,1,1,1,v1.0
+div12m_me,Value,Dividend yield,1,1,1,v1.0
+div_me,Value,Dividend yield,1,1,1,v1.0
+div_at,Value,Dividend yield,1,1,1,v1.0
+div_ni,Value,Dividend yield,1,1,1,v1.0
+eq_dur,Value,Equity duration,1,-1,1,v1.0
+gp_at,Profitability,Profitability,1,1,1,v1.0
+gp_atl1,Profitability,Profitability,1,1,1,v1.0
+gp_bev,Profitability,Profitability,1,1,1,v1.0
+op_at,Profitability,Profitability,1,1,1,v1.0
+op_atl1,Profitability,Profitability,1,1,1,v1.0
+ope_be,Profitability,Profitability,1,1,1,v1.0
+ope_bel1,Profitability,Profitability,1,1,1,v1.0
+cop_at,Profitability,Profitability,1,1,1,v1.0
+cop_atl1,Profitability,Profitability,1,1,1,v1.0
+cop_bev,Profitability,Profitability,1,1,1,v1.0
+ebit_at,Profitability,Profitability,1,1,1,v1.0
+ebit_bev,Profitability,Profitability,1,1,1,v1.0
+ebitda_at,Profitability,Profitability,1,1,1,v1.0
+ebitda_bev,Profitability,Profitability,1,1,1,v1.0
+ni_at,Profitability,Profitability,1,1,1,v1.0
+ni_be,Profitability,Profitability,1,1,1,v1.0
+nix_be,Profitability,Profitability,1,1,1,v1.0
+niq_at,Profitability,Profitability,1,1,1,v1.0
+niq_be,Profitability,Profitability,1,1,1,v1.0
+qmj_prof,Profitability,Profitability,1,1,1,v1.0
+fi_at,Profitability,Profitability,1,1,1,v1.0
+fi_bev,Profitability,Profitability,1,1,1,v1.0
+ebit_int,Profitability,Profitability,1,1,1,v1.0
+ebitda_debt,Profitability,Profitability,1,1,1,v1.0
+ebitda_ppen,Profitability,Profitability,1,1,1,v1.0
+gp_sale,Profitability,Profit margins,1,1,1,v1.0
+ebitda_sale,Profitability,Profit margins,1,1,1,v1.0
+ebit_sale,Profitability,Profit margins,1,1,1,v1.0
+pi_sale,Profitability,Profit margins,1,1,1,v1.0
+ni_sale,Profitability,Profit margins,1,1,1,v1.0
+nix_sale,Profitability,Profit margins,1,1,1,v1.0
+profit_cl,Profitability,Profit margins,1,1,1,v1.0
+ni_emp,Profitability,Profit margins,1,1,1,v1.0
+ocf_at,Profitability,Cash flow profitability,1,1,1,v1.0
+ocf_be,Profitability,Cash flow profitability,1,1,1,v1.0
+fcf_be,Profitability,Cash flow profitability,1,1,1,v1.0
+fcf_ocf,Profitability,Cash flow profitability,1,1,1,v1.0
+fcf_ppen,Profitability,Cash flow profitability,1,1,1,v1.0
+ocf_cl,Profitability,Cash flow profitability,1,1,1,v1.0
+fcf_sale,Profitability,Cash flow profitability,1,1,1,v1.0
+ocf_debt,Profitability,Cash flow profitability,1,1,1,v1.0
+ocf_sale,Profitability,Cash flow profitability,1,1,1,v1.0
+gp_gr1a,Fundamental momentum,Profit growth,1,1,1,v1.0
+ebitda_gr1a,Fundamental momentum,Profit growth,1,1,1,v1.0
+ebit_gr1a,Fundamental momentum,Profit growth,1,1,1,v1.0
+ope_gr1a,Fundamental momentum,Profit growth,1,1,1,v1.0
+ni_gr1a,Fundamental momentum,Profit growth,1,1,1,v1.0
+nix_gr1a,Fundamental momentum,Profit growth,1,1,1,v1.0
+gp_gr3a,Fundamental momentum,Profit growth,1,1,1,v1.0
+ebitda_gr3a,Fundamental momentum,Profit growth,1,1,1,v1.0
+ebit_gr3a,Fundamental momentum,Profit growth,1,1,1,v1.0
+ope_gr3a,Fundamental momentum,Profit growth,1,1,1,v1.0
+ni_gr3a,Fundamental momentum,Profit growth,1,1,1,v1.0
+nix_gr3a,Fundamental momentum,Profit growth,1,1,1,v1.0
+ocf_gr1a,Fundamental momentum,Profit growth,1,1,1,v1.0
+fcf_gr1a,Fundamental momentum,Profit growth,1,1,1,v1.0
+ocf_gr3a,Fundamental momentum,Profit growth,1,1,1,v1.0
+fcf_gr3a,Fundamental momentum,Profit growth,1,1,1,v1.0
+ocf_at_chg1,Fundamental momentum,Profit growth,1,1,1,v1.0
+ni_inc8q,Fundamental momentum,Profit growth,1,1,1,v1.0
+tax_gr1a,Fundamental momentum,Profit growth,1,1,1,v1.0
+tax_gr3a,Fundamental momentum,Profit growth,1,1,1,v1.0
+roe_ch5,Fundamental momentum,Profit growth,1,1,1,v1.0
+roa_ch5,Fundamental momentum,Profit growth,1,1,1,v1.0
+gpoa_ch5,Fundamental momentum,Profit growth,1,1,1,v1.0
+cfoa_ch5,Fundamental momentum,Profit growth,1,1,1,v1.0
+gmar_ch5,Fundamental momentum,Profit growth,1,1,1,v1.0
+qmj_growth,Fundamental momentum,Profit growth,1,1,1,v1.0
+dgp_dsale,Fundamental momentum,Profit growth,1,1,1,v1.0
+dsale_dsga,Fundamental momentum,Profit growth,1,1,1,v1.0
+niq_su,Fundamental momentum,Earnings surprise,1,1,1,v1.0
+saleq_su,Fundamental momentum,Earnings surprise,1,1,1,v1.0
+niq_at_chg1,Fundamental momentum,Earnings surprise,1,1,1,v1.0
+niq_be_chg1,Fundamental momentum,Earnings surprise,1,1,1,v1.0
+oaccruals_at,Earnings quality,Accruals,1,-1,1,v1.0
+oaccruals_ni,Earnings quality,Accruals,1,-1,1,v1.0
+taccruals_at,Earnings quality,Accruals,1,-1,1,v1.0
+taccruals_ni,Earnings quality,Accruals,1,-1,1,v1.0
+spi_at,Earnings quality,Special items,1,1,1,v1.0
+xido_at,Earnings quality,Special items,1,1,1,v1.0
+nri_at,Earnings quality,Special items,1,1,1,v1.0
+ni_ar1,Earnings quality,Earnings persistence,1,1,1,v1.0
+tax_pi,Earnings quality,Tax burden,1,1,1,v1.0
+pi_nix,Earnings quality,Tax burden,1,1,1,v1.0
+at_gr1,Investment,Asset growth,1,1,-1,v1.0
+at_gr3,Investment,Asset growth,1,1,-1,v1.0
+noa_gr1a,Investment,Asset growth,1,1,-1,v1.0
+lnoa_gr1a,Investment,Asset growth,1,1,-1,v1.0
+ppeinv_gr1a,Investment,Asset growth,1,1,-1,v1.0
+nca_gr1,Investment,Asset growth,1,1,-1,v1.0
+nca_gr3,Investment,Asset growth,1,1,-1,v1.0
+ncoa_gr1a,Investment,Asset growth,1,1,-1,v1.0
+nncoa_gr1a,Investment,Asset growth,1,1,-1,v1.0
+oa_gr1a,Investment,Asset growth,1,1,-1,v1.0
+ncoa_gr3a,Investment,Asset growth,1,1,-1,v1.0
+nncoa_gr3a,Investment,Asset growth,1,1,-1,v1.0
+oa_gr3a,Investment,Asset growth,1,1,-1,v1.0
+noa_at,Investment,Asset growth,1,1,-1,v1.0
+ppeg_gr1a,Investment,Asset growth,1,1,-1,v1.0
+ppeg_gr3a,Investment,Asset growth,1,1,-1,v1.0
+intan_gr1a,Investment,Asset growth,1,1,-1,v1.0
+intan_gr3a,Investment,Asset growth,1,1,-1,v1.0
+dp_gr1a,Investment,Asset growth,1,1,-1,v1.0
+dp_gr3a,Investment,Asset growth,1,1,-1,v1.0
+capx_gr1,Investment,Capex growth,1,1,-1,v1.0
+capx_gr2,Investment,Capex growth,1,1,-1,v1.0
+capx_gr3,Investment,Capex growth,1,1,-1,v1.0
+capx_gr1a,Investment,Capex growth,1,1,-1,v1.0
+capx_gr3a,Investment,Capex growth,1,1,-1,v1.0
+capex_abn,Investment,Capex growth,1,1,-1,v1.0
+ca_gr1,Investment,Working capital growth,1,1,-1,v1.0
+ca_gr3,Investment,Working capital growth,1,1,-1,v1.0
+coa_gr1a,Investment,Working capital growth,1,1,-1,v1.0
+coa_gr3a,Investment,Working capital growth,1,1,-1,v1.0
+cowc_gr1a,Investment,Working capital growth,1,1,-1,v1.0
+cowc_gr3a,Investment,Working capital growth,1,1,-1,v1.0
+nwc_gr1a,Investment,Working capital growth,1,1,-1,v1.0
+nwc_gr3a,Investment,Working capital growth,1,1,-1,v1.0
+inv_gr1,Investment,Working capital growth,1,1,-1,v1.0
+inv_gr1a,Investment,Working capital growth,1,1,-1,v1.0
+inv_gr3a,Investment,Working capital growth,1,1,-1,v1.0
+rec_gr1a,Investment,Working capital growth,1,1,-1,v1.0
+rec_gr3a,Investment,Working capital growth,1,1,-1,v1.0
+dsale_dinv,Investment,Working capital growth,-1,1,-1,v1.0
+dsale_drec,Investment,Working capital growth,-1,1,-1,v1.0
+col_gr1a,Investment,Operating payables growth,1,1,-1,v1.0
+ncol_gr1a,Investment,Operating payables growth,1,1,-1,v1.0
+ol_gr1a,Investment,Operating payables growth,1,1,-1,v1.0
+col_gr3a,Investment,Operating payables growth,1,1,-1,v1.0
+ncol_gr3a,Investment,Operating payables growth,1,1,-1,v1.0
+ol_gr3a,Investment,Operating payables growth,1,1,-1,v1.0
+ap_gr1a,Investment,Operating payables growth,1,1,-1,v1.0
+ap_gr3a,Investment,Operating payables growth,1,1,-1,v1.0
+txp_gr1a,Investment,Operating payables growth,1,1,-1,v1.0
+txp_gr3a,Investment,Operating payables growth,1,1,-1,v1.0
+txditc_gr1a,Investment,Operating payables growth,1,1,-1,v1.0
+txditc_gr3a,Investment,Operating payables growth,1,1,-1,v1.0
+be_gr1,Investment,Book equity growth,1,1,-1,v1.0
+be_gr3,Investment,Book equity growth,1,1,-1,v1.0
+be_gr1a,Investment,Book equity growth,1,1,-1,v1.0
+lti_gr1a,Investment,Long-term investment growth,1,1,-1,v1.0
+lti_gr3a,Investment,Long-term investment growth,1,1,-1,v1.0
+sti_gr1a,Investment,Financial asset growth,1,1,-1,v1.0
+fna_gr1a,Investment,Financial asset growth,1,1,-1,v1.0
+fna_gr3a,Investment,Financial asset growth,1,1,-1,v1.0
+sale_gr1,Investment,Operating growth,1,1,-1,v1.0
+sale_gr3,Investment,Operating growth,1,1,-1,v1.0
+saleq_gr1,Investment,Operating growth,1,1,-1,v1.0
+cogs_gr1,Investment,Operating growth,1,1,-1,v1.0
+sga_gr1,Investment,Operating growth,1,1,-1,v1.0
+opex_gr1,Investment,Operating growth,1,1,-1,v1.0
+cogs_gr3,Investment,Operating growth,1,1,-1,v1.0
+sga_gr3,Investment,Operating growth,1,1,-1,v1.0
+opex_gr3,Investment,Operating growth,1,1,-1,v1.0
+emp_gr1,Investment,Operating growth,1,1,-1,v1.0
+rd_at,Intangibles,R&D intensity,1,1,1,v1.0
+rd_sale,Intangibles,R&D intensity,1,1,1,v1.0
+rd_me,Intangibles,R&D intensity,1,1,1,v1.0
+rd5_at,Intangibles,R&D intensity,1,1,1,v1.0
+adv_sale,Intangibles,Advertising intensity,1,1,1,v1.0
+at_turnover,Operating efficiency,Asset turnover,1,1,1,v1.0
+sale_bev,Operating efficiency,Asset turnover,1,1,1,v1.0
+opex_at,Operating efficiency,Asset turnover,1,1,1,v1.0
+sale_be,Operating efficiency,Asset turnover,1,1,1,v1.0
+inv_days,Operating efficiency,Working capital efficiency,-1,1,1,v1.0
+rec_days,Operating efficiency,Working capital efficiency,-1,1,1,v1.0
+ap_days,Operating efficiency,Working capital efficiency,-1,1,1,v1.0
+cash_conversion,Operating efficiency,Working capital efficiency,-1,1,1,v1.0
+inv_turnover,Operating efficiency,Working capital efficiency,1,1,1,v1.0
+rec_turnover,Operating efficiency,Working capital efficiency,1,1,1,v1.0
+ap_turnover,Operating efficiency,Working capital efficiency,1,1,1,v1.0
+inv_act,Operating efficiency,Working capital efficiency,-1,1,1,v1.0
+capx_at,Operating efficiency,Capital intensity,1,-1,1,v1.0
+ppen_mev,Operating efficiency,Capital intensity,1,-1,1,v1.0
+gp_ppen,Operating efficiency,Capital intensity,-1,-1,1,v1.0
+lt_ppen,Operating efficiency,Capital intensity,-1,-1,1,v1.0
+staff_sale,Operating efficiency,Labor intensity,1,-1,1,v1.0
+sale_emp,Operating efficiency,Labor intensity,-1,-1,1,v1.0
+sale_emp_gr1,Operating efficiency,Labor productivity growth,1,1,1,v1.0
+chcsho_1m,Financing,Equity issuance,1,1,-1,v1.0
+chcsho_3m,Financing,Equity issuance,1,1,-1,v1.0
+chcsho_6m,Financing,Equity issuance,1,1,-1,v1.0
+chcsho_12m,Financing,Equity issuance,1,1,-1,v1.0
+eqnpo_1m,Financing,Equity issuance,-1,1,-1,v1.0
+eqnpo_3m,Financing,Equity issuance,-1,1,-1,v1.0
+eqnpo_6m,Financing,Equity issuance,-1,1,-1,v1.0
+eqnpo_12m,Financing,Equity issuance,-1,1,-1,v1.0
+eqis_at,Financing,Equity issuance,1,1,-1,v1.0
+eqis_me,Financing,Equity issuance,1,1,-1,v1.0
+eqnetis_at,Financing,Equity issuance,1,1,-1,v1.0
+eqnetis_me,Financing,Equity issuance,1,1,-1,v1.0
+eqnpo_at,Financing,Equity issuance,-1,1,-1,v1.0
+eqnpo_me,Financing,Equity issuance,-1,1,-1,v1.0
+eqis_gr1a,Financing,Equity issuance,1,1,-1,v1.0
+eqis_gr3a,Financing,Equity issuance,1,1,-1,v1.0
+eqnetis_gr1a,Financing,Equity issuance,1,1,-1,v1.0
+eqnetis_gr3a,Financing,Equity issuance,1,1,-1,v1.0
+eqnpo_gr1a,Financing,Equity issuance,-1,1,-1,v1.0
+eqnpo_gr3a,Financing,Equity issuance,-1,1,-1,v1.0
+eqbb_at,Financing,Equity payout,1,-1,-1,v1.0
+eqbb_me,Financing,Equity payout,1,-1,-1,v1.0
+eqpo_me,Financing,Equity payout,1,-1,-1,v1.0
+eqbb_gr1a,Financing,Equity payout,1,-1,-1,v1.0
+eqbb_gr3a,Financing,Equity payout,1,-1,-1,v1.0
+eqpo_gr1a,Financing,Equity payout,1,-1,-1,v1.0
+eqpo_gr3a,Financing,Equity payout,1,-1,-1,v1.0
+div_gr1a,Financing,Equity payout,1,-1,-1,v1.0
+div_gr3a,Financing,Equity payout,1,-1,-1,v1.0
+dbnetis_at,Financing,Debt issuance,1,1,-1,v1.0
+dltnetis_at,Financing,Debt issuance,1,1,-1,v1.0
+dstnetis_at,Financing,Debt issuance,1,1,-1,v1.0
+debt_gr1,Financing,Debt issuance,1,1,-1,v1.0
+debt_gr3,Financing,Debt issuance,1,1,-1,v1.0
+debtst_gr1a,Financing,Debt issuance,1,1,-1,v1.0
+debtst_gr3a,Financing,Debt issuance,1,1,-1,v1.0
+debtlt_gr1a,Financing,Debt issuance,1,1,-1,v1.0
+debtlt_gr3a,Financing,Debt issuance,1,1,-1,v1.0
+dbnetis_mev,Financing,Debt issuance,1,1,-1,v1.0
+dltnetis_mev,Financing,Debt issuance,1,1,-1,v1.0
+dstnetis_mev,Financing,Debt issuance,1,1,-1,v1.0
+dbnetis_gr1a,Financing,Debt issuance,1,1,-1,v1.0
+dbnetis_gr3a,Financing,Debt issuance,1,1,-1,v1.0
+dltnetis_gr1a,Financing,Debt issuance,1,1,-1,v1.0
+dltnetis_gr3a,Financing,Debt issuance,1,1,-1,v1.0
+dstnetis_gr1a,Financing,Debt issuance,1,1,-1,v1.0
+dstnetis_gr3a,Financing,Debt issuance,1,1,-1,v1.0
+fnl_gr1a,Financing,Debt issuance,1,1,-1,v1.0
+fnl_gr3a,Financing,Debt issuance,1,1,-1,v1.0
+nfna_gr1a,Financing,Debt issuance,-1,1,-1,v1.0
+nfna_gr3a,Financing,Debt issuance,-1,1,-1,v1.0
+lt_gr1,Financing,Liability growth,1,1,-1,v1.0
+lt_gr3,Financing,Liability growth,1,1,-1,v1.0
+ncl_gr1,Financing,Liability growth,1,1,-1,v1.0
+ncl_gr3,Financing,Liability growth,1,1,-1,v1.0
+cl_gr1,Financing,Liability growth,1,1,-1,v1.0
+cl_gr3,Financing,Liability growth,1,1,-1,v1.0
+netis_at,Financing,External financing,1,1,-1,v1.0
+netis_mev,Financing,External financing,1,1,-1,v1.0
+fincf_at,Financing,External financing,1,1,-1,v1.0
+fincf_mev,Financing,External financing,1,1,-1,v1.0
+netis_gr1a,Financing,External financing,1,1,-1,v1.0
+netis_gr3a,Financing,External financing,1,1,-1,v1.0
+fincf_gr1a,Financing,External financing,1,1,-1,v1.0
+fincf_gr3a,Financing,External financing,1,1,-1,v1.0
+debt_at,Leverage,Book leverage,1,1,-1,v1.0
+debt_be,Leverage,Book leverage,1,1,-1,v1.0
+debt_bev,Leverage,Book leverage,1,1,-1,v1.0
+debtlt_be,Leverage,Book leverage,1,1,-1,v1.0
+debtlt_bev,Leverage,Book leverage,1,1,-1,v1.0
+at_be,Leverage,Book leverage,1,1,-1,v1.0
+be_bev,Leverage,Book leverage,-1,1,-1,v1.0
+debt_me,Leverage,Market leverage,1,1,-1,v1.0
+debt_mev,Leverage,Market leverage,1,1,-1,v1.0
+debtlt_mev,Leverage,Market leverage,1,1,-1,v1.0
+netdebt_me,Leverage,Market leverage,1,1,-1,v1.0
+debtst_debt,Leverage,Debt maturity,-1,-1,-1,v1.0
+debtlt_debt,Leverage,Debt maturity,1,-1,-1,v1.0
+debtst_bev,Leverage,Debt maturity,-1,-1,-1,v1.0
+debtst_mev,Leverage,Debt maturity,-1,-1,-1,v1.0
+cl_lt,Leverage,Debt maturity,-1,-1,-1,v1.0
+int_debt,Leverage,Cost of debt,1,1,-1,v1.0
+int_debtlt,Leverage,Cost of debt,1,1,-1,v1.0
+pstk_bev,Leverage,Preferred stock,1,1,-1,v1.0
+pstk_mev,Leverage,Preferred stock,1,1,-1,v1.0
+pstk_gr1,Leverage,Preferred stock,1,1,-1,v1.0
+pstk_gr3,Leverage,Preferred stock,1,1,-1,v1.0
+cash_at,Leverage,Balance sheet liquidity,1,-1,-1,v1.0
+cash_bev,Leverage,Balance sheet liquidity,1,-1,-1,v1.0
+cash_lt,Leverage,Balance sheet liquidity,1,-1,-1,v1.0
+cash_cl,Leverage,Balance sheet liquidity,1,-1,-1,v1.0
+caliq_cl,Leverage,Balance sheet liquidity,1,-1,-1,v1.0
+ca_cl,Leverage,Balance sheet liquidity,1,-1,-1,v1.0
+cash_me,Leverage,Balance sheet liquidity,1,-1,-1,v1.0
+cash_mev,Leverage,Balance sheet liquidity,1,-1,-1,v1.0
+aliq_at,Leverage,Balance sheet liquidity,1,-1,-1,v1.0
+nwc_at,Leverage,Balance sheet liquidity,1,-1,-1,v1.0
+sale_nwc,Leverage,Balance sheet liquidity,-1,-1,-1,v1.0
+cash_gr1a,Leverage,Balance sheet liquidity,1,-1,-1,v1.0
+cash_gr3a,Leverage,Balance sheet liquidity,1,-1,-1,v1.0
+rec_act,Leverage,Balance sheet liquidity,-1,-1,-1,v1.0
+tangibility,Leverage,Balance sheet liquidity,1,-1,-1,v1.0
+o_score,Leverage,Distress,1,1,-1,v1.0
+z_score,Leverage,Distress,-1,1,-1,v1.0
+kz_index,Leverage,Financial constraints,1,1,-1,v1.0
+rvol_21d,Risk,Volatility,1,1,-1,v1.0
+rvol_252d,Risk,Volatility,1,1,-1,v1.0
+rvolhl_21d,Risk,Volatility,1,1,-1,v1.0
+ivol_capm_21d,Risk,Volatility,1,1,-1,v1.0
+ivol_capm_252d,Risk,Volatility,1,1,-1,v1.0
+ivol_capm_60m,Risk,Volatility,1,1,-1,v1.0
+ivol_ff3_21d,Risk,Volatility,1,1,-1,v1.0
+ivol_hxz4_21d,Risk,Volatility,1,1,-1,v1.0
+rmax1_21d,Risk,Lottery,1,1,-1,v1.0
+rmax5_21d,Risk,Lottery,1,1,-1,v1.0
+rmax5_rvol_21d,Risk,Lottery,1,1,-1,v1.0
+beta_60m,Risk,Beta,1,1,-1,v1.0
+beta_252d,Risk,Beta,1,1,-1,v1.0
+beta_21d,Risk,Beta,1,1,-1,v1.0
+beta_dimson_21d,Risk,Beta,1,1,-1,v1.0
+betadown_252d,Risk,Beta,1,1,-1,v1.0
+betabab_1260d,Risk,Beta,1,1,-1,v1.0
+corr_1260d,Risk,Beta,1,1,-1,v1.0
+rskew_21d,Risk,Skewness,1,1,-1,v1.0
+iskew_capm_21d,Risk,Skewness,1,1,-1,v1.0
+iskew_ff3_21d,Risk,Skewness,1,1,-1,v1.0
+iskew_hxz4_21d,Risk,Skewness,1,1,-1,v1.0
+coskew_21d,Risk,Skewness,1,1,-1,v1.0
+earnings_variability,Risk,Earnings volatility,1,1,-1,v1.0
+ni_ivol,Risk,Earnings volatility,1,1,-1,v1.0
+roe_be_std,Risk,Earnings volatility,1,1,-1,v1.0
+roeq_be_std,Risk,Earnings volatility,1,1,-1,v1.0
+niq_saleq_std,Risk,Earnings volatility,1,1,-1,v1.0
+ocfq_saleq_std,Risk,Earnings volatility,1,1,-1,v1.0
+market_equity,Size,Size,1,1,-1,v1.0
+enterprise_value,Size,Size,1,1,-1,v1.0
+book_equity,Size,Size,1,1,-1,v1.0
+assets,Size,Size,1,1,-1,v1.0
+sales,Size,Size,1,1,-1,v1.0
+net_income,Size,Size,1,1,-1,v1.0
+intrinsic_value,Size,Size,1,1,-1,v1.0
+age,Size,Firm age,1,1,-1,v1.0
+prc,Size,Share price,1,1,-1,v1.0
+ami_126d,Size,Liquidity,-1,1,-1,v1.0
+dolvol_126d,Size,Liquidity,1,1,-1,v1.0
+dolvol_var_126d,Size,Liquidity,-1,1,-1,v1.0
+turnover_var_126d,Size,Liquidity,-1,1,-1,v1.0
+bidaskhl_21d,Size,Liquidity,-1,1,-1,v1.0
+turnover_126d,Size,Share turnover,1,1,-1,v1.0
+zero_trades_21d,Size,Share turnover,-1,1,-1,v1.0
+zero_trades_126d,Size,Share turnover,-1,1,-1,v1.0
+zero_trades_252d,Size,Share turnover,-1,1,-1,v1.0
+ret_1_0,Short-term returns,Short-term returns,1,1,-1,v1.0
+ret_2_0,Medium-term returns,Returns 2-6,1,1,1,v1.0
+ret_3_0,Medium-term returns,Returns 2-6,1,1,1,v1.0
+ret_3_1,Medium-term returns,Returns 2-6,1,1,1,v1.0
+ret_6_1,Medium-term returns,Returns 2-6,1,1,1,v1.0
+ret_6_0,Medium-term returns,Returns 2-6,1,1,1,v1.0
+resff3_6_1,Medium-term returns,Returns 2-6,1,1,1,v1.0
+ret_12_7,Medium-term returns,Returns 7-12,1,1,1,v1.0
+ret_12_1,Medium-term returns,Medium-term returns,1,1,1,v1.0
+ret_9_1,Medium-term returns,Medium-term returns,1,1,1,v1.0
+resff3_12_1,Medium-term returns,Medium-term returns,1,1,1,v1.0
+ret_9_0,Medium-term returns,Medium-term returns,1,1,1,v1.0
+ret_12_0,Medium-term returns,Medium-term returns,1,1,1,v1.0
+ret_18_1,Medium-term returns,Medium-term returns,1,1,1,v1.0
+ret_24_1,Medium-term returns,Medium-term returns,1,1,1,v1.0
+prc_highprc_252d,Medium-term returns,Medium-term returns,1,1,1,v1.0
+seas_1_1na,Medium-term returns,Medium-term returns,1,1,1,v1.0
+ret_60_12,Long-term returns,Long-term returns,1,1,-1,v1.0
+ret_60_36,Long-term returns,Long-term returns,1,1,-1,v1.0
+ret_48_12,Long-term returns,Long-term returns,1,1,-1,v1.0
+ret_36_12,Long-term returns,Long-term returns,1,1,-1,v1.0
+ret_24_12,Long-term returns,Long-term returns,1,1,-1,v1.0
+ret_36_1,Long-term returns,Long-term returns,1,1,-1,v1.0
+ret_48_1,Long-term returns,Long-term returns,1,1,-1,v1.0
+ret_60_1,Long-term returns,Long-term returns,1,1,-1,v1.0
+seas_2_5na,Long-term returns,Long-term returns,1,1,-1,v1.0
+seas_6_10na,Long-term returns,Long-term returns,1,1,-1,v1.0
+seas_11_15na,Long-term returns,Long-term returns,1,1,-1,v1.0
+seas_16_20na,Long-term returns,Long-term returns,1,1,-1,v1.0
+seas_1_1an,Seasonal returns,Seasonal returns,1,1,1,v1.0
+seas_2_5an,Seasonal returns,Seasonal returns,1,1,1,v1.0
+seas_6_10an,Seasonal returns,Seasonal returns,1,1,1,v1.0
+seas_11_15an,Seasonal returns,Seasonal returns,1,1,1,v1.0
+seas_16_20an,Seasonal returns,Seasonal returns,1,1,1,v1.0
+qmj,Composites,Composites,1,1,1,v1.0
+qmj_safety,Composites,Composites,1,1,1,v1.0
+f_score,Composites,Composites,1,1,1,v1.0
+mispricing_mgmt,Composites,Composites,1,1,1,v1.0
+mispricing_perf,Composites,Composites,1,1,1,v1.0
