@@ -2214,7 +2214,7 @@ $\\
 	
 	60 Month CAPM Beta & beta\_60m & $\frac{COVAR\_60M(RET\mbox{*}_t, MKTRF\mbox{*}_t)}{VARC\_60M(MKTRF\mbox{*}_t)}$ \\
 	
-	Performance Based Mispricing & mispricing\_perf\footnote{Following \citeA{stambaugh2017}, each anomaly variable is sorted into monthly percentile ranks $P(\cdot)$; the ``positive" anomalies (gross profitability, momentum, return on assets) are ranked in descending order so that a higher percentile always indicates a more overpriced stock. Each cluster score is the equal-weighted average of the percentile ranks of its constituent anomalies (management cluster: six anomalies; performance cluster: five).} &
+	Performance Based Mispricing & mispricing\_perf\footnote{Following \citeA{stambaugh2017}, each anomaly variable is sorted into monthly percentile ranks $P(\cdot)$; the ``positive" anomalies (gross profitability, momentum, return on assets) are ranked in descending order so that a higher percentile always indicates a more overpriced stock. The percentile breakpoints come from the factor's sample (U.S.: lagged price above \$5; elsewhere: excluding nano caps; at least 30 U.S. or 10 non-U.S. stocks per month), and stocks outside that sample are placed into the same breakpoints, so the scores cover every stock with the anomaly inputs. Each cluster score is the equal-weighted average of the percentile ranks of its constituent anomalies (management cluster: six anomalies; performance cluster: five).} &
 		
 	$
 	\begin{aligned}

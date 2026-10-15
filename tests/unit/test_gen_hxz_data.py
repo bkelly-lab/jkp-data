@@ -25,9 +25,11 @@ from jkp.data.aux_functions import (
     _hxz_add_me_lag1_ym,
     _hxz_classify_roe,
     _hxz_classify_size_ia,
+    _hxz_fill_characteristics,
     country_breakpoints,
     hxz_attach_siccd,
     hxz_build_characteristics,
+    hxz_characteristics_extra,
     hxz_classify_portfolios,
     hxz_compute_factors,
     hxz_impute_be_clean_surplus,
@@ -1994,3 +1996,116 @@ class TestHxzUsRoeMonthly:
         fq_with_roe = fundq.with_columns(safe_div("ibq", "beq_lag1", "roe", mode=3))
         result = _hxz_us_roe_monthly(fq_with_roe, tmp_path, formation_dates)
         assert len(result) == 0
+
+
+class TestHxzCharacteristicsExtra:
+    """Characteristics for security-months outside the HXZ sample (here a GBR
+    non-universe security, a US Compustat-sourced row with no CCM link, and a US
+    CRSP permno whose world_msf gvkey differs from its CCM link)."""
+
+    def _extra(self, tmp_path) -> pl.DataFrame:
+        eoms = pl.date_range(date(2019, 6, 1), date(2020, 6, 1), "1mo", eager=True).dt.month_end()
+        n = len(eoms)
+        pl.DataFrame(
+            {
+                "excntry": ["GBR"] * n + ["USA"] * 2 * n,
+                "id": [10] * n + [200001] * n + [30] * n,
+                "gvkey": ["g10"] * n + ["g20"] * 2 * n,
+                "source_crsp": [0] * 2 * n + [1] * n,
+                "eom": pl.concat([eoms, eoms, eoms]),
+                "me_company": [50.0] * n + [0.0] * n + [70.0] * n,
+            }
+        ).write_parquet(tmp_path / "world_msf.parquet")
+        pl.DataFrame(
+            {
+                "gvkey": ["g30"],
+                "lpermno": [30],
+                "linkprim": ["P"],
+                "linktype": ["LC"],
+                "linkdt": [date(2000, 1, 1)],
+                "linkenddt": [None],
+            },
+            schema_overrides={"linkenddt": pl.Date},
+        ).write_parquet(tmp_path / "crsp_ccmxpf_lnkhist.parquet")
+        funda_us = pl.DataFrame(
+            {
+                "gvkey": ["g20", "g30"],
+                "datadate": [date(2018, 12, 31), date(2018, 12, 31)],
+                "inv": [0.05, 0.07],
+                "be_a": [1.0, 1.0],
+            }
+        )
+        fundq_us = pl.DataFrame(
+            {
+                "gvkey": ["g20", "g20", "g30"],
+                "datadate": [date(2019, 9, 30), date(2019, 12, 31), date(2019, 9, 30)],
+                # 2nd: rdq <= datadate
+                "rdq": [date(2019, 10, 25), date(2019, 12, 31), date(2019, 10, 25)],
+                "ibq": [1.0, 5.0, 2.0],
+                "beq_lag1": [10.0, 10.0, 10.0],
+            }
+        )
+        funda_row = pl.DataFrame(
+            {
+                "gvkey": ["g10", "g10"],
+                "year": [2018, 2019],
+                "datadate": [date(2018, 12, 31), date(2019, 12, 31)],
+                "inv": [0.1, 0.4],
+                "be_a": [1.0, 1.0],
+                "roe_a": [0.2, 0.3],
+            }
+        )
+        return hxz_characteristics_extra(
+            tmp_path, tmp_path, funda_us, fundq_us, funda_row, pl.col("date") >= date(2019, 1, 1)
+        )
+
+    def _at(self, out: pl.DataFrame, i: int, d: date) -> dict:
+        return out.filter((pl.col("id") == i) & (pl.col("eom") == d)).row(0, named=True)
+
+    def test_row_security_gets_me_ia_roe(self, tmp_path):
+        out = self._extra(tmp_path)
+        jun19, jul19, jun20 = date(2019, 6, 30), date(2019, 7, 31), date(2020, 6, 30)
+        assert self._at(out, 10, jul19)["me_hxz"] == 50.0
+        assert self._at(out, 10, jul19)["ia_hxz"] == 0.1  # fiscal 2018 for Jul 2019..Jun 2020
+        assert self._at(out, 10, jun19)["ia_hxz"] is None
+        assert self._at(out, 10, jun19)["roe_hxz"] == 0.2  # datadate + 6 months
+        assert self._at(out, 10, jun20)["roe_hxz"] == 0.3  # latest fiscal year wins
+
+    def test_us_unlinked_row_gets_rdq_gated_roe(self, tmp_path):
+        out = self._extra(tmp_path)
+        roe = {
+            d: self._at(out, 200001, d)["roe_hxz"]
+            for d in (date(2019, 10, 31), date(2019, 11, 30), date(2020, 3, 31), date(2020, 4, 30))
+        }
+        # month after rdq .. datadate + 6 months; the rdq <= datadate quarter is dropped
+        assert list(roe.values()) == [None, 0.1, 0.1, None]
+        assert self._at(out, 200001, date(2019, 7, 31))["ia_hxz"] == 0.05
+
+    def test_us_crsp_row_uses_ccm_link(self, tmp_path):
+        """A CRSP permno takes its CCM-linked gvkey's accounting, not world_msf's."""
+        out = self._extra(tmp_path)
+        assert self._at(out, 30, date(2019, 7, 31))["ia_hxz"] == 0.07
+        assert self._at(out, 30, date(2019, 11, 30))["roe_hxz"] == 0.2
+        assert self._at(out, 30, date(2019, 7, 31))["me_hxz"] == 70.0
+
+    def test_non_positive_me_company_stays_null(self, tmp_path):
+        out = self._extra(tmp_path)
+        assert out.filter(pl.col("id") == 200001)["me_hxz"].null_count() == 13
+
+    def test_fill_keeps_screened_cells(self, tmp_path):
+        extra = self._extra(tmp_path)
+        chars = pl.DataFrame(
+            {
+                "eom": [date(2019, 7, 31)],
+                "excntry": ["GBR"],
+                "id": [10],
+                "me_hxz": [99.0],
+                "ia_hxz": [None],
+                "roe_hxz": [0.7],
+            },
+            schema_overrides={"ia_hxz": pl.Float64},
+        )
+        out = _hxz_fill_characteristics(chars, extra)
+        assert out.height == extra.height
+        row = self._at(out, 10, date(2019, 7, 31))
+        assert (row["me_hxz"], row["ia_hxz"], row["roe_hxz"]) == (99.0, 0.1, 0.7)

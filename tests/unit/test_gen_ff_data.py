@@ -27,11 +27,14 @@ import pytest
 from jkp.data.aux_functions import (
     _ff_bm_breaks,
     _ff_bm_eligible,
+    _ff_fill_characteristics,
     _ff_inv_breaks,
     _ff_inv_eligible,
     _ff_mom_eligible,
     _ff_mom_signal_daily,
     _ff_mom_signal_monthly,
+    _ff_mom_source_row,
+    _ff_mom_source_us,
     _ff_op_breaks,
     _ff_op_eligible,
     _ff_row_finish_prepare,
@@ -43,6 +46,7 @@ from jkp.data.aux_functions import (
     ff_assign_portfolios,
     ff_assign_to_panel,
     ff_build_characteristics,
+    ff_characteristics_extra,
     ff_compute_factors,
     ff_compute_umd_factor,
     ff_country_breakpoints,
@@ -64,10 +68,14 @@ def _apply_eligible(df: pl.DataFrame, expr: pl.Expr) -> pl.Series:
     """Evaluate an eligibility Expr on df, returning the boolean Series.
 
     Frames without an excntry column get a ROW default ("GBR") so the
-    bm/op count gate (US-exempt) keeps its count >= 2 semantics.
+    bm/op count gate (US-exempt) keeps its count >= 2 semantics; frames
+    without dec_me get a positive Dec(t-1) ME so the OP/INV gates test
+    their other conditions.
     """
     if "excntry" not in df.columns:
         df = df.with_columns(excntry=pl.lit("GBR"))
+    if "dec_me" not in df.columns:
+        df = df.with_columns(dec_me=pl.lit(1.0))
     return df.select(expr.alias("elig"))["elig"]
 
 
@@ -213,6 +221,16 @@ class TestFFOpEligible:
         result = _apply_eligible(df, _ff_op_eligible())
         assert result.to_list() == [True, False, False, False]
 
+    @pytest.mark.parametrize("excntry", [US_EXCNTRY, "GBR"])
+    @pytest.mark.parametrize("dec_me", [None, 0.0])
+    def test_no_dec_me_fails(self, excntry, dec_me):
+        """French: RMW needs Dec(t-1) ME as well as June ME, in every country."""
+        df = pl.DataFrame(
+            {"me": [1.0], "dec_me": [dec_me], "be": [1.0], "count": [2], "op": [0.5]},
+            schema_overrides={"dec_me": pl.Float64},
+        ).with_columns(excntry=pl.lit(excntry))
+        assert _apply_eligible(df, _ff_op_eligible())[0] is False
+
 
 # =============================================================================
 # TestFFInvEligible
@@ -253,6 +271,16 @@ class TestFFInvEligible:
         """Returns True when inv < 0 (sign not gated)."""
         df = pl.DataFrame({"me": [1.0], "inv": [-0.5]})
         assert _apply_eligible(df, _ff_inv_eligible())[0] is True
+
+    @pytest.mark.parametrize("excntry", [US_EXCNTRY, "GBR"])
+    @pytest.mark.parametrize("dec_me", [None, 0.0])
+    def test_no_dec_me_fails(self, excntry, dec_me):
+        """French: CMA needs Dec(t-1) ME as well as June ME, in every country."""
+        df = pl.DataFrame(
+            {"me": [1.0], "dec_me": [dec_me], "inv": [0.1]},
+            schema_overrides={"dec_me": pl.Float64},
+        ).with_columns(excntry=pl.lit(excntry))
+        assert _apply_eligible(df, _ff_inv_eligible())[0] is False
 
 
 # =============================================================================
@@ -493,6 +521,7 @@ class TestFFSpecBreaks:
                 "id": list(range(20)),
                 "op": [float(i) * 0.1 for i in range(1, 21)],
                 "me": [1.0] * 20,
+                "dec_me": [1.0] * 20,
                 "be": [1.0] * 20,
                 "count": [3] * 20,
                 "exchcd_us": [1] * 20,
@@ -512,6 +541,7 @@ class TestFFSpecBreaks:
                 "id": list(range(20)),
                 "inv": [float(i) * 0.05 for i in range(1, 21)],
                 "me": [1.0] * 20,
+                "dec_me": [1.0] * 20,
                 "count": [3] * 20,
                 "exchcd_us": [1] * 20,
                 "size_grp": ["large"] * 20,
@@ -610,6 +640,7 @@ class TestFFPrepareCharsLeftJoin:
                 "retadj": [0.01] * 5,
                 "retx": [0.01] * 5,
                 "me": [100.0, 110.0, 200.0, 210.0, 300.0],
+                "prc": [10.0] * 5,
                 "exchcd": [1] * 5,
                 "shrcd": [10] * 5,
             }
@@ -707,6 +738,82 @@ class TestFFPrepareCharsLeftJoin:
 
 
 # =============================================================================
+# TestFFRowFormationMeTolerance
+# =============================================================================
+
+
+class TestFFRowFormationMeTolerance:
+    """ROW June/December formation ME falls back to the last row up to
+    FF_ROW_FORMATION_ME_LOOKBACK (2) months earlier when the formation-month
+    row is missing (trading halt); a June fallback needs a later row that year."""
+
+    @staticmethod
+    def _run():
+        rows = {
+            1: [(date(2019, 12, 31), 100.0), (date(2020, 6, 30), 110.0)],  # no halt
+            2: [  # halted over Dec and June, resumes in August
+                (date(2019, 11, 30), 200.0),
+                (date(2020, 5, 31), 210.0),
+                (date(2020, 8, 31), 220.0),
+            ],
+            3: [(date(2019, 12, 31), 300.0), (date(2020, 5, 31), 310.0)],  # delisted in May
+            4: [  # last pre-June row is outside the window
+                (date(2019, 12, 31), 400.0),
+                (date(2020, 3, 31), 410.0),
+                (date(2020, 7, 31), 420.0),
+            ],
+            5: [(date(2019, 9, 30), 500.0), (date(2020, 6, 30), 510.0)],  # Dec gap too long
+        }
+        recs = [(i, d, me) for i, obs in rows.items() for d, me in obs]
+        panel = pl.DataFrame(
+            {
+                "excntry": ["GBR"] * len(recs),
+                "id": [r[0] for r in recs],
+                "gvkey": [f"g{r[0]}" for r in recs],
+                "date": [r[1] for r in recs],
+                "ret": [0.01] * len(recs),
+                "me": [r[2] for r in recs],
+                "size_grp": ["large"] * len(recs),
+            }
+        ).sort("id", "date")
+        comp = pl.DataFrame(
+            {
+                "gvkey": [f"g{i}" for i in rows],
+                "year": [2019] * len(rows),
+                "datadate": [date(2019, 12, 31)] * len(rows),
+                "be": [50.0] * len(rows),
+                "op": [0.2] * len(rows),
+                "inv": [0.1] * len(rows),
+                "count": [3] * len(rows),
+            },
+            schema_overrides={"year": pl.Int32},
+        )
+        _, data_chars = _ff_row_finish_prepare(
+            _ff_row_rets_weights_lazy(panel.lazy(), "monthly").collect(), comp
+        )
+        return data_chars.sort("id")
+
+    def test_formation_rows(self):
+        chars = self._run()
+        # 3 (delisted, no later row) and 4 (Mar row outside window) get no June row
+        assert chars["id"].to_list() == [1, 2, 5]
+        assert chars["date"].unique().to_list() == [date(2020, 6, 30)]
+
+    def test_no_halt_unchanged(self):
+        row = self._run().filter(pl.col("id") == 1)
+        assert (row["me"][0], row["dec_me"][0]) == (110.0, 100.0)
+
+    def test_halted_stock_uses_last_me_in_window(self):
+        row = self._run().filter(pl.col("id") == 2)
+        assert (row["me"][0], row["dec_me"][0]) == (210.0, 200.0)
+
+    def test_dec_me_outside_window_stays_null(self):
+        row = self._run().filter(pl.col("id") == 5)
+        assert row["me"][0] == 510.0
+        assert row["dec_me"][0] is None
+
+
+# =============================================================================
 # TestFFLoadWorldPanel
 # =============================================================================
 
@@ -793,13 +900,19 @@ def _make_june_with_bp(
             "count": [3] * n,
             "exchcd_us": [1] * n,
             "size_grp": ["large"] * n,
-            # be/op/inv referenced by the OP/INV eligibility exprs; null here
-            # since op/inv breaks are trivial (no OP/INV assignment exercised).
+            # be/op/inv/dec_me referenced by the OP/INV eligibility exprs; null
+            # here since op/inv breaks are trivial (no OP/INV assignment exercised).
+            "dec_me": [None] * n,
             "be": [None] * n,
             "op": [None] * n,
             "inv": [None] * n,
         },
-        schema_overrides={"be": pl.Float64, "op": pl.Float64, "inv": pl.Float64},
+        schema_overrides={
+            "dec_me": pl.Float64,
+            "be": pl.Float64,
+            "op": pl.Float64,
+            "inv": pl.Float64,
+        },
     )
     bm_breaks = pl.DataFrame(
         {
@@ -874,6 +987,7 @@ class TestFFAssignPortfolios:
                 "count": [3],
                 "exchcd_us": [1],
                 "size_grp": ["large"],
+                "dec_me": [1.0],
                 "be": [None],
                 "op": [None],
                 "inv": [None],
@@ -1602,6 +1716,7 @@ def _make_monthly_panel(
             "date": dates,
             "ret": rets,
             "me": [1.0] * months,
+            "prc_us": [1.0] * months,
             "w": [1.0] * months,
             "exchcd_us": [1] * months,
             "size_grp": ["large"] * months,
@@ -1627,6 +1742,41 @@ def _jkp_mom(panel: pl.LazyFrame) -> pl.LazyFrame:
     )
 
 
+def _mom_src(panel: pl.LazyFrame, freq: str) -> pl.LazyFrame:
+    """UMD eligibility source for a test panel: US rows via _ff_mom_source_us;
+    non-US rows as a world_msf/world_dsf stand-in (prc = prc_us, ret_lag_dif =
+    periods since the previous row), via _ff_mom_source_row."""
+    by = ["excntry", "id"]
+    if freq == "monthly":
+        period = pl.col("date").dt.year() * 12 + pl.col("date").dt.month()
+    else:
+        period = pl.col("date").cast(pl.Int64)
+    world = (
+        panel.filter(pl.col("excntry") != US_EXCNTRY)
+        .sort([*by, "date"])
+        .select(
+            "excntry",
+            "id",
+            "date",
+            "me",
+            "ret",
+            prc=pl.col("prc_us"),
+            ret_lag_dif=period.diff().over(by).fill_null(1),
+        )
+    )
+    return pl.concat(
+        [_ff_mom_source_us(panel), _ff_mom_source_row(world, freq)], how="vertical_relaxed"
+    )
+
+
+def _run_monthly(panel: pl.LazyFrame) -> pl.LazyFrame:
+    return _ff_mom_signal_monthly(panel, _mom_src(panel, "monthly"), _jkp_mom(panel))
+
+
+def _run_daily(panel: pl.LazyFrame) -> pl.LazyFrame:
+    return _ff_mom_signal_daily(panel, _mom_src(panel, "daily"))
+
+
 class TestFFMomSignalMonthly:
     """Tests for _ff_mom_signal_monthly()."""
 
@@ -1634,7 +1784,7 @@ class TestFFMomSignalMonthly:
         """Output has the expected 11 columns of the mom-signal output schema."""
         panel = _make_monthly_panel(months=20)
         lf = panel.lazy()
-        result = _ff_mom_signal_monthly(lf, _jkp_mom(lf)).collect()
+        result = _run_monthly(lf).collect()
         expected_cols = {
             "excntry",
             "id",
@@ -1654,7 +1804,7 @@ class TestFFMomSignalMonthly:
         """Less than 13 months of data → mom_2_12 is null (not enough lags)."""
         panel = _make_monthly_panel(months=12)
         lf = panel.lazy()
-        result = _ff_mom_signal_monthly(lf, _jkp_mom(lf)).collect()
+        result = _run_monthly(lf).collect()
         # All rows should have null mom_2_12 (need 13 months for lag 1..12)
         assert result["mom_2_12"].is_null().all()
 
@@ -1662,7 +1812,7 @@ class TestFFMomSignalMonthly:
         """13+ months of data → later rows have non-null mom_2_12."""
         panel = _make_monthly_panel(months=20)
         lf = panel.lazy()
-        result = _ff_mom_signal_monthly(lf, _jkp_mom(lf)).collect()
+        result = _run_monthly(lf).collect()
         non_null = result.filter(pl.col("mom_2_12").is_not_null())
         assert len(non_null) > 0
 
@@ -1671,7 +1821,7 @@ class TestFFMomSignalMonthly:
         # Build 20-month panel with -99 at position 5 (will be a lagged return)
         panel = _make_monthly_panel(months=20, base_ret=0.0, include_missing_sentinel=True)
         lf = panel.lazy()
-        result = _ff_mom_signal_monthly(lf, _jkp_mom(lf)).collect()
+        result = _run_monthly(lf).collect()
         # Should still compute (sentinel becomes 0, doesn't make mom null)
         non_null = result.filter(pl.col("mom_2_12").is_not_null())
         assert len(non_null) > 0
@@ -1683,16 +1833,10 @@ class TestFFMomSignalMonthly:
         missing-price month that legacy CRSP coded -99)."""
         return _make_monthly_panel(months=20, excntry=excntry, ret_overrides={10: None}).lazy()
 
-    @staticmethod
-    def _with_jkp(lf: pl.LazyFrame) -> tuple[pl.LazyFrame, pl.LazyFrame]:
-        return lf, _jkp_mom(lf)
-
     def test_us_interior_null_month_tolerated(self, tolerance):
         """US: a null interior window month (row present) stays eligible and
         compounds as 0, per French's -99 tolerance for t-12..t-3."""
-        result = _ff_mom_signal_monthly(
-            *self._with_jkp(self._interior_null_panel(US_EXCNTRY))
-        ).collect()
+        result = _run_monthly(self._interior_null_panel(US_EXCNTRY)).collect()
         last_row = result.sort("date").tail(1)
         assert last_row["eligible_mom"][0] is True
         # 11 window months, one zeroed: (1.01)^10 - 1
@@ -1700,7 +1844,7 @@ class TestFFMomSignalMonthly:
 
     def test_row_interior_null_month_tolerated(self, tolerance):
         """ROW: same gate as the US; the null month counts as 0 in ret_12_1."""
-        result = _ff_mom_signal_monthly(*self._with_jkp(self._interior_null_panel("GBR"))).collect()
+        result = _run_monthly(self._interior_null_panel("GBR")).collect()
         last_row = result.sort("date").tail(1)
         assert last_row["eligible_mom"][0] is True
         np.testing.assert_allclose(last_row["mom_2_12"][0], 1.01**10 - 1, **tolerance.STANDARD)
@@ -1715,13 +1859,14 @@ class TestFFMomSignalMonthly:
                 "date": [date(2020, 1, 31), date(2020, 3, 31)],  # skip Feb
                 "ret": [0.01, 0.02],
                 "me": [1.0, 2.0],
+                "prc_us": [1.0, 1.0],
                 "w": [1.0, 1.0],
                 "exchcd_us": [1, 1],
                 "size_grp": ["large", "large"],
             }
         )
         lf = panel.lazy()
-        result = _ff_mom_signal_monthly(lf, _jkp_mom(lf)).collect().sort("date")
+        result = _run_monthly(lf).collect().sort("date")
         # March row: gap1 = (2020*12+3) - (2020*12+1) = 2 ≠ 1 → me_lag1 null
         mar_row = result.filter(pl.col("date") == date(2020, 3, 31))
         assert mar_row["me_lag1"][0] is None
@@ -1730,7 +1875,7 @@ class TestFFMomSignalMonthly:
         """With constant 2% monthly return, compounded 2-12 (skip 1) ≈ 1.02^11 - 1."""
         panel = _make_monthly_panel(months=24, base_ret=0.02)
         lf = panel.lazy()
-        result = _ff_mom_signal_monthly(lf, _jkp_mom(lf)).collect()
+        result = _run_monthly(lf).collect()
         non_null = result.filter(pl.col("mom_2_12").is_not_null())
         assert len(non_null) > 0
         # 11 months compounded: lags 2 through 12 = 11 months
@@ -1743,12 +1888,61 @@ class TestFFMomSignalMonthly:
         p2 = _make_monthly_panel(months=20, base_ret=0.05, stock_id=2)
         panel = pl.concat([p1, p2])
         lf = panel.lazy()
-        result = _ff_mom_signal_monthly(lf, _jkp_mom(lf)).collect()
+        result = _run_monthly(lf).collect()
         s1 = result.filter(pl.col("id") == 1).filter(pl.col("mom_2_12").is_not_null())
         s2 = result.filter(pl.col("id") == 2).filter(pl.col("mom_2_12").is_not_null())
         assert len(s1) > 0 and len(s2) > 0
         # Stock 2 has higher momentum
         assert s2["mom_2_12"][0] > s1["mom_2_12"][0]
+
+    # Last row of a 20-month panel is index 19: t-13 = 6, t-2 = 17, window t-12..t-2 = 7..17.
+
+    @staticmethod
+    def _last(result: pl.DataFrame) -> dict:
+        return result.sort("date").row(-1, named=True)
+
+    def test_us_missing_price_at_start_ineligible(self):
+        """US: row at t-13 without a price fails French's start check, even though
+        the permco-summed me is present."""
+        panel = _make_monthly_panel(months=20).with_columns(
+            prc_us=pl.when(pl.int_range(pl.len()) == 6).then(None).otherwise(pl.col("prc_us"))
+        )
+        assert self._last(_run_monthly(panel.lazy()).collect())["eligible_mom"] is False
+
+    def test_us_missing_interior_row_ineligible(self):
+        """US: French requires a row (possibly -99) for every month t-12..t-2."""
+        panel = _make_monthly_panel(months=20).filter(pl.int_range(pl.len()) != 10)
+        assert self._last(_run_monthly(panel.lazy()).collect())["eligible_mom"] is False
+
+    @pytest.mark.parametrize(("halt", "eligible"), [(range(9, 14), True), (range(9, 15), False)])
+    def test_row_halt_tolerance(self, halt, eligible):
+        """Non-US: a halt is missing rows; 5 missing of 11 window months (6 left)
+        stays eligible, 6 missing does not."""
+        panel = _make_monthly_panel(months=20, excntry="GBR").filter(
+            ~pl.int_range(pl.len()).is_in(list(halt))
+        )
+        last = self._last(_run_monthly(panel.lazy()).collect())
+        assert last["eligible_mom"] is eligible
+        assert (last["mom_2_12"] is not None) is eligible
+
+    @pytest.mark.parametrize("missing", [6, 17])
+    def test_row_halt_at_endpoint_ineligible(self, missing):
+        """Non-US: endpoints stay strict (price at t-13, good return at t-2)."""
+        panel = _make_monthly_panel(months=20, excntry="GBR").filter(
+            pl.int_range(pl.len()) != missing
+        )
+        assert self._last(_run_monthly(panel.lazy()).collect())["eligible_mom"] is False
+
+    def test_row_price_without_me_at_start_eligible(self):
+        """Non-US: the start check reads world_msf directly, so a priced row whose
+        me is null (absent from the FF panel) still counts."""
+        full = _make_monthly_panel(months=20, excntry="GBR").with_columns(
+            me=pl.when(pl.int_range(pl.len()) == 6).then(None).otherwise(pl.col("me"))
+        )
+        panel = full.filter(pl.col("me").is_not_null()).lazy()
+        src = _mom_src(full.lazy(), "monthly")
+        result = _ff_mom_signal_monthly(panel, src, _jkp_mom(full.lazy())).collect()
+        assert self._last(result)["eligible_mom"] is True
 
 
 # =============================================================================
@@ -1778,6 +1972,7 @@ def _make_daily_panel(
             "date": dates,
             "ret": rets,
             "me": [1.0] * n_days,
+            "prc_us": [1.0] * n_days,
             "w": [1.0] * n_days,
             "exchcd_us": [1] * n_days,
             "size_grp": ["large"] * n_days,
@@ -1787,13 +1982,13 @@ def _make_daily_panel(
 
 
 class TestFFMomSignalDaily:
-    """Tests for _ff_mom_signal_daily()."""
+    """Tests for _run_daily()."""
 
     def test_output_schema(self):
         """Output has the expected 11 columns."""
         panel = _make_daily_panel(n_days=300)
         lf = panel.lazy()
-        result = _ff_mom_signal_daily(lf).collect()
+        result = _run_daily(lf).collect()
         expected_cols = {
             "excntry",
             "id",
@@ -1813,14 +2008,14 @@ class TestFFMomSignalDaily:
         """Fewer than 252 days → all mom_2_12 null (not enough history)."""
         panel = _make_daily_panel(n_days=250)
         lf = panel.lazy()
-        result = _ff_mom_signal_daily(lf).collect()
+        result = _run_daily(lf).collect()
         assert result["mom_2_12"].is_null().all()
 
     def test_sufficient_history_has_non_null(self):
         """300 days → rows past lookback window have non-null mom_2_12."""
         panel = _make_daily_panel(n_days=300)
         lf = panel.lazy()
-        result = _ff_mom_signal_daily(lf).collect()
+        result = _run_daily(lf).collect()
         non_null = result.filter(pl.col("mom_2_12").is_not_null())
         assert len(non_null) > 0
 
@@ -1841,13 +2036,14 @@ class TestFFMomSignalDaily:
                 "date": dates,
                 "ret": rets,
                 "me": [1.0] * n,
+                "prc_us": [1.0] * n,
                 "w": [1.0] * n,
                 "exchcd_us": [1] * n,
                 "size_grp": ["large"] * n,
             }
         )
         lf = panel.lazy()
-        result = _ff_mom_signal_daily(lf).collect()
+        result = _run_daily(lf).collect()
         # The last row may be ineligible due to sentinel
         # (checking eligible_mom == False for the terminal row where skip lag == -99)
         last_row = result.sort("date").tail(1)
@@ -1864,7 +2060,7 @@ class TestFFMomSignalDaily:
     def test_null_ret_in_window_tolerated(self, excntry, tolerance):
         """Interior missing-price day is allowed and compounds as 0, in every country
         (French: 'any missing returns from day t-250 to t-22 must be -99.0')."""
-        result = _ff_mom_signal_daily(self._null_in_window_panel(excntry)).collect()
+        result = _run_daily(self._null_in_window_panel(excntry)).collect()
         last_row = result.sort("date").tail(1)
         assert last_row["eligible_mom"][0] is True
         # 230-day window with one zeroed day: (1.001)^229 - 1
@@ -1881,7 +2077,7 @@ class TestFFMomSignalDaily:
             excntry=excntry,
             ret_overrides={n - 1 - 21: 0.5},  # day t-21 for the last row
         )
-        result = _ff_mom_signal_daily(panel.lazy()).collect()
+        result = _run_daily(panel.lazy()).collect()
         last_row = result.sort("date").tail(1)
         assert last_row["eligible_mom"][0] is True
         assert abs(last_row["mom_2_12"][0] - 0.5) < 1e-9
@@ -1892,12 +2088,63 @@ class TestFFMomSignalDaily:
         p_gbr = _make_daily_panel(300, base_ret=0.003, excntry="GBR", stock_id=1)
         panel = pl.concat([p_usa, p_gbr])
         lf = panel.lazy()
-        result = _ff_mom_signal_daily(lf).collect()
+        result = _run_daily(lf).collect()
         usa = result.filter((pl.col("excntry") == "USA") & pl.col("mom_2_12").is_not_null())
         gbr = result.filter((pl.col("excntry") == "GBR") & pl.col("mom_2_12").is_not_null())
         assert len(usa) > 0 and len(gbr) > 0
         # GBR has higher per-day return → higher momentum
         assert gbr["mom_2_12"].mean() > usa["mom_2_12"].mean()
+
+    # Last row of a 300-day panel is index 299: t-251 = 48, t-21 = 278, window = 49..278.
+    # A second, complete stock keeps every date in the country's trading calendar.
+
+    @staticmethod
+    def _with_full_peer(panel: pl.DataFrame) -> pl.LazyFrame:
+        peer = _make_daily_panel(300, excntry=panel["excntry"][0], stock_id=2)
+        return pl.concat([panel, peer]).lazy()
+
+    @staticmethod
+    def _last_id1(result: pl.DataFrame) -> dict:
+        return result.filter(pl.col("id") == 1).sort("date").row(-1, named=True)
+
+    def test_us_missing_price_at_start_ineligible(self):
+        """US: no price at t-251 fails French's start check."""
+        panel = _make_daily_panel(300).with_columns(
+            prc_us=pl.when(pl.int_range(pl.len()) == 48).then(None).otherwise(pl.col("prc_us"))
+        )
+        assert (
+            self._last_id1(_run_daily(self._with_full_peer(panel)).collect())["eligible_mom"]
+            is False
+        )
+
+    def test_us_skip_window_rows_not_required(self):
+        """US: rows t-20..t-2 lie outside French's window and may be missing."""
+        panel = _make_daily_panel(300).filter(~pl.int_range(pl.len()).is_between(279, 297))
+        assert (
+            self._last_id1(_run_daily(self._with_full_peer(panel)).collect())["eligible_mom"]
+            is True
+        )
+
+    def test_row_halt_spanning_return_included(self):
+        """Non-US: a 51-day halt is tolerated and the first return after it
+        (p_end / p_start - 1) enters the compounded window return in full."""
+        panel = _make_daily_panel(
+            300, base_ret=0.0, excntry="GBR", ret_overrides={151: 0.5}
+        ).filter(~pl.int_range(pl.len()).is_between(100, 150))
+        last = self._last_id1(_run_daily(self._with_full_peer(panel)).collect())
+        assert last["eligible_mom"] is True
+        assert abs(last["mom_2_12"] - 0.5) < 1e-9
+
+    @pytest.mark.parametrize(("n_missing", "eligible"), [(115, True), (116, False)])
+    def test_row_halt_min_days(self, n_missing, eligible):
+        """Non-US: at least 115 of the 230 window days must be present."""
+        panel = _make_daily_panel(300, excntry="GBR").filter(
+            ~pl.int_range(pl.len()).is_between(100, 100 + n_missing - 1)
+        )
+        assert (
+            self._last_id1(_run_daily(self._with_full_peer(panel)).collect())["eligible_mom"]
+            is eligible
+        )
 
 
 # =============================================================================
@@ -2162,3 +2409,191 @@ class TestFFBuildCharacteristics:
         june = _make_june_chars()  # id=1
         result = ff_build_characteristics(panel, june, freq="monthly")
         assert len(result) == 0
+
+
+# =============================================================================
+# Unscreened characteristics (screens decide factor membership only)
+# =============================================================================
+
+
+def _months(start: date, n: int) -> list[date]:
+    """n month-ends starting at start's month."""
+    return (
+        pl.date_range(start, start.replace(year=start.year + 3), "1mo", eager=True)
+        .dt.month_end()[:n]
+        .to_list()
+    )
+
+
+def _write_extra_inputs(tmp_path) -> None:
+    """world_msf for a GBR non-common stock (10), a GBR stock with zero ME (11),
+    a GBR stock with no price at t-13 (12), a US Compustat-only row (20) and a US
+    CRSP stock (30) whose world_msf gvkey is 20's; comp_world / comp_funda /
+    ccm2a accounting for fiscal 2019; JKP ret_12_1."""
+    eoms = _months(date(2019, 6, 30), 15)  # Jun 2019 .. Aug 2020
+    rows = []
+    for i, cty, gv, me in [
+        (10, "GBR", "g10", 50.0),
+        (11, "GBR", "g11", 0.0),
+        (12, "GBR", "g12", 50.0),
+        (20, US_EXCNTRY, "g20", 60.0),
+        (30, US_EXCNTRY, "g20", 60.0),
+    ]:
+        for d in eoms:
+            no_prc = i == 12 and d == date(2019, 7, 31)
+            rows.append(
+                {
+                    "excntry": cty,
+                    "id": i,
+                    "gvkey": gv,
+                    "eom": d,
+                    "me_company": me,
+                    "prc": None if no_prc else 5.0,
+                    "ret": 0.01,
+                    "ret_lag_dif": 1,
+                    "common": 0,
+                    "source_crsp": int(i == 30),
+                }
+            )
+    pl.DataFrame(rows).write_parquet(tmp_path / "world_msf.parquet")
+    pl.DataFrame(
+        {"id": [10, 11, 12, 20, 30], "eom": [date(2020, 7, 31)] * 5, "ret_12_1": [0.2] * 5}
+    ).write_parquet(tmp_path / "market_chars_m.parquet")
+    f64 = [
+        "pstkrv",
+        "pstkl",
+        "pstk",
+        "seq",
+        "ceq",
+        "lt",
+        "at",
+        "txditc",
+        "revt",
+        "cogs",
+        "xsga",
+        "xint",
+        "mib",
+        "mibt",
+        "mibn",
+    ]
+    funda = {c: [None] for c in f64} | {"seq": [30.0], "at": [100.0], "revt": [10.0], "cogs": [4.0]}
+    pl.DataFrame(
+        {
+            "gvkey": ["g20"],
+            "datadate": [date(2019, 12, 31)],
+            "indfmt": ["INDL"],
+            "datafmt": ["STD"],
+            "popsrc": ["D"],
+            "consol": ["C"],
+            **funda,
+        },
+        schema_overrides=dict.fromkeys(f64, pl.Float64),
+    ).write_parquet(tmp_path / "comp_funda.parquet")
+
+
+_COMP_WORLD = pl.DataFrame(
+    {
+        "gvkey": ["g10", "g11", "g12"],
+        "datadate": [date(2019, 12, 31)] * 3,
+        "year": [2019] * 3,
+        "be": [25.0] * 3,
+        "op": [0.1] * 3,
+        "inv": [0.05] * 3,
+        "count": [1] * 3,
+    }
+)
+
+
+_CCM2A = pl.DataFrame(
+    {
+        "gvkey": ["g30"],
+        "permno": [30],
+        "year": [2019],
+        "datadate": [date(2019, 12, 31)],
+        "be": [40.0],
+        "op": [0.3],
+        "inv": [0.02],
+        "count": [3],
+    }
+)
+
+
+class TestFFCharacteristicsExtra:
+    """ff_characteristics_extra: characteristics without the FF sample screens."""
+
+    def _aug(self, tmp_path) -> pl.DataFrame:
+        _write_extra_inputs(tmp_path)
+        out = ff_characteristics_extra(tmp_path, tmp_path, _CCM2A, _COMP_WORLD).collect()
+        return out.filter(pl.col("date") == date(2020, 8, 31)).sort("id")
+
+    def test_screened_out_stock_gets_all_characteristics(self, tmp_path):
+        """Non-common, count=1, no June formation row: every formula is defined."""
+        r = self._aug(tmp_path).filter(pl.col("id") == 10).row(0, named=True)
+        assert r["me_ff"] == pytest.approx(50.0)
+        assert r["beme_ff"] == pytest.approx(25.0 / 50.0)  # Dec-2019 me_company
+        assert r["op_ff"] == pytest.approx(0.1)
+        assert r["inv_ff"] == pytest.approx(0.05)
+        assert r["umd_ff"] == pytest.approx(0.2)
+
+    def test_us_compustat_only_row_uses_ff_strict_accounting(self, tmp_path):
+        r = self._aug(tmp_path).filter(pl.col("id") == 20).row(0, named=True)
+        assert r["beme_ff"] == pytest.approx(30.0 / 60.0)
+        assert r["op_ff"] == pytest.approx((10.0 - 4.0) / 30.0)
+        assert r["inv_ff"] is None  # no prior fiscal year
+
+    def test_us_crsp_row_uses_ccm_link(self, tmp_path):
+        """A CRSP permno takes ccm2a's accounting, not its world_msf gvkey's."""
+        r = self._aug(tmp_path).filter(pl.col("id") == 30).row(0, named=True)
+        assert r["beme_ff"] == pytest.approx(40.0 / 60.0)
+        assert r["op_ff"] == pytest.approx(0.3)
+        assert r["inv_ff"] == pytest.approx(0.02)
+
+    def test_formula_nulls_stay_null(self, tmp_path):
+        out = self._aug(tmp_path)
+        zero_me = out.filter(pl.col("id") == 11).row(0, named=True)
+        assert zero_me["me_ff"] is None and zero_me["beme_ff"] is None
+        assert zero_me["op_ff"] == pytest.approx(0.1)  # op does not need ME
+        no_start_price = out.filter(pl.col("id") == 12).row(0, named=True)
+        assert no_start_price["umd_ff"] is None
+
+
+class TestFFFillCharacteristics:
+    """_ff_fill_characteristics: screened cells win; empty cells are filled."""
+
+    def test_coalesce_order(self):
+        d = date(2020, 8, 31)
+        cols = ["me_ff", "beme_ff", "op_ff", "inv_ff", "umd_ff"]
+        chars = pl.DataFrame(
+            {
+                "date": [d],
+                "excntry": ["GBR"],
+                "id": [1],
+                "me_ff": [100.0],
+                "beme_ff": [1.0],
+                "op_ff": [None],
+                "inv_ff": [None],
+                "umd_ff": [None],
+            },
+            schema_overrides=dict.fromkeys(cols, pl.Float64),
+        )
+        panel = pl.DataFrame(
+            {"excntry": ["GBR"] * 2, "id": [1, 2], "date": [d] * 2, "me": [100.0, 70.0]}
+        )
+        extra = pl.DataFrame(
+            {
+                "excntry": ["GBR"] * 3,
+                "id": [1, 2, 3],
+                "date": [d] * 3,
+                "me_ff": [999.0, 80.0, 90.0],
+                "beme_ff": [2.0, 0.5, 0.6],
+                "op_ff": [0.3, None, 0.4],
+                "inv_ff": [None] * 3,
+                "umd_ff": [0.1, 0.2, 0.3],
+            },
+            schema_overrides=dict.fromkeys(cols, pl.Float64),
+        ).lazy()
+        out = _ff_fill_characteristics(chars, panel, extra).sort("id")
+        assert out["me_ff"].to_list() == [100.0, 70.0, 90.0]  # screened, panel, extra
+        assert out["beme_ff"].to_list() == [1.0, 0.5, 0.6]
+        assert out["op_ff"].to_list() == [0.3, None, 0.4]
+        assert out["umd_ff"].to_list() == [0.1, 0.2, 0.3]

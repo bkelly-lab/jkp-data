@@ -19,9 +19,12 @@ import polars as pl
 import pytest
 
 from jkp.data.aux_functions import (
+    _dhs_abr_unscreened,
     _dhs_align_abr,
+    _dhs_chars_unscreened,
     _dhs_ibes_announcements,
     _dhs_ibes_gvkey_link,
+    _dhs_load_row_daily,
     _dhs_non_financial,
     _dhs_row_chars,
 )
@@ -371,3 +374,178 @@ class TestDhsAlignAbr:
         out_with = _dhs_align_abr(panel_rows, abr)
         assert out_without.equals(out_with)
         assert out_without["eom"].max() == date(2010, 12, 31)
+
+
+class TestDhsLoadRowDaily:
+    """ROW daily screen: US-equivalent validity (me > 0, ret present) + FF gap rule."""
+
+    def test_drops_nonpositive_me_and_long_gap_returns(self, tmp_path):
+        n = 6
+        pl.DataFrame(
+            {
+                "excntry": ["GBR"] * n,
+                "id": list(range(1, n + 1)),
+                "date": [date(2001, 1, 2)] * n,
+                "common": [1] * n,
+                "primary_sec": [1] * n,
+                "obs_main": [1] * n,
+                "exch_main": [1] * n,
+                "me": [10.0, 0.0, None, 10.0, 10.0, 10.0],
+                "ret": [0.01, 0.01, 0.01, 0.01, 0.01, None],
+                "ret_lag_dif": [1, 1, 1, 5, 6, 1],
+            }
+        ).write_parquet(tmp_path / "world_dsf.parquet")
+        out = _dhs_load_row_daily(tmp_path)
+        # kept: id 1 (clean), id 4 (gap of exactly 5 days)
+        assert sorted(out["id"].to_list()) == [1, 4]
+
+    def test_financials_are_not_screened_here(self):
+        # the financial screen moved to _dhs_pead_factor; alignment keeps them
+        panel_rows, abr = _align_abr_frames(1, gate=6)
+        out = _dhs_align_abr(panel_rows.with_columns(siccd=pl.lit(6020)), abr)
+        assert out.height > 0
+
+
+class TestDhsCharsUnscreened:
+    """Characteristics without the FIN/PEAD sample screens."""
+
+    def _out(self, tmp_path) -> pl.DataFrame:
+        eoms = pl.date_range(date(2010, 6, 1), date(2011, 8, 1), "1mo", eager=True).dt.month_end()
+        n = len(eoms)
+        pl.DataFrame(
+            {
+                "excntry": [US_EXCNTRY] * n + [US_EXCNTRY] * n,
+                "id": [1] * n + [900] * n,
+                "eom": pl.concat([eoms, eoms]),
+            }
+        ).write_parquet(tmp_path / "world_msf.parquet")
+        # CRSP id 1: NS = 0 (FIN screen drops it), negative lagBE (dropped too)
+        annual = pl.DataFrame(
+            {
+                "id": [1],
+                "datadate": [date(2009, 12, 31)],
+                "YEAR": [2009],
+                "lagBE": [-5.0],
+                "NS": [0.0],
+                "IR": [None],
+            },
+            schema_overrides={"IR": pl.Float64},
+        )
+        # IR from msf alone for a CRSP id with no funda IR row
+        us_ir = pl.DataFrame({"LPERMNO": [1], "YEAR": [2010], "IR": [0.3]})
+        # US Compustat-sourced id 900: jkp June chars
+        us_comp_june = pl.DataFrame(
+            {
+                "id": [900],
+                "gvkey": ["g"],
+                "datadate": [date(2010, 6, 30)],
+                "YEAR": [2010],
+                "NS": [0.1],
+                "IR": [-0.2],
+            }
+        )
+        abr = pl.DataFrame(
+            {
+                "id": [1],
+                "DATADATE": [date(2010, 6, 30)],
+                "RDQ": [date(2010, 7, 5)],
+                "Abr": [0.05],
+                "eom": [date(2010, 7, 31)],
+                "gate": [6],
+            }
+        )
+        return _dhs_chars_unscreened(tmp_path, 2000, 2020, annual, us_ir, us_comp_june, abr)
+
+    def test_ns_zero_and_crsp_only_ir_are_published(self, tmp_path):
+        r = self._out(tmp_path).filter((pl.col("id") == 1) & (pl.col("eom") == date(2010, 8, 31)))
+        assert r["ns"][0] == 0.0  # NS != 0 and lagBE >= 0 are factor screens only
+        assert math.isclose(r["ir"][0], 0.3)
+        assert math.isclose(r["abr"][0], 0.05)  # lagged Abr of the July announcement
+
+    def test_ns_ir_window_is_july_to_june(self, tmp_path):
+        out = self._out(tmp_path).filter(pl.col("id") == 1)
+        june = out.filter(pl.col("eom") == date(2010, 6, 30))
+        assert june["ns"][0] is None and june["ir"][0] is None  # prior July-June year
+        assert out.filter(pl.col("eom") == date(2011, 6, 30))["ir"][0] is not None
+        assert out.filter(pl.col("eom") == date(2011, 7, 31))["ir"][0] is None
+
+    def test_us_compustat_row_uses_jkp_june(self, tmp_path):
+        r = self._out(tmp_path).filter((pl.col("id") == 900) & (pl.col("eom") == date(2010, 9, 30)))
+        assert math.isclose(r["ns"][0], 0.1)
+        assert math.isclose(r["ir"][0], -0.2)
+        assert r["abr"][0] is None
+
+
+class TestDhsAbrUnscreened:
+    def _write(self, tmp_path) -> None:
+        """id 900: US Compustat-sourced (gvkey 001000). id 1: CRSP permno whose
+        world_msf gvkey is 001000 but whose CCM link is gvkey 002000."""
+        days = pl.date_range(date(2010, 7, 1), date(2010, 7, 9), "1d", eager=True)
+        days = days.filter(days.dt.weekday() <= 5)
+        n = len(days)
+        pl.DataFrame(
+            {
+                "excntry": [US_EXCNTRY] * 2,
+                "gvkey": ["001000"] * 2,
+                "id": [900, 1],
+                "source_crsp": [0, 1],
+                "eom": [date(2010, 7, 31)] * 2,
+            }
+        ).write_parquet(tmp_path / "world_msf.parquet")
+        pl.DataFrame(
+            {
+                "excntry": [US_EXCNTRY] * n,
+                "id": [900] * n,
+                "date": days,
+                "ret": [0.02] * n,
+                "me": [10.0] * n,
+                "ret_lag_dif": [1] * n,
+            }
+        ).write_parquet(tmp_path / "world_dsf.parquet")
+        pl.DataFrame(
+            {"permno": [1] * n, "dlycaldt": days, "dlyret": [0.03] * n, "dlycap": [5.0] * n}
+        ).write_parquet(tmp_path / "crsp_dsf_v2.parquet")
+        pl.DataFrame(
+            {
+                "gvkey": ["002000"],
+                "lpermno": [1],
+                "linktype": ["LC"],
+                "usedflag": [1.0],
+                "linkdt": [date(2000, 1, 1)],
+                "linkenddt": [None],
+            },
+            schema_overrides={"linkenddt": pl.Date},
+        ).write_parquet(tmp_path / "crsp_ccmxpf_linktable.parquet")
+        pl.DataFrame(
+            {"excntry": [US_EXCNTRY] * n, "date": days, "mkt_vw": [0.01] * n}
+        ).write_parquet(tmp_path / "market_returns_daily.parquet")
+        pl.DataFrame(
+            {
+                "gvkey": ["001000", "002000"],
+                "datadate": [date(2010, 6, 30), date(2010, 3, 31)],
+                "rdq": [date(2010, 7, 6), date(2010, 7, 7)],
+                "fyearq": [2010, 2010],
+                "indfmt": ["INDL"] * 2,
+                "datafmt": ["STD"] * 2,
+                "popsrc": ["D"] * 2,
+                "consol": ["C"] * 2,
+            }
+        ).write_parquet(tmp_path / "comp_fundq.parquet")
+
+    def test_non_primary_us_security_gets_abr_via_gvkey(self, tmp_path):
+        """fundq rdq maps to every US Compustat-sourced security of the gvkey;
+        Abr = sum(ret - mkt) over [rdq-2, rdq+1] on world_dsf."""
+        self._write(tmp_path)
+        out = _dhs_abr_unscreened(tmp_path, tmp_path, 2000, 2020, 2000, 2020)
+        r = out.filter(pl.col("id") == 900)
+        assert r["RDQ"].to_list() == [date(2010, 7, 6)]
+        assert math.isclose(r["Abr"][0], 4 * (0.02 - 0.01))
+
+    def test_crsp_security_uses_ccm_link_and_crsp_daily(self, tmp_path):
+        """A CRSP permno takes its CCM gvkey's announcement (not world_msf's gvkey)
+        and crsp_dsf_v2 returns."""
+        self._write(tmp_path)
+        out = _dhs_abr_unscreened(tmp_path, tmp_path, 2000, 2020, 2000, 2020)
+        r = out.filter(pl.col("id") == 1)
+        assert r["RDQ"].to_list() == [date(2010, 7, 7)]
+        assert math.isclose(r["Abr"][0], 4 * (0.03 - 0.01))

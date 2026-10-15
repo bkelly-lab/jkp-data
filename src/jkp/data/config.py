@@ -230,6 +230,10 @@ FF_MIN_STOCKS_BP = 10
 # Min firms per (excntry, date, bucket) for ROW VW; US bypassed.
 FF_MIN_STOCKS_PF = 3
 
+# ROW formation ME tolerance (months): a stock with no June (or December) row,
+# e.g. halted, takes its last ME up to this many months earlier. US unaffected.
+FF_ROW_FORMATION_ME_LOOKBACK = 2
+
 # HXZ q-factor ROW thresholds (same values as FF; separate names for clarity).
 HXZ_MIN_STOCKS_BP = 10
 HXZ_MIN_STOCKS_PF = 3
@@ -244,6 +248,12 @@ FF_UMD_DAILY_SKIP = 21
 FF_UMD_DAILY_LOOKBACK = 251
 FF_UMD_MONTHLY_LOOKBACK = 12
 FF_UMD_MONTHLY_SKIP = 1
+
+# Non-US UMD halt tolerance: min rows in the momentum window (monthly t-12..t-2 =
+# 11 months; daily t-250..t-21 = 230 trading days). Compustat Global records a
+# halt as missing rows, not French's -99.0. Endpoints stay strict; US needs all.
+FF_UMD_ROW_MIN_MONTHS = 6
+FF_UMD_ROW_MIN_DAYS = 115
 
 # DFF (Davis-Fama-French) hand-collected Moody's BE splice into the US FF path.
 # When True, union DFF BE (permno-keyed, bundled resource) with Compustat BE;

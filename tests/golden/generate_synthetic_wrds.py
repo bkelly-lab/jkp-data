@@ -812,7 +812,9 @@ def gen_world_msf(
             ret_lag_dif=(
                 (pl.col("eom").dt.year() - prev_eom.dt.year()) * 12
                 + (pl.col("eom").dt.month() - prev_eom.dt.month())
-            ).cast(pl.Int64)
+            ).cast(pl.Int64),
+            # one security per company in the synthetic panel
+            me_company=pl.col("me"),
         )
     )
 

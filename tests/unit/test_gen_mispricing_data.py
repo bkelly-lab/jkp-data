@@ -35,19 +35,28 @@ import pytest
 from jkp.data.aux_functions import (
     _mp_add_leg_score,
     _mp_anomaly_pct_panel,
+    _mp_build_comp_us_inputs,
     _mp_diff_legs,
     _mp_distress_book_equity_mb,
+    _mp_distress_bounds,
+    _mp_distress_cs_mean,
     _mp_distress_exretavg,
-    _mp_distress_final_score,
+    _mp_distress_lagged_inputs,
     _mp_distress_market_inputs,
     _mp_distress_nimtaavg,
+    _mp_distress_score,
     _mp_distress_sigma,
     _mp_double_sort_buckets,
     _mp_filter_full_buckets,
+    _mp_load_funda,
+    _mp_load_fundq,
+    _mp_percentile_rank,
+    _mp_place_percentile,
     _mp_rolling_calendar_sum,
     _mp_spread_per_size_then_diff,
     _mp_truncate_thin,
     _mp_vw_monthly,
+    _mp_world_distress_lagged_inputs,
     _mp_world_monthly_lagged_me_panel,
     _mp_world_percentile_rank_anomalies,
 )
@@ -1322,14 +1331,18 @@ class TestMpDistressNimtaavg:
     def test_nimtaavg_output_columns(self):
         """_mp_distress_nimtaavg must add NIMTAAVG column."""
         dist3 = self._make_dist3_consecutive(13)
-        result, _ = _mp_distress_nimtaavg(dist3)
+        result, _ = _mp_distress_nimtaavg(
+            dist3, _mp_distress_cs_mean(dist3, "NIMTA", ["eom"], min_obs=10)
+        )
         assert "NIMTAAVG" in result.columns
 
     def test_nimtaavg_requires_4_lags(self):
         """Stocks with < 4 consecutive quarterly obs get None NIMTAAVG."""
         # Only 2 months of data → lags at -3, -6, -9 months will be None
         dist3 = self._make_dist3_consecutive(2)
-        result, _ = _mp_distress_nimtaavg(dist3)
+        result, _ = _mp_distress_nimtaavg(
+            dist3, _mp_distress_cs_mean(dist3, "NIMTA", ["eom"], min_obs=10)
+        )
         # nimta_ok requires lags at 0,3,6,9 months all non-null with correct gaps
         # With only 2 months, eom_lag3 etc. won't match → nimta_ok=False → NIMTAAVG=None
         for row in result["NIMTAAVG"].to_list():
@@ -1343,7 +1356,9 @@ class TestMpDistressNimtaavg:
         scale_n = (1 - R**3) / (1 - R**12)
         nimta = 0.02
         dist3 = self._make_dist3_consecutive(13).with_columns(NIMTA=pl.lit(nimta))
-        result, _ = _mp_distress_nimtaavg(dist3)
+        result, _ = _mp_distress_nimtaavg(
+            dist3, _mp_distress_cs_mean(dist3, "NIMTA", ["eom"], min_obs=10)
+        )
         row = result.filter((pl.col("permno") == 0) & (pl.col("eom") == _eom(2000, 13)))
         assert row.height == 1
         computed = row["NIMTAAVG"][0]
@@ -1353,7 +1368,9 @@ class TestMpDistressNimtaavg:
     def test_floor_eom_returned(self):
         """_mp_distress_nimtaavg returns a (dist3, floor_eom) tuple."""
         dist3 = self._make_dist3_consecutive(13)
-        result = _mp_distress_nimtaavg(dist3)
+        result = _mp_distress_nimtaavg(
+            dist3, _mp_distress_cs_mean(dist3, "NIMTA", ["eom"], min_obs=10)
+        )
         assert isinstance(result, tuple) and len(result) == 2
 
 
@@ -1391,7 +1408,9 @@ class TestMpDistressExretavg:
         """EXRETAVG column must be present in output."""
         dist3 = self._make_dist3(15)
         floor_eom = _eom(1999, 1)
-        result = _mp_distress_exretavg(dist3, floor_eom)
+        result = _mp_distress_exretavg(
+            dist3, floor_eom, _mp_distress_cs_mean(dist3, "EXRET", ["eom"])
+        )
         assert "EXRETAVG" in result.columns
 
     def test_exretavg_scale_formula(self, tolerance):
@@ -1403,7 +1422,9 @@ class TestMpDistressExretavg:
         e = 0.01
         dist3 = self._make_dist3(15)
         floor_eom = _eom(1999, 1)
-        result = _mp_distress_exretavg(dist3, floor_eom)
+        result = _mp_distress_exretavg(
+            dist3, floor_eom, _mp_distress_cs_mean(dist3, "EXRET", ["eom"])
+        )
         last_eom = _eom(2000, 15)
         row = result.filter(pl.col("eom") == last_eom)
         assert row.height == 1
@@ -1416,7 +1437,9 @@ class TestMpDistressExretavg:
         """Fewer than 12 consecutive months → EXRETAVG=None."""
         dist3 = self._make_dist3(5)  # only 5 months — lags 0..11 won't all be valid
         floor_eom = _eom(1999, 1)
-        result = _mp_distress_exretavg(dist3, floor_eom)
+        result = _mp_distress_exretavg(
+            dist3, floor_eom, _mp_distress_cs_mean(dist3, "EXRET", ["eom"])
+        )
         # At most 4 obs: can't satisfy all 12 lag checks → all None
         exret_vals = [v for v in result["EXRETAVG"].to_list() if v is not None]
         assert len(exret_vals) == 0
@@ -1465,9 +1488,8 @@ class TestMpDistressSigma:
         np.testing.assert_allclose(row4["SIGMA"][0], expected_sigma, **tolerance.STANDARD)
 
     def test_sigma_null_when_no_prior_obs(self):
-        """When there are no prior 3-month daily obs, SIGMA is None: sum_total
-        is 0 obs for the single stock, and there's no other stock's SIGMA to
-        fall back on for the cross-sectional mean."""
+        """When there are no prior 3-month daily obs, SIGMA is None (the
+        cross-sectional fill happens later, in _mp_distress_lagged_inputs)."""
         # Only one month of data → no prior 3-month window
         daily = self._make_daily(n_months=1)
         result = _mp_distress_sigma(daily)
@@ -1481,12 +1503,22 @@ class TestMpDistressSigma:
 # ===========================================================================
 
 
+def _us_distress_own_refs(chs_inputs: pl.DataFrame, sigma: pl.DataFrame) -> pl.DataFrame:
+    """US CHS score with the frame's own cross-sectional references, as the
+    universe run of _mp_compute_distress computes them."""
+    scored = _mp_distress_lagged_inputs(
+        chs_inputs, sigma, _mp_distress_cs_mean(sigma, "SIGMA", ["eom"])
+    )
+    return _mp_distress_score(scored, _mp_distress_bounds(scored, ["eom"]), ["eom"])
+
+
 class TestMpDistressFinalScore:
-    """Tests for _mp_distress_final_score: CHS logit using MP_DISTRESS_BETAS."""
+    """Tests for the CHS logit (_mp_distress_lagged_inputs + _mp_distress_score)
+    using MP_DISTRESS_BETAS."""
 
     def _make_dist4_sigma(self):
         """Create minimal dist4 and sigma frames. TLMTA/CASHMTA/MB differ between
-        t-1 and t because _mp_distress_final_score scores those three off the
+        t-1 and t because the score uses those three at their
         *lagged* (t-1) value while NIMTAAVG/EXRETAVG/RSIZE/PRICE/SIGMA use the
         current (t) value — divergent rows catch a dropped or reversed lag."""
         eom = _eom(2001, 6)
@@ -1535,7 +1567,7 @@ class TestMpDistressFinalScore:
         )
 
         dist4, sigma_df = self._make_dist4_sigma()
-        result = _mp_distress_final_score(dist4, sigma_df)
+        result = _us_distress_own_refs(dist4, sigma_df)
         assert result.height == 1
         assert result["eom"][0] == _eom(2001, 6)
         np.testing.assert_allclose(result["distress"][0], expected, **tolerance.STANDARD)
@@ -1543,7 +1575,7 @@ class TestMpDistressFinalScore:
     def test_final_score_output_columns(self):
         """Output must contain eom, permno, distress."""
         dist4, sigma_df = self._make_dist4_sigma()
-        result = _mp_distress_final_score(dist4, sigma_df)
+        result = _us_distress_own_refs(dist4, sigma_df)
         assert {"eom", "permno", "distress"} <= set(result.columns)
 
     def test_final_score_drops_null_inputs(self):
@@ -1564,7 +1596,7 @@ class TestMpDistressFinalScore:
             }
         )
         sigma_df = pl.DataFrame({"permno": [1, 1], "eom": [eom_prev, eom], "SIGMA": [0.3, 0.3]})
-        result = _mp_distress_final_score(dist4, sigma_df)
+        result = _us_distress_own_refs(dist4, sigma_df)
         # First row has null NIMTAAVG → filtered out after winsorization+filter;
         # only the second (t) row survives.
         assert result.height == 1
@@ -2089,6 +2121,236 @@ class TestMpUniverseScreens:
         result = _mp_world_monthly_lagged_me_panel(world_monthly)
         assert result["eom"].to_list() == [_eom(2000, 2), _eom(2000, 3)]
         assert result["lag_size_grp"].to_list() == ["nano", "small"]
+
+
+class TestMpPlacePercentile:
+    """Screened-out rows are placed into the ranked sample's breakpoints."""
+
+    def _sample(self, n: int) -> pl.DataFrame:
+        return pl.DataFrame(
+            {
+                "permno": list(range(n)),
+                "eom": [_eom(2000, 6)] * n,
+                "rank_var": [float(i) for i in range(n)],
+            }
+        )
+
+    @pytest.mark.parametrize("descending", [False, True])
+    def test_equal_value_gets_sample_percentile(self, descending):
+        import duckdb
+
+        m = self._sample(40)
+        con = duckdb.connect()
+        ranked = _mp_percentile_rank(m, descending, con, id_select=["permno"], group_keys=["eom"])
+        extra = pl.DataFrame(
+            {"permno": [100, 101], "eom": [_eom(2000, 6)] * 2, "rank_var": [7.0, 33.0]}
+        )
+        placed = _mp_place_percentile(
+            m, extra, descending, con, id_select=["permno"], group_keys=["eom"], min_stks=30
+        ).sort("permno")
+        expected = ranked.filter(pl.col("permno").is_in([7, 33])).sort("permno")["pct_raw"]
+        assert placed["pct"].to_list() == expected.cast(pl.Float64).to_list()
+
+    def test_thin_group_gives_no_percentile(self):
+        import duckdb
+
+        extra = pl.DataFrame({"permno": [100], "eom": [_eom(2000, 6)], "rank_var": [3.0]})
+        placed = _mp_place_percentile(
+            self._sample(20),
+            extra,
+            False,
+            duckdb.connect(),
+            id_select=["permno"],
+            group_keys=["eom"],
+            min_stks=30,
+        )
+        assert placed.height == 0
+
+    def test_pct_panel_scores_excluded_stock_outside_legs(self):
+        import duckdb
+
+        eom = _eom(2000, 6)
+        n = 40
+        anom = MP_ANOMALY_LIST[0]
+        me_panel = pl.DataFrame(
+            {
+                "permno": list(range(n)),
+                "eom": [eom] * n,
+                "ret": [0.01] * n,
+                "lag_prc": [4.0] + [10.0] * (n - 1),
+                "mktcap": [100.0] * n,
+                "exchcd": [1] * n,
+            }
+        )
+        values = pl.DataFrame(
+            {"permno": list(range(n)), "eom": [eom] * n, "rank_var": [float(i) for i in range(n)]}
+        )
+        kwargs = {
+            "panel_cols": ["permno", "eom", "ret", "lag_prc", "mktcap", "exchcd"],
+            "sort_keys": ["permno", "eom"],
+            "id_cols": ["permno"],
+            "group_keys": ["eom"],
+            "anom_source": lambda a: values if a == anom else None,
+        }
+        old = _mp_anomaly_pct_panel(me_panel, 30, duckdb.connect(), **kwargs)
+        new = _mp_anomaly_pct_panel(
+            me_panel,
+            30,
+            duckdb.connect(),
+            extra_source=lambda a: values if a == anom else None,
+            **kwargs,
+        )
+        eligible = new.filter(pl.col("mp_eligible")).drop("mp_eligible")
+        assert eligible.equals(old)
+        excluded = new.filter(~pl.col("mp_eligible"))
+        assert excluded["permno"].to_list() == [0]
+        assert excluded[f"pct_{anom}"].to_list() == [1.0]
+
+
+class TestMpDistressUniverseRefs:
+    """Outside stocks are filled and winsorized against the universe cross-section."""
+
+    def _universe(self) -> tuple[pl.DataFrame, pl.DataFrame]:
+        n = 30
+        chs = pl.DataFrame(
+            {
+                "permno": list(range(n)) * 2,
+                "eom": [_eom(2001, 5)] * n + [_eom(2001, 6)] * n,
+            }
+        ).with_columns(
+            NIMTAAVG=0.001 * pl.col("permno"),
+            TLMTA=0.02 * pl.col("permno"),
+            EXRETAVG=-0.001 * pl.col("permno"),
+            RSIZE=-10 + 0.1 * pl.col("permno"),
+            CASHMTA=0.01 * pl.col("permno"),
+            MB=0.5 + 0.1 * pl.col("permno"),
+            PRICE=1 + 0.05 * pl.col("permno"),
+        )
+        sigma = chs.select("permno", "eom", SIGMA=0.2 + 0.01 * pl.col("permno"))
+        return chs, sigma
+
+    def test_outside_twin_gets_universe_score(self):
+        chs, sigma = self._universe()
+        sigma_mean = _mp_distress_cs_mean(sigma, "SIGMA", ["eom"])
+        scored = _mp_distress_lagged_inputs(chs, sigma, sigma_mean)
+        bounds = _mp_distress_bounds(scored, ["eom"])
+        universe = _mp_distress_score(scored, bounds, ["eom"])
+        # permno 29 is above the 95th percentile, so the universe clips its inputs
+        twin = _mp_distress_lagged_inputs(
+            chs.filter(pl.col("permno") == 29), sigma.filter(pl.col("permno") == 29), sigma_mean
+        )
+        placed = _mp_distress_score(twin, bounds, ["eom"])
+        own = _mp_distress_score(twin, _mp_distress_bounds(twin, ["eom"]), ["eom"])
+        expected = universe.filter(pl.col("permno") == 29)["distress"].to_list()
+        assert placed["distress"].to_list() == expected
+        assert own["distress"].to_list() != expected
+
+    def test_outside_sigma_fill_uses_universe_mean(self):
+        chs, sigma = self._universe()
+        sigma_mean = _mp_distress_cs_mean(sigma, "SIGMA", ["eom"])
+        out = _mp_distress_lagged_inputs(
+            chs.filter(pl.col("permno") == 0),
+            sigma.filter(pl.col("permno") == 0).with_columns(SIGMA=pl.lit(None, pl.Float64)),
+            sigma_mean,
+        ).sort("eom")
+        assert out["SIGMA"].to_list() == sigma_mean.sort("eom")["mean_SIGMA"].to_list()
+
+    def test_cs_mean_drops_thin_groups(self):
+        df = pl.DataFrame(
+            {
+                "eom": [_eom(2000, 1)] * 3 + [_eom(2000, 2)] * 3,
+                "NIMTA": [1.0, 2.0, 3.0, 4.0, None, 5.0],
+            }
+        )
+        out = _mp_distress_cs_mean(df, "NIMTA", ["eom"], min_obs=3)
+        assert out.to_dicts() == [{"eom": _eom(2000, 1), "mean_NIMTA": 2.0}]
+
+    def test_world_sigma_fill_per_country(self):
+        e = _eom(2001, 6)
+        panel = pl.DataFrame({"id": [1, 2], "excntry": ["GBR", "FRA"], "eom": [e, e]}).with_columns(
+            [
+                pl.lit(0.1).alias(c)
+                for c in ["NIMTAAVG", "TLMTA", "EXRETAVG", "RSIZE", "CASHMTA", "MB", "PRICE"]
+            ]
+        )
+        sigma = pl.DataFrame(
+            {"id": [1, 2], "eom": [e, e], "SIGMA": [None, None], "excntry": ["GBR", "FRA"]},
+            schema_overrides={"SIGMA": pl.Float64},
+        )
+        sigma_mean = pl.DataFrame(
+            {"excntry": ["GBR", "FRA"], "eom": [e, e], "mean_SIGMA": [0.1, 0.2]}
+        )
+        out = _mp_world_distress_lagged_inputs(panel, sigma, sigma_mean).sort("id")
+        assert out["SIGMA"].to_list() == [0.1, 0.2]
+
+
+class TestMpBuildCompUsInputs:
+    """Compustat-sourced US securities get US-path inputs keyed by their jkp id."""
+
+    def test_inputs(self, tmp_path):
+        raw_dir, interim_dir, out_dir = tmp_path / "raw", tmp_path / "interim", tmp_path / "out"
+        for d in (raw_dir, interim_dir, out_dir):
+            d.mkdir()
+        e1, e2 = _eom(2000, 1), _eom(2000, 2)
+        pl.DataFrame(
+            {
+                "id": [500001, 500001, 500001, 10001, 600001],
+                "gvkey": ["001234"] * 3 + ["001234", "009999"],
+                "excntry": ["USA", "USA", "USA", "USA", "GBR"],
+                "source_crsp": [0, 0, 0, 1, 0],
+                "eom": [e1, e2, _eom(2000, 3), e1, e1],
+                "prc": [10.0, 11.0, 12.0, 10.0, 10.0],
+                "ret": [0.01, 0.1, 0.09, 0.01, 0.01],
+                "me": [2.0, 2.2, 0.0, 2.0, 2.0],
+            }
+        ).write_parquet(interim_dir / "world_msf.parquet")
+        pl.DataFrame(
+            {
+                "id": [500001, 500001, 10001],
+                "excntry": ["USA", "USA", "USA"],
+                "source_crsp": [0, 0, 1],
+                "date": [date(2000, 1, 3), date(2000, 1, 4), date(2000, 1, 3)],
+                "eom": [e1, e1, e1],
+                "ret": [0.01, None, 0.02],
+            }
+        ).write_parquet(interim_dir / "world_dsf.parquet")
+        std = {"indfmt": "INDL", "datafmt": "STD", "popsrc": "D", "consol": "C"}
+        annual = ["act", "at", "ceq", "che", "cogs", "csho", "dlc", "dltt", "dp", "ib", "invt"]
+        annual += ["lct", "lt", "mib", "oancf", "ppegt", "pstk", "sale", "seq", "txditc", "xint"]
+        pl.DataFrame(
+            {"gvkey": ["001234"], "datadate": [date(1999, 12, 31)], "fyear": [1999], "fyr": [12]}
+            | {k: [v] for k, v in std.items()}
+            | {c: [1.0] for c in [*annual, "prcc_f"]}
+        ).write_parquet(raw_dir / "comp_funda.parquet")
+        quarterly = ["ibq", "saleq", "niq", "cheq", "seqq", "ceqq", "pstkq", "atq", "ltq"]
+        pl.DataFrame(
+            {
+                "gvkey": ["001234"],
+                "datadate": [date(1999, 12, 31)],
+                "fyearq": [1999],
+                "fqtr": [4],
+                "fyr": [12],
+                "rdq": [date(2000, 2, 10)],
+            }
+            | {k: [v] for k, v in std.items()}
+            | {c: [1.0] for c in [*quarterly, "pstkrq"]}
+        ).write_parquet(raw_dir / "comp_fundq.parquet")
+
+        try:
+            _mp_build_comp_us_inputs(raw_dir, interim_dir, out_dir)
+        finally:
+            _mp_load_funda.cache_clear()
+            _mp_load_fundq.cache_clear()
+
+        monthly = pl.read_parquet(out_dir / "crsp_monthly.parquet")
+        assert monthly["permno"].to_list() == [500001, 500001]  # me = 0 month dropped
+        assert monthly["me"].to_list() == [2000.0, 2200.0]  # $ millions -> $ thousands
+        daily = pl.read_parquet(out_dir / "crsp_daily.parquet")
+        assert daily["permno"].to_list() == [500001]
+        ca = pl.read_parquet(out_dir / "compustat_annual.parquet")
+        assert ca.select("permno", "gvkey").rows() == [(500001, "001234")]
+        cq = pl.read_parquet(out_dir / "compustat_quarterly.parquet")
+        assert cq["rdq_crsp"].to_list() == [_eom(2000, 3)]
 
 
 # ===========================================================================
