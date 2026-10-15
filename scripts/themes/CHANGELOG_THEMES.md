@@ -17,7 +17,8 @@ Medium-term returns, Long-term returns, Seasonal returns, Composites. See
 **Names.** Theme and sub-theme names describe the characteristics; `factor_name` in
 `theme_descriptions.csv` names the long-short factor and shows which side it goes long: the
 name itself for high values, and "Low" plus the name for low values (for example Low risk,
-Low leverage, Low asset growth; Small size for Size). Past returns keep their established
+Low leverage, Low asset growth), with plain antonyms where they read better: Small size,
+Young, Illiquidity, Short duration and Stable earnings). Past returns keep their established
 factor names: Short-term returns (factor: Short-term reversal), Medium-term returns (Momentum,
 with sub-themes Returns 2-6 and Returns 7-12 for Momentum 2-6 and Momentum 7-12), Long-term
 returns (Long-term reversal) and Seasonal returns (Seasonality).

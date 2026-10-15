@@ -4,7 +4,7 @@ sub_theme,Value,Value,Value,"Book equity, assets and sales relative to market va
 sub_theme,Earnings yield,Earnings yield,Value,"Earnings, gross profit and intrinsic value relative to price.",v1.0
 sub_theme,Cash flow yield,Cash flow yield,Value,Operating and free cash flow relative to market value.,v1.0
 sub_theme,Dividend yield,Dividend yield,Value,"Dividends relative to price, assets and earnings.",v1.0
-sub_theme,Equity duration,Low equity duration,Value,How far in the future expected cash flows arrive.,v1.0
+sub_theme,Equity duration,Short duration,Value,How far in the future expected cash flows arrive.,v1.0
 theme,Profitability,Profitability,Profitability,How profitable the firm is.,v1.0
 sub_theme,Profitability,Profitability,Profitability,"Profits relative to assets, book equity or PP&E.",v1.0
 sub_theme,Profit margins,Profit margins,Profitability,Profits relative to sales or employees.,v1.0
@@ -54,12 +54,12 @@ sub_theme,Volatility,Low volatility,Risk,Total and idiosyncratic return volatili
 sub_theme,Lottery,Low lottery,Risk,Largest daily returns over the past month.,v1.0
 sub_theme,Beta,Low beta,Risk,Sensitivity to and correlation with the market.,v1.0
 sub_theme,Skewness,Low skewness,Risk,Asymmetry of daily returns.,v1.0
-sub_theme,Earnings volatility,Low earnings volatility,Risk,Volatility of earnings and cash flow.,v1.0
+sub_theme,Earnings volatility,Stable earnings,Risk,Volatility of earnings and cash flow.,v1.0
 theme,Size,Small size,Size,"Firm size, age and trading activity.",v1.0
 sub_theme,Size,Small size,Size,"Market value, book value, assets and sales.",v1.0
-sub_theme,Firm age,Low firm age,Size,Months since the firm first appears in the data.,v1.0
+sub_theme,Firm age,Young,Size,Months since the firm first appears in the data.,v1.0
 sub_theme,Share price,Low share price,Size,Share price level.,v1.0
-sub_theme,Liquidity,Low liquidity,Size,"Trading volume, illiquidity and bid-ask spreads.",v1.0
+sub_theme,Liquidity,Illiquidity,Size,"Trading volume, illiquidity and bid-ask spreads.",v1.0
 sub_theme,Share turnover,Low share turnover,Size,Share turnover and days without trading.,v1.0
 theme,Short-term returns,Short-term reversal,Short-term returns,Last month's return.,v1.0
 sub_theme,Short-term returns,Short-term reversal,Short-term returns,Last month's return.,v1.0

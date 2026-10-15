@@ -645,9 +645,13 @@ SUB_THEME_DESCRIPTIONS: dict[str, str] = {
 
 # Factor names. By default a factor is named after its theme or sub-theme, with "Low" in
 # front when it goes long low values (factor_sign, times theme_sign for a sub-theme, is -1).
-# Exceptions: established names for past returns, and Small size.
+# Exceptions: established names for past returns, and plain antonyms where they read better.
 FACTOR_NAMES: dict[str, str] = {
     "Size": "Small size",
+    "Firm age": "Young",
+    "Liquidity": "Illiquidity",
+    "Equity duration": "Short duration",
+    "Earnings volatility": "Stable earnings",
     "Short-term returns": "Short-term reversal",
     "Medium-term returns": "Momentum",
     "Returns 2-6": "Momentum 2-6",

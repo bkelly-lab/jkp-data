@@ -28,7 +28,8 @@ The first two signs describe what a characteristic measures; only `factor_sign` 
 returns. In the same spirit, theme and sub-theme names describe the characteristics, and
 `theme_descriptions.csv` gives each one's `factor_name`, which says which side its long-short
 factor goes long: the name itself when it goes long high values, and "Low" plus the name when
-it goes long low values (Low risk, Low asset growth; Small size for Size). Past returns keep
+it goes long low values (Low risk, Low asset growth), with a few plain antonyms instead (Small size, Young,
+Illiquidity, Short duration, Stable earnings). Past returns keep
 their established names: Short-term returns, for example, is the characteristic behind the
 Short-term reversal factor.
 
