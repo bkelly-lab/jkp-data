@@ -66,7 +66,7 @@ theme,Short-term returns,Short-term reversal,Short-term returns,Last month's ret
 subtheme,Short-term returns,Short-term reversal,Short-term returns,Last month's return.,v1.0
 theme,Medium-term returns,Momentum,Medium-term returns,Returns over the past two months to two years.,v1.0
 subtheme,Returns 2-6,Momentum 2-6,Medium-term returns,"Returns over windows of up to six months, mostly skipping the last month.",v1.0
-subtheme,Returns 7-12,Momentum 7-12,Medium-term returns,Returns over months 7–12.,v1.0
+subtheme,Returns 7-12,Momentum 7-12,Medium-term returns,Returns over months 7-12.,v1.0
 subtheme,Medium-term returns,Momentum,Medium-term returns,"Returns over windows of 9 months or longer, and the 52-week high.",v1.0
 theme,Long-term returns,Long-term reversal,Long-term returns,"Returns over multi-year windows, up to 20 years back.",v1.0
 subtheme,Long-term returns,Long-term reversal,Long-term returns,"Returns over multi-year windows, up to 20 years back.",v1.0

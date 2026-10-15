@@ -634,7 +634,7 @@ SUBTHEME_DESCRIPTIONS: dict[str, str] = {
     "Liquidity": "Trading volume, illiquidity and bid-ask spreads.",
     "Share turnover": "Share turnover and days without trading.",
     "Returns 2-6": "Returns over windows of up to six months, mostly skipping the last month.",
-    "Returns 7-12": "Returns over months 7–12.",
+    "Returns 7-12": "Returns over months 7-12.",
     "Medium-term returns": "Returns over windows of 9 months or longer, and the 52-week high.",
     "Short-term returns": "Last month's return.",
     "Long-term returns": "Returns over multi-year windows, up to 20 years back.",
