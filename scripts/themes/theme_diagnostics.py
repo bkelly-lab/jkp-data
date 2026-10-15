@@ -9,7 +9,10 @@ Steps:
        equally). Cached to OUT_DIR/corr.parquet; recomputed when RERUN_CORR is set or the
        cache lacks a characteristic.
     2) Sub-theme composites: equal-weighted average of member ranks, each multiplied by its
-       sub_theme_sign. Composite correlations follow from the correlation matrix.
+       sub_theme_sign. Composite correlations are implied by the average correlation matrix.
+       This is an approximation: it ignores differences in missing data and ties across
+       months, and the averaged matrix need not be a valid correlation matrix. A warning is
+       printed if a fit exceeds 1.
     3) Per characteristic: signed correlation with the composite of the other members of its
        own sub-theme (fit; negative means the data disagree with its sign), and the
        best-fitting other sub-theme. Clear misfits are listed.
@@ -149,7 +152,7 @@ def main() -> None:
             own = (
                 sign[f] * corr_with_composite(corr, x, groups[t][keep], signs[t][keep])
                 if keep.any()
-                else float("nan")
+                else None
             )
             other = {
                 u: abs(corr_with_composite(corr, x, groups[u], signs[u])) for u in names if u != t
@@ -165,6 +168,8 @@ def main() -> None:
                 }
             )
     members = pl.DataFrame(rows)
+    if (members["own"].abs() > 1).any() or (members["best_other_r"] > 1).any():
+        print("Warning: some fits exceed 1; the average correlation matrix is too far from valid.")
 
     # Sub-themes: coherence and nearest neighbour -------------------------------------------
     w = np.zeros((len(features), len(names)))
@@ -179,7 +184,7 @@ def main() -> None:
         idx = groups[t]
         n = len(idx)
         sub = np.abs(corr[np.ix_(idx, idx)])
-        within = float((sub.sum() - n) / (n * (n - 1))) if n > 1 else float("nan")
+        within = float((sub.sum() - n) / (n * (n - 1))) if n > 1 else None
         nb = int(np.argmax(comp_abs[g]))
         summary.append(
             {

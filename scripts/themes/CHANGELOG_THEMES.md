@@ -111,7 +111,8 @@ each fits its main ingredient better.
 From `theme_diagnostics.py`, on U.S. stocks from January 1972 to December 2025, using a jkp-data
 run of 3 October 2026 (commit 666e896, WRDS data downloaded that day):
 
-- Median of the mean absolute correlation within sub-themes: 0.61.
+- Median of the mean absolute correlation within sub-themes with more than one
+  characteristic: 0.56.
 - Sub-theme pairs kept apart although their averages correlate 0.70 or more in absolute
   value: Size and Liquidity, Size and Share price, Share price and Liquidity,
   Cash flow yield and Cash flow profitability, Earnings yield and Equity duration,
