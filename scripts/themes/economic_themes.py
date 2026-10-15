@@ -61,7 +61,8 @@ THEMES: dict[str, list[str]] = {
         "External financing",
     ],
     "Leverage": [
-        "Leverage",
+        "Book leverage",
+        "Market leverage",
         "Debt maturity",
         "Cost of debt",
         "Preferred stock",
@@ -349,7 +350,7 @@ SUBTHEMES: dict[str, list[str]] = {
         "fincf_gr3a",
     ],
     # Leverage
-    "Leverage": [
+    "Book leverage": [
         "debt_at",
         "debt_be",
         "debt_bev",
@@ -357,11 +358,8 @@ SUBTHEMES: dict[str, list[str]] = {
         "debtlt_bev",
         "at_be",
         "be_bev",
-        "debt_me",
-        "debt_mev",
-        "debtlt_mev",
-        "netdebt_me",
     ],
+    "Market leverage": ["debt_me", "debt_mev", "debtlt_mev", "netdebt_me"],
     "Debt maturity": ["debtst_debt", "debtlt_debt", "debtst_bev", "debtst_mev", "cl_lt"],
     "Cost of debt": ["int_debt", "int_debtlt"],
     "Preferred stock": ["pstk_bev", "pstk_mev", "pstk_gr1", "pstk_gr3"],
@@ -507,7 +505,7 @@ NEGATIVE_IN_SUBTHEME: set[str] = {
     "eqnpo_gr3a",
     # Labor intensity
     "sale_emp",
-    # Leverage
+    # Book leverage
     "be_bev",
     # Liquidity
     "ami_126d",
@@ -617,7 +615,8 @@ SUBTHEME_DESCRIPTIONS: dict[str, str] = {
     "Debt issuance": "Net issuance and growth of debt.",
     "Liability growth": "Growth in total, current and non-current liabilities, including debt.",
     "External financing": "Total net financing from debt and equity.",
-    "Leverage": "Debt relative to assets, equity or market value.",
+    "Book leverage": "Debt relative to book assets, book equity or book enterprise value.",
+    "Market leverage": "Debt relative to market equity or market enterprise value.",
     "Debt maturity": "Short-term versus long-term debt.",
     "Cost of debt": "Interest expense relative to debt.",
     "Preferred stock": "Preferred stock outstanding and its growth.",

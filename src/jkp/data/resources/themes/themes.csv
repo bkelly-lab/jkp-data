@@ -275,17 +275,17 @@ netis_gr1a,Financing,External financing,1,1,-1,v1.0
 netis_gr3a,Financing,External financing,1,1,-1,v1.0
 fincf_gr1a,Financing,External financing,1,1,-1,v1.0
 fincf_gr3a,Financing,External financing,1,1,-1,v1.0
-debt_at,Leverage,Leverage,1,1,-1,v1.0
-debt_be,Leverage,Leverage,1,1,-1,v1.0
-debt_bev,Leverage,Leverage,1,1,-1,v1.0
-debtlt_be,Leverage,Leverage,1,1,-1,v1.0
-debtlt_bev,Leverage,Leverage,1,1,-1,v1.0
-at_be,Leverage,Leverage,1,1,-1,v1.0
-be_bev,Leverage,Leverage,-1,1,-1,v1.0
-debt_me,Leverage,Leverage,1,1,-1,v1.0
-debt_mev,Leverage,Leverage,1,1,-1,v1.0
-debtlt_mev,Leverage,Leverage,1,1,-1,v1.0
-netdebt_me,Leverage,Leverage,1,1,-1,v1.0
+debt_at,Leverage,Book leverage,1,1,-1,v1.0
+debt_be,Leverage,Book leverage,1,1,-1,v1.0
+debt_bev,Leverage,Book leverage,1,1,-1,v1.0
+debtlt_be,Leverage,Book leverage,1,1,-1,v1.0
+debtlt_bev,Leverage,Book leverage,1,1,-1,v1.0
+at_be,Leverage,Book leverage,1,1,-1,v1.0
+be_bev,Leverage,Book leverage,-1,1,-1,v1.0
+debt_me,Leverage,Market leverage,1,1,-1,v1.0
+debt_mev,Leverage,Market leverage,1,1,-1,v1.0
+debtlt_mev,Leverage,Market leverage,1,1,-1,v1.0
+netdebt_me,Leverage,Market leverage,1,1,-1,v1.0
 debtst_debt,Leverage,Debt maturity,-1,-1,-1,v1.0
 debtlt_debt,Leverage,Debt maturity,1,-1,-1,v1.0
 debtst_bev,Leverage,Debt maturity,-1,-1,-1,v1.0

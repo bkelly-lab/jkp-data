@@ -5,7 +5,7 @@ Changes to the economic themes, newest first. See [README.md](README.md) for the
 ## v1.0 (15-10-2026)
 
 A new grouping by economic meaning, replacing the statistically derived v0 themes. It covers
-402 characteristics (v0: 153) in 58 subthemes and 16 themes, and adds a second level: each
+402 characteristics (v0: 153) in 59 subthemes and 16 themes, and adds a second level: each
 characteristic belongs to a subtheme, and each subtheme to a theme. Every characteristic with
 a v0 theme has a v1.0 theme.
 
@@ -31,8 +31,8 @@ subtheme means more of what the theme's name says; `factor_sign` (per theme) is 
 the theme earns higher returns in the literature. A characteristic's factor goes long the side
 given by the product of the three. v0 instead signed each factor by the direction of its return
 in the original paper; signing characteristics that way would point characteristics in the same
-subtheme in opposite directions in 8 subthemes: in Leverage, for example, `debt_me` would be
-+1 and `at_be` −1, although the two correlate positively.
+subtheme in opposite directions in 6 subthemes: in Market leverage, for example, `debt_me`
+would be +1 and `netdebt_me` −1, although the two correlate 0.83.
 
 - 35 characteristics have `subtheme_sign` −1, for example `ami_126d` in Liquidity,
   `z_score` in Distress and net payout in Equity issuance. The data agree with every sign except
@@ -51,7 +51,7 @@ For 144 of the 153 v0 factors, the product of the three signs equals the directi
 Jensen, Kelly and Pedersen (2023). For nine it is the opposite, because the characteristic sits
 with its subtheme in the data while its own published direction pointed the other way:
 `aliq_mat` (Value), `dsale_drec` (Working capital growth), `sti_gr1a` (Financial asset growth),
-`debt_me` (Leverage), `aliq_at` (Balance sheet liquidity), `kz_index` (Financial constraints),
+`debt_me` (Market leverage), `aliq_at` (Balance sheet liquidity), `kz_index` (Financial constraints),
 `ni_ivol` (Earnings volatility), `dolvol_var_126d` and `turnover_var_126d` (Liquidity).
 The factor portfolios produced by `jkp portfolio` still use the published directions.
 
@@ -81,6 +81,9 @@ The factor portfolios produced by `jkp portfolio` still use the published direct
   Profitability and Profit growth.
 - **Value.** Gross profit to price is an earnings yield; cash-based operating profit to price
   is a cash flow yield. Equity duration is its own subtheme.
+- **Leverage.** Book and market leverage are separate subthemes. They correlate 0.87, but
+  market leverage also moves with value (0.47, against 0.14 for book leverage), because the
+  share price is in the denominator. This mirrors the split between yields and profitability.
 - **Financing.** Changes in equity and debt issuance join their issuance subthemes. Net total
   financing is External financing. Debt terms are split into maturity and cost. Growth in total
   liabilities, which includes debt, is Liability growth; growth in payables, accrued items and
@@ -105,7 +108,7 @@ each fits its main ingredient better.
 | Characteristic | Subtheme | Fits better with | Why it stays |
 |---|---|---|---|
 | `seas_1_1an` | Seasonal returns | Returns 7-12 | A same-month return; its overlap with months 7–12 is mechanical. |
-| `cl_lt` | Debt maturity | Leverage | Measures the maturity of liabilities. |
+| `cl_lt` | Debt maturity | Book leverage | Measures the maturity of liabilities. |
 | `corr_1260d` | Beta | Liquidity | A component of beta; it co-moves with size in the data. |
 | `bidaskhl_21d` | Liquidity | Volatility | A spread estimate; volatile, low-priced stocks have wide spreads. |
 | `fcf_gr3a` | Profit growth | Cash flow profitability | A growth measure, so it belongs with growth. |
@@ -119,16 +122,17 @@ From `theme_diagnostics.py`, on U.S. stocks from January 1972 to December 2025, 
 run of 3 October 2026 (commit 666e896, WRDS data downloaded that day):
 
 - Median of the mean absolute correlation within subthemes with more than one
-  characteristic: 0.56.
+  characteristic: 0.57.
 - Subtheme pairs kept apart although their averages correlate 0.70 or more in absolute
   value: Size and Liquidity, Size and Share price, Share price and Liquidity,
   Cash flow yield and Cash flow profitability, Earnings yield and Equity duration,
   Profitability and Profit margins, Volatility and Lottery, Distress and Composites,
-  Profitability and Composites. Each pair measures a different economic idea.
+  Profitability and Composites, Book leverage and Market leverage. Each pair measures a
+  different economic idea.
 - As a one-off check, the subthemes were compared with a purely statistical grouping
   (Ward clustering into 58 groups on one minus the absolute rank correlation, plus one
   group for characteristics that correlate weakly with all others). Adjusted Rand
-  index: 0.48. The statistical clustering is not part of this repository.
+  index: 0.47. The statistical clustering is not part of this repository.
 
 ## v0 (2023)
 

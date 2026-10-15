@@ -42,7 +42,8 @@ subtheme,Debt issuance,Low debt issuance,Financing,Net issuance and growth of de
 subtheme,Liability growth,Low liability growth,Financing,"Growth in total, current and non-current liabilities, including debt.",v1.0
 subtheme,External financing,Low external financing,Financing,Total net financing from debt and equity.,v1.0
 theme,Leverage,Low leverage,Leverage,Capital structure and financial strength.,v1.0
-subtheme,Leverage,Low leverage,Leverage,"Debt relative to assets, equity or market value.",v1.0
+subtheme,Book leverage,Low book leverage,Leverage,"Debt relative to book assets, book equity or book enterprise value.",v1.0
+subtheme,Market leverage,Low market leverage,Leverage,Debt relative to market equity or market enterprise value.,v1.0
 subtheme,Debt maturity,Debt maturity,Leverage,Short-term versus long-term debt.,v1.0
 subtheme,Cost of debt,Low cost of debt,Leverage,Interest expense relative to debt.,v1.0
 subtheme,Preferred stock,Low preferred stock,Leverage,Preferred stock outstanding and its growth.,v1.0
