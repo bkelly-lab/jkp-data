@@ -647,7 +647,7 @@ SUB_THEME_DESCRIPTIONS: dict[str, str] = {
 # front when it goes long low values (factor_sign, times theme_sign for a sub-theme, is -1).
 # Exceptions: established names for past returns, and plain antonyms where they read better.
 FACTOR_NAMES: dict[str, str] = {
-    "Size": "Small size",
+    "Size": "Small",
     "Firm age": "Young",
     "Liquidity": "Illiquidity",
     "Equity duration": "Short duration",

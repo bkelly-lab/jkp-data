@@ -55,8 +55,8 @@ sub_theme,Lottery,Low lottery,Risk,Largest daily returns over the past month.,v1
 sub_theme,Beta,Low beta,Risk,Sensitivity to and correlation with the market.,v1.0
 sub_theme,Skewness,Low skewness,Risk,Asymmetry of daily returns.,v1.0
 sub_theme,Earnings volatility,Stable earnings,Risk,Volatility of earnings and cash flow.,v1.0
-theme,Size,Small size,Size,"Firm size, age and trading activity.",v1.0
-sub_theme,Size,Small size,Size,"Market value, book value, assets and sales.",v1.0
+theme,Size,Small,Size,"Firm size, age and trading activity.",v1.0
+sub_theme,Size,Small,Size,"Market value, book value, assets and sales.",v1.0
 sub_theme,Firm age,Young,Size,Months since the firm first appears in the data.,v1.0
 sub_theme,Share price,Low share price,Size,Share price level.,v1.0
 sub_theme,Liquidity,Illiquidity,Size,"Trading volume, illiquidity and bid-ask spreads.",v1.0
