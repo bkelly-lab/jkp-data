@@ -26,9 +26,11 @@ stocks.
 
 The first two signs describe what a characteristic measures; only `factor_sign` is about
 returns. In the same spirit, theme and sub-theme names describe the characteristics, and
-`theme_descriptions.csv` gives each one's `factor_name`, the usual name of its long-short
-factor. The two differ only for past returns: Short-term returns, for example, is the
-characteristic behind the Short-term reversal factor.
+`theme_descriptions.csv` gives each one's `factor_name`, which says which side its long-short
+factor goes long: the name itself when it goes long high values, and "Low" plus the name when
+it goes long low values (Low risk, Low asset growth; Small size for Size). Past returns keep
+their established names: Short-term returns, for example, is the characteristic behind the
+Short-term reversal factor.
 
 - `economic_themes.py` is the source of truth: the grouping, the signs, the descriptions and
   the version. Running it writes `themes.csv` and `theme_descriptions.csv` to

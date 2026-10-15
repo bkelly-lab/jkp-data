@@ -643,8 +643,11 @@ SUB_THEME_DESCRIPTIONS: dict[str, str] = {
     "Composites": "Scores that combine signals from several themes: QMJ, QMJ safety, F-score and the two Stambaugh–Yuan mispricing factors.",
 }
 
-# Factor names that differ from the theme or sub-theme name (all others use the name itself).
+# Factor names. By default a factor is named after its theme or sub-theme, with "Low" in
+# front when it goes long low values (factor_sign, times theme_sign for a sub-theme, is -1).
+# Exceptions: established names for past returns, and Small size.
 FACTOR_NAMES: dict[str, str] = {
+    "Size": "Small size",
     "Short-term returns": "Short-term reversal",
     "Medium-term returns": "Momentum",
     "Returns 2-6": "Momentum 2-6",
@@ -692,6 +695,14 @@ def themes_frame() -> pl.DataFrame:
     return pl.DataFrame(rows)
 
 
+def factor_name(level: str, name: str, theme: str) -> str:
+    """Name of the long-short factor of a theme or sub-theme (see FACTOR_NAMES)."""
+    if name in FACTOR_NAMES:
+        return FACTOR_NAMES[name]
+    sign = FACTOR_SIGNS[theme] * (-1 if level == "sub_theme" and name in NEGATIVE_IN_THEME else 1)
+    return name if sign > 0 else "Low " + name[0].lower() + name[1:]
+
+
 def descriptions_frame() -> pl.DataFrame:
     """One row per theme, then its sub-themes: level, name, factor_name, theme, description, version."""
     rows = []
@@ -699,7 +710,7 @@ def descriptions_frame() -> pl.DataFrame:
         rows.append(("theme", theme, theme, THEME_DESCRIPTIONS[theme]))
         rows += [("sub_theme", s, theme, SUB_THEME_DESCRIPTIONS[s]) for s in subs]
     return pl.DataFrame(
-        [(lvl, n, FACTOR_NAMES.get(n, n), t, d) for lvl, n, t, d in rows],
+        [(lvl, n, factor_name(lvl, n, t), t, d) for lvl, n, t, d in rows],
         schema=["level", "name", "factor_name", "theme", "description"],
         orient="row",
     ).with_columns(version=pl.lit(VERSION))
