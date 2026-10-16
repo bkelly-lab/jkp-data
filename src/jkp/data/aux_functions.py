@@ -10074,24 +10074,24 @@ def _build_hml_lms(
 
 def _pf_daily_lazy(
     sub: pl.LazyFrame, daily: pl.DataFrame, x: str, ret_cols: list[str]
-) -> list[pl.LazyFrame]:
-    """Build daily portfolio returns for several return columns off one join.
+) -> pl.LazyFrame:
+    """Aggregate daily portfolio returns for every return column in one pass.
 
     Description:
         Weight each stock by its formation-month EW/VW/VW-cap weight within
         ``(eom, pf)`` and apply the weights to the following month's daily
-        returns. The weights and the join are shared; each return column then
-        gets its own null filter and aggregation, so every column sees
-        exactly the rows, row order and summation it would see on its own
-        and results are bit-identical to a single-column pass.
+        returns. All ``ret_cols`` share the sort, the weights and the join;
+        each column gets its own count and weighted sums.
     Steps:
         1) Build per-stock weights within ``(eom, pf)``.
-        2) Left-join to daily returns on the formation month.
-        3) Per column ``c``: keep rows with a portfolio and non-null ``c``,
-           aggregate by ``(pf, date)``.
+        2) Join to daily returns on the formation month; keep rows with a
+           portfolio and at least one non-null return column.
+        3) Aggregate by ``(pf, date)``: per column ``c``, ``n_{c}`` counts its
+           non-null returns and ``ret_{ew,vw,vw_cap}_{c}`` are weighted sums.
     Output:
-        One LazyFrame per entry of ``ret_cols``, in order, each with columns
-        ``[pf, date, characteristic, n, ret_ew, ret_vw, ret_vw_cap]``.
+        Wide LazyFrame keyed by ``(pf, date)`` with ``characteristic`` = ``x``.
+        A column whose returns are all null on a row has ``n_{c} == 0``; split
+        it out with ``_split_daily_leg``.
     """
     weights = (
         sub.group_by(["eom", "pf"])
@@ -10105,26 +10105,50 @@ def _pf_daily_lazy(
         )
         .explode("id", "w_vw", "w_vw_cap")
     )
-    return [
+    return (
         weights.join(
-            daily.lazy().select(["id", "date", c, "eom_lag1"]),
+            daily.lazy(),
             left_on=["id", "eom"],
             right_on=["id", "eom_lag1"],
             how="left",
         )
-        .filter((pl.col("pf").is_not_null()) & (pl.col(c).is_not_null()))
+        .filter(pl.col("pf").is_not_null() & pl.any_horizontal(pl.col(ret_cols).is_not_null()))
         .group_by(["pf", "date"])
         .agg(
-            [
-                pl.lit(x).alias("characteristic"),
-                pl.len().alias("n"),
-                ((pl.col("w_ew") * pl.col(c)).sum()).alias("ret_ew"),
-                ((pl.col("w_vw") * pl.col(c)).sum()).alias("ret_vw"),
-                ((pl.col("w_vw_cap") * pl.col(c)).sum()).alias("ret_vw_cap"),
+            [pl.lit(x).alias("characteristic")]
+            + [
+                expr
+                for c in ret_cols
+                for expr in (
+                    pl.col(c).is_not_null().sum().cast(pl.UInt32).alias(f"n_{c}"),
+                    (pl.col("w_ew") * pl.col(c)).sum().alias(f"ret_ew_{c}"),
+                    (pl.col("w_vw") * pl.col(c)).sum().alias(f"ret_vw_{c}"),
+                    (pl.col("w_vw_cap") * pl.col(c)).sum().alias(f"ret_vw_cap_{c}"),
+                )
             ]
         )
-        for c in ret_cols
-    ]
+    )
+
+
+def _split_daily_leg(wide: pl.DataFrame, c: str) -> pl.DataFrame:
+    """Extract one return column's daily portfolio returns from a wide frame.
+
+    Description:
+        Rows where column ``c`` had no non-null returns are dropped, since
+        their sums are 0 rather than null.
+    Output:
+        DataFrame with columns ``[pf, date, characteristic, n, ret_ew,
+        ret_vw, ret_vw_cap]``.
+    """
+    return wide.filter(pl.col(f"n_{c}") > 0).select(
+        "pf",
+        "date",
+        "characteristic",
+        pl.col(f"n_{c}").alias("n"),
+        pl.col(f"ret_ew_{c}").alias("ret_ew"),
+        pl.col(f"ret_vw_{c}").alias("ret_vw"),
+        pl.col(f"ret_vw_cap_{c}").alias("ret_vw_cap"),
+    )
 
 
 # main portfolios function to create the portfolios
@@ -10350,7 +10374,7 @@ def portfolios(
     # intermediate ``sub`` frame alive after each collect to compute
     # pf_signals, so it collects eagerly per-char.
     pf_returns_lazys: list[pl.LazyFrame] = []
-    pf_daily_lazys: list[list[pl.LazyFrame]] = []  # one LazyFrame per daily return column per char
+    pf_daily_lazys: list[pl.LazyFrame] = []
     char_pfs: list[dict] = []  # populated only when signals=True
 
     # Single shared LazyFrame node for the preprocessed data. All per-char
@@ -10458,7 +10482,7 @@ def portfolios(
             op["signals"] = pf_signals.collect()
 
             if daily_pf:
-                op["pf_daily"] = pl.collect_all(_pf_daily_lazy(sub, daily, x, daily_ret_cols))
+                op["pf_daily"] = _pf_daily_lazy(sub, daily, x, daily_ret_cols).collect()
 
             char_pfs.append(op)
         else:
@@ -10471,18 +10495,15 @@ def portfolios(
     # Batch-collect per-char lazy pipelines in chunks to bound peak memory
     # (see COLLECT_CHUNK_SIZE in config.py).
     pf_returns_df: pl.DataFrame | None = None
-    pf_daily_dfs: dict[str, pl.DataFrame] = {}
+    pf_daily_df: pl.DataFrame | None = None
 
     if signals and char_pfs:
         pf_returns_df = pl.concat([op["pf_returns"] for op in char_pfs])
         if daily_pf:
-            pf_daily_dfs = {
-                c: pl.concat([op["pf_daily"][i] for op in char_pfs])
-                for i, c in enumerate(daily_ret_cols)
-            }
+            pf_daily_df = pl.concat([op["pf_daily"] for op in char_pfs])
     elif pf_returns_lazys:
         ret_dfs: list[pl.DataFrame] = []
-        daily_dfs: dict[str, list[pl.DataFrame]] = {c: [] for c in daily_ret_cols}
+        daily_dfs: list[pl.DataFrame] = []
         n_chars = len(pf_returns_lazys)
         n_chunks = (n_chars + COLLECT_CHUNK_SIZE - 1) // COLLECT_CHUNK_SIZE
         for chunk_idx, start in enumerate(range(0, n_chars, COLLECT_CHUNK_SIZE)):
@@ -10492,23 +10513,26 @@ def portfolios(
                 flush=True,
             )
             chunk_ret = pf_returns_lazys[start:end]
-            chunk_daily = [lf for legs in pf_daily_lazys[start:end] for lf in legs]
+            chunk_daily = pf_daily_lazys[start:end] if daily_pf else []
             collected = pl.collect_all(chunk_ret + chunk_daily)
             n_ret_chunk = len(chunk_ret)
             ret_dfs.extend(df for df in collected[:n_ret_chunk] if df.height > 0)
-            # Daily frames come char-major: one per return column per char.
-            for j, df in enumerate(collected[n_ret_chunk:]):
-                if df.height > 0:
-                    daily_dfs[daily_ret_cols[j % len(daily_ret_cols)]].append(df)
+            if daily_pf:
+                daily_dfs.extend(df for df in collected[n_ret_chunk:] if df.height > 0)
         pf_returns_df = pl.concat(ret_dfs) if ret_dfs else None
-        pf_daily_dfs = {c: pl.concat(dfs) for c, dfs in daily_dfs.items() if dfs}
+        if daily_pf:
+            pf_daily_df = pl.concat(daily_dfs) if daily_dfs else None
 
     output = {}
     if pf_returns_df is not None:
         output["pf_returns"] = pf_returns_df
-    # ret_exc -> "pf_daily"; each O/I column c -> "pf_daily_{c}".
-    for c, df in pf_daily_dfs.items():
-        output["pf_daily" if c == "ret_exc" else f"pf_daily_{c}"] = df
+    if daily_pf and pf_daily_df is not None:
+        # One long frame per return column: ret_exc -> "pf_daily", each
+        # O/I column c -> "pf_daily_{c}". Empty legs are left out.
+        for c in daily_ret_cols:
+            leg = _split_daily_leg(pf_daily_df, c)
+            if leg.height > 0:
+                output["pf_daily" if c == "ret_exc" else f"pf_daily_{c}"] = leg
     # Handle industry portfolio returns if ind_pf is true
     if ind_pf:
         output["gics_returns"] = ind_gics
