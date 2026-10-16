@@ -3,8 +3,8 @@
 The legacy ``run_portfolio`` reran ``portfolios()`` once per overnight/intraday
 component. The current one aggregates every daily return column in the main
 pass. Both run end-to-end on the same synthetic inputs and every file under
-``processed/portfolios/`` must match: same files, schemas and rows, exact
-integer columns, and float columns within tight tolerance.
+``processed/portfolios/`` must match: same files, schemas and rows, and
+bit-identical values.
 """
 
 from __future__ import annotations
@@ -185,7 +185,18 @@ class TestOiSinglePassEquivalence:
             b = pl.read_parquet(new / rel)
             assert b.schema == a.schema, rel
             assert b.height == a.height, rel
-            assert_frame_equal(_sorted(b), _sorted(a), check_exact=False, **tolerance.TIGHT), rel
+            # regional_clusters* differ in the last bits between two runs of
+            # the legacy code itself (monthly ones too), so only those get a
+            # tolerance. Everything else must be bit-identical.
+            if rel.startswith("regional_clusters"):
+                (
+                    assert_frame_equal(
+                        _sorted(b), _sorted(a), check_exact=False, **tolerance.TIGHT
+                    ),
+                    rel,
+                )
+            else:
+                assert_frame_equal(_sorted(b), _sorted(a), check_exact=True), rel
 
     def test_edge_cases_present(self, outputs: tuple[Path, Path]) -> None:
         """Guard that the fixture exercises the per-leg null handling."""
