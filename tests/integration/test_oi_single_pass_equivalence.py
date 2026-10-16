@@ -118,7 +118,7 @@ def _build_inputs(root: Path) -> None:
         _add_oi_columns(root / "processed", ex, seed=7 + i)
 
 
-def _patch(monkeypatch: pytest.MonkeyPatch, resources: Path) -> None:
+def _patch(monkeypatch: pytest.MonkeyPatch, resources: Path, settings: dict) -> None:
     fd_path = make_factor_details(resources, CHARS)
     cc_path = make_multi_region_classification(resources)
     cl_path = make_cluster_labels(resources, {"char_a": "c1", "char_b": "c1", "char_c": "c2"})
@@ -132,7 +132,7 @@ def _patch(monkeypatch: pytest.MonkeyPatch, resources: Path) -> None:
 
     for mod in ("jkp.data.portfolio", "tests.fixtures.portfolio_oi_legacy"):
         monkeypatch.setattr(f"{mod}.PORTFOLIO_CHARS", CHARS)
-        monkeypatch.setattr(f"{mod}.PORTFOLIO_SETTINGS", SETTINGS)
+        monkeypatch.setattr(f"{mod}.PORTFOLIO_SETTINGS", settings)
         monkeypatch.setattr(f"{mod}.configure_output_format", _force_reset)
     configure_output_format("parquet", _allow_reset=True)
 
@@ -144,15 +144,26 @@ def _sorted(df: pl.DataFrame) -> pl.DataFrame:
     return df.sort(keys, nulls_last=True)
 
 
-@pytest.fixture(scope="module")
-def outputs(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path]:
-    """Run the legacy and the single-pass builds on identical inputs."""
+@pytest.fixture(scope="module", params=[False, True], ids=["signals_off", "signals_on"])
+def outputs(
+    request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPathFactory
+) -> tuple[Path, Path]:
+    """Run the legacy and the single-pass builds on identical inputs.
+
+    Parametrized over ``signals`` because the signals branch of ``portfolios()``
+    builds the daily legs on its own eager path.
+    """
+    signals = request.param
+    settings = {
+        **SETTINGS,
+        "signals": {**SETTINGS["signals"], "us": signals, "int": signals},
+    }
     mp = pytest.MonkeyPatch()
     legacy_root = tmp_path_factory.mktemp("legacy")
     new_root = tmp_path_factory.mktemp("new")
     _build_inputs(legacy_root)
     _build_inputs(new_root)
-    _patch(mp, tmp_path_factory.mktemp("resources"))
+    _patch(mp, tmp_path_factory.mktemp("resources"), settings)
     try:
         portfolio_oi_legacy.run_portfolio(output_format="parquet", output_dir=legacy_root)
         run_portfolio(output_format="parquet", output_dir=new_root)

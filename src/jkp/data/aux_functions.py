@@ -10120,7 +10120,7 @@ def _pf_daily_lazy(
                 expr
                 for c in ret_cols
                 for expr in (
-                    pl.col(c).is_not_null().sum().cast(pl.UInt32).alias(f"n_{c}"),
+                    pl.col(c).count().alias(f"n_{c}"),
                     (pl.col("w_ew") * pl.col(c)).sum().alias(f"ret_ew_{c}"),
                     (pl.col("w_vw") * pl.col(c)).sum().alias(f"ret_vw_{c}"),
                     (pl.col("w_vw_cap") * pl.col(c)).sum().alias(f"ret_vw_cap_{c}"),
