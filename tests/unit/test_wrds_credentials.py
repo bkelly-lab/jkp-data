@@ -1334,3 +1334,54 @@ def test_str_is_password_free() -> None:
     text = str(creds)
     assert password not in text
     assert "***" in text
+
+
+@pytest.mark.unit
+def test_secret_str_masks_repr() -> None:
+    """SecretStr behaves as the real string everywhere except repr()."""
+    from jkp.data.wrds_credentials import SecretStr
+
+    secret = SecretStr("hunter2-secret")
+    assert repr(secret) == "'***'"
+    assert secret == "hunter2-secret"
+    assert str(secret) == "hunter2-secret"
+    assert f"pw={secret}" == "pw=hunter2-secret"
+    assert "hunter2" in secret
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("source", ["env", "keyring", "prompt"])
+def test_resolved_password_is_masked(monkeypatch, _isolate_credential_state, source) -> None:
+    """Every password source yields a SecretStr, so the password (and the env_pw /
+    keyring_pw / password locals holding it) is masked in rendered frame locals."""
+    mod = _isolate_credential_state
+    secret = "resolved-secret"  # noqa: S105
+    monkeypatch.setenv("WRDS_USERNAME", "u")
+    if source == "env":
+        monkeypatch.setenv("WRDS_PASSWORD", secret)
+    elif source == "keyring":
+        monkeypatch.setattr(mod.keyring, "get_password", lambda *a, **kw: secret)
+    else:
+        monkeypatch.setattr(mod, "_interactive", lambda: True)
+        monkeypatch.setattr(mod.keyring, "get_password", lambda *a, **kw: None)
+        monkeypatch.setattr(mod.keyring, "set_password", lambda *a, **kw: None)
+        monkeypatch.setattr(mod.getpass, "getpass", lambda *a, **kw: secret)
+
+    creds = mod.get_wrds_credentials()
+
+    assert creds.password == secret
+    assert secret not in repr(creds.password)
+
+
+@pytest.mark.unit
+def test_pgpass_write_text_is_masked(monkeypatch, _isolate_credential_state) -> None:
+    """The file text handed to _atomic_write embeds the password, and that frame can
+    fail on a full disk or read-only home, so the text must be masked too."""
+    mod = _isolate_credential_state
+    written = {}
+    monkeypatch.setattr(mod, "_atomic_write", lambda path, text: written.update(text=text))
+
+    mod._write_pgpass("u", "pgpass-secret")
+
+    assert "pgpass-secret" in written["text"]
+    assert "pgpass-secret" not in repr(written["text"])
