@@ -138,7 +138,9 @@ def _patch(monkeypatch: pytest.MonkeyPatch, resources: Path) -> None:
 
 
 def _sorted(df: pl.DataFrame) -> pl.DataFrame:
-    keys = [c for c, t in df.schema.items() if not t.is_float()]
+    """Sort by key columns: every non-float column plus the float-typed keys."""
+    keys = [c for c, t in df.schema.items() if not t.is_float() or c in {"pf", "ff49", "gics"}]
+    assert df.select(keys).n_unique() == df.height
     return df.sort(keys, nulls_last=True)
 
 
