@@ -21,7 +21,7 @@ MAIN_FILTERS = {
 # chunk in `portfolios()`' chunked `collect_all` logic (bounds peak memory
 # of sort buffers / join hash tables when running over hundreds of
 # characteristics).
-COLLECT_CHUNK_SIZE = 20
+COLLECT_CHUNK_SIZE = 16
 
 # Number of portfolios characteristics are sorted into (e.g. 3 -> tertiles).
 PORTFOLIO_PFS = 3

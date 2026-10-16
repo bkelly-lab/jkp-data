@@ -10072,6 +10072,85 @@ def _build_hml_lms(
     return hml, lms
 
 
+def _pf_daily_lazy(
+    sub: pl.LazyFrame, daily: pl.DataFrame, x: str, ret_cols: list[str]
+) -> pl.LazyFrame:
+    """Aggregate daily portfolio returns for every return column in one pass.
+
+    Description:
+        Weight each stock by its formation-month EW/VW/VW-cap weight within
+        ``(eom, pf)`` and apply the weights to the following month's daily
+        returns. All ``ret_cols`` share the sort, the weights and the join;
+        each column gets its own count and weighted sums.
+    Steps:
+        1) Build per-stock weights within ``(eom, pf)``.
+        2) Join to daily returns on the formation month; keep rows with a
+           portfolio and at least one non-null return column.
+        3) Aggregate by ``(pf, date)``: per column ``c``, ``n_{c}`` counts its
+           non-null returns and ``ret_{ew,vw,vw_cap}_{c}`` are weighted sums.
+    Output:
+        Wide LazyFrame keyed by ``(pf, date)`` with ``characteristic`` = ``x``.
+        A column whose returns are all null on a row has ``n_{c} == 0``; split
+        it out with ``_split_daily_leg``.
+    """
+    weights = (
+        sub.group_by(["eom", "pf"])
+        .agg(
+            [
+                pl.col("id"),
+                (1 / pl.len()).alias("w_ew"),
+                (pl.col("me") / pl.col("me").sum()).alias("w_vw"),
+                (pl.col("me_cap") / pl.col("me_cap").sum()).alias("w_vw_cap"),
+            ]
+        )
+        .explode("id", "w_vw", "w_vw_cap")
+    )
+    return (
+        weights.join(
+            daily.lazy(),
+            left_on=["id", "eom"],
+            right_on=["id", "eom_lag1"],
+            how="left",
+        )
+        .filter(pl.col("pf").is_not_null() & pl.any_horizontal(pl.col(ret_cols).is_not_null()))
+        .group_by(["pf", "date"])
+        .agg(
+            [pl.lit(x).alias("characteristic")]
+            + [
+                expr
+                for c in ret_cols
+                for expr in (
+                    pl.col(c).count().alias(f"n_{c}"),
+                    (pl.col("w_ew") * pl.col(c)).sum().alias(f"ret_ew_{c}"),
+                    (pl.col("w_vw") * pl.col(c)).sum().alias(f"ret_vw_{c}"),
+                    (pl.col("w_vw_cap") * pl.col(c)).sum().alias(f"ret_vw_cap_{c}"),
+                )
+            ]
+        )
+    )
+
+
+def _split_daily_leg(wide: pl.DataFrame, c: str) -> pl.DataFrame:
+    """Extract one return column's daily portfolio returns from a wide frame.
+
+    Description:
+        Rows where column ``c`` had no non-null returns are dropped, since
+        their sums are 0 rather than null.
+    Output:
+        DataFrame with columns ``[pf, date, characteristic, n, ret_ew,
+        ret_vw, ret_vw_cap]``.
+    """
+    return wide.filter(pl.col(f"n_{c}") > 0).select(
+        "pf",
+        "date",
+        "characteristic",
+        pl.col(f"n_{c}").alias("n"),
+        pl.col(f"ret_ew_{c}").alias("ret_ew"),
+        pl.col(f"ret_vw_{c}").alias("ret_vw"),
+        pl.col(f"ret_vw_cap_{c}").alias("ret_vw_cap"),
+    )
+
+
 # main portfolios function to create the portfolios
 def portfolios(
     paths: DataPaths,
@@ -10091,7 +10170,8 @@ def portfolios(
     ind_pf=True,  # Should industry portfolio returns be estimated
     ret_cutoffs=None,  # Data frame for monthly winsorization. Neccesary when wins_ret=T
     ret_cutoffs_daily=None,  # Data frame for daily winsorization. Neccesary when wins_ret=T and daily_pf=T
-    daily_ret_col: str = "ret_exc",  # Daily return column to aggregate into portfolios
+    daily_oi_cols: list[str]
+    | None = None,  # Extra daily return columns aggregated alongside ret_exc (not winsorized)
 ):
     if source is None:
         source = ["CRSP", "COMPUSTAT"]
@@ -10165,12 +10245,13 @@ def portfolios(
     daily_file_path = (
         paths.processed_dir / "return_data" / "daily_rets_by_country" / f"{excntry}.parquet"
     )
+    daily_ret_cols = ["ret_exc", *(daily_oi_cols or [])]
     if daily_pf:
         daily_lazy = (
             pl.scan_parquet(daily_file_path)
-            .select(["id", "date", pl.col(daily_ret_col).alias("ret_exc")])
+            .select(["id", "date", *daily_ret_cols])
             .with_columns((pl.col("date").dt.month_start().dt.offset_by("-1d")).alias("eom_lag1"))
-            .with_columns(pl.col("ret_exc").cast(pl.Float64))
+            .with_columns(pl.col(daily_ret_cols).cast(pl.Float64))
         )
     else:
         daily_lazy = None
@@ -10198,7 +10279,7 @@ def portfolios(
 
         # Daily winsorization (only for standard ret_exc; O/I component
         # returns are not excess returns and use different distributions).
-        if daily_pf and daily_ret_col == "ret_exc":
+        if daily_pf:
             daily_lazy = (
                 daily_lazy.with_columns(pl.col("date").dt.month_end().alias("eom"))
                 .join(
@@ -10401,34 +10482,7 @@ def portfolios(
             op["signals"] = pf_signals.collect()
 
             if daily_pf:
-                weights = (
-                    sub.group_by(["eom", "pf"])
-                    .agg(
-                        [
-                            pl.col("id"),
-                            (1 / pl.len()).alias("w_ew"),
-                            (pl.col("me") / pl.col("me").sum()).alias("w_vw"),
-                            (pl.col("me_cap") / pl.col("me_cap").sum()).alias("w_vw_cap"),
-                        ]
-                    )
-                    .explode("id", "w_vw", "w_vw_cap")
-                )
-                daily_sub = weights.join(
-                    daily.lazy(),
-                    left_on=["id", "eom"],
-                    right_on=["id", "eom_lag1"],
-                    how="left",
-                ).filter((pl.col("pf").is_not_null()) & (pl.col("ret_exc").is_not_null()))
-                pf_daily_x = daily_sub.group_by(["pf", "date"]).agg(
-                    [
-                        pl.lit(x).alias("characteristic"),
-                        pl.len().alias("n"),
-                        ((pl.col("w_ew") * pl.col("ret_exc")).sum()).alias("ret_ew"),
-                        ((pl.col("w_vw") * pl.col("ret_exc")).sum()).alias("ret_vw"),
-                        ((pl.col("w_vw_cap") * pl.col("ret_exc")).sum()).alias("ret_vw_cap"),
-                    ]
-                )
-                op["pf_daily"] = pf_daily_x.collect()
+                op["pf_daily"] = _pf_daily_lazy(sub, daily, x, daily_ret_cols).collect()
 
             char_pfs.append(op)
         else:
@@ -10436,34 +10490,7 @@ def portfolios(
             pf_returns_lazys.append(pf_returns_x)
 
             if daily_pf:
-                weights = (
-                    sub.group_by(["eom", "pf"])
-                    .agg(
-                        [
-                            pl.col("id"),
-                            (1 / pl.len()).alias("w_ew"),
-                            (pl.col("me") / pl.col("me").sum()).alias("w_vw"),
-                            (pl.col("me_cap") / pl.col("me_cap").sum()).alias("w_vw_cap"),
-                        ]
-                    )
-                    .explode("id", "w_vw", "w_vw_cap")
-                )
-                daily_sub = weights.join(
-                    daily.lazy(),
-                    left_on=["id", "eom"],
-                    right_on=["id", "eom_lag1"],
-                    how="left",
-                ).filter((pl.col("pf").is_not_null()) & (pl.col("ret_exc").is_not_null()))
-                pf_daily_x = daily_sub.group_by(["pf", "date"]).agg(
-                    [
-                        pl.lit(x).alias("characteristic"),
-                        pl.len().alias("n"),
-                        ((pl.col("w_ew") * pl.col("ret_exc")).sum()).alias("ret_ew"),
-                        ((pl.col("w_vw") * pl.col("ret_exc")).sum()).alias("ret_vw"),
-                        ((pl.col("w_vw_cap") * pl.col("ret_exc")).sum()).alias("ret_vw_cap"),
-                    ]
-                )
-                pf_daily_lazys.append(pf_daily_x)
+                pf_daily_lazys.append(_pf_daily_lazy(sub, daily, x, daily_ret_cols))
 
     # Batch-collect per-char lazy pipelines in chunks to bound peak memory
     # (see COLLECT_CHUNK_SIZE in config.py).
@@ -10500,7 +10527,12 @@ def portfolios(
     if pf_returns_df is not None:
         output["pf_returns"] = pf_returns_df
     if daily_pf and pf_daily_df is not None:
-        output["pf_daily"] = pf_daily_df
+        # One long frame per return column: ret_exc -> "pf_daily", each
+        # O/I column c -> "pf_daily_{c}". Empty legs are left out.
+        for c in daily_ret_cols:
+            leg = _split_daily_leg(pf_daily_df, c)
+            if leg.height > 0:
+                output["pf_daily" if c == "ret_exc" else f"pf_daily_{c}"] = leg
     # Handle industry portfolio returns if ind_pf is true
     if ind_pf:
         output["gics_returns"] = ind_gics
@@ -10517,8 +10549,8 @@ def portfolios(
             output["pf_returns"] = output["pf_returns"].with_columns(
                 pl.lit(excntry).str.to_uppercase().alias("excntry")
             )
-            if daily_pf and "pf_daily" in output:
-                output["pf_daily"] = output["pf_daily"].with_columns(
+            for key in [k for k in output if k.startswith("pf_daily")]:
+                output[key] = output[key].with_columns(
                     pl.lit(excntry).str.to_uppercase().alias("excntry")
                 )
             if signals and char_pfs:
