@@ -12556,6 +12556,76 @@ def ff_load_crsp_panel(raw_dir: Path, freq: Literal["monthly", "daily"]) -> pl.L
     )
 
 
+def ff_us_mktrf(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl.LazyFrame:
+    """Fama-French US market excess return from CRSP only.
+
+    Description:
+        French's market: CRSP common stocks (share codes 10/11), US-incorporated,
+        NYSE/AMEX/NASDAQ, value-weighted by each permno's own prior-period ME.
+        Weights are per permno (not per permco), so every share class counts.
+    Steps:
+        1) Scan crsp_msf_v2 / crsp_dsf_v2, apply `_ciz_universe()`, me = |prc|*shrout/1000.
+        2) Weight = me of the permno's previous row; monthly requires that row to be
+           the previous calendar month. Weight counts only if > 0 and ret is non-null.
+        3) mkt = sum(ret*w)/sum(w) per date.
+        4) mktrf = mkt - coalesce(t30ret, rf)/scale (scale 1 monthly, 21 daily), the
+           same risk-free construction as `ret_exc` (add_rf_and_exchange_data_to_temporary_sf).
+    Output:
+        LazyFrame [excntry="USA", eom (monthly) | date (daily), mktrf].
+    """
+    pq, p = ("crsp_msf_v2.parquet", "mth") if freq == "monthly" else ("crsp_dsf_v2.parquet", "dly")
+    date_key = "eom" if freq == "monthly" else "date"
+    date_c, ret_c, prc_c = f"{p}caldt", f"{p}ret", f"{p}prc"
+    crsp_mcti, ff_factors_monthly, _ = load_rf_and_exchange_data(paths)
+    scale = 1 if freq == "monthly" else 21
+    date_expr = pl.col(date_c).dt.month_end() if freq == "monthly" else pl.col(date_c)
+    contiguous = (
+        pl.col(date_key).dt.offset_by("-1mo").dt.month_end() == pl.col("prev_date")
+        if freq == "monthly"
+        else pl.col("prev_date").is_not_null()
+    )
+    return (
+        pl.scan_parquet(paths.raw_tables_dir / pq)
+        .with_columns(
+            pl.col(date_c).cast(pl.Date),
+            pl.col("permno").cast(pl.Int64),
+            pl.col(ret_c, prc_c, "shrout").cast(pl.Float64),
+        )
+        .filter(_ciz_universe())
+        .select(
+            pl.col("permno"),
+            date_expr.alias(date_key),
+            pl.col(ret_c).alias("ret"),
+            (pl.col(prc_c).abs() * pl.col("shrout") / 1000.0).alias("me"),
+        )
+        .sort(["permno", date_key])
+        .with_columns(
+            prev_date=pl.col(date_key).shift(1).over("permno"),
+            prev_me=pl.col("me").shift(1).over("permno"),
+        )
+        .with_columns(
+            w=pl.when(contiguous & (pl.col("prev_me") > 0) & pl.col("ret").is_not_null())
+            .then(pl.col("prev_me"))
+            .otherwise(None)
+        )
+        .group_by(date_key)
+        .agg(
+            num=(pl.col("ret") * pl.col("w")).sum(),
+            den=pl.col("w").sum(),
+        )
+        .filter(pl.col("den") > 0)
+        .with_columns(mkt=safe_div(pl.col("num"), pl.col("den"), "mkt"))
+        .with_columns(merge_aux=gen_MMYY_column(date_key))
+        .join(crsp_mcti.lazy(), how="left", on="merge_aux")
+        .join(ff_factors_monthly.lazy(), how="left", on="merge_aux")
+        .select(
+            pl.lit("USA").alias("excntry"),
+            pl.col(date_key),
+            (pl.col("mkt") - pl.coalesce(["t30ret", "rf"]) / scale).alias("mktrf"),
+        )
+    )
+
+
 def _ff_us_rets_weights_lazy(
     raw_panel: pl.LazyFrame, freq: Literal["monthly", "daily"]
 ) -> pl.LazyFrame:
@@ -15416,12 +15486,23 @@ def _ap_check_no_collisions(frames: list[pl.LazyFrame], key: list[str]) -> None:
 
 
 def _ap_join_factor_inputs(
-    mkt_path: Path, factor_inputs: list[Path], date_key: str
+    paths: DataPaths,
+    mkt_path: Path,
+    factor_inputs: list[Path],
+    freq: Literal["monthly", "daily"],
 ) -> pl.LazyFrame:
-    """Market mktrf (mkt_vw_exc) outer-joined with each factor parquet on
-    (excntry, `date_key`)."""
-    mkt = pl.scan_parquet(mkt_path).select(
-        ["excntry", date_key, pl.col("mkt_vw_exc").alias("mktrf")]
+    """Market mktrf outer-joined with each factor parquet on (excntry, date key).
+
+    mktrf is `mkt_vw_exc` from market_returns for non-US countries; for the US it is
+    the French-style CRSP market from `ff_us_mktrf`."""
+    date_key = "eom" if freq == "monthly" else "date"
+    mkt = pl.concat(
+        [
+            pl.scan_parquet(mkt_path)
+            .filter(pl.col("excntry") != "USA")
+            .select(["excntry", date_key, pl.col("mkt_vw_exc").alias("mktrf")]),
+            ff_us_mktrf(paths, freq),
+        ]
     )
     frames = [mkt, *(pl.scan_parquet(p) for p in factor_inputs)]
     key = ["excntry", date_key]
@@ -15443,14 +15524,16 @@ def ap_factor_model_data(
           - ap_factors_daily.parquet           keyed by (excntry, date)
           - ap_factors_characteristics.parquet keyed by (id, eom); `id` is
             globally unique so `excntry` is dropped by the per-model chars writers.
-        mktrf is sourced from market_returns_*.parquet (mkt_vw_exc). The fixed I/O
+        mktrf is US-only French-style from CRSP (`ff_us_mktrf`); every other country
+        uses mkt_vw_exc from market_returns_*.parquet. The fixed I/O
         paths (market_returns_*, ap_factors_*) are derived from paths.interim_dir;
         only the per-model input lists are caller-supplied, so the set of models to
         merge stays defined by the caller (main.py's generators mapping), not
         hard-coded here. Extensible: append more factor-model parquets to the lists.
 
     Steps:
-        1) Monthly: scan market_returns.parquet → (excntry, eom, mktrf); outer-join
+        1) Monthly: non-US (excntry, eom, mktrf) from market_returns.parquet plus US from
+           ff_us_mktrf → (excntry, eom, mktrf); outer-join
            each monthly factor parquet on (excntry, eom); sink.
         2) Daily:   same with date key, market_returns_daily.parquet.
         3) Chars:   outer-join each chars parquet on (id, eom); sink.
@@ -15465,11 +15548,11 @@ def ap_factor_model_data(
     # and these files are copied verbatim into processed/other_output/ — the
     # published row order must be run-to-run reproducible.
     interim = paths.interim_dir
-    _ap_join_factor_inputs(interim / "market_returns.parquet", monthly_factor_inputs, "eom").sort(
-        ["excntry", "eom"]
-    ).sink_parquet(interim / "ap_factors_monthly.parquet")
     _ap_join_factor_inputs(
-        interim / "market_returns_daily.parquet", daily_factor_inputs, "date"
+        paths, interim / "market_returns.parquet", monthly_factor_inputs, "monthly"
+    ).sort(["excntry", "eom"]).sink_parquet(interim / "ap_factors_monthly.parquet")
+    _ap_join_factor_inputs(
+        paths, interim / "market_returns_daily.parquet", daily_factor_inputs, "daily"
     ).sort(["excntry", "date"]).sink_parquet(interim / "ap_factors_daily.parquet")
 
     chars_frames = [pl.scan_parquet(p) for p in chars_inputs]

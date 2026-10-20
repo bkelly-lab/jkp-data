@@ -3,6 +3,13 @@ This change log keeps track of changes to the underlying data set. In brackets, 
 
 This repository ports the original SAS pipeline ([ReplicationCrisis](https://github.com/bkelly-lab/ReplicationCrisis)) to Python using Polars. Entries up to and including 05-03-2025 are from the original change log.
 
+## 20-10-2026
+__Changes__:
+- US `mktrf` in `ap_factors_monthly` and `ap_factors_daily` now follows Fama-French: CRSP common stocks (share codes 10/11), US-incorporated, listed on NYSE/AMEX/NASDAQ, weighted by the previous month's (day's) market equity of each permno. Weights are per permno, so every share class counts. The risk-free rate is unchanged: the CRSP 30-day T-bill, with the Fama-French `rf` as fallback (divided by 21 for daily). Non-US `mktrf` (`mkt_vw_exc`) and `market_returns*` are unchanged. This supersedes the 05-10-2026 statement that `mktrf` is unchanged.
+
+__Impact__:
+- US characteristics estimated against `mktrf` change: `beta_60m`, `resff3_12_1`, `resff3_6_1`, and from the daily factor `betabab_1260d`, `corr_1260d`, `beta_dimson_21d`, `betadown_252d`, `coskew_21d`, `ivol_capm_21d`, `ivol_capm_252d`, `ivol_ff3_21d`, `ivol_hxz4_21d`, `iskew_capm_21d`, `iskew_ff3_21d`, `iskew_hxz4_21d`.
+
 ## 14-10-2026
 __Changes__:
 - ROW DHS PEAD: the IBES ticker is now linked to the Compustat gvkey by SEDOL first, then CUSIP, then Compustat `ibtic`. Previously only `ibtic` was used, with the lowest gvkey kept per ticker. The IBES `cusip` field holds either a country code plus the first six SEDOL characters (matched to Compustat `sedol`) or an 8-character CUSIP (mostly Canada, matched to Compustat `cusip`). `ibtic` now only fills tickers that neither identifier links. Where the links disagree, `ibtic` often points to a renamed successor or an unrelated firm. Non-US IBES tickers reaching a world security: 44,935 → 54,941.
