@@ -8,11 +8,13 @@ Changes to the economic themes, newest first. See [README.md](README.md) for the
   principles in the README (for example, Book-to-market for `be_me`). Until then,
   characteristics are identified by their JKP codes.
 - Theme portfolios in `jkp portfolio` built from these themes; they still use v0.
+- Short codes for themes and subthemes (for example, three letters such as VAL or MOM) for
+  regression tables and figures.
 
 ## v1.0 (15-10-2026)
 
 A new grouping by economic meaning, replacing the statistically derived v0 themes. It covers
-402 characteristics (v0: 153) in 59 subthemes and 16 themes, and adds a second level: each
+402 characteristics (v0: 153) in 60 subthemes and 16 themes, and adds a second level: each
 characteristic belongs to a subtheme, and each subtheme to a theme. Every characteristic with
 a v0 theme has a v1.0 theme.
 
@@ -27,8 +29,10 @@ name itself for high values, and "Low" plus the name for low values (for example
 Low leverage, Low asset growth), with plain antonyms where they read better: Small,
 Young, Illiquidity, Short duration and Stable earnings). Past returns keep their established
 factor names: Short-term returns (factor: Short-term reversal), Medium-term returns (Momentum,
-with subthemes Returns 2-6 and Returns 7-12 for Momentum 2-6 and Momentum 7-12), Long-term
-returns (Long-term reversal) and Seasonal returns (Seasonality).
+with subthemes Returns 2-6, Returns 7-12 and Returns 2-12 for Momentum 2-6, Momentum 7-12 and
+Momentum), Long-term
+returns (Long-term reversal) and Seasonal returns (Seasonality). A subtheme shares its theme's
+name only when it is the theme's only subtheme.
 
 ### Signs
 
@@ -87,11 +91,14 @@ The factor portfolios produced by `jkp portfolio` still use the published direct
   correlates close to zero with the growth subthemes and goes with low earnings yield, high
   cash and long duration, and R&D-intensive firms earn higher returns while fast-growing firms
   earn lower ones.
-- **Profitability.** Margins and cash-flow profitability are separate from profitability. All
-  profit-growth horizons form one subtheme. The profitability and growth parts of QMJ go to
-  Profitability and Profit growth.
-- **Value.** Gross profit to price is an earnings yield; cash-based operating profit to price
-  is a cash flow yield. Equity duration is its own subtheme.
+- **Profitability.** Profit margins (profits to sales) and cash flow profitability are separate
+  from Income profitability (earnings-based profits to assets or equity). All profit-growth
+  horizons form one subtheme. The profitability and growth parts of QMJ go to Income
+  profitability and Profit growth, which they fit better than the Quality composites (0.87
+  against 0.68, and 0.62 against 0.48).
+- **Value.** Book equity, assets and sales relative to market value form Cheapness. Gross profit
+  to price is an earnings yield; cash-based operating profit to price is a cash flow yield.
+  Equity duration is its own subtheme.
 - **Leverage.** Book and market leverage are separate subthemes. They correlate 0.87, but
   market leverage also moves with value (0.47, against 0.14 for book leverage), because the
   share price is in the denominator. This mirrors the split between yields and profitability.
@@ -101,10 +108,11 @@ The factor portfolios produced by `jkp portfolio` still use the published direct
   taxes stays with Investment as Operating payables growth.
 - **Risk.** Lottery is separate from Volatility despite a correlation of 0.72. Market
   correlation sits with Beta.
-- **Composites.** Scores that combine signals from several themes (QMJ, QMJ safety, F-score,
-  both Stambaugh–Yuan mispricing factors) form their own theme. Scores that combine inputs
-  toward a single concept (O-score, Z-score, Kaplan–Zingales index) stay in that concept's
-  subtheme.
+- **Composites.** Scores that combine signals from several themes form their own theme, with
+  two subthemes: Quality (QMJ, QMJ safety, F-score) and Mispricing (the two Stambaugh–Yuan
+  scores, which barely correlate with each other, −0.05). Scores that combine inputs toward a
+  single concept (O-score, Z-score, Kaplan–Zingales index, the QMJ profitability and growth
+  parts) stay in that concept's subtheme.
 - **Fundamental momentum** is the theme for earnings surprises and profit growth, the usual
   meaning of the term.
 - **Operating costs** over assets (Novy-Marx's operating leverage) stay in Asset turnover;
@@ -123,7 +131,7 @@ each fits its main ingredient better.
 | `corr_1260d` | Beta | Liquidity | A component of beta; it co-moves with size in the data. |
 | `bidaskhl_21d` | Liquidity | Volatility | A spread estimate; volatile, low-priced stocks have wide spreads. |
 | `fcf_gr3a` | Profit growth | Cash flow profitability | A growth measure, so it belongs with growth. |
-| `o_score` | Distress | Composites | Two composites use the O-score as an input, which causes the overlap. |
+| `o_score` | Distress | Quality | Two composites use the O-score as an input, which causes the overlap. |
 | `div_gr3a` | Equity payout | Dividend yield | Dividend growth is a payout-policy measure. |
 | `debtlt_gr3a` | Debt issuance | Liability growth | A debt measure; total liabilities include debt. |
 
@@ -133,13 +141,12 @@ From `theme_diagnostics.py`, on U.S. stocks from January 1972 to December 2025, 
 run of 3 October 2026 (commit 666e896, WRDS data downloaded that day):
 
 - Median of the mean absolute correlation within subthemes with more than one
-  characteristic: 0.57.
+  characteristic: 0.56.
 - Subtheme pairs kept apart although their averages correlate 0.70 or more in absolute
-  value: Size and Liquidity, Size and Share price, Share price and Liquidity,
+  value: Firm size and Liquidity, Firm size and Share price, Share price and Liquidity,
   Cash flow yield and Cash flow profitability, Earnings yield and Equity duration,
-  Profitability and Profit margins, Volatility and Lottery, Distress and Composites,
-  Profitability and Composites, Book leverage and Market leverage. Each pair measures a
-  different economic idea.
+  Income profitability and Profit margins, Volatility and Lottery, Distress and Quality,
+  Book leverage and Market leverage. Each pair measures a different economic idea.
 - As a one-off check, the subthemes were compared with a purely statistical grouping
   (Ward clustering into 58 groups on one minus the absolute rank correlation, plus one
   group for characteristics that correlate weakly with all others). Adjusted Rand

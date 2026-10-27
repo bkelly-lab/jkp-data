@@ -1,12 +1,12 @@
 level,name,factor_name,theme,description,version
 theme,Value,Value,Value,Price relative to fundamentals.,v1.0
-subtheme,Value,Value,Value,"Book equity, assets and sales relative to market value.",v1.0
+subtheme,Cheapness,Cheapness,Value,"Book equity, assets and sales relative to market value.",v1.0
 subtheme,Earnings yield,Earnings yield,Value,"Earnings, gross profit and intrinsic value relative to price.",v1.0
 subtheme,Cash flow yield,Cash flow yield,Value,Operating and free cash flow relative to market value.,v1.0
 subtheme,Dividend yield,Dividend yield,Value,"Dividends relative to price, assets and earnings.",v1.0
 subtheme,Equity duration,Short duration,Value,How far in the future expected cash flows arrive.,v1.0
 theme,Profitability,Profitability,Profitability,How profitable the firm is.,v1.0
-subtheme,Profitability,Profitability,Profitability,"Profits relative to assets, book equity or PP&E.",v1.0
+subtheme,Income profitability,Income profitability,Profitability,"Profits relative to assets, book equity or PP&E.",v1.0
 subtheme,Profit margins,Profit margins,Profitability,Profits relative to sales or employees.,v1.0
 subtheme,Cash flow profitability,Cash flow profitability,Profitability,"Cash flow relative to assets, equity, sales or debt.",v1.0
 theme,Fundamental momentum,Fundamental momentum,Fundamental momentum,Recent improvement in fundamentals.,v1.0
@@ -57,7 +57,7 @@ subtheme,Beta,Low beta,Risk,Sensitivity to and correlation with the market.,v1.0
 subtheme,Skewness,Low skewness,Risk,Asymmetry of daily returns.,v1.0
 subtheme,Earnings volatility,Stable earnings,Risk,Volatility of earnings and cash flow.,v1.0
 theme,Size,Small,Size,"Firm size, age and trading activity.",v1.0
-subtheme,Size,Small,Size,"Market value, book value, assets and sales.",v1.0
+subtheme,Firm size,Small,Size,"Market value, book value, assets and sales.",v1.0
 subtheme,Firm age,Young,Size,Months since the firm first appears in the data.,v1.0
 subtheme,Share price,Low share price,Size,Share price level.,v1.0
 subtheme,Liquidity,Illiquidity,Size,"Trading volume, illiquidity and bid-ask spreads.",v1.0
@@ -67,10 +67,11 @@ subtheme,Short-term returns,Short-term reversal,Short-term returns,Last month's 
 theme,Medium-term returns,Momentum,Medium-term returns,Returns over the past two months to two years.,v1.0
 subtheme,Returns 2-6,Momentum 2-6,Medium-term returns,"Returns over windows of up to six months, mostly skipping the last month.",v1.0
 subtheme,Returns 7-12,Momentum 7-12,Medium-term returns,Returns over months 7-12.,v1.0
-subtheme,Medium-term returns,Momentum,Medium-term returns,"Returns over windows of 9 months or longer, and the 52-week high.",v1.0
+subtheme,Returns 2-12,Momentum,Medium-term returns,"Returns over months 2-12 and similar windows of 9 to 24 months, and the 52-week high.",v1.0
 theme,Long-term returns,Long-term reversal,Long-term returns,"Returns over multi-year windows, up to 20 years back.",v1.0
 subtheme,Long-term returns,Long-term reversal,Long-term returns,"Returns over multi-year windows, up to 20 years back.",v1.0
 theme,Seasonal returns,Seasonality,Seasonal returns,Returns in the same calendar month in past years.,v1.0
 subtheme,Seasonal returns,Seasonality,Seasonal returns,Past returns in the same calendar month.,v1.0
-theme,Composites,Composites,Composites,Multi-signal scores that span several themes.,v1.0
-subtheme,Composites,Composites,Composites,"Scores that combine signals from several themes: QMJ, QMJ safety, F-score and the two Stambaugh–Yuan mispricing factors.",v1.0
+theme,Composites,Composites,Composites,Scores that combine signals from several themes.,v1.0
+subtheme,Quality,Quality,Composites,"Quality scores that combine profitability, growth and safety: QMJ, QMJ safety and the Piotroski F-score.",v1.0
+subtheme,Mispricing,Mispricing,Composites,"The two Stambaugh–Yuan mispricing scores, each combining several anomaly signals.",v1.0

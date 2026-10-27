@@ -31,8 +31,14 @@ OUT_DIR = Path(__file__).resolve().parents[2] / "src" / "jkp" / "data" / "resour
 
 # Themes: each subtheme belongs to exactly one -------------------------------------------
 THEMES: dict[str, list[str]] = {
-    "Value": ["Value", "Earnings yield", "Cash flow yield", "Dividend yield", "Equity duration"],
-    "Profitability": ["Profitability", "Profit margins", "Cash flow profitability"],
+    "Value": [
+        "Cheapness",
+        "Earnings yield",
+        "Cash flow yield",
+        "Dividend yield",
+        "Equity duration",
+    ],
+    "Profitability": ["Income profitability", "Profit margins", "Cash flow profitability"],
     "Fundamental momentum": ["Profit growth", "Earnings surprise"],
     "Earnings quality": ["Accruals", "Special items", "Earnings persistence", "Tax burden"],
     "Investment": [
@@ -71,18 +77,27 @@ THEMES: dict[str, list[str]] = {
         "Financial constraints",
     ],
     "Risk": ["Volatility", "Lottery", "Beta", "Skewness", "Earnings volatility"],
-    "Size": ["Size", "Firm age", "Share price", "Liquidity", "Share turnover"],
+    "Size": ["Firm size", "Firm age", "Share price", "Liquidity", "Share turnover"],
     "Short-term returns": ["Short-term returns"],
-    "Medium-term returns": ["Returns 2-6", "Returns 7-12", "Medium-term returns"],
+    "Medium-term returns": ["Returns 2-6", "Returns 7-12", "Returns 2-12"],
     "Long-term returns": ["Long-term returns"],
     "Seasonal returns": ["Seasonal returns"],
-    "Composites": ["Composites"],
+    "Composites": ["Quality", "Mispricing"],
 }
 
 # Subthemes: characteristics in each subtheme, ordered by theme --------------------
 SUBTHEMES: dict[str, list[str]] = {
     # Value
-    "Value": ["be_me", "at_me", "sale_me", "be_mev", "bev_mev", "at_mev", "sale_mev", "aliq_mat"],
+    "Cheapness": [
+        "be_me",
+        "at_me",
+        "sale_me",
+        "be_mev",
+        "bev_mev",
+        "at_mev",
+        "sale_mev",
+        "aliq_mat",
+    ],
     "Earnings yield": [
         "ni_me",
         "nix_me",
@@ -107,7 +122,7 @@ SUBTHEMES: dict[str, list[str]] = {
     ],
     "Equity duration": ["eq_dur"],
     # Profitability
-    "Profitability": [
+    "Income profitability": [
         "gp_at",
         "gp_atl1",
         "gp_bev",
@@ -413,7 +428,7 @@ SUBTHEMES: dict[str, list[str]] = {
         "ocfq_saleq_std",
     ],
     # Size
-    "Size": [
+    "Firm size": [
         "market_equity",
         "enterprise_value",
         "book_equity",
@@ -435,7 +450,7 @@ SUBTHEMES: dict[str, list[str]] = {
     # Medium-term returns
     "Returns 2-6": ["ret_2_0", "ret_3_0", "ret_3_1", "ret_6_1", "ret_6_0", "resff3_6_1"],
     "Returns 7-12": ["ret_12_7"],
-    "Medium-term returns": [
+    "Returns 2-12": [
         "ret_12_1",
         "ret_9_1",
         "resff3_12_1",
@@ -472,7 +487,8 @@ SUBTHEMES: dict[str, list[str]] = {
         "seas_16_20an",
     ],
     # Composites
-    "Composites": ["qmj", "qmj_safety", "f_score", "mispricing_mgmt", "mispricing_perf"],
+    "Quality": ["qmj", "qmj_safety", "f_score"],
+    "Mispricing": ["mispricing_mgmt", "mispricing_perf"],
 }
 
 # Signs ------------------------------------------------------------------------------------
@@ -576,16 +592,16 @@ THEME_DESCRIPTIONS: dict[str, str] = {
     "Medium-term returns": "Returns over the past two months to two years.",
     "Long-term returns": "Returns over multi-year windows, up to 20 years back.",
     "Seasonal returns": "Returns in the same calendar month in past years.",
-    "Composites": "Multi-signal scores that span several themes.",
+    "Composites": "Scores that combine signals from several themes.",
 }
 
 SUBTHEME_DESCRIPTIONS: dict[str, str] = {
-    "Value": "Book equity, assets and sales relative to market value.",
+    "Cheapness": "Book equity, assets and sales relative to market value.",
     "Earnings yield": "Earnings, gross profit and intrinsic value relative to price.",
     "Cash flow yield": "Operating and free cash flow relative to market value.",
     "Dividend yield": "Dividends relative to price, assets and earnings.",
     "Equity duration": "How far in the future expected cash flows arrive.",
-    "Profitability": "Profits relative to assets, book equity or PP&E.",
+    "Income profitability": "Profits relative to assets, book equity or PP&E.",
     "Profit margins": "Profits relative to sales or employees.",
     "Cash flow profitability": "Cash flow relative to assets, equity, sales or debt.",
     "Profit growth": "Changes in profits and profitability over one to five years.",
@@ -627,18 +643,19 @@ SUBTHEME_DESCRIPTIONS: dict[str, str] = {
     "Beta": "Sensitivity to and correlation with the market.",
     "Skewness": "Asymmetry of daily returns.",
     "Earnings volatility": "Volatility of earnings and cash flow.",
-    "Size": "Market value, book value, assets and sales.",
+    "Firm size": "Market value, book value, assets and sales.",
     "Firm age": "Months since the firm first appears in the data.",
     "Share price": "Share price level.",
     "Liquidity": "Trading volume, illiquidity and bid-ask spreads.",
     "Share turnover": "Share turnover and days without trading.",
     "Returns 2-6": "Returns over windows of up to six months, mostly skipping the last month.",
     "Returns 7-12": "Returns over months 7-12.",
-    "Medium-term returns": "Returns over windows of 9 months or longer, and the 52-week high.",
+    "Returns 2-12": "Returns over months 2-12 and similar windows of 9 to 24 months, and the 52-week high.",
     "Short-term returns": "Last month's return.",
     "Long-term returns": "Returns over multi-year windows, up to 20 years back.",
     "Seasonal returns": "Past returns in the same calendar month.",
-    "Composites": "Scores that combine signals from several themes: QMJ, QMJ safety, F-score and the two Stambaugh–Yuan mispricing factors.",
+    "Quality": "Quality scores that combine profitability, growth and safety: QMJ, QMJ safety and the Piotroski F-score.",
+    "Mispricing": "The two Stambaugh–Yuan mispricing scores, each combining several anomaly signals.",
 }
 
 # Factor names. By default a factor is named after its theme or subtheme, with "Low" in
@@ -646,12 +663,14 @@ SUBTHEME_DESCRIPTIONS: dict[str, str] = {
 # Exceptions: established names for past returns, and plain antonyms where they read better.
 FACTOR_NAMES: dict[str, str] = {
     "Size": "Small",
+    "Firm size": "Small",
     "Firm age": "Young",
     "Liquidity": "Illiquidity",
     "Equity duration": "Short duration",
     "Earnings volatility": "Stable earnings",
     "Short-term returns": "Short-term reversal",
     "Medium-term returns": "Momentum",
+    "Returns 2-12": "Momentum",
     "Returns 2-6": "Momentum 2-6",
     "Returns 7-12": "Momentum 7-12",
     "Long-term returns": "Long-term reversal",

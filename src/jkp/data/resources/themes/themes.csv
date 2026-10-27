@@ -1,12 +1,12 @@
 characteristic,theme,subtheme,subtheme_sign,theme_sign,factor_sign,version
-be_me,Value,Value,1,1,1,v1.0
-at_me,Value,Value,1,1,1,v1.0
-sale_me,Value,Value,1,1,1,v1.0
-be_mev,Value,Value,1,1,1,v1.0
-bev_mev,Value,Value,1,1,1,v1.0
-at_mev,Value,Value,1,1,1,v1.0
-sale_mev,Value,Value,1,1,1,v1.0
-aliq_mat,Value,Value,1,1,1,v1.0
+be_me,Value,Cheapness,1,1,1,v1.0
+at_me,Value,Cheapness,1,1,1,v1.0
+sale_me,Value,Cheapness,1,1,1,v1.0
+be_mev,Value,Cheapness,1,1,1,v1.0
+bev_mev,Value,Cheapness,1,1,1,v1.0
+at_mev,Value,Cheapness,1,1,1,v1.0
+sale_mev,Value,Cheapness,1,1,1,v1.0
+aliq_mat,Value,Cheapness,1,1,1,v1.0
 ni_me,Value,Earnings yield,1,1,1,v1.0
 nix_me,Value,Earnings yield,1,1,1,v1.0
 ope_me,Value,Earnings yield,1,1,1,v1.0
@@ -31,31 +31,31 @@ div_me,Value,Dividend yield,1,1,1,v1.0
 div_at,Value,Dividend yield,1,1,1,v1.0
 div_ni,Value,Dividend yield,1,1,1,v1.0
 eq_dur,Value,Equity duration,1,-1,1,v1.0
-gp_at,Profitability,Profitability,1,1,1,v1.0
-gp_atl1,Profitability,Profitability,1,1,1,v1.0
-gp_bev,Profitability,Profitability,1,1,1,v1.0
-op_at,Profitability,Profitability,1,1,1,v1.0
-op_atl1,Profitability,Profitability,1,1,1,v1.0
-ope_be,Profitability,Profitability,1,1,1,v1.0
-ope_bel1,Profitability,Profitability,1,1,1,v1.0
-cop_at,Profitability,Profitability,1,1,1,v1.0
-cop_atl1,Profitability,Profitability,1,1,1,v1.0
-cop_bev,Profitability,Profitability,1,1,1,v1.0
-ebit_at,Profitability,Profitability,1,1,1,v1.0
-ebit_bev,Profitability,Profitability,1,1,1,v1.0
-ebitda_at,Profitability,Profitability,1,1,1,v1.0
-ebitda_bev,Profitability,Profitability,1,1,1,v1.0
-ni_at,Profitability,Profitability,1,1,1,v1.0
-ni_be,Profitability,Profitability,1,1,1,v1.0
-nix_be,Profitability,Profitability,1,1,1,v1.0
-niq_at,Profitability,Profitability,1,1,1,v1.0
-niq_be,Profitability,Profitability,1,1,1,v1.0
-qmj_prof,Profitability,Profitability,1,1,1,v1.0
-fi_at,Profitability,Profitability,1,1,1,v1.0
-fi_bev,Profitability,Profitability,1,1,1,v1.0
-ebit_int,Profitability,Profitability,1,1,1,v1.0
-ebitda_debt,Profitability,Profitability,1,1,1,v1.0
-ebitda_ppen,Profitability,Profitability,1,1,1,v1.0
+gp_at,Profitability,Income profitability,1,1,1,v1.0
+gp_atl1,Profitability,Income profitability,1,1,1,v1.0
+gp_bev,Profitability,Income profitability,1,1,1,v1.0
+op_at,Profitability,Income profitability,1,1,1,v1.0
+op_atl1,Profitability,Income profitability,1,1,1,v1.0
+ope_be,Profitability,Income profitability,1,1,1,v1.0
+ope_bel1,Profitability,Income profitability,1,1,1,v1.0
+cop_at,Profitability,Income profitability,1,1,1,v1.0
+cop_atl1,Profitability,Income profitability,1,1,1,v1.0
+cop_bev,Profitability,Income profitability,1,1,1,v1.0
+ebit_at,Profitability,Income profitability,1,1,1,v1.0
+ebit_bev,Profitability,Income profitability,1,1,1,v1.0
+ebitda_at,Profitability,Income profitability,1,1,1,v1.0
+ebitda_bev,Profitability,Income profitability,1,1,1,v1.0
+ni_at,Profitability,Income profitability,1,1,1,v1.0
+ni_be,Profitability,Income profitability,1,1,1,v1.0
+nix_be,Profitability,Income profitability,1,1,1,v1.0
+niq_at,Profitability,Income profitability,1,1,1,v1.0
+niq_be,Profitability,Income profitability,1,1,1,v1.0
+qmj_prof,Profitability,Income profitability,1,1,1,v1.0
+fi_at,Profitability,Income profitability,1,1,1,v1.0
+fi_bev,Profitability,Income profitability,1,1,1,v1.0
+ebit_int,Profitability,Income profitability,1,1,1,v1.0
+ebitda_debt,Profitability,Income profitability,1,1,1,v1.0
+ebitda_ppen,Profitability,Income profitability,1,1,1,v1.0
 gp_sale,Profitability,Profit margins,1,1,1,v1.0
 ebitda_sale,Profitability,Profit margins,1,1,1,v1.0
 ebit_sale,Profitability,Profit margins,1,1,1,v1.0
@@ -344,13 +344,13 @@ roe_be_std,Risk,Earnings volatility,1,1,-1,v1.0
 roeq_be_std,Risk,Earnings volatility,1,1,-1,v1.0
 niq_saleq_std,Risk,Earnings volatility,1,1,-1,v1.0
 ocfq_saleq_std,Risk,Earnings volatility,1,1,-1,v1.0
-market_equity,Size,Size,1,1,-1,v1.0
-enterprise_value,Size,Size,1,1,-1,v1.0
-book_equity,Size,Size,1,1,-1,v1.0
-assets,Size,Size,1,1,-1,v1.0
-sales,Size,Size,1,1,-1,v1.0
-net_income,Size,Size,1,1,-1,v1.0
-intrinsic_value,Size,Size,1,1,-1,v1.0
+market_equity,Size,Firm size,1,1,-1,v1.0
+enterprise_value,Size,Firm size,1,1,-1,v1.0
+book_equity,Size,Firm size,1,1,-1,v1.0
+assets,Size,Firm size,1,1,-1,v1.0
+sales,Size,Firm size,1,1,-1,v1.0
+net_income,Size,Firm size,1,1,-1,v1.0
+intrinsic_value,Size,Firm size,1,1,-1,v1.0
 age,Size,Firm age,1,1,-1,v1.0
 prc,Size,Share price,1,1,-1,v1.0
 ami_126d,Size,Liquidity,-1,1,-1,v1.0
@@ -370,15 +370,15 @@ ret_6_1,Medium-term returns,Returns 2-6,1,1,1,v1.0
 ret_6_0,Medium-term returns,Returns 2-6,1,1,1,v1.0
 resff3_6_1,Medium-term returns,Returns 2-6,1,1,1,v1.0
 ret_12_7,Medium-term returns,Returns 7-12,1,1,1,v1.0
-ret_12_1,Medium-term returns,Medium-term returns,1,1,1,v1.0
-ret_9_1,Medium-term returns,Medium-term returns,1,1,1,v1.0
-resff3_12_1,Medium-term returns,Medium-term returns,1,1,1,v1.0
-ret_9_0,Medium-term returns,Medium-term returns,1,1,1,v1.0
-ret_12_0,Medium-term returns,Medium-term returns,1,1,1,v1.0
-ret_18_1,Medium-term returns,Medium-term returns,1,1,1,v1.0
-ret_24_1,Medium-term returns,Medium-term returns,1,1,1,v1.0
-prc_highprc_252d,Medium-term returns,Medium-term returns,1,1,1,v1.0
-seas_1_1na,Medium-term returns,Medium-term returns,1,1,1,v1.0
+ret_12_1,Medium-term returns,Returns 2-12,1,1,1,v1.0
+ret_9_1,Medium-term returns,Returns 2-12,1,1,1,v1.0
+resff3_12_1,Medium-term returns,Returns 2-12,1,1,1,v1.0
+ret_9_0,Medium-term returns,Returns 2-12,1,1,1,v1.0
+ret_12_0,Medium-term returns,Returns 2-12,1,1,1,v1.0
+ret_18_1,Medium-term returns,Returns 2-12,1,1,1,v1.0
+ret_24_1,Medium-term returns,Returns 2-12,1,1,1,v1.0
+prc_highprc_252d,Medium-term returns,Returns 2-12,1,1,1,v1.0
+seas_1_1na,Medium-term returns,Returns 2-12,1,1,1,v1.0
 ret_60_12,Long-term returns,Long-term returns,1,1,-1,v1.0
 ret_60_36,Long-term returns,Long-term returns,1,1,-1,v1.0
 ret_48_12,Long-term returns,Long-term returns,1,1,-1,v1.0
@@ -396,8 +396,8 @@ seas_2_5an,Seasonal returns,Seasonal returns,1,1,1,v1.0
 seas_6_10an,Seasonal returns,Seasonal returns,1,1,1,v1.0
 seas_11_15an,Seasonal returns,Seasonal returns,1,1,1,v1.0
 seas_16_20an,Seasonal returns,Seasonal returns,1,1,1,v1.0
-qmj,Composites,Composites,1,1,1,v1.0
-qmj_safety,Composites,Composites,1,1,1,v1.0
-f_score,Composites,Composites,1,1,1,v1.0
-mispricing_mgmt,Composites,Composites,1,1,1,v1.0
-mispricing_perf,Composites,Composites,1,1,1,v1.0
+qmj,Composites,Quality,1,1,1,v1.0
+qmj_safety,Composites,Quality,1,1,1,v1.0
+f_score,Composites,Quality,1,1,1,v1.0
+mispricing_mgmt,Composites,Mispricing,1,1,1,v1.0
+mispricing_perf,Composites,Mispricing,1,1,1,v1.0
