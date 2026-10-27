@@ -2,6 +2,13 @@
 
 Changes to the economic themes, newest first. See [README.md](README.md) for the versioning rules.
 
+## Planned
+
+- Readable names and factor names for individual characteristics, following the naming
+  principles in the README (for example, Book-to-market for `be_me`). Until then,
+  characteristics are identified by their JKP codes.
+- Theme portfolios in `jkp portfolio` built from these themes; they still use v0.
+
 ## v1.0 (15-10-2026)
 
 A new grouping by economic meaning, replacing the statistically derived v0 themes. It covers
