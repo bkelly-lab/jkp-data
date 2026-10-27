@@ -1,5 +1,5 @@
 level,name,factor_name,theme,description,version
-theme,Value,Value,Value,Price relative to fundamentals.,v1.0
+theme,Value,Value,Value,Fundamentals relative to price.,v1.0
 subtheme,Cheapness,Cheapness,Value,"Book equity, assets and sales relative to market value.",v1.0
 subtheme,Earnings yield,Earnings yield,Value,"Earnings, gross profit and intrinsic value relative to price.",v1.0
 subtheme,Cash flow yield,Cash flow yield,Value,"Operating cash flow, free cash flow and cash-based operating profit relative to market value.",v1.0

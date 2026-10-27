@@ -580,7 +580,7 @@ FACTOR_SIGNS: dict[str, int] = {
 
 # Descriptions -------------------------------------------------------------------------
 THEME_DESCRIPTIONS: dict[str, str] = {
-    "Value": "Price relative to fundamentals.",
+    "Value": "Fundamentals relative to price.",
     "Profitability": "How profitable the firm is.",
     "Fundamental momentum": "Recent improvement in fundamentals.",
     "Earnings quality": "How reliable reported earnings are.",
