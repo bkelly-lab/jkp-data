@@ -35,12 +35,12 @@ subtheme,Working capital efficiency,Working capital efficiency,Operating efficie
 subtheme,Capital intensity,Low capital intensity,Operating efficiency,"PP&E and capex relative to assets, price, profit or cash flow.",v1.0
 subtheme,Labor intensity,Low labor intensity,Operating efficiency,Staff costs and sales per employee.,v1.0
 subtheme,Labor productivity growth,Labor productivity growth,Operating efficiency,Growth in sales per employee.,v1.0
-theme,Financing,Low financing,Financing,Net flows to and from investors.,v1.0
-subtheme,Equity issuance,Low equity issuance,Financing,"Net share issuance, from market and accounting data.",v1.0
-subtheme,Equity payout,Equity payout,Financing,Buybacks and total payout to shareholders.,v1.0
-subtheme,Debt issuance,Low debt issuance,Financing,Net issuance and growth of debt.,v1.0
-subtheme,Liability growth,Low liability growth,Financing,"Growth in total, current and non-current liabilities, including debt.",v1.0
-subtheme,External financing,Low external financing,Financing,Total net financing from debt and equity.,v1.0
+theme,Issuance,Low issuance,Issuance,Net capital raised from shareholders and creditors.,v1.0
+subtheme,Equity issuance,Low equity issuance,Issuance,"Net share issuance, from market and accounting data.",v1.0
+subtheme,Equity payout,Equity payout,Issuance,Buybacks and total payout to shareholders.,v1.0
+subtheme,Debt issuance,Low debt issuance,Issuance,Net issuance and growth of debt.,v1.0
+subtheme,Liability growth,Low liability growth,Issuance,"Growth in total, current and non-current liabilities, including debt.",v1.0
+subtheme,External financing,Low external financing,Issuance,Total net financing from debt and equity.,v1.0
 theme,Leverage,Low leverage,Leverage,Capital structure and financial strength.,v1.0
 subtheme,Book leverage,Low book leverage,Leverage,"Debt relative to book assets, book equity or book enterprise value.",v1.0
 subtheme,Market leverage,Low market leverage,Leverage,Debt relative to market equity or market enterprise value.,v1.0

@@ -59,7 +59,7 @@ THEMES: dict[str, list[str]] = {
         "Labor intensity",
         "Labor productivity growth",
     ],
-    "Financing": [
+    "Issuance": [
         "Equity issuance",
         "Equity payout",
         "Debt issuance",
@@ -295,7 +295,7 @@ SUBTHEMES: dict[str, list[str]] = {
     "Capital intensity": ["capx_at", "ppen_mev", "gp_ppen", "lt_ppen", "fcf_ocf"],
     "Labor intensity": ["staff_sale", "sale_emp"],
     "Labor productivity growth": ["sale_emp_gr1"],
-    # Financing
+    # Issuance
     "Equity issuance": [
         "chcsho_1m",
         "chcsho_3m",
@@ -549,7 +549,7 @@ NEGATIVE_IN_SUBTHEME: set[str] = {
 # Subthemes where a high value means less of what their theme's name says.
 NEGATIVE_IN_THEME: set[str] = {
     "Equity duration",  # Value: long duration is the opposite of a high yield
-    "Equity payout",  # Financing: payout flows to investors, issuance from them
+    "Equity payout",  # Issuance: payout is the reverse of issuance
     "Balance sheet liquidity",  # Leverage
     "Debt maturity",  # Leverage: longer maturity, less refinancing risk
     "Accruals",  # Earnings quality
@@ -567,7 +567,7 @@ FACTOR_SIGNS: dict[str, int] = {
     "Investment": -1,
     "Intangibles": 1,
     "Operating efficiency": 1,
-    "Financing": -1,
+    "Issuance": -1,
     "Leverage": -1,
     "Risk": -1,
     "Size": -1,
@@ -587,7 +587,7 @@ THEME_DESCRIPTIONS: dict[str, str] = {
     "Investment": "Growth of the balance sheet and operations.",
     "Intangibles": "Spending on intangible capital, such as R&D and advertising.",
     "Operating efficiency": "How the firm uses its assets and labor.",
-    "Financing": "Net flows to and from investors.",
+    "Issuance": "Net capital raised from shareholders and creditors.",
     "Leverage": "Capital structure and financial strength.",
     "Risk": "Return and earnings risk.",
     "Size": "Firm size, age and trading activity.",

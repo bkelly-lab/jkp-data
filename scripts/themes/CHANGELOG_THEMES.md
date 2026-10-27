@@ -19,7 +19,7 @@ characteristic belongs to a subtheme, and each subtheme to a theme. Every charac
 a v0 theme has a v1.0 theme.
 
 **Themes:** Value, Profitability, Fundamental momentum, Earnings quality, Investment,
-Intangibles, Operating efficiency, Financing, Leverage, Risk, Size, Short-term returns,
+Intangibles, Operating efficiency, Issuance, Leverage, Risk, Size, Short-term returns,
 Medium-term returns, Long-term returns, Seasonal returns, Quality. See
 `theme_descriptions.csv` for the subthemes.
 
@@ -52,7 +52,7 @@ would be +1 and `netdebt_me` −1, although the two correlate 0.83.
   `z_score` in Distress and net payout in Equity issuance. The data agree with every sign except
   for four characteristics that barely correlate with their subtheme (`coskew_21d` and the three
   non-annual seasonality measures for years 6-20); these are +1 by definition.
-- 7 subthemes have `theme_sign` −1: Equity duration (Value), Equity payout (Financing),
+- 7 subthemes have `theme_sign` −1: Equity duration (Value), Equity payout (Issuance),
   Balance sheet liquidity and Debt maturity (Leverage), Accruals (Earnings quality), Capital
   intensity and Labor intensity (Operating efficiency). Where the data say little, these are
   economic choices: Debt maturity (−1) and Cost of debt (+1) in Leverage, and the Earnings
@@ -63,7 +63,7 @@ would be +1 and `netdebt_me` −1, although the two correlate 0.83.
   signed).
 - `factor_sign` is +1 for Value, Profitability, Fundamental momentum, Earnings quality,
   Intangibles, Operating efficiency, Medium-term returns, Seasonal returns and Quality, and
-  −1 for Investment, Financing, Leverage, Risk, Size, Short-term returns and Long-term returns.
+  −1 for Investment, Issuance, Leverage, Risk, Size, Short-term returns and Long-term returns.
 
 For 144 of the 153 v0 factors, the product of the three signs equals the direction used in
 Jensen, Kelly and Pedersen (2023). For nine it is the opposite, because the characteristic
@@ -109,7 +109,8 @@ The factor portfolios produced by `jkp portfolio` still use the published direct
   market leverage also moves with value (0.47, against 0.14 for book leverage), because the
   share price is in the denominator. This mirrors the split between yields and profitability.
   Debt terms are split into maturity and cost.
-- **Financing.** Changes in equity and debt issuance join their issuance subthemes. Net total
+- **Issuance.** Most of the theme is net issuance of equity, debt or both; payout counts as
+  the reverse. Changes in equity and debt issuance join their issuance subthemes. Net total
   financing is External financing. Growth in total liabilities, which includes debt, is
   Liability growth; growth in payables, accrued items and taxes stays with Investment as
   Operating payables growth.
