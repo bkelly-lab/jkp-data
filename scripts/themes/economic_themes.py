@@ -82,7 +82,7 @@ THEMES: dict[str, list[str]] = {
     "Medium-term returns": ["Returns 2-6", "Returns 7-12", "Returns 2-12"],
     "Long-term returns": ["Long-term returns"],
     "Seasonal returns": ["Seasonal returns"],
-    "Composites": ["Quality", "Mispricing"],
+    "Quality": ["Quality"],
 }
 
 # Subthemes: characteristics in each subtheme, ordered by theme --------------------
@@ -229,6 +229,7 @@ SUBTHEMES: dict[str, list[str]] = {
         "intan_gr3a",
         "dp_gr1a",
         "dp_gr3a",
+        "mispricing_mgmt",
     ],
     "Capex growth": ["capx_gr1", "capx_gr2", "capx_gr3", "capx_gr1a", "capx_gr3a", "capex_abn"],
     "Working capital growth": [
@@ -395,7 +396,7 @@ SUBTHEMES: dict[str, list[str]] = {
         "rec_act",
         "tangibility",
     ],
-    "Distress": ["o_score", "z_score"],
+    "Distress": ["o_score", "z_score", "qmj_safety"],
     "Financial constraints": ["kz_index"],
     # Risk
     "Volatility": [
@@ -486,9 +487,8 @@ SUBTHEMES: dict[str, list[str]] = {
         "seas_11_15an",
         "seas_16_20an",
     ],
-    # Composites
-    "Quality": ["qmj", "qmj_safety", "f_score"],
-    "Mispricing": ["mispricing_mgmt", "mispricing_perf"],
+    # Quality
+    "Quality": ["qmj", "f_score", "mispricing_perf"],
 }
 
 # Signs ------------------------------------------------------------------------------------
@@ -508,7 +508,8 @@ NEGATIVE_IN_SUBTHEME: set[str] = {
     "debtst_bev",
     "debtst_mev",
     "cl_lt",
-    # Distress
+    # Distress (the O-score measures distress; the Z-score and QMJ safety measure safety)
+    "qmj_safety",
     "z_score",
     # Equity issuance (net payout is the opposite of net issuance)
     "eqnpo_1m",
@@ -538,6 +539,8 @@ NEGATIVE_IN_SUBTHEME: set[str] = {
     "ap_days",
     "cash_conversion",
     "inv_act",
+    # Asset growth (a high management mispricing score means low growth and issuance)
+    "mispricing_mgmt",
     # Working capital growth (sales growth minus inventory or receivables growth)
     "dsale_dinv",
     "dsale_drec",
@@ -572,7 +575,7 @@ FACTOR_SIGNS: dict[str, int] = {
     "Medium-term returns": 1,
     "Long-term returns": -1,
     "Seasonal returns": 1,
-    "Composites": 1,
+    "Quality": 1,
 }
 
 # Descriptions -------------------------------------------------------------------------
@@ -592,7 +595,7 @@ THEME_DESCRIPTIONS: dict[str, str] = {
     "Medium-term returns": "Returns over the past two months to two years.",
     "Long-term returns": "Returns over multi-year windows, up to 20 years back.",
     "Seasonal returns": "Returns in the same calendar month in past years.",
-    "Composites": "Scores that combine signals from several themes.",
+    "Quality": "Scores that combine several signals of firm quality.",
 }
 
 SUBTHEME_DESCRIPTIONS: dict[str, str] = {
@@ -610,7 +613,7 @@ SUBTHEME_DESCRIPTIONS: dict[str, str] = {
     "Special items": "Non-recurring and extraordinary items.",
     "Earnings persistence": "How strongly earnings carry over from year to year.",
     "Tax burden": "Taxes relative to income.",
-    "Asset growth": "Growth in total, operating and long-lived assets.",
+    "Asset growth": "Growth in total, operating and long-lived assets, and the Stambaugh–Yuan management mispricing score.",
     "Capex growth": "Growth in capital expenditure.",
     "Working capital growth": "Growth in inventory, receivables and other working capital.",
     "Operating payables growth": "Growth in payables to suppliers, accrued expenses and taxes: liabilities that arise from operations.",
@@ -636,7 +639,7 @@ SUBTHEME_DESCRIPTIONS: dict[str, str] = {
     "Cost of debt": "Interest expense relative to debt.",
     "Preferred stock": "Preferred stock outstanding and its growth.",
     "Balance sheet liquidity": "Cash and current assets relative to liabilities or assets.",
-    "Distress": "Bankruptcy-risk scores.",
+    "Distress": "Bankruptcy-risk and safety scores.",
     "Financial constraints": "Kaplan–Zingales index.",
     "Volatility": "Total and idiosyncratic return volatility.",
     "Lottery": "Largest daily returns over the past month.",
@@ -654,8 +657,7 @@ SUBTHEME_DESCRIPTIONS: dict[str, str] = {
     "Short-term returns": "Last month's return.",
     "Long-term returns": "Returns over multi-year windows, up to 20 years back.",
     "Seasonal returns": "Past returns in the same calendar month.",
-    "Quality": "Quality scores that combine profitability, growth and safety: QMJ, QMJ safety and the Piotroski F-score.",
-    "Mispricing": "The two Stambaugh–Yuan mispricing scores, each combining several anomaly signals.",
+    "Quality": "Quality minus junk, the Piotroski F-score and the Stambaugh–Yuan performance mispricing score, which combine profitability, safety, growth and momentum signals.",
 }
 
 # Factor names. By default a factor is named after its theme or subtheme, with "Low" in
@@ -663,14 +665,14 @@ SUBTHEME_DESCRIPTIONS: dict[str, str] = {
 # Exceptions: established names for past returns, and plain antonyms where they read better.
 FACTOR_NAMES: dict[str, str] = {
     "Size": "Small",
-    "Firm size": "Small",
+    "Firm size": "Small firms",
     "Firm age": "Young",
     "Liquidity": "Illiquidity",
     "Equity duration": "Short duration",
     "Earnings volatility": "Stable earnings",
     "Short-term returns": "Short-term reversal",
     "Medium-term returns": "Momentum",
-    "Returns 2-12": "Momentum",
+    "Returns 2-12": "Momentum 2-12",
     "Returns 2-6": "Momentum 2-6",
     "Returns 7-12": "Momentum 7-12",
     "Long-term returns": "Long-term reversal",

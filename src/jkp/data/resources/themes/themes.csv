@@ -135,6 +135,7 @@ intan_gr1a,Investment,Asset growth,1,1,-1,v1.0
 intan_gr3a,Investment,Asset growth,1,1,-1,v1.0
 dp_gr1a,Investment,Asset growth,1,1,-1,v1.0
 dp_gr3a,Investment,Asset growth,1,1,-1,v1.0
+mispricing_mgmt,Investment,Asset growth,-1,1,-1,v1.0
 capx_gr1,Investment,Capex growth,1,1,-1,v1.0
 capx_gr2,Investment,Capex growth,1,1,-1,v1.0
 capx_gr3,Investment,Capex growth,1,1,-1,v1.0
@@ -314,6 +315,7 @@ rec_act,Leverage,Balance sheet liquidity,-1,-1,-1,v1.0
 tangibility,Leverage,Balance sheet liquidity,1,-1,-1,v1.0
 o_score,Leverage,Distress,1,1,-1,v1.0
 z_score,Leverage,Distress,-1,1,-1,v1.0
+qmj_safety,Leverage,Distress,-1,1,-1,v1.0
 kz_index,Leverage,Financial constraints,1,1,-1,v1.0
 rvol_21d,Risk,Volatility,1,1,-1,v1.0
 rvol_252d,Risk,Volatility,1,1,-1,v1.0
@@ -396,8 +398,6 @@ seas_2_5an,Seasonal returns,Seasonal returns,1,1,1,v1.0
 seas_6_10an,Seasonal returns,Seasonal returns,1,1,1,v1.0
 seas_11_15an,Seasonal returns,Seasonal returns,1,1,1,v1.0
 seas_16_20an,Seasonal returns,Seasonal returns,1,1,1,v1.0
-qmj,Composites,Quality,1,1,1,v1.0
-qmj_safety,Composites,Quality,1,1,1,v1.0
-f_score,Composites,Quality,1,1,1,v1.0
-mispricing_mgmt,Composites,Mispricing,1,1,1,v1.0
-mispricing_perf,Composites,Mispricing,1,1,1,v1.0
+qmj,Quality,Quality,1,1,1,v1.0
+f_score,Quality,Quality,1,1,1,v1.0
+mispricing_perf,Quality,Quality,1,1,1,v1.0

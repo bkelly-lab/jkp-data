@@ -18,7 +18,7 @@ subtheme,Special items,Special items,Earnings quality,Non-recurring and extraord
 subtheme,Earnings persistence,Earnings persistence,Earnings quality,How strongly earnings carry over from year to year.,v1.0
 subtheme,Tax burden,Tax burden,Earnings quality,Taxes relative to income.,v1.0
 theme,Investment,Low investment,Investment,Growth of the balance sheet and operations.,v1.0
-subtheme,Asset growth,Low asset growth,Investment,"Growth in total, operating and long-lived assets.",v1.0
+subtheme,Asset growth,Low asset growth,Investment,"Growth in total, operating and long-lived assets, and the Stambaugh–Yuan management mispricing score.",v1.0
 subtheme,Capex growth,Low capex growth,Investment,Growth in capital expenditure.,v1.0
 subtheme,Working capital growth,Low working capital growth,Investment,"Growth in inventory, receivables and other working capital.",v1.0
 subtheme,Operating payables growth,Low operating payables growth,Investment,"Growth in payables to suppliers, accrued expenses and taxes: liabilities that arise from operations.",v1.0
@@ -48,7 +48,7 @@ subtheme,Debt maturity,Debt maturity,Leverage,Short-term versus long-term debt.,
 subtheme,Cost of debt,Low cost of debt,Leverage,Interest expense relative to debt.,v1.0
 subtheme,Preferred stock,Low preferred stock,Leverage,Preferred stock outstanding and its growth.,v1.0
 subtheme,Balance sheet liquidity,Balance sheet liquidity,Leverage,Cash and current assets relative to liabilities or assets.,v1.0
-subtheme,Distress,Low distress,Leverage,Bankruptcy-risk scores.,v1.0
+subtheme,Distress,Low distress,Leverage,Bankruptcy-risk and safety scores.,v1.0
 subtheme,Financial constraints,Low financial constraints,Leverage,Kaplan–Zingales index.,v1.0
 theme,Risk,Low risk,Risk,Return and earnings risk.,v1.0
 subtheme,Volatility,Low volatility,Risk,Total and idiosyncratic return volatility.,v1.0
@@ -57,7 +57,7 @@ subtheme,Beta,Low beta,Risk,Sensitivity to and correlation with the market.,v1.0
 subtheme,Skewness,Low skewness,Risk,Asymmetry of daily returns.,v1.0
 subtheme,Earnings volatility,Stable earnings,Risk,Volatility of earnings and cash flow.,v1.0
 theme,Size,Small,Size,"Firm size, age and trading activity.",v1.0
-subtheme,Firm size,Small,Size,"Market value, book value, assets and sales.",v1.0
+subtheme,Firm size,Small firms,Size,"Market value, book value, assets and sales.",v1.0
 subtheme,Firm age,Young,Size,Months since the firm first appears in the data.,v1.0
 subtheme,Share price,Low share price,Size,Share price level.,v1.0
 subtheme,Liquidity,Illiquidity,Size,"Trading volume, illiquidity and bid-ask spreads.",v1.0
@@ -67,11 +67,10 @@ subtheme,Short-term returns,Short-term reversal,Short-term returns,Last month's 
 theme,Medium-term returns,Momentum,Medium-term returns,Returns over the past two months to two years.,v1.0
 subtheme,Returns 2-6,Momentum 2-6,Medium-term returns,"Returns over windows of up to six months, mostly skipping the last month.",v1.0
 subtheme,Returns 7-12,Momentum 7-12,Medium-term returns,Returns over months 7-12.,v1.0
-subtheme,Returns 2-12,Momentum,Medium-term returns,"Returns over months 2-12 and similar windows of 9 to 24 months, and the 52-week high.",v1.0
+subtheme,Returns 2-12,Momentum 2-12,Medium-term returns,"Returns over months 2-12 and similar windows of 9 to 24 months, and the 52-week high.",v1.0
 theme,Long-term returns,Long-term reversal,Long-term returns,"Returns over multi-year windows, up to 20 years back.",v1.0
 subtheme,Long-term returns,Long-term reversal,Long-term returns,"Returns over multi-year windows, up to 20 years back.",v1.0
 theme,Seasonal returns,Seasonality,Seasonal returns,Returns in the same calendar month in past years.,v1.0
 subtheme,Seasonal returns,Seasonality,Seasonal returns,Past returns in the same calendar month.,v1.0
-theme,Composites,Composites,Composites,Scores that combine signals from several themes.,v1.0
-subtheme,Quality,Quality,Composites,"Quality scores that combine profitability, growth and safety: QMJ, QMJ safety and the Piotroski F-score.",v1.0
-subtheme,Mispricing,Mispricing,Composites,"The two Stambaugh–Yuan mispricing scores, each combining several anomaly signals.",v1.0
+theme,Quality,Quality,Quality,Scores that combine several signals of firm quality.,v1.0
+subtheme,Quality,Quality,Quality,"Quality minus junk, the Piotroski F-score and the Stambaugh–Yuan performance mispricing score, which combine profitability, safety, growth and momentum signals.",v1.0
