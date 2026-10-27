@@ -23,16 +23,16 @@ Intangibles, Operating efficiency, Financing, Leverage, Risk, Size, Short-term r
 Medium-term returns, Long-term returns, Seasonal returns, Quality. See
 `theme_descriptions.csv` for the subthemes.
 
-**Names.** Theme and subtheme names describe the characteristics; `factor_name` in
-`theme_descriptions.csv` names the long-short factor and shows which side it goes long: the
-name itself for high values, and "Low" plus the name for low values (for example Low risk,
-Low leverage, Low asset growth), with plain antonyms where they read better: Small,
-Young, Illiquidity, Short duration and Stable earnings). Past returns keep their established
-factor names: Short-term returns (factor: Short-term reversal), Medium-term returns (Momentum,
-with subthemes Returns 2-6, Returns 7-12 and Returns 2-12 for Momentum 2-6, Momentum 7-12 and
-Momentum 2-12), Long-term
-returns (Long-term reversal) and Seasonal returns (Seasonality). A subtheme shares its theme's
-name only when it is the theme's only subtheme.
+**Names.** Theme and subtheme names describe what a high value of the characteristic measures.
+`factor_name` in `theme_descriptions.csv` names the long-short factor and shows which side it
+buys: the name itself for high values, and "Low" plus the name for low values (for example Low
+risk, Low leverage, Low asset growth). Plain antonyms are used where they read better: Small,
+Small firms, Young, Illiquidity, Short duration and Stable earnings. Past returns keep their
+established factor names: Short-term returns (factor: Short-term reversal), Medium-term returns
+(Momentum; its subthemes Returns 2-6, Returns 7-12 and Returns 2-12 give Momentum 2-6, Momentum
+7-12 and Momentum 2-12), Long-term returns (Long-term reversal) and Seasonal returns
+(Seasonality). A subtheme, or its factor, shares the theme's name only when it is the theme's
+only subtheme.
 
 ### Signs
 
@@ -40,15 +40,18 @@ Three signs, one per level: `subtheme_sign` (per characteristic) is +1 if a high
 more of what the subtheme's name says; `theme_sign` (per subtheme) is +1 if more of the
 subtheme means more of what the theme's name says; `factor_sign` (per theme) is +1 if more of
 the theme earns higher returns in the literature. A characteristic's factor goes long the side
-given by the product of the three. v0 instead signed each factor by the direction of its return
+given by the product of the three. A subtheme characteristic averages the cross-sectional
+ranks of its characteristics, each multiplied by `subtheme_sign`; a theme characteristic
+averages its subtheme characteristics, each multiplied by `theme_sign`, so every subtheme
+counts equally. v0 instead signed each factor by the direction of its return
 in the original paper; signing characteristics that way would point characteristics in the same
 subtheme in opposite directions in 6 subthemes: in Market leverage, for example, `debt_me`
 would be +1 and `netdebt_me` −1, although the two correlate 0.83.
 
-- 35 characteristics have `subtheme_sign` −1, for example `ami_126d` in Liquidity,
+- 38 characteristics have `subtheme_sign` −1, for example `ami_126d` in Liquidity,
   `z_score` in Distress and net payout in Equity issuance. The data agree with every sign except
   for four characteristics that barely correlate with their subtheme (`coskew_21d` and the three
-  non-annual seasonality measures for years 6–20); these are +1 by definition.
+  non-annual seasonality measures for years 6-20); these are +1 by definition.
 - 7 subthemes have `theme_sign` −1: Equity duration (Value), Equity payout (Financing),
   Balance sheet liquidity and Debt maturity (Leverage), Accruals (Earnings quality), Capital
   intensity and Labor intensity (Operating efficiency). Where the data say little, these are
@@ -63,24 +66,25 @@ would be +1 and `netdebt_me` −1, although the two correlate 0.83.
   −1 for Investment, Financing, Leverage, Risk, Size, Short-term returns and Long-term returns.
 
 For 144 of the 153 v0 factors, the product of the three signs equals the direction used in
-Jensen, Kelly and Pedersen (2023). For nine it is the opposite, because the characteristic sits
-with its subtheme in the data while its own published direction pointed the other way:
-`aliq_mat` (Value), `dsale_drec` (Working capital growth), `sti_gr1a` (Financial asset growth),
-`debt_me` (Market leverage), `aliq_at` (Balance sheet liquidity), `kz_index` (Financial constraints),
-`ni_ivol` (Earnings volatility), `dolvol_var_126d` and `turnover_var_126d` (Liquidity).
+Jensen, Kelly and Pedersen (2023). For nine it is the opposite, because the characteristic
+sits with its subtheme in the data while its own published direction pointed the other way:
+`aliq_mat` (Cheapness), `dsale_drec` (Working capital growth), `sti_gr1a` (Financial asset
+growth), `debt_me` (Market leverage), `aliq_at` (Balance sheet liquidity), `kz_index`
+(Financial constraints), `ni_ivol` (Earnings volatility), `dolvol_var_126d` and
+`turnover_var_126d` (Liquidity).
 The factor portfolios produced by `jkp portfolio` still use the published directions.
 
 ### Main decisions
 
 - **Naming.** The broad groups are called themes, as in the original JKP paper; the finer
   groups are subthemes. Names have no "&" or parentheses; a group that needed "&" was split.
-- **Past returns.** Medium-term returns are split by window: months 2–6 (Returns 2-6),
-  months 7–12 (Returns 7-12), and windows of 9 months or longer plus the 52-week high
-  (Medium-term returns). Returns over months 2–6 and 7–12 correlate only 0.07. Last month alone
-  is Short-term returns; the 2- and 3-month windows that include it go to Returns 2-6.
-  Multi-year windows go to Long-term returns.
+- **Past returns.** Medium-term returns are split by window: months 2-6 (Returns 2-6), months
+  7-12 (Returns 7-12), and months 2-12 with similar windows of 9 to 24 months and the 52-week
+  high (Returns 2-12). Returns over months 2-6 and 7-12 correlate only 0.07. Last month alone is
+  Short-term returns; the 2- and 3-month windows that include it go to Returns 2-6. Multi-year
+  windows go to Long-term returns.
 - **Seasonal returns.** Same-month returns are seasonal at every lag. Averages over the other
-  months go with the return window they overlap: year 1 to Medium-term returns, years 2–20 to
+  months go with the return window they overlap: year 1 to Medium-term returns, years 2-20 to
   Long-term returns. Their correlations with everything are close to zero, and their published
   direction matches long-term reversal.
 - **Investment.** Asset growth is split by what grows: total and long-lived assets, capex,
@@ -91,19 +95,24 @@ The factor portfolios produced by `jkp portfolio` still use the published direct
   correlates close to zero with the growth subthemes and goes with low earnings yield, high
   cash and long duration, and R&D-intensive firms earn higher returns while fast-growing firms
   earn lower ones.
-- **Profitability.** Profit margins (profits to sales) and cash flow profitability are separate
-  from Income profitability (earnings-based profits to assets or equity). All profit-growth
-  horizons form one subtheme.
+- **Profitability.** Income profitability (earnings-based profits relative to assets, equity or
+  liabilities), Profit margins (profits relative to sales or employees) and Cash flow
+  profitability are separate subthemes. Cash-based measures go to Cash flow profitability
+  whatever their denominator, including cash-based operating profitability, just as
+  cash-based operating profit to price is a cash flow yield. Free cash flow to operating cash
+  flow measures how much cash flow goes to capital spending, so it sits in Capital intensity.
+  All profit-growth horizons form one subtheme.
 - **Value.** Book equity, assets and sales relative to market value form Cheapness. Gross profit
   to price is an earnings yield; cash-based operating profit to price is a cash flow yield.
   Equity duration is its own subtheme.
 - **Leverage.** Book and market leverage are separate subthemes. They correlate 0.87, but
   market leverage also moves with value (0.47, against 0.14 for book leverage), because the
   share price is in the denominator. This mirrors the split between yields and profitability.
+  Debt terms are split into maturity and cost.
 - **Financing.** Changes in equity and debt issuance join their issuance subthemes. Net total
-  financing is External financing. Debt terms are split into maturity and cost. Growth in total
-  liabilities, which includes debt, is Liability growth; growth in payables, accrued items and
-  taxes stays with Investment as Operating payables growth.
+  financing is External financing. Growth in total liabilities, which includes debt, is
+  Liability growth; growth in payables, accrued items and taxes stays with Investment as
+  Operating payables growth.
 - **Risk.** Lottery is separate from Volatility despite a correlation of 0.72. Market
   correlation sits with Beta.
 - **Composite scores.** A score that combines several signals goes to the subtheme that best
@@ -125,14 +134,14 @@ These characteristics fit another subtheme clearly better in the data (by at lea
 
 | Characteristic | Subtheme | Fits better with | Why it stays |
 |---|---|---|---|
-| `seas_1_1an` | Seasonal returns | Returns 7-12 | A same-month return; its overlap with months 7–12 is mechanical. |
+| `fcf_gr3a` | Profit growth | Cash flow profitability | A growth measure, so it belongs with growth. |
+| `div_gr3a` | Equity payout | Dividend yield | Dividend growth is a payout-policy measure. |
+| `debtlt_gr3a` | Debt issuance | Liability growth | A debt measure; total liabilities include debt. |
 | `cl_lt` | Debt maturity | Book leverage | Measures the maturity of liabilities. |
 | `corr_1260d` | Beta | Liquidity | A component of beta; it co-moves with size in the data. |
 | `bidaskhl_21d` | Liquidity | Volatility | A spread estimate; volatile, low-priced stocks have wide spreads. |
-| `fcf_gr3a` | Profit growth | Cash flow profitability | A growth measure, so it belongs with growth. |
+| `seas_1_1an` | Seasonal returns | Returns 7-12 | A same-month return; its overlap with months 7-12 is mechanical. |
 | `mispricing_perf` | Quality | Income profitability | It combines profitability with safety and momentum, as quality scores do. |
-| `div_gr3a` | Equity payout | Dividend yield | Dividend growth is a payout-policy measure. |
-| `debtlt_gr3a` | Debt issuance | Liability growth | A debt measure; total liabilities include debt. |
 
 ### Statistics at release
 
@@ -144,12 +153,12 @@ run of 3 October 2026 (commit 666e896, WRDS data downloaded that day):
 - Subtheme pairs kept apart although their averages correlate 0.70 or more in absolute
   value: Firm size and Liquidity, Firm size and Share price, Share price and Liquidity,
   Cash flow yield and Cash flow profitability, Earnings yield and Equity duration,
-  Income profitability and Profit margins, Income profitability and Quality, Volatility and Lottery,
-  Book leverage and Market leverage. Each pair measures a different economic idea.
+  Income profitability and Profit margins, Income profitability and Quality, Volatility and
+  Lottery, Book leverage and Market leverage. Each pair measures a different economic idea.
 - As a one-off check, the subthemes were compared with a purely statistical grouping
   (Ward clustering into 58 groups on one minus the absolute rank correlation, plus one
   group for characteristics that correlate weakly with all others). Adjusted Rand
-  index: 0.47. The statistical clustering is not part of this repository.
+  index: 0.48. The statistical clustering is not part of this repository.
 
 ## v0 (2023)
 

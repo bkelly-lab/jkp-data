@@ -34,10 +34,12 @@ WRDS, CRSP, Compustat, or IBES vendor data:
   (e.g., "Low Leverage", "Investment", "Size", "Low Risk"). Authored by
   Jensen, Kelly, and Pedersen.
 - **`themes/themes.csv`** and **`themes/theme_descriptions.csv`** — The
-  current version of the economic themes: each characteristic's theme and
-  subtheme, and a description of each. Earlier versions are kept in
+  current version of the economic themes: each characteristic's theme,
+  subtheme and signs, and a description and factor name for each theme and
+  subtheme. Earlier versions are kept in
   `themes/superseded_themes/`. Authored by Jensen, Kelly, and Pedersen. See
-  `scripts/themes/` in the repository for the versioning rules and changelog.
+  `scripts/themes/` in the repository for the principles, versioning rules and
+  changelog.
 - **`country_classification.xlsx`** — Country-to-region mapping used to
   group outputs. Authored by Jensen, Kelly, and Pedersen.
 - **`factor_details.xlsx`** — Metadata describing factor portfolios
