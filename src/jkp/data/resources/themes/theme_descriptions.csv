@@ -2,19 +2,19 @@ level,name,factor_name,theme,description,version
 theme,Value,Value,Value,Price relative to fundamentals.,v1.0
 subtheme,Cheapness,Cheapness,Value,"Book equity, assets and sales relative to market value.",v1.0
 subtheme,Earnings yield,Earnings yield,Value,"Earnings, gross profit and intrinsic value relative to price.",v1.0
-subtheme,Cash flow yield,Cash flow yield,Value,Operating and free cash flow relative to market value.,v1.0
+subtheme,Cash flow yield,Cash flow yield,Value,"Operating cash flow, free cash flow and cash-based operating profit relative to market value.",v1.0
 subtheme,Dividend yield,Dividend yield,Value,"Dividends relative to price, assets and earnings.",v1.0
 subtheme,Equity duration,Short duration,Value,How far in the future expected cash flows arrive.,v1.0
 theme,Profitability,Profitability,Profitability,How profitable the firm is.,v1.0
-subtheme,Income profitability,Income profitability,Profitability,"Profits relative to assets, book equity or PP&E.",v1.0
+subtheme,Income profitability,Income profitability,Profitability,"Earnings-based profits relative to assets, equity, liabilities or PP&E.",v1.0
 subtheme,Profit margins,Profit margins,Profitability,Profits relative to sales or employees.,v1.0
-subtheme,Cash flow profitability,Cash flow profitability,Profitability,"Cash flow relative to assets, equity, sales or debt.",v1.0
+subtheme,Cash flow profitability,Cash flow profitability,Profitability,"Cash flow and cash-based operating profit relative to assets, equity, sales or debt.",v1.0
 theme,Fundamental momentum,Fundamental momentum,Fundamental momentum,Recent improvement in fundamentals.,v1.0
 subtheme,Profit growth,Profit growth,Fundamental momentum,Changes in profits and profitability over one to five years.,v1.0
 subtheme,Earnings surprise,Earnings surprise,Fundamental momentum,Unexpected quarterly earnings and sales.,v1.0
 theme,Earnings quality,Earnings quality,Earnings quality,How reliable reported earnings are.,v1.0
 subtheme,Accruals,Low accruals,Earnings quality,Gap between accounting earnings and cash flow.,v1.0
-subtheme,Special items,Special items,Earnings quality,Non-recurring and extraordinary items.,v1.0
+subtheme,Special items,Special items,Earnings quality,"Non-recurring and extraordinary items, which are mostly one-off charges.",v1.0
 subtheme,Earnings persistence,Earnings persistence,Earnings quality,How strongly earnings carry over from year to year.,v1.0
 subtheme,Tax burden,Tax burden,Earnings quality,Taxes relative to income.,v1.0
 theme,Investment,Low investment,Investment,Growth of the balance sheet and operations.,v1.0
@@ -31,8 +31,8 @@ subtheme,R&D intensity,R&D intensity,Intangibles,"R&D spending relative to asset
 subtheme,Advertising intensity,Advertising intensity,Intangibles,Advertising spending relative to sales.,v1.0
 theme,Operating efficiency,Operating efficiency,Operating efficiency,How the firm uses its assets and labor.,v1.0
 subtheme,Asset turnover,Asset turnover,Operating efficiency,Sales and operating costs relative to assets.,v1.0
-subtheme,Working capital efficiency,Working capital efficiency,Operating efficiency,"Inventory, receivable and payable days.",v1.0
-subtheme,Capital intensity,Low capital intensity,Operating efficiency,"PP&E and capex relative to assets, price or profit.",v1.0
+subtheme,Working capital efficiency,Working capital efficiency,Operating efficiency,"How quickly inventory, receivables and payables turn over.",v1.0
+subtheme,Capital intensity,Low capital intensity,Operating efficiency,"PP&E and capex relative to assets, price, profit or cash flow.",v1.0
 subtheme,Labor intensity,Low labor intensity,Operating efficiency,Staff costs and sales per employee.,v1.0
 subtheme,Labor productivity growth,Labor productivity growth,Operating efficiency,Growth in sales per employee.,v1.0
 theme,Financing,Low financing,Financing,Net flows to and from investors.,v1.0
@@ -44,7 +44,7 @@ subtheme,External financing,Low external financing,Financing,Total net financing
 theme,Leverage,Low leverage,Leverage,Capital structure and financial strength.,v1.0
 subtheme,Book leverage,Low book leverage,Leverage,"Debt relative to book assets, book equity or book enterprise value.",v1.0
 subtheme,Market leverage,Low market leverage,Leverage,Debt relative to market equity or market enterprise value.,v1.0
-subtheme,Debt maturity,Debt maturity,Leverage,Short-term versus long-term debt.,v1.0
+subtheme,Debt maturity,Debt maturity,Leverage,The share of debt and liabilities that is long-term.,v1.0
 subtheme,Cost of debt,Low cost of debt,Leverage,Interest expense relative to debt.,v1.0
 subtheme,Preferred stock,Low preferred stock,Leverage,Preferred stock outstanding and its growth.,v1.0
 subtheme,Balance sheet liquidity,Balance sheet liquidity,Leverage,Cash and current assets relative to liabilities or assets.,v1.0
@@ -60,12 +60,12 @@ theme,Size,Small,Size,"Firm size, age and trading activity.",v1.0
 subtheme,Firm size,Small firms,Size,"Market value, book value, assets and sales.",v1.0
 subtheme,Firm age,Young,Size,Months since the firm first appears in the data.,v1.0
 subtheme,Share price,Low share price,Size,Share price level.,v1.0
-subtheme,Liquidity,Illiquidity,Size,"Trading volume, illiquidity and bid-ask spreads.",v1.0
+subtheme,Liquidity,Illiquidity,Size,"How easily the stock trades: trading volume, price impact and bid-ask spreads.",v1.0
 subtheme,Share turnover,Low share turnover,Size,Share turnover and days without trading.,v1.0
 theme,Short-term returns,Short-term reversal,Short-term returns,Last month's return.,v1.0
 subtheme,Short-term returns,Short-term reversal,Short-term returns,Last month's return.,v1.0
 theme,Medium-term returns,Momentum,Medium-term returns,Returns over the past two months to two years.,v1.0
-subtheme,Returns 2-6,Momentum 2-6,Medium-term returns,"Returns over windows of up to six months, mostly skipping the last month.",v1.0
+subtheme,Returns 2-6,Momentum 2-6,Medium-term returns,"Returns over windows of two to six months, with or without the last month.",v1.0
 subtheme,Returns 7-12,Momentum 7-12,Medium-term returns,Returns over months 7-12.,v1.0
 subtheme,Returns 2-12,Momentum 2-12,Medium-term returns,"Returns over months 2-12 and similar windows of 9 to 24 months, and the 52-week high.",v1.0
 theme,Long-term returns,Long-term reversal,Long-term returns,"Returns over multi-year windows, up to 20 years back.",v1.0

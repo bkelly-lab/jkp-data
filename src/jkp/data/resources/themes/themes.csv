@@ -38,9 +38,6 @@ op_at,Profitability,Income profitability,1,1,1,v1.0
 op_atl1,Profitability,Income profitability,1,1,1,v1.0
 ope_be,Profitability,Income profitability,1,1,1,v1.0
 ope_bel1,Profitability,Income profitability,1,1,1,v1.0
-cop_at,Profitability,Income profitability,1,1,1,v1.0
-cop_atl1,Profitability,Income profitability,1,1,1,v1.0
-cop_bev,Profitability,Income profitability,1,1,1,v1.0
 ebit_at,Profitability,Income profitability,1,1,1,v1.0
 ebit_bev,Profitability,Income profitability,1,1,1,v1.0
 ebitda_at,Profitability,Income profitability,1,1,1,v1.0
@@ -56,23 +53,25 @@ fi_bev,Profitability,Income profitability,1,1,1,v1.0
 ebit_int,Profitability,Income profitability,1,1,1,v1.0
 ebitda_debt,Profitability,Income profitability,1,1,1,v1.0
 ebitda_ppen,Profitability,Income profitability,1,1,1,v1.0
+profit_cl,Profitability,Income profitability,1,1,1,v1.0
 gp_sale,Profitability,Profit margins,1,1,1,v1.0
 ebitda_sale,Profitability,Profit margins,1,1,1,v1.0
 ebit_sale,Profitability,Profit margins,1,1,1,v1.0
 pi_sale,Profitability,Profit margins,1,1,1,v1.0
 ni_sale,Profitability,Profit margins,1,1,1,v1.0
 nix_sale,Profitability,Profit margins,1,1,1,v1.0
-profit_cl,Profitability,Profit margins,1,1,1,v1.0
 ni_emp,Profitability,Profit margins,1,1,1,v1.0
 ocf_at,Profitability,Cash flow profitability,1,1,1,v1.0
 ocf_be,Profitability,Cash flow profitability,1,1,1,v1.0
 fcf_be,Profitability,Cash flow profitability,1,1,1,v1.0
-fcf_ocf,Profitability,Cash flow profitability,1,1,1,v1.0
 fcf_ppen,Profitability,Cash flow profitability,1,1,1,v1.0
 ocf_cl,Profitability,Cash flow profitability,1,1,1,v1.0
 fcf_sale,Profitability,Cash flow profitability,1,1,1,v1.0
 ocf_debt,Profitability,Cash flow profitability,1,1,1,v1.0
 ocf_sale,Profitability,Cash flow profitability,1,1,1,v1.0
+cop_at,Profitability,Cash flow profitability,1,1,1,v1.0
+cop_atl1,Profitability,Cash flow profitability,1,1,1,v1.0
+cop_bev,Profitability,Cash flow profitability,1,1,1,v1.0
 gp_gr1a,Fundamental momentum,Profit growth,1,1,1,v1.0
 ebitda_gr1a,Fundamental momentum,Profit growth,1,1,1,v1.0
 ebit_gr1a,Fundamental momentum,Profit growth,1,1,1,v1.0
@@ -208,6 +207,7 @@ capx_at,Operating efficiency,Capital intensity,1,-1,1,v1.0
 ppen_mev,Operating efficiency,Capital intensity,1,-1,1,v1.0
 gp_ppen,Operating efficiency,Capital intensity,-1,-1,1,v1.0
 lt_ppen,Operating efficiency,Capital intensity,-1,-1,1,v1.0
+fcf_ocf,Operating efficiency,Capital intensity,-1,-1,1,v1.0
 staff_sale,Operating efficiency,Labor intensity,1,-1,1,v1.0
 sale_emp,Operating efficiency,Labor intensity,-1,-1,1,v1.0
 sale_emp_gr1,Operating efficiency,Labor productivity growth,1,1,1,v1.0

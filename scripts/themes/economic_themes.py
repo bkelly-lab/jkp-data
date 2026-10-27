@@ -4,14 +4,14 @@ Description:
     Groups characteristics by economic meaning into subthemes, and subthemes into broad
     themes. Each characteristic belongs to exactly one subtheme and each subtheme to
     exactly one theme. Three signs, one per level: subtheme_sign (per characteristic)
-    points the characteristic toward its subtheme's name, theme_sign (per subtheme)
-    points the subtheme toward its theme's name, and factor_sign (per theme) points the
-    theme toward higher returns, the long side of its factor. Each theme and subtheme also
-    has a factor name, the usual name of its long-short factor. See README.md in this folder for the versioning rules and
-    CHANGELOG_THEMES.md for what changed in each version.
+    points the characteristic toward its subtheme's name, theme_sign (per subtheme) points
+    the subtheme toward its theme's name, and factor_sign (per theme) points the theme
+    toward higher returns. Names describe what a high value measures; factor names
+    describe what the long-short factor buys. See README.md in this folder for the
+    principles and versioning rules, and CHANGELOG_THEMES.md for what changed in each
+    version.
 Steps:
-    1) Check the grouping: no characteristic in two subthemes, every subtheme in exactly
-       one theme, and a description for every theme and subtheme.
+    1) Check the grouping, the signs, the descriptions and the naming rules.
     2) Write the mapping and the descriptions, both tagged with VERSION.
 Output:
     src/jkp/data/resources/themes/themes.csv (characteristic, theme, subtheme, subtheme_sign,
@@ -130,9 +130,6 @@ SUBTHEMES: dict[str, list[str]] = {
         "op_atl1",
         "ope_be",
         "ope_bel1",
-        "cop_at",
-        "cop_atl1",
-        "cop_bev",
         "ebit_at",
         "ebit_bev",
         "ebitda_at",
@@ -148,6 +145,7 @@ SUBTHEMES: dict[str, list[str]] = {
         "ebit_int",
         "ebitda_debt",
         "ebitda_ppen",
+        "profit_cl",
     ],
     "Profit margins": [
         "gp_sale",
@@ -156,19 +154,20 @@ SUBTHEMES: dict[str, list[str]] = {
         "pi_sale",
         "ni_sale",
         "nix_sale",
-        "profit_cl",
         "ni_emp",
     ],
     "Cash flow profitability": [
         "ocf_at",
         "ocf_be",
         "fcf_be",
-        "fcf_ocf",
         "fcf_ppen",
         "ocf_cl",
         "fcf_sale",
         "ocf_debt",
         "ocf_sale",
+        "cop_at",
+        "cop_atl1",
+        "cop_bev",
     ],
     # Fundamental momentum
     "Profit growth": [
@@ -293,7 +292,7 @@ SUBTHEMES: dict[str, list[str]] = {
         "ap_turnover",
         "inv_act",
     ],
-    "Capital intensity": ["capx_at", "ppen_mev", "gp_ppen", "lt_ppen"],
+    "Capital intensity": ["capx_at", "ppen_mev", "gp_ppen", "lt_ppen", "fcf_ocf"],
     "Labor intensity": ["staff_sale", "sale_emp"],
     "Labor productivity growth": ["sale_emp_gr1"],
     # Financing
@@ -448,6 +447,8 @@ SUBTHEMES: dict[str, list[str]] = {
         "bidaskhl_21d",
     ],
     "Share turnover": ["turnover_126d", "zero_trades_21d", "zero_trades_126d", "zero_trades_252d"],
+    # Short-term returns
+    "Short-term returns": ["ret_1_0"],
     # Medium-term returns
     "Returns 2-6": ["ret_2_0", "ret_3_0", "ret_3_1", "ret_6_1", "ret_6_0", "resff3_6_1"],
     "Returns 7-12": ["ret_12_7"],
@@ -462,8 +463,6 @@ SUBTHEMES: dict[str, list[str]] = {
         "prc_highprc_252d",
         "seas_1_1na",
     ],
-    # Short-term returns
-    "Short-term returns": ["ret_1_0"],
     # Long-term returns
     "Long-term returns": [
         "ret_60_12",
@@ -497,9 +496,10 @@ NEGATIVE_IN_SUBTHEME: set[str] = {
     # Balance sheet liquidity
     "sale_nwc",
     "rec_act",
-    # Capital intensity
+    # Capital intensity (free cash flow to operating cash flow is high when capex is low)
     "gp_ppen",
     "lt_ppen",
+    "fcf_ocf",
     # Debt issuance
     "nfna_gr1a",
     "nfna_gr3a",
@@ -601,16 +601,16 @@ THEME_DESCRIPTIONS: dict[str, str] = {
 SUBTHEME_DESCRIPTIONS: dict[str, str] = {
     "Cheapness": "Book equity, assets and sales relative to market value.",
     "Earnings yield": "Earnings, gross profit and intrinsic value relative to price.",
-    "Cash flow yield": "Operating and free cash flow relative to market value.",
+    "Cash flow yield": "Operating cash flow, free cash flow and cash-based operating profit relative to market value.",
     "Dividend yield": "Dividends relative to price, assets and earnings.",
     "Equity duration": "How far in the future expected cash flows arrive.",
-    "Income profitability": "Profits relative to assets, book equity or PP&E.",
+    "Income profitability": "Earnings-based profits relative to assets, equity, liabilities or PP&E.",
     "Profit margins": "Profits relative to sales or employees.",
-    "Cash flow profitability": "Cash flow relative to assets, equity, sales or debt.",
+    "Cash flow profitability": "Cash flow and cash-based operating profit relative to assets, equity, sales or debt.",
     "Profit growth": "Changes in profits and profitability over one to five years.",
     "Earnings surprise": "Unexpected quarterly earnings and sales.",
     "Accruals": "Gap between accounting earnings and cash flow.",
-    "Special items": "Non-recurring and extraordinary items.",
+    "Special items": "Non-recurring and extraordinary items, which are mostly one-off charges.",
     "Earnings persistence": "How strongly earnings carry over from year to year.",
     "Tax burden": "Taxes relative to income.",
     "Asset growth": "Growth in total, operating and long-lived assets, and the Stambaugh–Yuan management mispricing score.",
@@ -624,8 +624,8 @@ SUBTHEME_DESCRIPTIONS: dict[str, str] = {
     "R&D intensity": "R&D spending relative to assets, sales or price.",
     "Advertising intensity": "Advertising spending relative to sales.",
     "Asset turnover": "Sales and operating costs relative to assets.",
-    "Working capital efficiency": "Inventory, receivable and payable days.",
-    "Capital intensity": "PP&E and capex relative to assets, price or profit.",
+    "Working capital efficiency": "How quickly inventory, receivables and payables turn over.",
+    "Capital intensity": "PP&E and capex relative to assets, price, profit or cash flow.",
     "Labor intensity": "Staff costs and sales per employee.",
     "Labor productivity growth": "Growth in sales per employee.",
     "Equity issuance": "Net share issuance, from market and accounting data.",
@@ -635,7 +635,7 @@ SUBTHEME_DESCRIPTIONS: dict[str, str] = {
     "External financing": "Total net financing from debt and equity.",
     "Book leverage": "Debt relative to book assets, book equity or book enterprise value.",
     "Market leverage": "Debt relative to market equity or market enterprise value.",
-    "Debt maturity": "Short-term versus long-term debt.",
+    "Debt maturity": "The share of debt and liabilities that is long-term.",
     "Cost of debt": "Interest expense relative to debt.",
     "Preferred stock": "Preferred stock outstanding and its growth.",
     "Balance sheet liquidity": "Cash and current assets relative to liabilities or assets.",
@@ -649,9 +649,9 @@ SUBTHEME_DESCRIPTIONS: dict[str, str] = {
     "Firm size": "Market value, book value, assets and sales.",
     "Firm age": "Months since the firm first appears in the data.",
     "Share price": "Share price level.",
-    "Liquidity": "Trading volume, illiquidity and bid-ask spreads.",
+    "Liquidity": "How easily the stock trades: trading volume, price impact and bid-ask spreads.",
     "Share turnover": "Share turnover and days without trading.",
-    "Returns 2-6": "Returns over windows of up to six months, mostly skipping the last month.",
+    "Returns 2-6": "Returns over windows of two to six months, with or without the last month.",
     "Returns 7-12": "Returns over months 7-12.",
     "Returns 2-12": "Returns over months 2-12 and similar windows of 9 to 24 months, and the 52-week high.",
     "Short-term returns": "Last month's return.",
@@ -672,16 +672,16 @@ FACTOR_NAMES: dict[str, str] = {
     "Earnings volatility": "Stable earnings",
     "Short-term returns": "Short-term reversal",
     "Medium-term returns": "Momentum",
-    "Returns 2-12": "Momentum 2-12",
     "Returns 2-6": "Momentum 2-6",
     "Returns 7-12": "Momentum 7-12",
+    "Returns 2-12": "Momentum 2-12",
     "Long-term returns": "Long-term reversal",
     "Seasonal returns": "Seasonality",
 }
 
 
 def validate() -> None:
-    """Check that the grouping is a two-level partition with a description for every group."""
+    """Check the grouping (a two-level partition), the signs, the descriptions and the names."""
     listed = [s for subs in THEMES.values() for s in subs]
     assert sorted(listed) == sorted(SUBTHEMES), "each subtheme must be under exactly one theme"
     members = [c for chars in SUBTHEMES.values() for c in chars]
@@ -693,6 +693,16 @@ def validate() -> None:
     assert (THEMES.keys() | SUBTHEMES.keys()) >= FACTOR_NAMES.keys(), (
         "unknown names in FACTOR_NAMES"
     )
+    names = THEMES.keys() | SUBTHEMES.keys()
+    assert not [n for n in names if " & " in n or "(" in n], "names use '&' or parentheses"
+    sub_factors = [factor_name("subtheme", s, t) for t, subs in THEMES.items() for s in subs]
+    assert len(sub_factors) == len(set(sub_factors)), "two subthemes share a factor name"
+    for theme, subs in THEMES.items():
+        if len(subs) > 1:
+            assert theme not in subs, f"{theme}: a subtheme shares the theme's name"
+            assert factor_name("theme", theme, theme) not in {
+                factor_name("subtheme", s, theme) for s in subs
+            }, f"{theme}: a subtheme factor shares the theme factor's name"
     assert THEME_DESCRIPTIONS.keys() == THEMES.keys(), "theme descriptions do not match"
     assert SUBTHEME_DESCRIPTIONS.keys() == SUBTHEMES.keys(), "subtheme descriptions do not match"
 
