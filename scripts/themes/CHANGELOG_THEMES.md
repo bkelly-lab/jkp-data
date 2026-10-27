@@ -125,7 +125,7 @@ The factor portfolios produced by `jkp portfolio` still use the published direct
 - **Fundamental momentum** is the theme for earnings surprises and profit growth, the usual
   meaning of the term.
 - **Operating costs** over assets (Novy-Marx's operating leverage) stay in Asset turnover;
-  they correlate 0.87 with asset turnover.
+  they correlate 0.86 with asset turnover.
 
 ### Exceptions kept for economic reasons
 
@@ -138,7 +138,7 @@ These characteristics fit another subtheme clearly better in the data (by at lea
 | `div_gr3a` | Equity payout | Dividend yield | Dividend growth is a payout-policy measure. |
 | `debtlt_gr3a` | Debt issuance | Liability growth | A debt measure; total liabilities include debt. |
 | `cl_lt` | Debt maturity | Book leverage | Measures the maturity of liabilities. |
-| `corr_1260d` | Beta | Liquidity | A component of beta; it co-moves with size in the data. |
+| `corr_1260d` | Beta | Liquidity | A component of beta; in the data it moves with size and liquidity. |
 | `bidaskhl_21d` | Liquidity | Volatility | A spread estimate; volatile, low-priced stocks have wide spreads. |
 | `seas_1_1an` | Seasonal returns | Returns 7-12 | A same-month return; its overlap with months 7-12 is mechanical. |
 | `mispricing_perf` | Quality | Income profitability | It combines profitability with safety and momentum, as quality scores do. |

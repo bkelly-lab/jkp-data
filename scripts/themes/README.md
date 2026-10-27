@@ -96,7 +96,8 @@ version is never edited.
 
 - **Minor** (v1.0 to v1.1): characteristics are added to existing subthemes or moved between
   them, a sign is changed, or descriptions are reworded.
-- **Major** (v1.x to v2.0): a theme or subtheme is added, removed, renamed, split or merged.
+- **Major** (v1.x to v2.0): a theme or subtheme is added, removed, renamed (including its factor
+  name), split or merged.
 
 A minor version needs one co-author's approval on the pull request; a major version needs all
 co-authors.
