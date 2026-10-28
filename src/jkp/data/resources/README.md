@@ -33,6 +33,13 @@ WRDS, CRSP, Compustat, or IBES vendor data:
 - **`cluster_labels.csv`** — Maps firm characteristics to thematic clusters
   (e.g., "Low Leverage", "Investment", "Size", "Low Risk"). Authored by
   Jensen, Kelly, and Pedersen.
+- **`themes/themes.csv`** and **`themes/theme_descriptions.csv`** — The
+  current version of the economic themes: each characteristic's theme,
+  subtheme and signs, a description for each theme and subtheme, and notes
+  explaining signs and placements that may surprise. Earlier versions are kept in
+  `themes/superseded_themes/`. Authored by Jensen, Kelly, and Pedersen. See
+  `scripts/themes/` in the repository for the principles, versioning rules and
+  changelog.
 - **`country_classification.xlsx`** — Country-to-region mapping used to
   group outputs. Authored by Jensen, Kelly, and Pedersen.
 - **`factor_details.xlsx`** — Metadata describing factor portfolios
