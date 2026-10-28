@@ -84,12 +84,12 @@ directions.
 - **Naming.** The broad groups are called themes, as in the original JKP paper, and the finer
   groups subthemes. Each group has one name, the name of its factor in the literature. We
   dropped separate names for the characteristic and the factor, because two names for one group
-  are confusing. Names have no "&" or parentheses. A group that needed "&" was split. The
-  theme with leverage, debt terms, liquidity and distress is called Financial strength,
-  because only two of its eight subthemes are leverage ratios. So the v0 name Low Leverage is
-  no longer a theme name. Only 5 of the 11 v0 Low Leverage characteristics are in Financial
-  strength. The others moved to Intangibles, Low risk, Size and Value. Of the 41
-  characteristics in Financial strength, 31 were not in v0.
+  are confusing. Names don't join two groups with "&", and have no parentheses. A group that
+  needed "&" was split. The theme with leverage, debt terms, liquidity and distress is called
+  Financial strength, because only two of its eight subthemes are leverage ratios. So the v0
+  name Low Leverage is no longer a theme name. Only 5 of the 11 v0 Low Leverage characteristics
+  are in Financial strength. The others moved to Intangibles, Low risk, Size and Value. Of the
+  41 characteristics in Financial strength, 31 were not in v0.
 - **Past returns.** Momentum is split by window: months 2-6 (Momentum 2-6), months 7-12
   (Momentum 7-12), and months 2-12 together with similar windows of 9 to 24 months and the
   52-week high (Momentum 2-12). Returns over months 2-6 and 7-12 correlate only 0.07. Last month

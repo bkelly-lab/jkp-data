@@ -13,8 +13,8 @@ theme,Fundamental momentum,Fundamental momentum,Recent improvement in fundamenta
 subtheme,Profit growth,Fundamental momentum,Changes in profits and profitability over one to five years.,,v1.0
 subtheme,Earnings surprise,Fundamental momentum,Unexpected quarterly earnings and sales.,,v1.0
 theme,Earnings quality,Earnings quality,How reliable reported earnings are.,,v1.0
-subtheme,Accruals,Earnings quality,Gap between accounting earnings and cash flow.,,v1.0
-subtheme,Special items,Earnings quality,"Non-recurring and extraordinary items, which are mostly one-off charges.",,v1.0
+subtheme,Accruals,Earnings quality,Gap between accounting earnings and cash flow.,High accruals mean lower earnings quality.,v1.0
+subtheme,Special items,Earnings quality,"Non-recurring and extraordinary items, which are mostly one-off charges.","Special items are mostly charges, so a high value means fewer charges and higher earnings quality.",v1.0
 subtheme,Earnings persistence,Earnings quality,How strongly earnings carry over from year to year.,,v1.0
 subtheme,Tax burden,Earnings quality,Taxes relative to income.,,v1.0
 theme,Investment,Investment,Growth of the balance sheet and operations.,,v1.0
@@ -33,7 +33,7 @@ theme,Operating efficiency,Operating efficiency,How the firm uses its assets and
 subtheme,Asset turnover,Operating efficiency,Sales and operating costs relative to assets.,,v1.0
 subtheme,Working capital efficiency,Operating efficiency,"How quickly inventory, receivables and payables turn over.",,v1.0
 subtheme,Capital intensity,Operating efficiency,"PP&E and capex relative to assets, price, profit or cash flow.",More input per unit of output.,v1.0
-subtheme,Labor intensity,Operating efficiency,Staff costs and sales per employee.,,v1.0
+subtheme,Labor intensity,Operating efficiency,Staff costs and sales per employee.,More input per unit of output.,v1.0
 subtheme,Labor productivity growth,Operating efficiency,Growth in sales per employee.,,v1.0
 theme,Issuance,Issuance,Net capital raised from shareholders and creditors.,,v1.0
 subtheme,Equity issuance,Issuance,"Net share issuance, from market and accounting data.",,v1.0

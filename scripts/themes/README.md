@@ -66,8 +66,8 @@ value of the Illiquidity characteristic means an illiquid stock, and the Illiqui
 buys illiquid stocks. A high value of the Size characteristic means a large firm, and the Size
 factor buys small firms.
 
-Names have no "&" or parentheses. A subtheme has its theme's name only if it is the theme's
-only subtheme. `tests/unit/test_themes.py` checks these rules.
+Names don't join two groups with "&", and have no parentheses. A subtheme has its theme's name
+only if it is the theme's only subtheme. `tests/unit/test_themes.py` checks these rules.
 
 ## Grouping principles
 
