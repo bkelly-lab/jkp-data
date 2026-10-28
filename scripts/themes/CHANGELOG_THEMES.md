@@ -11,7 +11,7 @@ Changes to the economic themes, newest first. See [README.md](README.md) for the
 - Short codes for themes and subthemes (for example, three letters such as VAL or MOM) for
   regression tables and figures.
 
-## v1.0 (unreleased)
+## v1.0 (28-10-2026)
 
 A new grouping by economic meaning. It replaces the v0 themes, which were derived from
 statistics alone. It covers 402 characteristics (v0: 153) in 59 subthemes and 16 themes. The
