@@ -25,12 +25,12 @@ Multiplying a characteristic by its signs changes what a high value means:
 | `subtheme_sign × theme_sign` | more of the theme |
 | `subtheme_sign × theme_sign × factor_sign` | higher returns in the literature: the side the factor buys |
 
-Example: `ami_126d`, the Amihud illiquidity measure, in subtheme Liquidity and theme Size.
+Example: `ami_126d`, the Amihud illiquidity measure, in subtheme Illiquidity and theme Size.
 
 | Sign | Value | Why |
 |---|---|---|
-| `subtheme_sign` | −1 | a high `ami_126d` means low liquidity |
-| `theme_sign` | +1 | liquid stocks are large |
+| `subtheme_sign` | +1 | a high `ami_126d` means an illiquid stock |
+| `theme_sign` | −1 | illiquid stocks are small |
 | `factor_sign` | −1 | small stocks earn more |
 | Product | +1 | the factor buys stocks with high `ami_126d`: illiquid stocks |
 
@@ -49,27 +49,22 @@ level there are two objects:
   `factor_sign`, for a subtheme characteristic by `theme_sign × factor_sign`, and for an
   individual characteristic by `subtheme_sign × theme_sign × factor_sign`.
 
-Each object has its own name:
+Both objects share one name: the name the asset pricing literature uses for the factor, such
+as Value, Investment or Momentum. A high value of the characteristic means more of what the
+name says, and the signs give the side the factor buys: as in Fama and French, the Size factor
+buys small firms and the Investment factor buys firms that invest little. Most names say what
+the factor sorts on. Four also state the side, because the literature names these factors
+that way: Low risk, Low leverage, Short-term reversal and Long-term reversal. A high value of
+their characteristics means low risk, low leverage or a low past return.
 
-- **The name** (`theme`, `subtheme`) says what a high value of the characteristic measures, so
-  it reads directly in a regression. For example, suppose you regress future returns on the
-  Short-term returns characteristic and the coefficient is negative. That means stocks with
-  high returns last month tend to have lower returns next month.
-- **The factor name** (`factor_name`) says which stocks the factor buys. It is the name itself
-  when the factor buys high values, and "Low" plus the name when it buys low values (Low risk,
-  Low asset growth). The only exceptions are established names from the literature (Momentum,
-  Short-term reversal, Long-term reversal and Seasonality, plus momentum windows such as
-  Momentum 2-6) and plain antonyms that read better (Small, Small firms, Young, Illiquidity,
-  Short duration and Stable earnings).
-
-For example, `ami_126d` belongs to the subtheme Liquidity, in the theme Size. A high value of
-the Liquidity characteristic means a liquid stock, and its factor, Illiquidity, buys illiquid
-stocks. A high value of the Size characteristic means a large firm, and its factor, Small, buys
-small firms. In short: names describe what is measured; factor names describe what is bought.
+For example, `ami_126d` belongs to the subtheme Illiquidity, in the theme Size. A high value of
+the Illiquidity characteristic means an illiquid stock, and the Illiquidity factor buys
+illiquid stocks. A high value of the Size characteristic means a large firm, and the Size
+factor buys small firms.
 
 Names are plain words or phrases, without "&" or parentheses. A subtheme shares its theme's
-name, and its factor the theme factor's name, only when it is the theme's only subtheme.
-`economic_themes.py` checks these rules every time it runs.
+name only when it is the theme's only subtheme. `economic_themes.py` checks these rules every
+time it runs.
 
 ## Grouping principles
 
@@ -96,8 +91,7 @@ version is never edited.
 
 - **Minor** (v1.0 to v1.1): characteristics are added to existing subthemes or moved between
   them, a sign is changed, or descriptions are reworded.
-- **Major** (v1.x to v2.0): a theme or subtheme is added, removed, renamed (including its factor
-  name), split or merged.
+- **Major** (v1.x to v2.0): a theme or subtheme is added, removed, renamed, split or merged.
 
 A minor version needs one co-author's approval on the pull request; a major version needs all
 co-authors.

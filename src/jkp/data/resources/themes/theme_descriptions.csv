@@ -1,76 +1,76 @@
-level,name,factor_name,theme,description,version
-theme,Value,Value,Value,Fundamentals relative to price.,v1.0
-subtheme,Cheapness,Cheapness,Value,"Book equity, assets and sales relative to market value.",v1.0
-subtheme,Earnings yield,Earnings yield,Value,"Earnings, gross profit and intrinsic value relative to price.",v1.0
-subtheme,Cash flow yield,Cash flow yield,Value,"Operating cash flow, free cash flow and cash-based operating profit relative to market value.",v1.0
-subtheme,Dividend yield,Dividend yield,Value,"Dividends relative to price, assets and earnings.",v1.0
-subtheme,Equity duration,Short duration,Value,How far in the future expected cash flows arrive.,v1.0
-theme,Profitability,Profitability,Profitability,How profitable the firm is.,v1.0
-subtheme,Income profitability,Income profitability,Profitability,"Earnings-based profits relative to assets, equity, liabilities or PP&E.",v1.0
-subtheme,Profit margins,Profit margins,Profitability,Profits relative to sales or employees.,v1.0
-subtheme,Cash flow profitability,Cash flow profitability,Profitability,"Cash flow and cash-based operating profit relative to assets, equity, sales or debt.",v1.0
-theme,Fundamental momentum,Fundamental momentum,Fundamental momentum,Recent improvement in fundamentals.,v1.0
-subtheme,Profit growth,Profit growth,Fundamental momentum,Changes in profits and profitability over one to five years.,v1.0
-subtheme,Earnings surprise,Earnings surprise,Fundamental momentum,Unexpected quarterly earnings and sales.,v1.0
-theme,Earnings quality,Earnings quality,Earnings quality,How reliable reported earnings are.,v1.0
-subtheme,Accruals,Low accruals,Earnings quality,Gap between accounting earnings and cash flow.,v1.0
-subtheme,Special items,Special items,Earnings quality,"Non-recurring and extraordinary items, which are mostly one-off charges.",v1.0
-subtheme,Earnings persistence,Earnings persistence,Earnings quality,How strongly earnings carry over from year to year.,v1.0
-subtheme,Tax burden,Tax burden,Earnings quality,Taxes relative to income.,v1.0
-theme,Investment,Low investment,Investment,Growth of the balance sheet and operations.,v1.0
-subtheme,Asset growth,Low asset growth,Investment,"Growth in total, operating and long-lived assets, and the Stambaugh–Yuan management mispricing score.",v1.0
-subtheme,Capex growth,Low capex growth,Investment,Growth in capital expenditure.,v1.0
-subtheme,Working capital growth,Low working capital growth,Investment,"Growth in inventory, receivables and other working capital.",v1.0
-subtheme,Operating payables growth,Low operating payables growth,Investment,"Growth in payables to suppliers, accrued expenses and taxes: liabilities that arise from operations.",v1.0
-subtheme,Book equity growth,Low book equity growth,Investment,Growth in book equity.,v1.0
-subtheme,Long-term investment growth,Low long-term investment growth,Investment,Growth in long-term investments.,v1.0
-subtheme,Financial asset growth,Low financial asset growth,Investment,Growth in short-term investments and financial assets.,v1.0
-subtheme,Operating growth,Low operating growth,Investment,"Growth in sales, costs and employees.",v1.0
-theme,Intangibles,Intangibles,Intangibles,"Spending on intangible capital, such as R&D and advertising.",v1.0
-subtheme,R&D intensity,R&D intensity,Intangibles,"R&D spending relative to assets, sales or price.",v1.0
-subtheme,Advertising intensity,Advertising intensity,Intangibles,Advertising spending relative to sales.,v1.0
-theme,Operating efficiency,Operating efficiency,Operating efficiency,How the firm uses its assets and labor.,v1.0
-subtheme,Asset turnover,Asset turnover,Operating efficiency,Sales and operating costs relative to assets.,v1.0
-subtheme,Working capital efficiency,Working capital efficiency,Operating efficiency,"How quickly inventory, receivables and payables turn over.",v1.0
-subtheme,Capital intensity,Low capital intensity,Operating efficiency,"PP&E and capex relative to assets, price, profit or cash flow.",v1.0
-subtheme,Labor intensity,Low labor intensity,Operating efficiency,Staff costs and sales per employee.,v1.0
-subtheme,Labor productivity growth,Labor productivity growth,Operating efficiency,Growth in sales per employee.,v1.0
-theme,Issuance,Low issuance,Issuance,Net capital raised from shareholders and creditors.,v1.0
-subtheme,Equity issuance,Low equity issuance,Issuance,"Net share issuance, from market and accounting data.",v1.0
-subtheme,Equity payout,Equity payout,Issuance,Buybacks and total payout to shareholders.,v1.0
-subtheme,Debt issuance,Low debt issuance,Issuance,Net issuance and growth of debt.,v1.0
-subtheme,Liability growth,Low liability growth,Issuance,"Growth in total, current and non-current liabilities, including debt.",v1.0
-subtheme,External financing,Low external financing,Issuance,Total net financing from debt and equity.,v1.0
-theme,Leverage,Low leverage,Leverage,Capital structure and financial strength.,v1.0
-subtheme,Book leverage,Low book leverage,Leverage,"Debt relative to book assets, book equity or book enterprise value.",v1.0
-subtheme,Market leverage,Low market leverage,Leverage,Debt relative to market equity or market enterprise value.,v1.0
-subtheme,Debt maturity,Debt maturity,Leverage,The share of debt and liabilities that is long-term.,v1.0
-subtheme,Cost of debt,Low cost of debt,Leverage,Interest expense relative to debt.,v1.0
-subtheme,Preferred stock,Low preferred stock,Leverage,Preferred stock outstanding and its growth.,v1.0
-subtheme,Balance sheet liquidity,Balance sheet liquidity,Leverage,Cash and current assets relative to liabilities or assets.,v1.0
-subtheme,Distress,Low distress,Leverage,Bankruptcy-risk and safety scores.,v1.0
-subtheme,Financial constraints,Low financial constraints,Leverage,Kaplan–Zingales index.,v1.0
-theme,Risk,Low risk,Risk,Return and earnings risk.,v1.0
-subtheme,Volatility,Low volatility,Risk,Total and idiosyncratic return volatility.,v1.0
-subtheme,Lottery,Low lottery,Risk,Largest daily returns over the past month.,v1.0
-subtheme,Beta,Low beta,Risk,Sensitivity to and correlation with the market.,v1.0
-subtheme,Skewness,Low skewness,Risk,Asymmetry of daily returns.,v1.0
-subtheme,Earnings volatility,Stable earnings,Risk,Volatility of earnings and cash flow.,v1.0
-theme,Size,Small,Size,"Firm size, age and trading activity.",v1.0
-subtheme,Firm size,Small firms,Size,"Market value, book value, assets and sales.",v1.0
-subtheme,Firm age,Young,Size,Months since the firm first appears in the data.,v1.0
-subtheme,Share price,Low share price,Size,Share price level.,v1.0
-subtheme,Liquidity,Illiquidity,Size,"How easily the stock trades: trading volume, price impact and bid-ask spreads.",v1.0
-subtheme,Share turnover,Low share turnover,Size,Share turnover and days without trading.,v1.0
-theme,Short-term returns,Short-term reversal,Short-term returns,Last month's return.,v1.0
-subtheme,Short-term returns,Short-term reversal,Short-term returns,Last month's return.,v1.0
-theme,Medium-term returns,Momentum,Medium-term returns,Returns over the past two months to two years.,v1.0
-subtheme,Returns 2-6,Momentum 2-6,Medium-term returns,"Returns over windows of two to six months, with or without the last month.",v1.0
-subtheme,Returns 7-12,Momentum 7-12,Medium-term returns,Returns over months 7-12.,v1.0
-subtheme,Returns 2-12,Momentum 2-12,Medium-term returns,"Returns over months 2-12 and similar windows of 9 to 24 months, and the 52-week high.",v1.0
-theme,Long-term returns,Long-term reversal,Long-term returns,"Returns over multi-year windows, up to 20 years back.",v1.0
-subtheme,Long-term returns,Long-term reversal,Long-term returns,"Returns over multi-year windows, up to 20 years back.",v1.0
-theme,Seasonal returns,Seasonality,Seasonal returns,Returns in the same calendar month in past years.,v1.0
-subtheme,Seasonal returns,Seasonality,Seasonal returns,Past returns in the same calendar month.,v1.0
-theme,Quality,Quality,Quality,Scores that combine several signals of firm quality.,v1.0
-subtheme,Quality,Quality,Quality,"Quality minus junk, the Piotroski F-score and the Stambaugh–Yuan performance mispricing score, which combine profitability, safety, growth and momentum signals.",v1.0
+level,name,theme,description,version
+theme,Value,Value,Fundamentals relative to price.,v1.0
+subtheme,Cheapness,Value,"Book equity, assets and sales relative to market value.",v1.0
+subtheme,Earnings yield,Value,"Earnings, gross profit and intrinsic value relative to price.",v1.0
+subtheme,Cash flow yield,Value,"Operating cash flow, free cash flow and cash-based operating profit relative to market value.",v1.0
+subtheme,Dividend yield,Value,"Dividends relative to price, assets and earnings.",v1.0
+subtheme,Equity duration,Value,How far in the future expected cash flows arrive.,v1.0
+theme,Profitability,Profitability,How profitable the firm is.,v1.0
+subtheme,Income profitability,Profitability,"Earnings-based profits relative to assets, equity, liabilities or PP&E.",v1.0
+subtheme,Profit margins,Profitability,Profits relative to sales or employees.,v1.0
+subtheme,Cash flow profitability,Profitability,"Cash flow and cash-based operating profit relative to assets, equity, sales or debt.",v1.0
+theme,Fundamental momentum,Fundamental momentum,Recent improvement in fundamentals.,v1.0
+subtheme,Profit growth,Fundamental momentum,Changes in profits and profitability over one to five years.,v1.0
+subtheme,Earnings surprise,Fundamental momentum,Unexpected quarterly earnings and sales.,v1.0
+theme,Earnings quality,Earnings quality,How reliable reported earnings are.,v1.0
+subtheme,Accruals,Earnings quality,Gap between accounting earnings and cash flow.,v1.0
+subtheme,Special items,Earnings quality,"Non-recurring and extraordinary items, which are mostly one-off charges.",v1.0
+subtheme,Earnings persistence,Earnings quality,How strongly earnings carry over from year to year.,v1.0
+subtheme,Tax burden,Earnings quality,Taxes relative to income.,v1.0
+theme,Investment,Investment,Growth of the balance sheet and operations.,v1.0
+subtheme,Asset growth,Investment,"Growth in total, operating and long-lived assets, and the Stambaugh–Yuan management mispricing score.",v1.0
+subtheme,Capex growth,Investment,Growth in capital expenditure.,v1.0
+subtheme,Working capital growth,Investment,"Growth in inventory, receivables and other working capital.",v1.0
+subtheme,Operating payables growth,Investment,"Growth in payables to suppliers, accrued expenses and taxes: liabilities that arise from operations.",v1.0
+subtheme,Book equity growth,Investment,Growth in book equity.,v1.0
+subtheme,Long-term investment growth,Investment,Growth in long-term investments.,v1.0
+subtheme,Financial asset growth,Investment,Growth in short-term investments and financial assets.,v1.0
+subtheme,Operating growth,Investment,"Growth in sales, costs and employees.",v1.0
+theme,Intangibles,Intangibles,"Spending on intangible capital, such as R&D and advertising.",v1.0
+subtheme,R&D intensity,Intangibles,"R&D spending relative to assets, sales or price.",v1.0
+subtheme,Advertising intensity,Intangibles,Advertising spending relative to sales.,v1.0
+theme,Operating efficiency,Operating efficiency,How the firm uses its assets and labor.,v1.0
+subtheme,Asset turnover,Operating efficiency,Sales and operating costs relative to assets.,v1.0
+subtheme,Working capital efficiency,Operating efficiency,"How quickly inventory, receivables and payables turn over.",v1.0
+subtheme,Capital intensity,Operating efficiency,"PP&E and capex relative to assets, price, profit or cash flow.",v1.0
+subtheme,Labor intensity,Operating efficiency,Staff costs and sales per employee.,v1.0
+subtheme,Labor productivity growth,Operating efficiency,Growth in sales per employee.,v1.0
+theme,Issuance,Issuance,Net capital raised from shareholders and creditors.,v1.0
+subtheme,Equity issuance,Issuance,"Net share issuance, from market and accounting data.",v1.0
+subtheme,Equity payout,Issuance,Buybacks and total payout to shareholders.,v1.0
+subtheme,Debt issuance,Issuance,Net issuance and growth of debt.,v1.0
+subtheme,Liability growth,Issuance,"Growth in total, current and non-current liabilities, including debt.",v1.0
+subtheme,External financing,Issuance,Total net financing from debt and equity.,v1.0
+theme,Low leverage,Low leverage,Capital structure and financial strength.,v1.0
+subtheme,Book leverage,Low leverage,"Debt relative to book assets, book equity or book enterprise value.",v1.0
+subtheme,Market leverage,Low leverage,Debt relative to market equity or market enterprise value.,v1.0
+subtheme,Debt maturity,Low leverage,The share of debt and liabilities that is long-term.,v1.0
+subtheme,Cost of debt,Low leverage,Interest expense relative to debt.,v1.0
+subtheme,Preferred stock,Low leverage,Preferred stock outstanding and its growth.,v1.0
+subtheme,Balance sheet liquidity,Low leverage,Cash and current assets relative to liabilities or assets.,v1.0
+subtheme,Distress,Low leverage,Bankruptcy-risk and safety scores.,v1.0
+subtheme,Financial constraints,Low leverage,Kaplan–Zingales index.,v1.0
+theme,Low risk,Low risk,Low return and earnings risk.,v1.0
+subtheme,Volatility,Low risk,Total and idiosyncratic return volatility.,v1.0
+subtheme,Lottery,Low risk,Largest daily returns over the past month.,v1.0
+subtheme,Beta,Low risk,Sensitivity to and correlation with the market.,v1.0
+subtheme,Skewness,Low risk,Asymmetry of daily returns.,v1.0
+subtheme,Earnings volatility,Low risk,Volatility of earnings and cash flow.,v1.0
+theme,Size,Size,"Firm size, age and trading activity.",v1.0
+subtheme,Firm size,Size,"Market value, book value, assets and sales.",v1.0
+subtheme,Firm age,Size,Months since the firm first appears in the data.,v1.0
+subtheme,Share price,Size,Share price level.,v1.0
+subtheme,Illiquidity,Size,"How hard the stock is to trade: price impact, bid-ask spreads and low trading volume.",v1.0
+subtheme,Share turnover,Size,Share turnover and days without trading.,v1.0
+theme,Short-term reversal,Short-term reversal,"Last month's return, with the sign reversed.",v1.0
+subtheme,Short-term reversal,Short-term reversal,"Last month's return, with the sign reversed.",v1.0
+theme,Momentum,Momentum,Returns over the past two months to two years.,v1.0
+subtheme,Momentum 2-6,Momentum,"Returns over windows of two to six months, with or without the last month.",v1.0
+subtheme,Momentum 7-12,Momentum,Returns over months 7-12.,v1.0
+subtheme,Momentum 2-12,Momentum,"Returns over months 2-12 and similar windows of 9 to 24 months, and the 52-week high.",v1.0
+theme,Long-term reversal,Long-term reversal,"Returns over multi-year windows, up to 20 years back, with the sign reversed.",v1.0
+subtheme,Long-term reversal,Long-term reversal,"Returns over multi-year windows, up to 20 years back, with the sign reversed.",v1.0
+theme,Seasonality,Seasonality,Returns in the same calendar month in past years.,v1.0
+subtheme,Seasonality,Seasonality,Past returns in the same calendar month.,v1.0
+theme,Quality,Quality,Scores that combine several signals of firm quality.,v1.0
+subtheme,Quality,Quality,"Quality minus junk, the Piotroski F-score and the Stambaugh–Yuan performance mispricing score, which combine profitability, safety, growth and momentum signals.",v1.0
