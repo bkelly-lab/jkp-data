@@ -34,7 +34,7 @@ def test_grouping_is_a_two_level_partition(themes):
 @pytest.mark.unit
 def test_signs(themes):
     for col in ["subtheme_sign", "theme_sign", "factor_sign"]:
-        assert themes[col].is_in([-1, 1]).all(), f"{col} must be -1 or +1"
+        assert themes[col].is_in([-1, 1]).all(ignore_nulls=False), f"{col} must be -1 or +1"
     bad = not_constant(themes, "theme_sign", within="subtheme")
     assert not bad, f"theme_sign differs within subthemes: {bad}"
     bad = not_constant(themes, "factor_sign", within="theme")
