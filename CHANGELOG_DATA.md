@@ -3,6 +3,10 @@ This change log keeps track of changes to the underlying data set. In brackets, 
 
 This repository ports the original SAS pipeline ([ReplicationCrisis](https://github.com/bkelly-lab/ReplicationCrisis)) to Python using Polars. Entries up to and including 05-03-2025 are from the original change log.
 
+## 28-10-2026
+__Changes__:
+- Set `ni_ar1` to null instead of NaN when the lagged NI/AT does not vary over the regression window, where DuckDB's `regr_slope` returns NaN ([#293](https://github.com/bkelly-lab/jkp-data/issues/293)). This affects 694 stock-months in 10 countries, 48 of them in the US. Polars sorts NaN above every number, so these stocks were placed in the top `ni_ar1` portfolio; they are now left out of the sort. As a safeguard, factor portfolio construction now treats any NaN characteristic value as missing.
+
 ## 15-10-2026
 __Changes__:
 - Nulled rolling daily characteristics over constant or near-dead windows ([#269](https://github.com/bkelly-lab/jkp-data/pull/269)). Return-based characteristics (`rvol_*`, `ivol_capm_*`, `ivol_ff3_*`, `ivol_hxz4_*`, `beta_*`, `betadown_*`, `beta_dimson_*`, `rmax*`, `rskew_*`, `iskew_*`, `coskew_*`, `corr_*`, `ami_*`) are nulled when raw `ret` is constant over the window or zero on at least 90% of its days. The check uses raw `ret` rather than `ret_exc`, whose monthly risk-free steps would otherwise hide constant returns over multi-month windows (`_252d`, `_1260d`). `prc_highprc_*`, `dolvol_var_*` and `turnover_var_*` are nulled only when the adjusted price, dollar volume or turnover is exactly constant over the window. The derived `betabab_1260d` and `rmax5_rvol_21d` become null with their inputs. Residual NaN/inf values are scrubbed in `finish_daily_chars`.

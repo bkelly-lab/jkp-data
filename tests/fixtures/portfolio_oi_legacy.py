@@ -98,6 +98,9 @@ def portfolios(
         .with_columns(pl.min_horizontal(pl.col("me"), pl.col("nyse_p80")).alias("me_cap"))
         .drop("nyse_p80")
         .with_columns([pl.col(c).cast(pl.Float64) for c in cast_cols])
+        # NaN counts as missing: Polars ranks and sorts it above every number,
+        # so it would land in the top portfolio.
+        .with_columns(pl.col(chars).fill_nan(None))
         .filter(
             (pl.col("size_grp").is_not_null())
             & (pl.col("me").is_not_null())

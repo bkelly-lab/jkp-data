@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 import pytest
+from polars.testing import assert_frame_equal
 
 from jkp.data.paths import DataPaths
 from jkp.data.portfolio import portfolios
@@ -174,6 +175,55 @@ class TestPortfoliosCore:
             pf_no_win["ret_ew"].to_numpy(),
             atol=1e-12,
         )
+
+
+class TestNanCharacteristics:
+    """NaN characteristic values are left out of the sort, exactly like nulls."""
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("signals", [False, True])
+    def test_nan_values_give_the_same_portfolios_as_nulls(
+        self, tmp_path: Path, seed: int, signals: bool
+    ):
+        results = []
+        for name, fill in [("null", None), ("nan", float("nan"))]:
+            data_root = tmp_path / name / "processed"
+            char_df, _ = write_synthetic_country(
+                data_root=data_root, excntry="SYN", chars=SYNTHETIC_CHARS, seed=seed
+            )
+            char_df.with_columns(
+                pl.when(pl.int_range(pl.len()) % 7 == 0)
+                .then(pl.lit(fill, pl.Float64))
+                .otherwise(pl.col("char_a"))
+                .alias("char_a")
+            ).write_parquet(data_root / "characteristics" / "SYN.parquet")
+            eoms = char_df["eom"].unique().sort().to_list()
+            nyse_cut, ret_cut, ret_cut_daily = make_cutoffs(eoms)
+            results.append(
+                portfolios(
+                    paths=DataPaths(base_dir=tmp_path / name),
+                    excntry="SYN",
+                    chars=SYNTHETIC_CHARS,
+                    pfs=3,
+                    bps="non_mc",
+                    bp_min_n=10,
+                    nyse_size_cutoffs=nyse_cut,
+                    source=["CRSP", "COMPUSTAT"],
+                    wins_ret=True,
+                    cmp_key=True,
+                    signals=signals,
+                    signals_standardize=signals,
+                    daily_pf=True,
+                    ind_pf=False,
+                    ret_cutoffs=ret_cut,
+                    ret_cutoffs_daily=ret_cut_daily,
+                )
+            )
+        with_null, with_nan = results
+        keys = ["pf_returns", "pf_daily", "cmp"] + (["signals"] if signals else [])
+        for key in keys:
+            assert with_null[key].height > 0
+            assert_frame_equal(with_null[key], with_nan[key], check_row_order=False)
 
 
 class TestPortfoliosDaily:

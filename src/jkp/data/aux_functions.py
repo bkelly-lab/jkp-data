@@ -5695,7 +5695,8 @@ def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min):
         1) Load gvkey,curcd,datadate,ni_x,at_x; create __ni_at=ni_x/at_x (at_x>0).
         2) Keep obs with __ni_at and its 12-month lag; build calendar cohorts by month for N years.
         3) For each (gvkey,curcd,calc_date,grp) with ≥ __min obs, run OLS __ni_at on lag.
-        4) Aggregate to slope (ni_ar1) and residual std (ni_ivol); save.
+        4) Aggregate to slope (ni_ar1) and residual std (ni_ivol); save. ni_ar1 is null when
+           the lagged NI/AT does not vary in the window (regr_slope returns NaN).
 
     Output:
         Writes 'ni_ar_res.parquet' with [gvkey, curcd, datadate, ni_ar1, ni_ivol].
@@ -5796,7 +5797,7 @@ def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min):
       gvkey,
       curcd,
       calc_date as datadate,
-      slope as ni_ar1,
+      CASE WHEN NOT isnan(slope) THEN slope END AS ni_ar1,
       stddev_samp(resid) AS ni_ivol,
     FROM resids
     GROUP BY gvkey, curcd, calc_grp, calc_date, slope
@@ -10227,6 +10228,9 @@ def portfolios(
         .with_columns(pl.min_horizontal(pl.col("me"), pl.col("nyse_p80")).alias("me_cap"))
         .drop("nyse_p80")
         .with_columns([pl.col(c).cast(pl.Float64) for c in cast_cols])
+        # NaN counts as missing: Polars ranks and sorts it above every number,
+        # so it would land in the top portfolio.
+        .with_columns(pl.col(chars).fill_nan(None))
         .filter(
             (pl.col("size_grp").is_not_null())
             & (pl.col("me").is_not_null())
