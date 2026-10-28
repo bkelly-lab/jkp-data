@@ -5,7 +5,7 @@ This repository ports the original SAS pipeline ([ReplicationCrisis](https://git
 
 ## 28-10-2026
 __Changes__:
-- Set `ni_ar1` to null instead of NaN when the lagged NI/AT does not vary over the regression window, where DuckDB's `regr_slope` returns NaN ([#293](https://github.com/bkelly-lab/jkp-data/issues/293)). This affects 694 stock-months in 10 countries, 48 of them in the US. Polars sorts NaN above every number, so these stocks were placed in the top `ni_ar1` portfolio. 672 are now null and left out of the sort. In the other 22, the annual NaN blocked the fallback to the quarterly value that all accounting characteristics use; they now take the quarterly `ni_ar1`, from the same regression as the quarterly `ni_ivol` they already had. As a safeguard, factor portfolio construction now treats any NaN characteristic value as missing.
+- Set `ni_ar1` to null instead of NaN when the lagged NI/AT does not vary over the regression window, where DuckDB's `regr_slope` returns NaN ([#294](https://github.com/bkelly-lab/jkp-data/pull/294)). This affects 694 stock-months in 10 countries, 48 of them in the US. Polars sorts NaN above every number, so these stocks were placed in the top `ni_ar1` portfolio. 672 are now null and left out of the sort. In the other 22, the annual NaN blocked the fallback to the quarterly value that all accounting characteristics use; they now take the quarterly `ni_ar1`, from the same regression as the quarterly `ni_ivol` they already had. As a safeguard, factor portfolio construction now treats any NaN characteristic value as missing.
 
 ## 15-10-2026
 __Changes__:
