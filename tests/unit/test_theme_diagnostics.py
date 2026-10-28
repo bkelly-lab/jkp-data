@@ -2,6 +2,7 @@
 
 import importlib.util
 import os
+from datetime import date
 from pathlib import Path
 
 import numpy as np
@@ -64,6 +65,20 @@ def test_monthly_rank_corr_matches_pairwise_complete_corrcoef(diag):
             ok = ~np.isnan(x[:, i]) & ~np.isnan(x[:, j])
             assert got[i, j] == pytest.approx(np.corrcoef(x[ok, i], x[ok, j])[0, 1])
     assert np.isnan(got[3]).all()
+
+
+@pytest.mark.unit
+def test_compute_corr_treats_nan_as_missing(diag, tmp_path):
+    rng = np.random.default_rng(2)
+    a = rng.normal(size=200)
+    b = a + rng.normal(size=200)
+    b[:20] = np.nan  # Polars ranks NaN above every number
+    data = pl.DataFrame({"eom": [date(2000, 1, 31)] * 200, "a": a, "b": b})
+    data.write_parquet(tmp_path / "nan.parquet")
+    data.with_columns(pl.col("b").fill_nan(None)).write_parquet(tmp_path / "null.parquet")
+    with_nan = diag.compute_corr(tmp_path / "nan.parquet", ["a", "b"])
+    with_null = diag.compute_corr(tmp_path / "null.parquet", ["a", "b"])
+    assert with_nan.equals(with_null)
 
 
 @pytest.mark.unit

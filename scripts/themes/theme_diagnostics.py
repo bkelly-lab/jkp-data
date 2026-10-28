@@ -4,10 +4,10 @@ Description:
     Checks how well the subthemes hold together in the data, using the average monthly
     cross-sectional rank correlation between characteristics (U.S. stocks, START to END).
 Steps:
-    1) Percentile-rank each characteristic within month, correlate the ranks across the
-       stocks that have both characteristics, and average over months (each month weighted
-       equally). Cached to OUT_DIR/corr.parquet; recomputed when the cache lacks a
-       characteristic or is older than INPUT.
+    1) Percentile-rank each characteristic within month (NaN counts as missing), correlate
+       the ranks across the stocks that have both characteristics, and average over months
+       (each month weighted equally). Cached to OUT_DIR/corr.parquet; recomputed when the
+       cache lacks a characteristic or is older than INPUT.
     2) Subtheme composites: equal-weighted average of member ranks, each multiplied by its
        subtheme_sign. Composite correlations are implied by the average correlation matrix.
        This is an approximation: it ignores differences in missing data and ties across
@@ -76,7 +76,7 @@ def compute_corr(characteristics_path: Path, features: list[str]) -> pl.DataFram
         Average monthly cross-sectional rank correlation of the characteristics.
     Steps:
         1) Scan the characteristics file, keep START <= eom <= END, percentile-rank each
-           characteristic within eom (nulls stay null).
+           characteristic within eom (nulls and NaN stay null).
         2) Correlate ranks within each month; average over months, ignoring missing pairs.
     Output:
         DataFrame with a feature column and one column per characteristic.
@@ -85,6 +85,8 @@ def compute_corr(characteristics_path: Path, features: list[str]) -> pl.DataFram
         pl.scan_parquet(characteristics_path)
         .filter(pl.col("eom").is_between(START, END))
         .select(["eom", *features])
+        # NaN, such as the skewness of a constant price, would otherwise get the top rank
+        .with_columns(pl.col(pl.Float32, pl.Float64).fill_nan(None))
         .with_columns(
             (pl.col(f).rank("average").over("eom") / pl.col(f).count().over("eom")).cast(pl.Float64)
             for f in features
