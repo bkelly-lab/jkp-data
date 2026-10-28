@@ -154,8 +154,8 @@ inv_gr1a,Investment,Working capital growth,1,1,-1,,v1.0
 inv_gr3a,Investment,Working capital growth,1,1,-1,,v1.0
 rec_gr1a,Investment,Working capital growth,1,1,-1,,v1.0
 rec_gr3a,Investment,Working capital growth,1,1,-1,,v1.0
-dsale_dinv,Investment,Working capital growth,-1,1,-1,Sales growth minus inventory or receivables growth.,v1.0
-dsale_drec,Investment,Working capital growth,-1,1,-1,Sales growth minus inventory or receivables growth.,v1.0
+dsale_dinv,Investment,Working capital growth,-1,1,-1,"Sales growth minus inventory growth, so a high value means slow inventory growth.",v1.0
+dsale_drec,Investment,Working capital growth,-1,1,-1,"Sales growth minus receivables growth, so a high value means slow receivables growth.",v1.0
 col_gr1a,Investment,Operating payables growth,1,1,-1,,v1.0
 ncol_gr1a,Investment,Operating payables growth,1,1,-1,,v1.0
 ol_gr1a,Investment,Operating payables growth,1,1,-1,,v1.0
@@ -287,11 +287,11 @@ debt_me,Financial strength,Market leverage,1,-1,1,,v1.0
 debt_mev,Financial strength,Market leverage,1,-1,1,,v1.0
 debtlt_mev,Financial strength,Market leverage,1,-1,1,,v1.0
 netdebt_me,Financial strength,Market leverage,1,-1,1,,v1.0
-debtst_debt,Financial strength,Debt maturity,-1,1,1,A high Debt maturity means longer maturity.,v1.0
+debtst_debt,Financial strength,Debt maturity,-1,1,1,A high share of short-term debt means shorter maturity.,v1.0
 debtlt_debt,Financial strength,Debt maturity,1,1,1,,v1.0
-debtst_bev,Financial strength,Debt maturity,-1,1,1,A high Debt maturity means longer maturity.,v1.0
-debtst_mev,Financial strength,Debt maturity,-1,1,1,A high Debt maturity means longer maturity.,v1.0
-cl_lt,Financial strength,Debt maturity,-1,1,1,A high Debt maturity means longer maturity. Kept here although it fits Book leverage better in the data. It measures the maturity of liabilities.,v1.0
+debtst_bev,Financial strength,Debt maturity,-1,1,1,A high share of short-term debt means shorter maturity.,v1.0
+debtst_mev,Financial strength,Debt maturity,-1,1,1,A high share of short-term debt means shorter maturity.,v1.0
+cl_lt,Financial strength,Debt maturity,-1,1,1,A high share of current liabilities means shorter maturity. Kept here although it fits Book leverage better in the data. It measures the maturity of liabilities.,v1.0
 int_debt,Financial strength,Cost of debt,1,-1,1,,v1.0
 int_debtlt,Financial strength,Cost of debt,1,-1,1,,v1.0
 pstk_bev,Financial strength,Preferred stock,1,-1,1,,v1.0
@@ -314,8 +314,8 @@ cash_gr3a,Financial strength,Balance sheet liquidity,1,1,1,,v1.0
 rec_act,Financial strength,Balance sheet liquidity,-1,1,1,,v1.0
 tangibility,Financial strength,Balance sheet liquidity,1,1,1,,v1.0
 o_score,Financial strength,Distress,1,-1,1,,v1.0
-z_score,Financial strength,Distress,-1,-1,1,The O-score measures distress; the Z-score and QMJ safety measure safety.,v1.0
-qmj_safety,Financial strength,Distress,-1,-1,1,The O-score measures distress; the Z-score and QMJ safety measure safety.,v1.0
+z_score,Financial strength,Distress,-1,-1,1,A high Z-score means a safe firm.,v1.0
+qmj_safety,Financial strength,Distress,-1,-1,1,A high QMJ safety score means a safe firm.,v1.0
 kz_index,Financial strength,Financial constraints,1,-1,1,,v1.0
 rvol_21d,Low risk,Volatility,1,-1,1,,v1.0
 rvol_252d,Low risk,Volatility,1,-1,1,,v1.0
@@ -364,7 +364,7 @@ turnover_126d,Size,Share turnover,1,1,-1,,v1.0
 zero_trades_21d,Size,Share turnover,-1,1,-1,,v1.0
 zero_trades_126d,Size,Share turnover,-1,1,-1,,v1.0
 zero_trades_252d,Size,Share turnover,-1,1,-1,,v1.0
-ret_1_0,Short-term reversal,Short-term reversal,-1,1,1,Past losers score high.,v1.0
+ret_1_0,Short-term reversal,Short-term reversal,-1,1,1,"A high return means a past winner, but Short-term reversal is high for past losers.",v1.0
 ret_2_0,Momentum,Momentum 2-6,1,1,1,,v1.0
 ret_3_0,Momentum,Momentum 2-6,1,1,1,,v1.0
 ret_3_1,Momentum,Momentum 2-6,1,1,1,,v1.0
@@ -381,18 +381,18 @@ ret_18_1,Momentum,Momentum 2-12,1,1,1,,v1.0
 ret_24_1,Momentum,Momentum 2-12,1,1,1,,v1.0
 prc_highprc_252d,Momentum,Momentum 2-12,1,1,1,,v1.0
 seas_1_1na,Momentum,Momentum 2-12,1,1,1,,v1.0
-ret_60_12,Long-term reversal,Long-term reversal,-1,1,1,Past losers score high.,v1.0
-ret_60_36,Long-term reversal,Long-term reversal,-1,1,1,Past losers score high.,v1.0
-ret_48_12,Long-term reversal,Long-term reversal,-1,1,1,Past losers score high.,v1.0
-ret_36_12,Long-term reversal,Long-term reversal,-1,1,1,Past losers score high.,v1.0
-ret_24_12,Long-term reversal,Long-term reversal,-1,1,1,Past losers score high.,v1.0
-ret_36_1,Long-term reversal,Long-term reversal,-1,1,1,Past losers score high.,v1.0
-ret_48_1,Long-term reversal,Long-term reversal,-1,1,1,Past losers score high.,v1.0
-ret_60_1,Long-term reversal,Long-term reversal,-1,1,1,Past losers score high.,v1.0
-seas_2_5na,Long-term reversal,Long-term reversal,-1,1,1,Past losers score high.,v1.0
-seas_6_10na,Long-term reversal,Long-term reversal,-1,1,1,Past losers score high.,v1.0
-seas_11_15na,Long-term reversal,Long-term reversal,-1,1,1,Past losers score high.,v1.0
-seas_16_20na,Long-term reversal,Long-term reversal,-1,1,1,Past losers score high.,v1.0
+ret_60_12,Long-term reversal,Long-term reversal,-1,1,1,"A high return means a past winner, but Long-term reversal is high for past losers.",v1.0
+ret_60_36,Long-term reversal,Long-term reversal,-1,1,1,"A high return means a past winner, but Long-term reversal is high for past losers.",v1.0
+ret_48_12,Long-term reversal,Long-term reversal,-1,1,1,"A high return means a past winner, but Long-term reversal is high for past losers.",v1.0
+ret_36_12,Long-term reversal,Long-term reversal,-1,1,1,"A high return means a past winner, but Long-term reversal is high for past losers.",v1.0
+ret_24_12,Long-term reversal,Long-term reversal,-1,1,1,"A high return means a past winner, but Long-term reversal is high for past losers.",v1.0
+ret_36_1,Long-term reversal,Long-term reversal,-1,1,1,"A high return means a past winner, but Long-term reversal is high for past losers.",v1.0
+ret_48_1,Long-term reversal,Long-term reversal,-1,1,1,"A high return means a past winner, but Long-term reversal is high for past losers.",v1.0
+ret_60_1,Long-term reversal,Long-term reversal,-1,1,1,"A high return means a past winner, but Long-term reversal is high for past losers.",v1.0
+seas_2_5na,Long-term reversal,Long-term reversal,-1,1,1,"A high return means a past winner, but Long-term reversal is high for past losers.",v1.0
+seas_6_10na,Long-term reversal,Long-term reversal,-1,1,1,"A high return means a past winner, but Long-term reversal is high for past losers.",v1.0
+seas_11_15na,Long-term reversal,Long-term reversal,-1,1,1,"A high return means a past winner, but Long-term reversal is high for past losers.",v1.0
+seas_16_20na,Long-term reversal,Long-term reversal,-1,1,1,"A high return means a past winner, but Long-term reversal is high for past losers.",v1.0
 seas_1_1an,Seasonality,Seasonality,1,1,1,"Kept here although it fits Momentum 7-12 better in the data. Last year's return in the same month, which is also one of months 7-12.",v1.0
 seas_2_5an,Seasonality,Seasonality,1,1,1,,v1.0
 seas_6_10an,Seasonality,Seasonality,1,1,1,,v1.0

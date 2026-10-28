@@ -32,8 +32,8 @@ subtheme,Advertising intensity,Intangibles,Advertising spending relative to sale
 theme,Operating efficiency,Operating efficiency,How the firm uses its assets and labor.,,v1.0
 subtheme,Asset turnover,Operating efficiency,Sales and operating costs relative to assets.,,v1.0
 subtheme,Working capital efficiency,Operating efficiency,"How quickly inventory, receivables and payables turn over.",,v1.0
-subtheme,Capital intensity,Operating efficiency,"PP&E and capex relative to assets, price, profit or cash flow.",More input per unit of output.,v1.0
-subtheme,Labor intensity,Operating efficiency,Staff costs and sales per employee.,More input per unit of output.,v1.0
+subtheme,Capital intensity,Operating efficiency,"PP&E and capex relative to assets, price, profit or cash flow.",More capital per unit of output means less efficiency.,v1.0
+subtheme,Labor intensity,Operating efficiency,Staff costs and sales per employee.,More labor per unit of output means less efficiency.,v1.0
 subtheme,Labor productivity growth,Operating efficiency,Growth in sales per employee.,,v1.0
 theme,Issuance,Issuance,Net capital raised from shareholders and creditors.,,v1.0
 subtheme,Equity issuance,Issuance,"Net share issuance, from market and accounting data.",,v1.0
@@ -42,20 +42,20 @@ subtheme,Debt issuance,Issuance,Net issuance and growth of debt.,,v1.0
 subtheme,Liability growth,Issuance,"Growth in total, current and non-current liabilities, including debt.",,v1.0
 subtheme,External financing,Issuance,Total net financing from debt and equity.,,v1.0
 theme,Financial strength,Financial strength,Capital structure and financial strength.,,v1.0
-subtheme,Book leverage,Financial strength,"Debt relative to book assets, book equity or book enterprise value.","More debt, distress or constraints means less strength.",v1.0
-subtheme,Market leverage,Financial strength,Debt relative to market equity or market enterprise value.,"More debt, distress or constraints means less strength.",v1.0
+subtheme,Book leverage,Financial strength,"Debt relative to book assets, book equity or book enterprise value.",A high value means less financial strength.,v1.0
+subtheme,Market leverage,Financial strength,Debt relative to market equity or market enterprise value.,A high value means less financial strength.,v1.0
 subtheme,Debt maturity,Financial strength,The share of debt and liabilities that is long-term.,,v1.0
-subtheme,Cost of debt,Financial strength,Interest expense relative to debt.,"More debt, distress or constraints means less strength.",v1.0
-subtheme,Preferred stock,Financial strength,Preferred stock outstanding and its growth.,"More debt, distress or constraints means less strength.",v1.0
+subtheme,Cost of debt,Financial strength,Interest expense relative to debt.,A high value means less financial strength.,v1.0
+subtheme,Preferred stock,Financial strength,Preferred stock outstanding and its growth.,A high value means less financial strength.,v1.0
 subtheme,Balance sheet liquidity,Financial strength,Cash and current assets relative to liabilities or assets.,,v1.0
-subtheme,Distress,Financial strength,Bankruptcy-risk and safety scores.,"More debt, distress or constraints means less strength.",v1.0
-subtheme,Financial constraints,Financial strength,Kaplan–Zingales index.,"More debt, distress or constraints means less strength.",v1.0
+subtheme,Distress,Financial strength,Bankruptcy-risk and safety scores.,A high value means less financial strength.,v1.0
+subtheme,Financial constraints,Financial strength,Kaplan–Zingales index.,A high value means less financial strength.,v1.0
 theme,Low risk,Low risk,Low return and earnings risk.,,v1.0
-subtheme,Volatility,Low risk,Total and idiosyncratic return volatility.,More of each is more risk.,v1.0
-subtheme,Lottery,Low risk,Largest daily returns over the past month.,More of each is more risk.,v1.0
-subtheme,Beta,Low risk,Sensitivity to and correlation with the market.,More of each is more risk.,v1.0
-subtheme,Skewness,Low risk,Asymmetry of daily returns.,More of each is more risk.,v1.0
-subtheme,Earnings volatility,Low risk,Volatility of earnings and cash flow.,More of each is more risk.,v1.0
+subtheme,Volatility,Low risk,Total and idiosyncratic return volatility.,A high value means more risk.,v1.0
+subtheme,Lottery,Low risk,Largest daily returns over the past month.,A high value means more risk.,v1.0
+subtheme,Beta,Low risk,Sensitivity to and correlation with the market.,A high value means more risk.,v1.0
+subtheme,Skewness,Low risk,Asymmetry of daily returns.,A high value means more risk.,v1.0
+subtheme,Earnings volatility,Low risk,Volatility of earnings and cash flow.,A high value means more risk.,v1.0
 theme,Size,Size,"Firm size, age and trading activity.",,v1.0
 subtheme,Firm size,Size,"Market value, book value, assets and sales.",,v1.0
 subtheme,Firm age,Size,Months since the firm first appears in the data.,,v1.0
