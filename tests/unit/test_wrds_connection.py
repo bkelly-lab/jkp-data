@@ -129,6 +129,16 @@ class TestWrdsPasswordEnv:
             raise ValueError("boom")
         assert os.environ["PGPASSWORD"] == "users-own"
 
+    def test_masks_previous_value_in_frame(self, monkeypatch):
+        """A user's own PGPASSWORD, held while the block runs, renders as '***'."""
+        from jkp.data.wrds_connection import wrds_password_env
+
+        monkeypatch.setenv("PGPASSWORD", "users-own")
+        cm = wrds_password_env("hunter2")
+        with cm:
+            assert repr(cm.gen.gi_frame.f_locals["previous"]) == "'***'"
+        assert os.environ["PGPASSWORD"] == "users-own"
+
     def test_none_leaves_environment_untouched(self, monkeypatch):
         """password=None is the ~/.pgpass path: libpq reads the file, so nothing is set."""
         from jkp.data.wrds_connection import wrds_password_env

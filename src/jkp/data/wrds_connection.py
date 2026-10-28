@@ -17,7 +17,7 @@ from collections.abc import Iterator
 
 import duckdb
 
-from .wrds_credentials import WRDS_DB, WRDS_HOST, WRDS_PORT
+from .wrds_credentials import WRDS_DB, WRDS_HOST, WRDS_PORT, SecretStr
 
 
 def _pg_escape_value(value: str) -> str:
@@ -72,11 +72,16 @@ def wrds_password_env(password: str | None) -> Iterator[None]:
     error text. With ``None`` nothing is set and libpq falls back to ``~/.pgpass``.
     Set before any worker thread starts and restored after they finish, so the
     process-wide environment is never mutated concurrently.
+
+    PGPASSWORD is set process-wide for the whole block. Do not spawn child
+    processes inside it: they inherit the password.
     """
     if password is None:
         yield
         return
     previous = os.environ.get("PGPASSWORD")
+    if previous is not None:
+        previous = SecretStr(previous)
     os.environ["PGPASSWORD"] = password
     try:
         yield
