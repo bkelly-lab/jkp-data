@@ -1,4 +1,4 @@
-"""Statistical diagnostics for the economic themes in economic_themes.py.
+"""Statistical diagnostics for the economic themes in themes.csv.
 
 Description:
     Checks how well the subthemes hold together in the data, using the average monthly
@@ -6,8 +6,8 @@ Description:
 Steps:
     1) Percentile-rank each characteristic within month, correlate the ranks across the
        stocks that have both characteristics, and average over months (each month weighted
-       equally). Cached to OUT_DIR/corr.parquet; recomputed when RERUN_CORR is set or the
-       cache lacks a characteristic.
+       equally). Cached to OUT_DIR/corr.parquet; recomputed when the cache lacks a
+       characteristic or is older than INPUT.
     2) Subtheme composites: equal-weighted average of member ranks, each multiplied by its
        subtheme_sign. Composite correlations are implied by the average correlation matrix.
        This is an approximation: it ignores differences in missing data and ties across
@@ -25,20 +25,16 @@ Output:
 Run with: uv run python scripts/themes/theme_diagnostics.py
 """
 
-import sys
 from datetime import date
 from pathlib import Path
 
 import numpy as np
 import polars as pl
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from economic_themes import NEGATIVE_IN_THEME, SUBTHEMES, THEMES, themes_frame  # noqa: E402
-
 REPO = Path(__file__).resolve().parents[2]
+THEMES_CSV = REPO / "src" / "jkp" / "data" / "resources" / "themes" / "themes.csv"
 INPUT = REPO / "data" / "processed" / "characteristics" / "USA.parquet"
 OUT_DIR = REPO / "data" / "interim" / "themes"
-RERUN_CORR = False  # recompute the correlations (after a new data run)
 START = date(1972, 1, 1)
 END = date(2025, 12, 31)
 MIN_OBS = 30  # min stocks with both characteristics for a month's pair correlation to count
@@ -121,7 +117,8 @@ def corr_with_composite(corr: np.ndarray, x: int, idx: np.ndarray, w: np.ndarray
 def load_corr(features: list[str]) -> np.ndarray:
     """Correlation matrix of features (diagonal 1, symmetric), from the cache when possible."""
     cache = OUT_DIR / "corr.parquet"
-    cached = pl.read_parquet(cache) if cache.exists() and not RERUN_CORR else None
+    fresh = cache.exists() and cache.stat().st_mtime >= INPUT.stat().st_mtime
+    cached = pl.read_parquet(cache) if fresh else None
     if cached is None or not set(features) <= set(cached["feature"]):
         print(f"Computing rank correlations from {INPUT} ({START} to {END})")
         cached = compute_corr(INPUT, features)
@@ -133,60 +130,106 @@ def load_corr(features: list[str]) -> np.ndarray:
     return (corr + corr.T) / 2
 
 
-def main() -> None:
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    names = list(SUBTHEMES)
-    features = [f for t in names for f in SUBTHEMES[t]]
-    corr = load_corr(features)
-    pos = {f: i for i, f in enumerate(features)}
-    groups = {t: np.array([pos[f] for f in SUBTHEMES[t]]) for t in names}
-    sign = dict(themes_frame().select("characteristic", "subtheme_sign").iter_rows())
-    signs = {t: np.array([sign[f] for f in SUBTHEMES[t]], dtype=float) for t in names}
+def subtheme_groups(themes: pl.DataFrame) -> pl.DataFrame:
+    """One row per subtheme, in file order: theme, theme_sign, member rows (pos) and signs."""
+    return (
+        themes.with_row_index("pos")
+        .group_by("subtheme", maintain_order=True)
+        .agg(pl.col("theme", "theme_sign").first(), "pos", "subtheme_sign")
+    )
 
-    # Characteristics: fit with own subtheme (leave-one-out) and best other subtheme -----
+
+def member_fits(corr: np.ndarray, themes: pl.DataFrame) -> pl.DataFrame:
+    """
+    Description:
+        How well each characteristic fits its own subtheme and every other subtheme.
+    Steps:
+        1) Own fit: correlation with the signed composite of the other members of its own
+           subtheme (leave-one-out), times its own subtheme_sign. None for a one-member
+           subtheme.
+        2) Best other: the other subtheme whose composite has the largest |correlation|.
+    Output:
+        One row per characteristic, in file order: feature, subtheme, own, best_other,
+        best_other_r. corr rows and columns follow the rows of themes.
+    """
+    groups = subtheme_groups(themes)
+    idx = {t: np.array(pos) for t, pos in groups.select("subtheme", "pos").iter_rows()}
+    w = {
+        t: np.array(s, dtype=float)
+        for t, s in groups.select("subtheme", "subtheme_sign").iter_rows()
+    }
     rows = []
-    for t in names:
-        for f in SUBTHEMES[t]:
-            x = pos[f]
-            keep = groups[t] != x
-            own = (
-                sign[f] * corr_with_composite(corr, x, groups[t][keep], signs[t][keep])
-                if keep.any()
-                else None
-            )
-            other = {
-                u: abs(corr_with_composite(corr, x, groups[u], signs[u])) for u in names if u != t
+    for x, (f, t, sign) in enumerate(
+        themes.select("characteristic", "subtheme", "subtheme_sign").iter_rows()
+    ):
+        keep = idx[t] != x
+        own = sign * corr_with_composite(corr, x, idx[t][keep], w[t][keep]) if keep.any() else None
+        other = {u: abs(corr_with_composite(corr, x, idx[u], w[u])) for u in idx if u != t}
+        best = max(other, key=lambda u: other[u])
+        rows.append(
+            {
+                "feature": f,
+                "subtheme": t,
+                "own": own,
+                "best_other": best,
+                "best_other_r": other[best],
             }
-            best = max(other, key=lambda u: other[u])
-            rows.append(
-                {
-                    "feature": f,
-                    "subtheme": t,
-                    "own": own,
-                    "best_other": best,
-                    "best_other_r": other[best],
-                }
-            )
-    members = pl.DataFrame(rows)
-    if (members["own"].abs() > 1).any() or (members["best_other_r"] > 1).any():
-        print("Warning: some fits exceed 1; the average correlation matrix is too far from valid.")
+        )
+    return pl.DataFrame(rows)
 
-    # Subthemes: coherence and nearest neighbour -------------------------------------------
-    w = np.zeros((len(features), len(names)))
-    for g, t in enumerate(names):
-        w[groups[t], g] = signs[t]
+
+def misfits(members: pl.DataFrame) -> pl.DataFrame:
+    """Characteristics that fit another subtheme at least MISFIT_GAP better, at MISFIT_MIN or more."""
+    return members.filter(
+        (pl.col("best_other_r") >= pl.col("own") + MISFIT_GAP)
+        & (pl.col("best_other_r") >= MISFIT_MIN)
+    )
+
+
+def composite_corr(corr: np.ndarray, themes: pl.DataFrame) -> pl.DataFrame:
+    """
+    Description:
+        Correlations between subtheme composites, implied by the characteristic correlations.
+    Steps:
+        1) Weight matrix: each subtheme's members get their subtheme_sign, others zero.
+        2) Composite covariance W' C W, scaled to correlations.
+    Output:
+        A subtheme column, then one column per subtheme, both in file order.
+    """
+    groups = subtheme_groups(themes)
+    names = groups["subtheme"].to_list()
+    w = np.zeros((themes.height, len(names)))
+    for g, (pos, signs) in enumerate(groups.select("pos", "subtheme_sign").iter_rows()):
+        w[pos, g] = signs
     s = w.T @ corr @ w
     comp = s / np.sqrt(np.outer(np.diag(s), np.diag(s)))
+    return pl.DataFrame(comp, schema=names).insert_column(0, pl.Series("subtheme", names))
+
+
+def subtheme_summary(
+    corr: np.ndarray, composite: pl.DataFrame, themes: pl.DataFrame
+) -> pl.DataFrame:
+    """
+    Description:
+        How tightly each subtheme holds together, and which other subtheme is closest.
+    Steps:
+        1) Mean |correlation| between distinct members (None for a one-member subtheme).
+        2) Nearest other subtheme by |composite correlation|.
+    Output:
+        One row per subtheme: subtheme, n, mean_abs_r, nearest_subtheme, nearest_r.
+    """
+    groups = subtheme_groups(themes)
+    names = groups["subtheme"].to_list()
+    comp = composite.drop("subtheme").to_numpy()
     comp_abs = np.abs(comp)
     np.fill_diagonal(comp_abs, 0.0)
-    summary = []
-    for g, t in enumerate(names):
-        idx = groups[t]
-        n = len(idx)
-        sub = np.abs(corr[np.ix_(idx, idx)])
+    rows = []
+    for g, (t, pos) in enumerate(groups.select("subtheme", "pos").iter_rows()):
+        n = len(pos)
+        sub = np.abs(corr[np.ix_(pos, pos)])
         within = float((sub.sum() - n) / (n * (n - 1))) if n > 1 else None
         nb = int(np.argmax(comp_abs[g]))
-        summary.append(
+        rows.append(
             {
                 "subtheme": t,
                 "n": n,
@@ -195,12 +238,29 @@ def main() -> None:
                 "nearest_r": float(comp[g, nb]),
             }
         )
-    summary = pl.DataFrame(summary)
-    composite = pl.DataFrame(comp, schema=names).insert_column(0, pl.Series("subtheme", names))
+    return pl.DataFrame(rows)
 
-    members.write_parquet(OUT_DIR / "theme_members.parquet")
-    summary.write_parquet(OUT_DIR / "theme_summary.parquet")
-    composite.write_parquet(OUT_DIR / "theme_composite_corr.parquet")
+
+def print_report(
+    members: pl.DataFrame, summary: pl.DataFrame, composite: pl.DataFrame, themes: pl.DataFrame
+) -> None:
+    """
+    Description:
+        Console summary of the diagnostics.
+    Steps:
+        1) Warn if a fit exceeds 1.
+        2) Print coherence, clear misfits, weak fits, close subtheme pairs, signs the data
+           disagree with, and same-theme subthemes that correlate negatively after theme signs.
+    Output:
+        None; prints to the console.
+    """
+    if (members["own"].abs() > 1).any() or (members["best_other_r"] > 1).any():
+        print("Warning: some fits exceed 1; the average correlation matrix is too far from valid.")
+    names = composite["subtheme"].to_list()
+    comp = composite.drop("subtheme").to_numpy()
+    groups = subtheme_groups(themes)
+    theme_sign = dict(groups.select("subtheme", "theme_sign").iter_rows())
+    theme_subs = groups.group_by("theme", maintain_order=True).agg("subtheme").iter_rows()
 
     with pl.Config(tbl_rows=-1, tbl_width_chars=160, float_precision=2):
         print(f"Median mean |r| within subthemes: {summary['mean_abs_r'].median():.2f}\n")
@@ -209,10 +269,7 @@ def main() -> None:
             f"\nClear misfits (fit another subtheme at least {MISFIT_GAP} better, "
             f"at {MISFIT_MIN} or more); move them or record why they stay:"
         )
-        misfit = (pl.col("best_other_r") >= pl.col("own") + MISFIT_GAP) & (
-            pl.col("best_other_r") >= MISFIT_MIN
-        )
-        print(members.filter(misfit).sort("subtheme"))
+        print(misfits(members).sort("subtheme"))
         print(f"\nWeakly attached characteristics (fit < {WEAK_FIT}):")
         print(members.filter(pl.col("own") < WEAK_FIT).sort("own"))
         print(f"\nSubtheme pairs whose composites correlate {CLOSE_PAIR} or more:")
@@ -220,7 +277,7 @@ def main() -> None:
             (names[i], names[j], float(comp[i, j]))
             for i in range(len(names))
             for j in range(i + 1, len(names))
-            if comp_abs[i, j] >= CLOSE_PAIR
+            if abs(comp[i, j]) >= CLOSE_PAIR
         ]
         print(pl.DataFrame(pairs, schema=["subtheme", "other", "r"], orient="row").sort("r"))
         print("\nCharacteristics whose sign the data disagree with (negative fit):")
@@ -228,15 +285,28 @@ def main() -> None:
         print(
             f"\nSubthemes in the same theme correlating below -{SIGN_CONFLICT} after theme signs:"
         )
-        theme_sign = {t: -1 if t in NEGATIVE_IN_THEME else 1 for t in names}
         conflicts = [
             (theme, a, b, comp[names.index(a), names.index(b)] * theme_sign[a] * theme_sign[b])
-            for theme, subs in THEMES.items()
+            for theme, subs in theme_subs
             for i, a in enumerate(subs)
             for b in subs[i + 1 :]
         ]
         conflicts = [c for c in conflicts if c[3] < -SIGN_CONFLICT]
         print(pl.DataFrame(conflicts, schema=["theme", "subtheme", "other", "r"], orient="row"))
+
+
+def main() -> None:
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    themes = pl.read_csv(THEMES_CSV)
+    corr = load_corr(themes["characteristic"].to_list())
+    members = member_fits(corr, themes)
+    composite = composite_corr(corr, themes)
+    summary = subtheme_summary(corr, composite, themes)
+
+    members.write_parquet(OUT_DIR / "theme_members.parquet")
+    summary.write_parquet(OUT_DIR / "theme_summary.parquet")
+    composite.write_parquet(OUT_DIR / "theme_composite_corr.parquet")
+    print_report(members, summary, composite, themes)
     print(f"\nWritten to {OUT_DIR}")
 
 
