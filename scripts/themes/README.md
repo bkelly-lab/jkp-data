@@ -113,7 +113,8 @@ co-authors.
    naming rules.
 4. Run `uv run python scripts/themes/theme_diagnostics.py`. It reads
    `data/processed/characteristics/USA.parquet` and recomputes its cached correlations when
-   that file is newer than the cache. Move clear misfits, or keep them and give the reason in
-   `note` and in the changelog. Check the signs the data disagree with.
+   that file is newer than the cache or the settings at the top of the script change. Move
+   clear misfits, or keep them and give the reason in `note` and in the changelog. Check the
+   signs the data disagree with.
 5. Add a changelog entry and open a pull request. Date the entry with the day the pull
    request merges, which is when the version is released.

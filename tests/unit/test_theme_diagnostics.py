@@ -1,4 +1,4 @@
-"""Tests for scripts/themes/theme_diagnostics.py: correlations, fits and the misfit rule."""
+"""Tests for scripts/themes/theme_diagnostics.py: correlations, fits and the misfit rules."""
 
 import importlib.util
 import os
@@ -113,10 +113,28 @@ def test_planted_misfit_is_flagged(diag, toy):
 
 
 @pytest.mark.unit
-def test_load_corr_uses_cache_unless_input_is_newer(diag, tmp_path, monkeypatch):
+def test_one_member_subtheme_flagged_only_against_another_theme(diag, toy):
+    _, corr, themes = toy
+
+    def flagged(t: pl.DataFrame) -> list[str]:
+        summary = diag.subtheme_summary(corr, diag.composite_corr(corr, t), t)
+        return diag.one_member_misfits(summary, t)["subtheme"].to_list()
+
+    # b2 alone in subtheme D of theme T2; it is mostly A, which is in T1
+    alone = themes.with_columns(
+        subtheme=pl.when(pl.col("characteristic") == "b2").then(pl.lit("D")).otherwise("subtheme")
+    )
+    assert flagged(themes) == []  # C is alone too, but close to nothing
+    assert flagged(alone) == ["D"]
+    same_theme = alone.with_columns(
+        theme=pl.when(pl.col("subtheme") == "D").then(pl.lit("T1")).otherwise("theme")
+    )
+    assert flagged(same_theme) == []
+
+
+@pytest.mark.unit
+def test_load_corr_uses_cache_unless_input_or_settings_change(diag, tmp_path, monkeypatch):
     feats = ["a", "b"]
-    cache = tmp_path / "corr.parquet"
-    pl.DataFrame({"feature": feats, "a": [1.0, 0.5], "b": [0.5, 1.0]}).write_parquet(cache)
     usa = tmp_path / "USA.parquet"
     recomputed = pl.DataFrame({"feature": feats, "a": [1.0, 0.9], "b": [0.9, 1.0]})
     calls = []
@@ -128,6 +146,8 @@ def test_load_corr_uses_cache_unless_input_is_newer(diag, tmp_path, monkeypatch)
     monkeypatch.setattr(diag, "OUT_DIR", tmp_path)
     monkeypatch.setattr(diag, "INPUT", usa)
     monkeypatch.setattr(diag, "compute_corr", fake_compute_corr)
+    cache = diag.cache_path()
+    pl.DataFrame({"feature": feats, "a": [1.0, 0.5], "b": [0.5, 1.0]}).write_parquet(cache)
 
     assert diag.load_corr(feats)[0, 1] == 0.5  # no input file: the cache is used
     usa.touch()
@@ -136,16 +156,19 @@ def test_load_corr_uses_cache_unless_input_is_newer(diag, tmp_path, monkeypatch)
     newer = cache.stat().st_mtime + 10
     os.utime(usa, (newer, newer))
     assert diag.load_corr(feats)[0, 1] == 0.9  # input newer: recomputed
-    assert calls == [usa]
+    os.utime(usa, (0, 0))
+    monkeypatch.setattr(diag, "MIN_OBS", diag.MIN_OBS + 1)
+    diag.load_corr(feats)  # another MIN_OBS: another cache file, so recomputed
+    assert calls == [usa, usa]
 
 
 @pytest.mark.unit
 def test_misfit_rule_thresholds(diag):
     members = pl.DataFrame(
         {
-            "feature": ["clear", "weak_everywhere", "small_gap"],
-            "own": [0.10, 0.10, 0.50],
-            "best_other_r": [0.60, 0.25, 0.60],
+            "feature": ["clear", "weak_everywhere", "small_gap", "wrong_sign"],
+            "own": [0.10, 0.10, 0.50, -0.50],  # wrong_sign fits well, but with the wrong sign
+            "best_other_r": [0.60, 0.25, 0.60, 0.60],
         }
     )
     assert diag.misfits(members)["feature"].to_list() == ["clear"]

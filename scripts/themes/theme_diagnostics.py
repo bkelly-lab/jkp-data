@@ -6,8 +6,9 @@ Description:
 Steps:
     1) Percentile-rank each characteristic within month (NaN counts as missing), correlate
        the ranks across the stocks that have both characteristics, and average over months
-       (each month weighted equally). Cached to OUT_DIR/corr.parquet; recomputed when the
-       cache lacks a characteristic or is older than INPUT.
+       (each month weighted equally). Cached in OUT_DIR, in a file named after START, END,
+       MIN_OBS and CORR_VERSION; recomputed when the cache lacks a characteristic or is
+       older than INPUT.
     2) Subtheme composites: equal-weighted average of member ranks, each multiplied by its
        subtheme_sign. Composite correlations are implied by the average correlation matrix.
        This is an approximation: it ignores differences in missing data and ties across
@@ -15,8 +16,11 @@ Steps:
        printed if a fit exceeds 1.
     3) Per characteristic: signed correlation with the composite of the other members of its
        own subtheme (fit; negative means the data disagree with its sign), and the
-       best-fitting other subtheme. Clear misfits are listed.
+       best-fitting other subtheme. Clear misfits are listed. Fits are compared by size, so
+       a wrong sign shows up only as a sign problem.
     4) Per subtheme: mean within-subtheme |corr|; nearest other subtheme by |composite corr|.
+       Subthemes with one characteristic have no fit of their own; they are listed when their
+       nearest subtheme is in another theme.
     5) Per theme: pairs of subthemes that correlate negatively once theme signs are applied.
 Output:
     OUT_DIR/theme_members.parquet, OUT_DIR/theme_summary.parquet,
@@ -38,6 +42,7 @@ OUT_DIR = REPO / "data" / "interim" / "themes"
 START = date(1972, 1, 1)
 END = date(2025, 12, 31)
 MIN_OBS = 30  # min stocks with both characteristics for a month's pair correlation to count
+CORR_VERSION = 1  # raise when compute_corr changes, so the cached correlations are recomputed
 WEAK_FIT = 0.3  # flag characteristics whose fit with their own subtheme is below this
 MISFIT_GAP = 0.15  # clear misfit: fits another subtheme at least this much better ...
 MISFIT_MIN = 0.4  # ... and at least this well
@@ -116,9 +121,14 @@ def corr_with_composite(corr: np.ndarray, x: int, idx: np.ndarray, w: np.ndarray
     return float((w @ corr[idx, x]) / np.sqrt(var))
 
 
+def cache_path() -> Path:
+    """Cache file for the correlations, named after the settings that change them."""
+    return OUT_DIR / f"corr_{START}_{END}_min{MIN_OBS}_v{CORR_VERSION}.parquet"
+
+
 def load_corr(features: list[str]) -> np.ndarray:
     """Correlation matrix of features (diagonal 1, symmetric), from the cache when possible."""
-    cache = OUT_DIR / "corr.parquet"
+    cache = cache_path()
     fresh = cache.exists() and (
         not INPUT.exists() or cache.stat().st_mtime >= INPUT.stat().st_mtime
     )
@@ -183,11 +193,31 @@ def member_fits(corr: np.ndarray, themes: pl.DataFrame) -> pl.DataFrame:
 
 
 def misfits(members: pl.DataFrame) -> pl.DataFrame:
-    """Characteristics that fit another subtheme at least MISFIT_GAP better, at MISFIT_MIN or more."""
+    """
+    Characteristics that fit another subtheme at least MISFIT_GAP better, at MISFIT_MIN or more.
+    The own fit counts by size: a wrong sign is a sign problem, not a misfit.
+    """
     return members.filter(
-        (pl.col("best_other_r") >= pl.col("own") + MISFIT_GAP)
+        (pl.col("best_other_r") >= pl.col("own").abs() + MISFIT_GAP)
         & (pl.col("best_other_r") >= MISFIT_MIN)
     )
+
+
+def one_member_misfits(summary: pl.DataFrame, themes: pl.DataFrame) -> pl.DataFrame:
+    """
+    Subthemes with one characteristic whose nearest subtheme, at MISFIT_MIN or more, is in
+    another theme. misfits() skips them because they have no fit of their own. A close
+    subtheme in the same theme is expected, since such a subtheme was split off on purpose.
+    """
+    theme = dict(subtheme_groups(themes).select("subtheme", "theme").iter_rows())
+    return summary.filter(
+        (pl.col("n") == 1)
+        & (pl.col("nearest_r").abs() >= MISFIT_MIN)
+        & (
+            pl.col("subtheme").replace_strict(theme)
+            != pl.col("nearest_subtheme").replace_strict(theme)
+        )
+    ).select("subtheme", "nearest_subtheme", "nearest_r")
 
 
 def composite_corr(corr: np.ndarray, themes: pl.DataFrame) -> pl.DataFrame:
@@ -253,8 +283,9 @@ def print_report(
         Console summary of the diagnostics.
     Steps:
         1) Warn if a fit exceeds 1.
-        2) Print coherence, clear misfits, weak fits, close subtheme pairs, signs the data
-           disagree with, and same-theme subthemes that correlate negatively after theme signs.
+        2) Print coherence, clear misfits (also among subthemes with one characteristic),
+           weak fits, close subtheme pairs, signs the data disagree with, and same-theme
+           subthemes that correlate negatively after theme signs.
     Output:
         None; prints to the console.
     """
@@ -274,8 +305,13 @@ def print_report(
             f"at {MISFIT_MIN} or more); move them or record why they stay:"
         )
         print(misfits(members).sort("subtheme"))
-        print(f"\nWeakly attached characteristics (fit < {WEAK_FIT}):")
-        print(members.filter(pl.col("own") < WEAK_FIT).sort("own"))
+        print(
+            f"\nSubthemes with one characteristic whose nearest subtheme, at {MISFIT_MIN} or "
+            "more, is in another theme; move them or record why they stay:"
+        )
+        print(one_member_misfits(summary, themes))
+        print(f"\nWeakly attached characteristics (|fit| < {WEAK_FIT}):")
+        print(members.filter(pl.col("own").abs() < WEAK_FIT).sort("own"))
         print(f"\nSubtheme pairs whose composites correlate {CLOSE_PAIR} or more:")
         pairs = [
             (names[i], names[j], float(comp[i, j]))
