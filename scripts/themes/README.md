@@ -6,10 +6,10 @@ example *Value*).
 
 ## Signs
 
-Characteristics in the same group do not all point the same way: a high dollar volume means a
-liquid stock, but a high Amihud measure means an illiquid one. `themes.csv` therefore gives
-each characteristic three signs, one per level. Each answers a yes-or-no question, with +1 for
-yes and −1 for no:
+Characteristics in the same group can point in opposite directions. A high dollar volume means
+a liquid stock, but a high Amihud measure means an illiquid one. So `themes.csv` gives each
+characteristic three signs, one per level. Each sign answers a yes-or-no question: +1 for yes,
+−1 for no.
 
 | Column | Same for all | Question |
 |---|---|---|
@@ -36,49 +36,49 @@ Example: `ami_126d`, the Amihud illiquidity measure, in subtheme Illiquidity and
 
 ## Naming principles
 
-The data can be used at three levels: theme, subtheme and individual characteristic. At each
-level there are two objects:
+You can use the grouping at three levels: theme, subtheme and individual characteristic. Each
+level has a characteristic and a factor:
 
-- **A characteristic:** a value for each stock and month. At the bottom level it is the
+- **Characteristic:** a value for each stock and month. At the individual level, it is the
   characteristic itself, such as `ami_126d`. A subtheme characteristic averages the
   cross-sectional ranks of its characteristics, each multiplied by `subtheme_sign`. A theme
   characteristic averages its subtheme characteristics, each multiplied by `theme_sign`, so
-  every subtheme counts equally however many characteristics it has.
-- **A factor:** a long-short portfolio that sorts stocks on that characteristic and buys the
-  side that earns more in the literature. For a theme characteristic that side is set by
-  `factor_sign`, for a subtheme characteristic by `theme_sign × factor_sign`, and for an
-  individual characteristic by `subtheme_sign × theme_sign × factor_sign`.
+  every subtheme counts equally, no matter how many characteristics it has.
+- **Factor:** a long-short portfolio that sorts stocks on the characteristic and buys the side
+  that earns more in the literature. That side is set by `factor_sign` for a theme, by
+  `theme_sign × factor_sign` for a subtheme, and by `subtheme_sign × theme_sign × factor_sign`
+  for an individual characteristic.
 
-Both objects share one name: the name the asset pricing literature uses for the factor, such
-as Value, Investment or Momentum. A high value of the characteristic means more of what the
-name says, and the signs give the side the factor buys: as in Fama and French, the Size factor
-buys small firms and the Investment factor buys firms that invest little. Most names say what
-the factor sorts on. Four also state the side, because the literature names these factors
-that way: Low risk, Low leverage, Short-term reversal and Long-term reversal. A high value of
-their characteristics means low risk, low leverage or a low past return.
+The characteristic and the factor share one name, the one the asset pricing literature uses
+for the factor, such as Value, Investment or Momentum. A high value of the characteristic
+means more of what the name says, and the signs say which side the factor buys. As in Fama and
+French, the Size factor buys small firms, and the Investment factor buys firms that invest
+little. Most names say only what the factor sorts on. Four also give the side, because that is
+how the literature names these factors: Low risk, Low leverage, Short-term reversal and
+Long-term reversal. For these four, a high value means low risk, low leverage or a low past
+return.
 
-For example, `ami_126d` belongs to the subtheme Illiquidity, in the theme Size. A high value of
-the Illiquidity characteristic means an illiquid stock, and the Illiquidity factor buys
-illiquid stocks. A high value of the Size characteristic means a large firm, and the Size
+For example, `ami_126d` is in the subtheme Illiquidity, which is in the theme Size. A high
+value of the Illiquidity characteristic means an illiquid stock, and the Illiquidity factor
+buys illiquid stocks. A high value of the Size characteristic means a large firm, and the Size
 factor buys small firms.
 
-Names are plain words or phrases, without "&" or parentheses. A subtheme shares its theme's
-name only when it is the theme's only subtheme. `economic_themes.py` checks these rules every
-time it runs.
+Names have no "&" or parentheses. A subtheme has its theme's name only if it is the theme's
+only subtheme. `economic_themes.py` checks these rules every time it runs.
 
 ## Grouping principles
 
-Economics decides: a subtheme collects characteristics that measure the same thing. The data
-check it: clear misfits are moved. Where the two disagree, the economic grouping stays and the
-changelog records the exception. A score that combines several signals goes to the subtheme
-that best matches what it combines.
+Each subtheme holds characteristics that measure the same thing. We check the grouping in the
+data and move clear misfits. When the data disagree with the economics, we keep the economic
+grouping and list the exception in the changelog. A score that combines several signals goes
+to the subtheme that best matches what it combines.
 
 ## Files
 
-- `economic_themes.py` is the source of truth: the grouping, the signs, the descriptions and
-  the version. Running it writes `themes.csv` and `theme_descriptions.csv` to
+- `economic_themes.py` defines the grouping, the signs, the descriptions and the version.
+  Running it writes `themes.csv` and `theme_descriptions.csv` to
   `src/jkp/data/resources/themes/`.
-- `theme_diagnostics.py` checks how well each subtheme holds together in the U.S. data.
+- `theme_diagnostics.py` checks the grouping against correlations in the U.S. data.
 - `CHANGELOG_THEMES.md` records what changed in each version, and why.
 - Earlier versions are kept in `src/jkp/data/resources/themes/superseded_themes/vX.Y/`.
   `v0/` holds the original themes of Jensen, Kelly and Pedersen (2023), which the theme
