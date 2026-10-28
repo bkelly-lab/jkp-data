@@ -1,6 +1,7 @@
 """Tests for scripts/themes/theme_diagnostics.py: correlations, fits and the misfit rule."""
 
 import importlib.util
+import os
 from pathlib import Path
 
 import numpy as np
@@ -94,6 +95,33 @@ def test_planted_misfit_is_flagged(diag, toy):
     _, corr, themes = toy
     flagged = diag.misfits(diag.member_fits(corr, themes))
     assert flagged.select("feature", "best_other").rows() == [("b2", "A")]
+
+
+@pytest.mark.unit
+def test_load_corr_uses_cache_unless_input_is_newer(diag, tmp_path, monkeypatch):
+    feats = ["a", "b"]
+    cache = tmp_path / "corr.parquet"
+    pl.DataFrame({"feature": feats, "a": [1.0, 0.5], "b": [0.5, 1.0]}).write_parquet(cache)
+    usa = tmp_path / "USA.parquet"
+    recomputed = pl.DataFrame({"feature": feats, "a": [1.0, 0.9], "b": [0.9, 1.0]})
+    calls = []
+
+    def fake_compute_corr(path: Path, features: list[str]) -> pl.DataFrame:
+        calls.append(path)
+        return recomputed
+
+    monkeypatch.setattr(diag, "OUT_DIR", tmp_path)
+    monkeypatch.setattr(diag, "INPUT", usa)
+    monkeypatch.setattr(diag, "compute_corr", fake_compute_corr)
+
+    assert diag.load_corr(feats)[0, 1] == 0.5  # no input file: the cache is used
+    usa.touch()
+    os.utime(usa, (0, 0))
+    assert diag.load_corr(feats)[0, 1] == 0.5  # input older than the cache
+    newer = cache.stat().st_mtime + 10
+    os.utime(usa, (newer, newer))
+    assert diag.load_corr(feats)[0, 1] == 0.9  # input newer: recomputed
+    assert calls == [usa]
 
 
 @pytest.mark.unit

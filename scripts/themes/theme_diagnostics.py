@@ -117,7 +117,9 @@ def corr_with_composite(corr: np.ndarray, x: int, idx: np.ndarray, w: np.ndarray
 def load_corr(features: list[str]) -> np.ndarray:
     """Correlation matrix of features (diagonal 1, symmetric), from the cache when possible."""
     cache = OUT_DIR / "corr.parquet"
-    fresh = cache.exists() and cache.stat().st_mtime >= INPUT.stat().st_mtime
+    fresh = cache.exists() and (
+        not INPUT.exists() or cache.stat().st_mtime >= INPUT.stat().st_mtime
+    )
     cached = pl.read_parquet(cache) if fresh else None
     if cached is None or not set(features) <= set(cached["feature"]):
         print(f"Computing rank correlations from {INPUT} ({START} to {END})")
