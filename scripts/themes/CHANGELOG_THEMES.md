@@ -177,5 +177,6 @@ run of 3 October 2026 (commit 666e896, WRDS data downloaded that day):
 
 The 13 themes of Jensen, Kelly and Pedersen (2023), "Is There a Replication Crisis in
 Finance?", *Journal of Finance*, for 153 factors, derived by clustering factor returns. Archived
-in `superseded_themes/v0/cluster_labels.csv`. Still used by the theme portfolios in
-`jkp portfolio`.
+in `superseded_themes/v0/`. `cluster_labels.csv` gives each factor's theme, and
+`factor_directions.csv` gives the direction each factor was signed by, copied from
+`factor_details.xlsx`. Still used by the theme portfolios in `jkp portfolio`.

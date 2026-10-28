@@ -80,8 +80,8 @@ to the subtheme that best matches what it combines.
 - `theme_diagnostics.py` checks the grouping against correlations in the U.S. data.
 - `CHANGELOG_THEMES.md` records what changed in each version, and why.
 - Earlier versions are kept in `src/jkp/data/resources/themes/superseded_themes/vX.Y/`.
-  `v0/` holds the original themes of Jensen, Kelly and Pedersen (2023), which the theme
-  portfolios in `jkp portfolio` still use.
+  `v0/` holds the original themes of Jensen, Kelly and Pedersen (2023) and the direction each
+  factor was signed by. The theme portfolios in `jkp portfolio` still use v0.
 
 ## Versions
 
