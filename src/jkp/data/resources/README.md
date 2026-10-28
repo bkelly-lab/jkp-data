@@ -35,8 +35,8 @@ WRDS, CRSP, Compustat, or IBES vendor data:
   Jensen, Kelly, and Pedersen.
 - **`themes/themes.csv`** and **`themes/theme_descriptions.csv`** — The
   current version of the economic themes: each characteristic's theme,
-  subtheme and signs, and a description and factor name for each theme and
-  subtheme. Earlier versions are kept in
+  subtheme and signs, a description for each theme and subtheme, and notes
+  explaining signs and placements that may surprise. Earlier versions are kept in
   `themes/superseded_themes/`. Authored by Jensen, Kelly, and Pedersen. See
   `scripts/themes/` in the repository for the principles, versioning rules and
   changelog.

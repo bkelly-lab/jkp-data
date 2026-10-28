@@ -17,6 +17,10 @@ characteristic three signs, one per level. Each sign answers a yes-or-no questio
 | `theme_sign` | characteristics in a subtheme | Does more of the subtheme mean more of the theme? |
 | `factor_sign` | characteristics in a theme | Does more of the theme earn higher returns in the literature? |
 
+`factor_sign` mostly follows the majority direction of the theme's factors in Jensen, Kelly and
+Pedersen (2023). Where a sign may surprise, the `note` column says why: in `themes.csv` for
+`subtheme_sign`, and in `theme_descriptions.csv` for `theme_sign`.
+
 Multiplying a characteristic by its signs changes what a high value means:
 
 | Multiply by | A high value then means |
@@ -63,7 +67,7 @@ buys illiquid stocks. A high value of the Size characteristic means a large firm
 factor buys small firms.
 
 Names have no "&" or parentheses. A subtheme has its theme's name only if it is the theme's
-only subtheme. `economic_themes.py` checks these rules every time it runs.
+only subtheme. `tests/unit/test_themes.py` checks these rules.
 
 ## Grouping principles
 
@@ -74,9 +78,15 @@ to the subtheme that best matches what it combines.
 
 ## Files
 
-- `economic_themes.py` defines the grouping, the signs, the descriptions and the version.
-  Running it writes `themes.csv` and `theme_descriptions.csv` to
-  `src/jkp/data/resources/themes/`.
+- `themes.csv` and `theme_descriptions.csv`, in `src/jkp/data/resources/themes/`, are the
+  themes: edit them directly. `themes.csv` has one row per characteristic (theme, subtheme,
+  the three signs, `note`, version); `theme_descriptions.csv` has one row per theme and
+  subtheme (description, `note`, version). `note` is empty unless a sign needs explaining or
+  a characteristic stays in its subtheme although it fits another better in the data.
+- `tests/unit/test_themes.py` checks the files: each characteristic in one subtheme and each
+  subtheme in one theme, signs of ±1 that are constant where they should be, the naming
+  rules, a description for every group, one version, and a theme for every characteristic
+  that gets a factor portfolio.
 - `theme_diagnostics.py` checks the grouping against correlations in the U.S. data.
 - `CHANGELOG_THEMES.md` records what changed in each version, and why.
 - Earlier versions are kept in `src/jkp/data/resources/themes/superseded_themes/vX.Y/`.
@@ -89,7 +99,7 @@ Versions are numbered `vMAJOR.MINOR`; cite them as, for example, "JKP themes v1.
 version is never edited.
 
 - **Minor** (v1.0 to v1.1): characteristics are added to existing subthemes or moved between
-  them, a sign is changed, or descriptions are reworded.
+  them, a sign is changed, or descriptions or notes are reworded.
 - **Major** (v1.x to v2.0): a theme or subtheme is added, removed, renamed, split or merged.
 
 A minor version needs one co-author's approval on the pull request; a major version needs all
@@ -98,11 +108,11 @@ co-authors.
 ## Making a new version
 
 1. Copy the current `themes.csv` and `theme_descriptions.csv` to `superseded_themes/vX.Y/`.
-2. Edit `economic_themes.py`, including `VERSION`.
-3. Run `uv run python scripts/themes/theme_diagnostics.py` (it reads
-   `data/processed/characteristics/USA.parquet`; set `RERUN_CORR = True` after a new data
-   run). Move clear misfits, or note in the changelog why they stay. Check the signs the data
-   disagree with.
-4. Run `uv run python scripts/themes/economic_themes.py`. It checks the grouping, the signs and
-   the naming rules before writing the files.
+2. Edit `themes.csv` and `theme_descriptions.csv`, including `version` on every row.
+3. Run `uv run pytest tests/unit/test_themes.py`. It checks the grouping, the signs and the
+   naming rules.
+4. Run `uv run python scripts/themes/theme_diagnostics.py`. It reads
+   `data/processed/characteristics/USA.parquet` and recomputes its cached correlations when
+   that file is newer than the cache. Move clear misfits, or keep them and give the reason in
+   `note` and in the changelog. Check the signs the data disagree with.
 5. Add a changelog entry and open a pull request.

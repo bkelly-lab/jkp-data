@@ -16,7 +16,8 @@ Changes to the economic themes, newest first. See [README.md](README.md) for the
 A new grouping by economic meaning. It replaces the v0 themes, which were derived from
 statistics alone. It covers 402 characteristics (v0: 153) in 59 subthemes and 16 themes. The
 subthemes are a new, second level: each characteristic belongs to a subtheme, and each
-subtheme to a theme. Every characteristic with a v0 theme has a v1.0 theme.
+subtheme to a theme. Every characteristic with a v0 theme has a v1.0 theme. A `note` column
+in both files gives the reason for signs that may surprise and for the exceptions below.
 
 **Themes:** Value, Profitability, Fundamental momentum, Earnings quality, Investment,
 Intangibles, Operating efficiency, Issuance, Financial strength, Low risk, Size, Short-term
@@ -142,7 +143,8 @@ directions.
 ### Exceptions kept for economic reasons
 
 These characteristics fit another subtheme clearly better in the data: their fit there is 0.40
-or more, and at least 0.15 higher than with their own subtheme. They stay where they are.
+or more, and at least 0.15 higher than with their own subtheme. They stay where they are, and
+the reason is also in their `note` in `themes.csv`.
 
 | Characteristic | Subtheme | Fits better with | Why it stays |
 |---|---|---|---|
