@@ -41,15 +41,15 @@ subtheme,Equity payout,Issuance,Buybacks and total payout to shareholders.,v1.0
 subtheme,Debt issuance,Issuance,Net issuance and growth of debt.,v1.0
 subtheme,Liability growth,Issuance,"Growth in total, current and non-current liabilities, including debt.",v1.0
 subtheme,External financing,Issuance,Total net financing from debt and equity.,v1.0
-theme,Low leverage,Low leverage,Capital structure and financial strength.,v1.0
-subtheme,Book leverage,Low leverage,"Debt relative to book assets, book equity or book enterprise value.",v1.0
-subtheme,Market leverage,Low leverage,Debt relative to market equity or market enterprise value.,v1.0
-subtheme,Debt maturity,Low leverage,The share of debt and liabilities that is long-term.,v1.0
-subtheme,Cost of debt,Low leverage,Interest expense relative to debt.,v1.0
-subtheme,Preferred stock,Low leverage,Preferred stock outstanding and its growth.,v1.0
-subtheme,Balance sheet liquidity,Low leverage,Cash and current assets relative to liabilities or assets.,v1.0
-subtheme,Distress,Low leverage,Bankruptcy-risk and safety scores.,v1.0
-subtheme,Financial constraints,Low leverage,Kaplan–Zingales index.,v1.0
+theme,Financial strength,Financial strength,Capital structure and financial strength.,v1.0
+subtheme,Book leverage,Financial strength,"Debt relative to book assets, book equity or book enterprise value.",v1.0
+subtheme,Market leverage,Financial strength,Debt relative to market equity or market enterprise value.,v1.0
+subtheme,Debt maturity,Financial strength,The share of debt and liabilities that is long-term.,v1.0
+subtheme,Cost of debt,Financial strength,Interest expense relative to debt.,v1.0
+subtheme,Preferred stock,Financial strength,Preferred stock outstanding and its growth.,v1.0
+subtheme,Balance sheet liquidity,Financial strength,Cash and current assets relative to liabilities or assets.,v1.0
+subtheme,Distress,Financial strength,Bankruptcy-risk and safety scores.,v1.0
+subtheme,Financial constraints,Financial strength,Kaplan–Zingales index.,v1.0
 theme,Low risk,Low risk,Low return and earnings risk.,v1.0
 subtheme,Volatility,Low risk,Total and idiosyncratic return volatility.,v1.0
 subtheme,Lottery,Low risk,Largest daily returns over the past month.,v1.0

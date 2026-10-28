@@ -276,47 +276,47 @@ netis_gr1a,Issuance,External financing,1,1,-1,v1.0
 netis_gr3a,Issuance,External financing,1,1,-1,v1.0
 fincf_gr1a,Issuance,External financing,1,1,-1,v1.0
 fincf_gr3a,Issuance,External financing,1,1,-1,v1.0
-debt_at,Low leverage,Book leverage,1,-1,1,v1.0
-debt_be,Low leverage,Book leverage,1,-1,1,v1.0
-debt_bev,Low leverage,Book leverage,1,-1,1,v1.0
-debtlt_be,Low leverage,Book leverage,1,-1,1,v1.0
-debtlt_bev,Low leverage,Book leverage,1,-1,1,v1.0
-at_be,Low leverage,Book leverage,1,-1,1,v1.0
-be_bev,Low leverage,Book leverage,-1,-1,1,v1.0
-debt_me,Low leverage,Market leverage,1,-1,1,v1.0
-debt_mev,Low leverage,Market leverage,1,-1,1,v1.0
-debtlt_mev,Low leverage,Market leverage,1,-1,1,v1.0
-netdebt_me,Low leverage,Market leverage,1,-1,1,v1.0
-debtst_debt,Low leverage,Debt maturity,-1,1,1,v1.0
-debtlt_debt,Low leverage,Debt maturity,1,1,1,v1.0
-debtst_bev,Low leverage,Debt maturity,-1,1,1,v1.0
-debtst_mev,Low leverage,Debt maturity,-1,1,1,v1.0
-cl_lt,Low leverage,Debt maturity,-1,1,1,v1.0
-int_debt,Low leverage,Cost of debt,1,-1,1,v1.0
-int_debtlt,Low leverage,Cost of debt,1,-1,1,v1.0
-pstk_bev,Low leverage,Preferred stock,1,-1,1,v1.0
-pstk_mev,Low leverage,Preferred stock,1,-1,1,v1.0
-pstk_gr1,Low leverage,Preferred stock,1,-1,1,v1.0
-pstk_gr3,Low leverage,Preferred stock,1,-1,1,v1.0
-cash_at,Low leverage,Balance sheet liquidity,1,1,1,v1.0
-cash_bev,Low leverage,Balance sheet liquidity,1,1,1,v1.0
-cash_lt,Low leverage,Balance sheet liquidity,1,1,1,v1.0
-cash_cl,Low leverage,Balance sheet liquidity,1,1,1,v1.0
-caliq_cl,Low leverage,Balance sheet liquidity,1,1,1,v1.0
-ca_cl,Low leverage,Balance sheet liquidity,1,1,1,v1.0
-cash_me,Low leverage,Balance sheet liquidity,1,1,1,v1.0
-cash_mev,Low leverage,Balance sheet liquidity,1,1,1,v1.0
-aliq_at,Low leverage,Balance sheet liquidity,1,1,1,v1.0
-nwc_at,Low leverage,Balance sheet liquidity,1,1,1,v1.0
-sale_nwc,Low leverage,Balance sheet liquidity,-1,1,1,v1.0
-cash_gr1a,Low leverage,Balance sheet liquidity,1,1,1,v1.0
-cash_gr3a,Low leverage,Balance sheet liquidity,1,1,1,v1.0
-rec_act,Low leverage,Balance sheet liquidity,-1,1,1,v1.0
-tangibility,Low leverage,Balance sheet liquidity,1,1,1,v1.0
-o_score,Low leverage,Distress,1,-1,1,v1.0
-z_score,Low leverage,Distress,-1,-1,1,v1.0
-qmj_safety,Low leverage,Distress,-1,-1,1,v1.0
-kz_index,Low leverage,Financial constraints,1,-1,1,v1.0
+debt_at,Financial strength,Book leverage,1,-1,1,v1.0
+debt_be,Financial strength,Book leverage,1,-1,1,v1.0
+debt_bev,Financial strength,Book leverage,1,-1,1,v1.0
+debtlt_be,Financial strength,Book leverage,1,-1,1,v1.0
+debtlt_bev,Financial strength,Book leverage,1,-1,1,v1.0
+at_be,Financial strength,Book leverage,1,-1,1,v1.0
+be_bev,Financial strength,Book leverage,-1,-1,1,v1.0
+debt_me,Financial strength,Market leverage,1,-1,1,v1.0
+debt_mev,Financial strength,Market leverage,1,-1,1,v1.0
+debtlt_mev,Financial strength,Market leverage,1,-1,1,v1.0
+netdebt_me,Financial strength,Market leverage,1,-1,1,v1.0
+debtst_debt,Financial strength,Debt maturity,-1,1,1,v1.0
+debtlt_debt,Financial strength,Debt maturity,1,1,1,v1.0
+debtst_bev,Financial strength,Debt maturity,-1,1,1,v1.0
+debtst_mev,Financial strength,Debt maturity,-1,1,1,v1.0
+cl_lt,Financial strength,Debt maturity,-1,1,1,v1.0
+int_debt,Financial strength,Cost of debt,1,-1,1,v1.0
+int_debtlt,Financial strength,Cost of debt,1,-1,1,v1.0
+pstk_bev,Financial strength,Preferred stock,1,-1,1,v1.0
+pstk_mev,Financial strength,Preferred stock,1,-1,1,v1.0
+pstk_gr1,Financial strength,Preferred stock,1,-1,1,v1.0
+pstk_gr3,Financial strength,Preferred stock,1,-1,1,v1.0
+cash_at,Financial strength,Balance sheet liquidity,1,1,1,v1.0
+cash_bev,Financial strength,Balance sheet liquidity,1,1,1,v1.0
+cash_lt,Financial strength,Balance sheet liquidity,1,1,1,v1.0
+cash_cl,Financial strength,Balance sheet liquidity,1,1,1,v1.0
+caliq_cl,Financial strength,Balance sheet liquidity,1,1,1,v1.0
+ca_cl,Financial strength,Balance sheet liquidity,1,1,1,v1.0
+cash_me,Financial strength,Balance sheet liquidity,1,1,1,v1.0
+cash_mev,Financial strength,Balance sheet liquidity,1,1,1,v1.0
+aliq_at,Financial strength,Balance sheet liquidity,1,1,1,v1.0
+nwc_at,Financial strength,Balance sheet liquidity,1,1,1,v1.0
+sale_nwc,Financial strength,Balance sheet liquidity,-1,1,1,v1.0
+cash_gr1a,Financial strength,Balance sheet liquidity,1,1,1,v1.0
+cash_gr3a,Financial strength,Balance sheet liquidity,1,1,1,v1.0
+rec_act,Financial strength,Balance sheet liquidity,-1,1,1,v1.0
+tangibility,Financial strength,Balance sheet liquidity,1,1,1,v1.0
+o_score,Financial strength,Distress,1,-1,1,v1.0
+z_score,Financial strength,Distress,-1,-1,1,v1.0
+qmj_safety,Financial strength,Distress,-1,-1,1,v1.0
+kz_index,Financial strength,Financial constraints,1,-1,1,v1.0
 rvol_21d,Low risk,Volatility,1,-1,1,v1.0
 rvol_252d,Low risk,Volatility,1,-1,1,v1.0
 rvolhl_21d,Low risk,Volatility,1,-1,1,v1.0

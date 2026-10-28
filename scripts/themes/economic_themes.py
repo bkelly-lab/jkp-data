@@ -65,7 +65,7 @@ THEMES: dict[str, list[str]] = {
         "Liability growth",
         "External financing",
     ],
-    "Low leverage": [
+    "Financial strength": [
         "Book leverage",
         "Market leverage",
         "Debt maturity",
@@ -363,7 +363,7 @@ SUBTHEMES: dict[str, list[str]] = {
         "fincf_gr1a",
         "fincf_gr3a",
     ],
-    # Low leverage
+    # Financial strength
     "Book leverage": [
         "debt_at",
         "debt_be",
@@ -563,7 +563,7 @@ NEGATIVE_IN_THEME: set[str] = {
     "Capital intensity",  # Operating efficiency: more input per unit of output
     "Labor intensity",  # Operating efficiency
     "Equity payout",  # Issuance: payout is the reverse of issuance
-    "Book leverage",  # Low leverage: more debt, distress or constraints
+    "Book leverage",  # Financial strength: more debt, distress or constraints means less strength
     "Market leverage",
     "Cost of debt",
     "Preferred stock",
@@ -588,7 +588,7 @@ FACTOR_SIGNS: dict[str, int] = {
     "Intangibles": 1,
     "Operating efficiency": 1,
     "Issuance": -1,
-    "Low leverage": 1,
+    "Financial strength": 1,
     "Low risk": 1,
     "Size": -1,
     "Short-term reversal": 1,
@@ -608,7 +608,7 @@ THEME_DESCRIPTIONS: dict[str, str] = {
     "Intangibles": "Spending on intangible capital, such as R&D and advertising.",
     "Operating efficiency": "How the firm uses its assets and labor.",
     "Issuance": "Net capital raised from shareholders and creditors.",
-    "Low leverage": "Capital structure and financial strength.",
+    "Financial strength": "Capital structure and financial strength.",
     "Low risk": "Low return and earnings risk.",
     "Size": "Firm size, age and trading activity.",
     "Short-term reversal": "Last month's return, with the sign reversed.",

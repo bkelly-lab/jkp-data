@@ -19,18 +19,18 @@ subthemes are a new, second level: each characteristic belongs to a subtheme, an
 subtheme to a theme. Every characteristic with a v0 theme has a v1.0 theme.
 
 **Themes:** Value, Profitability, Fundamental momentum, Earnings quality, Investment,
-Intangibles, Operating efficiency, Issuance, Low leverage, Low risk, Size, Short-term reversal,
-Momentum, Long-term reversal, Seasonality, Quality. See `theme_descriptions.csv` for the
-subthemes.
+Intangibles, Operating efficiency, Issuance, Financial strength, Low risk, Size, Short-term
+reversal, Momentum, Long-term reversal, Seasonality, Quality. See `theme_descriptions.csv` for
+the subthemes.
 
 **Names.** Each theme and subtheme has one name, used for both its characteristic and its
 factor. It is the name the asset pricing literature uses for the factor. A high value means
 more of what the name says, and the signs say which side the factor buys. The Size factor, for
-example, buys small firms. Four names also give the side, as in the literature: Low risk, Low
-leverage, Short-term reversal and Long-term reversal. All 13 v0 theme names are still used, ten
-as themes and three as subthemes (Accruals, Debt issuance and Profit growth), but some now hold
-different characteristics. A subtheme has its theme's name only if it is the theme's only
-subtheme.
+example, buys small firms. Three names also give the side, as in the literature: Low risk,
+Short-term reversal and Long-term reversal. Twelve of the 13 v0 theme names are still used,
+nine as themes and three as subthemes (Accruals, Debt issuance and Profit growth), but some now
+hold different characteristics. The thirteenth, Low Leverage, is replaced by Financial
+strength. A subtheme has its theme's name only if it is the theme's only subtheme.
 
 ### Signs
 
@@ -54,10 +54,10 @@ by `theme_sign`, so every subtheme counts equally.
   non-annual seasonality measures for years 6-20. These keep the sign their definition implies.
 - 17 subthemes have `theme_sign` −1: Equity duration (Value), Accruals (Earnings quality),
   Capital intensity and Labor intensity (Operating efficiency), Equity payout (Issuance),
-  Illiquidity (Size), all five subthemes of Low risk, and all of Low leverage except Debt
-  maturity and Balance sheet liquidity. Where the data say little, we chose the sign on
-  economic grounds: Debt maturity (+1) and Cost of debt (−1) in Low leverage, and the signs in
-  Earnings quality and Operating efficiency.
+  Illiquidity (Size), all five subthemes of Low risk, and all of Financial strength except
+  Debt maturity and Balance sheet liquidity. Where the data say little, we chose the sign on
+  economic grounds: Debt maturity (+1) and Cost of debt (−1) in Financial strength, and the
+  signs in Earnings quality and Operating efficiency.
 - The subtheme Special items has `theme_sign` +1. Special items are mostly write-downs and other
   one-off charges, so a high (less negative) value means fewer charges and higher earnings
   quality. After signing, they correlate weakly and negatively with Accruals and Tax burden
@@ -83,7 +83,12 @@ directions.
 - **Naming.** The broad groups are called themes, as in the original JKP paper, and the finer
   groups subthemes. Each group has one name, the name of its factor in the literature. We
   dropped separate names for the characteristic and the factor, because two names for one group
-  are confusing. Names have no "&" or parentheses. A group that needed "&" was split.
+  are confusing. Names have no "&" or parentheses. A group that needed "&" was split. The
+  theme with leverage, debt terms, liquidity and distress is called Financial strength,
+  because only two of its eight subthemes are leverage ratios. So the v0 name Low Leverage is
+  no longer a theme name. Only 5 of the 11 v0 Low Leverage characteristics are in Financial
+  strength. The others moved to Intangibles, Low risk, Size and Value. Of the 41
+  characteristics in Financial strength, 31 were not in v0.
 - **Past returns.** Momentum is split by window: months 2-6 (Momentum 2-6), months 7-12
   (Momentum 7-12), and months 2-12 together with similar windows of 9 to 24 months and the
   52-week high (Momentum 2-12). Returns over months 2-6 and 7-12 correlate only 0.07. Last month
@@ -111,10 +116,10 @@ directions.
 - **Value.** Book equity, assets and sales relative to market value form Cheapness. Gross profit
   to price is an earnings yield, and cash-based operating profit to price is a cash flow yield.
   Equity duration is its own subtheme.
-- **Low leverage.** Book and market leverage are separate subthemes. They correlate 0.87, but
-  market leverage also moves with value (0.47, against 0.14 for book leverage), because the
-  share price is in the denominator. Yields and profitability are split for the same reason.
-  Debt terms are split into maturity and cost.
+- **Financial strength.** Book and market leverage are separate subthemes. They correlate
+  0.87, but market leverage also moves with value (0.47, against 0.14 for book leverage),
+  because the share price is in the denominator. Yields and profitability are split for the
+  same reason. Debt terms are split into maturity and cost.
 - **Issuance.** Most of the theme is net issuance of equity, debt or both. Payout counts as
   negative issuance. Changes in equity and debt issuance join their issuance subthemes. Net
   total financing is External financing. Growth in total liabilities, which include debt, is

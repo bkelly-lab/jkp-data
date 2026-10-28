@@ -53,10 +53,9 @@ The characteristic and the factor share one name, the one the asset pricing lite
 for the factor, such as Value, Investment or Momentum. A high value of the characteristic
 means more of what the name says, and the signs say which side the factor buys. As in Fama and
 French, the Size factor buys small firms, and the Investment factor buys firms that invest
-little. Most names say only what the factor sorts on. Four also give the side, because that is
-how the literature names these factors: Low risk, Low leverage, Short-term reversal and
-Long-term reversal. For these four, a high value means low risk, low leverage or a low past
-return.
+little. Most names say only what the factor sorts on. Three also give the side, because that
+is how the literature names these factors: Low risk, Short-term reversal and Long-term
+reversal. For these three, a high value means low risk or a low past return.
 
 For example, `ami_126d` is in the subtheme Illiquidity, which is in the theme Size. A high
 value of the Illiquidity characteristic means an illiquid stock, and the Illiquidity factor
