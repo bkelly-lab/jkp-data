@@ -218,7 +218,7 @@ class TestSourceFilter:
         assert pf_returns.height > 0
 
         # Compute expected n: rows surviving size_grp/me/ret_exc_lead1m
-        # non-null filters AND the source filter AND char_a non-null AND
+        # non-null filters AND the source filter AND char_a neither null nor NaN AND
         # bp_n>=bp_min_n per eom. The bp_n filter applies to every row whose
         # eom has enough bp stocks; with ~80 rows per eom and the size_grp
         # distribution, bp_n is comfortably >= 5.
@@ -227,6 +227,7 @@ class TestSourceFilter:
             & pl.col("me").is_not_null()
             & pl.col("ret_exc_lead1m").is_not_null()
             & pl.col("char_a").is_not_null()
+            & pl.col("char_a").is_not_nan()
         )
         if source == ["CRSP"]:
             expected = expected.filter(pl.col("source_crsp") == 1)
