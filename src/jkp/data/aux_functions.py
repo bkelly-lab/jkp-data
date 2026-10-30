@@ -8801,9 +8801,10 @@ def save_main_data(paths: DataPaths) -> None:
     for d in out_dir.glob("excntry=*"):
         if d.is_dir():
             country = d.name[len("excntry=") :]
+            # DuckDB can split one partition across several part files; keep them all.
             part_files = sorted(d.glob("*.parquet"))
             if part_files:
-                part_files[0].rename(out_dir / f"{country}.parquet")
+                pl.scan_parquet(part_files).sink_parquet(out_dir / f"{country}.parquet")
             shutil.rmtree(d)
 
 
@@ -8889,9 +8890,10 @@ def save_daily_ret(paths: DataPaths):
     for d in out_dir.glob("excntry=*"):
         if d.is_dir():
             country = d.name[len("excntry=") :]
+            # DuckDB can split one partition across several part files; keep them all.
             part_files = sorted(d.glob("*.parquet"))
             if part_files:
-                part_files[0].rename(out_dir / f"{country}.parquet")
+                pl.scan_parquet(part_files).sink_parquet(out_dir / f"{country}.parquet")
             shutil.rmtree(d)
 
 
