@@ -9,7 +9,15 @@ import polars as pl
 import polars.testing
 import pytest
 
-from jkp.data.aux_functions import save_daily_ret, save_main_data, setup_folder_structure
+from jkp.data.aux_functions import (
+    save_accounting_data,
+    save_daily_ret,
+    save_full_files_and_cleanup,
+    save_main_data,
+    save_monthly_ret,
+    save_output_files,
+    setup_folder_structure,
+)
 
 DAILY_RET_COLS = [
     "id",
@@ -131,3 +139,238 @@ class TestCountrySplitWriters:
             polars.testing.assert_frame_equal(
                 actual.sort(keys), expected.sort(keys), check_exact=True
             )
+
+
+OTHER_OUTPUT_FILES = [
+    "market_returns.parquet",
+    "market_returns_daily.parquet",
+    "nyse_cutoffs.parquet",
+    "return_cutoffs.parquet",
+    "return_cutoffs_daily.parquet",
+    "ap_factors_monthly.parquet",
+    "ap_factors_daily.parquet",
+]
+
+MONTHLY_RET_COLS = [
+    "excntry",
+    "id",
+    "source_crsp",
+    "eom",
+    "me",
+    "ret_exc",
+    "ret",
+    "ret_local",
+    "ret_exc_wins",
+    "ret_intraday",
+    "ret_overnight",
+    "ret_intraday_local",
+    "ret_overnight_local",
+    "ret_intraday_lead1m",
+    "ret_overnight_lead1m",
+    "ret_intraday_local_lead1m",
+    "ret_overnight_local_lead1m",
+]
+
+
+def _monthly_frame(n: int = 20) -> pl.DataFrame:
+    """world_msf_output-shaped frame with an extra column that must not be published."""
+    return pl.DataFrame(
+        {
+            "excntry": ["USA", "CAN"] * (n // 2),
+            "id": list(range(n)),
+            "source_crsp": [1, 0] * (n // 2),
+            "eom": [date(2020, 1, 31)] * n,
+            "me": [float(i) * 1000.5 for i in range(n)],
+            **{c: [i / 100 for i in range(n)] for c in MONTHLY_RET_COLS[5:]},
+            "ret_local": [i / 50 for i in range(n)],
+            "extra_col": ["x"] * n,
+        }
+    )
+
+
+def _bit_width(dtype: pl.DataType) -> int:
+    """Storage width in bits for numeric dtypes; 0 for non-numeric ones."""
+    digits = "".join(ch for ch in str(dtype) if ch.isdigit())
+    return int(digits) if dtype.is_numeric() and digits else 0
+
+
+class TestSaveOutputFiles:
+    def test_files_copied_byte_identical_and_interim_kept(self, test_paths):
+        setup_folder_structure(test_paths)
+        for i, name in enumerate(OTHER_OUTPUT_FILES):
+            pl.DataFrame({"a": [i, i + 1]}).write_parquet(test_paths.interim_dir / name)
+
+        save_output_files(test_paths)
+
+        for name in OTHER_OUTPUT_FILES:
+            src = test_paths.interim_dir / name
+            dst = test_paths.processed_dir / "other_output" / name
+            assert src.exists()
+            assert dst.read_bytes() == src.read_bytes()
+
+    def test_missing_source_raises(self, test_paths):
+        setup_folder_structure(test_paths)
+        for name in OTHER_OUTPUT_FILES[:-1]:
+            pl.DataFrame({"a": [1]}).write_parquet(test_paths.interim_dir / name)
+
+        with pytest.raises(FileNotFoundError):
+            save_output_files(test_paths)
+
+
+class TestSaveDailyRet:
+    def _run(self, test_paths, data: pl.DataFrame) -> None:
+        data.write_parquet(test_paths.interim_dir / "world_dsf_output.parquet")
+        save_daily_ret(test_paths)
+
+    def test_null_country_goes_to_null_country_file(self, test_paths):
+        setup_folder_structure(test_paths)
+        data = _daily_frame(["USA", "CAN"], n_per_country=5)
+        data = data.with_columns(
+            pl.when(pl.col("id") < 3).then(None).otherwise(pl.col("excntry")).alias("excntry")
+        )
+
+        self._run(test_paths, data)
+
+        published = _read_country_files(
+            test_paths.processed_dir / "return_data/daily_rets_by_country"
+        )
+        assert set(published) == {"USA", "CAN", "null_country"}
+        assert sorted(published["null_country"]["id"].to_list()) == [0, 1, 2]
+
+    def test_no_partition_folders_remain_and_columns_exact(self, test_paths):
+        setup_folder_structure(test_paths)
+        data = _daily_frame(["USA", "CAN"], n_per_country=5).with_columns(extra=pl.lit("x"))
+
+        self._run(test_paths, data)
+
+        out_dir = test_paths.processed_dir / "return_data/daily_rets_by_country"
+        assert list(out_dir.glob("excntry=*")) == []
+        for df in _read_country_files(out_dir).values():
+            assert df.columns == DAILY_RET_COLS
+
+    def test_second_run_overwrites(self, test_paths):
+        setup_folder_structure(test_paths)
+        data = _daily_frame(["USA", "CAN"], n_per_country=5)
+
+        self._run(test_paths, data)
+        self._run(test_paths, data)
+
+        published = _read_country_files(
+            test_paths.processed_dir / "return_data/daily_rets_by_country"
+        )
+        assert sum(df.height for df in published.values()) == data.height
+
+
+class TestSaveMonthlyRet:
+    def _out(self, test_paths) -> pl.DataFrame:
+        return pl.read_parquet(
+            test_paths.processed_dir / "return_data" / "world_ret_monthly.parquet"
+        )
+
+    def test_selects_exact_columns_in_order(self, test_paths):
+        setup_folder_structure(test_paths)
+        _monthly_frame().write_parquet(test_paths.interim_dir / "world_msf_output.parquet")
+
+        save_monthly_ret(test_paths)
+
+        assert self._out(test_paths).columns == MONTHLY_RET_COLS
+
+    def test_missing_required_column_raises(self, test_paths):
+        setup_folder_structure(test_paths)
+        _monthly_frame().drop("ret_local").write_parquet(
+            test_paths.interim_dir / "world_msf_output.parquet"
+        )
+
+        with pytest.raises(pl.exceptions.ColumnNotFoundError):
+            save_monthly_ret(test_paths)
+
+    def test_values_equal_shrunk_input_and_dtypes_not_wider(self, test_paths):
+        setup_folder_structure(test_paths)
+        data = _monthly_frame()
+        data.write_parquet(test_paths.interim_dir / "world_msf_output.parquet")
+
+        save_monthly_ret(test_paths)
+
+        expected = data.select(MONTHLY_RET_COLS).select(pl.all().shrink_dtype())
+        actual = self._out(test_paths)
+        polars.testing.assert_frame_equal(actual, expected, check_exact=True)
+        for col_name in MONTHLY_RET_COLS:
+            assert _bit_width(actual[col_name].dtype) <= _bit_width(data[col_name].dtype)
+
+
+class TestSaveAccountingData:
+    def test_null_source_rows_removed(self, test_paths):
+        setup_folder_structure(test_paths)
+        for name, offset in (("acc_std_qtr", 0), ("acc_std_ann", 100)):
+            pl.DataFrame(
+                {
+                    "gvkey": [f"{offset + i:06d}" for i in range(6)],
+                    "source": ["a", None, "b", None, "c", "d"],
+                    "at": [float(i) for i in range(6)],
+                }
+            ).write_parquet(test_paths.interim_dir / f"{name}.parquet")
+
+        save_accounting_data(test_paths)
+
+        for name, out in (("acc_std_qtr", "quarterly"), ("acc_std_ann", "annual")):
+            src = pl.read_parquet(test_paths.interim_dir / f"{name}.parquet")
+            expected = src.filter(pl.col("source").is_not_null())
+            actual = pl.read_parquet(
+                test_paths.processed_dir / "accounting_data" / f"{out}.parquet"
+            )
+            assert actual.height == 4
+            polars.testing.assert_frame_equal(actual, expected, check_exact=True)
+
+
+class TestSaveFullFilesAndCleanup:
+    def _setup(self, test_paths) -> tuple[pl.DataFrame, pl.DataFrame]:
+        setup_folder_structure(test_paths)
+        dsf = _daily_frame(["USA", "CAN"], n_per_country=5)
+        wd = _world_data_frame(["USA", "CAN"], n_per_country=5)
+        dsf.write_parquet(test_paths.interim_dir / "world_dsf_output.parquet")
+        wd.write_parquet(test_paths.interim_dir / "world_data_output.parquet")
+        (test_paths.interim_dir / "sub").mkdir()
+        (test_paths.interim_dir / "sub" / "f.txt").write_text("x")
+        (test_paths.raw_dir / "sub2").mkdir(parents=True, exist_ok=True)
+        (test_paths.raw_dir / "sub2" / "g.txt").write_text("y")
+        (test_paths.raw_dir / "loose.txt").write_text("z")
+        return dsf, wd
+
+    def test_full_files_match_inputs(self, test_paths):
+        dsf, wd = self._setup(test_paths)
+
+        save_full_files_and_cleanup(test_paths, clear_interim=False)
+
+        for expected, path in (
+            (dsf, test_paths.processed_dir / "return_data" / "world_dsf.parquet"),
+            (wd, test_paths.processed_dir / "characteristics" / "world_data.parquet"),
+        ):
+            polars.testing.assert_frame_equal(
+                pl.read_parquet(path),
+                expected.select(pl.all().shrink_dtype()),
+                check_exact=True,
+            )
+
+    def test_clear_interim_true_empties_but_keeps_folders(self, test_paths):
+        self._setup(test_paths)
+        before = sorted(p.name for p in test_paths.processed_dir.rglob("*"))
+
+        save_full_files_and_cleanup(test_paths, clear_interim=True)
+
+        assert test_paths.interim_dir.is_dir()
+        assert test_paths.raw_dir.is_dir()
+        assert list(test_paths.interim_dir.iterdir()) == []
+        assert list(test_paths.raw_dir.iterdir()) == []
+        after = {p.name for p in test_paths.processed_dir.rglob("*")}
+        assert set(before) <= after
+        assert {"world_dsf.parquet", "world_data.parquet"} <= after
+
+    def test_clear_interim_false_leaves_folders_intact(self, test_paths):
+        self._setup(test_paths)
+
+        save_full_files_and_cleanup(test_paths, clear_interim=False)
+
+        assert (test_paths.interim_dir / "world_dsf_output.parquet").exists()
+        assert (test_paths.interim_dir / "sub" / "f.txt").exists()
+        assert (test_paths.raw_dir / "sub2" / "g.txt").exists()
+        assert (test_paths.raw_dir / "loose.txt").exists()
