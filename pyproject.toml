@@ -143,13 +143,13 @@ ignore = [
 # they add ~100 pytest/mock false positives, and test-only helpers are listed below.
 paths = ["src/jkp/data"]
 min_confidence = 60
-ignore_decorators = ["@app.command", "@app.callback"]  # Typer registers these
+ignore_decorators = ["@app.command", "@app.callback"]  # Typer commands in cli.py are only called via the decorator
 ignore_names = [
     "__getattr__",      # module-level lazy-import hooks (__init__.py, portfolio.py)
     "__dir__",
     "csv",              # OutputFormat enum member, selected by CLI string value
-    "bo_false",         # documented reusable helper (CLAUDE.md), used only by tests
-    "get_output_format",  # used only by tests
+    "bo_false",         # reusable helper named in CLAUDE.md; currently only tests call it
+    "get_output_format",  # public getter paired with configure_output_format
 ]
 
 [tool.pyright]

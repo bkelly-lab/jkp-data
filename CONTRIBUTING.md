@@ -68,7 +68,7 @@ We use [vulture](https://github.com/jendrikseipp/vulture) to find unused functio
 vulture
 ```
 
-If it flags something that is genuinely used (e.g. registered by a decorator or called dynamically), add its name to `ignore_names` under `[tool.vulture]` in `pyproject.toml` with a short comment. Otherwise, delete the dead code.
+Delete dead code it flags. For a false positive (e.g. called dynamically) or a helper deliberately kept, add its name to `ignore_names` under `[tool.vulture]` in `pyproject.toml` with a comment saying why.
 
 ## Type Checking
 
