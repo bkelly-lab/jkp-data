@@ -18,6 +18,9 @@ uv sync
 uv run ruff check src/jkp/data/ tests/
 uv run ruff format --check src/jkp/data/ tests/
 
+# Run dead-code detection (blocking in CI; silence a genuine false positive via ignore_names in [tool.vulture])
+uv run vulture
+
 # Run type checking (informational, not blocking in CI)
 uv run pyright src/jkp/data/
 

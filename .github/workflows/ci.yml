@@ -57,6 +57,9 @@ jobs:
       - name: Ruff format check
         run: uv run ruff format --check src/jkp/data/ tests/
 
+      - name: Dead code check (vulture)
+        run: uv run vulture
+
       - name: Type check (pyright)
         continue-on-error: true  # Informational until type issues are resolved
         run: uv run pyright src/jkp/data/
