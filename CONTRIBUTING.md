@@ -68,7 +68,7 @@ We use [vulture](https://github.com/jendrikseipp/vulture) to find unused functio
 vulture
 ```
 
-Delete dead code it flags. For a false positive (e.g. called dynamically) or a helper deliberately kept, add its name to `ignore_names` under `[tool.vulture]` in `pyproject.toml` with a comment saying why.
+Delete dead code it flags, after checking that nothing outside `src/jkp/data/` (tests, scripts) still calls it. For a false positive (e.g. called dynamically) or a helper deliberately kept, add its name to `ignore_names` under `[tool.vulture]` in `pyproject.toml` with a comment saying why.
 
 ## Type Checking
 

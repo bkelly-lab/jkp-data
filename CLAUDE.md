@@ -151,7 +151,8 @@ Additional Claude Code-specific steps when making changes:
 4. **Verify before opening a PR:**
    - All existing tests pass: `uv run pytest tests/unit/`
    - New functions have corresponding unit tests (use the test-scaffolder agent if needed)
-   - Code passes lint and format checks: `uv run ruff check src/jkp/data/ tests/ && uv run ruff format --check src/jkp/data/ tests/ && uv run vulture`
+   - Code passes lint and format checks: `uv run ruff check src/jkp/data/ tests/ && uv run ruff format --check src/jkp/data/ tests/`
+   - No dead code: `uv run vulture`
    - Changed code follows project conventions: run `/review-code`
 
 5. **Open a pull request** — Reference the issue in the PR description. The PR template will guide you through the required sections.
