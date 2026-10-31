@@ -7,9 +7,9 @@ from datetime import date
 from pathlib import Path
 
 import polars as pl
-import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
+from polars.testing import assert_frame_equal
 
 from jkp.data import aux_functions as af
 from jkp.data.paths import DataPaths
@@ -263,7 +263,7 @@ class TestMergeSaveInvariants:
         )
     )
     @SETTINGS
-    def test_save_monthly_ret_preserves_values(self, rows) -> None:
+    def test_save_monthly_ret_preserves_values_and_dtypes(self, rows) -> None:
         frame = pl.DataFrame(
             {
                 "excntry": ["USA"] * len(rows),
@@ -280,29 +280,4 @@ class TestMergeSaveInvariants:
             frame.write_parquet(paths.interim_dir / "world_msf_output.parquet")
             af.save_monthly_ret(paths)
             out = pl.read_parquet(paths.processed_dir / "return_data" / "world_ret_monthly.parquet")
-        assert out.columns == frame.columns
-        for c in out.columns:
-            assert out[c].cast(frame[c].dtype).to_list() == frame[c].to_list(), c
-
-    @pytest.mark.xfail(
-        strict=True,
-        reason="Expr.shrink_dtype is a deprecated no-op in polars 1.40; save_monthly_ret keeps Int64/Float64",
-    )
-    def test_save_monthly_ret_actually_shrinks_dtypes(self, test_paths: DataPaths) -> None:
-        frame = pl.DataFrame(
-            {
-                "excntry": ["USA"],
-                "id": [1],
-                "source_crsp": [1],
-                "eom": [date(2020, 1, 31)],
-                "me": [1.0],
-                **{c: [0.5] for c in RET_COLS},
-            }
-        )
-        frame.write_parquet(test_paths.interim_dir / "world_msf_output.parquet")
-        af.save_monthly_ret(test_paths)
-        out = pl.read_parquet(
-            test_paths.processed_dir / "return_data" / "world_ret_monthly.parquet"
-        )
-        assert out["id"].dtype != pl.Int64
-        assert out["source_crsp"].dtype != pl.Int64
+        assert_frame_equal(out, frame, check_exact=True)

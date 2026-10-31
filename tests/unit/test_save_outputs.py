@@ -119,6 +119,22 @@ class TestCountrySplitWriters:
         ids = pl.concat(df.select("id") for df in published.values())["id"].sort()
         assert ids.to_list() == data["id"].sort().to_list()
 
+    def test_null_country_goes_to_null_country_file(
+        self, test_paths, writer, input_name, out_subdir, build, keys
+    ):
+        setup_folder_structure(test_paths)
+        data = build(["USA", "CAN"], n_per_country=5)
+        data = data.with_columns(
+            pl.when(pl.col("id") < 3).then(None).otherwise(pl.col("excntry")).alias("excntry")
+        )
+        data.write_parquet(test_paths.interim_dir / input_name)
+
+        writer(test_paths)
+
+        published = _read_country_files(test_paths.processed_dir / out_subdir)
+        assert set(published) == {"USA", "CAN", "null_country"}
+        assert sorted(published["null_country"]["id"].to_list()) == [0, 1, 2]
+
     def test_country_files_equal_input_rows(
         self, test_paths, writer, input_name, out_subdir, build, keys
     ):
@@ -129,7 +145,7 @@ class TestCountrySplitWriters:
 
         writer(test_paths)
 
-        # save_main_data rewrites its input (adds me_lag1, shrinks dtypes) before splitting.
+        # save_main_data rewrites its input (adds me_lag1) before splitting.
         expected_all = pl.read_parquet(test_paths.interim_dir / input_name)
         published = _read_country_files(test_paths.processed_dir / out_subdir)
         assert set(published) == {"USA", "CAN", "GBR"}
@@ -188,12 +204,6 @@ def _monthly_frame(n: int = 20) -> pl.DataFrame:
     )
 
 
-def _bit_width(dtype: pl.DataType) -> int:
-    """Storage width in bits for numeric dtypes; 0 for non-numeric ones."""
-    digits = "".join(ch for ch in str(dtype) if ch.isdigit())
-    return int(digits) if dtype.is_numeric() and digits else 0
-
-
 class TestSaveOutputFiles:
     def test_files_copied_byte_identical_and_interim_kept(self, test_paths):
         setup_folder_structure(test_paths)
@@ -221,21 +231,6 @@ class TestSaveDailyRet:
     def _run(self, test_paths, data: pl.DataFrame) -> None:
         data.write_parquet(test_paths.interim_dir / "world_dsf_output.parquet")
         save_daily_ret(test_paths)
-
-    def test_null_country_goes_to_null_country_file(self, test_paths):
-        setup_folder_structure(test_paths)
-        data = _daily_frame(["USA", "CAN"], n_per_country=5)
-        data = data.with_columns(
-            pl.when(pl.col("id") < 3).then(None).otherwise(pl.col("excntry")).alias("excntry")
-        )
-
-        self._run(test_paths, data)
-
-        published = _read_country_files(
-            test_paths.processed_dir / "return_data/daily_rets_by_country"
-        )
-        assert set(published) == {"USA", "CAN", "null_country"}
-        assert sorted(published["null_country"]["id"].to_list()) == [0, 1, 2]
 
     def test_no_partition_folders_remain_and_columns_exact(self, test_paths):
         setup_folder_structure(test_paths)
@@ -284,18 +279,16 @@ class TestSaveMonthlyRet:
         with pytest.raises(pl.exceptions.ColumnNotFoundError):
             save_monthly_ret(test_paths)
 
-    def test_values_equal_shrunk_input_and_dtypes_not_wider(self, test_paths):
+    def test_values_and_dtypes_equal_input(self, test_paths):
         setup_folder_structure(test_paths)
         data = _monthly_frame()
         data.write_parquet(test_paths.interim_dir / "world_msf_output.parquet")
 
         save_monthly_ret(test_paths)
 
-        expected = data.select(MONTHLY_RET_COLS).select(pl.all().shrink_dtype())
-        actual = self._out(test_paths)
-        polars.testing.assert_frame_equal(actual, expected, check_exact=True)
-        for col_name in MONTHLY_RET_COLS:
-            assert _bit_width(actual[col_name].dtype) <= _bit_width(data[col_name].dtype)
+        polars.testing.assert_frame_equal(
+            self._out(test_paths), data.select(MONTHLY_RET_COLS), check_exact=True
+        )
 
 
 class TestSaveAccountingData:
@@ -345,11 +338,7 @@ class TestSaveFullFilesAndCleanup:
             (dsf, test_paths.processed_dir / "return_data" / "world_dsf.parquet"),
             (wd, test_paths.processed_dir / "characteristics" / "world_data.parquet"),
         ):
-            polars.testing.assert_frame_equal(
-                pl.read_parquet(path),
-                expected.select(pl.all().shrink_dtype()),
-                check_exact=True,
-            )
+            polars.testing.assert_frame_equal(pl.read_parquet(path), expected, check_exact=True)
 
     def test_clear_interim_true_empties_but_keeps_folders(self, test_paths):
         self._setup(test_paths)

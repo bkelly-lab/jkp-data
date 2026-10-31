@@ -21,7 +21,7 @@ EXPECTED_PROCESSED = {
     "characteristics/DEU.parquet",
     "characteristics/GBR.parquet",
     "characteristics/USA.parquet",
-    "characteristics/__HIVE_DEFAULT_PARTITION__.parquet",
+    "characteristics/null_country.parquet",
     "characteristics/world_data.parquet",
     "return_data/daily_rets_by_country/DEU.parquet",
     "return_data/daily_rets_by_country/GBR.parquet",
@@ -187,13 +187,6 @@ class TestSaveTail:
             11
         ]  # id 12 has a null primary_sec
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "save_main_data writes the null-excntry characteristics file as "
-            "__HIVE_DEFAULT_PARTITION__.parquet while save_daily_ret uses null_country"
-        ),
-    )
     def test_null_excntry_characteristics_file_named_null_country(self, save_tail: dict) -> None:
         chars = save_tail["paths"].processed_dir / "characteristics"
         assert (chars / "null_country.parquet").exists()
