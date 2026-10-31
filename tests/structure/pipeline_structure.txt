@@ -469,6 +469,7 @@ char portfolio zero_trades_252d
 chlog 01-15-2021
 chlog 01-25-2021
 chlog 02-01-2021
+chlog 02-09-2026
 chlog 02-15-2021
 chlog 02-19-2021
 chlog 03-03-2023
@@ -479,11 +480,16 @@ chlog 10-07-2026
 chlog 11-03-2024
 chlog 14-04-2026
 chlog 14-06-2021
+chlog 15-07-2026
+chlog 15-10-2026
 chlog 16-11-2021
 chlog 22-04-2026
+chlog 23-07-2026
 chlog 27-04-2026
 chlog 27-08-2021
+chlog 28-10-2026
 chlog 30-06-2022 [Paper data set]
+chlog 30-07-2026
 dispatch process_window.funcs ami -> ami
 dispatch process_window.funcs capm -> capm
 dispatch process_window.funcs capm_ext -> capm_ext
@@ -561,7 +567,9 @@ file documentation/sas_to_python/release_notes_files/figure-markdown_strict/fig-
 file documentation/sas_to_python/release_notes_files/figure-markdown_strict/fig-comparison5-output-1.png
 file documentation/sas_to_python/release_notes_files/figure-markdown_strict/fig-comparison6-output-1.png
 file pyproject.toml
-file scripts/benchmark_dimsonbeta.py
+file scripts/themes/CHANGELOG_THEMES.md
+file scripts/themes/README.md
+file scripts/themes/theme_diagnostics.py
 file slurm/submit_job_som_hpc.slurm
 file src/jkp/data/__init__.py
 file src/jkp/data/aux_functions.py
@@ -578,12 +586,18 @@ file src/jkp/data/resources/Siccodes49.txt
 file src/jkp/data/resources/cluster_labels.csv
 file src/jkp/data/resources/country_classification.xlsx
 file src/jkp/data/resources/factor_details.xlsx
+file src/jkp/data/resources/themes/superseded_themes/v0/cluster_labels.csv
+file src/jkp/data/resources/themes/superseded_themes/v0/factor_directions.csv
+file src/jkp/data/resources/themes/theme_descriptions.csv
+file src/jkp/data/resources/themes/themes.csv
+file src/jkp/data/wrds_connection.py
 file src/jkp/data/wrds_credentials.py
 file tests/README.md
 file tests/__init__.py
 file tests/conftest.py
 file tests/fixtures/__init__.py
 file tests/fixtures/portfolio_legacy.py
+file tests/fixtures/portfolio_oi_legacy.py
 file tests/golden/__init__.py
 file tests/golden/comp_industry_stubs.py
 file tests/golden/comp_sic_naics_inputs.py
@@ -691,6 +705,7 @@ file tests/golden/test_quality_minus_junk_golden.py
 file tests/golden/test_residual_momentum_golden.py
 file tests/golden/test_run_portfolio_golden.py
 file tests/integration/__init__.py
+file tests/integration/test_oi_single_pass_equivalence.py
 file tests/integration/test_portfolios_matrix.py
 file tests/integration/test_qmj_pipeline.py
 file tests/integration/test_run_portfolio_outputs.py
@@ -712,6 +727,7 @@ file tests/unit/portfolio/test_cmp_branch.py
 file tests/unit/portfolio/test_date_arithmetic.py
 file tests/unit/portfolio/test_industry_returns.py
 file tests/unit/portfolio/test_output_format.py
+file tests/unit/portfolio/test_pf_daily_legs.py
 file tests/unit/portfolio/test_portfolios_core.py
 file tests/unit/portfolio/test_regional_data.py
 file tests/unit/portfolio/test_signals_branch.py
@@ -722,21 +738,26 @@ file tests/unit/test_accounting_formulas.py
 file tests/unit/test_aug_msf_v2.py
 file tests/unit/test_aux_functions.py
 file tests/unit/test_cli.py
+file tests/unit/test_cli_connect.py
 file tests/unit/test_combine_crsp_comp_sf.py
 file tests/unit/test_comp_hgics.py
 file tests/unit/test_comp_industry.py
 file tests/unit/test_comp_industry_legacy_equivalence.py
 file tests/unit/test_comp_sic_naics.py
 file tests/unit/test_compustat_correction.py
+file tests/unit/test_constant_window_guard.py
 file tests/unit/test_crsp_industry.py
+file tests/unit/test_daily_coverage_fixes.py
 file tests/unit/test_deterministic_dedup.py
 file tests/unit/test_download_and_config.py
+file tests/unit/test_earnings_persistence.py
 file tests/unit/test_expressions.py
 file tests/unit/test_ff_ind_class.py
 file tests/unit/test_firm_age.py
 file tests/unit/test_hgics_join.py
 file tests/unit/test_market_beta.py
 file tests/unit/test_output_writer.py
+file tests/unit/test_overnight_intraday.py
 file tests/unit/test_paths.py
 file tests/unit/test_prepare_crsp_sf.py
 file tests/unit/test_public_api.py
@@ -745,14 +766,16 @@ file tests/unit/test_residual_momentum.py
 file tests/unit/test_ret_exc_wins.py
 file tests/unit/test_rolling_daily_metrics.py
 file tests/unit/test_scaling_ratios.py
+file tests/unit/test_theme_diagnostics.py
+file tests/unit/test_themes.py
 file tests/unit/test_winsorization.py
+file tests/unit/test_wrds_connection.py
 file tests/unit/test_wrds_credentials.py
 file tests/unit/test_wrds_download.py
 file uv.lock
 fn __init__.__dir__()
 fn __init__.__getattr__(name: str)
-fn aux_functions._attach_download_worker(task_queue: queue.Queue[_DownloadTask], conninfo: str, password: str | None, task_errors: list[str], startup_errors: list[str], errors_lock: threading.Lock, stop_event: threading.Event)
-fn aux_functions._attach_wrds(con: duckdb.DuckDBPyConnection, conninfo: str, password: str | None)
+fn aux_functions._attach_download_worker(task_queue: queue.Queue[_DownloadTask], conninfo: str, task_errors: list[str], startup_errors: list[str], errors_lock: threading.Lock, stop_event: threading.Event)
 fn aux_functions._balanced_year_chunks(histogram: list[tuple[int, int]], n_chunks: int, end_date: date | None)
 fn aux_functions._build_download_tasks(table_names: list[str], filenames: dict[str, str], date_columns: dict[str, str], end_date: date | None, split_tables: frozenset[str], n_chunks: int, histograms: dict[str, list[tuple[int, int]]])
 fn aux_functions._build_hml_lms(pf_df: pl.DataFrame, char_info: pl.DataFrame, n_pfs: int, date_col: str, include_signal: bool)
@@ -760,23 +783,20 @@ fn aux_functions._build_industry_daily_returns(data: pl.DataFrame, daily: pl.Dat
 fn aux_functions._build_industry_monthly_returns(data: pl.DataFrame, industry_col: str, bp_min_n: int, excntry: str, industry_transform: pl.Expr | None=None)
 fn aux_functions._build_regional_loop(data: pl.DataFrame, mkt: pl.DataFrame, regions: pl.DataFrame, date_col: str, char_col: str, output_cols: list[str], weighting: str, periods_min: int, stocks_min: int)
 fn aux_functions._chunk_path(filename: str, i: int)
-fn aux_functions._compute_histograms(conninfo: str, tables: list[str], date_columns: dict[str, str], end_date: date | None, max_conns: int, password: str | None)
+fn aux_functions._compute_histograms(conninfo: str, tables: list[str], date_columns: dict[str, str], end_date: date | None, max_conns: int)
 fn aux_functions._compute_histograms.one(table: str)
 fn aux_functions._concat_chunks(final_file: str, chunk_files: list[str])
 fn aux_functions._date_where(date_column: str | None, start_date: date | None, end_date: date | None)
-fn aux_functions._download_tables_parallel(table_names: list[str], filenames: dict[str, str], conninfo: str, date_columns: dict[str, str], end_date: date | None, password: str | None, workers: int, split_tables: frozenset[str]=frozenset(), n_chunks: int=1)
+fn aux_functions._download_tables_parallel(table_names: list[str], filenames: dict[str, str], conninfo: str, date_columns: dict[str, str], end_date: date | None, workers: int, split_tables: frozenset[str]=frozenset(), n_chunks: int=1)
 fn aux_functions._download_tables_parallel.concat_one(item: tuple[str, list[str]])
 fn aux_functions._effective_download_workers(requested: int, n_tables: int)
-fn aux_functions._install_postgres_extension()
+fn aux_functions._guard_constant(input_col: str, stat_expr: pl.Expr, *, max_zero_frac: float | None=CONSTANT_MAX_ZERO_FRAC)
 fn aux_functions._main_filter_expr()
 fn aux_functions._map_interruptible(fn: Callable[[_MapT], _MapR], items: Iterable[_MapT], max_workers: int)
 fn aux_functions._parse_siccodes_file(filename: str, label: str)
-fn aux_functions._password_forms(password: str)
-fn aux_functions._password_in_error(text: str, password: str)
-fn aux_functions._pg_escape_value(value: str)
-fn aux_functions._redact_password(text: str, password: str)
+fn aux_functions._pf_daily_lazy(sub: pl.LazyFrame, daily: pl.DataFrame, x: str, ret_cols: list[str])
 fn aux_functions._remove_chunk_parts(filename: str)
-fn aux_functions._sql_literal(value: str)
+fn aux_functions._split_daily_leg(wide: pl.DataFrame, c: str)
 fn aux_functions._stack_outputs(portfolio_data: dict, key: str, sort_cols: list[str], select_cols: list[str] | None=None)
 fn aux_functions._turnover_d_expr()
 fn aux_functions._write_filtered(df: pl.DataFrame, path: Path, date_col: str, end_date: date)
@@ -831,6 +851,7 @@ fn aux_functions.comp_hgics(paths: DataPaths, lib)
 fn aux_functions.comp_hgics_aux(filename)
 fn aux_functions.comp_industry(paths: DataPaths)
 fn aux_functions.comp_sic_naics(paths: DataPaths)
+fn aux_functions.compound_overnight_intraday(paths: DataPaths)
 fn aux_functions.compustat_fx(paths: DataPaths)
 fn aux_functions.compute_bidask_spread(df, __min_obs)
 fn aux_functions.compute_capex_abn(df)
@@ -879,7 +900,6 @@ fn aux_functions.gen_returns_df(paths: DataPaths, freq)
 fn aux_functions.gen_secd_data(paths: DataPaths)
 fn aux_functions.gen_secm_data(paths: DataPaths)
 fn aux_functions.gen_temporary_sf(paths: DataPaths, freq, __returns, __delist)
-fn aux_functions.gen_wrds_connection_info(user, password: str | None=None)
 fn aux_functions.get_columns(conn, conninfo, lib, table)
 fn aux_functions.get_columns_attached(conn, db_alias, lib, table)
 fn aux_functions.header_aux(comp_path, gcomp_path, output_path)
@@ -911,7 +931,7 @@ fn aux_functions.nyse_size_cutoffs(paths: DataPaths, data_path)
 fn aux_functions.ohlson_o(df, name='o_score')
 fn aux_functions.pitroski_f(df, name='f_score')
 fn aux_functions.populate_own(paths: DataPaths, inset_path, idvar, datevar, datename)
-fn aux_functions.portfolios(paths: DataPaths, excntry, chars, pfs, bps, bp_min_n, nyse_size_cutoffs, source=None, wins_ret=True, cmp_key=False, signals=False, signals_standardize=False, signals_w='vw_cap', daily_pf=False, ind_pf=True, ret_cutoffs=None, ret_cutoffs_daily=None)
+fn aux_functions.portfolios(paths: DataPaths, excntry, chars, pfs, bps, bp_min_n, nyse_size_cutoffs, source=None, wins_ret=True, cmp_key=False, signals=False, signals_standardize=False, signals_w='vw_cap', daily_pf=False, ind_pf=True, ret_cutoffs=None, ret_cutoffs_daily=None, daily_oi_cols: list[str] | None=None)
 fn aux_functions.prc_to_high(df, sfx, __min)
 fn aux_functions.prep_data_factor_regs(paths: DataPaths, data_path, fcts_path, lower: float=0.001, upper: float=0.999)
 fn aux_functions.prepare_base_data(paths: DataPaths, stat)
@@ -963,6 +983,7 @@ fn aux_functions.var_growth(var_gr, horizon)
 fn aux_functions.vola(df, name, var, yrs, yrs_min)
 fn aux_functions.volq(df, name, var, qtrs, qtrs_min)
 fn aux_functions.z_ranks(data, var, __min, sort)
+fn aux_functions.zero_obs_gate_ok()
 fn aux_functions.zero_trades(df, sfx, __min)
 fn cli._version_callback(value: bool)
 fn cli.build(output_dir: Path=typer.Argument(help='Directory for pipeline output (raw, interim, and processed data).'), persistent_connection: bool=typer.Option(False, '--persistent-connection', '-p', help='Use a single persistent WRDS connection (reduces MFA prompts on NAT-rotated networks).'), download_workers: int=typer.Option(1, '--download-workers', '-j', help='Number of concurrent WRDS download connections (default 1 = sequential). Higher values download tables in parallel and cut wall time, capped at the WRDS per-account connection limit. Ignored when --persistent-connection is set (which forces a single connection). On NAT-rotated networks each worker may trigger its own MFA prompt at startup; keep at 1 there.'), force: bool=typer.Option(False, '--force', '-f', help='Overwrite existing data in output directory without prompting.'))
@@ -1022,7 +1043,17 @@ fn paths.get_factor_details_path()
 fn paths.get_siccodes_path()
 fn portfolio.__dir__()
 fn portfolio.__getattr__(name: str)
+fn portfolio._build_oi_factor_returns(*, pf_daily: pl.DataFrame, settings: dict, char_info: pl.DataFrame, cluster_labels: pl.DataFrame, regions: pl.DataFrame, market_daily: pl.DataFrame)
 fn portfolio.run_portfolio(*, output_format: str='parquet', output_dir: Path)
+fn wrds_connection._attach_wrds(con: duckdb.DuckDBPyConnection, conninfo: str)
+fn wrds_connection._install_postgres_extension()
+fn wrds_connection._pg_escape_value(value: str)
+fn wrds_connection._sql_literal(value: str)
+fn wrds_connection.gen_wrds_connection_info(user: str, *, connect_timeout: int | None=None)
+fn wrds_connection.verify_wrds_connection(username: str, password: str | None, *, connect_timeout: int=25)
+fn wrds_connection.wrds_password_env(password: str | None)
+fn wrds_credentials.Credentials.__repr__(self)
+fn wrds_credentials.SecretStr.__repr__(self)
 fn wrds_credentials._atomic_write(path: Path, text: str)
 fn wrds_credentials._cleanup_legacy_keyring_section(username: str)
 fn wrds_credentials._drop_legacy_keyring_option(cp: configparser.RawConfigParser, path: Path, username: str)
@@ -1043,22 +1074,24 @@ fn wrds_credentials._pgpass_has_entry(username: str, *, check_perms: bool=True)
 fn wrds_credentials._pgpass_line(username: str, password: str)
 fn wrds_credentials._pgpass_path()
 fn wrds_credentials._pgpass_scan(username: str, *, check_perms: bool=True)
-fn wrds_credentials._prompt_and_store(username: str)
+fn wrds_credentials._prompt_verify_store(username: str, verify: VerifyConnection | None=None)
 fn wrds_credentials._read_pgpass_lines(path: Path)
 fn wrds_credentials._remove_pgpass_entry(username: str)
 fn wrds_credentials._resolve_username(env_user: str | None=None)
 fn wrds_credentials._split_pgpass(line: str)
+fn wrds_credentials._verified(creds: Credentials, verify: VerifyConnection | None)
 fn wrds_credentials._write_pgpass(username: str, password: str)
-fn wrds_credentials.get_wrds_credentials()
+fn wrds_credentials.get_wrds_credentials(verify: VerifyConnection | None=None)
 fn wrds_credentials.reset_credentials(full_reset: bool=False)
 imp aux_functions -> compustat_correction
 imp aux_functions -> config
 imp aux_functions -> output_writer
 imp aux_functions -> paths
-imp aux_functions -> wrds_credentials
+imp aux_functions -> wrds_connection
 imp cli -> __version__
 imp cli -> main
 imp cli -> portfolio
+imp cli -> wrds_connection
 imp cli -> wrds_credentials
 imp compustat_correction -> config
 imp main -> aux_functions
@@ -1069,6 +1102,7 @@ imp portfolio -> aux_functions
 imp portfolio -> config
 imp portfolio -> output_writer
 imp portfolio -> paths
+imp wrds_connection -> wrds_credentials
 stage 000 setup_folder_structure
 stage 001 download_raw_data_tables
 stage 002 gen_raw_data_dfs
@@ -1076,48 +1110,49 @@ stage 003 prepare_comp_sf
 stage 004 prepare_crsp_sf
 stage 005 prepare_crsp_sf
 stage 006 combine_crsp_comp_sf
-stage 007 crsp_industry
-stage 008 comp_industry
-stage 009 merge_industry_to_world_msf
-stage 010 ff_ind_class
-stage 011 nyse_size_cutoffs
-stage 012 classify_stocks_size_groups
-stage 013 return_cutoffs
+stage 007 compound_overnight_intraday
+stage 008 crsp_industry
+stage 009 comp_industry
+stage 010 merge_industry_to_world_msf
+stage 011 ff_ind_class
+stage 012 nyse_size_cutoffs
+stage 013 classify_stocks_size_groups
 stage 014 return_cutoffs
-stage 015 add_ret_exc_wins
+stage 015 return_cutoffs
 stage 016 add_ret_exc_wins
-stage 017 market_returns
+stage 017 add_ret_exc_wins
 stage 018 market_returns
-stage 019 standardized_accounting_data
-stage 020 create_acc_chars
+stage 019 market_returns
+stage 020 standardized_accounting_data
 stage 021 create_acc_chars
-stage 022 combine_ann_qtr_chars
-stage 023 market_chars_monthly
-stage 024 create_world_data_prelim
-stage 025 ap_factors
+stage 022 create_acc_chars
+stage 023 combine_ann_qtr_chars
+stage 024 market_chars_monthly
+stage 025 create_world_data_prelim
 stage 026 ap_factors
-stage 027 firm_age
-stage 028 mispricing_factors
-stage 029 market_beta
-stage 030 residual_momentum
+stage 027 ap_factors
+stage 028 firm_age
+stage 029 mispricing_factors
+stage 030 market_beta
 stage 031 residual_momentum
-stage 032 bidask_hl
-stage 033 prepare_daily
-stage 034 roll_apply_daily
-stage 035 merge_roll_apply_daily_results
-stage 036 finish_daily_chars
-stage 037 merge_world_data_prelim
-stage 038 quality_minus_junk
-stage 039 merge_qmj_to_world_data
-stage 040 filter_dsf
-stage 041 filter_msf
-stage 042 filter_world
-stage 043 save_main_data
-stage 044 save_daily_ret
-stage 045 save_monthly_ret
-stage 046 save_accounting_data
-stage 047 save_output_files
-stage 048 save_full_files_and_cleanup
+stage 032 residual_momentum
+stage 033 bidask_hl
+stage 034 prepare_daily
+stage 035 roll_apply_daily
+stage 036 merge_roll_apply_daily_results
+stage 037 finish_daily_chars
+stage 038 merge_world_data_prelim
+stage 039 quality_minus_junk
+stage 040 merge_qmj_to_world_data
+stage 041 filter_dsf
+stage 042 filter_msf
+stage 043 filter_world
+stage 044 save_main_data
+stage 045 save_daily_ret
+stage 046 save_monthly_ret
+stage 047 save_accounting_data
+stage 048 save_output_files
+stage 049 save_full_files_and_cleanup
 test tests/conftest.py::test_paths
 test tests/golden/test_firm_age_golden.py::test_firm_age_golden
 test tests/golden/test_market_beta_golden.py::test_market_beta_golden
@@ -1126,6 +1161,10 @@ test tests/golden/test_prepare_crsp_sf_golden.py::test_prepare_crsp_sf_golden
 test tests/golden/test_quality_minus_junk_golden.py::test_quality_minus_junk_golden
 test tests/golden/test_residual_momentum_golden.py::test_residual_momentum_golden
 test tests/golden/test_run_portfolio_golden.py::test_run_portfolio_golden
+test tests/integration/test_oi_single_pass_equivalence.py::TestOiSinglePassEquivalence::test_all_outputs_match
+test tests/integration/test_oi_single_pass_equivalence.py::TestOiSinglePassEquivalence::test_edge_cases_present
+test tests/integration/test_oi_single_pass_equivalence.py::TestOiSinglePassEquivalence::test_oi_outputs_written
+test tests/integration/test_oi_single_pass_equivalence.py::TestOiSinglePassEquivalence::test_same_files
 test tests/integration/test_portfolios_matrix.py::TestPortfoliosMatrix::test_portfolios_runs_and_returns_expected_keys
 test tests/integration/test_qmj_pipeline.py::TestQmjPipeline::test_gate_failing_rows_present_with_null_qmj
 test tests/integration/test_qmj_pipeline.py::TestQmjPipeline::test_height_equals_unique_id_eom
@@ -1212,6 +1251,12 @@ test tests/unit/portfolio/test_industry_returns.py::TestPortfoliosIndustry::test
 test tests/unit/portfolio/test_industry_returns.py::TestPortfoliosIndustry::test_ind_returns_filter_by_bp_min_n
 test tests/unit/portfolio/test_output_format.py::TestOutputFormatIntegration::test_csv_format_passed_through
 test tests/unit/portfolio/test_output_format.py::TestOutputFormatIntegration::test_default_format_is_parquet
+test tests/unit/portfolio/test_pf_daily_legs.py::TestPfDailyLazy::test_per_leg_counts
+test tests/unit/portfolio/test_pf_daily_legs.py::TestPfDailyLazy::test_per_leg_weighted_sums
+test tests/unit/portfolio/test_pf_daily_legs.py::TestPfDailyLazy::test_rows_kept_when_any_leg_present
+test tests/unit/portfolio/test_pf_daily_legs.py::TestSplitDailyLeg::test_drops_dates_without_leg_returns
+test tests/unit/portfolio/test_pf_daily_legs.py::TestSplitDailyLeg::test_keeps_leg_only_dates
+test tests/unit/portfolio/test_portfolios_core.py::TestNanCharacteristics::test_nan_values_give_the_same_portfolios_as_nulls
 test tests/unit/portfolio/test_portfolios_core.py::TestPortfoliosCore::test_pf_monotone_signal_medians_within_eom_char
 test tests/unit/portfolio/test_portfolios_core.py::TestPortfoliosCore::test_pf_returns_schema_and_columns
 test tests/unit/portfolio/test_portfolios_core.py::TestPortfoliosCore::test_pf_values_in_1_to_pfs_range
@@ -1283,6 +1328,7 @@ test tests/unit/test_aux_functions.py::TestRollWindowEquivalence::test_process_w
 test tests/unit/test_aux_functions.py::test_aug_msf_v2_writes_augmented_file_and_is_idempotent
 test tests/unit/test_aux_functions.py::test_dsf1_unique_id_int_date
 test tests/unit/test_aux_functions.py::test_gen_crsp_sf_exposes_ticker_after_senames_join
+test tests/unit/test_aux_functions.py::test_gen_crsp_sf_propagates_del_flag
 test tests/unit/test_aux_functions.py::test_merge_roll_apply_daily_results_writes_once_with_deterministic_order
 test tests/unit/test_cli.py::TestBuildCommand::test_build_calls_run_pipeline
 test tests/unit/test_cli.py::TestBuildCommand::test_build_download_workers
@@ -1290,6 +1336,7 @@ test tests/unit/test_cli.py::TestBuildCommand::test_build_download_workers_short
 test tests/unit/test_cli.py::TestBuildCommand::test_build_missing_output_dir
 test tests/unit/test_cli.py::TestBuildCommand::test_build_persistent_connection
 test tests/unit/test_cli.py::TestBuildCommand::test_build_persistent_connection_short
+test tests/unit/test_cli.py::TestCliAppConfig::test_pretty_exceptions_show_locals_disabled
 test tests/unit/test_cli.py::TestCliHelp::test_build_help
 test tests/unit/test_cli.py::TestCliHelp::test_connect_help
 test tests/unit/test_cli.py::TestCliHelp::test_connect_surfaces_actionable_error_cleanly
@@ -1304,6 +1351,9 @@ test tests/unit/test_cli.py::TestPortfolioCommand::test_portfolio_missing_output
 test tests/unit/test_cli.py::TestVersionFlag::test_version_attribute_resolves_from_metadata
 test tests/unit/test_cli.py::TestVersionFlag::test_version_does_not_invoke_subcommand
 test tests/unit/test_cli.py::TestVersionFlag::test_version_prints_package_version
+test tests/unit/test_cli_connect.py::TestConnectVerification::test_credential_resolution_errors_exit_cleanly_without_traceback
+test tests/unit/test_cli_connect.py::TestConnectVerification::test_failure_exits_nonzero_with_message_on_stderr_no_traceback
+test tests/unit/test_cli_connect.py::TestConnectVerification::test_success_exits_zero_and_reports_username
 test tests/unit/test_combine_crsp_comp_sf.py::TestCompNormalization::test_comp_dsf_eom_computed
 test tests/unit/test_combine_crsp_comp_sf.py::TestCompNormalization::test_comp_dsf_tvol_from_cshtrd
 test tests/unit/test_combine_crsp_comp_sf.py::TestCompNormalization::test_comp_msf_bidask_flag
@@ -1399,6 +1449,37 @@ test tests/unit/test_compustat_correction.py::TestObservationFilters::test_initi
 test tests/unit/test_compustat_correction.py::TestObservationFilters::test_low_volume_trims_lowest_volume_security
 test tests/unit/test_compustat_correction.py::TestObservationFilters::test_requires_spill_dir
 test tests/unit/test_compustat_correction.py::TestObservationFilters::test_zero_ajexdi_drops_security
+test tests/unit/test_constant_window_guard.py::TestConstantWindowAmi::test_all_zero_dolvol_gives_null
+test tests/unit/test_constant_window_guard.py::TestConstantWindowAmi::test_constant_zero_returns_with_nonzero_dolvol
+test tests/unit/test_constant_window_guard.py::TestConstantWindowCapm::test_constant_ret_gives_null_ivol
+test tests/unit/test_constant_window_guard.py::TestConstantWindowCapm::test_constant_ret_nulls_beta
+test tests/unit/test_constant_window_guard.py::TestConstantWindowCapm::test_rf_stepped_dead_stock_nulls_capm_252d
+test tests/unit/test_constant_window_guard.py::TestConstantWindowCapmExt::test_constant_ret_nulls_beta
+test tests/unit/test_constant_window_guard.py::TestConstantWindowCapmExt::test_constant_ret_nulls_ivol_iskew_coskew
+test tests/unit/test_constant_window_guard.py::TestConstantWindowDimsonbeta::test_constant_ret_nulls_dimson
+test tests/unit/test_constant_window_guard.py::TestConstantWindowDolvolVar::test_constant_dolvol_nulls_var
+test tests/unit/test_constant_window_guard.py::TestConstantWindowDownbeta::test_constant_ret_nulls_betadown
+test tests/unit/test_constant_window_guard.py::TestConstantWindowFf3::test_constant_ret_gives_null_ivol_and_iskew
+test tests/unit/test_constant_window_guard.py::TestConstantWindowFf3::test_rf_stepped_dead_stock_nulls_ff3_252d
+test tests/unit/test_constant_window_guard.py::TestConstantWindowHxz4::test_constant_ret_gives_null_ivol_and_iskew
+test tests/unit/test_constant_window_guard.py::TestConstantWindowHxz4::test_rf_stepped_dead_stock_nulls_hxz4_252d
+test tests/unit/test_constant_window_guard.py::TestConstantWindowMktcorr::test_constant_ret_gives_null_corr
+test tests/unit/test_constant_window_guard.py::TestConstantWindowMktcorr::test_rf_stepped_dead_stock_nulls_corr
+test tests/unit/test_constant_window_guard.py::TestConstantWindowPrcToHigh::test_constant_price_gives_null
+test tests/unit/test_constant_window_guard.py::TestConstantWindowPrcToHigh::test_varying_price_gives_value
+test tests/unit/test_constant_window_guard.py::TestConstantWindowRmax::test_constant_returns_give_null_rmax
+test tests/unit/test_constant_window_guard.py::TestConstantWindowRvol::test_constant_returns_give_null_rvol
+test tests/unit/test_constant_window_guard.py::TestConstantWindowRvol::test_rf_stepped_dead_stock_nulls_rvol_252d
+test tests/unit/test_constant_window_guard.py::TestConstantWindowRvol::test_varying_returns_give_finite_rvol
+test tests/unit/test_constant_window_guard.py::TestConstantWindowSkew::test_constant_returns_give_null_rskew
+test tests/unit/test_constant_window_guard.py::TestConstantWindowTurnoverVar::test_constant_turnover_nulls_var
+test tests/unit/test_constant_window_guard.py::TestFinishDailyCharsBackstop::test_finite_values_preserved
+test tests/unit/test_constant_window_guard.py::TestFinishDailyCharsBackstop::test_inf_and_nan_scrubbed_to_null
+test tests/unit/test_constant_window_guard.py::TestGuardConstantHelper::test_all_null_returns_none
+test tests/unit/test_constant_window_guard.py::TestGuardConstantHelper::test_constant_series_returns_none
+test tests/unit/test_constant_window_guard.py::TestGuardConstantHelper::test_near_dead_zero_fraction_nulls
+test tests/unit/test_constant_window_guard.py::TestGuardConstantHelper::test_single_element_returns_none
+test tests/unit/test_constant_window_guard.py::TestGuardConstantHelper::test_varying_series_returns_value
 test tests/unit/test_crsp_industry.py::TestCrspIndustry::test_crsp_industry_golden_fixture
 test tests/unit/test_crsp_industry.py::TestCrspIndustry::test_date_range_expansion
 test tests/unit/test_crsp_industry.py::TestCrspIndustry::test_multiple_non_overlapping_spans_per_permno
@@ -1407,6 +1488,14 @@ test tests/unit/test_crsp_industry.py::TestCrspIndustry::test_overlapping_spans_
 test tests/unit/test_crsp_industry.py::TestCrspIndustry::test_preserves_permco
 test tests/unit/test_crsp_industry.py::TestCrspIndustry::test_sic_zero_becomes_null
 test tests/unit/test_crsp_industry.py::TestCrspIndustry::test_sorted_by_permno_date
+test tests/unit/test_daily_coverage_fixes.py::TestBaseDataFilter::test_return_stat_keeps_row_regardless_of_mktrf
+test tests/unit/test_daily_coverage_fixes.py::TestBaseDataFilter::test_rvol_drops_compustat_high_zero_obs
+test tests/unit/test_daily_coverage_fixes.py::TestBaseDataFilter::test_rvol_keeps_crsp_high_zero_obs
+test tests/unit/test_daily_coverage_fixes.py::TestGaoRitterBoundary::test_2003_12_31_is_adjusted
+test tests/unit/test_daily_coverage_fixes.py::TestGaoRitterBoundary::test_2004_01_01_unchanged
+test tests/unit/test_daily_coverage_fixes.py::TestZeroObsGate::test_compustat_fails_when_zero_obs_ge_10
+test tests/unit/test_daily_coverage_fixes.py::TestZeroObsGate::test_compustat_passes_when_zero_obs_lt_10
+test tests/unit/test_daily_coverage_fixes.py::TestZeroObsGate::test_crsp_passes_even_with_many_zeros
 test tests/unit/test_deterministic_dedup.py::TestAddPrimarySecDedup::test_non_primary_stays_zero
 test tests/unit/test_deterministic_dedup.py::TestAddPrimarySecDedup::test_primary_sec_prefers_one
 test tests/unit/test_deterministic_dedup.py::TestGenReturnsDfDedup::test_keeps_highest_prcstd
@@ -1459,6 +1548,7 @@ test tests/unit/test_download_and_config.py::TestSaveMainData::test_accepts_path
 test tests/unit/test_download_and_config.py::TestSaveMainData::test_all_rows_pass_through
 test tests/unit/test_download_and_config.py::TestSaveMainData::test_me_lag1_computed
 test tests/unit/test_download_and_config.py::TestSaveMainData::test_no_eom_date_filter
+test tests/unit/test_earnings_persistence.py::test_ni_ar1_is_null_when_lagged_ni_at_does_not_vary
 test tests/unit/test_expressions.py::TestBoFalse::test_bo_false_in_filter
 test tests/unit/test_expressions.py::TestBoFalse::test_bo_false_returns_false
 test tests/unit/test_expressions.py::TestExpressionChaining::test_multiple_expressions_in_select
@@ -1561,6 +1651,30 @@ test tests/unit/test_output_writer.py::TestWriteDataframe::test_csv_format_still
 test tests/unit/test_output_writer.py::TestWriteDataframe::test_extension_correction_to_parquet
 test tests/unit/test_output_writer.py::TestWriteDataframe::test_lazyframe_collection
 test tests/unit/test_output_writer.py::TestWriteDataframe::test_write_parquet
+test tests/unit/test_overnight_intraday.py::TestMonthlyCompounding::test_lead_columns_consecutive_months
+test tests/unit/test_overnight_intraday.py::TestMonthlyCompounding::test_lead_columns_non_consecutive
+test tests/unit/test_overnight_intraday.py::TestMonthlyCompounding::test_local_compounding_differs_from_usd
+test tests/unit/test_overnight_intraday.py::TestMonthlyCompounding::test_msf_id_not_in_dsf_gets_nulls
+test tests/unit/test_overnight_intraday.py::TestMonthlyCompounding::test_normal_compounding
+test tests/unit/test_overnight_intraday.py::TestMonthlyCompounding::test_null_intraday_propagates
+test tests/unit/test_overnight_intraday.py::TestMonthlyCompounding::test_null_overnight_propagates
+test tests/unit/test_overnight_intraday.py::TestPrepareCrspSfIntegration::test_daily_has_return_columns
+test tests/unit/test_overnight_intraday.py::TestPrepareCrspSfIntegration::test_daily_intraday_formula
+test tests/unit/test_overnight_intraday.py::TestPrepareCrspSfIntegration::test_daily_negative_open_price
+test tests/unit/test_overnight_intraday.py::TestPrepareCrspSfIntegration::test_daily_null_ret
+test tests/unit/test_overnight_intraday.py::TestPrepareCrspSfIntegration::test_daily_null_when_no_close
+test tests/unit/test_overnight_intraday.py::TestPrepareCrspSfIntegration::test_daily_null_when_no_open
+test tests/unit/test_overnight_intraday.py::TestPrepareCrspSfIntegration::test_daily_return_identity
+test tests/unit/test_overnight_intraday.py::TestPrepareCrspSfIntegration::test_daily_zero_open_price
+test tests/unit/test_overnight_intraday.py::TestPrepareCrspSfIntegration::test_monthly_no_return_columns
+test tests/unit/test_overnight_intraday.py::TestReturnFormulas::test_basic_decomposition
+test tests/unit/test_overnight_intraday.py::TestReturnFormulas::test_fx_move_lands_in_overnight_not_local
+test tests/unit/test_overnight_intraday.py::TestReturnFormulas::test_identity_holds
+test tests/unit/test_overnight_intraday.py::TestReturnFormulas::test_identity_parametrized
+test tests/unit/test_overnight_intraday.py::TestReturnFormulas::test_local_identity_holds
+test tests/unit/test_overnight_intraday.py::TestReturnFormulas::test_local_identity_parametrized
+test tests/unit/test_overnight_intraday.py::TestReturnFormulas::test_local_overnight_formula
+test tests/unit/test_overnight_intraday.py::TestReturnFormulas::test_negative_return
 test tests/unit/test_paths.py::TestDataPaths::test_frozen
 test tests/unit/test_paths.py::TestDataPaths::test_interim_dir
 test tests/unit/test_paths.py::TestDataPaths::test_processed_dir
@@ -1577,8 +1691,13 @@ test tests/unit/test_prepare_crsp_sf.py::test_both_freq_filename_and_columns
 test tests/unit/test_prepare_crsp_sf.py::test_c2_near_miss_not_imputed
 test tests/unit/test_prepare_crsp_sf.py::test_c3_every_reason_code_imputes
 test tests/unit/test_prepare_crsp_sf.py::test_c3_near_miss_wrong_action_not_imputed
-test tests/unit/test_prepare_crsp_sf.py::test_daily_delist_date_mismatch_no_join
-test tests/unit/test_prepare_crsp_sf.py::test_daily_delist_exact_date_join
+test tests/unit/test_prepare_crsp_sf.py::test_daily_bad_delist_imputes_minus_030
+test tests/unit/test_prepare_crsp_sf.py::test_daily_date_mismatch_no_join
+test tests/unit/test_prepare_crsp_sf.py::test_daily_delist_N_compounds_on_exact_date
+test tests/unit/test_prepare_crsp_sf.py::test_daily_flag_Y_row_dropped
+test tests/unit/test_prepare_crsp_sf.py::test_daily_ret_backfill_when_missing
+test tests/unit/test_prepare_crsp_sf.py::test_daily_ret_passthrough_no_delist
+test tests/unit/test_prepare_crsp_sf.py::test_daily_unexpected_del_flag_warns
 test tests/unit/test_prepare_crsp_sf.py::test_daily_vol_not_scaled_by_100
 test tests/unit/test_prepare_crsp_sf.py::test_div_tot
 test tests/unit/test_prepare_crsp_sf.py::test_empty_daily_input_yields_typed_empty
@@ -1586,6 +1705,11 @@ test tests/unit/test_prepare_crsp_sf.py::test_empty_input_yields_typed_empty_out
 test tests/unit/test_prepare_crsp_sf.py::test_me_company
 test tests/unit/test_prepare_crsp_sf.py::test_me_company_mixed_null_coalesces_to_zero
 test tests/unit/test_prepare_crsp_sf.py::test_monthly_delist_month_mismatch_no_join
+test tests/unit/test_prepare_crsp_sf.py::test_monthly_flag_APV_no_double_count
+test tests/unit/test_prepare_crsp_sf.py::test_monthly_flag_G_compounds_delret
+test tests/unit/test_prepare_crsp_sf.py::test_monthly_flag_M_preserves_imputation
+test tests/unit/test_prepare_crsp_sf.py::test_monthly_flag_N_compounds_when_delret_present
+test tests/unit/test_prepare_crsp_sf.py::test_monthly_null_flag_compounds_when_delret_present
 test tests/unit/test_prepare_crsp_sf.py::test_monthly_scaling_and_vol_dtype
 test tests/unit/test_prepare_crsp_sf.py::test_nasdaq_condition_gate
 test tests/unit/test_prepare_crsp_sf.py::test_nasdaq_volume_window_boundaries
@@ -1598,6 +1722,7 @@ test tests/unit/test_prepare_crsp_sf.py::test_present_delret_in_bad_bucket_not_o
 test tests/unit/test_prepare_crsp_sf.py::test_ret_backfill_when_missing
 test tests/unit/test_prepare_crsp_sf.py::test_ret_exc_scale_and_coalesce
 test tests/unit/test_prepare_crsp_sf.py::test_ret_null_no_delist_stays_null
+test tests/unit/test_prepare_crsp_sf.py::test_unexpected_del_flag_warns
 test tests/unit/test_public_api.py::TestLazyImportBehavior::test_bare_import_does_not_pull_polars
 test tests/unit/test_public_api.py::TestLazyImportBehavior::test_run_pipeline_access_does_pull_polars
 test tests/unit/test_public_api.py::TestLazyImportBehavior::test_version_lookup_does_not_pull_polars
@@ -1715,7 +1840,10 @@ test tests/unit/test_rolling_daily_metrics.py::TestPrcToHigh::test_prc_to_high_g
 test tests/unit/test_rolling_daily_metrics.py::TestPrcToHigh::test_prc_to_high_sorts_by_date_and_applies_min_filter
 test tests/unit/test_rolling_daily_metrics.py::TestPrcToHigh::test_prc_to_high_within_group_date_order_parity
 test tests/unit/test_rolling_daily_metrics.py::TestPrcToHigh::test_prc_to_high_zero_prices_yield_undefined_ratio
+test tests/unit/test_rolling_daily_metrics.py::TestPrepareDailyCorr::test_corr_data_carries_raw_ret_into_mktcorr
+test tests/unit/test_rolling_daily_metrics.py::TestPrepareDailyCorr::test_corr_data_keeps_crsp_high_zero_obs
 test tests/unit/test_rolling_daily_metrics.py::TestPrepareDailyCorr::test_corr_data_null_free_and_zero_obs_filtered
+test tests/unit/test_rolling_daily_metrics.py::TestPrepareDailyCorr::test_prepare_daily_drops_null_mktrf_stock_days
 test tests/unit/test_rolling_daily_metrics.py::TestRmax::test_rmax_empty_input_returns_empty
 test tests/unit/test_rolling_daily_metrics.py::TestRmax::test_rmax_grouped_top5_mean_and_max
 test tests/unit/test_rolling_daily_metrics.py::TestRmax::test_rmax_handles_null_returns
@@ -1836,6 +1964,20 @@ test tests/unit/test_scaling_ratios.py::TestUpdateNiIncAndDecrease::test_null_sh
 test tests/unit/test_scaling_ratios.py::TestUpdateNiIncAndDecrease::test_preserves_when_already_broken
 test tests/unit/test_scaling_ratios.py::TestUpdateNiIncAndDecrease::test_resets_no_decrease_when_ni_inc_zero
 test tests/unit/test_scaling_ratios.py::TestUpdateNiIncAndDecrease::test_returns_sorted_output
+test tests/unit/test_theme_diagnostics.py::test_compute_corr_treats_nan_as_missing
+test tests/unit/test_theme_diagnostics.py::test_corr_with_composite_matches_explicit_composite
+test tests/unit/test_theme_diagnostics.py::test_load_corr_uses_cache_unless_input_or_settings_change
+test tests/unit/test_theme_diagnostics.py::test_member_fits_leave_one_out_and_signs
+test tests/unit/test_theme_diagnostics.py::test_misfit_rule_thresholds
+test tests/unit/test_theme_diagnostics.py::test_monthly_rank_corr_matches_pairwise_complete_corrcoef
+test tests/unit/test_theme_diagnostics.py::test_one_member_subtheme_flagged_only_against_another_theme
+test tests/unit/test_theme_diagnostics.py::test_planted_misfit_is_flagged
+test tests/unit/test_themes.py::test_descriptions_match_grouping
+test tests/unit/test_themes.py::test_grouping_is_a_two_level_partition
+test tests/unit/test_themes.py::test_naming_rules
+test tests/unit/test_themes.py::test_one_version
+test tests/unit/test_themes.py::test_portfolio_characteristics_have_a_theme
+test tests/unit/test_themes.py::test_signs
 test tests/unit/test_winsorization.py::TestAddCutoffsAndWinsorize::test_compustat_non_outliers_unchanged
 test tests/unit/test_winsorization.py::TestAddCutoffsAndWinsorize::test_compustat_outliers_are_clipped
 test tests/unit/test_winsorization.py::TestAddCutoffsAndWinsorize::test_crsp_rows_unchanged_regardless_of_outliers
@@ -1860,6 +2002,21 @@ test tests/unit/test_winsorization.py::TestPortfolioDailyJoin::test_crsp_rows_un
 test tests/unit/test_winsorization.py::TestPortfolioDailyJoin::test_no_year_month_in_output
 test tests/unit/test_winsorization.py::TestWinsorizeEquivalence::test_group_count_matches
 test tests/unit/test_winsorization.py::TestWinsorizeEquivalence::test_quantile_bounds_identical
+test tests/unit/test_wrds_connection.py::TestGenWrdsConnectionInfo::test_connect_timeout_included_when_set
+test tests/unit/test_wrds_connection.py::TestGenWrdsConnectionInfo::test_connect_timeout_omitted_by_default
+test tests/unit/test_wrds_connection.py::TestGenWrdsConnectionInfo::test_connection_string_format
+test tests/unit/test_wrds_connection.py::TestGenWrdsConnectionInfo::test_conninfo_embeds_in_sql_without_parse_error
+test tests/unit/test_wrds_connection.py::TestGenWrdsConnectionInfo::test_sql_literal_escapes_conninfo_for_embedding
+test tests/unit/test_wrds_connection.py::TestGenWrdsConnectionInfo::test_username_with_special_characters_is_quoted_and_escaped
+test tests/unit/test_wrds_connection.py::TestVerifyWrdsConnection::test_attach_failure_wrapped_as_runtime_error
+test tests/unit/test_wrds_connection.py::TestVerifyWrdsConnection::test_install_extension_failure_wrapped_as_runtime_error
+test tests/unit/test_wrds_connection.py::TestVerifyWrdsConnection::test_pgpass_path_does_not_set_pgpassword
+test tests/unit/test_wrds_connection.py::TestVerifyWrdsConnection::test_probe_query_failure_wrapped_as_runtime_error
+test tests/unit/test_wrds_connection.py::TestVerifyWrdsConnection::test_success_runs_attach_and_probe_with_default_timeout
+test tests/unit/test_wrds_connection.py::TestWrdsPasswordEnv::test_masks_previous_value_in_frame
+test tests/unit/test_wrds_connection.py::TestWrdsPasswordEnv::test_none_leaves_environment_untouched
+test tests/unit/test_wrds_connection.py::TestWrdsPasswordEnv::test_restores_previous_value_on_error
+test tests/unit/test_wrds_connection.py::TestWrdsPasswordEnv::test_sets_and_unsets
 test tests/unit/test_wrds_credentials.py::test_atomic_write_warns_when_replacing_symlink
 test tests/unit/test_wrds_credentials.py::test_empty_cached_username_treated_as_missing
 test tests/unit/test_wrds_credentials.py::test_empty_env_vars_treated_as_unset
@@ -1871,6 +2028,8 @@ test tests/unit/test_wrds_credentials.py::test_env_vars_take_precedence
 test tests/unit/test_wrds_credentials.py::test_escape_keyring_option_format
 test tests/unit/test_wrds_credentials.py::test_exact_above_wildcard_does_not_warn
 test tests/unit/test_wrds_credentials.py::test_exact_pgpass_entry_does_not_warn
+test tests/unit/test_wrds_credentials.py::test_failed_verification_of_stored_credentials_propagates
+test tests/unit/test_wrds_credentials.py::test_failed_verification_stores_nothing
 test tests/unit/test_wrds_credentials.py::test_keyring_password_cleans_up_lingering_legacy_section
 test tests/unit/test_wrds_credentials.py::test_legacy_keyring_file_removed_when_only_our_section
 test tests/unit/test_wrds_credentials.py::test_legacy_keyring_migrates_to_pgpass_and_removes_only_our_section
@@ -1899,13 +2058,18 @@ test tests/unit/test_wrds_credentials.py::test_pgpass_escapes_special_username
 test tests/unit/test_wrds_credentials.py::test_pgpass_ignored_when_permissions_too_open
 test tests/unit/test_wrds_credentials.py::test_pgpass_not_utf8_is_ignored_with_warning
 test tests/unit/test_wrds_credentials.py::test_pgpass_wildcard_entry_matches
-test tests/unit/test_wrds_credentials.py::test_prompt_and_store_falls_back_to_pgpass_without_keyring
-test tests/unit/test_wrds_credentials.py::test_prompt_and_store_persists_username_for_reset
-test tests/unit/test_wrds_credentials.py::test_prompt_and_store_uses_keyring_when_available
+test tests/unit/test_wrds_credentials.py::test_pgpass_write_text_is_masked
 test tests/unit/test_wrds_credentials.py::test_prompt_stores_to_pgpass_when_keyring_locked
+test tests/unit/test_wrds_credentials.py::test_prompt_verify_store_falls_back_to_pgpass_without_keyring
+test tests/unit/test_wrds_credentials.py::test_prompt_verify_store_persists_username_for_reset
+test tests/unit/test_wrds_credentials.py::test_prompt_verify_store_uses_keyring_when_available
+test tests/unit/test_wrds_credentials.py::test_prompt_verify_store_verifies_before_storing
 test tests/unit/test_wrds_credentials.py::test_remove_pgpass_entry_preserves_comments_and_others
 test tests/unit/test_wrds_credentials.py::test_remove_pgpass_not_utf8_gives_actionable_error
 test tests/unit/test_wrds_credentials.py::test_remove_pgpass_unreadable_file_gives_actionable_error
+test tests/unit/test_wrds_credentials.py::test_repr_masks_empty_password
+test tests/unit/test_wrds_credentials.py::test_repr_masks_password
+test tests/unit/test_wrds_credentials.py::test_repr_preserves_none_password
 test tests/unit/test_wrds_credentials.py::test_reset_clears_legacy_even_when_pgpass_removal_fails
 test tests/unit/test_wrds_credentials.py::test_reset_clears_legacy_keyring_section
 test tests/unit/test_wrds_credentials.py::test_reset_empty_username_cache_falls_through_to_legacy
@@ -1913,7 +2077,13 @@ test tests/unit/test_wrds_credentials.py::test_reset_keeps_username_cache_when_p
 test tests/unit/test_wrds_credentials.py::test_reset_no_username_is_handled
 test tests/unit/test_wrds_credentials.py::test_reset_removes_username_keyring_and_pgpass
 test tests/unit/test_wrds_credentials.py::test_reset_warns_when_keyring_unreachable
+test tests/unit/test_wrds_credentials.py::test_resolved_password_is_masked
+test tests/unit/test_wrds_credentials.py::test_secret_str_masks_repr
+test tests/unit/test_wrds_credentials.py::test_stored_credentials_are_verified_exactly_once
+test tests/unit/test_wrds_credentials.py::test_str_is_password_free
 test tests/unit/test_wrds_credentials.py::test_username_from_state_file
+test tests/unit/test_wrds_credentials.py::test_verification_failure_leaves_next_run_able_to_prompt
+test tests/unit/test_wrds_credentials.py::test_verify_none_stores_without_checking
 test tests/unit/test_wrds_credentials.py::test_whitespace_env_username_treated_as_missing
 test tests/unit/test_wrds_credentials.py::test_wildcard_above_exact_still_warns
 test tests/unit/test_wrds_credentials.py::test_wildcard_only_pgpass_warns
@@ -1924,9 +2094,6 @@ test tests/unit/test_wrds_credentials.py::test_write_pgpass_preserves_other_entr
 test tests/unit/test_wrds_credentials.py::test_write_pgpass_rejects_newline_password
 test tests/unit/test_wrds_credentials.py::test_write_pgpass_replaces_our_line_in_place
 test tests/unit/test_wrds_credentials.py::test_write_pgpass_unreadable_file_gives_actionable_error
-test tests/unit/test_wrds_download.py::TestAttachWrds::test_passes_through_non_password_error
-test tests/unit/test_wrds_download.py::TestAttachWrds::test_redacts_password_on_attach_error
-test tests/unit/test_wrds_download.py::TestAttachWrds::test_redacts_special_char_password_on_attach_error
 test tests/unit/test_wrds_download.py::TestBuildProjection::test_multiple_special_columns
 test tests/unit/test_wrds_download.py::TestBuildProjection::test_no_special_columns
 test tests/unit/test_wrds_download.py::TestBuildProjection::test_permno_column_cast
@@ -1935,7 +2102,6 @@ test tests/unit/test_wrds_download.py::TestDateRangeSplitting::test_balanced_chu
 test tests/unit/test_wrds_download.py::TestDateRangeSplitting::test_balanced_chunks_skewed_distribution
 test tests/unit/test_wrds_download.py::TestDateRangeSplitting::test_build_tasks_no_split_without_histogram
 test tests/unit/test_wrds_download.py::TestDateRangeSplitting::test_build_tasks_splits_only_split_tables
-test tests/unit/test_wrds_download.py::TestDateRangeSplitting::test_compute_histograms_attach_failure_is_redacted
 test tests/unit/test_wrds_download.py::TestDateRangeSplitting::test_concat_chunks_combines_and_removes
 test tests/unit/test_wrds_download.py::TestDateRangeSplitting::test_date_where_clause
 test tests/unit/test_wrds_download.py::TestDateRangeSplitting::test_download_attached_emits_date_range
@@ -1952,14 +2118,6 @@ test tests/unit/test_wrds_download.py::TestEffectiveDownloadWorkers::test_clampe
 test tests/unit/test_wrds_download.py::TestEffectiveDownloadWorkers::test_never_more_workers_than_tables
 test tests/unit/test_wrds_download.py::TestEffectiveDownloadWorkers::test_one_or_less_means_sequential
 test tests/unit/test_wrds_download.py::TestEffectiveDownloadWorkers::test_passthrough_within_bounds
-test tests/unit/test_wrds_download.py::TestGenWrdsConnectionInfo::test_connection_string_format
-test tests/unit/test_wrds_download.py::TestGenWrdsConnectionInfo::test_conninfo_embeds_in_sql_without_parse_error
-test tests/unit/test_wrds_download.py::TestGenWrdsConnectionInfo::test_password_masking_matches_libpq_escaped_form
-test tests/unit/test_wrds_download.py::TestGenWrdsConnectionInfo::test_password_masking_matches_sql_doubled_form
-test tests/unit/test_wrds_download.py::TestGenWrdsConnectionInfo::test_password_omitted_when_none
-test tests/unit/test_wrds_download.py::TestGenWrdsConnectionInfo::test_password_with_special_characters_is_quoted_and_escaped
-test tests/unit/test_wrds_download.py::TestGenWrdsConnectionInfo::test_sql_literal_escapes_conninfo_for_embedding
-test tests/unit/test_wrds_download.py::TestGenWrdsConnectionInfo::test_username_with_special_characters_is_quoted_and_escaped
 test tests/unit/test_wrds_download.py::TestGetColumnsAttached::test_queries_attached_database
 test tests/unit/test_wrds_download.py::TestGetColumnsAttached::test_returns_column_names
 test tests/unit/test_wrds_download.py::TestMapInterruptible::test_preserves_order_and_returns_results
@@ -1969,9 +2127,8 @@ test tests/unit/test_wrds_download.py::TestParallelDownload::test_all_attach_fai
 test tests/unit/test_wrds_download.py::TestParallelDownload::test_one_attach_failure_is_non_fatal_when_queue_drains
 test tests/unit/test_wrds_download.py::TestParallelDownload::test_one_connection_per_worker_with_attach_detach
 test tests/unit/test_wrds_download.py::TestParallelDownload::test_parallel_covers_same_tables_as_sequential
-test tests/unit/test_wrds_download.py::TestParallelDownload::test_password_not_leaked_in_aggregated_error
+test tests/unit/test_wrds_download.py::TestParallelDownload::test_password_reaches_libpq_via_pgpassword_only
 test tests/unit/test_wrds_download.py::TestParallelDownload::test_persistent_connection_forces_sequential
-test tests/unit/test_wrds_download.py::TestParallelDownload::test_special_char_password_not_leaked_in_aggregated_error
 test tests/unit/test_wrds_download.py::TestParallelDownload::test_table_failure_is_aggregated
 test tests/unit/test_wrds_download.py::TestParallelDownload::test_worker_count_clamped_to_connection_limit
 test tests/unit/test_wrds_download.py::TestParallelDownload::test_worker_respects_stop_event
