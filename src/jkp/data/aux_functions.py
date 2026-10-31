@@ -126,7 +126,8 @@ def collect_and_write(df, filename, collect_streaming=False):
         Used for interim files during pipeline execution in main.py.
 
         Note: For final output files (in portfolio.py), use write_dataframe() from
-        output_writer module instead. write_dataframe() ensures .parquet extension and integrates with CSV conversion at pipeline end.
+        output_writer module instead. write_dataframe() ensures .parquet extension and
+        integrates with CSV conversion at pipeline end.
 
     Steps:
         1) df.collect(streaming=collect_streaming).
@@ -8747,6 +8748,33 @@ def filter_world(paths: DataPaths):
     ).sink_parquet(paths.interim_dir / "world_data_output.parquet")
 
 
+def _flatten_country_partitions(out_dir: Path) -> None:
+    """
+    Description:
+        Turn DuckDB's 'excntry=<country>/' partition folders into '<country>.parquet' files.
+
+    Steps:
+        1) Map DuckDB's '__HIVE_DEFAULT_PARTITION__' (a null excntry) to 'null_country'.
+        2) Rename a single part file; merge several (DuckDB splits a partition once more
+           than partitioned_write_max_open_files partitions are open).
+        3) Remove the partition folder.
+
+    Output:
+        One '{country}.parquet' file per partition in out_dir.
+    """
+    for d in out_dir.glob("excntry=*"):
+        if d.is_dir():
+            country = d.name[len("excntry=") :]
+            if country == "__HIVE_DEFAULT_PARTITION__":
+                country = "null_country"
+            part_files = sorted(d.glob("*.parquet"))
+            if len(part_files) == 1:
+                part_files[0].rename(out_dir / f"{country}.parquet")
+            elif part_files:
+                pl.scan_parquet(part_files).sink_parquet(out_dir / f"{country}.parquet")
+            shutil.rmtree(d)
+
+
 @measure_time
 def save_main_data(paths: DataPaths) -> None:
     """
@@ -8792,16 +8820,7 @@ def save_main_data(paths: DataPaths) -> None:
       );
     """)
     con.close()
-    for d in out_dir.glob("excntry=*"):
-        if d.is_dir():
-            country = d.name[len("excntry=") :]
-            if country == "__HIVE_DEFAULT_PARTITION__":  # DuckDB's name for a null excntry
-                country = "null_country"
-            # DuckDB can split one partition across several part files; keep them all.
-            part_files = sorted(d.glob("*.parquet"))
-            if part_files:
-                pl.scan_parquet(part_files).sink_parquet(out_dir / f"{country}.parquet")
-            shutil.rmtree(d)
+    _flatten_country_partitions(out_dir)
 
 
 @measure_time
@@ -8883,14 +8902,7 @@ def save_daily_ret(paths: DataPaths):
       );
     """)
     con.close()
-    for d in out_dir.glob("excntry=*"):
-        if d.is_dir():
-            country = d.name[len("excntry=") :]
-            # DuckDB can split one partition across several part files; keep them all.
-            part_files = sorted(d.glob("*.parquet"))
-            if part_files:
-                pl.scan_parquet(part_files).sink_parquet(out_dir / f"{country}.parquet")
-            shutil.rmtree(d)
+    _flatten_country_partitions(out_dir)
 
 
 @measure_time
