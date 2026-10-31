@@ -1541,7 +1541,7 @@ def populate_own(paths: DataPaths, inset_path, idvar, datevar, datename):
             ).dt.offset_by("-1d")
         )
         .with_columns(pl.date_ranges("ddate", "n"))
-        .explode("ddate", empty_as_null=True)
+        .explode("ddate")
         .select(["ddate", "gvkey", "datadate", "csho_fund", "ajex_fund"])
         .sort(["gvkey", "datadate"])
     )
@@ -1583,7 +1583,7 @@ def compustat_fx(paths: DataPaths):
             )
         )
         .select(["datadate", "curcdd", "fx"])
-        .explode("datadate", empty_as_null=True)
+        .explode("datadate")
         .unique(["curcdd", "datadate"])
         .sort(["curcdd", "datadate"])
     )
@@ -3222,7 +3222,7 @@ def crsp_industry(paths: DataPaths):
             sic=pl.when(col("sic") == 0).then(pl.lit(None).cast(pl.Int64)).otherwise(col("sic"))
         )
         .with_columns(date=pl.date_ranges("secinfostartdt", "secinfoenddt"))
-        .explode("date", empty_as_null=True)
+        .explode("date")
         .select(["permno", "permco", "date", "sic", "naics"])
         .unique(["permno", "date"])
         .sort(["permno", "date"])
@@ -3276,7 +3276,7 @@ def comp_hgics(paths: DataPaths, lib):
     data = (
         data.with_columns(indthru=pl.when(c1 & c2).then(indthru_date).otherwise(col("indthru")))
         .select(["gvkey", pl.date_ranges("indfrom", "indthru").alias("date"), "gics"])
-        .explode("date", empty_as_null=True)
+        .explode("date")
         .unique(subset=["gvkey", "date"])
         .sort(["gvkey", "date"])
     )
@@ -3399,13 +3399,12 @@ def comp_sic_naics(paths: DataPaths):
             .then(col("datadate"))
             .otherwise(col("end_date"))
         )
-        .with_columns(date=pl.date_ranges("datadate", "end_date", closed="left"))
-        .explode("date", empty_as_null=True)
         .with_columns(
             date=pl.when(col("datadate") == col("end_date"))
-            .then(col("datadate"))
-            .otherwise(col("date"))
+            .then(pl.concat_list("datadate"))
+            .otherwise(pl.date_ranges("datadate", "end_date", closed="left"))
         )
+        .explode("date")
         .select(["gvkey", "date", "sic", "naics"])
         .unique(["gvkey", "date"])
         .sort(["gvkey", "date"])
@@ -3460,7 +3459,7 @@ def comp_industry(paths: DataPaths):
             pl.date_ranges(pl.col("date") + pl.duration(days=1), "aux_date").alias("date"),
             *[pl.lit(None, dtype=schema[c]).alias(c) for c in ["gics", "sic", "naics"]],
         )
-        .explode("date", empty_as_null=True)
+        .explode("date")
     )
     out = pl.concat([joined.select(["gvkey", "date", "gics", "sic", "naics"]), gap_rows]).sort(
         ["gvkey", "date"]
@@ -4659,7 +4658,7 @@ def expand(data, id_vars, start_date, end_date, freq="day", new_date_name="date"
         data.with_columns(
             pl.date_ranges(start=start_date, end=end_date, interval=freq_range).alias(new_date_name)
         )
-        .explode(new_date_name, empty_as_null=True)
+        .explode(new_date_name)
         .drop([start_date, end_date])
     )
     if freq == "month":
