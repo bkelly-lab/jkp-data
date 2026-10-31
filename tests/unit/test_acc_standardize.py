@@ -1,11 +1,11 @@
-"""Tests for the NA/Global stacking and quarterization steps of ``standardized_accounting_data``."""
+"""Tests for the NA/Global stacking, quarterization and one-row-per-date steps of ``standardized_accounting_data``."""
 
 from datetime import date
 
 import polars as pl
 import pytest
 
-from jkp.data.aux_functions import prefer_global, quarterize
+from jkp.data.aux_functions import one_row_per_date, prefer_global, quarterize
 
 QK = ["gvkey", "fyr", "fyearq", "fqtr"]
 
@@ -140,3 +140,43 @@ class TestQuarterize:
         out = quarterize(df, ["saley"]).collect()
         assert out["datadate"].to_list() == [date(2012, 12, 31)]
         assert out["saley_q"].to_list() == [None]
+
+
+@pytest.mark.unit
+class TestOneRowPerDate:
+    def test_regular_quarter_beats_leftover_with_higher_fyr(self) -> None:
+        """Year-end moved from 12 to 9: the old-calendar row (fqtr missing) must not replace the real quarter."""
+        df = _fundq(
+            [
+                ("001", date(2014, 3, 31), 9, 2014, 2, 10.0),
+                ("001", date(2014, 3, 31), 12, 2014, None, 99.0),
+            ],
+            "NA",
+        )
+        out = one_row_per_date(df).collect()
+        assert out.select("fyr", "fqtr", "atq").rows() == [(9, 2, 10.0)]
+
+    def test_both_regular_keeps_highest_fyr(self) -> None:
+        df = _fundq(
+            [
+                ("001", date(2012, 9, 30), 6, 2013, 1, 10.0),
+                ("001", date(2012, 9, 30), 12, 2012, 3, 11.0),
+            ],
+            "NA",
+        )
+        out = one_row_per_date(df).collect()
+        assert out.select("fyr", "atq").rows() == [(12, 11.0)]
+
+    def test_leftover_alone_on_its_date_is_kept(self) -> None:
+        df = _fundq(
+            [
+                ("001", date(2012, 12, 31), 9, 2013, None, 1.0),
+                ("001", date(2013, 3, 31), 12, 2013, 1, 2.0),
+            ],
+            "NA",
+        )
+        out = one_row_per_date(df).sort("datadate").collect()
+        assert out.select("datadate", "atq").rows() == [
+            (date(2012, 12, 31), 1.0),
+            (date(2013, 3, 31), 2.0),
+        ]

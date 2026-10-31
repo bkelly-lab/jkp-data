@@ -4031,6 +4031,27 @@ def quarterize(df, var_list):
     return df
 
 
+def one_row_per_date(df: pl.LazyFrame) -> pl.LazyFrame:
+    """
+    Description:
+        Keep one quarterly row per (gvkey, datadate). Two rows share a date when a firm changes its
+        fiscal year-end and both its old and new fiscal calendars report the same quarter.
+
+    Steps:
+        1) Keep one row per (gvkey, datadate, fyr).
+        2) Per (gvkey, datadate), keep the row with a fiscal quarter (fqtr not null), then the highest fyr.
+
+    Output:
+        LazyFrame unique on (gvkey, datadate). A row left over from the abandoned calendar (fqtr missing)
+        never replaces a regular quarter.
+    """
+    return (
+        df.unique(["gvkey", "datadate", "fyr"])
+        .sort(["gvkey", "datadate", pl.col("fqtr").is_not_null(), "fyr"])
+        .unique(["gvkey", "datadate"], keep="last")
+    )
+
+
 def ttm(var):
     """
     Description:
@@ -4234,7 +4255,7 @@ def standardized_accounting_data(
            quarterly: gvkey, fyr, fyearq, fqtr), keep the GLOBAL row.
         4) If convert_to_usd: join FX and convert listed vars (annual & quarterly).
         5) Load ME and join to annual/quarterly panels.
-        6) Quarterly: quarterize …y → …y_q, coalesce to …q; create ni_qtr/sale_qtr/ocf_qtr; cumulate 4Q flows with continuity checks; normalize currency codes; de-dupe to one row per (gvkey, datadate), keeping the highest fyr.
+        6) Quarterly: quarterize …y → …y_q, coalesce to …q; create ni_qtr/sale_qtr/ocf_qtr; cumulate 4Q flows with continuity checks; normalize currency codes; de-dupe to one row per (gvkey, datadate), keeping the row with a fiscal quarter, then the highest fyr.
         7) Annual: add empty quarterly helpers; join ME; sort.
         8) Optionally add helper variables.
         9) Unique by (gvkey, datadate), drop row index, sort, and write 'acc_std_ann.parquet' and 'acc_std_qtr.parquet'.
@@ -4591,9 +4612,7 @@ def standardized_accounting_data(
                 **{"curcdq": "curcd"},
             }
         )
-        .unique(["gvkey", "datadate", "fyr"])
-        .sort(["gvkey", "datadate", "fyr"])
-        .unique(["gvkey", "datadate"], keep="last")
+        .pipe(one_row_per_date)
         .drop(["fyr", "fyearq", "fqtr"])
         .join(
             __me_data,
