@@ -8808,6 +8808,8 @@ def save_main_data(paths: DataPaths) -> None:
     os.replace(world_data_output_temp, world_data_output)
 
     out_dir = paths.processed_dir / "characteristics"
+    # OVERWRITE empties all of characteristics/, including world_data.parquet, so
+    # save_full_files_and_cleanup (which writes world_data.parquet) must run after this.
     con = duckdb.connect()
     con.execute(f"""
     COPY (SELECT * FROM read_parquet('{world_data_output.as_posix()}'))
