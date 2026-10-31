@@ -60,6 +60,16 @@ ruff format --check src/jkp/data/ tests/
 ruff format src/jkp/data/ tests/
 ```
 
+## Dead Code
+
+We use [vulture](https://github.com/jendrikseipp/vulture) to find unused functions and variables in `src/jkp/data/`. It is configured in `pyproject.toml` and blocks CI:
+
+```bash
+vulture
+```
+
+Delete dead code it flags, after checking that nothing outside `src/jkp/data/` (tests, scripts) still calls it. For a false positive (e.g. called dynamically) or a helper deliberately kept, add its name to `ignore_names` under `[tool.vulture]` in `pyproject.toml` with a comment saying why.
+
 ## Type Checking
 
 We use [pyright](https://github.com/microsoft/pyright) for static type checking:
@@ -85,12 +95,14 @@ Pyright runs in CI but does not currently block PRs. It surfaces potential bugs 
    ```bash
    ruff check src/jkp/data/ tests/
    ruff format --check src/jkp/data/ tests/
+   vulture
    ```
 
 5. **Push and open a PR**. The CI pipeline will run automatically.
 
 6. **All checks must pass** before merging. This includes:
    - Ruff lint and format checks
+   - Vulture dead-code check
    - All unit tests passing on Python 3.11 and 3.12
 
 ## Project Structure

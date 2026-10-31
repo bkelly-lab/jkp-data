@@ -167,25 +167,6 @@ def sic_naics_aux(filename):
     return df
 
 
-def load_age_aux(filename, filter_monthend=False):
-    """
-    Description:
-        Load gvkey–datadate pairs from a parquet; optionally filter to month-end rows.
-
-    Steps:
-        1) Scan parquet lazily.
-        2) If filter_monthend, keep rows with monthend == 1.
-        3) Select gvkey, datadate.
-
-    Output:
-        LazyFrame of (gvkey, datadate).
-    """
-    df = pl.scan_parquet(filename)
-    if filter_monthend:
-        df = df.filter(col("monthend") == 1)
-    return df.select(["gvkey", "datadate"])
-
-
 def comp_hgics_aux(filename):
     """
     Description:
@@ -260,28 +241,6 @@ def header_aux(comp_path, gcomp_path, output_path):
     g_comp = con.read_parquet(gcomp_path).select(["gvkey", "prirow", "priusa", "prican"])
     comp.union(g_comp).distinct(on="gvkey", keep="first").to_parquet(output_path)
     con.disconnect()
-
-
-def prihist_aux(filename, alias_itemvalue):
-    """
-    Description:
-        Build a unified Compustat header table combining NA and Global sources (one row per gvkey).
-
-    Steps:
-        1) Read NA and Global header parquets into Ibis.
-        2) Select gvkey, prirow, priusa, prican from each.
-        3) Union tables and take the first occurrence per gvkey.
-        4) Write to `output_path` and close connection.
-
-    Output:
-        Parquet header file with unique gvkey rows.
-    """
-    df = (
-        pl.scan_parquet(filename)
-        .filter(col("item") == alias_itemvalue.upper())
-        .select(["gvkey", col("itemvalue").alias(alias_itemvalue), "effdate", "thrudate"])
-    )
-    return df
 
 
 def gen_firmshares(paths: DataPaths):
