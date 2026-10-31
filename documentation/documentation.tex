@@ -180,9 +180,9 @@ Jensen is at Yale School of Management; \url{www.tijensen.com}. Kelly is at AQR 
 
 \subsection{Terminology}
 \begin{itemize}
-	\item \textit{Annual data} refers to accounting data from annual reports sourced from COMP.FUNDA and COMP.G\_FUNDA.
+	\item \textit{Annual data} refers to accounting data from annual reports sourced from COMP.FUNDA and COMP.G\_FUNDA. If both report the same firm (GVKEY) and fiscal period end (DATADATE), we use the COMP.G\_FUNDA record.
 	
-	\item \textit{Quarterly data} refers to accounting data from quarterly reports sourced from COMP.FUNDQ and COMP.G\_FUNDQ.
+	\item \textit{Quarterly data} refers to accounting data from quarterly reports sourced from COMP.FUNDQ and COMP.G\_FUNDQ. If both report the same firm and fiscal quarter (GVKEY, FYR, FYEARQ, FQTR), we use the COMP.G\_FUNDQ record. If one source reports the same fiscal quarter more than once, we keep the record with the earliest DATADATE.
 	
 	\item \textit{Final Dataset} refers to ``world\_data.parquet", the output dataset
 	
