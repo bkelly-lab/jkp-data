@@ -61,6 +61,7 @@ def merge_outputs(test_paths: DataPaths) -> dict:
     return {
         "msf": pl.read_parquet(i / "world_msf.parquet"),
         "prelim": pl.read_parquet(i / "world_data_prelim.parquet"),
+        "world_data_-1": pl.read_parquet(i / "world_data_-1.parquet"),
         "world_data": pl.read_parquet(i / "world_data.parquet"),
         "inputs": {k: pl.read_parquet(i / f) for k, f in INPUT_FILES.items()},
     }
@@ -68,10 +69,14 @@ def merge_outputs(test_paths: DataPaths) -> dict:
 
 class TestMergeChain:
     def test_key_unique_and_row_count_equals_msf(self, merge_outputs: dict) -> None:
-        wd, msf = merge_outputs["world_data"], merge_outputs["msf"]
-        assert wd.height == msf.height
-        assert wd.select(["id", "eom"]).is_duplicated().sum() == 0
-        assert set(wd.select("id", "eom").rows()) == set(msf.select("id", "eom").rows())
+        """Every stage keeps msf's rows; checked before merge_qmj's unique() can hide a fan-out."""
+        msf = merge_outputs["msf"]
+        msf_keys = set(msf.select("id", "eom").rows())
+        for stage in ("prelim", "world_data_-1", "world_data"):
+            df = merge_outputs[stage]
+            assert df.height == msf.height, stage
+            assert df.select(["id", "eom"]).is_duplicated().sum() == 0, stage
+            assert set(df.select("id", "eom").rows()) == msf_keys, stage
 
     def test_every_input_column_present(self, merge_outputs: dict) -> None:
         cols = set(merge_outputs["world_data"].columns)

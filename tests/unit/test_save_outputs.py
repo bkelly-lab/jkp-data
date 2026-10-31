@@ -9,6 +9,7 @@ import polars as pl
 import polars.testing
 import pytest
 
+from jkp.data import aux_functions as af
 from jkp.data.aux_functions import (
     save_accounting_data,
     save_daily_ret,
@@ -107,13 +108,22 @@ class TestCountrySplitWriters:
             con.execute("SET partitioned_write_flush_threshold = 1")
             return con
 
+        real_flatten = af._flatten_country_partitions
+        part_counts: list[int] = []
+
+        def count_parts_then_flatten(out_dir):
+            part_counts.extend(len(list(d.glob("*.parquet"))) for d in out_dir.glob("excntry=*"))
+            real_flatten(out_dir)
+
         monkeypatch.setattr(duckdb, "connect", connect_with_tiny_partition_limits)
+        monkeypatch.setattr(af, "_flatten_country_partitions", count_parts_then_flatten)
         setup_folder_structure(test_paths)
         data = build(["USA", "CAN", "GBR"], n_per_country=1000)
         data.write_parquet(test_paths.interim_dir / input_name)
 
         writer(test_paths)
 
+        assert max(part_counts) > 1, "DuckDB wrote one file per country; nothing was merged"
         published = _read_country_files(test_paths.processed_dir / out_subdir)
         assert sum(df.height for df in published.values()) == data.height
         ids = pl.concat(df.select("id") for df in published.values())["id"].sort()
@@ -145,16 +155,78 @@ class TestCountrySplitWriters:
 
         writer(test_paths)
 
-        # save_main_data rewrites its input (adds me_lag1) before splitting.
-        expected_all = pl.read_parquet(test_paths.interim_dir / input_name)
+        # Compare with the input, not save_main_data's rewritten copy of it; me_lag1 and
+        # the exact column lists are tested per writer.
         published = _read_country_files(test_paths.processed_dir / out_subdir)
         assert set(published) == {"USA", "CAN", "GBR"}
         for country, actual in published.items():
-            expected = expected_all.filter(pl.col("excntry") == country)
-            expected = expected.select(actual.columns)
+            expected = data.filter(pl.col("excntry") == country)
+            shared = [c for c in actual.columns if c in expected.columns]
             polars.testing.assert_frame_equal(
-                actual.sort(keys), expected.sort(keys), check_exact=True
+                actual.select(shared).sort(keys),
+                expected.select(shared).sort(keys),
+                check_exact=True,
             )
+
+    def test_rerun_removes_files_from_the_previous_run(
+        self, test_paths, writer, input_name, out_subdir, build, keys
+    ):
+        """A rerun with fewer countries leaves no stale country files (COPY ... OVERWRITE)."""
+        setup_folder_structure(test_paths)
+        build(["USA", "CAN", "GBR"], n_per_country=5).write_parquet(
+            test_paths.interim_dir / input_name
+        )
+        writer(test_paths)
+        data = build(["USA", "CAN"], n_per_country=3)
+        data.write_parquet(test_paths.interim_dir / input_name)
+
+        writer(test_paths)
+
+        published = _read_country_files(test_paths.processed_dir / out_subdir)
+        assert set(published) == {"USA", "CAN"}
+        assert sum(df.height for df in published.values()) == data.height
+
+
+class TestSaveMainData:
+    def test_me_lag1_is_previous_month_me_within_id(self, test_paths):
+        """me_lag1 is the same id's me one month earlier; null at a first month or after a gap."""
+        setup_folder_structure(test_paths)
+        dec, jan, feb, mar, may = (
+            date(2019, 12, 31),
+            date(2020, 1, 31),
+            date(2020, 2, 29),
+            date(2020, 3, 31),
+            date(2020, 5, 31),
+        )
+        # Rows shuffled. id 1 skips April; id 2 crosses a year boundary.
+        data = pl.DataFrame(
+            {
+                "excntry": ["USA"] * 6,
+                "id": [1, 2, 1, 1, 2, 1],
+                "eom": [may, jan, jan, mar, dec, feb],
+                "me": [50.0, 6.0, 10.0, 30.0, 5.0, 20.0],
+            }
+        )
+        data.write_parquet(test_paths.interim_dir / "world_data_output.parquet")
+
+        save_main_data(test_paths)
+
+        out = pl.read_parquet(test_paths.processed_dir / "characteristics" / "USA.parquet")
+        assert out.sort("id", "eom")["me_lag1"].to_list() == [None, 10.0, 20.0, None, None, 5.0]
+
+    def test_country_files_columns_exact(self, test_paths):
+        """Each file has the input columns plus me_lag1, excntry included and single-valued."""
+        setup_folder_structure(test_paths)
+        data = _world_data_frame(["USA", "CAN"], n_per_country=5)
+        data.write_parquet(test_paths.interim_dir / "world_data_output.parquet")
+
+        save_main_data(test_paths)
+
+        published = _read_country_files(test_paths.processed_dir / "characteristics")
+        assert set(published) == {"USA", "CAN"}
+        for country, df in published.items():
+            assert df.columns == [*data.columns, "me_lag1"]
+            assert df["excntry"].unique().to_list() == [country]
 
 
 OTHER_OUTPUT_FILES = [
@@ -242,18 +314,6 @@ class TestSaveDailyRet:
         assert list(out_dir.glob("excntry=*")) == []
         for df in _read_country_files(out_dir).values():
             assert df.columns == DAILY_RET_COLS
-
-    def test_second_run_overwrites(self, test_paths):
-        setup_folder_structure(test_paths)
-        data = _daily_frame(["USA", "CAN"], n_per_country=5)
-
-        self._run(test_paths, data)
-        self._run(test_paths, data)
-
-        published = _read_country_files(
-            test_paths.processed_dir / "return_data/daily_rets_by_country"
-        )
-        assert sum(df.height for df in published.values()) == data.height
 
 
 class TestSaveMonthlyRet:
