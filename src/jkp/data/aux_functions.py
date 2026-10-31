@@ -126,17 +126,18 @@ def collect_and_write(df, filename, collect_streaming=False):
         Used for interim files during pipeline execution in main.py.
 
         Note: For final output files (in portfolio.py), use write_dataframe() from
-        output_writer module instead. write_dataframe() supports shrink_dtype,
-        ensures .parquet extension, and integrates with CSV conversion at pipeline end.
+        output_writer module instead. write_dataframe() ensures .parquet
+        extension and integrates with CSV conversion at pipeline end.
 
     Steps:
-        1) df.collect(streaming=collect_streaming).
+        1) df.collect() on the streaming engine if collect_streaming, else in-memory.
         2) write_parquet(filename).
 
     Output:
         Parquet file at `filename`.
     """
-    df.collect(streaming=collect_streaming).write_parquet(filename)
+    engine = "streaming" if collect_streaming else "in-memory"
+    df.collect(engine=engine).write_parquet(filename)
 
 
 def sic_naics_aux(filename):
@@ -1540,7 +1541,7 @@ def populate_own(paths: DataPaths, inset_path, idvar, datevar, datename):
             ).dt.offset_by("-1d")
         )
         .with_columns(pl.date_ranges("ddate", "n"))
-        .explode("ddate")
+        .explode("ddate", empty_as_null=True)
         .select(["ddate", "gvkey", "datadate", "csho_fund", "ajex_fund"])
         .sort(["gvkey", "datadate"])
     )
@@ -1582,7 +1583,7 @@ def compustat_fx(paths: DataPaths):
             )
         )
         .select(["datadate", "curcdd", "fx"])
-        .explode("datadate")
+        .explode("datadate", empty_as_null=True)
         .unique(["curcdd", "datadate"])
         .sort(["curcdd", "datadate"])
     )
@@ -3221,7 +3222,7 @@ def crsp_industry(paths: DataPaths):
             sic=pl.when(col("sic") == 0).then(pl.lit(None).cast(pl.Int64)).otherwise(col("sic"))
         )
         .with_columns(date=pl.date_ranges("secinfostartdt", "secinfoenddt"))
-        .explode("date")
+        .explode("date", empty_as_null=True)
         .select(["permno", "permco", "date", "sic", "naics"])
         .unique(["permno", "date"])
         .sort(["permno", "date"])
@@ -3275,7 +3276,7 @@ def comp_hgics(paths: DataPaths, lib):
     data = (
         data.with_columns(indthru=pl.when(c1 & c2).then(indthru_date).otherwise(col("indthru")))
         .select(["gvkey", pl.date_ranges("indfrom", "indthru").alias("date"), "gics"])
-        .explode("date")
+        .explode("date", empty_as_null=True)
         .unique(subset=["gvkey", "date"])
         .sort(["gvkey", "date"])
     )
@@ -3399,7 +3400,7 @@ def comp_sic_naics(paths: DataPaths):
             .otherwise(col("end_date"))
         )
         .with_columns(date=pl.date_ranges("datadate", "end_date", closed="left"))
-        .explode("date")
+        .explode("date", empty_as_null=True)
         .with_columns(
             date=pl.when(col("datadate") == col("end_date"))
             .then(col("datadate"))
@@ -3459,7 +3460,7 @@ def comp_industry(paths: DataPaths):
             pl.date_ranges(pl.col("date") + pl.duration(days=1), "aux_date").alias("date"),
             *[pl.lit(None, dtype=schema[c]).alias(c) for c in ["gics", "sic", "naics"]],
         )
-        .explode("date")
+        .explode("date", empty_as_null=True)
     )
     out = pl.concat([joined.select(["gvkey", "date", "gics", "sic", "naics"]), gap_rows]).sort(
         ["gvkey", "date"]
@@ -3750,7 +3751,7 @@ def add_ret_exc_wins(
         )
         .drop(drop_cols)
     )
-    result.collect(streaming=(freq == "d")).write_parquet(data_path)
+    result.collect(engine="streaming" if freq == "d" else "in-memory").write_parquet(data_path)
 
 
 def load_mkt_returns_params(freq):
@@ -4658,7 +4659,7 @@ def expand(data, id_vars, start_date, end_date, freq="day", new_date_name="date"
         data.with_columns(
             pl.date_ranges(start=start_date, end=end_date, interval=freq_range).alias(new_date_name)
         )
-        .explode(new_date_name)
+        .explode(new_date_name, empty_as_null=True)
         .drop([start_date, end_date])
     )
     if freq == "month":
@@ -7058,7 +7059,7 @@ def div_cols(i, spc=False):
     num = (
         col(f"{div_var}1m_me")
         if (i == 1)
-        else col(f"{div_var}1m_me").rolling_sum(window_size=i, min_periods=1).over("id")
+        else col(f"{div_var}1m_me").rolling_sum(window_size=i, min_samples=1).over("id")
     )
     return (
         pl.when((col("count") >= i) & (col("me") != 0)).then(num / col("me")).otherwise(fl_none())
@@ -7190,7 +7191,7 @@ def market_chars_monthly(paths: DataPaths, data_path, market_ret_path, local_cur
         .sort(["id", "eom"])
     )
 
-    data.collect(streaming=True).write_parquet(paths.interim_dir / "market_chars_m.parquet")
+    data.collect(engine="streaming").write_parquet(paths.interim_dir / "market_chars_m.parquet")
 
 
 @measure_time
@@ -7752,9 +7753,6 @@ def prepare_daily(paths: DataPaths, data_path, fcts_path):
         )
         .drop(["ret_lag_dif", "ret_local", "adjfct", "prc", "dolvol"])
         .sort(["id_int", "date"])
-        .select(
-            pl.all().shrink_dtype()
-        )  # For computers without enough memory, use this line to apply dtype shrinking
     )
     dsf1.collect().write_parquet(paths.interim_dir / "dsf1.parquet")
 
@@ -7771,7 +7769,6 @@ def prepare_daily(paths: DataPaths, data_path, fcts_path):
             mktrf_ld1=col("mktrf").shift(-1).over(["excntry", "eom"]),
             mktrf_lg1=col("mktrf").shift(1).over(["excntry"]),
         )
-        .select(pl.all().shrink_dtype())
         .sort(["excntry", "date"])
     )
     mkt_lead_lag.collect().write_parquet(paths.interim_dir / "mkt_lead_lag.parquet")
@@ -7793,7 +7790,6 @@ def prepare_daily(paths: DataPaths, data_path, fcts_path):
         )
         # Keep raw `ret` so mktcorr can guard on RF-immune constantness.
         .select(["id_int", "eom", "ret_exc_3l", "mkt_exc_3l", "ret"])
-        .select(pl.all().shrink_dtype())
         .sort(["id_int", "eom"])
     )
     corr_data.collect().write_parquet(paths.interim_dir / "corr_data.parquet")
@@ -8533,7 +8529,7 @@ def finish_daily_chars(paths: DataPaths, output_path):
     r1 = pl.scan_parquet(paths.interim_dir / "roll_apply_daily.parquet").with_columns(
         col("id").cast(pl.Int64)
     )
-    daily_chars = bidask.join(r1, how="outer_coalesce", on=["id", "eom"])
+    daily_chars = bidask.join(r1, how="full", coalesce=True, on=["id", "eom"])
     daily_chars = daily_chars.with_columns(
         betabab_1260d=col("corr_1260d") * col("rvol_252d") / col("__mktvol_252d"),
         rmax5_rvol_21d=col("rmax5_21d") / col("rvol_252d"),
@@ -8782,7 +8778,7 @@ def save_main_data(paths: DataPaths) -> None:
         )
         .drop("dif_aux")
     )
-    data.select(pl.all().shrink_dtype()).sink_parquet(world_data_output_temp)
+    data.sink_parquet(world_data_output_temp)
     os.replace(world_data_output_temp, world_data_output)
 
     out_dir = paths.processed_dir / "characteristics"
@@ -8930,12 +8926,12 @@ def save_full_files_and_cleanup(paths: DataPaths, clear_interim=True):
     Output:
         Compressed parquet files in return_data/ and characteristics/, cleanup of temp files.
     """
-    pl.scan_parquet(paths.interim_dir / "world_dsf_output.parquet").select(
-        pl.all().shrink_dtype()
-    ).sink_parquet(paths.processed_dir / "return_data" / "world_dsf.parquet")
-    pl.scan_parquet(paths.interim_dir / "world_data_output.parquet").select(
-        pl.all().shrink_dtype()
-    ).sink_parquet(paths.processed_dir / "characteristics" / "world_data.parquet")
+    pl.scan_parquet(paths.interim_dir / "world_dsf_output.parquet").sink_parquet(
+        paths.processed_dir / "return_data" / "world_dsf.parquet"
+    )
+    pl.scan_parquet(paths.interim_dir / "world_data_output.parquet").sink_parquet(
+        paths.processed_dir / "characteristics" / "world_data.parquet"
+    )
     if clear_interim:
         for child in paths.interim_dir.iterdir():
             if child.is_dir():
@@ -8984,9 +8980,7 @@ def save_monthly_ret(paths: DataPaths):
             "ret_overnight_local_lead1m",
         ]
     )
-    data.select(pl.all().shrink_dtype()).collect().write_parquet(
-        paths.processed_dir / "return_data" / "world_ret_monthly.parquet"
-    )
+    data.collect().write_parquet(paths.processed_dir / "return_data" / "world_ret_monthly.parquet")
 
 
 @measure_time
@@ -9023,7 +9017,7 @@ def merge_roll_apply_daily_results(paths: DataPaths):
     joint_file = pl.scan_parquet(file_paths[0])
     for i in file_paths[1:]:
         df_aux = pl.scan_parquet(i)
-        joint_file = joint_file.join(df_aux, how="outer_coalesce", on=["id_int", "aux_date"])
+        joint_file = joint_file.join(df_aux, how="full", coalesce=True, on=["id_int", "aux_date"])
 
     joint_file.with_columns(col("aux_date").cast(pl.Int64)).join(
         df_dates.lazy(),
@@ -10034,7 +10028,8 @@ def _build_hml_lms(
         pl.col(c).filter(pl.col("pf") == n_pfs).first()
         - pl.col(c).filter(pl.col("pf") == 1).first()
     )
-    agg_exprs = [pl.col("pf").is_in([n_pfs, 1]).sum().alias("pfs")]
+    is_extreme_pf = (pl.col("pf") == n_pfs) | (pl.col("pf") == 1)
+    agg_exprs = [is_extreme_pf.sum().alias("pfs")]
     if include_signal:
         agg_exprs.append(diff("signal").alias("signal"))
     agg_exprs.extend(
@@ -10043,7 +10038,7 @@ def _build_hml_lms(
                 pl.col("n").filter(pl.col("pf") == n_pfs).first()
                 + pl.col("n").filter(pl.col("pf") == 1).first()
             ).alias("n_stocks"),
-            pl.col("n").filter(pl.col("pf").is_in([n_pfs, 1])).min().alias("n_stocks_min"),
+            pl.col("n").filter(is_extreme_pf).min().alias("n_stocks_min"),
             diff("ret_ew").alias("ret_ew"),
             diff("ret_vw").alias("ret_vw"),
             diff("ret_vw_cap").alias("ret_vw_cap"),

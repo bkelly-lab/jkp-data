@@ -44,6 +44,11 @@ def main(
     ),
 ) -> None:
     """JKP Factor Data generation pipeline."""
+    import polars as pl
+
+    # Polars 2 runs a bare collect() on the streaming engine, which does not keep the
+    # row order the pipeline relies on; keep the in-memory default of Polars 1.x.
+    pl.Config.set_engine_affinity("in-memory")
 
 
 @app.command()
