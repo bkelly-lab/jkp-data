@@ -11,18 +11,22 @@ QK = ["gvkey", "fyr", "fyearq", "fqtr"]
 
 
 def _fundq(rows: list[tuple], source: str) -> pl.LazyFrame:
-    return pl.LazyFrame(
-        rows,
-        schema={
-            "gvkey": pl.String,
-            "datadate": pl.Date,
-            "fyr": pl.Int16,
-            "fyearq": pl.Int32,
-            "fqtr": pl.Int16,
-            "atq": pl.Float64,
-        },
-        orient="row",
-    ).with_columns(source=pl.lit(source))
+    return (
+        pl.LazyFrame(
+            rows,
+            schema={
+                "gvkey": pl.String,
+                "datadate": pl.Date,
+                "fyr": pl.Int16,
+                "fyearq": pl.Int32,
+                "fqtr": pl.Int16,
+                "atq": pl.Float64,
+            },
+            orient="row",
+        )
+        .with_columns(source=pl.lit(source))
+        .with_row_index("n")
+    )
 
 
 @pytest.mark.unit
@@ -155,6 +159,17 @@ class TestOneRowPerDate:
         )
         out = one_row_per_date(df).collect()
         assert out.select("fyr", "fqtr", "atq").rows() == [(9, 2, 10.0)]
+
+    def test_regular_quarter_beats_leftover_with_same_fyr(self) -> None:
+        """NA leftover and Global regular quarter on the same date and fyr: the regular quarter is kept."""
+        df = pl.concat(
+            [
+                _fundq([("001", date(2014, 3, 31), 12, 2014, None, 99.0)], "NA"),
+                _fundq([("001", date(2014, 3, 31), 12, 2014, 1, 10.0)], "GLOBAL"),
+            ]
+        )
+        out = one_row_per_date(df).collect()
+        assert out.select("source", "fqtr", "atq").rows() == [("GLOBAL", 1, 10.0)]
 
     def test_both_regular_keeps_highest_fyr(self) -> None:
         df = _fundq(

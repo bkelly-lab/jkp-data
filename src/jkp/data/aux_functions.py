@@ -3990,7 +3990,7 @@ def prefer_global(
     return pl.concat([global_rows, na_only], how="diagonal_relaxed")
 
 
-def quarterize(df, var_list):
+def quarterize(df: pl.LazyFrame, var_list: list[str]) -> pl.LazyFrame:
     """
     Description:
         Convert quarterly Compustat levels to quarter-over-quarter flows with guardrails.
@@ -4038,18 +4038,23 @@ def one_row_per_date(df: pl.LazyFrame) -> pl.LazyFrame:
         fiscal year-end and both its old and new fiscal calendars report the same quarter.
 
     Steps:
-        1) Keep one row per (gvkey, datadate, fyr).
-        2) Per (gvkey, datadate), keep the row with a fiscal quarter (fqtr not null), then the highest fyr.
+        1) Per (gvkey, datadate), keep the row with a fiscal quarter (fqtr not null), then the highest fyr,
+           then the Global row, then the last raw row (n).
 
     Output:
         LazyFrame unique on (gvkey, datadate). A row left over from the abandoned calendar (fqtr missing)
         never replaces a regular quarter.
     """
-    return (
-        df.unique(["gvkey", "datadate", "fyr"])
-        .sort(["gvkey", "datadate", pl.col("fqtr").is_not_null(), "fyr"])
-        .unique(["gvkey", "datadate"], keep="last")
-    )
+    return df.sort(
+        [
+            "gvkey",
+            "datadate",
+            pl.col("fqtr").is_not_null(),
+            "fyr",
+            pl.col("source") == "GLOBAL",
+            "n",
+        ]
+    ).unique(["gvkey", "datadate"], keep="last")
 
 
 def ttm(var):
