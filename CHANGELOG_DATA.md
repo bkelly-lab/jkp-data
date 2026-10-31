@@ -3,6 +3,10 @@ This change log keeps track of changes to the underlying data set. In brackets, 
 
 This repository ports the original SAS pipeline ([ReplicationCrisis](https://github.com/bkelly-lab/ReplicationCrisis)) to Python using Polars. Entries up to and including 05-03-2025 are from the original change log.
 
+## 31-10-2026
+__Changes__:
+- Made the choice of NAICS code deterministic when Compustat has two records for the same firm and fiscal year end with the same SIC code. `comp_sic_naics` keeps one record per firm and date, preferring the lowest SIC, but had no rule for ties on SIC, so the NAICS code it kept could change from one run to the next. It now keeps the record with a non-null NAICS code (the lowest one if there are several). The current WRDS data has one such tie: Compustat Global gvkey 101035, fiscal year end 2024-03-31, SIC 3260, with one record showing NAICS 336320 and the other null. The kept record applies until the next fiscal year end, so in runs where the null record won, `naics` was missing for this firm from March 2024 through February 2025. In the published characteristics this is 12 stock-months of one security (id 310103501, JPN). The firm's other security (id 110103590) is not in the published output. No characteristic or factor portfolio uses `naics`, and `sic`, `ff49` and `gics` are unaffected. Runs where 336320 won produced the same data as now.
+
 ## 28-10-2026
 __Changes__:
 - Set `ni_ar1` to null instead of NaN when the lagged NI/AT does not vary over the regression window, where DuckDB's `regr_slope` returns NaN ([#294](https://github.com/bkelly-lab/jkp-data/pull/294)). This affects 694 stock-months in 10 countries, 48 of them in the US. Polars sorts NaN above every number, so these stocks were placed in the top `ni_ar1` portfolio. 672 are now null and left out of the sort. In the other 22, the annual NaN blocked the fallback to the quarterly value that all accounting characteristics use; they now take the quarterly `ni_ar1`, from the same regression as the quarterly `ni_ivol` they already had. As a safeguard, factor portfolio construction now treats any NaN characteristic value as missing.

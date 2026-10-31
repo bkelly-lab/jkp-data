@@ -184,6 +184,26 @@ class TestCompSicNaics:
         )
         assert row["naics"] == 111111
 
+    def test_distinct_on_sic_tie_keeps_non_null_naics(self) -> None:
+        """When duplicate (gvkey, datadate) rows tie on SIC, the row with a NAICS wins.
+
+        Mirrors gvkey 101035 on 2024-03-31 in Compustat Global (SIC 3260, NAICS
+        336320 and null). Without a NAICS tie-break DuckDB keeps either row.
+        """
+        gl = sic_naics_frame(
+            ["101035"] * 4,
+            [date(2024, 3, 31)] * 4,
+            [3260] * 4,
+            [None, None, None, 336320],
+        )
+        _write_inputs(self.paths, empty_sic_naics_frame(), gl)
+
+        comp_sic_naics(self.paths)
+
+        result = pl.read_parquet(self.output_path)
+        assert result.height == 1
+        assert result["naics"].item() == 336320
+
     def test_dedup_and_sort_invariants(self) -> None:
         """Output has unique ``(gvkey, date)`` keys and is sorted ascending."""
         na = sic_naics_frame(

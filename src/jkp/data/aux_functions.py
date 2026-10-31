@@ -3317,7 +3317,8 @@ def comp_sic_naics(paths: DataPaths):
 
     Steps:
         1) Load NA and GL tables; drop a known problematic row; outer-join on (gvkey,datadate).
-        2) Coalesce ids/dates/codes; order to prefer non-null SIC; select distinct per (gvkey,date).
+        2) Coalesce ids/dates/codes; order to prefer the lowest non-null SIC, then non-null
+           NAICS on SIC ties; select distinct per (gvkey,date).
         3) Convert to daily spans by joining to next datadate; expand date ranges [datadate,end_date).
         4) Handle single-date rows; project to {gvkey,date,sic,naics}; deduplicate, sort.
         5) Write comp_other.parquet.
@@ -3385,7 +3386,8 @@ def comp_sic_naics(paths: DataPaths):
                 ORDER BY
                 t.gvkey,
                 t.date,
-                t.sic
+                t.sic,
+                t.naics NULLS LAST
                 ;
     """)
     comp = (
