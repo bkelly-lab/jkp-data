@@ -9,6 +9,7 @@ parquet. There is no float math, so frames are compared exactly.
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
 
 import polars as pl
 import pytest
@@ -27,6 +28,7 @@ from tests.conftest import assert_unique_keys
 JAN = date(2020, 1, 31)
 FEB = date(2020, 2, 29)
 MAR = date(2020, 3, 31)
+GOLDEN_FIXTURES = Path(__file__).parents[1] / "golden" / "fixtures"
 
 
 class TestCreateWorldDataPrelim:
@@ -117,11 +119,18 @@ class TestCreateWorldDataPrelim:
         assert_unique_keys(out, ["id", "eom"])
 
 
-def _daily_chars_columns() -> set[str]:
-    """Non-key column names of market_chars_d, derived from the producers.
+def _golden_non_key_columns(relpath: str) -> set[str]:
+    """Non-key columns of a golden fixture written by the real producer."""
+    return set(pl.read_parquet_schema(GOLDEN_FIXTURES / relpath)) - {"id", "eom"}
 
-    Derived from ``ROLLING_DAILY_SPECS`` and the output names in ``roll_apply_daily``
-    helpers, ``bidask_hl`` and ``finish_daily_chars``.
+
+def _daily_chars_columns() -> set[str]:
+    """Non-key column names of market_chars_d, maintained by hand.
+
+    Built from ``ROLLING_DAILY_SPECS`` plus a hand-copied mapping from each statistic
+    to the names that ``roll_apply_daily`` helpers, ``bidask_hl`` and
+    ``finish_daily_chars`` write, so it can fall behind the producers. Replace it with
+    the golden fixture's columns once market_chars_d has one (#304).
     """
     per_stat = {
         "rvol": ["rvol"],
@@ -150,7 +159,11 @@ def _daily_chars_columns() -> set[str]:
 
 
 def _prelim_columns() -> set[str]:
-    """Representative world_data_prelim non-key columns (msf + market chars + accounting)."""
+    """Representative world_data_prelim non-key columns (msf + market chars + accounting).
+
+    The msf and market_chars_m sets are maintained by hand. Replace the market_chars_m
+    set with the golden fixture's columns once market_chars_m has one (#304).
+    """
     msf = {
         "excntry",
         "gvkey",
@@ -197,14 +210,18 @@ def _prelim_columns() -> set[str]:
 
 
 def _right_side_columns() -> dict[str, set[str]]:
-    """Non-key columns of the six merge_world_data_prelim right-side inputs."""
+    """Non-key columns of the six merge_world_data_prelim right-side inputs.
+
+    Read from the producers' golden fixtures where one exists. mp_factors and
+    market_chars_d have no fixture yet and are listed by hand (#304).
+    """
     return {
-        "beta_60m": {"beta_60m", "ivol_capm_60m"},
-        "resmom_ff3_12_1": {"resff3_12_1"},
-        "resmom_ff3_6_1": {"resff3_6_1"},
+        "beta_60m": _golden_non_key_columns("market_beta/beta_60m.parquet"),
+        "resmom_ff3_12_1": _golden_non_key_columns("residual_momentum/resmom_ff3_12_1.parquet"),
+        "resmom_ff3_6_1": _golden_non_key_columns("residual_momentum/resmom_ff3_6_1.parquet"),
         "mp_factors": {"mispricing_perf", "mispricing_mgmt"},
         "market_chars_d": _daily_chars_columns(),
-        "firm_age": {"age"},
+        "firm_age": _golden_non_key_columns("firm_age/firm_age.parquet"),
     }
 
 
@@ -281,15 +298,6 @@ class TestMergeWorldDataPrelim:
         assert not [c for c in out.columns if c.endswith("_right")]
         expected_cols = {"id", "eom"} | prelim_cols | set().union(*right.values())
         assert set(out.columns) == expected_cols
-
-    def test_right_side_columns_are_disjoint(self) -> None:
-        """The six right-side inputs share no non-key columns with each other or with prelim."""
-        right = _right_side_columns()
-        names = list(right)
-        for i, a in enumerate(names):
-            assert not right[a] & _prelim_columns(), a
-            for b in names[i + 1 :]:
-                assert not right[a] & right[b], (a, b)
 
 
 class TestMergeIndustryToWorldMsf:

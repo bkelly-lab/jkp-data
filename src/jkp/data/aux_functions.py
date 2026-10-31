@@ -8132,6 +8132,7 @@ def create_world_data_prelim(
     """
     Description:
         Build preliminary world dataset by merging returns, market characteristics, and accounting data.
+        The right-side inputs must be unique on their join keys, or msf rows are duplicated.
 
     Steps:
         1) Load msf (stock returns), monthly market chars, and accounting chars parquet files.
@@ -9049,6 +9050,7 @@ def merge_world_data_prelim(paths: DataPaths):
     """
     Description:
         Combine preliminary world data with factor/regression outputs.
+        Each input must be unique on (id, eom), or world_data_prelim rows are duplicated.
 
     Steps:
         1) Load world_data_prelim and factor files (beta, resmom, mispricing, etc.).

@@ -1,4 +1,8 @@
-"""Property-based invariants for the final merge and save functions."""
+"""Property-based invariants for the final merge and save functions.
+
+The row-conservation properties assume each right-side input is unique on its join
+key, which the producers guarantee; a duplicate key would duplicate msf rows.
+"""
 
 from __future__ import annotations
 

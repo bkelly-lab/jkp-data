@@ -78,6 +78,11 @@ class TestMergeChain:
             assert df.select(["id", "eom"]).is_duplicated().sum() == 0, stage
             assert set(df.select("id", "eom").rows()) == msf_keys, stage
 
+    def test_no_right_suffix_columns(self, merge_outputs: dict) -> None:
+        """No join renamed a colliding column to *_right."""
+        for stage in ("prelim", "world_data_-1", "world_data"):
+            assert not [c for c in merge_outputs[stage].columns if c.endswith("_right")], stage
+
     def test_every_input_column_present(self, merge_outputs: dict) -> None:
         cols = set(merge_outputs["world_data"].columns)
         for name, df in merge_outputs["inputs"].items():
