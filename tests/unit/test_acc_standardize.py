@@ -130,47 +130,27 @@ class TestQuarterize:
             (date(2010, 6, 30), 15.0),
         ]
 
-    def test_missing_fqtr_group_keeps_earliest_row(self) -> None:
+    def test_rows_without_fqtr_are_dropped(self) -> None:
+        """A leftover from the old fiscal calendar (fqtr missing) is dropped and does not break Q1's flow."""
         df = pl.LazyFrame(
             {
                 "gvkey": ["001"] * 3,
-                "datadate": [date(2013, 3, 31), date(2012, 12, 31), date(2013, 6, 30)],
-                "fyr": pl.Series([9] * 3, dtype=pl.Int16),
-                "fyearq": pl.Series([2013] * 3, dtype=pl.Int32),
-                "fqtr": pl.Series([None] * 3, dtype=pl.Int16),
-                "saley": [2.0, 1.0, 3.0],
+                "datadate": [date(2014, 3, 31), date(2014, 6, 30), date(2014, 9, 30)],
+                "fyr": pl.Series([12] * 3, dtype=pl.Int16),
+                "fyearq": pl.Series([2014] * 3, dtype=pl.Int32),
+                "fqtr": pl.Series([1, 2, None], dtype=pl.Int16),
+                "capxy": [10.0, 25.0, 40.0],
             }
         )
-        out = quarterize(df, ["saley"]).collect()
-        assert out["datadate"].to_list() == [date(2012, 12, 31)]
-        assert out["saley_q"].to_list() == [None]
+        out = quarterize(df, ["capxy"]).collect()
+        assert out.select("datadate", "capxy_q").rows() == [
+            (date(2014, 3, 31), 10.0),
+            (date(2014, 6, 30), 15.0),
+        ]
 
 
 @pytest.mark.unit
 class TestOneRowPerDate:
-    def test_regular_quarter_beats_leftover_with_higher_fyr(self) -> None:
-        """Year-end moved from 12 to 9: the old-calendar row (fqtr missing) must not replace the real quarter."""
-        df = _fundq(
-            [
-                ("001", date(2014, 3, 31), 9, 2014, 2, 10.0),
-                ("001", date(2014, 3, 31), 12, 2014, None, 99.0),
-            ],
-            "NA",
-        )
-        out = one_row_per_date(df).collect()
-        assert out.select("fyr", "fqtr", "atq").rows() == [(9, 2, 10.0)]
-
-    def test_regular_quarter_beats_leftover_with_same_fyr(self) -> None:
-        """NA leftover and Global regular quarter on the same date and fyr: the regular quarter is kept."""
-        df = pl.concat(
-            [
-                _fundq([("001", date(2014, 3, 31), 12, 2014, None, 99.0)], "NA"),
-                _fundq([("001", date(2014, 3, 31), 12, 2014, 1, 10.0)], "GLOBAL"),
-            ]
-        )
-        out = one_row_per_date(df).collect()
-        assert out.select("source", "fqtr", "atq").rows() == [("GLOBAL", 1, 10.0)]
-
     def test_both_regular_keeps_highest_fyr(self) -> None:
         df = _fundq(
             [
@@ -182,16 +162,13 @@ class TestOneRowPerDate:
         out = one_row_per_date(df).collect()
         assert out.select("fyr", "atq").rows() == [(12, 11.0)]
 
-    def test_leftover_alone_on_its_date_is_kept(self) -> None:
-        df = _fundq(
+    def test_same_fyr_keeps_global_row(self) -> None:
+        """NA and Global report the same date and fyr under different fiscal quarters: the Global row is kept."""
+        df = pl.concat(
             [
-                ("001", date(2012, 12, 31), 9, 2013, None, 1.0),
-                ("001", date(2013, 3, 31), 12, 2013, 1, 2.0),
-            ],
-            "NA",
+                _fundq([("001", date(2014, 3, 31), 12, 2014, 1, 10.0)], "GLOBAL"),
+                _fundq([("001", date(2014, 3, 31), 12, 2013, 4, 99.0)], "NA"),
+            ]
         )
-        out = one_row_per_date(df).sort("datadate").collect()
-        assert out.select("datadate", "atq").rows() == [
-            (date(2012, 12, 31), 1.0),
-            (date(2013, 3, 31), 2.0),
-        ]
+        out = one_row_per_date(df).collect()
+        assert out.select("source", "atq").rows() == [("GLOBAL", 10.0)]

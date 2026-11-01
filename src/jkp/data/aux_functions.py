@@ -3996,10 +3996,12 @@ def quarterize(df: pl.LazyFrame, var_list: list[str]) -> pl.LazyFrame:
         Convert quarterly Compustat levels to quarter-over-quarter flows with guardrails.
 
     Steps:
-        1) Keep one row per [gvkey,fyr,fyearq,fqtr]: the earliest datadate.
-        2) Per [gvkey,fyr,fyearq], add running count and diffs var_q = Δ(var).
-        3) Build deletion mask for first obs or quarter breaks; null-out invalid diffs.
-        4) Return unique, sorted quarterly panel with *_q flows.
+        1) Drop rows without a fiscal quarter (fqtr missing). Compustat keeps these from a firm's old
+           fiscal calendar after it changes its fiscal year-end.
+        2) Keep one row per [gvkey,fyr,fyearq,fqtr]: the earliest datadate.
+        3) Per [gvkey,fyr,fyearq], add running count and diffs var_q = Δ(var).
+        4) Build deletion mask for first obs or quarter breaks; null-out invalid diffs.
+        5) Return unique, sorted quarterly panel with *_q flows.
 
     Output:
         Quarterly panel with flow variables var_q for each input in var_list.
@@ -4018,7 +4020,8 @@ def quarterize(df: pl.LazyFrame, var_list: list[str]) -> pl.LazyFrame:
         for var in var_list
     ]
     df = (
-        df.sort(["gvkey", "fyr", "fyearq", "fqtr", "datadate"])
+        df.filter(col("fqtr").is_not_null())
+        .sort(["gvkey", "fyr", "fyearq", "fqtr", "datadate"])
         .unique(["gvkey", "fyr", "fyearq", "fqtr"], keep="first", maintain_order=True)
         .with_columns(list_aux1)
         .sort(["gvkey", "fyr", "fyearq", "fqtr"])
@@ -4038,23 +4041,15 @@ def one_row_per_date(df: pl.LazyFrame) -> pl.LazyFrame:
         fiscal year-end and both its old and new fiscal calendars report the same quarter.
 
     Steps:
-        1) Per (gvkey, datadate), keep the row with a fiscal quarter (fqtr not null), then the highest fyr,
-           then the Global row, then the last raw row (n).
+        1) Per (gvkey, datadate), keep the row with the highest fyr, then the Global row, then the last
+           raw row (n).
 
     Output:
-        LazyFrame unique on (gvkey, datadate). A row left over from the abandoned calendar (fqtr missing)
-        never replaces a regular quarter.
+        LazyFrame unique on (gvkey, datadate).
     """
-    return df.sort(
-        [
-            "gvkey",
-            "datadate",
-            pl.col("fqtr").is_not_null(),
-            "fyr",
-            pl.col("source") == "GLOBAL",
-            "n",
-        ]
-    ).unique(["gvkey", "datadate"], keep="last")
+    return df.sort(["gvkey", "datadate", "fyr", pl.col("source") == "GLOBAL", "n"]).unique(
+        ["gvkey", "datadate"], keep="last"
+    )
 
 
 def ttm(var):
@@ -4260,7 +4255,7 @@ def standardized_accounting_data(
            quarterly: gvkey, fyr, fyearq, fqtr), keep the GLOBAL row.
         4) If convert_to_usd: join FX and convert listed vars (annual & quarterly).
         5) Load ME and join to annual/quarterly panels.
-        6) Quarterly: quarterize …y → …y_q, coalesce to …q; create ni_qtr/sale_qtr/ocf_qtr; cumulate 4Q flows with continuity checks; normalize currency codes; de-dupe to one row per (gvkey, datadate), keeping the row with a fiscal quarter, then the highest fyr.
+        6) Quarterly: drop rows without fqtr and quarterize …y → …y_q, coalesce to …q; create ni_qtr/sale_qtr/ocf_qtr; cumulate 4Q flows with continuity checks; normalize currency codes; de-dupe to one row per (gvkey, datadate), keeping the highest fyr.
         7) Annual: add empty quarterly helpers; join ME; sort.
         8) Optionally add helper variables.
         9) Unique by (gvkey, datadate), drop row index, sort, and write 'acc_std_ann.parquet' and 'acc_std_qtr.parquet'.
