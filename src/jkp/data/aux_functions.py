@@ -126,8 +126,8 @@ def collect_and_write(df, filename, collect_streaming=False):
         Used for interim files during pipeline execution in main.py.
 
         Note: For final output files (in portfolio.py), use write_dataframe() from
-        output_writer module instead. write_dataframe() supports shrink_dtype,
-        ensures .parquet extension, and integrates with CSV conversion at pipeline end.
+        output_writer module instead. write_dataframe() ensures .parquet extension and
+        integrates with CSV conversion at pipeline end.
 
     Steps:
         1) df.collect(streaming=collect_streaming).
@@ -7702,7 +7702,7 @@ def zero_obs_gate_ok() -> pl.Expr:
 def prepare_daily(paths: DataPaths, data_path, fcts_path):
     """
     Description:
-        Build daily dataset: align returns with factors, shrink dtypes, and create helpers.
+        Build daily dataset: align returns with factors and create helpers.
 
     Steps:
         1) Join daily stock data with daily factors; filter rows with mktrf.
@@ -7752,9 +7752,6 @@ def prepare_daily(paths: DataPaths, data_path, fcts_path):
         )
         .drop(["ret_lag_dif", "ret_local", "adjfct", "prc", "dolvol"])
         .sort(["id_int", "date"])
-        .select(
-            pl.all().shrink_dtype()
-        )  # For computers without enough memory, use this line to apply dtype shrinking
     )
     dsf1.collect().write_parquet(paths.interim_dir / "dsf1.parquet")
 
@@ -7771,7 +7768,6 @@ def prepare_daily(paths: DataPaths, data_path, fcts_path):
             mktrf_ld1=col("mktrf").shift(-1).over(["excntry", "eom"]),
             mktrf_lg1=col("mktrf").shift(1).over(["excntry"]),
         )
-        .select(pl.all().shrink_dtype())
         .sort(["excntry", "date"])
     )
     mkt_lead_lag.collect().write_parquet(paths.interim_dir / "mkt_lead_lag.parquet")
@@ -7793,7 +7789,6 @@ def prepare_daily(paths: DataPaths, data_path, fcts_path):
         )
         # Keep raw `ret` so mktcorr can guard on RF-immune constantness.
         .select(["id_int", "eom", "ret_exc_3l", "mkt_exc_3l", "ret"])
-        .select(pl.all().shrink_dtype())
         .sort(["id_int", "eom"])
     )
     corr_data.collect().write_parquet(paths.interim_dir / "corr_data.parquet")
@@ -8137,6 +8132,7 @@ def create_world_data_prelim(
     """
     Description:
         Build preliminary world dataset by merging returns, market characteristics, and accounting data.
+        The right-side inputs must be unique on their join keys, or msf rows are duplicated.
 
     Steps:
         1) Load msf (stock returns), monthly market chars, and accounting chars parquet files.
@@ -8753,6 +8749,33 @@ def filter_world(paths: DataPaths):
     ).sink_parquet(paths.interim_dir / "world_data_output.parquet")
 
 
+def _flatten_country_partitions(out_dir: Path) -> None:
+    """
+    Description:
+        Turn DuckDB's 'excntry=<country>/' partition folders into '<country>.parquet' files.
+
+    Steps:
+        1) Map DuckDB's '__HIVE_DEFAULT_PARTITION__' (a null excntry) to 'null_country'.
+        2) Rename a single part file; merge several (DuckDB splits a partition once more
+           than partitioned_write_max_open_files partitions are open).
+        3) Remove the partition folder.
+
+    Output:
+        One '{country}.parquet' file per partition in out_dir.
+    """
+    for d in out_dir.glob("excntry=*"):
+        if d.is_dir():
+            country = d.name[len("excntry=") :]
+            if country == "__HIVE_DEFAULT_PARTITION__":
+                country = "null_country"
+            part_files = sorted(d.glob("*.parquet"))
+            if len(part_files) == 1:
+                part_files[0].rename(out_dir / f"{country}.parquet")
+            elif part_files:
+                pl.scan_parquet(part_files).sink_parquet(out_dir / f"{country}.parquet")
+            shutil.rmtree(d)
+
+
 @measure_time
 def save_main_data(paths: DataPaths) -> None:
     """
@@ -8782,10 +8805,12 @@ def save_main_data(paths: DataPaths) -> None:
         )
         .drop("dif_aux")
     )
-    data.select(pl.all().shrink_dtype()).sink_parquet(world_data_output_temp)
+    data.sink_parquet(world_data_output_temp)
     os.replace(world_data_output_temp, world_data_output)
 
     out_dir = paths.processed_dir / "characteristics"
+    # OVERWRITE empties all of characteristics/, including world_data.parquet, so
+    # save_full_files_and_cleanup (which writes world_data.parquet) must run after this.
     con = duckdb.connect()
     con.execute(f"""
     COPY (SELECT * FROM read_parquet('{world_data_output.as_posix()}'))
@@ -8798,13 +8823,7 @@ def save_main_data(paths: DataPaths) -> None:
       );
     """)
     con.close()
-    for d in out_dir.glob("excntry=*"):
-        if d.is_dir():
-            country = d.name[len("excntry=") :]
-            part_files = sorted(d.glob("*.parquet"))
-            if part_files:
-                part_files[0].rename(out_dir / f"{country}.parquet")
-            shutil.rmtree(d)
+    _flatten_country_partitions(out_dir)
 
 
 @measure_time
@@ -8886,13 +8905,7 @@ def save_daily_ret(paths: DataPaths):
       );
     """)
     con.close()
-    for d in out_dir.glob("excntry=*"):
-        if d.is_dir():
-            country = d.name[len("excntry=") :]
-            part_files = sorted(d.glob("*.parquet"))
-            if part_files:
-                part_files[0].rename(out_dir / f"{country}.parquet")
-            shutil.rmtree(d)
+    _flatten_country_partitions(out_dir)
 
 
 @measure_time
@@ -8930,12 +8943,12 @@ def save_full_files_and_cleanup(paths: DataPaths, clear_interim=True):
     Output:
         Compressed parquet files in return_data/ and characteristics/, cleanup of temp files.
     """
-    pl.scan_parquet(paths.interim_dir / "world_dsf_output.parquet").select(
-        pl.all().shrink_dtype()
-    ).sink_parquet(paths.processed_dir / "return_data" / "world_dsf.parquet")
-    pl.scan_parquet(paths.interim_dir / "world_data_output.parquet").select(
-        pl.all().shrink_dtype()
-    ).sink_parquet(paths.processed_dir / "characteristics" / "world_data.parquet")
+    pl.scan_parquet(paths.interim_dir / "world_dsf_output.parquet").sink_parquet(
+        paths.processed_dir / "return_data" / "world_dsf.parquet"
+    )
+    pl.scan_parquet(paths.interim_dir / "world_data_output.parquet").sink_parquet(
+        paths.processed_dir / "characteristics" / "world_data.parquet"
+    )
     if clear_interim:
         for child in paths.interim_dir.iterdir():
             if child.is_dir():
@@ -8957,7 +8970,7 @@ def save_monthly_ret(paths: DataPaths):
 
     Steps:
         1) Load world_msf_output.parquet and select relevant columns.
-        2) Shrink dtypes and collect results.
+        2) Collect results.
         3) Write to return_data/world_ret_monthly.parquet.
 
     Output:
@@ -8984,9 +8997,7 @@ def save_monthly_ret(paths: DataPaths):
             "ret_overnight_local_lead1m",
         ]
     )
-    data.select(pl.all().shrink_dtype()).collect().write_parquet(
-        paths.processed_dir / "return_data" / "world_ret_monthly.parquet"
-    )
+    data.collect().write_parquet(paths.processed_dir / "return_data" / "world_ret_monthly.parquet")
 
 
 @measure_time
@@ -9039,6 +9050,7 @@ def merge_world_data_prelim(paths: DataPaths):
     """
     Description:
         Combine preliminary world data with factor/regression outputs.
+        Each input must be unique on (id, eom), or world_data_prelim rows are duplicated.
 
     Steps:
         1) Load world_data_prelim and factor files (beta, resmom, mispricing, etc.).

@@ -208,8 +208,13 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
 
     configure_output_format(output_format)
 
-    # Get list of countries from characteristics files
-    countries = sorted(p.stem for p in chars_dir.glob("*.parquet") if "world" not in p.stem)
+    # Get list of countries from characteristics files; null_country holds stocks
+    # with a null excntry and is not a country.
+    countries = sorted(
+        p.stem
+        for p in chars_dir.glob("*.parquet")
+        if "world" not in p.stem and p.stem != "null_country"
+    )
 
     chars = PORTFOLIO_CHARS
     settings = PORTFOLIO_SETTINGS

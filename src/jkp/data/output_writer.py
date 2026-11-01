@@ -83,29 +83,22 @@ def _collect_dataframe(
     df: pl.DataFrame | pl.LazyFrame,
     *,
     streaming: bool = False,
-    shrink_dtype: bool = False,
 ) -> pl.DataFrame:
     """
     Description:
-        Collect a LazyFrame to a DataFrame, applying optional transformations.
+        Collect a LazyFrame to a DataFrame; a DataFrame is returned unchanged.
 
     Steps:
-        1) If input is LazyFrame and shrink_dtype requested, apply shrink_dtype.
-        2) Collect using streaming engine if requested, otherwise standard collect.
-        3) If input is DataFrame and shrink_dtype requested, apply shrink_dtype.
-        4) Return the resulting DataFrame.
+        1) Collect using streaming engine if requested, otherwise standard collect.
+        2) Return the resulting DataFrame.
 
     Output:
-        Collected pl.DataFrame with optional dtype shrinking applied.
+        Collected pl.DataFrame.
     """
     if isinstance(df, pl.LazyFrame):
-        if shrink_dtype:
-            df = df.select(pl.all().shrink_dtype())
         if streaming:
             return df.collect(engine="streaming")
         return df.collect()
-    elif shrink_dtype:
-        return df.select(pl.all().shrink_dtype())
     return df
 
 
@@ -114,14 +107,13 @@ def write_dataframe(
     path: str | Path,
     *,
     streaming: bool = False,
-    shrink_dtype: bool = False,
 ) -> None:
     """
     Description:
         Write a DataFrame to Parquet format. Always writes parquet internally;
         use convert_outputs_to_csv() at pipeline end for CSV output. This function
-        differs from collect_and_write() in aux_functions.py by supporting
-        shrink_dtype and ensuring .parquet extension.
+        differs from collect_and_write() in aux_functions.py by ensuring the
+        .parquet extension.
 
     Steps:
         1) Collect the DataFrame (handles LazyFrame input).
@@ -133,7 +125,7 @@ def write_dataframe(
         Parquet file written to disk at the specified path.
     """
     path = Path(path)
-    collected_df = _collect_dataframe(df, streaming=streaming, shrink_dtype=shrink_dtype)
+    collected_df = _collect_dataframe(df, streaming=streaming)
 
     # Always write parquet (ensure extension)
     if path.suffix != ".parquet":

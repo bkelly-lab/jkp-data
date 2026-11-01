@@ -325,46 +325,6 @@ class TestStreamingMode:
             assert df_read.shape == sample_dataframe.shape
 
 
-class TestShrinkDtype:
-    """Tests for shrink_dtype parameter in write_dataframe."""
-
-    def test_shrink_dtype_reduces_size(self, reset_output_format):
-        """shrink_dtype=True should reduce file size for large integer values."""
-        configure_output_format("parquet", _allow_reset=True)
-        # Create DataFrame with small values in Int64 columns
-        df = pl.DataFrame(
-            {
-                "small_int": pl.Series([1, 2, 3, 4, 5], dtype=pl.Int64),
-                "small_float": pl.Series([1.0, 2.0, 3.0, 4.0, 5.0], dtype=pl.Float64),
-            }
-        )
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path_normal = Path(tmpdir) / "normal.parquet"
-            path_shrunk = Path(tmpdir) / "shrunk.parquet"
-
-            write_dataframe(df, path_normal, shrink_dtype=False)
-            write_dataframe(df, path_shrunk, shrink_dtype=True)
-
-            # Shrunk file should be smaller or equal (depends on compression)
-            normal_size = path_normal.stat().st_size
-            shrunk_size = path_shrunk.stat().st_size
-            assert shrunk_size <= normal_size
-
-    def test_shrink_dtype_with_lazyframe(self, sample_dataframe, reset_output_format):
-        """shrink_dtype=True should work with LazyFrames."""
-        configure_output_format("parquet", _allow_reset=True)
-        lazy_df = sample_dataframe.lazy()
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "test.parquet"
-            write_dataframe(lazy_df, path, shrink_dtype=True)
-
-            assert path.exists()
-            df_read = pl.read_parquet(path)
-            assert len(df_read) == len(sample_dataframe)
-
-
 class TestCollectDataframe:
     """Tests for _collect_dataframe helper function."""
 
@@ -387,18 +347,3 @@ class TestCollectDataframe:
         result = _collect_dataframe(lazy_df, streaming=True)
         assert isinstance(result, pl.DataFrame)
         assert result.shape == sample_dataframe.shape
-
-    @pytest.mark.parametrize("use_lazy", [False, True])
-    def test_collect_dataframe_with_shrink_dtype(self, use_lazy):
-        """_collect_dataframe applies shrink_dtype to DataFrame or LazyFrame."""
-        df = pl.DataFrame(
-            {
-                "small_int": pl.Series([1, 2, 3, 4, 5], dtype=pl.Int64),
-            }
-        )
-        input_df = df.lazy() if use_lazy else df
-        result = _collect_dataframe(input_df, shrink_dtype=True)
-        # shrink_dtype should return a valid DataFrame with the same data
-        assert isinstance(result, pl.DataFrame)
-        assert result.shape == df.shape
-        assert list(result["small_int"]) == [1, 2, 3, 4, 5]
