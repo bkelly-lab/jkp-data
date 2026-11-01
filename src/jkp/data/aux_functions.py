@@ -296,10 +296,14 @@ def gen_firmshares(paths: DataPaths):
         2) Filter to INDL/STD/D/C rows with non-null shares & adj. factors.
         3) SELECT {gvkey, datadate, cshoq→csho_fund, ajexq→ajex_fund} from FUNDQ.
         4) UNION ALL with FUNDA {csho→csho_fund, ajex→ajex_fund}.
-        5) Write to raw_data_dfs/__firm_shares1.parquet.
+        5) Keep one record per (gvkey, datadate): FUNDQ over FUNDA (as SAS's union order
+           and stable nodupkey sort do). When a fiscal year-end change leaves two quarterly
+           records on one date, keep the one with a fiscal quarter, then the highest fyr.
+        6) Write to raw_data_dfs/__firm_shares1.parquet.
 
     Output:
-        Parquet: raw_data_dfs/__firm_shares1.parquet (gvkey, datadate, csho_fund, ajex_fund).
+        Parquet: raw_data_dfs/__firm_shares1.parquet (gvkey, datadate, csho_fund, ajex_fund),
+        unique on (gvkey, datadate).
     """
     con = ibis.duckdb.connect(threads=os.cpu_count())
     con.create_table("comp_fundq", con.read_parquet(paths.raw_tables_dir / "comp_fundq.parquet"))
@@ -309,16 +313,19 @@ def gen_firmshares(paths: DataPaths):
     )
     con.raw_sql("""
     CREATE TABLE __firm_shares1 AS
+    SELECT DISTINCT ON (gvkey, datadate) gvkey, datadate, csho_fund, ajex_fund
+    FROM (
+        SELECT gvkey, datadate, cshoq AS csho_fund, ajexq AS ajex_fund, 0 AS source_rank, fqtr, fyr
+        FROM comp_fundq
+        WHERE indfmt = 'INDL' AND datafmt = 'STD' AND popsrc = 'D' AND consol = 'C' AND cshoq IS NOT NULL AND ajexq IS NOT NULL
 
-    SELECT gvkey, datadate, cshoq AS csho_fund, ajexq AS ajex_fund
-    FROM comp_fundq
-    WHERE indfmt = 'INDL' AND datafmt = 'STD' AND popsrc = 'D' AND consol = 'C' AND cshoq IS NOT NULL AND ajexq IS NOT NULL
+        UNION ALL
 
-    UNION ALL
-
-    SELECT gvkey, datadate, csho AS csho_fund, ajex AS ajex_fund
-    FROM comp_funda
-    WHERE indfmt = 'INDL' AND datafmt = 'STD' AND popsrc = 'D' AND consol = 'C' AND csho IS NOT NULL AND ajex IS NOT NULL;
+        SELECT gvkey, datadate, csho AS csho_fund, ajex AS ajex_fund, 1 AS source_rank, NULL AS fqtr, fyr
+        FROM comp_funda
+        WHERE indfmt = 'INDL' AND datafmt = 'STD' AND popsrc = 'D' AND consol = 'C' AND csho IS NOT NULL AND ajex IS NOT NULL
+    )
+    ORDER BY gvkey, datadate, source_rank, fqtr IS NULL, fyr DESC;
     """)
     con.table("__firm_shares1").to_parquet(
         paths.interim_dir / "raw_data_dfs" / "__firm_shares1.parquet"
@@ -3237,8 +3244,10 @@ def comp_hgics(paths: DataPaths, lib):
         terminal dates and write separate outputs.
 
     Steps:
-        1) Load raw file (national/global); replace null gics with -999 sentinel.
-        2) Compute row counts and terminal rows; set open-ended indthru to (max(indfrom) or END_DATE).
+        1) Load raw file (national/global), sorted by (gvkey, indfrom); replace null gics
+           with -999 sentinel.
+        2) Compute row counts and terminal rows (latest indfrom per gvkey); set open-ended
+           indthru to (max(indfrom) or END_DATE).
         3) Create date ranges [indfrom, indthru]; explode; unique per (gvkey,date).
         4) Write to na_hgics.parquet or g_hgics.parquet.
 
@@ -3256,7 +3265,7 @@ def comp_hgics(paths: DataPaths, lib):
             "global": paths.interim_dir / "g_hgics.parquet",
         },
     }
-    data = pl.scan_parquet(file_paths["raw data"][lib])  # .sort(['gvkey', 'indfrom'])
+    data = pl.scan_parquet(file_paths["raw data"][lib]).sort(["gvkey", "indfrom"])
     if data.limit(1).collect().is_empty():
         warnings.warn(
             f"comp_hgics: {lib} GICS input is empty "
