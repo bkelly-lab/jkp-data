@@ -3,6 +3,10 @@ This change log keeps track of changes to the underlying data set. In brackets, 
 
 This repository ports the original SAS pipeline ([ReplicationCrisis](https://github.com/bkelly-lab/ReplicationCrisis)) to Python using Polars. Entries up to and including 05-03-2025 are from the original change log.
 
+## 01-11-2026
+__Changes__:
+- Four-quarter sums of quarterly income and cash-flow items (trailing twelve months, TTM) now require four consecutive fiscal quarters ([#308](https://github.com/bkelly-lab/jkp-data/pull/308)). The previous check, ported from SAS, accepted four rows of a firm with the same fiscal year-end and currency whenever their fiscal-quarter numbers summed to 10, so a firm with a gap in its quarterly data could get a sum of quarters years apart (6,556 quarterly records in 4,294 firms, most from 2000 onward). These sums are now missing, except in the fourth fiscal quarter, which takes the year-to-date value. The annual data are unchanged. In the quarterly data, 1,606 firm-quarters in 866 firms change. In the accounting characteristics, 219,590 values change in 803 firms (15 newly filled, 68,943 newly missing), with no change in rows; 8,802 of the changed firm-months are in the main JKP universe, mostly micro and nano caps. Every characteristic's correlation with the old values is at least 0.99998.
+
 ## 28-10-2026
 __Changes__:
 - Set `ni_ar1` to null instead of NaN when the lagged NI/AT does not vary over the regression window, where DuckDB's `regr_slope` returns NaN ([#294](https://github.com/bkelly-lab/jkp-data/pull/294)). This affects 694 stock-months in 10 countries, 48 of them in the US. Polars sorts NaN above every number, so these stocks were placed in the top `ni_ar1` portfolio. 672 are now null and left out of the sort. In the other 22, the annual NaN blocked the fallback to the quarterly value that all accounting characteristics use; they now take the quarterly `ni_ar1`, from the same regression as the quarterly `ni_ivol` they already had. As a safeguard, factor portfolio construction now treats any NaN characteristic value as missing.
