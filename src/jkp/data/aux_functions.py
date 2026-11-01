@@ -3983,61 +3983,38 @@ def ttm(var):
     return col(var) + col(var).shift(1) + col(var).shift(2) + col(var).shift(3)
 
 
-def cumulate_4q(df, var_list):
+def cumulate_4q(df: pl.LazyFrame, var_list: list[str]) -> pl.LazyFrame:
     """
     Description:
         Create 4-quarter cumulative (TTM) level variables and enforce continuity checks.
+        Assumes df is unique on (gvkey, fyr, fyearq, fqtr) and sorted by those columns, so the
+        three rows before a row are the firm's preceding fiscal quarters whenever they exist.
 
     Steps:
-        1) For each *_q in var_list, create year-level name by stripping trailing 'q'.
-        2) Compute TTM via ttm(*_q) and continuity flags (same gvkey/fyr/currency & ttm(fqtr)==10).
-        3) Keep TTM only when continuity holds; backfill at fqtr==4 if missing.
-        4) Drop helpers and *_q inputs.
+        1) For each *q in var_list, name the TTM variable by stripping the trailing 'q'.
+        2) Keep ttm(*q) only if the row three back has the same gvkey/fyr/currency and the
+           four fqtr values sum to 10.
+        3) Otherwise null, except at fqtr == 4, which takes the year-to-date value (*y).
+        4) Drop the *q and *y inputs.
 
     Output:
         Frame with validated 4Q cumulative variables for each input (e.g., sales, oibdp).
     """
-    var_yrl_name_list = [var[:-1] for var in var_list]
-    df = (
-        df.with_columns(
-            [
-                ttm(var_yrl).alias(var_yrl_name)
-                for var_yrl, var_yrl_name in zip(var_list, var_yrl_name_list, strict=True)
-            ]
-            + [
-                (
-                    (col("gvkey") == col("gvkey").shift(3))
-                    & (col("fyr") == col("fyr").shift(3))
-                    & (col("curcdq") == col("curcdq").shift(3))
-                    & (ttm("fqtr") == 10)
-                ).alias("not_null_flag")
-            ]
-        )
-        .with_columns(
-            [
-                pl.when(col("not_null_flag"))
-                .then(col(var_yrl_name))
-                .otherwise(fl_none())
-                .alias(var_yrl_name)
-                for var_yrl_name in var_yrl_name_list
-            ]
-        )
-        .with_columns(
-            [
-                pl.when(col(var_yrl_name).is_null() & (col("fqtr") == 4))
-                .then(col(f"{var_yrl_name}y"))
-                .otherwise(col(var_yrl_name))
-                .alias(var_yrl_name)
-                for var_yrl_name in var_yrl_name_list
-            ]
-        )
-        .drop(
-            ["not_null_flag"]
-            + var_list
-            + [f"{var_yrl_name}y" for var_yrl_name in var_yrl_name_list]
-        )
+    continuous = (
+        (pl.col("gvkey") == pl.col("gvkey").shift(3))
+        & (pl.col("fyr") == pl.col("fyr").shift(3))
+        & (pl.col("curcdq") == pl.col("curcdq").shift(3))
+        & (ttm("fqtr") == 10)
     )
-    return df
+    return df.with_columns(
+        [
+            pl.coalesce(
+                pl.when(continuous).then(ttm(var)),
+                pl.when(pl.col("fqtr") == 4).then(pl.col(f"{var[:-1]}y")),
+            ).alias(var[:-1])
+            for var in var_list
+        ]
+    ).drop(var_list + [f"{var[:-1]}y" for var in var_list])
 
 
 def load_raw_fund_table_and_filter(filename, start_date, source_str, mode):
