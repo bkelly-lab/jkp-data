@@ -73,6 +73,7 @@ test = [
 lint = [
     "ruff>=0.4.0",
     "pyright>=1.1.350",
+    "vulture>=2.16",
 ]
 
 [tool.pytest.ini_options]
@@ -135,6 +136,20 @@ ignore = [
     "B008",   # do not perform function calls in argument defaults
     "SIM102", # nested if statements (sometimes clearer than combined)
     "SIM108", # use ternary operator instead of if-else
+]
+
+[tool.vulture]
+# Whole-program dead-code check for production code only. Tests are not scanned:
+# they add ~100 pytest/mock false positives, and test-only helpers are listed below.
+paths = ["src/jkp/data"]
+min_confidence = 60
+ignore_decorators = ["@app.command", "@app.callback"]  # Typer commands in cli.py are only called via the decorator
+ignore_names = [
+    "__getattr__",      # module-level lazy-import hooks (__init__.py, portfolio.py)
+    "__dir__",
+    "csv",              # OutputFormat enum member, selected by CLI string value
+    "bo_false",         # reusable helper named in CLAUDE.md; currently only tests call it
+    "get_output_format",  # public getter paired with configure_output_format
 ]
 
 [tool.pyright]
