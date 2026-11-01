@@ -58,6 +58,40 @@ class TestCumulate4q:
         )
         assert _sale(df) == [None, 100.0, None, 110.0]
 
+    def test_twenty_year_gap_is_missing(self) -> None:
+        """FY1994 Q3, Q4 and FY2016 Q1, Q2: fqtr sums to 10, but the quarters are not consecutive."""
+        df = _panel(
+            [
+                (1994, 3, 100.0, 300.0),
+                (1994, 4, 100.0, 400.0),
+                (2016, 1, 200.0, 200.0),
+                (2016, 2, 200.0, 400.0),
+            ]
+        )
+        assert _sale(df) == [None, 400.0, None, None]
+
+    def test_one_missing_fiscal_year_is_missing(self) -> None:
+        df = _panel(
+            [
+                (2010, 3, 30.0, 60.0),
+                (2010, 4, 40.0, 100.0),
+                (2012, 1, 15.0, 15.0),
+                (2012, 2, 25.0, 40.0),
+            ]
+        )
+        assert _sale(df) == [None, 100.0, None, None]
+
+    def test_gap_ending_in_q4_uses_year_to_date(self) -> None:
+        df = _panel(
+            [
+                (1994, 2, 100.0, 200.0),
+                (1994, 3, 100.0, 300.0),
+                (2016, 1, 200.0, 200.0),
+                (2016, 4, 200.0, 900.0),
+            ]
+        )
+        assert _sale(df) == [None, None, None, 900.0]
+
     def test_fyr_change_is_missing(self) -> None:
         """Consecutive quarters with fqtr summing to 10, but the fiscal year-end moves from June to December."""
         df = _panel(
@@ -163,14 +197,36 @@ def _random_panel(seed: int, n_firms: int = 40) -> pl.LazyFrame:
     return pl.LazyFrame(rows, schema=schema, orient="row").sort(QK)
 
 
+def _skipped_quarters() -> pl.Expr:
+    """Rows the old check accepts although the four quarters are not consecutive."""
+    q = 4 * pl.col("fyearq") + pl.col("fqtr")
+    old_check = (
+        (pl.col("gvkey") == pl.col("gvkey").shift(3))
+        & (pl.col("fyr") == pl.col("fyr").shift(3))
+        & (pl.col("curcdq") == pl.col("curcdq").shift(3))
+        & (ttm("fqtr") == 10)
+    )
+    return (old_check & (q - q.shift(3) != 3)).fill_null(False)
+
+
 @pytest.mark.unit
 class TestCumulate4qEquivalence:
-    """The rewrite must reproduce main's cumulate_4q exactly."""
+    """cumulate_4q matches main's version except where main summed non-consecutive quarters."""
 
     @pytest.mark.parametrize("seed", range(5))
-    def test_matches_legacy(self, seed: int) -> None:
-        df = _random_panel(seed)
+    def test_matches_legacy_except_skipped_quarters(self, seed: int) -> None:
+        df = _random_panel(seed).with_columns(
+            skipped=_skipped_quarters(), ytd_sale=pl.col("saley"), ytd_ib=pl.col("iby")
+        )
+        new = cumulate_4q(df, ["saleq", "ibq"]).collect()
+        old = _legacy_cumulate_4q(df, ["saleq", "ibq"]).collect()
+        assert_frame_equal(new.filter(~pl.col("skipped")), old.filter(~pl.col("skipped")))
+        skipped = new.filter("skipped")
+        assert skipped.height > 0
         assert_frame_equal(
-            cumulate_4q(df, ["saleq", "ibq"]).collect(),
-            _legacy_cumulate_4q(df, ["saleq", "ibq"]).collect(),
+            skipped.select("sale", "ib"),
+            skipped.select(
+                pl.when(pl.col("fqtr") == 4).then(pl.col(f"ytd_{v}")).alias(v)
+                for v in ("sale", "ib")
+            ),
         )

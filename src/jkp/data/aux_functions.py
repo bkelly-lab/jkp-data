@@ -3992,24 +3992,26 @@ def cumulate_4q(df: pl.LazyFrame, var_list: list[str]) -> pl.LazyFrame:
 
     Steps:
         1) For each *q in var_list, name the TTM variable by stripping the trailing 'q'.
-        2) Keep ttm(*q) only if the row three back has the same gvkey/fyr/currency and the
-           four fqtr values sum to 10.
+        2) Keep ttm(*q) only if the four rows share gvkey/fyr/currency and are consecutive
+           fiscal quarters (4*fyearq + fqtr rises by 3 over the three rows).
         3) Otherwise null, except at fqtr == 4, which takes the year-to-date value (*y).
         4) Drop the *q and *y inputs.
 
     Output:
         Frame with validated 4Q cumulative variables for each input (e.g., sales, oibdp).
     """
-    continuous = (
+    qidx = 4 * pl.col("fyearq") + pl.col("fqtr")
+    consecutive = (
         (pl.col("gvkey") == pl.col("gvkey").shift(3))
         & (pl.col("fyr") == pl.col("fyr").shift(3))
         & (pl.col("curcdq") == pl.col("curcdq").shift(3))
         & (ttm("fqtr") == 10)
+        & (qidx - qidx.shift(3) == 3)
     )
     return df.with_columns(
         [
             pl.coalesce(
-                pl.when(continuous).then(ttm(var)),
+                pl.when(consecutive).then(ttm(var)),
                 pl.when(pl.col("fqtr") == 4).then(pl.col(f"{var[:-1]}y")),
             ).alias(var[:-1])
             for var in var_list
