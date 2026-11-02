@@ -6842,11 +6842,13 @@ def combine_ann_qtr_chars(paths: DataPaths, ann_df_path, qtr_df_path, char_vars,
     """
     Description:
         Combine annual and quarterly characteristic panels, preferring fresher quarterly values at the same public_date.
+        A firm-month with only quarterly characteristics (e.g. before the first annual report) keeps them.
 
     Steps:
         1) Load annual and quarterly files into DuckDB with row numbers.
-        2) Left-join on (gvkey, public_date); for each char_var choose quarterly value if present and more recent (datadate_qitem > datadate).
-        3) Drop redundant join and dated columns; dedupe on (gvkey, public_date).
+        2) Full outer join on (gvkey, public_date); take gvkey, public_date and source from whichever side has them.
+        3) For each char_var choose the quarterly value if the annual one is null, or if present and more recent (datadate_qitem > datadate).
+        4) Drop redundant join and dated columns; dedupe on (gvkey, public_date).
 
     Output:
         Writes 'acc_chars_world.parquet' merged panel.
@@ -6867,7 +6869,7 @@ def combine_ann_qtr_chars(paths: DataPaths, ann_df_path, qtr_df_path, char_vars,
     )
     ann = con.table("ann")
     qtr = con.table("qtr")
-    combined = ann.left_join(qtr, [ann.gvkey == qtr.gvkey, ann.public_date == qtr.public_date])
+    combined = ann.outer_join(qtr, [ann.gvkey == qtr.gvkey, ann.public_date == qtr.public_date])
     drop_columns = [
         "datadate",
         f"datadate{q_suffix}",
@@ -6875,7 +6877,11 @@ def combine_ann_qtr_chars(paths: DataPaths, ann_df_path, qtr_df_path, char_vars,
         "public_date_right",
         "source_qitem",
     ] + [f"{ann_var}{q_suffix}" for ann_var in char_vars]
-    subs = {}
+    subs = {
+        "gvkey": ibis.coalesce(combined.gvkey, combined.gvkey_right),
+        "public_date": ibis.coalesce(combined.public_date, combined.public_date_right),
+        "source": ibis.coalesce(combined.source, combined.source_qitem),
+    }
     for ann_var in char_vars:
         qtr_var = f"{ann_var}{q_suffix}"
         subs[ann_var] = ibis.ifelse(
