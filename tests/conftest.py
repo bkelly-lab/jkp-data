@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    """Register custom markers and match the CLI's Polars engine (see jkp.data.cli.main)."""
+    """Register custom markers and match the pipeline's Polars engine (see run_pipeline)."""
     pl.Config.set_engine_affinity("in-memory")
     config.addinivalue_line("markers", "unit: Unit tests (fast, isolated)")
     config.addinivalue_line("markers", "integration: Integration tests (module interactions)")
