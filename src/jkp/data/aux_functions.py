@@ -7160,7 +7160,7 @@ def market_chars_monthly(paths: DataPaths, data_path, market_ret_path, local_cur
         .sort(["id", "eom"])
     )
 
-    data.collect(engine="streaming").write_parquet(paths.interim_dir / "market_chars_m.parquet")
+    data.collect().write_parquet(paths.interim_dir / "market_chars_m.parquet")
 
 
 @measure_time
