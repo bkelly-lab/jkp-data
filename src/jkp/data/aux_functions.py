@@ -4664,6 +4664,8 @@ def standardized_accounting_data(
         __compq = add_helper_vars(paths, __compq)
         __compa = add_helper_vars(paths, __compa)
 
+    # Annual data have no same-source (gvkey, datadate) duplicates; prefer_global would keep them
+    # and this unique would pick one arbitrarily.
     __compa.unique(["gvkey", "datadate"]).drop("n").sort(
         ["gvkey", "datadate"]
     ).collect().write_parquet(paths.interim_dir / "acc_std_ann.parquet")
