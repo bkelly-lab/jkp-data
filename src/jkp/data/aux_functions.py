@@ -3992,8 +3992,9 @@ def cumulate_4q(df: pl.LazyFrame, var_list: list[str]) -> pl.LazyFrame:
 
     Steps:
         1) For each *q in var_list, name the TTM variable by stripping the trailing 'q'.
-        2) Keep ttm(*q) only if the four rows share gvkey/fyr/currency and are consecutive
-           fiscal quarters (4*fyearq + fqtr rises by 3 over the three rows).
+        2) Keep ttm(*q) only if the four rows share gvkey/fyr/currency, their fqtr values sum
+           to 10, and they are consecutive fiscal quarters (4*fyearq + fqtr rises by 3 over the
+           three rows). The rise of 3 implies the fqtr sum, which is kept to match SAS.
         3) Otherwise null, except at fqtr == 4, which takes the year-to-date value (*y).
         4) Drop the *q and *y inputs.
 
