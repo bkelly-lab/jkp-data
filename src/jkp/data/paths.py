@@ -70,6 +70,11 @@ def get_factor_details_path() -> Path:
     return _resource_path("factor_details.xlsx")
 
 
+def get_fx_cad_backfill_path() -> Path:
+    """Return the path to the bundled month-end CAD/USD rates for 1960-01 to 1982-01."""
+    return _resource_path("fx_cad_1960_1982.csv")
+
+
 def get_data_readme_path() -> Path:
     """Return the path to the bundled data directory README file."""
     return _resource_path("README.md")
