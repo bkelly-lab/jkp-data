@@ -3369,6 +3369,8 @@ def comp_sic_naics(paths: DataPaths):
             .then(col("datadate"))
             .otherwise(col("end_date"))
         )
+        # A gvkey's last record has end_date == datadate, so its left-closed range is empty;
+        # explode() drops empty lists under Polars 2, so that record gets its date directly.
         .with_columns(
             date=pl.when(col("datadate") == col("end_date"))
             .then(pl.concat_list("datadate"))
