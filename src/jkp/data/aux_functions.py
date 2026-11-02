@@ -6845,62 +6845,37 @@ def combine_ann_qtr_chars(paths: DataPaths, ann_df_path, qtr_df_path, char_vars,
         A firm-month with only quarterly characteristics (e.g. before the first annual report) keeps them.
 
     Steps:
-        1) Load annual and quarterly files into DuckDB with row numbers.
-        2) Full outer join on (gvkey, public_date); take gvkey, public_date and source from whichever side has them.
-        3) For each char_var choose the quarterly value if the annual one is null, or if present and more recent (datadate_qitem > datadate).
-        4) Drop redundant join and dated columns; dedupe on (gvkey, public_date).
+        1) Full outer join the two parquet files on (gvkey, public_date); USING merges the keys, and
+           source comes from whichever side has it. Both inputs are unique on (gvkey, public_date)
+           (create_acc_chars ends with that unique), so the join is one-to-one.
+        2) For each char_var take the quarterly value if the annual one is null, or if the quarterly
+           one is present and more recent (quarterly datadate > annual datadate).
+        3) Sort by (gvkey, public_date) and write to parquet in one COPY.
 
     Output:
         Writes 'acc_chars_world.parquet' merged panel.
     """
-    (paths.interim_dir / "aux_aqtr_chars.ddb").unlink(missing_ok=True)
-    con = ibis.duckdb.connect(str(paths.interim_dir / "aux_aqtr_chars.ddb"), threads=os.cpu_count())
-    con.create_table(
-        "ann",
-        con.read_parquet(ann_df_path).mutate(n1=ibis.row_number()),
-        overwrite=True,
+    db = paths.interim_dir / "aux_aqtr_chars.ddb"
+    db.unlink(missing_ok=True)
+    chars_sql = ",\n".join(
+        f'CASE WHEN a."{var}" IS NULL OR (q."{var}{q_suffix}" IS NOT NULL AND q.datadate > a.datadate) '
+        f'THEN q."{var}{q_suffix}" ELSE a."{var}" END AS "{var}"'
+        for var in char_vars
     )
-    con.create_table(
-        "qtr",
-        con.read_parquet(qtr_df_path)
-        .mutate(n2=ibis.row_number())
-        .rename({"datadate_qitem": "datadate", "source_qitem": "source"}),
-        overwrite=True,
-    )
-    ann = con.table("ann")
-    qtr = con.table("qtr")
-    combined = ann.outer_join(qtr, [ann.gvkey == qtr.gvkey, ann.public_date == qtr.public_date])
-    drop_columns = [
-        "datadate",
-        f"datadate{q_suffix}",
-        "gvkey_right",
-        "public_date_right",
-        "source_qitem",
-    ] + [f"{ann_var}{q_suffix}" for ann_var in char_vars]
-    subs = {
-        "gvkey": ibis.coalesce(combined.gvkey, combined.gvkey_right),
-        "public_date": ibis.coalesce(combined.public_date, combined.public_date_right),
-        "source": ibis.coalesce(combined.source, combined.source_qitem),
-    }
-    for ann_var in char_vars:
-        qtr_var = f"{ann_var}{q_suffix}"
-        subs[ann_var] = ibis.ifelse(
-            combined[ann_var].isnull()
-            | (combined[qtr_var].notnull() & (combined[f"datadate{q_suffix}"] > combined.datadate)),
-            combined[qtr_var],
-            combined[ann_var],
+    con = duckdb.connect(str(db))
+    con.execute(f"""
+        COPY (
+          SELECT coalesce(a.source, q.source) AS source, gvkey, public_date,
+          {chars_sql}
+          FROM read_parquet('{Path(ann_df_path).as_posix()}') AS a
+          FULL OUTER JOIN read_parquet('{Path(qtr_df_path).as_posix()}') AS q
+            USING (gvkey, public_date)
+          ORDER BY gvkey, public_date
         )
-    combined = (
-        combined.mutate(subs)
-        .drop(drop_columns)
-        .order_by(["gvkey", "public_date", "n1", "n2"])
-        .distinct(on=["gvkey", "public_date"], keep="first")
-        .drop(["n1", "n2"])
-        .order_by(["gvkey", "public_date"])
-    )
-    combined.to_parquet(paths.interim_dir / "acc_chars_world.parquet")
-    con.disconnect()
-    (paths.interim_dir / "aux_aqtr_chars.ddb").unlink(missing_ok=True)
+        TO '{(paths.interim_dir / "acc_chars_world.parquet").as_posix()}' (FORMAT PARQUET);
+    """)
+    con.close()
+    db.unlink(missing_ok=True)
 
 
 def seasonality(data, ret_x, start_year, end_year):
