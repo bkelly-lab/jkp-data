@@ -695,6 +695,31 @@ class TestQmjAggregation:
             **tolerance.STANDARD,
         )
 
+    def test_composites_equal_up_to_float_noise_tie(self) -> None:
+        """Stocks 1 and 2 have the same six profitability ranks in a different column order.
+
+        Their composites are equal in exact math but differ in the last bit when summed in
+        floating point. Without rounding, the second-stage rank orders them by that noise;
+        they must get the same qmj_prof.
+        """
+        n = 12
+        prof_ranks = {
+            "gp_at": [7, 12, 8, 6, 4, 11, 9, 1, 2, 5, 3, 10],
+            "ni_be": [12, 7, 9, 1, 11, 4, 3, 6, 8, 10, 2, 5],
+            "ni_at": [1, 8, 2, 4, 11, 5, 3, 10, 6, 12, 9, 7],
+            "ocf_at": [5, 4, 7, 2, 3, 9, 6, 8, 10, 12, 11, 1],
+            "gp_sale": [8, 5, 11, 3, 9, 6, 2, 1, 10, 12, 4, 7],
+            "oaccruals_at": [4, 1, 8, 12, 9, 6, 7, 5, 2, 3, 10, 11],
+        }
+        # oaccruals_at is ranked descending, so its values are flipped to keep these ranks.
+        overrides = {
+            c: [float(n + 1 - r) if c == "oaccruals_at" else float(r) for r in ranks]
+            for c, ranks in prof_ranks.items()
+        }
+        result = self._run(_group_frame(n=n, overrides=overrides)).sort("id")
+        qmj_prof = result["qmj_prof"].to_list()
+        assert qmj_prof[0] == qmj_prof[1], f"Tied composites got different scores: {qmj_prof[:2]}"
+
 
 # ===========================================================================
 # TestOutputAndIdempotency

@@ -8556,6 +8556,19 @@ def finish_daily_chars(paths: DataPaths, output_path):
 
 
 def z_ranks(data, var, __min, sort):
+    """
+    Description:
+        Compute standardized within-country z-scores for a variable.
+
+    Steps:
+        1) Rank variable by eom within each country (ascending/descending).
+        2) Keep months with at least __min stocks.
+        3) Standardize rank by mean/std within (excntry, eom).
+        4) Clean NaN values.
+
+    Output:
+        DataFrame with ['excntry','id','eom', z_{var}].
+    """
     order = sort != "ascending"
     exp_z_var = (col("rank") - pl.mean("rank").over(["excntry", "eom"])) / pl.std("rank").over(
         ["excntry", "eom"]
@@ -8582,16 +8595,18 @@ def z_ranks(data, var, __min, sort):
 def quality_minus_junk(paths: DataPaths, data_path, min_stks):
     """
     Description:
-        Compute standardized within-country z-scores for a variable.
+        Compute quality-minus-junk scores from within-country z-ranks.
 
     Steps:
-        1) Rank variable by eom within each country (ascending/descending).
-        2) Keep months with at least __min stocks.
-        3) Standardize rank by mean/std within (excntry, eom).
-        4) Clean NaN values.
+        1) Keep common, primary, main-exchange securities with non-null ret_exc and me.
+        2) z-rank the 16 quality inputs within (excntry, eom).
+        3) Average them into profitability, growth and safety composites, rounded to 10
+           decimals so composites equal up to floating-point noise tie exactly.
+        4) z-rank each composite (qmj_prof, qmj_growth, qmj_safety), then z-rank their
+           mean, also rounded to 10 decimals (qmj).
 
     Output:
-        LazyFrame with ['excntry','id','eom', z_{var}].
+        interim/qmj.parquet with ['excntry','id','eom','qmj_prof','qmj_growth','qmj_safety','qmj'].
     """
     z_vars = [
         "gp_at",
@@ -8672,13 +8687,13 @@ def quality_minus_junk(paths: DataPaths, data_path, min_stks):
     qmj = qmj.with_columns(
         __prof=pl.mean_horizontal(
             "z_gp_at", "z_ni_be", "z_ni_at", "z_ocf_at", "z_gp_sale", "z_oaccruals_at"
-        ),
+        ).round(10),
         __growth=pl.mean_horizontal(
             "z_gpoa_ch5", "z_roe_ch5", "z_roa_ch5", "z_cfoa_ch5", "z_gmar_ch5"
-        ),
+        ).round(10),
         __safety=pl.mean_horizontal(
             "z_betabab_1260d", "z_debt_at", "z_o_score", "z_z_score", "z___evol"
-        ),
+        ).round(10),
     ).select(["excntry", "id", "eom", "__prof", "__growth", "__safety"])
 
     ranks = {
@@ -8690,7 +8705,9 @@ def quality_minus_junk(paths: DataPaths, data_path, min_stks):
         .join(ranks["prof"], how="left", on=["excntry", "id", "eom"])
         .join(ranks["growth"], how="left", on=["excntry", "id", "eom"])
         .join(ranks["safety"], how="left", on=["excntry", "id", "eom"])
-        .with_columns(__qmj=(col("qmj_prof") + col("qmj_growth") + col("qmj_safety")) / 3)
+        .with_columns(
+            __qmj=((col("qmj_prof") + col("qmj_growth") + col("qmj_safety")) / 3).round(10)
+        )
     )
     __qmj = z_ranks(qmj, "__qmj", min_stks, "ascending").rename({"z___qmj": "qmj"})
     qmj = qmj.join(__qmj, how="left", on=["excntry", "id", "eom"]).drop("__qmj")
