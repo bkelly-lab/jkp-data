@@ -126,8 +126,8 @@ def collect_and_write(df, filename, collect_streaming=False):
         Used for interim files during pipeline execution in main.py.
 
         Note: For final output files (in portfolio.py), use write_dataframe() from
-        output_writer module instead. write_dataframe() ensures .parquet
-        extension and integrates with CSV conversion at pipeline end.
+        output_writer module instead. write_dataframe() ensures .parquet extension and
+        integrates with CSV conversion at pipeline end.
 
     Steps:
         1) df.collect() on the streaming engine if collect_streaming, else in-memory.
@@ -166,25 +166,6 @@ def sic_naics_aux(filename):
         .unique()
     )
     return df
-
-
-def load_age_aux(filename, filter_monthend=False):
-    """
-    Description:
-        Load gvkey–datadate pairs from a parquet; optionally filter to month-end rows.
-
-    Steps:
-        1) Scan parquet lazily.
-        2) If filter_monthend, keep rows with monthend == 1.
-        3) Select gvkey, datadate.
-
-    Output:
-        LazyFrame of (gvkey, datadate).
-    """
-    df = pl.scan_parquet(filename)
-    if filter_monthend:
-        df = df.filter(col("monthend") == 1)
-    return df.select(["gvkey", "datadate"])
 
 
 def comp_hgics_aux(filename):
@@ -261,28 +242,6 @@ def header_aux(comp_path, gcomp_path, output_path):
     g_comp = con.read_parquet(gcomp_path).select(["gvkey", "prirow", "priusa", "prican"])
     comp.union(g_comp).distinct(on="gvkey", keep="first").to_parquet(output_path)
     con.disconnect()
-
-
-def prihist_aux(filename, alias_itemvalue):
-    """
-    Description:
-        Build a unified Compustat header table combining NA and Global sources (one row per gvkey).
-
-    Steps:
-        1) Read NA and Global header parquets into Ibis.
-        2) Select gvkey, prirow, priusa, prican from each.
-        3) Union tables and take the first occurrence per gvkey.
-        4) Write to `output_path` and close connection.
-
-    Output:
-        Parquet header file with unique gvkey rows.
-    """
-    df = (
-        pl.scan_parquet(filename)
-        .filter(col("item") == alias_itemvalue.upper())
-        .select(["gvkey", col("itemvalue").alias(alias_itemvalue), "effdate", "thrudate"])
-    )
-    return df
 
 
 def gen_firmshares(paths: DataPaths):
@@ -7713,7 +7672,7 @@ def zero_obs_gate_ok() -> pl.Expr:
 def prepare_daily(paths: DataPaths, data_path, fcts_path):
     """
     Description:
-        Build daily dataset: align returns with factors, shrink dtypes, and create helpers.
+        Build daily dataset: align returns with factors and create helpers.
 
     Steps:
         1) Join daily stock data with daily factors; filter rows with mktrf.
@@ -8143,6 +8102,7 @@ def create_world_data_prelim(
     """
     Description:
         Build preliminary world dataset by merging returns, market characteristics, and accounting data.
+        The right-side inputs must be unique on their join keys, or msf rows are duplicated.
 
     Steps:
         1) Load msf (stock returns), monthly market chars, and accounting chars parquet files.
@@ -8776,6 +8736,33 @@ def filter_world(paths: DataPaths):
     ).sink_parquet(paths.interim_dir / "world_data_output.parquet")
 
 
+def _flatten_country_partitions(out_dir: Path) -> None:
+    """
+    Description:
+        Turn DuckDB's 'excntry=<country>/' partition folders into '<country>.parquet' files.
+
+    Steps:
+        1) Map DuckDB's '__HIVE_DEFAULT_PARTITION__' (a null excntry) to 'null_country'.
+        2) Rename a single part file; merge several (DuckDB splits a partition once more
+           than partitioned_write_max_open_files partitions are open).
+        3) Remove the partition folder.
+
+    Output:
+        One '{country}.parquet' file per partition in out_dir.
+    """
+    for d in out_dir.glob("excntry=*"):
+        if d.is_dir():
+            country = d.name[len("excntry=") :]
+            if country == "__HIVE_DEFAULT_PARTITION__":
+                country = "null_country"
+            part_files = sorted(d.glob("*.parquet"))
+            if len(part_files) == 1:
+                part_files[0].rename(out_dir / f"{country}.parquet")
+            elif part_files:
+                pl.scan_parquet(part_files).sink_parquet(out_dir / f"{country}.parquet")
+            shutil.rmtree(d)
+
+
 @measure_time
 def save_main_data(paths: DataPaths) -> None:
     """
@@ -8809,6 +8796,8 @@ def save_main_data(paths: DataPaths) -> None:
     os.replace(world_data_output_temp, world_data_output)
 
     out_dir = paths.processed_dir / "characteristics"
+    # OVERWRITE empties all of characteristics/, including world_data.parquet, so
+    # save_full_files_and_cleanup (which writes world_data.parquet) must run after this.
     con = duckdb.connect()
     con.execute(f"""
     COPY (SELECT * FROM read_parquet('{world_data_output.as_posix()}'))
@@ -8821,13 +8810,7 @@ def save_main_data(paths: DataPaths) -> None:
       );
     """)
     con.close()
-    for d in out_dir.glob("excntry=*"):
-        if d.is_dir():
-            country = d.name[len("excntry=") :]
-            part_files = sorted(d.glob("*.parquet"))
-            if part_files:
-                part_files[0].rename(out_dir / f"{country}.parquet")
-            shutil.rmtree(d)
+    _flatten_country_partitions(out_dir)
 
 
 @measure_time
@@ -8909,13 +8892,7 @@ def save_daily_ret(paths: DataPaths):
       );
     """)
     con.close()
-    for d in out_dir.glob("excntry=*"):
-        if d.is_dir():
-            country = d.name[len("excntry=") :]
-            part_files = sorted(d.glob("*.parquet"))
-            if part_files:
-                part_files[0].rename(out_dir / f"{country}.parquet")
-            shutil.rmtree(d)
+    _flatten_country_partitions(out_dir)
 
 
 @measure_time
@@ -8980,7 +8957,7 @@ def save_monthly_ret(paths: DataPaths):
 
     Steps:
         1) Load world_msf_output.parquet and select relevant columns.
-        2) Shrink dtypes and collect results.
+        2) Collect results.
         3) Write to return_data/world_ret_monthly.parquet.
 
     Output:
@@ -9060,6 +9037,7 @@ def merge_world_data_prelim(paths: DataPaths):
     """
     Description:
         Combine preliminary world data with factor/regression outputs.
+        Each input must be unique on (id, eom), or world_data_prelim rows are duplicated.
 
     Steps:
         1) Load world_data_prelim and factor files (beta, resmom, mispricing, etc.).

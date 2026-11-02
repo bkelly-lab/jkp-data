@@ -86,7 +86,7 @@ def _collect_dataframe(
 ) -> pl.DataFrame:
     """
     Description:
-        Collect a LazyFrame to a DataFrame; return a DataFrame unchanged.
+        Collect a LazyFrame to a DataFrame; a DataFrame is returned unchanged.
 
     Steps:
         1) Collect using streaming engine if requested, otherwise standard collect.
@@ -112,7 +112,7 @@ def write_dataframe(
     Description:
         Write a DataFrame to Parquet format. Always writes parquet internally;
         use convert_outputs_to_csv() at pipeline end for CSV output. This function
-        differs from collect_and_write() in aux_functions.py by ensuring
+        differs from collect_and_write() in aux_functions.py by ensuring the
         .parquet extension.
 
     Steps:

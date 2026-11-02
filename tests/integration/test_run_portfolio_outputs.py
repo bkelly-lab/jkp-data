@@ -119,6 +119,18 @@ class TestRunPortfolioOutputs:
         assert (country_dir / "USA.parquet").exists()
         assert (country_dir / "FRA.parquet").exists()
 
+    def test_null_country_file_is_not_a_country(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # save_main_data and save_daily_ret write stocks with a null excntry to
+        # null_country.parquet; they must not get country portfolios.
+        _setup(tmp_path, monkeypatch, countries=("USA", "FRA", "null_country"))
+        run_portfolio(output_format="parquet", output_dir=tmp_path)
+
+        out = _portfolios_dir(tmp_path)
+        assert not (out / "country_factors" / "null_country.parquet").exists()
+        assert set(pl.read_parquet(out / "pfs.parquet")["excntry"].unique()) == {"USA", "FRA"}
+
     def test_writes_regional_factors_partition(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
