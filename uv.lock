@@ -1173,7 +1173,7 @@ requires-dist = [
     { name = "numba", specifier = ">=0.61" },
     { name = "numpy", specifier = ">=1.26.4" },
     { name = "platformdirs", specifier = ">=4.9.6" },
-    { name = "polars", specifier = ">=1.40" },
+    { name = "polars", specifier = ">=2.0" },
     { name = "polars-ds", specifier = ">=0.11.2" },
     { name = "polars-ols", specifier = ">=0.3.5" },
     { name = "pyarrow", specifier = ">=16.1.0" },
