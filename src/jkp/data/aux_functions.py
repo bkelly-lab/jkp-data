@@ -8523,16 +8523,22 @@ def z_ranks(data, var, __min, sort):
     Steps:
         1) Rank variable by eom within each country (ascending/descending).
         2) Keep months with at least __min stocks.
-        3) Standardize rank by mean/std within (excntry, eom).
+        3) Standardize rank by its mean and sample std within (excntry, eom), both computed
+           exactly from integer rank sums so the z-score does not depend on row order or
+           thread count.
         4) Clean NaN values.
 
     Output:
         DataFrame with ['excntry','id','eom', z_{var}].
     """
     order = sort != "ascending"
-    exp_z_var = (col("rank") - pl.mean("rank").over(["excntry", "eom"])) / pl.std("rank").over(
-        ["excntry", "eom"]
-    )
+    # Average ranks are multiples of 0.5, so with t = 2*rank the group's rank mean is
+    # (n+1)/2 and its squared deviations sum to (sum(t^2) - n(n+1)^2)/4, both exact.
+    # pl.mean/pl.std over() add floats in an order that can change between runs.
+    n = pl.len().over(["excntry", "eom"]).cast(pl.Int64)
+    t = (2 * col("rank")).cast(pl.Int64)
+    sq_dev_x4 = (t * t).sum().over(["excntry", "eom"]) - n * (n + 1) * (n + 1)
+    exp_z_var = (col("rank") - (n + 1) / 2) / (sq_dev_x4 / (4 * (n - 1))).sqrt()
     z_df = (
         data.filter(col(var).is_not_nan())
         .filter(pl.count(var).over(["excntry", "eom"]) >= __min)
