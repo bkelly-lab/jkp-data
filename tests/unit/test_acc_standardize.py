@@ -1,11 +1,12 @@
 """Tests for the NA/Global stacking, quarterization and one-row-per-date steps of ``standardized_accounting_data``."""
 
-from datetime import date
+from datetime import date, timedelta
 
 import polars as pl
 import pytest
 
 from jkp.data.aux_functions import one_row_per_date, prefer_global, quarterize
+from jkp.data.config import CALENDAR_RUN_MAX_GAP_DAYS
 
 QK = ["gvkey", "fyr", "fyearq", "fqtr"]
 
@@ -214,6 +215,21 @@ class TestOneRowPerDate:
         )
         out = one_row_per_date(df).filter(pl.col("datadate") == date(2015, 3, 31)).collect()
         assert out["fyr"].to_list() == [3]
+
+    @pytest.mark.parametrize(
+        ("gap", "kept"),
+        [(CALENDAR_RUN_MAX_GAP_DAYS, 12), (CALENDAR_RUN_MAX_GAP_DAYS + 1, 3)],
+    )
+    def test_gap_limit(self, gap: int, kept: int) -> None:
+        """A gap of exactly the limit keeps the run; one day more restarts it."""
+        start = date(2015, 1, 1)
+        end = start + timedelta(days=gap)
+        df = _fundq(
+            _calendar(12, [start, end]) + _calendar(3, [start + timedelta(days=10), end]),
+            "NA",
+        )
+        out = one_row_per_date(df).filter(pl.col("datadate") == end).collect()
+        assert out["fyr"].to_list() == [kept]
 
     def test_runs_are_per_firm(self) -> None:
         """Another firm's long history on the same fyr doesn't make the calendar established."""

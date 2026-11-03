@@ -31,7 +31,13 @@ from .compustat_correction import (
     correct_decimal_errors,
     drop_unreliable_observations,
 )
-from .config import COLLECT_CHUNK_SIZE, CORRECTION_SPILL_COMPRESSION, END_DATE, MAIN_FILTERS
+from .config import (
+    CALENDAR_RUN_MAX_GAP_DAYS,
+    COLLECT_CHUNK_SIZE,
+    CORRECTION_SPILL_COMPRESSION,
+    END_DATE,
+    MAIN_FILTERS,
+)
 from .output_writer import write_dataframe
 from .paths import DataPaths, get_fx_cad_backfill_path
 from .wrds_connection import (
@@ -4020,16 +4026,18 @@ def one_row_per_date(df: pl.LazyFrame) -> pl.LazyFrame:
         uses only dates up to the one being decided.
 
     Steps:
-        1) Per (gvkey, fyr), split the dates into runs that break at a gap of more than 200 days, so
-           semiannual reporting or one missing quarter (about 183 days) doesn't end a run, and find
-           where each row's run started.
+        1) Per (gvkey, fyr), split the dates into runs that break at a gap of more than
+           CALENDAR_RUN_MAX_GAP_DAYS, so semiannual reporting or one missing quarter (181-184 days)
+           doesn't end a run, and find where each row's run started.
         2) Per (gvkey, datadate), keep the row whose run started first, then the highest fyr, then the
            Global row, then the last raw row (n).
 
     Output:
         LazyFrame unique on (gvkey, datadate).
     """
-    new_run = (pl.col("datadate").diff().dt.total_days() > 200).fill_null(True)
+    new_run = (pl.col("datadate").diff().dt.total_days() > CALENDAR_RUN_MAX_GAP_DAYS).fill_null(
+        True
+    )
     return (
         df.sort(["gvkey", "fyr", "datadate"])
         .with_columns(run=new_run.cum_sum().over("gvkey", "fyr"))
