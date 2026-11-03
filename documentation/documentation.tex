@@ -124,6 +124,7 @@ Jensen is at Yale School of Management; \url{www.tijensen.com}. Kelly is at AQR 
 \hline
 \endhead
 11-03-2026 & \textbullet~Factor portfolios for every characteristic in a released themes version, and signed factors and theme portfolios for each themes version. \texttt{pfs}, \texttt{hml} and \texttt{cmp} now cover the 402 characteristics of themes v1.0 (before: the 153 factors of \cite{JensenKellyPedersen2023}); their existing rows are unchanged. The signed outputs moved to \texttt{portfolios/themes/\{version\}/}: \texttt{lms}, \texttt{country\_factors/}, \texttt{regional\_factors/}, \texttt{themes} (before: \texttt{clusters}) and \texttt{regional\_themes/} (before: \texttt{regional\_clusters/}), and for v1.0 also \texttt{subthemes} and \texttt{regional\_subthemes/}. \texttt{jkp portfolio} writes the current version, v1.0, and \texttt{jkp themes data/ --version v0} writes v0. The column \texttt{cluster} is now \texttt{theme}, and theme files have a new \texttt{n\_subthemes} column. Apart from these renames, which break code that reads the old paths, all v0 values are the same as before up to float noise. A v1.0 theme return is the mean of its subtheme returns. See Section \ref{sec:theme-portfolios}. \\
+ & \textbullet~Characteristics-managed portfolios signed by each themes version from v1.0 on. Each \texttt{themes/\{version\}/} folder now has a \texttt{cmp} file. From v1.0 on, \texttt{ret\_weighted} and \texttt{signal\_weighted} are multiplied by the version's sign, and a new \texttt{direction} column records it. In v0, \texttt{cmp} stays unsigned and equals the top-level \texttt{cmp} for its 153 characteristics. The top-level \texttt{cmp} stays unsigned. See Section \ref{sec:cmp}. \\
 & \textbullet~Affected output files: all files under \texttt{portfolios/} except the industry portfolios. \\
 \hline
 10-15-2026 & \textbullet~Nulled rolling daily characteristics over constant or near-dead windows. Return-based characteristics (\texttt{rvol\_*}, \texttt{ivol\_capm\_*}, \texttt{ivol\_ff3\_*}, \texttt{ivol\_hxz4\_*}, \texttt{beta\_*}, \texttt{betadown\_*}, \texttt{beta\_dimson\_*}, \texttt{rmax*}, \texttt{rskew\_*}, \texttt{iskew\_*}, \texttt{coskew\_*}, \texttt{corr\_*}, \texttt{ami\_*}) are nulled when raw \texttt{ret} is constant over the window or zero on at least 90\% of its days. The check uses raw \texttt{ret} rather than \texttt{ret\_exc}, whose monthly risk-free steps would otherwise hide constant returns over multi-month windows (\texttt{\_252d}, \texttt{\_1260d}). \texttt{prc\_highprc\_*}, \texttt{dolvol\_var\_*} and \texttt{turnover\_var\_*} are nulled only when the adjusted price, dollar volume or turnover is exactly constant over the window. The derived \texttt{betabab\_1260d} and \texttt{rmax5\_rvol\_21d} become null with their inputs. Residual NaN/inf values are scrubbed in \texttt{finish\_daily\_chars}. \\
@@ -321,11 +322,12 @@ We share long/short factor returns on \url{jkpfactors.com/factor-returns}, but w
   \texttt{themes} & Theme returns per country: the mean of the theme's subtheme returns (\texttt{n\_subthemes}, \texttt{n\_factors}) \\
   \texttt{regional\_subthemes/} & Regional subtheme returns (one file per region; not for v0) \\
   \texttt{regional\_themes/} & Regional theme returns (one file per region) \\
+  \texttt{cmp} & Characteristics-managed portfolios, monthly: \texttt{ret\_weighted} and \texttt{signal\_weighted} times \texttt{direction}. In v0, unsigned with no \texttt{direction} column (Section \ref{sec:cmp}) \\
   \hline
   \end{tabular}
   \end{center}
 
-  \item The command \texttt{jkp themes} builds these folders from the saved \texttt{hml} files, without sorting again: the current version by default, another released version (\texttt{--version v0}), or an edited themes file (\texttt{--file my\_themes.csv}, written to \texttt{themes/my\_themes/}). An edited file may only use characteristics in a released version. Each build replaces the version's folder, and builds nothing if a characteristic has no \texttt{hml} factor. Rerunning \texttt{jkp portfolio} replaces only the current version's folder, so rerun \texttt{jkp themes data/ --version v0} afterwards or \texttt{themes/v0/} stays on the old data.
+  \item The command \texttt{jkp themes} builds these folders from the saved \texttt{hml} and \texttt{cmp} files, without sorting again: the current version by default, another released version (\texttt{--version v0}), or an edited themes file (\texttt{--file my\_themes.csv}, written to \texttt{themes/my\_themes/}). An edited file may only use characteristics in a released version. Each build replaces the version's folder, and builds nothing if a characteristic has no \texttt{hml} factor. Rerunning \texttt{jkp portfolio} replaces only the current version's folder, so rerun \texttt{jkp themes data/ --version v0} afterwards or \texttt{themes/v0/} stays on the old data.
 \end{itemize}
 
 \subsection{Overnight and Intraday Factor Portfolios}\label{sec:oi-portfolios}
@@ -465,12 +467,13 @@ We share long/short factor returns on \url{jkpfactors.com/factor-returns}, but w
 
 \end{longtable}}
 
-\subsection{Characteristics-Managed Portfolio Returns (\texttt{cmp.csv})}
+\subsection{Characteristics-Managed Portfolio Returns (\texttt{cmp.csv})}\label{sec:cmp}
 \begin{itemize}
     \item \texttt{cmp.csv} reports for each country, characteristic, and month the size-neutral long-short excess returns with the corresponding weighted characteristic.
     \item For each characteristic, country, and month, we form characteristics-managed portfolios (CMP) within predefined size groups based on \hyperref[app:nyse-breakpoints]{NYSE size breakpoints}. Only observations with non-missing characteristic values and returns are included.
     \item Within each size group and month, we compute each stock's percentile rank on the characteristic, demean the rank within the group, and scale the deviation so long and short weights offset and the gross weight is normalized. These weights create a within-size long-short portfolio that isolates the characteristic from size.
     \item Using the within-group weights, we compute the group's next-month excess return and the weighted signal level.
+    \item The top-level \texttt{cmp.csv} is unsigned: it always buys high values of the characteristic. Each \texttt{themes/\{version\}/} folder also has a \texttt{cmp.csv}. From v1.0 on, \texttt{ret\_weighted} and \texttt{signal\_weighted} are multiplied by the version's sign and a \texttt{direction} column records it, so the portfolio buys the side the version expects to earn more. In v0, \texttt{cmp.csv} stays unsigned, has no \texttt{direction} column and equals the top-level file for the 153 v0 characteristics.
 \end{itemize}
 
 {\scriptsize
@@ -539,6 +542,10 @@ Nano  & Below 1st percentile. \\
     n\_stocks & Number of stocks in the size group that month. \\[1ex]
 
     ret\_weighted & Characteristics-managed excess return using CMP weights. \\[1ex]
+
+    signal\_weighted & Characteristic level using CMP weights. \\[1ex]
+
+    direction & $+1$ or $-1$, the sign applied to \texttt{ret\_weighted} and \texttt{signal\_weighted}. Only in the signed files, \texttt{themes/\{version\}/cmp.csv} from v1.0 on. \\[1ex]
 
 \end{longtable}}
 

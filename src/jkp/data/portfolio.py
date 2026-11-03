@@ -232,12 +232,13 @@ def _write_theme_versions(
     portfolios_dir: Path,
     theme_sets: dict[str, pl.DataFrame],
     hml_series: list[tuple[str, pl.DataFrame, str]],
+    cmp: pl.DataFrame | None,
     market: pl.DataFrame,
     market_daily: pl.DataFrame | None,
     regions: pl.DataFrame,
     settings: dict,
 ) -> None:
-    """Write the signed factors and theme portfolios of each themes version.
+    """Write the signed factors, CMP and theme portfolios of each themes version.
 
     Description:
         Used by ``jkp portfolio`` and ``jkp themes``. A missing factor
@@ -249,9 +250,15 @@ def _write_theme_versions(
            characteristics without an HML factor.
         2) Delete each version's folder, so no file of an earlier build remains.
         3) Write each version's outputs for each return series.
+        4) When ``cmp`` is given, write each version's CMP. v0 keeps the unsigned
+           CMP for its characteristics; later versions sign it. A characteristic
+           can lack CMP rows, since CMP is US-only by default and skips months
+           where the characteristic doesn't vary, so this step has no missing check.
     Output:
         Files under ``portfolios_dir/themes/<version>/``.
     """
+    from .aux_functions import _sign_factors, _write_filtered
+
     missing = []
     for suffix, hml, _ in hml_series:
         factors = set(hml["characteristic"].unique())
@@ -278,6 +285,20 @@ def _write_theme_versions(
                 mkt=market if date_col == "eom" else market_daily,
                 regions=regions,
                 settings=settings,
+            )
+
+    if cmp is not None:
+        for name, themes in theme_sets.items():
+            version_cmp = (
+                cmp.filter(pl.col("characteristic").is_in(themes["characteristic"].implode()))
+                if name == "v0"
+                else _sign_factors(cmp, themes)
+            )
+            _write_filtered(
+                version_cmp,
+                portfolios_dir / "themes" / name / "cmp.parquet",
+                "eom",
+                settings["end_date"],
             )
 
 
@@ -556,6 +577,7 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
             portfolios_dir=portfolios_dir,
             theme_sets={current: released[current]},
             hml_series=[s for s in hml_series if s[1] is not None],
+            cmp=cmp_returns,
             market=market,
             market_daily=market_daily,
             regions=regions,
@@ -575,14 +597,15 @@ def run_themes(*, output_dir: Path, version: str | None = None, file: Path | Non
     """Build signed factors and theme portfolios from saved HML factors.
 
     Description:
-        Read the HML factors written by ``jkp portfolio`` and build the outputs
+        Read the HML factors and CMP written by ``jkp portfolio`` and build the outputs
         of the current themes version, of another released version named by
         ``version``, or of an edited themes file in the v1.0 format (``file``).
         Outputs are written in the format of the saved files.
     Steps:
         1) Load the requested themes version.
-        2) Read each saved hml file (monthly, daily, overnight/intraday) and the
-           market returns, and write each version's outputs, replacing its folder.
+        2) Read each saved hml file (monthly, daily, overnight/intraday), the saved
+           cmp file if any, and the market returns, and write the version's outputs,
+           replacing its folder.
         3) After a CSV run, convert the written folders to CSV.
     Output:
         Files under ``portfolios/themes/<version>/``, or
@@ -637,6 +660,9 @@ def run_themes(*, output_dir: Path, version: str | None = None, file: Path | Non
         portfolios_dir=portfolios_dir,
         theme_sets=theme_sets,
         hml_series=hml_series,
+        cmp=_read_saved(portfolios_dir / "cmp")
+        if (portfolios_dir / f"cmp.{output_format}").exists()
+        else None,
         market=_read_saved(other_output_dir / "market_returns"),
         market_daily=_read_saved(other_output_dir / "market_returns_daily") if daily else None,
         regions=_regions(settings),

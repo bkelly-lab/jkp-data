@@ -277,6 +277,47 @@ class TestRunThemes:
         for rel, df in v1.items():
             assert pl.read_parquet(out / "v1.0" / rel).equals(df), rel
 
+    def test_cmp_per_version(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _setup(tmp_path, monkeypatch)
+        run_portfolio(output_format="parquet", output_dir=tmp_path)
+        run_themes(output_dir=tmp_path, version="v0")
+        portfolios = _portfolios_dir(tmp_path)
+        unsigned = pl.read_parquet(portfolios / "cmp.parquet")
+        assert unsigned.height > 0
+        keys = ["characteristic", "size_grp", "eom"]
+
+        v0 = pl.read_parquet(portfolios / "themes" / "v0" / "cmp.parquet")
+        assert v0.sort(keys).equals(unsigned.sort(keys))
+
+        signed = pl.read_parquet(portfolios / "themes" / "v1.0" / "cmp.parquet")
+        directions = pl.read_parquet(portfolios / "themes" / "v1.0" / "lms.parquet").select(
+            "characteristic", "direction"
+        )
+        assert set(directions["direction"]) == {-1, 1}
+        assert (
+            signed.select("characteristic", "direction")
+            .unique()
+            .sort("characteristic")
+            .equals(directions.unique().sort("characteristic"))
+        )
+        joined = signed.join(unsigned, on=keys, suffix="_unsigned", validate="1:1")
+        assert joined.height == unsigned.height
+        for col in ("ret_weighted", "signal_weighted"):
+            expected = joined.select((pl.col(f"{col}_unsigned") * pl.col("direction")).alias(col))
+            assert joined.select(col).equals(expected), col
+
+    def test_cmp_per_version_from_saved_csv(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _setup(tmp_path, monkeypatch)
+        run_portfolio(output_format="csv", output_dir=tmp_path)
+        run_themes(output_dir=tmp_path, version="v0")
+        out = _portfolios_dir(tmp_path) / "themes"
+        for version in ("v0", "v1.0"):
+            assert pl.read_csv(out / version / "cmp.csv").height > 0, version
+        assert "direction" not in pl.read_csv(out / "v0" / "cmp.csv").columns
+        assert "direction" in pl.read_csv(out / "v1.0" / "cmp.csv").columns
+
     def test_edited_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _setup(tmp_path, monkeypatch)
         run_portfolio(output_format="parquet", output_dir=tmp_path)

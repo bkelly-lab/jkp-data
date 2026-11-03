@@ -132,7 +132,7 @@ def themes(
         "portfolios/themes/<file name without extension>/.",
     ),
 ) -> None:
-    """Build signed factors and theme portfolios from the saved HML factors.
+    """Build signed factors and theme portfolios from the saved HML factors and CMP.
 
     With no option, builds the current themes version, the one in themes.csv
     (now v1.0). jkp portfolio runs this step at the end, so run this command to
