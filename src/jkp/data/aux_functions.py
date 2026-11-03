@@ -4015,20 +4015,21 @@ def one_row_per_date(df: pl.LazyFrame) -> pl.LazyFrame:
     Description:
         Keep one quarterly row per (gvkey, datadate). Two rows share a date when a firm changes its
         fiscal year-end and both its old and new fiscal calendars report the same quarter. The row of
-        the established calendar, whose current run of quarters started first, is kept: it is the
+        the established calendar, whose current run of reports started first, is kept: it is the
         series the firm was reporting on, which usually carries the four-quarter sums, and the choice
         uses only dates up to the one being decided.
 
     Steps:
-        1) Per (gvkey, fyr), split the dates into runs that break at a gap of more than 100 days, and
-           find where each row's run started.
+        1) Per (gvkey, fyr), split the dates into runs that break at a gap of more than 200 days, so
+           semiannual reporting or one missing quarter (about 183 days) doesn't end a run, and find
+           where each row's run started.
         2) Per (gvkey, datadate), keep the row whose run started first, then the highest fyr, then the
            Global row, then the last raw row (n).
 
     Output:
         LazyFrame unique on (gvkey, datadate).
     """
-    new_run = (pl.col("datadate").diff().dt.total_days() > 100).fill_null(True)
+    new_run = (pl.col("datadate").diff().dt.total_days() > 200).fill_null(True)
     return (
         df.sort(["gvkey", "fyr", "datadate"])
         .with_columns(run=new_run.cum_sum().over("gvkey", "fyr"))
@@ -4230,7 +4231,7 @@ def standardized_accounting_data(
            quarterly: gvkey, fyr, fyearq, fqtr), keep the GLOBAL row.
         4) If convert_to_usd: join FX and convert listed vars (annual & quarterly).
         5) Load ME and join to annual/quarterly panels.
-        6) Quarterly: drop rows without fqtr and quarterize …y → …y_q, coalesce to …q; create ni_qtr/sale_qtr/ocf_qtr; cumulate 4Q flows with continuity checks; normalize currency codes; de-dupe to one row per (gvkey, datadate), keeping the highest fyr.
+        6) Quarterly: drop rows without fqtr and quarterize …y → …y_q, coalesce to …q; create ni_qtr/sale_qtr/ocf_qtr; cumulate 4Q flows with continuity checks; normalize currency codes; de-dupe to one row per (gvkey, datadate), keeping the established fiscal calendar.
         7) Annual: add empty quarterly helpers; join ME; sort.
         8) Optionally add helper variables.
         9) Unique by (gvkey, datadate), drop row index, sort, and write 'acc_std_ann.parquet' and 'acc_std_qtr.parquet'.

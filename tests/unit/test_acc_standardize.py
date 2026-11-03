@@ -29,9 +29,9 @@ def _fundq(rows: list[tuple], source: str) -> pl.LazyFrame:
     )
 
 
-def _calendar(fyr: int, ends: list[date]) -> list[tuple]:
+def _calendar(fyr: int, ends: list[date], gvkey: str = "001") -> list[tuple]:
     """Quarter-end rows of one fiscal calendar for `_fundq`; fyearq and fqtr are placeholders."""
-    return [("001", d, fyr, d.year, 1, float(fyr)) for d in ends]
+    return [(gvkey, d, fyr, d.year, 1, float(fyr)) for d in ends]
 
 
 @pytest.mark.unit
@@ -173,17 +173,76 @@ class TestOneRowPerDate:
         out = one_row_per_date(df).sort("datadate").collect()
         assert out["fyr"].to_list() == [old] * 6 + [new]
 
-    def test_gap_restarts_calendar_run(self) -> None:
-        """A calendar that returns after a gap of more than 100 days starts a new run, so its earlier
-        quarters don't make it the established calendar."""
+    @pytest.mark.parametrize(("old", "new"), [(3, 12), (12, 6)])
+    def test_semiannual_calendar_stays_established(self, old: int, new: int) -> None:
+        """Six months between reports don't end a run, so a semiannual calendar keeps its history
+        against a calendar that appears later."""
+        old_ends = [
+            date(2013, 6, 30),
+            date(2013, 12, 31),
+            date(2014, 6, 30),
+            date(2014, 12, 31),
+            date(2015, 6, 30),
+            date(2015, 12, 31),
+        ]
+        new_ends = [date(2015, 9, 30), date(2015, 12, 31), date(2016, 3, 31)]
+        df = _fundq(_calendar(old, old_ends) + _calendar(new, new_ends), "NA")
+        out = one_row_per_date(df).filter(pl.col("datadate") == date(2015, 12, 31)).collect()
+        assert out["fyr"].to_list() == [old]
+
+    def test_one_missed_quarter_keeps_run(self) -> None:
+        """A calendar that misses one quarter keeps its run; the other calendar fills only that date."""
+        old_ends = [
+            date(2014, 9, 30),
+            date(2014, 12, 31),
+            date(2015, 3, 31),
+            date(2015, 9, 30),
+            date(2015, 12, 31),
+        ]
+        new_ends = [date(2015, 6, 30), date(2015, 9, 30), date(2015, 12, 31)]
+        df = _fundq(_calendar(3, old_ends) + _calendar(12, new_ends), "NA")
+        out = one_row_per_date(df).sort("datadate").collect()
+        assert out["fyr"].to_list() == [3, 3, 3, 12, 3, 3]
+
+    def test_two_missed_quarters_restart_run(self) -> None:
+        """A calendar that misses two quarters starts a new run, so its earlier quarters don't make it
+        the established calendar."""
         df = _fundq(
-            _calendar(12, [date(2010, 3, 31), date(2010, 6, 30)])
-            + _calendar(3, [date(2014, 9, 30), date(2014, 12, 31), date(2015, 3, 31)])
-            + _calendar(12, [date(2015, 3, 31), date(2015, 6, 30)]),
+            _calendar(12, [date(2014, 3, 31), date(2014, 6, 30), date(2015, 3, 31)])
+            + _calendar(3, [date(2014, 9, 30), date(2014, 12, 31), date(2015, 3, 31)]),
             "NA",
         )
         out = one_row_per_date(df).filter(pl.col("datadate") == date(2015, 3, 31)).collect()
         assert out["fyr"].to_list() == [3]
+
+    def test_runs_are_per_firm(self) -> None:
+        """Another firm's long history on the same fyr doesn't make the calendar established."""
+        other_firm = [date(2014, 3, 31), date(2014, 9, 30), date(2015, 3, 31), date(2015, 9, 30)]
+        old_ends = [date(2015, 3, 31), date(2015, 6, 30), date(2015, 9, 30)]
+        df = _fundq(
+            _calendar(12, other_firm, gvkey="001")
+            + _calendar(3, old_ends, gvkey="002")
+            + _calendar(12, [date(2015, 9, 30)], gvkey="002"),
+            "NA",
+        )
+        out = (
+            one_row_per_date(df)
+            .filter((pl.col("gvkey") == "002") & (pl.col("datadate") == date(2015, 9, 30)))
+            .collect()
+        )
+        assert out["fyr"].to_list() == [3]
+
+    def test_run_start_outranks_global_row(self) -> None:
+        """NA and Global rows on different calendars: the earlier run wins, even over the Global row."""
+        na_ends = [date(2015, 3, 31), date(2015, 6, 30), date(2015, 9, 30), date(2015, 12, 31)]
+        df = pl.concat(
+            [
+                _fundq(_calendar(3, na_ends), "NA"),
+                _fundq(_calendar(12, [date(2015, 9, 30), date(2015, 12, 31)]), "GLOBAL"),
+            ]
+        )
+        out = one_row_per_date(df).filter(pl.col("datadate") == date(2015, 12, 31)).collect()
+        assert out.select("fyr", "source").rows() == [(3, "NA")]
 
     def test_same_run_start_keeps_highest_fyr(self) -> None:
         """Both calendars' runs start on the same date: the higher fyr is kept."""
