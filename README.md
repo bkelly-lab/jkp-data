@@ -124,6 +124,6 @@ Please see the release notes (`documentation/sas_to_python/release_notes.html`) 
 
 Code in this repository is released under the [MIT License](LICENSE).
 
-Data distributed in this repository is licensed under [Creative Commons Attribution-NonCommercial 4.0 (CC BY-NC 4.0)](DATA_LICENSE).
+Data distributed in this repository is licensed under [Creative Commons Attribution-NonCommercial 4.0 (CC BY-NC 4.0)](DATA_LICENSE), except the third-party reference files listed in [`src/jkp/data/resources/README.md`](src/jkp/data/resources/README.md), which remain under their sources' terms.
 
 See [LICENSE](LICENSE) and [DATA_LICENSE](DATA_LICENSE) for details.
