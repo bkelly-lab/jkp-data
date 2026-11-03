@@ -33,7 +33,7 @@ from .compustat_correction import (
 )
 from .config import COLLECT_CHUNK_SIZE, CORRECTION_SPILL_COMPRESSION, END_DATE, MAIN_FILTERS
 from .output_writer import write_dataframe
-from .paths import DataPaths
+from .paths import DataPaths, get_fx_cad_backfill_path
 from .wrds_connection import (
     _attach_wrds,
     _install_postgres_extension,
@@ -1511,13 +1511,18 @@ def compustat_fx(paths: DataPaths):
     Description:
         Construct a complete daily FX (currency to USD) time series per currency, including USD=1.
         Fills gaps by expanding each FX observation to all dates up to the next observation.
+        Compustat's rates start in February 1982, but North American Compustat has CAD reports
+        and prices from the 1950s on. CAD is extended back to January 1960 with month-end
+        rates (OECD Main Economic Indicators, FRED series CCUSSP01CAM650N) bundled in
+        resources/fx_cad_1960_1982.csv; these reports and prices are all dated at a month-end.
 
     Steps:
         1) Create a seed row for USD with fx=1.0 starting 1950-01-01.
-        2) Load __fx1 (curcdd, datadate, fx) and vertically concat the USD seed.
-        3) For each curcdd, compute next datadate; build a date range [datadate, next) per row.
-        4) Explode ranges to daily rows; fallback to single-day list if next is null.
-        5) Drop duplicates, sort by {curcdd, datadate}, and collect to a DataFrame.
+        2) Load the bundled CAD month-end rates dated before Compustat's first CAD rate.
+        3) Load __fx1 (curcdd, datadate, fx) and vertically concat the USD and CAD rows.
+        4) For each curcdd, compute next datadate; build a date range [datadate, next) per row.
+        5) Explode ranges to daily rows; fallback to single-day list if next is null.
+        6) Drop duplicates, sort by {curcdd, datadate}, and collect to a DataFrame.
 
     Output:
         Polars DataFrame with columns {datadate, curcdd, fx} at daily frequency (to USD).
@@ -1528,8 +1533,20 @@ def compustat_fx(paths: DataPaths):
         .lazy()
     )
     __fx1 = pl.scan_parquet(paths.interim_dir / "raw_data_dfs" / "__fx1.parquet")
+    cad_backfill = (
+        pl.scan_csv(
+            get_fx_cad_backfill_path(),
+            schema={"curcdd": pl.String, "datadate": pl.Date, "fx": pl.Float64},
+        )
+        .join(
+            __fx1.filter(pl.col("curcdd") == "CAD").select(cad_start=pl.col("datadate").min()),
+            how="cross",
+        )
+        .filter(pl.col("datadate") < pl.col("cad_start"))
+        .drop("cad_start")
+    )
     __fx1 = (
-        pl.concat([aux, __fx1], how="vertical_relaxed")
+        pl.concat([aux, cad_backfill, __fx1], how="vertical_relaxed")
         .sort(["curcdd", "datadate"])
         .with_columns(aux=col("datadate").shift(-1).over("curcdd"))
         .with_columns(
@@ -4120,14 +4137,18 @@ def add_fx_and_convert_vars(df, fx_df, vars, freq):
     """
     Description:
         Join FX rates and convert selected variables to USD; normalize currency code.
+        Rows without an FX rate on their datadate (null currency code, or a currency with no
+        rate on that date) are dropped: kept, they would have null USD values and replace
+        the firm's previous valid report.
 
     Steps:
         1) Pick currency column by freq: annual→curcd, quarterly→curcdq.
-        2) Left-join FX on [datadate, currency]; keep original cols + 'fx'.
+        2) Inner-join FX on [datadate, currency], keeping row order; keep original cols + 'fx'.
         3) Multiply listed vars by fx; set currency column to 'USD'; drop fx.
 
     Output:
-        Frame with specified vars converted to USD and currency code set to USD.
+        Frame with the rows that have an FX rate, specified vars converted to USD and
+        currency code set to USD.
     """
     if freq == "annual":
         fx_var = "curcd"
@@ -4138,7 +4159,8 @@ def add_fx_and_convert_vars(df, fx_df, vars, freq):
             fx_df,
             left_on=["datadate", fx_var],
             right_on=["datadate", "curcdd"],
-            how="left",
+            how="inner",
+            maintain_order="left",
         )
         .select(df.collect_schema().names() + ["fx"])
         .with_columns(

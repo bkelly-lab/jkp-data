@@ -23,13 +23,20 @@ If you use this data, please cite:
 ## Bundled reference files (source distribution)
 
 The `jkp-data` package source ships with the following reference
-classification files under `src/jkp/data/resources/`. None are derived from
+files under `src/jkp/data/resources/`. None are derived from
 WRDS, CRSP, Compustat, or IBES vendor data:
 
 - **`Siccodes49.txt`** — Fama-French 49-industry classification mapping SIC
   codes to industry groups. Sourced from Ken French's
   [data library](https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/data_library.html);
   subject to its own publicly-available terms.
+- **`fx_cad_1960_1982.csv`** — Month-end Canadian dollar exchange rates (USD
+  per CAD) from January 1960 to January 1982, used for Canadian-dollar values
+  dated before Compustat's exchange rates begin in February 1982. Source:
+  OECD Main Economic Indicators, retrieved from FRED, Federal Reserve Bank of
+  St. Louis ([series CCUSSP01CAM650N](https://fred.stlouisfed.org/series/CCUSSP01CAM650N)).
+  FRED dates each month by its first day; the file dates it by its last day.
+  Copyright OECD; subject to the OECD's terms of use.
 - **`cluster_labels.csv`** — Maps firm characteristics to thematic clusters
   (e.g., "Low Leverage", "Investment", "Size", "Low Risk"). Authored by
   Jensen, Kelly, and Pedersen.

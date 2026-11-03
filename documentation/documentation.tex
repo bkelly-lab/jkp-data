@@ -2704,6 +2704,8 @@ This section outlines how we create a daily dataset, beginning 01/01/1950 to now
             where $X_{GBP,t}$ is the exchange rate of GBP to currency X on day $t$. 
         \item In case there are gaps in information, we assume the exchange rate of the last observation until a new observation is available. 
         \item $fx_t$ is quoted as $\frac{X_t}{USD_t}$ , so to go from X to USD, do $X_t \times fx_t$
+        \item COMP.EXRT\_DLY starts on 1 February 1982, but North American Compustat has Canadian-dollar (CAD) reports and prices from the 1950s on. For CAD dates before the first COMP.EXRT\_DLY rate, we use month-end rates from January 1960 to January 1982 from the OECD Main Economic Indicators, retrieved from FRED \cite{oecd_fx_cad}. CAD reports and monthly prices are dated at a month-end, so each gets the rate of its own month. CAD observations before January 1960 have no rate.
+        \item Accounting observations without an exchange rate on their \texttt{datadate} (a missing currency code, or a currency without a rate on that date) are dropped before the accounting characteristics are computed. The firm's previous report then stays in use, for up to 18 months as usual.
     \end{itemize}
 
 \end{section}
