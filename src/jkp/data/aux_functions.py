@@ -4318,14 +4318,16 @@ def standardized_accounting_data(
     avars = avars_inc + avars_cf + avars_bs
     # finding which variables of interest are available in the quarterly data
     combined_columns = g_fundq_cols + fundq_cols
-    qvars_q = list(
+    # Sorted: a set's iteration order changes between Python processes, and with it the column
+    # order of acc_std_qtr.
+    qvars_q = sorted(
         {
             aux_var
             for aux_var in combined_columns
             if aux_var[:-1].lower() in avars and aux_var.endswith("q")
         }
     )  # different from above to get only unique values
-    qvars_y = list(
+    qvars_y = sorted(
         {
             aux_var
             for aux_var in combined_columns
@@ -5686,7 +5688,9 @@ def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min):
         2) Keep obs with __ni_at and its 12-month lag; build calendar cohorts by month for N years.
         3) For each (gvkey,curcd,calc_date,grp) with ≥ __min obs, run OLS __ni_at on lag.
         4) Aggregate to slope (ni_ar1) and residual std (ni_ivol); save. ni_ar1 is null when
-           the lagged NI/AT does not vary in the window (regr_slope returns NaN).
+           the lagged NI/AT does not vary in the window (regr_slope returns NaN). The
+           regressions and the std read their rows in datadate order: unordered, the float
+           sums follow DuckDB's thread scheduling and the low bits change between runs.
 
     Output:
         Writes 'ni_ar_res.parquet' with [gvkey, curcd, datadate, ni_ar1, ni_ivol].
@@ -5762,12 +5766,13 @@ def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min):
         curcd,
         calc_grp,
         calc_date,
+        datadate,
         __ni_at,
         __ni_at_l1,
-        regr_slope(__ni_at, __ni_at_l1) OVER (
+        regr_slope(__ni_at, __ni_at_l1 ORDER BY datadate) OVER (
           PARTITION BY gvkey, curcd, calc_grp, calc_date
         ) AS slope,
-        regr_intercept(__ni_at, __ni_at_l1) OVER (
+        regr_intercept(__ni_at, __ni_at_l1 ORDER BY datadate) OVER (
           PARTITION BY gvkey, curcd, calc_grp, calc_date
         ) AS intercept
       FROM calc_data
@@ -5779,6 +5784,7 @@ def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min):
         curcd,
         calc_grp,
         calc_date,
+        datadate,
         slope,
         (__ni_at - (intercept + slope * __ni_at_l1)) AS resid
       FROM fit
@@ -5788,7 +5794,7 @@ def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min):
       curcd,
       calc_date as datadate,
       CASE WHEN NOT isnan(slope) THEN slope END AS ni_ar1,
-      stddev_samp(resid) AS ni_ivol,
+      stddev_samp(resid ORDER BY datadate) AS ni_ivol,
     FROM resids
     GROUP BY gvkey, curcd, calc_grp, calc_date, slope
     HAVING COUNT(*) >= {__min}
