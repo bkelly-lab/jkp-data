@@ -85,7 +85,7 @@ def _portfolios_dir(tmp_path: Path) -> Path:
 
 
 class TestRunPortfolioOutputs:
-    def test_writes_pfs_hml_and_lms_per_version(
+    def test_writes_pfs_hml_and_only_the_current_version(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _setup(tmp_path, monkeypatch)
@@ -95,23 +95,21 @@ class TestRunPortfolioOutputs:
         for name in (
             "pfs.parquet",
             "hml.parquet",
-            "themes/v0/lms.parquet",
             "themes/v1.0/lms.parquet",
         ):
             path = out / name
             assert path.exists(), f"missing {name}"
             assert pl.read_parquet(path).height > 0, f"{name} is empty"
         assert not (out / "lms.parquet").exists()
+        assert [p.name for p in (out / "themes").iterdir()] == ["v1.0"]
 
     def test_writes_theme_portfolios(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _setup(tmp_path, monkeypatch)
         run_portfolio(output_format="parquet", output_dir=tmp_path)
 
         out = _portfolios_dir(tmp_path) / "themes"
-        for name in ("v0/themes.parquet", "v1.0/themes.parquet", "v1.0/subthemes.parquet"):
+        for name in ("v1.0/themes.parquet", "v1.0/subthemes.parquet"):
             assert pl.read_parquet(out / name).height > 0, f"{name} is empty"
-        # Every v0 theme is its own subtheme, so v0 has no subtheme files.
-        assert not (out / "v0" / "subthemes.parquet").exists()
         assert list((out / "v1.0" / "regional_subthemes").glob("*.parquet"))
 
     def test_writes_country_factors_partition(
@@ -120,7 +118,7 @@ class TestRunPortfolioOutputs:
         _setup(tmp_path, monkeypatch, countries=("USA", "FRA"))
         run_portfolio(output_format="parquet", output_dir=tmp_path)
 
-        country_dir = _portfolios_dir(tmp_path) / "themes" / "v0" / "country_factors"
+        country_dir = _portfolios_dir(tmp_path) / "themes" / "v1.0" / "country_factors"
         assert (country_dir / "USA.parquet").exists()
         assert (country_dir / "FRA.parquet").exists()
 
@@ -133,7 +131,7 @@ class TestRunPortfolioOutputs:
         run_portfolio(output_format="parquet", output_dir=tmp_path)
 
         out = _portfolios_dir(tmp_path)
-        assert not (out / "themes" / "v0" / "country_factors" / "null_country.parquet").exists()
+        assert not (out / "themes" / "v1.0" / "country_factors" / "null_country.parquet").exists()
         assert set(pl.read_parquet(out / "pfs.parquet")["excntry"].unique()) == {"USA", "FRA"}
 
     def test_writes_regional_factors_partition(
@@ -142,7 +140,7 @@ class TestRunPortfolioOutputs:
         _setup(tmp_path, monkeypatch)
         run_portfolio(output_format="parquet", output_dir=tmp_path)
 
-        regional_dir = _portfolios_dir(tmp_path) / "themes" / "v0" / "regional_factors"
+        regional_dir = _portfolios_dir(tmp_path) / "themes" / "v1.0" / "regional_factors"
         assert regional_dir.exists()
         files = list(regional_dir.glob("*.parquet"))
         assert files, "no regional_factors parquets written"
@@ -221,7 +219,7 @@ class TestRunPortfolioOutputs:
         )
         run_portfolio(output_format="parquet", output_dir=tmp_path)
 
-        out = _portfolios_dir(tmp_path) / "themes" / "v0"
+        out = _portfolios_dir(tmp_path) / "themes" / "v1.0"
 
         # ZWE survives in per-country outputs (country_excl does not gate them).
         assert (out / "country_factors" / "ZWE.parquet").exists()
@@ -245,7 +243,7 @@ def _files(root: Path, suffix: str = "parquet") -> set[str]:
 
 
 class TestRunThemes:
-    def test_rebuilds_released_versions(
+    def test_no_option_rebuilds_only_the_current_version(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _setup(tmp_path, monkeypatch)
@@ -258,8 +256,26 @@ class TestRunThemes:
         run_themes(output_dir=tmp_path)
 
         assert _files(themes_dir) == set(expected)
+        assert [p.name for p in themes_dir.iterdir()] == ["v1.0"]
         for rel, df in expected.items():
             assert pl.read_parquet(themes_dir / rel).equals(df), rel
+
+    def test_builds_v0_when_named(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _setup(tmp_path, monkeypatch)
+        run_portfolio(output_format="parquet", output_dir=tmp_path)
+        out = _portfolios_dir(tmp_path) / "themes"
+        v1 = {rel: pl.read_parquet(out / "v1.0" / rel) for rel in _files(out / "v1.0")}
+
+        run_themes(output_dir=tmp_path, version="v0")
+
+        for name in ("lms.parquet", "themes.parquet", "lms_daily.parquet"):
+            assert pl.read_parquet(out / "v0" / name).height > 0, f"{name} is empty"
+        assert list((out / "v0" / "regional_themes").glob("*.parquet"))
+        # Every v0 theme is its own subtheme, so v0 has no subtheme files.
+        assert not (out / "v0" / "subthemes.parquet").exists()
+        # Building v0 leaves the current version's folder as it was.
+        for rel, df in v1.items():
+            assert pl.read_parquet(out / "v1.0" / rel).equals(df), rel
 
     def test_edited_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _setup(tmp_path, monkeypatch)
@@ -288,6 +304,7 @@ class TestRunThemes:
         out = _portfolios_dir(tmp_path) / "themes"
         (out / "v1.0" / "lms.parquet").unlink()
         stale = out / "v0" / "subthemes.parquet"  # v0 has no subthemes
+        stale.parent.mkdir()
         stale.touch()
 
         run_themes(output_dir=tmp_path, version="v0")
@@ -355,4 +372,9 @@ class TestRunThemes:
         run_themes(output_dir=tmp_path)
 
         assert _files(themes_dir, "csv") == expected
+        assert not list(tmp_path.rglob("*.parquet"))
+
+        run_themes(output_dir=tmp_path, version="v0")
+
+        assert (themes_dir / "v0" / "lms.csv").exists()
         assert not list(tmp_path.rglob("*.parquet"))

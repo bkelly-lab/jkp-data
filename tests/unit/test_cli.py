@@ -166,7 +166,7 @@ class TestThemesCommand:
     """Test the themes command routes to run_themes correctly."""
 
     @patch("jkp.data.portfolio.run_themes")
-    def test_themes_builds_every_version_by_default(self, mock_run_themes, tmp_path):
+    def test_themes_passes_no_version_by_default(self, mock_run_themes, tmp_path):
         result = runner.invoke(app, ["themes", str(tmp_path)])
         assert result.exit_code == 0
         mock_run_themes.assert_called_once_with(output_dir=tmp_path, version=None, file=None)

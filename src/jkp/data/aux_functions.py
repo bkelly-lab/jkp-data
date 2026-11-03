@@ -10116,7 +10116,8 @@ def theme_versions(themes_dir: Path) -> dict[str, Path]:
         ``version`` column, and each folder in ``superseded_themes/``, named by
         the folder. A new version therefore needs no code change.
     Output:
-        Dict from version name to a path that ``load_themes`` reads. Raises
+        Dict from version name to a path that ``load_themes`` reads, with the
+        current version first. Raises
         ``ValueError`` when a superseded folder has the current version's name.
     """
     current = themes_dir / "themes.csv"

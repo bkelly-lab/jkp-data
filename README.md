@@ -93,11 +93,19 @@ Please see the release notes (`documentation/sas_to_python/release_notes.html`) 
   jkp portfolio data/ --output-format csv
   ```
 
-- `jkp portfolio` writes the signed factors and theme portfolios of each released themes version to `portfolios/themes/<version>/`. To rebuild them from the saved factor returns, for example for an edited copy of `src/jkp/data/resources/themes/themes.csv`, run:
+- `jkp portfolio` writes the signed factors and theme portfolios of the current themes version, v1.0, to `portfolios/themes/v1.0/`. Other versions are built only when you name them.
+
+  To build v0, the 13 themes and 153 factors of Jensen, Kelly and Pedersen (2023), run this after `jkp portfolio`:
+  ```sh
+  jkp themes data/ --version v0
+  ```
+  The output goes to `portfolios/themes/v0/`. It uses the saved factor returns, so nothing is sorted again. Rerunning `jkp portfolio` replaces only the v1.0 folder, so run this command again afterwards or `themes/v0/` stays on the old data.
+
+  To rebuild v1.0, run `jkp themes data/`. To build an edited copy of `src/jkp/data/resources/themes/themes.csv`, run:
   ```sh
   jkp themes data/ --file my_themes.csv
   ```
-  The output goes to `portfolios/themes/my_themes/`. Without `--file`, the command rebuilds every released version, or one with `--version v1.0`.
+  The output goes to `portfolios/themes/my_themes/`.
 
 - By default, the end date for the data in the code is 2025-12-31, which you can change by editing the `end_date` assignment in `src/jkp/data/config.py`. For example, for May 6, 1992, use: `END_DATE = date(1992, 5, 6)`.
 

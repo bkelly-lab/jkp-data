@@ -92,10 +92,11 @@ to the subtheme that best matches what it combines.
 - Earlier versions are kept in `src/jkp/data/resources/themes/superseded_themes/vX.Y/`.
   `v0/` holds the original themes of Jensen, Kelly and Pedersen (2023) and the direction each
   factor was signed by.
-- `jkp portfolio` builds the signed factors and theme portfolios of every released version
-  into `portfolios/themes/<version>/`, so a new version needs no code change. `jkp themes`
-  rebuilds them from the saved factors, for one version (`--version v1.0`) or for an edited
-  copy of `themes.csv` (`--file`), which may use only characteristics in a released version.
+- `jkp portfolio` builds the signed factors and theme portfolios of the current version into
+  `portfolios/themes/<version>/`, so a new version needs no code change. `jkp themes` builds
+  them from the saved factors: the current version by default, an earlier version by name
+  (`jkp themes data/ --version v0`), or an edited copy of `themes.csv` (`--file`), which may use
+  only characteristics in a released version.
 
 ## Versions
 

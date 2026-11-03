@@ -1,7 +1,7 @@
 """Golden-fixture parity test for run_portfolio.
 
-For each profile, run ``run_portfolio`` on deterministic synthetic data
-(seed=42) and compare every emitted parquet against a committed fixture
+For each profile, run ``run_portfolio`` and build themes v0 with ``run_themes``
+on deterministic synthetic data (seed=42) and compare every emitted parquet against a committed fixture
 tree under ``tests/golden/fixtures/<profile>/``.
 
 Run ``pytest tests/golden/test_run_portfolio_golden.py --regen-golden -v``
@@ -134,9 +134,11 @@ def test_run_portfolio_golden(
     monkeypatch.setattr("jkp.data.portfolio.PORTFOLIO_CHARS", chars)
     monkeypatch.setattr("jkp.data.portfolio.PORTFOLIO_SETTINGS", _build_settings(cfg))
 
-    from jkp.data.portfolio import run_portfolio
+    from jkp.data.portfolio import run_portfolio, run_themes
 
     run_portfolio(output_dir=tmp_path)
+    monkeypatch.setattr("jkp.data.output_writer._configured", False)  # a new CLI process
+    run_themes(output_dir=tmp_path, version="v0")
 
     output_root = tmp_path / "processed" / "portfolios"
     fixture_root = FIXTURES_DIR / profile

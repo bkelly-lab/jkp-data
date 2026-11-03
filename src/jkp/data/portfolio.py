@@ -305,8 +305,9 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
     Description:
         Orchestrate portfolio construction: configure output format, build
         factor portfolios for each country, write the unsigned results, and
-        build the signed factors and theme portfolios of every released themes
-        version.
+        build the signed factors and theme portfolios of the current themes
+        version. ``run_themes`` builds any other released version from the saved
+        factors.
     Steps:
         1) Configure output format and load the released themes versions.
         2) Load country list and portfolio inputs.
@@ -314,7 +315,7 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
            ``PORTFOLIO_CHARS`` and every characteristic in a themes version.
         4) Aggregate cross-country results and compute HML factors.
         5) Write output files.
-        6) Write each themes version's outputs under ``portfolios/themes/``.
+        6) Write the current themes version's outputs under ``portfolios/themes/``.
         7) Optionally convert to CSV.
     Output:
         Portfolio files written to data/processed/portfolios/.
@@ -347,12 +348,11 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
         if "world" not in p.stem and p.stem != "null_country"
     )
 
-    # Sort every characteristic that a released themes version signs. Loading
-    # the versions first stops a run with an invalid themes file before sorting.
-    theme_sets = {
-        name: load_themes(path) for name, path in theme_versions(get_themes_dir()).items()
-    }
-    themed = set().union(*(set(t["characteristic"]) for t in theme_sets.values()))
+    # Sort every characteristic that a released themes version signs, so jkp themes
+    # can build any of them from the saved factors. Loading the versions first stops
+    # a run with an invalid themes file before sorting.
+    released = {name: load_themes(path) for name, path in theme_versions(get_themes_dir()).items()}
+    themed = set().union(*(set(t["characteristic"]) for t in released.values()))
     chars = PORTFOLIO_CHARS + sorted(themed - set(PORTFOLIO_CHARS))
     settings = PORTFOLIO_SETTINGS
 
@@ -548,12 +548,13 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
         _write_filtered(hml_oi, portfolios_dir / f"hml_{component}.parquet", "date", end_date)
         hml_series.append((f"_{component}", hml_oi, "date"))
 
-    # Signed factors and theme portfolios of each released themes version
+    # Signed factors and theme portfolios of the current themes version.
     # The CSV conversion runs even if the themes step fails.
+    current = next(iter(released))
     try:
         _write_theme_versions(
             portfolios_dir=portfolios_dir,
-            theme_sets=theme_sets,
+            theme_sets={current: released[current]},
             hml_series=[s for s in hml_series if s[1] is not None],
             market=market,
             market_daily=market_daily,
@@ -575,11 +576,11 @@ def run_themes(*, output_dir: Path, version: str | None = None, file: Path | Non
 
     Description:
         Read the HML factors written by ``jkp portfolio`` and build the outputs
-        of every released themes version, of one released version
-        (``version``), or of an edited themes file in the v1.0 format
-        (``file``). Outputs are written in the format of the saved files.
+        of the current themes version, of another released version named by
+        ``version``, or of an edited themes file in the v1.0 format (``file``).
+        Outputs are written in the format of the saved files.
     Steps:
-        1) Load the requested themes versions.
+        1) Load the requested themes version.
         2) Read each saved hml file (monthly, daily, overnight/intraday) and the
            market returns, and write each version's outputs, replacing its folder.
         3) After a CSV run, convert the written folders to CSV.
@@ -613,7 +614,8 @@ def run_themes(*, output_dir: Path, version: str | None = None, file: Path | Non
             raise ValueError(f"unknown themes version {version!r}; released: {sorted(released)}")
         sources = {version: released[version]}
     else:
-        sources = released
+        current = next(iter(released))
+        sources = {current: released[current]}
     theme_sets = {name: load_themes(path) for name, path in sources.items()}
 
     known = {"hml", "hml_daily", *(f"hml_{component}" for component, _ in OI_COMPONENTS)}

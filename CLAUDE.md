@@ -37,7 +37,9 @@ uv run pytest
 # Run the full pipeline (requires WRDS credentials and ~450 GB RAM)
 jkp build data/                     # stock returns and firm characteristics
 jkp portfolio data/                 # factor returns (run after jkp build)
-jkp themes data/ [--version v1.0 | --file my_themes.csv]   # rebuild theme portfolios from saved hml
+jkp themes data/                    # rebuild the current themes version (v1.0) from saved hml
+jkp themes data/ --version v0       # build another released version, here v0
+jkp themes data/ --file my_themes.csv   # build an edited themes file
 
 # WRDS connection management
 jkp connect                         # test connection
@@ -57,7 +59,7 @@ The pipeline has two entry points that run sequentially:
 5. Calculate rolling daily metrics (volatility, beta, skewness) across 21d/126d/252d/1260d windows
 6. Save outputs as parquet files to `data/processed/`
 
-**`src/jkp/data/portfolio.py`** constructs factor portfolios from the characteristics output by `main.py`, using ECDF ranking and value-weighting by market cap. It sorts every characteristic in a released themes version (`resources/themes/`), writes the unsigned `pfs`/`hml`/`cmp`/`industry` files to `portfolios/`, then the signed factors and theme portfolios of each version to `portfolios/themes/<version>/`. `jkp themes` (`run_themes`) rebuilds that last step from saved `hml` files.
+**`src/jkp/data/portfolio.py`** constructs factor portfolios from the characteristics output by `main.py`, using ECDF ranking and value-weighting by market cap. It sorts every characteristic in a released themes version (`resources/themes/`), writes the unsigned `pfs`/`hml`/`cmp`/`industry` files to `portfolios/`, then the signed factors and theme portfolios of the current version (`themes.csv`, now v1.0) to `portfolios/themes/<version>/`. `jkp themes` (`run_themes`) runs that last step from saved `hml` files: the current version by default, any other released version such as v0 only when named with `--version`, or an edited file with `--file`.
 
 ### Key source files
 

@@ -21,7 +21,7 @@ import pytest
 from polars.testing import assert_frame_equal
 
 from jkp.data.output_writer import configure_output_format
-from jkp.data.portfolio import run_portfolio
+from jkp.data.portfolio import run_portfolio, run_themes
 from tests.fixtures import portfolio_oi_legacy
 from tests.unit.portfolio.conftest import (
     build_synthetic_data,
@@ -168,6 +168,7 @@ def outputs(
     try:
         portfolio_oi_legacy.run_portfolio(output_format="parquet", output_dir=legacy_root)
         run_portfolio(output_format="parquet", output_dir=new_root)
+        run_themes(output_dir=new_root, version="v0")
     finally:
         mp.undo()
     return legacy_root / "processed" / "portfolios", new_root / "processed" / "portfolios"

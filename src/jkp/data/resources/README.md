@@ -43,7 +43,7 @@ WRDS, CRSP, Compustat, or IBES vendor data:
   explaining signs and placements that may surprise. Earlier versions are kept in
   `themes/superseded_themes/`; `v0/` holds the clusters and factor directions of
   Jensen, Kelly, and Pedersen (2023). `jkp portfolio` builds signed factors and
-  theme portfolios for each version. Authored by Jensen, Kelly, and Pedersen. See
+  theme portfolios for the current version, and `jkp themes --version` for an earlier one. Authored by Jensen, Kelly, and Pedersen. See
   `scripts/themes/` in the repository for the principles, versioning rules and
   changelog.
 - **`country_classification.xlsx`** — Country-to-region mapping used to

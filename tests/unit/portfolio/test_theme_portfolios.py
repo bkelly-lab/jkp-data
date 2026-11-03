@@ -21,7 +21,7 @@ import pytest
 from jkp.data.aux_functions import _theme_returns, load_themes, theme_versions
 from jkp.data.config import PORTFOLIO_CHARS
 from jkp.data.paths import _resource_path, get_themes_dir
-from jkp.data.portfolio import _write_theme_versions, run_portfolio
+from jkp.data.portfolio import _write_theme_versions, run_portfolio, run_themes
 from tests.unit.portfolio.conftest import (
     SYNTHETIC_CHARS,
     build_synthetic_data,
@@ -284,6 +284,8 @@ class TestClusterPortfolios:
         monkeypatch.setattr(pf_mod, "PORTFOLIO_SETTINGS", lenient_settings)
 
         run_portfolio(output_dir=tmp_path)
+        monkeypatch.setattr("jkp.data.output_writer._configured", False)  # a new CLI process
+        run_themes(output_dir=tmp_path, version="v0")
 
         themes_path = tmp_path / "processed" / "portfolios" / "themes" / "v0" / "themes.parquet"
         assert themes_path.exists(), f"missing {themes_path}"

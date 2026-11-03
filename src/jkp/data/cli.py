@@ -103,7 +103,12 @@ def portfolio(
         help="Output file format.",
     ),
 ) -> None:
-    """Generate factor portfolios from characteristics data."""
+    """Generate factor portfolios from characteristics data.
+
+    Writes the signed factors and theme portfolios of the current themes version,
+    now v1.0, to portfolios/themes/v1.0/. Build another version, such as v0, from
+    the saved factors with: jkp themes OUTPUT_DIR --version v0
+    """
     from .portfolio import run_portfolio
 
     run_portfolio(output_format=output_format.value, output_dir=output_dir)
@@ -117,7 +122,8 @@ def themes(
     version: str | None = typer.Option(
         None,
         "--version",
-        help="Build only this released themes version, such as v1.0.",
+        help="Build this released themes version instead of the current one: "
+        "v0 is the 13 themes and 153 factors of Jensen, Kelly and Pedersen (2023).",
     ),
     file: Path | None = typer.Option(
         None,
@@ -128,8 +134,10 @@ def themes(
 ) -> None:
     """Build signed factors and theme portfolios from the saved HML factors.
 
-    With no option, builds every released themes version. jkp portfolio runs
-    this step at the end.
+    With no option, builds the current themes version, the one in themes.csv
+    (now v1.0). jkp portfolio runs this step at the end, so run this command to
+    rebuild it or to build another version. Other versions are built only when
+    named: jkp themes OUTPUT_DIR --version v0 writes portfolios/themes/v0/.
     """
     if version is not None and file is not None:
         raise typer.BadParameter("Give --version or --file, not both.")
