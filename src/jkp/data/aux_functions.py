@@ -3929,15 +3929,38 @@ def market_returns(paths: DataPaths, data_path, freq, wins_comp, wins_data_path,
     )
 
 
-def quarterize(df, var_list):
+def prefer_global(
+    global_rows: pl.LazyFrame, na_rows: pl.LazyFrame, keys: list[str]
+) -> pl.LazyFrame:
+    """
+    Description:
+        Stack Compustat Global and North America rows, keeping the Global row where both
+        report the same key.
+
+    Steps:
+        1) Drop NA rows whose key also appears in the Global rows (null key values match).
+        2) Stack the Global rows and the remaining NA rows.
+
+    Output:
+        LazyFrame of all Global rows plus the NA rows for keys that Global does not report.
+        Duplicates within one source are kept.
+    """
+    na_only = na_rows.join(global_rows, on=keys, how="anti", nulls_equal=True)
+    return pl.concat([global_rows, na_only], how="diagonal_relaxed")
+
+
+def quarterize(df: pl.LazyFrame, var_list: list[str]) -> pl.LazyFrame:
     """
     Description:
         Convert quarterly Compustat levels to quarter-over-quarter flows with guardrails.
 
     Steps:
-        1) Per [gvkey,fyr,fyearq], add running count and diffs var_q = Δ(var).
-        2) Build deletion mask for first obs or quarter breaks; null-out invalid diffs.
-        3) Return unique, sorted quarterly panel with *_q flows.
+        1) Drop rows without a fiscal quarter (fqtr missing). Compustat keeps these from a firm's old
+           fiscal calendar after it changes its fiscal year-end.
+        2) Keep one row per [gvkey,fyr,fyearq,fqtr]: the earliest datadate.
+        3) Per [gvkey,fyr,fyearq], add running count and diffs var_q = Δ(var).
+        4) Build deletion mask for first obs or quarter breaks; null-out invalid diffs.
+        5) Return unique, sorted quarterly panel with *_q flows.
 
     Output:
         Quarterly panel with flow variables var_q for each input in var_list.
@@ -3956,8 +3979,9 @@ def quarterize(df, var_list):
         for var in var_list
     ]
     df = (
-        df.unique(["gvkey", "fyr", "fyearq", "fqtr"])
-        .sort(["gvkey", "fyr", "fyearq", "fqtr"])
+        df.filter(col("fqtr").is_not_null())
+        .sort(["gvkey", "fyr", "fyearq", "fqtr", "datadate"])
+        .unique(["gvkey", "fyr", "fyearq", "fqtr"], keep="first", maintain_order=True)
         .with_columns(list_aux1)
         .sort(["gvkey", "fyr", "fyearq", "fqtr"])
         .with_columns(list_aux2)
@@ -3967,6 +3991,24 @@ def quarterize(df, var_list):
         .sort(["gvkey", "fyr", "fyearq", "fqtr"])
     )
     return df
+
+
+def one_row_per_date(df: pl.LazyFrame) -> pl.LazyFrame:
+    """
+    Description:
+        Keep one quarterly row per (gvkey, datadate). Two rows share a date when a firm changes its
+        fiscal year-end and both its old and new fiscal calendars report the same quarter.
+
+    Steps:
+        1) Per (gvkey, datadate), keep the row with the highest fyr, then the Global row, then the last
+           raw row (n).
+
+    Output:
+        LazyFrame unique on (gvkey, datadate).
+    """
+    return df.sort(["gvkey", "datadate", "fyr", pl.col("source") == "GLOBAL", "n"]).unique(
+        ["gvkey", "datadate"], keep="last"
+    )
 
 
 def ttm(var):
@@ -4168,10 +4210,11 @@ def standardized_accounting_data(
     Steps:
         1) Inspect FUNDQ schemas; define target income/CF/BS/other vars; collect quarterly suffix vars (…q/…y).
         2) Load & filter raw GLOBAL and/or NA (annual/quarterly) via helper; add computed fields (e.g., ni, niq, ppegtq); drop vars as needed; apply INDFMT resolver.
-        3) If world: concat NA+GLOBAL and break ties per key by preferring NA.
+        3) If world: concat NA+GLOBAL; where both report the same firm-period (annual: gvkey, datadate;
+           quarterly: gvkey, fyr, fyearq, fqtr), keep the GLOBAL row.
         4) If convert_to_usd: join FX and convert listed vars (annual & quarterly).
         5) Load ME and join to annual/quarterly panels.
-        6) Quarterly: quarterize …y → …y_q, coalesce to …q; create ni_qtr/sale_qtr/ocf_qtr; cumulate 4Q flows with continuity checks; normalize currency codes; de-dupe, prefer later/NA rows.
+        6) Quarterly: drop rows without fqtr and quarterize …y → …y_q, coalesce to …q; create ni_qtr/sale_qtr/ocf_qtr; cumulate 4Q flows with continuity checks; normalize currency codes; de-dupe to one row per (gvkey, datadate), keeping the highest fyr.
         7) Annual: add empty quarterly helpers; join ME; sort.
         8) Optionally add helper variables.
         9) Unique by (gvkey, datadate), drop row index, sort, and write 'acc_std_ann.parquet' and 'acc_std_qtr.parquet'.
@@ -4398,17 +4441,8 @@ def standardized_accounting_data(
             + query_vars
         )
     if coverage == "world":
-        __wfunda = pl.concat([__gfunda, __funda], how="diagonal_relaxed").filter(
-            (pl.len().over(["gvkey", "datadate"]) == 1)
-            | ((pl.len().over(["gvkey", "datadate"]) == 2) & (col("source") == "GLOBAL"))
-        )
-        __wfundq = pl.concat([__gfundq, __fundq], how="diagonal_relaxed").filter(
-            (pl.len().over(["gvkey", "fyr", "fyearq", "fqtr"]) == 1)
-            | (
-                (pl.len().over(["gvkey", "fyr", "fyearq", "fqtr"]) == 2)
-                & (col("source") == "GLOBAL")
-            )
-        )
+        __wfunda = prefer_global(__gfunda, __funda, ["gvkey", "datadate"])
+        __wfundq = prefer_global(__gfundq, __fundq, ["gvkey", "fyr", "fyearq", "fqtr"])
     else:
         pass
     if coverage == "na":
@@ -4537,9 +4571,7 @@ def standardized_accounting_data(
                 **{"curcdq": "curcd"},
             }
         )
-        .unique(["gvkey", "datadate", "fyr"])
-        .sort(["gvkey", "datadate", "fyr"])
-        .unique(["gvkey", "datadate"], keep="last")
+        .pipe(one_row_per_date)
         .drop(["fyr", "fyearq", "fqtr"])
         .join(
             __me_data,
@@ -4591,6 +4623,8 @@ def standardized_accounting_data(
         __compq = add_helper_vars(paths, __compq)
         __compa = add_helper_vars(paths, __compa)
 
+    # Annual data have no same-source (gvkey, datadate) duplicates; prefer_global would keep them
+    # and this unique would pick one arbitrarily.
     __compa.unique(["gvkey", "datadate"]).drop("n").sort(
         ["gvkey", "datadate"]
     ).collect().write_parquet(paths.interim_dir / "acc_std_ann.parquet")
