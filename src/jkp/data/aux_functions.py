@@ -10054,7 +10054,7 @@ def load_themes(path: Path) -> pl.DataFrame:
         v1.0 on, ``direction`` is ``subtheme_sign * theme_sign * factor_sign``.
     Steps:
         1) Read the v0 files or the v1.0-format file.
-        2) Check that every direction is -1 or 1, that each characteristic appears
+        2) Check that no name is blank, that every direction is -1 or 1, that each characteristic appears
            once and that each subtheme belongs to one theme.
     Output:
         DataFrame with ``characteristic``, ``theme``, ``subtheme`` and ``direction``
@@ -10079,6 +10079,17 @@ def load_themes(path: Path) -> pl.DataFrame:
             "subtheme",
             direction=pl.col("subtheme_sign") * pl.col("theme_sign") * pl.col("factor_sign"),
         )
+
+    names = ["characteristic", "theme", "subtheme"]
+    blank = (
+        themes.with_row_index("_row")
+        .filter(
+            pl.any_horizontal(pl.col(names).cast(pl.String).str.strip_chars().fill_null("") == "")
+        )["_row"]
+        .to_list()
+    )
+    if blank:
+        raise ValueError(f"{path}: blank names in rows {[i + 2 for i in blank]}")
 
     bad_sign = themes.filter(~pl.col("direction").is_in([-1, 1]).fill_null(False))
     repeated = themes.filter(pl.col("characteristic").is_duplicated())
@@ -10109,7 +10120,11 @@ def theme_versions(themes_dir: Path) -> dict[str, Path]:
         ``ValueError`` when a superseded folder has the current version's name.
     """
     current = themes_dir / "themes.csv"
-    versions = {pl.read_csv(current, columns=["version"])["version"][0]: current}
+    versions = {
+        pl.read_csv(current, columns=["version"], schema_overrides={"version": pl.String})[
+            "version"
+        ][0]: current
+    }
     for folder in sorted((themes_dir / "superseded_themes").iterdir()):
         if folder.is_dir():
             if folder.name in versions:
@@ -10164,7 +10179,11 @@ def _theme_returns(
     """
     rets = ["ret_ew", "ret_vw", "ret_vw_cap"]
     subthemes = (
-        lms.join(themes.select("characteristic", "theme", "subtheme"), on="characteristic")
+        lms.join(
+            themes.select("characteristic", "theme", "subtheme"),
+            on="characteristic",
+            maintain_order="left",
+        )
         .group_by("excntry", "theme", "subtheme", date_col)
         .agg(pl.len().alias("n_factors"), pl.col(rets).mean())
         .sort("excntry", "theme", "subtheme", date_col)

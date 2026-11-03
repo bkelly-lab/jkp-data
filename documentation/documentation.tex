@@ -368,7 +368,7 @@ We share long/short factor returns on \url{jkpfactors.com/factor-returns}, but w
   \end{tabular}
   \end{center}
 
-  \item Column schemas match the corresponding standard daily files (e.g.\ \texttt{pfs\_daily}, \texttt{lms\_daily}): \texttt{date}, \texttt{characteristic}, \texttt{excntry}, \texttt{ret\_ew}, \texttt{ret\_vw}, \texttt{ret\_vw\_cap}, and related fields.
+  \item Column schemas match the corresponding standard daily files (e.g.\ \texttt{pfs\_daily}, and \texttt{themes/\{version\}/lms\_daily} for the signed file): \texttt{date}, \texttt{characteristic}, \texttt{excntry}, \texttt{ret\_ew}, \texttt{ret\_vw}, \texttt{ret\_vw\_cap}, and related fields.
   \item Daily-return winsorization applies only to the standard \texttt{ret\_exc} path; O/I legs are aggregated as-is.
   \item For US/CRSP stocks, local and USD O/I components coincide. Local variants matter for international Compustat securities, where FX would otherwise enter the USD overnight residual. Because FX cancels in the open/close ratio, \texttt{ret\_intraday\_local} equals \texttt{ret\_intraday}, so the \texttt{intraday} and \texttt{intraday\_local} portfolio suites are identical.
   \item Industry portfolios and characteristics-managed portfolios (\texttt{cmp}) are not rebuilt for O/I components. Monthly overnight/intraday factor portfolios are not produced.

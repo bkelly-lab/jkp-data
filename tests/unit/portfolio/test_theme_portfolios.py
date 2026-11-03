@@ -401,6 +401,8 @@ class TestLoadThemes:
             ({"factor_sign": [1, 0]}, "signs other than -1 and 1: \\['b'\\]"),
             ({"characteristic": ["a", "a"]}, "characteristics listed more than once"),
             ({"theme": ["T", "U"]}, "subthemes under more than one theme: \\['S'\\]"),
+            ({}, "blank names in rows \\[4\\]"),
+            ({"subtheme": ["S", " "]}, "blank names in rows \\[3, 4\\]"),
         ],
     )
     def test_invalid_file(self, tmp_path: Path, change: dict, message: str) -> None:
@@ -414,6 +416,8 @@ class TestLoadThemes:
             "factor_sign": [1, 1],
         }
         pl.DataFrame({**base, **change}).write_csv(file)
+        if "blank" in message:
+            file.write_text(file.read_text() + ",,,,,\n")
         with pytest.raises(ValueError, match=message):
             load_themes(file)
 
@@ -436,6 +440,12 @@ class TestLoadThemes:
         versions = theme_versions(themes_dir)
         assert sorted(versions) == ["v0", "v0.5", "v1.0"]
         assert load_themes(versions["v0.5"]).equals(load_themes(versions["v1.0"]))
+
+    def test_theme_versions_numeric_version(self, tmp_path: Path) -> None:
+        themes_dir = make_themes_dir(tmp_path, {"a": "c"})
+        themes = pl.read_csv(themes_dir / "themes.csv").with_columns(version=pl.lit("1.1"))
+        themes.write_csv(themes_dir / "themes.csv")
+        assert list(theme_versions(themes_dir)) == ["1.1", "v0"]
 
     def test_theme_versions_rejects_a_folder_named_like_the_current_version(
         self, tmp_path: Path

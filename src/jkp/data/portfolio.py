@@ -1,3 +1,4 @@
+import re
 import shutil
 import time
 from pathlib import Path
@@ -110,6 +111,15 @@ def _regions(settings: dict) -> pl.DataFrame:
             "countries_min": [settings["regional_pfs"]["countries_min"]] * 3 + [1, 3],
         }
     )
+
+
+# Overnight / intraday daily return components: (name, daily return column).
+OI_COMPONENTS = [
+    ("overnight", "ret_overnight"),
+    ("intraday", "ret_intraday"),
+    ("overnight_local", "ret_overnight_local"),
+    ("intraday_local", "ret_intraday_local"),
+]
 
 
 def _write_theme_outputs(
@@ -230,9 +240,10 @@ def _write_theme_versions(
     """Write the signed factors and theme portfolios of each themes version.
 
     Description:
-        Used by ``jkp portfolio`` and ``jkp themes``. Nothing is written unless
-        every characteristic of every version has a factor in every return
-        series, so a failed build leaves no partly written folder.
+        Used by ``jkp portfolio`` and ``jkp themes``. A missing factor
+        (a characteristic of any version without an HML factor in any return
+        series) stops the build before any folder is touched. Other errors while
+        writing can leave a version's folder partly written.
     Steps:
         1) Raise ``ValueError`` listing, per version and series, the
            characteristics without an HML factor.
@@ -271,7 +282,17 @@ def _write_theme_versions(
 
 
 def _read_saved(path: Path) -> pl.DataFrame:
-    """Read a saved output file, as parquet or, after a CSV run, as CSV."""
+    """Read a saved output file, as parquet or, after a CSV run, as CSV.
+
+    Description:
+        ``path`` is the file path without a suffix. A parquet file wins over a
+        CSV file of the same name.
+    Steps:
+        1) Read ``<path>.parquet`` if it exists.
+        2) Otherwise read ``<path>.csv``, parsing dates.
+    Output:
+        DataFrame with the file's contents.
+    """
     parquet = path.with_suffix(".parquet")
     if parquet.exists():
         return pl.read_parquet(parquet)
@@ -373,12 +394,7 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
             / f"{countries[0]}.parquet"
         )
         daily_schema = pl.scan_parquet(sample_path).collect_schema()
-        for component, ret_col in [
-            ("overnight", "ret_overnight"),
-            ("intraday", "ret_intraday"),
-            ("overnight_local", "ret_overnight_local"),
-            ("intraday_local", "ret_intraday_local"),
-        ]:
+        for component, ret_col in OI_COMPONENTS:
             if ret_col in daily_schema.names():
                 oi_components.append((component, ret_col))
             else:
@@ -533,18 +549,20 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
         hml_series.append((f"_{component}", hml_oi, "date"))
 
     # Signed factors and theme portfolios of each released themes version
-    _write_theme_versions(
-        portfolios_dir=portfolios_dir,
-        theme_sets=theme_sets,
-        hml_series=[s for s in hml_series if s[1] is not None],
-        market=market,
-        market_daily=market_daily,
-        regions=regions,
-        settings=settings,
-    )
-
-    # Convert to CSV if configured
-    convert_outputs_to_csv(processed_dir=paths.processed_dir)
+    # The CSV conversion runs even if the themes step fails.
+    try:
+        _write_theme_versions(
+            portfolios_dir=portfolios_dir,
+            theme_sets=theme_sets,
+            hml_series=[s for s in hml_series if s[1] is not None],
+            market=market,
+            market_daily=market_daily,
+            regions=regions,
+            settings=settings,
+        )
+    finally:
+        # Convert to CSV if configured
+        convert_outputs_to_csv(processed_dir=paths.processed_dir)
 
     print(
         f"End            : {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))}",
@@ -582,7 +600,12 @@ def run_themes(*, output_dir: Path, version: str | None = None, file: Path | Non
         # The file's name becomes a folder under themes/ that is replaced.
         if file.suffix != ".csv":
             raise ValueError(f"{file} is not a .csv file")
-        if file.stem in released:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", file.stem):
+            raise ValueError(
+                f"{file.name}: the file name must start with a letter or digit and use only "
+                "letters, digits, '.', '_' and '-'"
+            )
+        if file.stem.lower() in {name.lower() for name in released}:
             raise ValueError(f"{file.name} has the name of a released themes version; rename it")
         sources = {file.stem: file}
     elif version is not None:
@@ -593,8 +616,9 @@ def run_themes(*, output_dir: Path, version: str | None = None, file: Path | Non
         sources = released
     theme_sets = {name: load_themes(path) for name, path in sources.items()}
 
+    known = {"hml", "hml_daily", *(f"hml_{component}" for component, _ in OI_COMPONENTS)}
     hml_names = sorted(
-        {p.stem for p in portfolios_dir.glob("hml*") if p.suffix in (".parquet", ".csv")}
+        {p.stem for p in portfolios_dir.glob("hml*") if p.suffix in (".parquet", ".csv")} & known
     )
     if not hml_names:
         raise FileNotFoundError(f"no hml files in {portfolios_dir}; run jkp portfolio first")

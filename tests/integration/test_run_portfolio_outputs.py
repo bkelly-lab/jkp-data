@@ -8,6 +8,7 @@ files are written under ``output_dir/processed/portfolios/``.
 from __future__ import annotations
 
 import datetime as _dt
+import shutil
 from pathlib import Path
 
 import polars as pl
@@ -313,6 +314,35 @@ class TestRunThemes:
             run_themes(output_dir=tmp_path, file=tmp_path / "typo.csv")
         with pytest.raises(ValueError, match="not a .csv file"):
             run_themes(output_dir=tmp_path, file=tmp_path)
+        themes.write_csv(tmp_path / "V0.csv")
+        with pytest.raises(ValueError, match="released themes version"):
+            run_themes(output_dir=tmp_path, file=tmp_path / "V0.csv")
+        themes.write_csv(tmp_path / "...csv")
+        with pytest.raises(ValueError, match="file name must start"):
+            run_themes(output_dir=tmp_path, file=tmp_path / "...csv")
+
+    def test_ignores_unknown_hml_files(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _setup(tmp_path, monkeypatch)
+        run_portfolio(output_format="parquet", output_dir=tmp_path)
+        portfolios = _portfolios_dir(tmp_path)
+        shutil.copy(portfolios / "hml.parquet", portfolios / "hml_backup.parquet")
+        run_themes(output_dir=tmp_path)
+
+    def test_csv_conversion_runs_when_themes_step_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _setup(tmp_path, monkeypatch)
+
+        def fail(**_: object) -> None:
+            raise ValueError("themes failed")
+
+        monkeypatch.setattr("jkp.data.portfolio._write_theme_versions", fail)
+        with pytest.raises(ValueError, match="themes failed"):
+            run_portfolio(output_format="csv", output_dir=tmp_path)
+        assert (_portfolios_dir(tmp_path) / "hml.csv").exists()
+        assert not list((tmp_path / "processed").rglob("*.parquet"))
 
     def test_csv_output_folder(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _setup(tmp_path, monkeypatch)
