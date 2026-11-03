@@ -27,7 +27,9 @@ Q_SUFFIX = "_qitem"
 KEY = ["gvkey", "public_date"]
 
 
-def _legacy_combine(interim_dir: Path, ann_df_path, qtr_df_path, char_vars, q_suffix) -> None:
+def _legacy_combine(
+    interim_dir: Path, ann_df_path: Path, qtr_df_path: Path, char_vars: list[str], q_suffix: str
+) -> None:
     """Pre-rewrite combine_ann_qtr_chars, verbatim except that paths.interim_dir is interim_dir."""
     (interim_dir / "aux_aqtr_chars.ddb").unlink(missing_ok=True)
     con = ibis.duckdb.connect(str(interim_dir / "aux_aqtr_chars.ddb"), threads=os.cpu_count())
@@ -105,8 +107,12 @@ def _random_side(
     )
 
 
-def _outputs(test_paths: DataPaths, tmp_path: Path) -> tuple[pl.DataFrame, ...]:
-    """Write random inputs, run the new and the legacy code, return (ann, qtr, new, legacy)."""
+@pytest.fixture(scope="module")
+def outputs(tmp_path_factory: pytest.TempPathFactory) -> tuple[pl.DataFrame, ...]:
+    """Write random inputs, run the new and the legacy code once, return (ann, qtr, new, legacy)."""
+    tmp_path = tmp_path_factory.mktemp("combine")
+    test_paths = DataPaths(tmp_path / "data")
+    test_paths.interim_dir.mkdir(parents=True)
     rng = np.random.default_rng(0)
     months = pl.date_range(date(2015, 1, 1), date(2017, 12, 1), "1mo", eager=True).dt.month_end()
     grid = pl.DataFrame({"gvkey": [f"{i:06d}" for i in range(40)]}).join(
@@ -134,16 +140,16 @@ def _outputs(test_paths: DataPaths, tmp_path: Path) -> tuple[pl.DataFrame, ...]:
 class TestCombineAnnQtrCharsEquivalence:
     """combine_ann_qtr_chars must match the legacy Ibis code on every month it wrote."""
 
-    def test_annual_months_match_legacy(self, test_paths: DataPaths, tmp_path: Path) -> None:
-        ann, _, new, legacy = _outputs(test_paths, tmp_path)
+    def test_annual_months_match_legacy(self, outputs: tuple[pl.DataFrame, ...]) -> None:
+        ann, _, new, legacy = outputs
         assert_frame_equal(
             new.join(ann.select(KEY), on=KEY, how="semi").sort(KEY), legacy.sort(KEY)
         )
 
     def test_quarterly_only_months_equal_quarterly_input(
-        self, test_paths: DataPaths, tmp_path: Path
+        self, outputs: tuple[pl.DataFrame, ...]
     ) -> None:
-        ann, qtr, new, _ = _outputs(test_paths, tmp_path)
+        ann, qtr, new, _ = outputs
         expected = (
             qtr.join(ann.select(KEY), on=KEY, how="anti")
             .select("source", *KEY, *[pl.col(f"{v}{Q_SUFFIX}").alias(v) for v in CHAR_VARS])
