@@ -5690,7 +5690,9 @@ def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min):
         4) Aggregate to slope (ni_ar1) and residual std (ni_ivol); save. ni_ar1 is null when
            the lagged NI/AT does not vary in the window (regr_slope returns NaN). The
            regressions and the std read their rows in datadate order: unordered, the float
-           sums follow DuckDB's thread scheduling and the low bits change between runs.
+           sums follow DuckDB's thread scheduling and the low bits change between runs. The
+           order is total only if datadate is unique per (gvkey, curcd), which holds for
+           acc_std_ann/acc_std_qtr (deduplicated on gvkey, datadate).
 
     Output:
         Writes 'ni_ar_res.parquet' with [gvkey, curcd, datadate, ni_ar1, ni_ivol].
