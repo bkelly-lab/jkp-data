@@ -1,7 +1,8 @@
 """The bundled themes files are a valid two-level grouping with consistent signs and names.
 
-characteristics.csv holds every characteristic name used by themes.csv, cluster_labels.csv and
-the accounting and daily characteristic code.
+characteristics.csv lists the characteristics in the output. themes.csv, acc_chars_list() and the
+hand-kept daily names in daily_chars_columns() may use only listed names, and cluster_labels.csv
+must cover exactly the characteristics with factor portfolios.
 """
 
 import polars as pl
@@ -92,13 +93,13 @@ def test_portfolio_characteristics_have_a_theme(themes):
 
 
 @pytest.mark.unit
-def test_themed_characteristics_exist(themes, characteristics):
+def test_themed_characteristics_exist(themes: pl.DataFrame, characteristics: pl.DataFrame) -> None:
     unknown = sorted(set(themes["characteristic"]) - set(characteristics["characteristic"]))
     assert not unknown, f"not in characteristics.csv: {unknown}"
 
 
 @pytest.mark.unit
-def test_code_characteristics_are_listed(characteristics):
+def test_code_characteristics_are_listed(characteristics: pl.DataFrame) -> None:
     unknown = sorted(
         (set(acc_chars_list()) | daily_chars_columns()) - set(characteristics["characteristic"])
     )
@@ -106,6 +107,9 @@ def test_code_characteristics_are_listed(characteristics):
 
 
 @pytest.mark.unit
-def test_cluster_label_characteristics_exist(clusters, characteristics):
-    unknown = sorted(set(clusters["characteristic"]) - set(characteristics["characteristic"]))
-    assert not unknown, f"not in characteristics.csv: {unknown}"
+def test_cluster_labels_match_portfolio_characteristics(clusters: pl.DataFrame) -> None:
+    labels, portfolio = set(clusters["characteristic"]), set(PORTFOLIO_CHARS)
+    assert labels == portfolio, (
+        f"no cluster for: {sorted(portfolio - labels)}; "
+        f"not a portfolio characteristic: {sorted(labels - portfolio)}"
+    )

@@ -31,11 +31,10 @@ WRDS, CRSP, Compustat, or IBES vendor data:
   [data library](https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/data_library.html);
   subject to its own publicly-available terms.
 - **`characteristics.csv`** — The names of the characteristics in the
-  `characteristics/` output files, one per row: every characteristic in
-  `themes/themes.csv`, plus `divspc1m_me` and `divspc12m_me`, which have no
-  theme. The other columns in those files (identifiers, returns, prices,
-  classifications) are not characteristics. Authored by Jensen, Kelly, and
-  Pedersen.
+  `characteristics/` output files, one per row. The other columns in those
+  files are not characteristics: for example identifiers (`id`, `gvkey`), the
+  month's returns (`ret`, `ret_exc`) and industry codes (`sic`, `ff49`).
+  Authored by Jensen, Kelly, and Pedersen.
 - **`cluster_labels.csv`** — Maps firm characteristics to thematic clusters
   (e.g., "Low Leverage", "Investment", "Size", "Low Risk"). Authored by
   Jensen, Kelly, and Pedersen.
