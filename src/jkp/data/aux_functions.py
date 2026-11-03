@@ -4014,17 +4014,31 @@ def one_row_per_date(df: pl.LazyFrame) -> pl.LazyFrame:
     """
     Description:
         Keep one quarterly row per (gvkey, datadate). Two rows share a date when a firm changes its
-        fiscal year-end and both its old and new fiscal calendars report the same quarter.
+        fiscal year-end and both its old and new fiscal calendars report the same quarter. The row of
+        the established calendar, whose current run of quarters started first, is kept: it is the
+        series the firm was reporting on, which usually carries the four-quarter sums, and the choice
+        uses only dates up to the one being decided.
 
     Steps:
-        1) Per (gvkey, datadate), keep the row with the highest fyr, then the Global row, then the last
-           raw row (n).
+        1) Per (gvkey, fyr), split the dates into runs that break at a gap of more than 100 days, and
+           find where each row's run started.
+        2) Per (gvkey, datadate), keep the row whose run started first, then the highest fyr, then the
+           Global row, then the last raw row (n).
 
     Output:
         LazyFrame unique on (gvkey, datadate).
     """
-    return df.sort(["gvkey", "datadate", "fyr", pl.col("source") == "GLOBAL", "n"]).unique(
-        ["gvkey", "datadate"], keep="last"
+    new_run = (pl.col("datadate").diff().dt.total_days() > 100).fill_null(True)
+    return (
+        df.sort(["gvkey", "fyr", "datadate"])
+        .with_columns(run=new_run.cum_sum().over("gvkey", "fyr"))
+        .with_columns(run_start=pl.col("datadate").min().over("gvkey", "fyr", "run"))
+        .sort(
+            ["gvkey", "datadate", "run_start", "fyr", pl.col("source") == "GLOBAL", "n"],
+            descending=[False, False, True, False, False, False],
+        )
+        .unique(["gvkey", "datadate"], keep="last")
+        .drop("run", "run_start")
     )
 
 

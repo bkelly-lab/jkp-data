@@ -29,6 +29,11 @@ def _fundq(rows: list[tuple], source: str) -> pl.LazyFrame:
     )
 
 
+def _calendar(fyr: int, ends: list[date]) -> list[tuple]:
+    """Quarter-end rows of one fiscal calendar for `_fundq`; fyearq and fqtr are placeholders."""
+    return [("001", d, fyr, d.year, 1, float(fyr)) for d in ends]
+
+
 @pytest.mark.unit
 class TestPreferGlobal:
     def test_overlap_keeps_global_row(self) -> None:
@@ -151,7 +156,37 @@ class TestQuarterize:
 
 @pytest.mark.unit
 class TestOneRowPerDate:
-    def test_both_regular_keeps_highest_fyr(self) -> None:
+    @pytest.mark.parametrize(("old", "new"), [(3, 12), (12, 6)])
+    def test_overlap_keeps_established_calendar(self, old: int, new: int) -> None:
+        """Both calendars report Sep and Dec 2015; the old calendar's run started first, so it is kept
+        whichever fyr is higher."""
+        old_ends = [
+            date(2014, 9, 30),
+            date(2014, 12, 31),
+            date(2015, 3, 31),
+            date(2015, 6, 30),
+            date(2015, 9, 30),
+            date(2015, 12, 31),
+        ]
+        new_ends = [date(2015, 9, 30), date(2015, 12, 31), date(2016, 3, 31)]
+        df = _fundq(_calendar(old, old_ends) + _calendar(new, new_ends), "NA")
+        out = one_row_per_date(df).sort("datadate").collect()
+        assert out["fyr"].to_list() == [old] * 6 + [new]
+
+    def test_gap_restarts_calendar_run(self) -> None:
+        """A calendar that returns after a gap of more than 100 days starts a new run, so its earlier
+        quarters don't make it the established calendar."""
+        df = _fundq(
+            _calendar(12, [date(2010, 3, 31), date(2010, 6, 30)])
+            + _calendar(3, [date(2014, 9, 30), date(2014, 12, 31), date(2015, 3, 31)])
+            + _calendar(12, [date(2015, 3, 31), date(2015, 6, 30)]),
+            "NA",
+        )
+        out = one_row_per_date(df).filter(pl.col("datadate") == date(2015, 3, 31)).collect()
+        assert out["fyr"].to_list() == [3]
+
+    def test_same_run_start_keeps_highest_fyr(self) -> None:
+        """Both calendars' runs start on the same date: the higher fyr is kept."""
         df = _fundq(
             [
                 ("001", date(2012, 9, 30), 6, 2013, 1, 10.0),
