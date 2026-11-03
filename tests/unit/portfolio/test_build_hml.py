@@ -114,8 +114,3 @@ class TestBuildHmlAndSignFactors:
         ]
         assert lms["eom"].equals(expected["eom"])
         assert lms["n_stocks"].equals(expected["n_stocks"])
-
-    def test_missing_factor_raises(self):
-        hml = _build_hml(_make_pf_df(), n_pfs=3, date_col="eom", include_signal=True)
-        with pytest.raises(ValueError, match=r"no hml factor for: \['char_z'\]"):
-            _sign_factors(hml, _themes([1, 1], chars=("char_a", "char_z")))

@@ -21,7 +21,7 @@ import pytest
 from jkp.data.aux_functions import _theme_returns, load_themes, theme_versions
 from jkp.data.config import PORTFOLIO_CHARS
 from jkp.data.paths import _resource_path, get_themes_dir
-from jkp.data.portfolio import run_portfolio
+from jkp.data.portfolio import _write_theme_versions, run_portfolio
 from tests.unit.portfolio.conftest import (
     SYNTHETIC_CHARS,
     build_synthetic_data,
@@ -436,3 +436,37 @@ class TestLoadThemes:
         versions = theme_versions(themes_dir)
         assert sorted(versions) == ["v0", "v0.5", "v1.0"]
         assert load_themes(versions["v0.5"]).equals(load_themes(versions["v1.0"]))
+
+    def test_theme_versions_rejects_a_folder_named_like_the_current_version(
+        self, tmp_path: Path
+    ) -> None:
+        themes_dir = make_themes_dir(tmp_path, {"a": "c"})
+        (themes_dir / "superseded_themes" / "v1.0").mkdir()
+        with pytest.raises(ValueError, match="superseded_themes/v1.0 has the version name"):
+            theme_versions(themes_dir)
+
+
+class TestWriteThemeVersions:
+    def test_missing_factor_stops_before_writing(self, tmp_path: Path) -> None:
+        # char "b" has a monthly factor but no daily one. The check runs before
+        # anything is written, so the earlier build's folder is left as it was.
+        themes = pl.DataFrame(
+            {"characteristic": ["a", "b"], "theme": "T", "subtheme": "S", "direction": [1, 1]}
+        )
+        old = tmp_path / "themes" / "v" / "themes.parquet"
+        old.parent.mkdir(parents=True)
+        old.touch()
+        with pytest.raises(ValueError, match=r"no hml factor for: v \(hml_daily\): \['b'\]"):
+            _write_theme_versions(
+                portfolios_dir=tmp_path,
+                theme_sets={"v": themes},
+                hml_series=[
+                    ("", pl.DataFrame({"characteristic": ["a", "b"]}), "eom"),
+                    ("_daily", pl.DataFrame({"characteristic": ["a"]}), "date"),
+                ],
+                market=pl.DataFrame(),
+                market_daily=None,
+                regions=pl.DataFrame(),
+                settings={},
+            )
+        assert [p.name for p in old.parent.iterdir()] == ["themes.parquet"]

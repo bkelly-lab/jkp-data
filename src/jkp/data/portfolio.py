@@ -1,3 +1,4 @@
+import shutil
 import time
 from pathlib import Path
 from typing import Any as _Any
@@ -214,6 +215,59 @@ def _write_theme_outputs(
             date_col,
             end_date,
         )
+
+
+def _write_theme_versions(
+    *,
+    portfolios_dir: Path,
+    theme_sets: dict[str, pl.DataFrame],
+    hml_series: list[tuple[str, pl.DataFrame, str]],
+    market: pl.DataFrame,
+    market_daily: pl.DataFrame | None,
+    regions: pl.DataFrame,
+    settings: dict,
+) -> None:
+    """Write the signed factors and theme portfolios of each themes version.
+
+    Description:
+        Used by ``jkp portfolio`` and ``jkp themes``. Nothing is written unless
+        every characteristic of every version has a factor in every return
+        series, so a failed build leaves no partly written folder.
+    Steps:
+        1) Raise ``ValueError`` listing, per version and series, the
+           characteristics without an HML factor.
+        2) Delete each version's folder, so no file of an earlier build remains.
+        3) Write each version's outputs for each return series.
+    Output:
+        Files under ``portfolios_dir/themes/<version>/``.
+    """
+    missing = []
+    for suffix, hml, _ in hml_series:
+        factors = set(hml["characteristic"].unique())
+        for name, themes in theme_sets.items():
+            if absent := sorted(set(themes["characteristic"]) - factors):
+                missing.append(f"{name} (hml{suffix}): {absent}")
+    if missing:
+        raise ValueError("no hml factor for: " + "; ".join(missing))
+
+    for name in theme_sets:
+        out_dir = portfolios_dir / "themes" / name
+        if out_dir.exists():
+            shutil.rmtree(out_dir)
+
+    for suffix, hml, date_col in hml_series:
+        for name, themes in theme_sets.items():
+            print(f"Building themes {name}{suffix}...", flush=True)
+            _write_theme_outputs(
+                out_dir=portfolios_dir / "themes" / name,
+                suffix=suffix,
+                themes=themes,
+                hml=hml,
+                date_col=date_col,
+                mkt=market if date_col == "eom" else market_daily,
+                regions=regions,
+                settings=settings,
+            )
 
 
 def _read_saved(path: Path) -> pl.DataFrame:
@@ -479,21 +533,15 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
         hml_series.append((f"_{component}", hml_oi, "date"))
 
     # Signed factors and theme portfolios of each released themes version
-    for suffix, hml, date_col in hml_series:
-        if hml is None:
-            continue
-        for name, themes in theme_sets.items():
-            print(f"Building themes {name}{suffix}...", flush=True)
-            _write_theme_outputs(
-                out_dir=portfolios_dir / "themes" / name,
-                suffix=suffix,
-                themes=themes,
-                hml=hml,
-                date_col=date_col,
-                mkt=market if date_col == "eom" else market_daily,
-                regions=regions,
-                settings=settings,
-            )
+    _write_theme_versions(
+        portfolios_dir=portfolios_dir,
+        theme_sets=theme_sets,
+        hml_series=[s for s in hml_series if s[1] is not None],
+        market=market,
+        market_daily=market_daily,
+        regions=regions,
+        settings=settings,
+    )
 
     # Convert to CSV if configured
     convert_outputs_to_csv(processed_dir=paths.processed_dir)
@@ -514,8 +562,8 @@ def run_themes(*, output_dir: Path, version: str | None = None, file: Path | Non
         (``file``). Outputs are written in the format of the saved files.
     Steps:
         1) Load the requested themes versions.
-        2) For each saved hml file (monthly, daily, overnight/intraday), read it
-           and the market returns, and write each version's outputs.
+        2) Read each saved hml file (monthly, daily, overnight/intraday) and the
+           market returns, and write each version's outputs, replacing its folder.
         3) After a CSV run, convert the written folders to CSV.
     Output:
         Files under ``portfolios/themes/<version>/``, or
@@ -531,6 +579,9 @@ def run_themes(*, output_dir: Path, version: str | None = None, file: Path | Non
 
     released = theme_versions(get_themes_dir())
     if file is not None:
+        # The file's name becomes a folder under themes/ that is replaced.
+        if file.suffix != ".csv":
+            raise ValueError(f"{file} is not a .csv file")
         if file.stem in released:
             raise ValueError(f"{file.name} has the name of a released themes version; rename it")
         sources = {file.stem: file}
@@ -550,25 +601,21 @@ def run_themes(*, output_dir: Path, version: str | None = None, file: Path | Non
     output_format = "parquet" if (portfolios_dir / "hml.parquet").exists() else "csv"
     configure_output_format(output_format)
 
-    regions = _regions(settings)
+    hml_series = []
     for hml_name in hml_names:
         suffix = hml_name.removeprefix("hml")
         date_col = "eom" if suffix == "" else "date"
-        market = "market_returns" if date_col == "eom" else "market_returns_daily"
-        hml = _read_saved(portfolios_dir / hml_name)
-        mkt = _read_saved(other_output_dir / market)
-        for name, themes in theme_sets.items():
-            print(f"Building themes {name}{suffix}...", flush=True)
-            _write_theme_outputs(
-                out_dir=portfolios_dir / "themes" / name,
-                suffix=suffix,
-                themes=themes,
-                hml=hml,
-                date_col=date_col,
-                mkt=mkt,
-                regions=regions,
-                settings=settings,
-            )
+        hml_series.append((suffix, _read_saved(portfolios_dir / hml_name), date_col))
+    daily = any(date_col == "date" for _, _, date_col in hml_series)
+    _write_theme_versions(
+        portfolios_dir=portfolios_dir,
+        theme_sets=theme_sets,
+        hml_series=hml_series,
+        market=_read_saved(other_output_dir / "market_returns"),
+        market_daily=_read_saved(other_output_dir / "market_returns_daily") if daily else None,
+        regions=_regions(settings),
+        settings=settings,
+    )
 
     if output_format == "csv":
         for name in theme_sets:

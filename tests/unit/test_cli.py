@@ -196,8 +196,8 @@ class TestThemesCommand:
         # The command's --version option is separate from the app-level --version.
         result = runner.invoke(app, ["themes", "--help"])
         assert result.exit_code == 0
-        assert "--file" in result.output
-        assert "themes version" in result.output
+        assert "--file" in _strip_ansi(result.output)
+        assert "--version" in _strip_ansi(result.output)
 
 
 @pytest.mark.unit

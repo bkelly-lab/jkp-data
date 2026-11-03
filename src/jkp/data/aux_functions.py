@@ -10105,12 +10105,17 @@ def theme_versions(themes_dir: Path) -> dict[str, Path]:
         ``version`` column, and each folder in ``superseded_themes/``, named by
         the folder. A new version therefore needs no code change.
     Output:
-        Dict from version name to a path that ``load_themes`` reads.
+        Dict from version name to a path that ``load_themes`` reads. Raises
+        ``ValueError`` when a superseded folder has the current version's name.
     """
     current = themes_dir / "themes.csv"
     versions = {pl.read_csv(current, columns=["version"])["version"][0]: current}
     for folder in sorted((themes_dir / "superseded_themes").iterdir()):
         if folder.is_dir():
+            if folder.name in versions:
+                raise ValueError(
+                    f"superseded_themes/{folder.name} has the version name of themes.csv"
+                )
             versions[folder.name] = folder
     return versions
 
@@ -10121,15 +10126,15 @@ def _sign_factors(hml: pl.DataFrame, themes: pl.DataFrame) -> pl.DataFrame:
     Description:
         Keep the factors of the characteristics in ``themes`` and multiply their
         returns, and ``signal`` when present, by ``direction``, so each factor buys
-        the side its theme favours.
+        the side its theme favours. The caller checks that every characteristic
+        has a factor (``_write_theme_versions`` in ``portfolio.py``).
+    Steps:
+        1) Join ``direction`` to ``hml`` by characteristic, in ``hml``'s row order.
+        2) Multiply the return and signal columns by ``direction``.
     Output:
         DataFrame with ``characteristic``, ``direction`` and the ``hml`` columns, in
-        ``hml``'s row order. Raises ``ValueError`` listing the characteristics in
-        ``themes`` that have no factor in ``hml``.
+        ``hml``'s row order.
     """
-    missing = sorted(set(themes["characteristic"]) - set(hml["characteristic"].unique()))
-    if missing:
-        raise ValueError(f"no hml factor for: {missing}")
     resign = [c for c in ("signal", "ret_ew", "ret_vw", "ret_vw_cap") if c in hml.columns]
     return (
         themes.select("characteristic", "direction")
@@ -10148,6 +10153,10 @@ def _theme_returns(
         a country and period. A theme's return is the mean of its subtheme
         returns, so each subtheme counts equally however many characteristics it
         has. Null returns are skipped by the means but counted in ``n_factors``.
+    Steps:
+        1) Join each factor to its theme and subtheme, and average by country,
+           subtheme and period.
+        2) Average the subtheme returns by country, theme and period.
     Output:
         ``(subthemes, themes)``: returns by ``excntry``, ``theme``, ``subtheme``
         and ``date_col`` with ``n_factors``, and by ``excntry``, ``theme`` and

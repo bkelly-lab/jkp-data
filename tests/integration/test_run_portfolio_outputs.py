@@ -286,9 +286,13 @@ class TestRunThemes:
         run_portfolio(output_format="parquet", output_dir=tmp_path)
         out = _portfolios_dir(tmp_path) / "themes"
         (out / "v1.0" / "lms.parquet").unlink()
+        stale = out / "v0" / "subthemes.parquet"  # v0 has no subthemes
+        stale.touch()
 
         run_themes(output_dir=tmp_path, version="v0")
 
+        assert not stale.exists()
+        assert (out / "v0" / "lms.parquet").exists()
         assert not (out / "v1.0" / "lms.parquet").exists()
         with pytest.raises(ValueError, match="unknown themes version"):
             run_themes(output_dir=tmp_path, version="v9")
@@ -307,6 +311,8 @@ class TestRunThemes:
         )
         with pytest.raises(ValueError, match="char_z"):
             run_themes(output_dir=tmp_path, file=tmp_path / "typo.csv")
+        with pytest.raises(ValueError, match="not a .csv file"):
+            run_themes(output_dir=tmp_path, file=tmp_path)
 
     def test_csv_output_folder(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _setup(tmp_path, monkeypatch)
