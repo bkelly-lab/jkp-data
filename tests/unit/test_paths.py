@@ -8,6 +8,7 @@ from jkp.data.paths import (
     get_country_classification_path,
     get_data_readme_path,
     get_factor_details_path,
+    get_fx_cad_backfill_path,
     get_siccodes_path,
 )
 
@@ -62,6 +63,11 @@ class TestResourcePaths:
         path = get_factor_details_path()
         assert isinstance(path, Path)
         assert path.exists(), f"factor_details.xlsx not found at {path}"
+
+    def test_fx_cad_backfill_exists(self):
+        path = get_fx_cad_backfill_path()
+        assert isinstance(path, Path)
+        assert path.exists(), f"fx_cad_1960_1982.csv not found at {path}"
 
     def test_data_readme_exists(self):
         path = get_data_readme_path()

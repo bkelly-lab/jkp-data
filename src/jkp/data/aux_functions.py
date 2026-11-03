@@ -33,7 +33,7 @@ from .compustat_correction import (
 )
 from .config import COLLECT_CHUNK_SIZE, CORRECTION_SPILL_COMPRESSION, END_DATE, MAIN_FILTERS
 from .output_writer import write_dataframe
-from .paths import DataPaths
+from .paths import DataPaths, get_fx_cad_backfill_path
 from .wrds_connection import (
     _attach_wrds,
     _install_postgres_extension,
@@ -1519,13 +1519,18 @@ def compustat_fx(paths: DataPaths):
     Description:
         Construct a complete daily FX (currency to USD) time series per currency, including USD=1.
         Fills gaps by expanding each FX observation to all dates up to the next observation.
+        Compustat's rates start in February 1982, but North American Compustat has CAD reports
+        and prices from the 1950s on. CAD is extended back to January 1960 with month-end
+        rates (OECD Main Economic Indicators, FRED series CCUSSP01CAM650N) bundled in
+        resources/fx_cad_1960_1982.csv; these reports and prices are all dated at a month-end.
 
     Steps:
         1) Create a seed row for USD with fx=1.0 starting 1950-01-01.
-        2) Load __fx1 (curcdd, datadate, fx) and vertically concat the USD seed.
-        3) For each curcdd, compute next datadate; build a date range [datadate, next) per row.
-        4) Explode ranges to daily rows; fallback to single-day list if next is null.
-        5) Drop duplicates, sort by {curcdd, datadate}, and collect to a DataFrame.
+        2) Load the bundled CAD month-end rates dated before Compustat's first CAD rate.
+        3) Load __fx1 (curcdd, datadate, fx) and vertically concat the USD and CAD rows.
+        4) For each curcdd, compute next datadate; build a date range [datadate, next) per row.
+        5) Explode ranges to daily rows; fallback to single-day list if next is null.
+        6) Drop duplicates, sort by {curcdd, datadate}, and collect to a DataFrame.
 
     Output:
         Polars DataFrame with columns {datadate, curcdd, fx} at daily frequency (to USD).
@@ -1536,8 +1541,20 @@ def compustat_fx(paths: DataPaths):
         .lazy()
     )
     __fx1 = pl.scan_parquet(paths.interim_dir / "raw_data_dfs" / "__fx1.parquet")
+    cad_backfill = (
+        pl.scan_csv(
+            get_fx_cad_backfill_path(),
+            schema={"curcdd": pl.String, "datadate": pl.Date, "fx": pl.Float64},
+        )
+        .join(
+            __fx1.filter(pl.col("curcdd") == "CAD").select(cad_start=pl.col("datadate").min()),
+            how="cross",
+        )
+        .filter(pl.col("datadate") < pl.col("cad_start"))
+        .drop("cad_start")
+    )
     __fx1 = (
-        pl.concat([aux, __fx1], how="vertical_relaxed")
+        pl.concat([aux, cad_backfill, __fx1], how="vertical_relaxed")
         .sort(["curcdd", "datadate"])
         .with_columns(aux=col("datadate").shift(-1).over("curcdd"))
         .with_columns(
@@ -3942,15 +3959,38 @@ def market_returns(paths: DataPaths, data_path, freq, wins_comp, wins_data_path,
     )
 
 
-def quarterize(df, var_list):
+def prefer_global(
+    global_rows: pl.LazyFrame, na_rows: pl.LazyFrame, keys: list[str]
+) -> pl.LazyFrame:
+    """
+    Description:
+        Stack Compustat Global and North America rows, keeping the Global row where both
+        report the same key.
+
+    Steps:
+        1) Drop NA rows whose key also appears in the Global rows (null key values match).
+        2) Stack the Global rows and the remaining NA rows.
+
+    Output:
+        LazyFrame of all Global rows plus the NA rows for keys that Global does not report.
+        Duplicates within one source are kept.
+    """
+    na_only = na_rows.join(global_rows, on=keys, how="anti", nulls_equal=True)
+    return pl.concat([global_rows, na_only], how="diagonal_relaxed")
+
+
+def quarterize(df: pl.LazyFrame, var_list: list[str]) -> pl.LazyFrame:
     """
     Description:
         Convert quarterly Compustat levels to quarter-over-quarter flows with guardrails.
 
     Steps:
-        1) Per [gvkey,fyr,fyearq], add running count and diffs var_q = Δ(var).
-        2) Build deletion mask for first obs or quarter breaks; null-out invalid diffs.
-        3) Return unique, sorted quarterly panel with *_q flows.
+        1) Drop rows without a fiscal quarter (fqtr missing). Compustat keeps these from a firm's old
+           fiscal calendar after it changes its fiscal year-end.
+        2) Keep one row per [gvkey,fyr,fyearq,fqtr]: the earliest datadate.
+        3) Per [gvkey,fyr,fyearq], add running count and diffs var_q = Δ(var).
+        4) Build deletion mask for first obs or quarter breaks; null-out invalid diffs.
+        5) Return unique, sorted quarterly panel with *_q flows.
 
     Output:
         Quarterly panel with flow variables var_q for each input in var_list.
@@ -3969,8 +4009,9 @@ def quarterize(df, var_list):
         for var in var_list
     ]
     df = (
-        df.unique(["gvkey", "fyr", "fyearq", "fqtr"])
-        .sort(["gvkey", "fyr", "fyearq", "fqtr"])
+        df.filter(col("fqtr").is_not_null())
+        .sort(["gvkey", "fyr", "fyearq", "fqtr", "datadate"])
+        .unique(["gvkey", "fyr", "fyearq", "fqtr"], keep="first", maintain_order=True)
         .with_columns(list_aux1)
         .sort(["gvkey", "fyr", "fyearq", "fqtr"])
         .with_columns(list_aux2)
@@ -3980,6 +4021,24 @@ def quarterize(df, var_list):
         .sort(["gvkey", "fyr", "fyearq", "fqtr"])
     )
     return df
+
+
+def one_row_per_date(df: pl.LazyFrame) -> pl.LazyFrame:
+    """
+    Description:
+        Keep one quarterly row per (gvkey, datadate). Two rows share a date when a firm changes its
+        fiscal year-end and both its old and new fiscal calendars report the same quarter.
+
+    Steps:
+        1) Per (gvkey, datadate), keep the row with the highest fyr, then the Global row, then the last
+           raw row (n).
+
+    Output:
+        LazyFrame unique on (gvkey, datadate).
+    """
+    return df.sort(["gvkey", "datadate", "fyr", pl.col("source") == "GLOBAL", "n"]).unique(
+        ["gvkey", "datadate"], keep="last"
+    )
 
 
 def ttm(var):
@@ -3996,61 +4055,41 @@ def ttm(var):
     return col(var) + col(var).shift(1) + col(var).shift(2) + col(var).shift(3)
 
 
-def cumulate_4q(df, var_list):
+def cumulate_4q(df: pl.LazyFrame, var_list: list[str]) -> pl.LazyFrame:
     """
     Description:
         Create 4-quarter cumulative (TTM) level variables and enforce continuity checks.
+        Assumes df is unique on (gvkey, fyr, fyearq, fqtr) and sorted by those columns, so the
+        three rows before a row are the firm's preceding fiscal quarters whenever they exist.
 
     Steps:
-        1) For each *_q in var_list, create year-level name by stripping trailing 'q'.
-        2) Compute TTM via ttm(*_q) and continuity flags (same gvkey/fyr/currency & ttm(fqtr)==10).
-        3) Keep TTM only when continuity holds; backfill at fqtr==4 if missing.
-        4) Drop helpers and *_q inputs.
+        1) For each *q in var_list, name the TTM variable by stripping the trailing 'q'.
+        2) Keep ttm(*q) only if the four rows share gvkey/fyr/currency, their fqtr values sum
+           to 10, and they are consecutive fiscal quarters (4*fyearq + fqtr rises by 3 over the
+           three rows). The rise of 3 implies the fqtr sum, which is kept to match SAS.
+        3) Otherwise null, except at fqtr == 4, which takes the year-to-date value (*y).
+        4) Drop the *q and *y inputs.
 
     Output:
         Frame with validated 4Q cumulative variables for each input (e.g., sales, oibdp).
     """
-    var_yrl_name_list = [var[:-1] for var in var_list]
-    df = (
-        df.with_columns(
-            [
-                ttm(var_yrl).alias(var_yrl_name)
-                for var_yrl, var_yrl_name in zip(var_list, var_yrl_name_list, strict=True)
-            ]
-            + [
-                (
-                    (col("gvkey") == col("gvkey").shift(3))
-                    & (col("fyr") == col("fyr").shift(3))
-                    & (col("curcdq") == col("curcdq").shift(3))
-                    & (ttm("fqtr") == 10)
-                ).alias("not_null_flag")
-            ]
-        )
-        .with_columns(
-            [
-                pl.when(col("not_null_flag"))
-                .then(col(var_yrl_name))
-                .otherwise(fl_none())
-                .alias(var_yrl_name)
-                for var_yrl_name in var_yrl_name_list
-            ]
-        )
-        .with_columns(
-            [
-                pl.when(col(var_yrl_name).is_null() & (col("fqtr") == 4))
-                .then(col(f"{var_yrl_name}y"))
-                .otherwise(col(var_yrl_name))
-                .alias(var_yrl_name)
-                for var_yrl_name in var_yrl_name_list
-            ]
-        )
-        .drop(
-            ["not_null_flag"]
-            + var_list
-            + [f"{var_yrl_name}y" for var_yrl_name in var_yrl_name_list]
-        )
+    qidx = 4 * pl.col("fyearq") + pl.col("fqtr")
+    consecutive = (
+        (pl.col("gvkey") == pl.col("gvkey").shift(3))
+        & (pl.col("fyr") == pl.col("fyr").shift(3))
+        & (pl.col("curcdq") == pl.col("curcdq").shift(3))
+        & (ttm("fqtr") == 10)
+        & (qidx - qidx.shift(3) == 3)
     )
-    return df
+    return df.with_columns(
+        [
+            pl.coalesce(
+                pl.when(consecutive).then(ttm(var)),
+                pl.when(pl.col("fqtr") == 4).then(pl.col(f"{var[:-1]}y")),
+            ).alias(var[:-1])
+            for var in var_list
+        ]
+    ).drop(var_list + [f"{var[:-1]}y" for var in var_list])
 
 
 def load_raw_fund_table_and_filter(filename, start_date, source_str, mode):
@@ -4111,14 +4150,18 @@ def add_fx_and_convert_vars(df, fx_df, vars, freq):
     """
     Description:
         Join FX rates and convert selected variables to USD; normalize currency code.
+        Rows without an FX rate on their datadate (null currency code, or a currency with no
+        rate on that date) are dropped: kept, they would have null USD values and replace
+        the firm's previous valid report.
 
     Steps:
         1) Pick currency column by freq: annual→curcd, quarterly→curcdq.
-        2) Left-join FX on [datadate, currency]; keep original cols + 'fx'.
+        2) Inner-join FX on [datadate, currency], keeping row order; keep original cols + 'fx'.
         3) Multiply listed vars by fx; set currency column to 'USD'; drop fx.
 
     Output:
-        Frame with specified vars converted to USD and currency code set to USD.
+        Frame with the rows that have an FX rate, specified vars converted to USD and
+        currency code set to USD.
     """
     if freq == "annual":
         fx_var = "curcd"
@@ -4129,7 +4172,8 @@ def add_fx_and_convert_vars(df, fx_df, vars, freq):
             fx_df,
             left_on=["datadate", fx_var],
             right_on=["datadate", "curcdd"],
-            how="left",
+            how="inner",
+            maintain_order="left",
         )
         .select(df.collect_schema().names() + ["fx"])
         .with_columns(
@@ -4181,10 +4225,11 @@ def standardized_accounting_data(
     Steps:
         1) Inspect FUNDQ schemas; define target income/CF/BS/other vars; collect quarterly suffix vars (…q/…y).
         2) Load & filter raw GLOBAL and/or NA (annual/quarterly) via helper; add computed fields (e.g., ni, niq, ppegtq); drop vars as needed; apply INDFMT resolver.
-        3) If world: concat NA+GLOBAL and break ties per key by preferring NA.
+        3) If world: concat NA+GLOBAL; where both report the same firm-period (annual: gvkey, datadate;
+           quarterly: gvkey, fyr, fyearq, fqtr), keep the GLOBAL row.
         4) If convert_to_usd: join FX and convert listed vars (annual & quarterly).
         5) Load ME and join to annual/quarterly panels.
-        6) Quarterly: quarterize …y → …y_q, coalesce to …q; create ni_qtr/sale_qtr/ocf_qtr; cumulate 4Q flows with continuity checks; normalize currency codes; de-dupe, prefer later/NA rows.
+        6) Quarterly: drop rows without fqtr and quarterize …y → …y_q, coalesce to …q; create ni_qtr/sale_qtr/ocf_qtr; cumulate 4Q flows with continuity checks; normalize currency codes; de-dupe to one row per (gvkey, datadate), keeping the highest fyr.
         7) Annual: add empty quarterly helpers; join ME; sort.
         8) Optionally add helper variables.
         9) Unique by (gvkey, datadate), drop row index, sort, and write 'acc_std_ann.parquet' and 'acc_std_qtr.parquet'.
@@ -4411,17 +4456,8 @@ def standardized_accounting_data(
             + query_vars
         )
     if coverage == "world":
-        __wfunda = pl.concat([__gfunda, __funda], how="diagonal_relaxed").filter(
-            (pl.len().over(["gvkey", "datadate"]) == 1)
-            | ((pl.len().over(["gvkey", "datadate"]) == 2) & (col("source") == "GLOBAL"))
-        )
-        __wfundq = pl.concat([__gfundq, __fundq], how="diagonal_relaxed").filter(
-            (pl.len().over(["gvkey", "fyr", "fyearq", "fqtr"]) == 1)
-            | (
-                (pl.len().over(["gvkey", "fyr", "fyearq", "fqtr"]) == 2)
-                & (col("source") == "GLOBAL")
-            )
-        )
+        __wfunda = prefer_global(__gfunda, __funda, ["gvkey", "datadate"])
+        __wfundq = prefer_global(__gfundq, __fundq, ["gvkey", "fyr", "fyearq", "fqtr"])
     else:
         pass
     if coverage == "na":
@@ -4550,9 +4586,7 @@ def standardized_accounting_data(
                 **{"curcdq": "curcd"},
             }
         )
-        .unique(["gvkey", "datadate", "fyr"])
-        .sort(["gvkey", "datadate", "fyr"])
-        .unique(["gvkey", "datadate"], keep="last")
+        .pipe(one_row_per_date)
         .drop(["fyr", "fyearq", "fqtr"])
         .join(
             __me_data,
@@ -4604,6 +4638,8 @@ def standardized_accounting_data(
         __compq = add_helper_vars(paths, __compq)
         __compa = add_helper_vars(paths, __compa)
 
+    # Annual data have no same-source (gvkey, datadate) duplicates; prefer_global would keep them
+    # and this unique would pick one arbitrarily.
     __compa.unique(["gvkey", "datadate"]).drop("n").sort(
         ["gvkey", "datadate"]
     ).collect().write_parquet(paths.interim_dir / "acc_std_ann.parquet")
@@ -6851,63 +6887,43 @@ def create_acc_chars(
 
 
 @measure_time
-def combine_ann_qtr_chars(paths: DataPaths, ann_df_path, qtr_df_path, char_vars, q_suffix):
+def combine_ann_qtr_chars(
+    paths: DataPaths, ann_df_path: Path, qtr_df_path: Path, char_vars: list[str], q_suffix: str
+) -> None:
     """
     Description:
         Combine annual and quarterly characteristic panels, preferring fresher quarterly values at the same public_date.
+        A firm-month with only quarterly characteristics (e.g. before the first annual report) keeps them.
 
     Steps:
-        1) Load annual and quarterly files into DuckDB with row numbers.
-        2) Left-join on (gvkey, public_date); for each char_var choose quarterly value if present and more recent (datadate_qitem > datadate).
-        3) Drop redundant join and dated columns; dedupe on (gvkey, public_date).
+        1) Full outer join the two parquet files on (gvkey, public_date); USING merges the keys, and
+           source comes from whichever side has it. Both inputs are unique on (gvkey, public_date)
+           (create_acc_chars ends with that unique), so the join is one-to-one.
+        2) For each char_var take the quarterly value if the annual one is null, or if the quarterly
+           one is present and more recent (quarterly datadate > annual datadate).
+        3) Sort by (gvkey, public_date) and write to parquet in one COPY.
 
     Output:
         Writes 'acc_chars_world.parquet' merged panel.
     """
-    (paths.interim_dir / "aux_aqtr_chars.ddb").unlink(missing_ok=True)
-    con = ibis.duckdb.connect(str(paths.interim_dir / "aux_aqtr_chars.ddb"), threads=os.cpu_count())
-    con.create_table(
-        "ann",
-        con.read_parquet(ann_df_path).mutate(n1=ibis.row_number()),
-        overwrite=True,
+    chars_sql = ",\n".join(
+        f'CASE WHEN a."{var}" IS NULL OR (q."{var}{q_suffix}" IS NOT NULL AND q.datadate > a.datadate) '
+        f'THEN q."{var}{q_suffix}" ELSE a."{var}" END AS "{var}"'
+        for var in char_vars
     )
-    con.create_table(
-        "qtr",
-        con.read_parquet(qtr_df_path)
-        .mutate(n2=ibis.row_number())
-        .rename({"datadate_qitem": "datadate", "source_qitem": "source"}),
-        overwrite=True,
-    )
-    ann = con.table("ann")
-    qtr = con.table("qtr")
-    combined = ann.left_join(qtr, [ann.gvkey == qtr.gvkey, ann.public_date == qtr.public_date])
-    drop_columns = [
-        "datadate",
-        f"datadate{q_suffix}",
-        "gvkey_right",
-        "public_date_right",
-        "source_qitem",
-    ] + [f"{ann_var}{q_suffix}" for ann_var in char_vars]
-    subs = {}
-    for ann_var in char_vars:
-        qtr_var = f"{ann_var}{q_suffix}"
-        subs[ann_var] = ibis.ifelse(
-            combined[ann_var].isnull()
-            | (combined[qtr_var].notnull() & (combined[f"datadate{q_suffix}"] > combined.datadate)),
-            combined[qtr_var],
-            combined[ann_var],
-        )
-    combined = (
-        combined.mutate(subs)
-        .drop(drop_columns)
-        .order_by(["gvkey", "public_date", "n1", "n2"])
-        .distinct(on=["gvkey", "public_date"], keep="first")
-        .drop(["n1", "n2"])
-        .order_by(["gvkey", "public_date"])
-    )
-    combined.to_parquet(paths.interim_dir / "acc_chars_world.parquet")
-    con.disconnect()
-    (paths.interim_dir / "aux_aqtr_chars.ddb").unlink(missing_ok=True)
+    with duckdb.connect(":memory:") as con:
+        con.execute(f"SET temp_directory = '{(paths.interim_dir / '__duckdb_tmp').as_posix()}'")
+        con.execute(f"""
+            COPY (
+              SELECT coalesce(a.source, q.source) AS source, gvkey, public_date,
+              {chars_sql}
+              FROM read_parquet('{ann_df_path.as_posix()}') AS a
+              FULL OUTER JOIN read_parquet('{qtr_df_path.as_posix()}') AS q
+                USING (gvkey, public_date)
+              ORDER BY gvkey, public_date
+            )
+            TO '{(paths.interim_dir / "acc_chars_world.parquet").as_posix()}' (FORMAT PARQUET);
+        """)
 
 
 def seasonality(data, ret_x, start_year, end_year):

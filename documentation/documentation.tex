@@ -180,9 +180,9 @@ Jensen is at Yale School of Management; \url{www.tijensen.com}. Kelly is at AQR 
 
 \subsection{Terminology}
 \begin{itemize}
-	\item \textit{Annual data} refers to accounting data from annual reports sourced from COMP.FUNDA and COMP.G\_FUNDA.
+	\item \textit{Annual data} refers to accounting data from annual reports sourced from COMP.FUNDA and COMP.G\_FUNDA. If both report the same firm (GVKEY) and fiscal period end (DATADATE), we use the COMP.G\_FUNDA record.
 	
-	\item \textit{Quarterly data} refers to accounting data from quarterly reports sourced from COMP.FUNDQ and COMP.G\_FUNDQ.
+	\item \textit{Quarterly data} refers to accounting data from quarterly reports sourced from COMP.FUNDQ and COMP.G\_FUNDQ. If both report the same firm and fiscal quarter (GVKEY, FYR, FYEARQ, FQTR), we use the COMP.G\_FUNDQ record. We drop records without a fiscal quarter (FQTR), which Compustat keeps from a firm's old fiscal calendar after it changes its fiscal year-end. If one source reports the same fiscal quarter more than once, we keep the record with the earliest DATADATE. If a firm still has more than one record for the same DATADATE, which happens when both its old and new fiscal calendars report that quarter, we keep the record with the higher FYR. A remaining tie goes to the COMP.G\_FUNDQ record.
 	
 	\item \textit{Final Dataset} refers to ``world\_data.parquet", the output dataset
 	
@@ -860,7 +860,7 @@ This section describes functions that we use to create variables. Many of the fu
 
 \subsection{General Information}
 \begin{itemize}
-	\item  We create characteristics for annual and quarterly accounting data separately. We then take the most recent characteristics value from each dataset to create the final dataset. 
+	\item  We create characteristics for annual and quarterly accounting data separately. We then take the most recent characteristics value from each dataset to create the final dataset. A firm-month with quarterly but no annual data, such as the months before a firm's first annual report, uses the quarterly characteristics.
 	
 	\item We assume that accounting variables are publically available 4 months after the end of the accounting period.  
 	
@@ -871,7 +871,7 @@ This section describes functions that we use to create variables. Many of the fu
 \begin{itemize}
 	\item The value of a balance sheet item such as asset or book equity has the same meaning in the annual and the quarterly data. It is the value by the end of a fiscal period. 
 	
-	\item The value of an income or cash flow statement item is different. In the annual data, it is calculated over one year. However, in the quarterly data, it is calculated over one quarter. To make quarterly income and cash flows items comparable to the corresponding annual item, we take the sum of the item over the last four quarters. 
+	\item The value of an income or cash flow statement item is different. In the annual data, it is calculated over one year. However, in the quarterly data, it is calculated over one quarter. To make quarterly income and cash flows items comparable to the corresponding annual item, we take the sum of the item over the last four consecutive fiscal quarters. If one of these quarters is missing, the sum is missing, except that the fourth fiscal quarter uses the year-to-date value. 
 \end{itemize}
 
 \subsection{Accounting Variables}
@@ -2704,6 +2704,8 @@ This section outlines how we create a daily dataset, beginning 01/01/1950 to now
             where $X_{GBP,t}$ is the exchange rate of GBP to currency X on day $t$. 
         \item In case there are gaps in information, we assume the exchange rate of the last observation until a new observation is available. 
         \item $fx_t$ is quoted as $\frac{X_t}{USD_t}$ , so to go from X to USD, do $X_t \times fx_t$
+        \item COMP.EXRT\_DLY starts on 1 February 1982, but North American Compustat has Canadian-dollar (CAD) reports and prices from the 1950s on. For CAD dates before the first COMP.EXRT\_DLY rate, we use month-end rates from January 1960 to January 1982 from the OECD Main Economic Indicators, retrieved from FRED \cite{oecd_fx_cad}. CAD reports and monthly prices are dated at a month-end, so each gets the rate of its own month. CAD observations before January 1960 have no rate.
+        \item Accounting observations without an exchange rate on their \texttt{datadate} (a missing currency code, or a currency without a rate on that date) are dropped before the accounting characteristics are computed. The firm's previous report then stays in use, for up to 18 months as usual.
     \end{itemize}
 
 \end{section}
