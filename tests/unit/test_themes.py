@@ -1,10 +1,16 @@
-"""The bundled themes files are a valid two-level grouping with consistent signs and names."""
+"""The bundled themes files are a valid two-level grouping with consistent signs and names.
+
+characteristics.csv holds every characteristic name used by themes.csv, cluster_labels.csv and
+the accounting and daily characteristic code.
+"""
 
 import polars as pl
 import pytest
 
+from jkp.data.aux_functions import acc_chars_list
 from jkp.data.config import PORTFOLIO_CHARS
 from jkp.data.paths import _resource_path
+from tests.unit.test_final_merges import _daily_chars_columns
 
 
 @pytest.fixture(scope="module")
@@ -83,4 +89,19 @@ def test_portfolio_characteristics_have_a_theme(themes):
 @pytest.mark.unit
 def test_themed_characteristics_exist(themes, characteristics):
     unknown = sorted(set(themes["characteristic"]) - set(characteristics["characteristic"]))
+    assert not unknown, f"not in characteristics.csv: {unknown}"
+
+
+@pytest.mark.unit
+def test_code_characteristics_are_listed(characteristics):
+    unknown = sorted(
+        (set(acc_chars_list()) | _daily_chars_columns()) - set(characteristics["characteristic"])
+    )
+    assert not unknown, f"not in characteristics.csv: {unknown}"
+
+
+@pytest.mark.unit
+def test_cluster_label_characteristics_exist(characteristics):
+    clusters = pl.read_csv(_resource_path("cluster_labels.csv"))
+    unknown = sorted(set(clusters["characteristic"]) - set(characteristics["characteristic"]))
     assert not unknown, f"not in characteristics.csv: {unknown}"
