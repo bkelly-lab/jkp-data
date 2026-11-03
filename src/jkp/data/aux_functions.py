@@ -6838,7 +6838,9 @@ def create_acc_chars(
 
 
 @measure_time
-def combine_ann_qtr_chars(paths: DataPaths, ann_df_path, qtr_df_path, char_vars, q_suffix):
+def combine_ann_qtr_chars(
+    paths: DataPaths, ann_df_path: Path, qtr_df_path: Path, char_vars: list[str], q_suffix: str
+) -> None:
     """
     Description:
         Combine annual and quarterly characteristic panels, preferring fresher quarterly values at the same public_date.
@@ -6855,27 +6857,24 @@ def combine_ann_qtr_chars(paths: DataPaths, ann_df_path, qtr_df_path, char_vars,
     Output:
         Writes 'acc_chars_world.parquet' merged panel.
     """
-    db = paths.interim_dir / "aux_aqtr_chars.ddb"
-    db.unlink(missing_ok=True)
     chars_sql = ",\n".join(
         f'CASE WHEN a."{var}" IS NULL OR (q."{var}{q_suffix}" IS NOT NULL AND q.datadate > a.datadate) '
         f'THEN q."{var}{q_suffix}" ELSE a."{var}" END AS "{var}"'
         for var in char_vars
     )
-    con = duckdb.connect(str(db))
-    con.execute(f"""
-        COPY (
-          SELECT coalesce(a.source, q.source) AS source, gvkey, public_date,
-          {chars_sql}
-          FROM read_parquet('{Path(ann_df_path).as_posix()}') AS a
-          FULL OUTER JOIN read_parquet('{Path(qtr_df_path).as_posix()}') AS q
-            USING (gvkey, public_date)
-          ORDER BY gvkey, public_date
-        )
-        TO '{(paths.interim_dir / "acc_chars_world.parquet").as_posix()}' (FORMAT PARQUET);
-    """)
-    con.close()
-    db.unlink(missing_ok=True)
+    with duckdb.connect(":memory:") as con:
+        con.execute(f"SET temp_directory = '{(paths.interim_dir / '__duckdb_tmp').as_posix()}'")
+        con.execute(f"""
+            COPY (
+              SELECT coalesce(a.source, q.source) AS source, gvkey, public_date,
+              {chars_sql}
+              FROM read_parquet('{ann_df_path.as_posix()}') AS a
+              FULL OUTER JOIN read_parquet('{qtr_df_path.as_posix()}') AS q
+                USING (gvkey, public_date)
+              ORDER BY gvkey, public_date
+            )
+            TO '{(paths.interim_dir / "acc_chars_world.parquet").as_posix()}' (FORMAT PARQUET);
+        """)
 
 
 def seasonality(data, ret_x, start_year, end_year):

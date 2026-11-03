@@ -84,7 +84,7 @@ def test_quarterly_only_month_is_kept(test_paths: DataPaths) -> None:
 
 @pytest.mark.unit
 def test_shared_and_annual_only_months_unchanged(test_paths: DataPaths) -> None:
-    """On shared months the newer quarterly value wins; annual-only months pass through."""
+    """On shared months the newer quarterly value wins, source stays annual; annual-only months pass through."""
     ann = _ann(
         [
             ("NA", "001", date(2016, 4, 30), date(2015, 12, 31), 100.0),
@@ -95,7 +95,7 @@ def test_shared_and_annual_only_months_unchanged(test_paths: DataPaths) -> None:
     qtr = _qtr(
         [
             ("NA", "001", date(2016, 4, 30), date(2015, 12, 31), 90.0),
-            ("NA", "001", date(2016, 8, 31), date(2016, 3, 31), 110.0),
+            ("GLOBAL", "001", date(2016, 8, 31), date(2016, 3, 31), 110.0),
         ]
     )
 
