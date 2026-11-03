@@ -35,6 +35,7 @@ WRDS, CRSP, Compustat, or IBES vendor data:
   dated before Compustat's exchange rates begin in February 1982. Source:
   OECD Main Economic Indicators, retrieved from FRED, Federal Reserve Bank of
   St. Louis ([series CCUSSP01CAM650N](https://fred.stlouisfed.org/series/CCUSSP01CAM650N)).
+  FRED dates each month by its first day; the file dates it by its last day.
   Copyright OECD; subject to the OECD's terms of use.
 - **`cluster_labels.csv`** — Maps firm characteristics to thematic clusters
   (e.g., "Low Leverage", "Investment", "Size", "Low Risk"). Authored by

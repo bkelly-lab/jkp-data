@@ -74,7 +74,11 @@ class TestCompustatFx:
         _write_fx1(test_paths, cad_start=date(1975, 1, 1))
         fx = compustat_fx(test_paths)
 
-        assert _rate(fx, "CAD", date(1974, 12, 31)) is not None
+        bf = _backfill()
+        assert (
+            _rate(fx, "CAD", date(1974, 12, 31))
+            == bf.filter(pl.col("datadate") == date(1974, 12, 31))["fx"].item()
+        )
         assert _rate(fx, "CAD", date(1975, 1, 1)) == 0.5
         assert _rate(fx, "CAD", date(1980, 6, 30)) == 0.5
         assert fx.select(pl.struct("curcdd", "datadate").is_unique().all()).item()

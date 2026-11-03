@@ -1539,10 +1539,10 @@ def compustat_fx(paths: DataPaths):
             schema={"curcdd": pl.String, "datadate": pl.Date, "fx": pl.Float64},
         )
         .join(
-            __fx1.filter(col("curcdd") == "CAD").select(cad_start=col("datadate").min()),
+            __fx1.filter(pl.col("curcdd") == "CAD").select(cad_start=pl.col("datadate").min()),
             how="cross",
         )
-        .filter(col("datadate") < col("cad_start"))
+        .filter(pl.col("datadate") < pl.col("cad_start"))
         .drop("cad_start")
     )
     __fx1 = (
