@@ -21,9 +21,8 @@ from jkp.data.aux_functions import (
     merge_industry_to_world_msf,
     merge_world_data_prelim,
 )
-from jkp.data.config import ROLLING_DAILY_SPECS
 from jkp.data.paths import DataPaths
-from tests.conftest import assert_unique_keys
+from tests.conftest import assert_unique_keys, daily_chars_columns
 
 JAN = date(2020, 1, 31)
 FEB = date(2020, 2, 29)
@@ -124,40 +123,6 @@ def _golden_non_key_columns(relpath: str) -> set[str]:
     return set(pl.read_parquet_schema(GOLDEN_FIXTURES / relpath)) - {"id", "eom"}
 
 
-def _daily_chars_columns() -> set[str]:
-    """Non-key column names of market_chars_d, maintained by hand.
-
-    Built from ``ROLLING_DAILY_SPECS`` plus a hand-copied mapping from each statistic
-    to the names that ``roll_apply_daily`` helpers, ``bidask_hl`` and
-    ``finish_daily_chars`` write, so it can fall behind the producers. Replace it with
-    the golden fixture's columns once market_chars_d has one (#304).
-    """
-    per_stat = {
-        "rvol": ["rvol"],
-        "rmax": ["rmax5", "rmax1"],
-        "skew": ["rskew"],
-        "capm_ext": ["beta", "ivol_capm", "iskew_capm", "coskew"],
-        "ff3": ["ivol_ff3", "iskew_ff3"],
-        "hxz4": ["ivol_hxz4", "iskew_hxz4"],
-        "dimsonbeta": ["beta_dimson"],
-        "zero_trades": ["zero_trades"],
-        "turnover": ["turnover"],
-        "dolvol": ["dolvol"],
-        "ami": ["ami"],
-        "capm": ["beta", "ivol_capm"],
-        "downbeta": ["betadown"],
-        "prc_to_high": ["prc_highprc"],
-        "mktcorr": ["corr"],
-    }
-    cols = {"bidaskhl_21d", "rvolhl_21d", "betabab_1260d", "rmax5_rvol_21d"}
-    for sfx, _, stats in ROLLING_DAILY_SPECS:
-        for stat in stats:
-            if stat == "mktvol":  # dropped by finish_daily_chars
-                continue
-            cols |= {f"{name}{sfx}" for name in per_stat[stat]}
-    return cols
-
-
 def _prelim_columns() -> set[str]:
     """Representative world_data_prelim non-key columns (msf + market chars + accounting).
 
@@ -220,7 +185,7 @@ def _right_side_columns() -> dict[str, set[str]]:
         "resmom_ff3_12_1": _golden_non_key_columns("residual_momentum/resmom_ff3_12_1.parquet"),
         "resmom_ff3_6_1": _golden_non_key_columns("residual_momentum/resmom_ff3_6_1.parquet"),
         "mp_factors": {"mispricing_perf", "mispricing_mgmt"},
-        "market_chars_d": _daily_chars_columns(),
+        "market_chars_d": daily_chars_columns(),
         "firm_age": _golden_non_key_columns("firm_age/firm_age.parquet"),
     }
 

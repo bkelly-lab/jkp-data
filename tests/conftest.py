@@ -236,6 +236,42 @@ def assert_sorted_by_keys(df: pl.DataFrame, group_col: str, date_col: str) -> No
         )
 
 
+def daily_chars_columns() -> set[str]:
+    """Non-key column names of market_chars_d, maintained by hand.
+
+    Built from ``ROLLING_DAILY_SPECS`` plus a hand-copied mapping from each statistic
+    to the names that ``roll_apply_daily`` helpers, ``bidask_hl`` and
+    ``finish_daily_chars`` write, so it can fall behind the producers. Replace it with
+    the golden fixture's columns once market_chars_d has one (#304).
+    """
+    from jkp.data.config import ROLLING_DAILY_SPECS
+
+    per_stat = {
+        "rvol": ["rvol"],
+        "rmax": ["rmax5", "rmax1"],
+        "skew": ["rskew"],
+        "capm_ext": ["beta", "ivol_capm", "iskew_capm", "coskew"],
+        "ff3": ["ivol_ff3", "iskew_ff3"],
+        "hxz4": ["ivol_hxz4", "iskew_hxz4"],
+        "dimsonbeta": ["beta_dimson"],
+        "zero_trades": ["zero_trades"],
+        "turnover": ["turnover"],
+        "dolvol": ["dolvol"],
+        "ami": ["ami"],
+        "capm": ["beta", "ivol_capm"],
+        "downbeta": ["betadown"],
+        "prc_to_high": ["prc_highprc"],
+        "mktcorr": ["corr"],
+    }
+    cols = {"bidaskhl_21d", "rvolhl_21d", "betabab_1260d", "rmax5_rvol_21d"}
+    for sfx, _, stats in ROLLING_DAILY_SPECS:
+        for stat in stats:
+            if stat == "mktvol":  # dropped by finish_daily_chars
+                continue
+            cols |= {f"{name}{sfx}" for name in per_stat[stat]}
+    return cols
+
+
 # =============================================================================
 # Temporary Directory Fixtures
 # =============================================================================

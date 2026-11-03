@@ -10,7 +10,7 @@ import pytest
 from jkp.data.aux_functions import acc_chars_list
 from jkp.data.config import PORTFOLIO_CHARS
 from jkp.data.paths import _resource_path
-from tests.unit.test_final_merges import _daily_chars_columns
+from tests.conftest import daily_chars_columns
 
 
 @pytest.fixture(scope="module")
@@ -26,6 +26,11 @@ def descriptions() -> pl.DataFrame:
 @pytest.fixture(scope="module")
 def characteristics() -> pl.DataFrame:
     return pl.read_csv(_resource_path("characteristics.csv"))
+
+
+@pytest.fixture(scope="module")
+def clusters() -> pl.DataFrame:
+    return pl.read_csv(_resource_path("cluster_labels.csv"))
 
 
 def not_constant(df: pl.DataFrame, col: str, within: str) -> list[str]:
@@ -95,13 +100,12 @@ def test_themed_characteristics_exist(themes, characteristics):
 @pytest.mark.unit
 def test_code_characteristics_are_listed(characteristics):
     unknown = sorted(
-        (set(acc_chars_list()) | _daily_chars_columns()) - set(characteristics["characteristic"])
+        (set(acc_chars_list()) | daily_chars_columns()) - set(characteristics["characteristic"])
     )
     assert not unknown, f"not in characteristics.csv: {unknown}"
 
 
 @pytest.mark.unit
-def test_cluster_label_characteristics_exist(characteristics):
-    clusters = pl.read_csv(_resource_path("cluster_labels.csv"))
+def test_cluster_label_characteristics_exist(clusters, characteristics):
     unknown = sorted(set(clusters["characteristic"]) - set(characteristics["characteristic"]))
     assert not unknown, f"not in characteristics.csv: {unknown}"

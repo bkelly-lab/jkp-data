@@ -30,7 +30,7 @@ WRDS, CRSP, Compustat, or IBES vendor data:
   codes to industry groups. Sourced from Ken French's
   [data library](https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/data_library.html);
   subject to its own publicly-available terms.
-- **`characteristics.csv`** — The names of the 404 characteristics in the
+- **`characteristics.csv`** — The names of the characteristics in the
   `characteristics/` output files, one per row: every characteristic in
   `themes/themes.csv`, plus `divspc1m_me` and `divspc12m_me`, which have no
   theme. The other columns in those files (identifiers, returns, prices,
