@@ -70,4 +70,5 @@ def test_output_does_not_depend_on_thread_count(
         monkeypatch.setattr(os, "cpu_count", lambda threads=threads: threads)
         compute_earnings_persistence(test_paths, data_path, 5, 5)
         outputs.append(pl.read_parquet(test_paths.interim_dir / "ni_ar_res.parquet"))
+    assert outputs[0].height > 0
     assert_frame_equal(outputs[0], outputs[1], check_exact=True)
