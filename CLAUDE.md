@@ -37,6 +37,7 @@ uv run pytest
 # Run the full pipeline (requires WRDS credentials and ~450 GB RAM)
 jkp build data/                     # stock returns and firm characteristics
 jkp portfolio data/                 # factor returns (run after jkp build)
+jkp themes data/ [--version v1.0 | --file my_themes.csv]   # rebuild theme portfolios from saved hml
 
 # WRDS connection management
 jkp connect                         # test connection
@@ -56,7 +57,7 @@ The pipeline has two entry points that run sequentially:
 5. Calculate rolling daily metrics (volatility, beta, skewness) across 21d/126d/252d/1260d windows
 6. Save outputs as parquet files to `data/processed/`
 
-**`src/jkp/data/portfolio.py`** constructs factor portfolios from the characteristics output by `main.py`, using ECDF ranking and value-weighting by market cap.
+**`src/jkp/data/portfolio.py`** constructs factor portfolios from the characteristics output by `main.py`, using ECDF ranking and value-weighting by market cap. It sorts every characteristic in a released themes version (`resources/themes/`), writes the unsigned `pfs`/`hml`/`cmp`/`industry` files to `portfolios/`, then the signed factors and theme portfolios of each version to `portfolios/themes/<version>/`. `jkp themes` (`run_themes`) rebuilds that last step from saved `hml` files.
 
 ### Key source files
 
@@ -70,7 +71,7 @@ The pipeline has two entry points that run sequentially:
 
 Raw WRDS data → `data/raw/` → intermediate processing in `data/interim/` → final outputs in `data/processed/` (subdirectories: `characteristics/`, `portfolios/`, `return_data/`, `accounting_data/`, `other_output/`).
 
-Static reference data (`src/jkp/data/resources/cluster_labels.csv`, `src/jkp/data/resources/country_classification.xlsx`, `src/jkp/data/resources/factor_details.xlsx`) is packaged with the code and loaded via `_resource_path()` in `paths.py`, not read from the output directory.
+Static reference data (`src/jkp/data/resources/themes/`, `src/jkp/data/resources/country_classification.xlsx`, `src/jkp/data/resources/factor_details.xlsx`) is packaged with the code and loaded via `_resource_path()` in `paths.py`, not read from the output directory.
 
 ## Code Conventions
 

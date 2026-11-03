@@ -4,12 +4,15 @@ The legacy ``run_portfolio`` reran ``portfolios()`` once per overnight/intraday
 component. The current one aggregates every daily return column in the main
 pass. Both run end-to-end on the same synthetic inputs and every file under
 ``processed/portfolios/`` must match: same files, schemas and rows, exact
-integer columns, and float columns within tight tolerance.
+integer columns, and float columns within tight tolerance. Since #296 the
+signed files are under ``themes/v0/`` and the cluster files are theme files,
+so the legacy files are compared through ``_new_path``.
 """
 
 from __future__ import annotations
 
 import datetime as _dt
+import re
 from pathlib import Path
 
 import numpy as np
@@ -22,10 +25,8 @@ from jkp.data.portfolio import run_portfolio
 from tests.fixtures import portfolio_oi_legacy
 from tests.unit.portfolio.conftest import (
     build_synthetic_data,
-    make_cluster_labels,
-    make_factor_details,
     make_multi_region_classification,
-    patch_resource_readers,
+    make_themes_dir,
 )
 
 pytestmark = pytest.mark.integration
@@ -119,13 +120,13 @@ def _build_inputs(root: Path) -> None:
 
 
 def _patch(monkeypatch: pytest.MonkeyPatch, resources: Path, settings: dict) -> None:
-    fd_path = make_factor_details(resources, CHARS)
     cc_path = make_multi_region_classification(resources)
-    cl_path = make_cluster_labels(resources, {"char_a": "c1", "char_b": "c1", "char_c": "c2"})
-    patch_resource_readers(monkeypatch)
-    monkeypatch.setattr("jkp.data.paths.get_factor_details_path", lambda: fd_path)
+    themes_dir = make_themes_dir(resources, {"char_a": "c1", "char_b": "c1", "char_c": "c2"})
     monkeypatch.setattr("jkp.data.paths.get_country_classification_path", lambda: cc_path)
-    monkeypatch.setattr("jkp.data.paths.get_cluster_labels_path", lambda: cl_path)
+    monkeypatch.setattr("jkp.data.paths.get_themes_dir", lambda: themes_dir)
+    monkeypatch.setattr(
+        "tests.fixtures.portfolio_oi_legacy.V0_DIR", themes_dir / "superseded_themes" / "v0"
+    )
 
     def _force_reset(format_str: str, *, _allow_reset: bool = False) -> None:
         configure_output_format(format_str, _allow_reset=True)
@@ -176,24 +177,40 @@ def _files(root: Path) -> set[str]:
     return {p.relative_to(root).as_posix() for p in root.rglob("*.parquet")}
 
 
+_MOVED = [
+    (r"^lms(.*)\.parquet$", r"themes/v0/lms\1.parquet"),
+    (r"^clusters(.*)\.parquet$", r"themes/v0/themes\1.parquet"),
+    (r"^(country_factors|regional_factors)(.*)/", r"themes/v0/\1\2/"),
+    (r"^regional_clusters(.*)/", r"themes/v0/regional_themes\1/"),
+]
+
+
+def _new_path(legacy_rel: str) -> str:
+    """Where the current build writes a legacy output file."""
+    for pattern, repl in _MOVED:
+        legacy_rel = re.sub(pattern, repl, legacy_rel)
+    return legacy_rel
+
+
 class TestOiSinglePassEquivalence:
     def test_same_files(self, outputs: tuple[Path, Path]) -> None:
         legacy, new = outputs
-        assert _files(new) == _files(legacy)
+        v0_and_unsigned = {f for f in _files(new) if not f.startswith("themes/v1.0/")}
+        assert v0_and_unsigned == {_new_path(f) for f in _files(legacy)}
 
     def test_oi_outputs_written(self, outputs: tuple[Path, Path]) -> None:
         _, new = outputs
         files = _files(new)
         for component in ("overnight", "intraday", "overnight_local", "intraday_local"):
-            for name in ("pfs", "hml", "lms", "clusters"):
+            for name in ("pfs", "hml", "themes/v0/lms", "themes/v0/themes"):
                 assert f"{name}_{component}.parquet" in files
-            assert any(f.startswith(f"regional_factors_{component}/") for f in files)
+            assert any(f.startswith(f"themes/v0/regional_factors_{component}/") for f in files)
 
     def test_all_outputs_match(self, outputs: tuple[Path, Path], tolerance) -> None:
         legacy, new = outputs
         for rel in sorted(_files(legacy)):
-            a = pl.read_parquet(legacy / rel)
-            b = pl.read_parquet(new / rel)
+            a = pl.read_parquet(legacy / rel).rename({"cluster": "theme"}, strict=False)
+            b = pl.read_parquet(new / _new_path(rel)).drop("n_subthemes", strict=False)
             assert b.schema == a.schema, rel
             assert b.height == a.height, rel
             # Keys and integer columns must match exactly. Float sums may

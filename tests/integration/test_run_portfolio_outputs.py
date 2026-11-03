@@ -14,13 +14,11 @@ import polars as pl
 import pytest
 
 from jkp.data.output_writer import configure_output_format
-from jkp.data.portfolio import run_portfolio
+from jkp.data.portfolio import run_portfolio, run_themes
 from tests.unit.portfolio.conftest import (
     build_synthetic_data,
-    make_cluster_labels,
-    make_factor_details,
     make_multi_region_classification,
-    patch_resource_readers,
+    make_themes_dir,
 )
 
 
@@ -44,14 +42,11 @@ def _setup(
     settings_overrides: dict | None = None,
 ) -> Path:
     build_synthetic_data(tmp_path, list(countries), list(chars))
-    fd_path = make_factor_details(tmp_path, list(chars))
     cc_path = make_multi_region_classification(tmp_path)
-    cl_path = make_cluster_labels(tmp_path, dict.fromkeys(chars, "cluster_x"))
+    themes_dir = make_themes_dir(tmp_path, dict.fromkeys(chars, "cluster_x"))
 
-    patch_resource_readers(monkeypatch)
-    monkeypatch.setattr("jkp.data.paths.get_factor_details_path", lambda: fd_path)
     monkeypatch.setattr("jkp.data.paths.get_country_classification_path", lambda: cc_path)
-    monkeypatch.setattr("jkp.data.paths.get_cluster_labels_path", lambda: cl_path)
+    monkeypatch.setattr("jkp.data.paths.get_themes_dir", lambda: themes_dir)
     monkeypatch.setattr("jkp.data.portfolio.PORTFOLIO_CHARS", list(chars))
 
     base_settings = {
@@ -89,25 +84,34 @@ def _portfolios_dir(tmp_path: Path) -> Path:
 
 
 class TestRunPortfolioOutputs:
-    def test_writes_pfs_and_hml_lms_parquets(
+    def test_writes_pfs_hml_and_lms_per_version(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _setup(tmp_path, monkeypatch)
         run_portfolio(output_format="parquet", output_dir=tmp_path)
 
         out = _portfolios_dir(tmp_path)
-        for name in ("pfs.parquet", "hml.parquet", "lms.parquet"):
+        for name in (
+            "pfs.parquet",
+            "hml.parquet",
+            "themes/v0/lms.parquet",
+            "themes/v1.0/lms.parquet",
+        ):
             path = out / name
             assert path.exists(), f"missing {name}"
             assert pl.read_parquet(path).height > 0, f"{name} is empty"
+        assert not (out / "lms.parquet").exists()
 
-    def test_writes_clusters_parquet(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_writes_theme_portfolios(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _setup(tmp_path, monkeypatch)
         run_portfolio(output_format="parquet", output_dir=tmp_path)
 
-        path = _portfolios_dir(tmp_path) / "clusters.parquet"
-        assert path.exists()
-        assert pl.read_parquet(path).height > 0
+        out = _portfolios_dir(tmp_path) / "themes"
+        for name in ("v0/themes.parquet", "v1.0/themes.parquet", "v1.0/subthemes.parquet"):
+            assert pl.read_parquet(out / name).height > 0, f"{name} is empty"
+        # Every v0 theme is its own subtheme, so v0 has no subtheme files.
+        assert not (out / "v0" / "subthemes.parquet").exists()
+        assert list((out / "v1.0" / "regional_subthemes").glob("*.parquet"))
 
     def test_writes_country_factors_partition(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -115,7 +119,7 @@ class TestRunPortfolioOutputs:
         _setup(tmp_path, monkeypatch, countries=("USA", "FRA"))
         run_portfolio(output_format="parquet", output_dir=tmp_path)
 
-        country_dir = _portfolios_dir(tmp_path) / "country_factors"
+        country_dir = _portfolios_dir(tmp_path) / "themes" / "v0" / "country_factors"
         assert (country_dir / "USA.parquet").exists()
         assert (country_dir / "FRA.parquet").exists()
 
@@ -128,7 +132,7 @@ class TestRunPortfolioOutputs:
         run_portfolio(output_format="parquet", output_dir=tmp_path)
 
         out = _portfolios_dir(tmp_path)
-        assert not (out / "country_factors" / "null_country.parquet").exists()
+        assert not (out / "themes" / "v0" / "country_factors" / "null_country.parquet").exists()
         assert set(pl.read_parquet(out / "pfs.parquet")["excntry"].unique()) == {"USA", "FRA"}
 
     def test_writes_regional_factors_partition(
@@ -137,7 +141,7 @@ class TestRunPortfolioOutputs:
         _setup(tmp_path, monkeypatch)
         run_portfolio(output_format="parquet", output_dir=tmp_path)
 
-        regional_dir = _portfolios_dir(tmp_path) / "regional_factors"
+        regional_dir = _portfolios_dir(tmp_path) / "themes" / "v0" / "regional_factors"
         assert regional_dir.exists()
         files = list(regional_dir.glob("*.parquet"))
         assert files, "no regional_factors parquets written"
@@ -216,7 +220,7 @@ class TestRunPortfolioOutputs:
         )
         run_portfolio(output_format="parquet", output_dir=tmp_path)
 
-        out = _portfolios_dir(tmp_path)
+        out = _portfolios_dir(tmp_path) / "themes" / "v0"
 
         # ZWE survives in per-country outputs (country_excl does not gate them).
         assert (out / "country_factors" / "ZWE.parquet").exists()
@@ -233,3 +237,86 @@ class TestRunPortfolioOutputs:
             assert df["n_countries"].max() <= 3, (
                 f"{f.name}: n_countries exceeds USA+GBR+DEU max of 3 → ZWE leaked in"
             )
+
+
+def _files(root: Path, suffix: str = "parquet") -> set[str]:
+    return {p.relative_to(root).as_posix() for p in root.rglob(f"*.{suffix}")}
+
+
+class TestRunThemes:
+    def test_rebuilds_released_versions(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _setup(tmp_path, monkeypatch)
+        run_portfolio(output_format="parquet", output_dir=tmp_path)
+        themes_dir = _portfolios_dir(tmp_path) / "themes"
+        expected = {rel: pl.read_parquet(themes_dir / rel) for rel in _files(themes_dir)}
+        for path in themes_dir.rglob("*.parquet"):
+            path.unlink()
+
+        run_themes(output_dir=tmp_path)
+
+        assert _files(themes_dir) == set(expected)
+        for rel, df in expected.items():
+            assert pl.read_parquet(themes_dir / rel).equals(df), rel
+
+    def test_edited_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _setup(tmp_path, monkeypatch)
+        run_portfolio(output_format="parquet", output_dir=tmp_path)
+        edited = tmp_path / "my_themes.csv"
+        (
+            pl.read_csv(tmp_path / "themes" / "themes.csv")
+            .filter(pl.col("characteristic") == "char_a")
+            .with_columns(factor_sign=-1)
+            .write_csv(edited)
+        )
+
+        run_themes(output_dir=tmp_path, file=edited)
+
+        out = _portfolios_dir(tmp_path) / "themes"
+        mine = pl.read_parquet(out / "my_themes" / "lms.parquet")
+        released = pl.read_parquet(out / "v1.0" / "lms.parquet").filter(
+            pl.col("characteristic") == "char_a"
+        )
+        assert set(mine["characteristic"]) == {"char_a"}
+        assert mine["ret_ew"].equals(-released["ret_ew"])
+
+    def test_one_version(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _setup(tmp_path, monkeypatch, settings_overrides={"daily_pf": False})
+        run_portfolio(output_format="parquet", output_dir=tmp_path)
+        out = _portfolios_dir(tmp_path) / "themes"
+        (out / "v1.0" / "lms.parquet").unlink()
+
+        run_themes(output_dir=tmp_path, version="v0")
+
+        assert not (out / "v1.0" / "lms.parquet").exists()
+        with pytest.raises(ValueError, match="unknown themes version"):
+            run_themes(output_dir=tmp_path, version="v9")
+
+    def test_rejects_released_name_and_missing_factor(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _setup(tmp_path, monkeypatch, settings_overrides={"daily_pf": False})
+        run_portfolio(output_format="parquet", output_dir=tmp_path)
+        themes = pl.read_csv(tmp_path / "themes" / "themes.csv")
+        themes.write_csv(tmp_path / "v0.csv")
+        with pytest.raises(ValueError, match="released themes version"):
+            run_themes(output_dir=tmp_path, file=tmp_path / "v0.csv")
+        themes.with_columns(characteristic=pl.lit("char_z")).head(1).write_csv(
+            tmp_path / "typo.csv"
+        )
+        with pytest.raises(ValueError, match="char_z"):
+            run_themes(output_dir=tmp_path, file=tmp_path / "typo.csv")
+
+    def test_csv_output_folder(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _setup(tmp_path, monkeypatch)
+        run_portfolio(output_format="csv", output_dir=tmp_path)
+        themes_dir = _portfolios_dir(tmp_path) / "themes"
+        expected = _files(themes_dir, "csv")
+        for path in themes_dir.rglob("*.csv"):
+            path.unlink()
+
+        run_themes(output_dir=tmp_path)
+
+        assert _files(themes_dir, "csv") == expected
+        assert not list(tmp_path.rglob("*.parquet"))

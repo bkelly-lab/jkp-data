@@ -19,10 +19,8 @@ import pytest
 from tests.unit.portfolio.conftest import (
     build_synthetic_data,
     compare_parquets,
-    make_cluster_labels,
-    make_factor_details,
     make_multi_region_classification,
-    patch_resource_readers,
+    make_themes_dir,
 )
 
 # ---------------------------------------------------------------------------
@@ -126,17 +124,13 @@ def test_run_portfolio_golden(
 
     build_synthetic_data(tmp_path, COUNTRIES, chars, seed=42)
 
-    fd = make_factor_details(tmp_path, chars)
     cc = make_multi_region_classification(tmp_path)
-    cl = make_cluster_labels(tmp_path, dict.fromkeys(chars, "cluster_x"))
-
-    patch_resource_readers(monkeypatch)
+    themes_dir = make_themes_dir(tmp_path, dict.fromkeys(chars, "cluster_x"))
 
     # Paths are imported locally inside run_portfolio via `from .paths import ...`,
     # so patch the source module rather than jkp.data.portfolio.
-    monkeypatch.setattr("jkp.data.paths.get_factor_details_path", lambda: fd)
     monkeypatch.setattr("jkp.data.paths.get_country_classification_path", lambda: cc)
-    monkeypatch.setattr("jkp.data.paths.get_cluster_labels_path", lambda: cl)
+    monkeypatch.setattr("jkp.data.paths.get_themes_dir", lambda: themes_dir)
     monkeypatch.setattr("jkp.data.portfolio.PORTFOLIO_CHARS", chars)
     monkeypatch.setattr("jkp.data.portfolio.PORTFOLIO_SETTINGS", _build_settings(cfg))
 

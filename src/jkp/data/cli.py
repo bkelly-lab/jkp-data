@@ -109,6 +109,35 @@ def portfolio(
     run_portfolio(output_format=output_format.value, output_dir=output_dir)
 
 
+@app.command()
+def themes(
+    output_dir: Path = typer.Argument(
+        help="Directory containing pipeline output (must match output_dir from build).",
+    ),
+    version: str | None = typer.Option(
+        None,
+        "--version",
+        help="Build only this released themes version, such as v1.0.",
+    ),
+    file: Path | None = typer.Option(
+        None,
+        "--file",
+        help="Build an edited themes file in the v1.0 format into "
+        "portfolios/themes/<file name without extension>/.",
+    ),
+) -> None:
+    """Build signed factors and theme portfolios from the saved HML factors.
+
+    With no option, builds every released themes version. jkp portfolio runs
+    this step at the end.
+    """
+    if version is not None and file is not None:
+        raise typer.BadParameter("Give --version or --file, not both.")
+    from .portfolio import run_themes
+
+    run_themes(output_dir=output_dir, version=version, file=file)
+
+
 # This help text is the canonical description of the credential precedence
 # order; the README, the wrds_credentials module docstring, and the tests point
 # here rather than restating it. Update here first.

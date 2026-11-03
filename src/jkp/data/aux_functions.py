@@ -10000,22 +10000,20 @@ def _build_industry_monthly_returns(
     )
 
 
-def _build_hml_lms(
+def _build_hml(
     pf_df: pl.DataFrame,
-    char_info: pl.DataFrame,
     n_pfs: int,
     date_col: str,
     include_signal: bool,
-) -> tuple[pl.DataFrame, pl.DataFrame]:
-    """Build HML (top minus bottom pf) and signed LMS factor returns.
+) -> pl.DataFrame:
+    """Build HML (top minus bottom pf) factor returns.
 
     Description:
         Group `pf_df` by ``["excntry", "characteristic", date_col]``, compute
         top-minus-bottom-portfolio diffs for return columns (and optionally
-        ``signal``), keep only groups containing both extreme portfolios, then
-        join `char_info` and re-sign each factor by ``direction``.
+        ``signal``), and keep only groups containing both extreme portfolios.
     Output:
-        ``(hml, lms)`` tuple of DataFrames.
+        DataFrame sorted by ``["excntry", "characteristic", date_col]``.
     """
     diff = lambda c: (  # noqa: E731
         pl.col(c).filter(pl.col("pf") == n_pfs).first()
@@ -10037,7 +10035,7 @@ def _build_hml_lms(
         ]
     )
 
-    hml = (
+    return (
         pf_df.group_by(["excntry", "characteristic", date_col])
         .agg(agg_exprs)
         .filter(pl.col("pfs") == 2)
@@ -10045,15 +10043,129 @@ def _build_hml_lms(
         .sort(["excntry", "characteristic", date_col])
     )
 
-    resign_cols = (
-        ["signal", "ret_ew", "ret_vw", "ret_vw_cap"]
-        if include_signal
-        else ["ret_ew", "ret_vw", "ret_vw_cap"]
+
+def load_themes(path: Path) -> pl.DataFrame:
+    """Read one themes version.
+
+    Description:
+        ``path`` is a v0 folder (``cluster_labels.csv`` and ``factor_directions.csv``),
+        a folder holding ``themes.csv``, or a themes file in the v1.0 format. In v0
+        each theme is its only subtheme and ``direction`` is the v0 direction. From
+        v1.0 on, ``direction`` is ``subtheme_sign * theme_sign * factor_sign``.
+    Steps:
+        1) Read the v0 files or the v1.0-format file.
+        2) Check that every direction is -1 or 1, that each characteristic appears
+           once and that each subtheme belongs to one theme.
+    Output:
+        DataFrame with ``characteristic``, ``theme``, ``subtheme`` and ``direction``
+        (Int32). Raises ``ValueError`` naming the rows that fail a check.
+    """
+    if (path / "cluster_labels.csv").exists():
+        themes = (
+            pl.read_csv(path / "cluster_labels.csv")
+            .join(pl.read_csv(path / "factor_directions.csv"), on="characteristic", how="left")
+            .select("characteristic", theme="cluster", subtheme="cluster", direction="direction")
+        )
+    else:
+        file = path / "themes.csv" if path.is_dir() else path
+        themes = pl.read_csv(file)
+        signs = ["subtheme_sign", "theme_sign", "factor_sign"]
+        missing = sorted({"characteristic", "theme", "subtheme", *signs} - set(themes.columns))
+        if missing:
+            raise ValueError(f"{file}: missing columns {missing}")
+        themes = themes.select(
+            "characteristic",
+            "theme",
+            "subtheme",
+            direction=pl.col("subtheme_sign") * pl.col("theme_sign") * pl.col("factor_sign"),
+        )
+
+    bad_sign = themes.filter(~pl.col("direction").is_in([-1, 1]).fill_null(False))
+    repeated = themes.filter(pl.col("characteristic").is_duplicated())
+    split = themes.group_by("subtheme").agg(pl.col("theme").n_unique()).filter(pl.col("theme") > 1)
+    errors = [
+        f"{label}: {sorted(set(names))}"
+        for label, names in [
+            ("signs other than -1 and 1", bad_sign["characteristic"]),
+            ("characteristics listed more than once", repeated["characteristic"]),
+            ("subthemes under more than one theme", split["subtheme"]),
+        ]
+        if len(names)
+    ]
+    if errors:
+        raise ValueError(f"{path}: " + "; ".join(errors))
+    return themes.with_columns(pl.col("direction").cast(pl.Int32))
+
+
+def theme_versions(themes_dir: Path) -> dict[str, Path]:
+    """Map each released themes version to its source.
+
+    Description:
+        The released versions are the current ``themes.csv``, named by its
+        ``version`` column, and each folder in ``superseded_themes/``, named by
+        the folder. A new version therefore needs no code change.
+    Output:
+        Dict from version name to a path that ``load_themes`` reads.
+    """
+    current = themes_dir / "themes.csv"
+    versions = {pl.read_csv(current, columns=["version"])["version"][0]: current}
+    for folder in sorted((themes_dir / "superseded_themes").iterdir()):
+        if folder.is_dir():
+            versions[folder.name] = folder
+    return versions
+
+
+def _sign_factors(hml: pl.DataFrame, themes: pl.DataFrame) -> pl.DataFrame:
+    """Sign the HML factors of a themes version (LMS).
+
+    Description:
+        Keep the factors of the characteristics in ``themes`` and multiply their
+        returns, and ``signal`` when present, by ``direction``, so each factor buys
+        the side its theme favours.
+    Output:
+        DataFrame with ``characteristic``, ``direction`` and the ``hml`` columns, in
+        ``hml``'s row order. Raises ``ValueError`` listing the characteristics in
+        ``themes`` that have no factor in ``hml``.
+    """
+    missing = sorted(set(themes["characteristic"]) - set(hml["characteristic"].unique()))
+    if missing:
+        raise ValueError(f"no hml factor for: {missing}")
+    resign = [c for c in ("signal", "ret_ew", "ret_vw", "ret_vw_cap") if c in hml.columns]
+    return (
+        themes.select("characteristic", "direction")
+        .join(hml, on="characteristic", how="inner", maintain_order="right")
+        .with_columns(pl.col(resign) * pl.col("direction"))
     )
-    lms = char_info.join(hml, on="characteristic", how="left").with_columns(
-        [(pl.col(c) * pl.col("direction")).alias(c) for c in resign_cols]
+
+
+def _theme_returns(
+    lms: pl.DataFrame, themes: pl.DataFrame, date_col: str
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Average signed factors within subthemes, and subthemes within themes.
+
+    Description:
+        A subtheme's return is the mean return of its characteristics' factors in
+        a country and period. A theme's return is the mean of its subtheme
+        returns, so each subtheme counts equally however many characteristics it
+        has. Null returns are skipped by the means but counted in ``n_factors``.
+    Output:
+        ``(subthemes, themes)``: returns by ``excntry``, ``theme``, ``subtheme``
+        and ``date_col`` with ``n_factors``, and by ``excntry``, ``theme`` and
+        ``date_col`` with ``n_subthemes`` and ``n_factors``.
+    """
+    rets = ["ret_ew", "ret_vw", "ret_vw_cap"]
+    subthemes = (
+        lms.join(themes.select("characteristic", "theme", "subtheme"), on="characteristic")
+        .group_by("excntry", "theme", "subtheme", date_col)
+        .agg(pl.len().alias("n_factors"), pl.col(rets).mean())
+        .sort("excntry", "theme", "subtheme", date_col)
     )
-    return hml, lms
+    theme_returns = (
+        subthemes.group_by("excntry", "theme", date_col)
+        .agg(pl.len().alias("n_subthemes"), pl.col("n_factors").sum(), pl.col(rets).mean())
+        .sort("excntry", "theme", date_col)
+    )
+    return subthemes, theme_returns
 
 
 def _pf_daily_lazy(

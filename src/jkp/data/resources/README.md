@@ -37,18 +37,18 @@ WRDS, CRSP, Compustat, or IBES vendor data:
   St. Louis ([series CCUSSP01CAM650N](https://fred.stlouisfed.org/series/CCUSSP01CAM650N)).
   FRED dates each month by its first day; the file dates it by its last day.
   Copyright OECD; subject to the OECD's terms of use.
-- **`cluster_labels.csv`** — Maps firm characteristics to thematic clusters
-  (e.g., "Low Leverage", "Investment", "Size", "Low Risk"). Authored by
-  Jensen, Kelly, and Pedersen.
 - **`themes/themes.csv`** and **`themes/theme_descriptions.csv`** — The
   current version of the economic themes: each characteristic's theme,
   subtheme and signs, a description for each theme and subtheme, and notes
   explaining signs and placements that may surprise. Earlier versions are kept in
-  `themes/superseded_themes/`. Authored by Jensen, Kelly, and Pedersen. See
+  `themes/superseded_themes/`; `v0/` holds the clusters and factor directions of
+  Jensen, Kelly, and Pedersen (2023). `jkp portfolio` builds signed factors and
+  theme portfolios for each version. Authored by Jensen, Kelly, and Pedersen. See
   `scripts/themes/` in the repository for the principles, versioning rules and
   changelog.
 - **`country_classification.xlsx`** — Country-to-region mapping used to
   group outputs. Authored by Jensen, Kelly, and Pedersen.
-- **`factor_details.xlsx`** — Metadata describing factor portfolios
-  (cluster membership, descriptions). Authored by Jensen, Kelly, and
+- **`factor_details.xlsx`** — Metadata on the 153 factors of Jensen, Kelly,
+  and Pedersen (2023): descriptions, original references, signs and clusters.
+  Reference only; the factors are signed by the themes files. Authored by Jensen, Kelly, and
   Pedersen.

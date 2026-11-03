@@ -21,8 +21,7 @@ __all__ = [  # noqa: F822 — lazy via __getattr__
     "add_ecdf",
     "_build_industry_daily_returns",
     "_build_industry_monthly_returns",
-    "_build_hml_lms",
-    "_build_oi_factor_returns",
+    "_build_hml",
     "portfolios",
     "regional_data",
     "_build_regional_loop",
@@ -30,6 +29,7 @@ __all__ = [  # noqa: F822 — lazy via __getattr__
     "_write_filtered",
     "_write_split_by_key",
     "run_portfolio",
+    "run_themes",
 ]
 
 _LAZY_REEXPORTS = frozenset(
@@ -37,7 +37,7 @@ _LAZY_REEXPORTS = frozenset(
         "add_ecdf",
         "_build_industry_daily_returns",
         "_build_industry_monthly_returns",
-        "_build_hml_lms",
+        "_build_hml",
         "portfolios",
         "regional_data",
         "_build_regional_loop",
@@ -63,183 +63,17 @@ def __dir__() -> list[str]:
     return sorted(set(__all__) | standard_dunders)
 
 
-def _build_oi_factor_returns(
-    *,
-    pf_daily: pl.DataFrame,
-    settings: dict,
-    char_info: pl.DataFrame,
-    cluster_labels: pl.DataFrame,
-    regions: pl.DataFrame,
-    market_daily: pl.DataFrame,
-) -> dict[str, pl.DataFrame | None]:
-    """Build daily factor outputs for an overnight or intraday return component.
+def _regions(settings: dict) -> pl.DataFrame:
+    """Countries in each region of the regional portfolios.
 
     Description:
-        Take the stacked per-country daily portfolio returns for one O/I
-        component (computed by ``portfolios()`` in the main pass alongside
-        ``ret_exc``, using the standard ``ret_exc_lead1m`` sort) and build
-        HML, LMS, cluster, and regional daily aggregates. Monthly O/I factor
-        portfolios are not constructed.
+        Read the bundled country classification, drop countries without a code
+        and the excluded countries, and list each region's countries and the
+        minimum number of countries a regional portfolio needs.
     Output:
-        Dict with keys ``pf_daily``, ``hml_daily``, ``lms_daily``,
-        ``cluster_pfs_daily``, ``regional_pfs_daily``,
-        ``regional_clusters_daily`` (values may be ``None``).
+        DataFrame with ``name``, ``country_codes`` and ``countries_min``.
     """
-    from .aux_functions import (
-        _build_hml_lms,
-        _build_regional_loop,
-    )
-
-    hml_daily, lms_daily = _build_hml_lms(
-        pf_daily, char_info, settings["pfs"], "date", include_signal=False
-    )
-
-    cluster_pfs_daily: pl.DataFrame | None = None
-    if lms_daily is not None:
-        cluster_pfs_daily = (
-            lms_daily.join(cluster_labels, on="characteristic", how="left")
-            .group_by(["excntry", "cluster", "date"])
-            .agg(
-                [
-                    pl.len().alias("n_factors"),
-                    pl.col("ret_ew").mean().alias("ret_ew"),
-                    pl.col("ret_vw").mean().alias("ret_vw"),
-                    pl.col("ret_vw_cap").mean().alias("ret_vw_cap"),
-                ]
-            )
-        )
-
-    weighting = settings["regional_pfs"]["country_weights"]
-    months_min = settings["regional_pfs"]["months_min"]
-    stocks_min = settings["regional_pfs"]["stocks_min"]
-    lms_cols_daily = [
-        "region",
-        "characteristic",
-        "direction",
-        "date",
-        "n_countries",
-        "ret_ew",
-        "ret_vw",
-        "ret_vw_cap",
-        "mkt_vw_exc",
-    ]
-    cluster_cols_daily = [
-        "region",
-        "cluster",
-        "date",
-        "n_countries",
-        "ret_ew",
-        "ret_vw",
-        "ret_vw_cap",
-        "mkt_vw_exc",
-    ]
-
-    regional_pfs_daily: pl.DataFrame | None = None
-    if lms_daily is not None:
-        regional_pfs_daily = _build_regional_loop(
-            data=lms_daily,
-            mkt=market_daily,
-            regions=regions,
-            date_col="date",
-            char_col="characteristic",
-            output_cols=lms_cols_daily,
-            weighting=weighting,
-            periods_min=months_min * 21,
-            stocks_min=stocks_min,
-        )
-
-    regional_clusters_daily: pl.DataFrame | None = None
-    if cluster_pfs_daily is not None:
-        regional_clusters_daily = _build_regional_loop(
-            data=cluster_pfs_daily.rename({"n_factors": "n_stocks_min"}).with_columns(
-                pl.lit(None).cast(pl.Float64).alias("direction")
-            ),
-            mkt=market_daily,
-            regions=regions,
-            date_col="date",
-            char_col="cluster",
-            output_cols=cluster_cols_daily,
-            weighting=weighting,
-            periods_min=months_min * 21,
-            stocks_min=1,
-        )
-
-    return {
-        "pf_daily": pf_daily,
-        "hml_daily": hml_daily,
-        "lms_daily": lms_daily,
-        "cluster_pfs_daily": cluster_pfs_daily,
-        "regional_pfs_daily": regional_pfs_daily,
-        "regional_clusters_daily": regional_clusters_daily,
-    }
-
-
-def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
-    """Run JKP portfolio generation.
-
-    Description:
-        Orchestrate portfolio construction: parse arguments, configure output
-        format, build factor portfolios for each country, and write results.
-    Steps:
-        1) Parse CLI arguments and configure output format.
-        2) Load country list and characteristic definitions.
-        3) Construct portfolios per country (monthly, daily, industry).
-        4) Aggregate cross-country results and compute long-minus-short factors.
-        5) Write output files and optionally convert to CSV.
-    Output:
-        Portfolio files written to data/processed/portfolios/.
-    """
-    # Function-local: LOAD_GLOBAL inside this function bypasses module
-    # __getattr__, so helpers must be bound explicitly here. Also keeps
-    # importing `jkp.data.portfolio` cheap (no eager duckdb/ibis pull).
-    from .aux_functions import (
-        _build_hml_lms,
-        _build_regional_loop,
-        _stack_outputs,
-        _write_filtered,
-        _write_split_by_key,
-        portfolios,
-    )
-
-    paths = DataPaths(base_dir=output_dir)
-    portfolios_dir = paths.processed_dir / "portfolios"
-    other_output_dir = paths.processed_dir / "other_output"
-    chars_dir = paths.processed_dir / "characteristics"
-
-    configure_output_format(output_format)
-
-    # Get list of countries from characteristics files; null_country holds stocks
-    # with a null excntry and is not a country.
-    countries = sorted(
-        p.stem
-        for p in chars_dir.glob("*.parquet")
-        if "world" not in p.stem and p.stem != "null_country"
-    )
-
-    chars = PORTFOLIO_CHARS
-    settings = PORTFOLIO_SETTINGS
-
-    print(
-        f"Start          : {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))}",
-        flush=True,
-    )
-
-    # Extract Necessary Information
-    # Read Factor details from bundled Excel file
-    from .paths import (
-        get_cluster_labels_path,
-        get_country_classification_path,
-        get_factor_details_path,
-    )
-
-    char_info = (
-        pl.read_excel(
-            get_factor_details_path(),
-            sheet_name="details",
-        )
-        .filter(pl.col("abr_jkp").is_not_null())
-        .select([pl.col("abr_jkp").alias("characteristic"), pl.col("direction").cast(pl.Int32)])
-    )
+    from .paths import get_country_classification_path
 
     # Read country classification details from bundled Excel file
     country_classification = pl.read_excel(
@@ -256,7 +90,7 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
     )
 
     # Creating the regions DataFrame
-    regions = pl.DataFrame(
+    return pl.DataFrame(
         {
             "name": ["developed", "emerging", "frontier", "world", "world_ex_us"],
             "country_codes": [
@@ -276,11 +110,183 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
         }
     )
 
-    # Read cluster labels from bundled CSV file
-    cluster_labels = pl.read_csv(
-        get_cluster_labels_path(),
-        infer_schema_length=int(1e10),
+
+def _write_theme_outputs(
+    *,
+    out_dir: Path,
+    suffix: str,
+    themes: pl.DataFrame,
+    hml: pl.DataFrame,
+    date_col: str,
+    mkt: pl.DataFrame,
+    regions: pl.DataFrame,
+    settings: dict,
+) -> None:
+    """Write one themes version's signed factors and theme portfolios for one return series.
+
+    Description:
+        Sign the HML factors of the version's characteristics (LMS), average them
+        within subthemes and the subtheme returns within themes, and aggregate
+        factors, themes and subthemes across countries into regions. A country's
+        factor enters a regional factor only with ``stocks_min`` stocks on each
+        side; a country's theme or subtheme enters with one factor.
+    Steps:
+        1) lms and country_factors/ from the signed factors.
+        2) regional_factors/ from lms.
+        3) themes and regional_themes/.
+        4) subthemes and regional_subthemes/, skipped when every subtheme is its
+           own theme, as in v0.
+    Output:
+        Files in ``out_dir``, each name ending in ``suffix``: "" (monthly),
+        "_daily" or an overnight/intraday component such as "_overnight".
+    """
+    from .aux_functions import (
+        _build_regional_loop,
+        _sign_factors,
+        _theme_returns,
+        _write_filtered,
+        _write_split_by_key,
     )
+
+    end_date = settings["end_date"]
+    regional = settings["regional_pfs"]
+    regional_cols = ["n_countries", "ret_ew", "ret_vw", "ret_vw_cap", "mkt_vw_exc"]
+
+    def regional_pfs(
+        data: pl.DataFrame, char_col: str, cols: list[str], stocks_min: int
+    ) -> pl.DataFrame:
+        return _build_regional_loop(
+            data=data,
+            mkt=mkt,
+            regions=regions,
+            date_col=date_col,
+            char_col=char_col,
+            output_cols=["region", *cols, date_col, *regional_cols],
+            weighting=regional["country_weights"],
+            periods_min=regional["months_min"] * (1 if date_col == "eom" else 21),
+            stocks_min=stocks_min,
+        )
+
+    # regional_data applies its minimum to n_stocks_min; for themes and
+    # subthemes that is the factor count, and the direction is undefined.
+    def as_regional_input(df: pl.DataFrame) -> pl.DataFrame:
+        return df.rename({"n_factors": "n_stocks_min"}).with_columns(
+            pl.lit(None).cast(pl.Float64).alias("direction")
+        )
+
+    lms = _sign_factors(hml, themes)
+    subthemes, theme_returns = _theme_returns(lms, themes, date_col)
+
+    _write_filtered(lms, out_dir / f"lms{suffix}.parquet", date_col, end_date)
+    _write_split_by_key(lms, out_dir / f"country_factors{suffix}", "excntry", date_col, end_date)
+    _write_split_by_key(
+        regional_pfs(
+            lms, "characteristic", ["characteristic", "direction"], regional["stocks_min"]
+        ),
+        out_dir / f"regional_factors{suffix}",
+        "region",
+        date_col,
+        end_date,
+    )
+    _write_filtered(theme_returns, out_dir / f"themes{suffix}.parquet", date_col, end_date)
+    _write_split_by_key(
+        regional_pfs(as_regional_input(theme_returns), "theme", ["theme"], 1),
+        out_dir / f"regional_themes{suffix}",
+        "region",
+        date_col,
+        end_date,
+    )
+    if (themes["subtheme"] != themes["theme"]).any():
+        _write_filtered(subthemes, out_dir / f"subthemes{suffix}.parquet", date_col, end_date)
+        regional_subthemes = (
+            regional_pfs(as_regional_input(subthemes), "subtheme", ["subtheme"], 1)
+            .join(
+                themes.select("subtheme", "theme").unique(),
+                on="subtheme",
+                maintain_order="left",
+            )
+            .select("region", "theme", "subtheme", date_col, *regional_cols)
+        )
+        _write_split_by_key(
+            regional_subthemes,
+            out_dir / f"regional_subthemes{suffix}",
+            "region",
+            date_col,
+            end_date,
+        )
+
+
+def _read_saved(path: Path) -> pl.DataFrame:
+    """Read a saved output file, as parquet or, after a CSV run, as CSV."""
+    parquet = path.with_suffix(".parquet")
+    if parquet.exists():
+        return pl.read_parquet(parquet)
+    return pl.read_csv(path.with_suffix(".csv"), try_parse_dates=True)
+
+
+def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
+    """Run JKP portfolio generation.
+
+    Description:
+        Orchestrate portfolio construction: configure output format, build
+        factor portfolios for each country, write the unsigned results, and
+        build the signed factors and theme portfolios of every released themes
+        version.
+    Steps:
+        1) Configure output format and load the released themes versions.
+        2) Load country list and portfolio inputs.
+        3) Construct portfolios per country (monthly, daily, industry) for
+           ``PORTFOLIO_CHARS`` and every characteristic in a themes version.
+        4) Aggregate cross-country results and compute HML factors.
+        5) Write output files.
+        6) Write each themes version's outputs under ``portfolios/themes/``.
+        7) Optionally convert to CSV.
+    Output:
+        Portfolio files written to data/processed/portfolios/.
+    """
+    # Function-local: LOAD_GLOBAL inside this function bypasses module
+    # __getattr__, so helpers must be bound explicitly here. Also keeps
+    # importing `jkp.data.portfolio` cheap (no eager duckdb/ibis pull).
+    from .aux_functions import (
+        _build_hml,
+        _stack_outputs,
+        _write_filtered,
+        load_themes,
+        portfolios,
+        theme_versions,
+    )
+    from .paths import get_themes_dir
+
+    paths = DataPaths(base_dir=output_dir)
+    portfolios_dir = paths.processed_dir / "portfolios"
+    other_output_dir = paths.processed_dir / "other_output"
+    chars_dir = paths.processed_dir / "characteristics"
+
+    configure_output_format(output_format)
+
+    # Get list of countries from characteristics files; null_country holds stocks
+    # with a null excntry and is not a country.
+    countries = sorted(
+        p.stem
+        for p in chars_dir.glob("*.parquet")
+        if "world" not in p.stem and p.stem != "null_country"
+    )
+
+    # Sort every characteristic that a released themes version signs. Loading
+    # the versions first stops a run with an invalid themes file before sorting.
+    theme_sets = {
+        name: load_themes(path) for name, path in theme_versions(get_themes_dir()).items()
+    }
+    themed = set().union(*(set(t["characteristic"]) for t in theme_sets.values()))
+    chars = PORTFOLIO_CHARS + sorted(themed - set(PORTFOLIO_CHARS))
+    settings = PORTFOLIO_SETTINGS
+
+    print(
+        f"Start          : {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))}",
+        flush=True,
+    )
+
+    regions = _regions(settings)
 
     # nyse_cutoffs
     nyse_size_cutoffs = pl.read_parquet(other_output_dir / "nyse_cutoffs.parquet")
@@ -393,22 +399,16 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
         gics_daily = None
         ff49_daily = None
 
-    # Create HML / LMS Returns
+    # Create HML Returns
     if pf_returns is not None and pf_returns.height > 0:
-        hml_returns, lms_returns = _build_hml_lms(
-            pf_returns, char_info, settings["pfs"], "eom", include_signal=True
-        )
+        hml_returns = _build_hml(pf_returns, settings["pfs"], "eom", include_signal=True)
     else:
         hml_returns = None
-        lms_returns = None
 
     if settings["daily_pf"] and pf_daily is not None and pf_daily.height > 0:
-        hml_daily, lms_daily = _build_hml_lms(
-            pf_daily, char_info, settings["pfs"], "date", include_signal=False
-        )
+        hml_daily = _build_hml(pf_daily, settings["pfs"], "date", include_signal=False)
     else:
         hml_daily = None
-        lms_daily = None
 
     # Extract CMP returns
     cmp_list = [d["cmp"] for d in portfolio_data.values() if "cmp" in d]
@@ -416,141 +416,12 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
     if cmp_returns is None:
         print("No 'cmp' keys found")
 
-    # Create Clustered Portfolios
-    if lms_returns is not None:
-        cluster_pfs = (
-            lms_returns.join(cluster_labels, on="characteristic", how="left")
-            .group_by(["excntry", "cluster", "eom"])
-            .agg(
-                [
-                    pl.len().alias("n_factors"),
-                    pl.col("ret_ew").mean().alias("ret_ew"),
-                    pl.col("ret_vw").mean().alias("ret_vw"),
-                    pl.col("ret_vw_cap").mean().alias("ret_vw_cap"),
-                ]
-            )
-        )
-    else:
-        cluster_pfs = None
-
-    # Conditional Operation for Daily Clustered Portfolios
-    if settings["daily_pf"] and lms_daily is not None:
-        cluster_pfs_daily = (
-            lms_daily.join(cluster_labels, on="characteristic", how="left")
-            .group_by(["excntry", "cluster", "date"])
-            .agg(
-                [
-                    pl.len().alias("n_factors"),
-                    pl.col("ret_ew").mean().alias("ret_ew"),
-                    pl.col("ret_vw").mean().alias("ret_vw"),
-                    pl.col("ret_vw_cap").mean().alias("ret_vw_cap"),
-                ]
-            )
-        )
-    else:
-        cluster_pfs_daily = None
-
-    weighting = settings["regional_pfs"]["country_weights"]
-    months_min = settings["regional_pfs"]["months_min"]
-    stocks_min = settings["regional_pfs"]["stocks_min"]
-    lms_cols_monthly = [
-        "region",
-        "characteristic",
-        "direction",
-        "eom",
-        "n_countries",
-        "ret_ew",
-        "ret_vw",
-        "ret_vw_cap",
-        "mkt_vw_exc",
-    ]
-    lms_cols_daily = [c if c != "eom" else "date" for c in lms_cols_monthly]
-    cluster_cols_monthly = [
-        "region",
-        "cluster",
-        "eom",
-        "n_countries",
-        "ret_ew",
-        "ret_vw",
-        "ret_vw_cap",
-        "mkt_vw_exc",
-    ]
-    cluster_cols_daily = [c if c != "eom" else "date" for c in cluster_cols_monthly]
-
-    # Creating regional portfolios
-    if lms_returns is not None:
-        regional_pfs = _build_regional_loop(
-            data=lms_returns,
-            mkt=market,
-            regions=regions,
-            date_col="eom",
-            char_col="characteristic",
-            output_cols=lms_cols_monthly,
-            weighting=weighting,
-            periods_min=months_min,
-            stocks_min=stocks_min,
-        )
-    else:
-        regional_pfs = None
-
-    if settings["daily_pf"] and lms_daily is not None:
-        regional_pfs_daily = _build_regional_loop(
-            data=lms_daily,
-            mkt=market_daily,
-            regions=regions,
-            date_col="date",
-            char_col="characteristic",
-            output_cols=lms_cols_daily,
-            weighting=weighting,
-            periods_min=months_min * 21,
-            stocks_min=stocks_min,
-        )
-    else:
-        regional_pfs_daily = None
-
-    # Creating regional clusters
-    if cluster_pfs is not None:
-        regional_clusters = _build_regional_loop(
-            data=cluster_pfs.rename({"n_factors": "n_stocks_min"}).with_columns(
-                pl.lit(None).cast(pl.Float64).alias("direction")
-            ),
-            mkt=market,
-            regions=regions,
-            date_col="eom",
-            char_col="cluster",
-            output_cols=cluster_cols_monthly,
-            weighting=weighting,
-            periods_min=months_min,
-            stocks_min=1,
-        )
-    else:
-        regional_clusters = None
-
-    if settings["daily_pf"] and cluster_pfs_daily is not None:
-        regional_clusters_daily = _build_regional_loop(
-            data=cluster_pfs_daily.rename({"n_factors": "n_stocks_min"}).with_columns(
-                pl.lit(None).cast(pl.Float64).alias("direction")
-            ),
-            mkt=market_daily,
-            regions=regions,
-            date_col="date",
-            char_col="cluster",
-            output_cols=cluster_cols_daily,
-            weighting=weighting,
-            periods_min=months_min * 21,
-            stocks_min=1,
-        )
-    else:
-        regional_clusters_daily = None
-
     end_date = settings["end_date"]
 
     # Single-file outputs (monthly)
     monthly_outputs = [
         (pf_returns, "pfs.parquet"),
         (hml_returns, "hml.parquet"),
-        (lms_returns, "lms.parquet"),
-        (cluster_pfs, "clusters.parquet"),
     ]
     for df, name in monthly_outputs:
         if df is not None:
@@ -563,8 +434,6 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
         daily_outputs = [
             (pf_daily, "pfs_daily.parquet"),
             (hml_daily, "hml_daily.parquet"),
-            (lms_daily, "lms_daily.parquet"),
-            (cluster_pfs_daily, "clusters_daily.parquet"),
         ]
         for df, name in daily_outputs:
             if df is not None:
@@ -589,51 +458,8 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
             if df is not None:
                 _write_filtered(df, portfolios_dir / name, "date", end_date)
 
-    # Partitioned outputs
-    if regional_pfs is not None:
-        _write_split_by_key(
-            regional_pfs, portfolios_dir / "regional_factors", "region", "eom", end_date
-        )
-    if settings["daily_pf"] and regional_pfs_daily is not None:
-        _write_split_by_key(
-            regional_pfs_daily,
-            portfolios_dir / "regional_factors_daily",
-            "region",
-            "date",
-            end_date,
-        )
-    if regional_clusters is not None:
-        _write_split_by_key(
-            regional_clusters,
-            portfolios_dir / "regional_clusters",
-            "region",
-            "eom",
-            end_date,
-        )
-    if settings["daily_pf"] and regional_clusters_daily is not None:
-        _write_split_by_key(
-            regional_clusters_daily,
-            portfolios_dir / "regional_clusters_daily",
-            "region",
-            "date",
-            end_date,
-        )
-    if lms_returns is not None:
-        _write_split_by_key(
-            lms_returns,
-            portfolios_dir / "country_factors",
-            "excntry",
-            "eom",
-            end_date,
-        )
-    if settings["daily_pf"] and lms_daily is not None:
-        _write_split_by_key(
-            lms_daily,
-            portfolios_dir / "country_factors_daily",
-            "excntry",
-            "date",
-            end_date,
-        )
+    # HML factors by return series; the themes versions sign them below.
+    hml_series = [("", hml_returns, "eom"), ("_daily", hml_daily, "date")]
 
     # Overnight / Intraday daily factor portfolios (LPS 2019 decomposition).
     # The main pass aggregated each component's daily returns with the
@@ -647,48 +473,26 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
             continue
 
         print(f"Building {component} daily factor portfolios...", flush=True)
-        oi = _build_oi_factor_returns(
-            pf_daily=pf_oi,
-            settings=settings,
-            char_info=char_info,
-            cluster_labels=cluster_labels,
-            regions=regions,
-            market_daily=market_daily,
-        )
+        hml_oi = _build_hml(pf_oi, settings["pfs"], "date", include_signal=False)
+        _write_filtered(pf_oi, portfolios_dir / f"pfs_{component}.parquet", "date", end_date)
+        _write_filtered(hml_oi, portfolios_dir / f"hml_{component}.parquet", "date", end_date)
+        hml_series.append((f"_{component}", hml_oi, "date"))
 
-        oi_single = [
-            (oi.get("pf_daily"), f"pfs_{component}.parquet"),
-            (oi.get("hml_daily"), f"hml_{component}.parquet"),
-            (oi.get("lms_daily"), f"lms_{component}.parquet"),
-            (oi.get("cluster_pfs_daily"), f"clusters_{component}.parquet"),
-        ]
-        for df, name in oi_single:
-            if df is not None:
-                _write_filtered(df, portfolios_dir / name, "date", end_date)
-
-        if oi.get("regional_pfs_daily") is not None:
-            _write_split_by_key(
-                oi["regional_pfs_daily"],
-                portfolios_dir / f"regional_factors_{component}",
-                "region",
-                "date",
-                end_date,
-            )
-        if oi.get("regional_clusters_daily") is not None:
-            _write_split_by_key(
-                oi["regional_clusters_daily"],
-                portfolios_dir / f"regional_clusters_{component}",
-                "region",
-                "date",
-                end_date,
-            )
-        if oi.get("lms_daily") is not None:
-            _write_split_by_key(
-                oi["lms_daily"],
-                portfolios_dir / f"country_factors_{component}",
-                "excntry",
-                "date",
-                end_date,
+    # Signed factors and theme portfolios of each released themes version
+    for suffix, hml, date_col in hml_series:
+        if hml is None:
+            continue
+        for name, themes in theme_sets.items():
+            print(f"Building themes {name}{suffix}...", flush=True)
+            _write_theme_outputs(
+                out_dir=portfolios_dir / "themes" / name,
+                suffix=suffix,
+                themes=themes,
+                hml=hml,
+                date_col=date_col,
+                mkt=market if date_col == "eom" else market_daily,
+                regions=regions,
+                settings=settings,
             )
 
     # Convert to CSV if configured
@@ -698,3 +502,74 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
         f"End            : {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))}",
         flush=True,
     )
+
+
+def run_themes(*, output_dir: Path, version: str | None = None, file: Path | None = None) -> None:
+    """Build signed factors and theme portfolios from saved HML factors.
+
+    Description:
+        Read the HML factors written by ``jkp portfolio`` and build the outputs
+        of every released themes version, of one released version
+        (``version``), or of an edited themes file in the v1.0 format
+        (``file``). Outputs are written in the format of the saved files.
+    Steps:
+        1) Load the requested themes versions.
+        2) For each saved hml file (monthly, daily, overnight/intraday), read it
+           and the market returns, and write each version's outputs.
+        3) After a CSV run, convert the written folders to CSV.
+    Output:
+        Files under ``portfolios/themes/<version>/``, or
+        ``portfolios/themes/<file name without extension>/`` for ``file``.
+    """
+    from .aux_functions import load_themes, theme_versions
+    from .paths import get_themes_dir
+
+    paths = DataPaths(base_dir=output_dir)
+    portfolios_dir = paths.processed_dir / "portfolios"
+    other_output_dir = paths.processed_dir / "other_output"
+    settings = PORTFOLIO_SETTINGS
+
+    released = theme_versions(get_themes_dir())
+    if file is not None:
+        if file.stem in released:
+            raise ValueError(f"{file.name} has the name of a released themes version; rename it")
+        sources = {file.stem: file}
+    elif version is not None:
+        if version not in released:
+            raise ValueError(f"unknown themes version {version!r}; released: {sorted(released)}")
+        sources = {version: released[version]}
+    else:
+        sources = released
+    theme_sets = {name: load_themes(path) for name, path in sources.items()}
+
+    hml_names = sorted(
+        {p.stem for p in portfolios_dir.glob("hml*") if p.suffix in (".parquet", ".csv")}
+    )
+    if not hml_names:
+        raise FileNotFoundError(f"no hml files in {portfolios_dir}; run jkp portfolio first")
+    output_format = "parquet" if (portfolios_dir / "hml.parquet").exists() else "csv"
+    configure_output_format(output_format)
+
+    regions = _regions(settings)
+    for hml_name in hml_names:
+        suffix = hml_name.removeprefix("hml")
+        date_col = "eom" if suffix == "" else "date"
+        market = "market_returns" if date_col == "eom" else "market_returns_daily"
+        hml = _read_saved(portfolios_dir / hml_name)
+        mkt = _read_saved(other_output_dir / market)
+        for name, themes in theme_sets.items():
+            print(f"Building themes {name}{suffix}...", flush=True)
+            _write_theme_outputs(
+                out_dir=portfolios_dir / "themes" / name,
+                suffix=suffix,
+                themes=themes,
+                hml=hml,
+                date_col=date_col,
+                mkt=mkt,
+                regions=regions,
+                settings=settings,
+            )
+
+    if output_format == "csv":
+        for name in theme_sets:
+            convert_outputs_to_csv(processed_dir=portfolios_dir / "themes" / name)

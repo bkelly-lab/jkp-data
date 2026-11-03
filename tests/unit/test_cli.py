@@ -162,6 +162,45 @@ class TestPortfolioCommand:
 
 
 @pytest.mark.unit
+class TestThemesCommand:
+    """Test the themes command routes to run_themes correctly."""
+
+    @patch("jkp.data.portfolio.run_themes")
+    def test_themes_builds_every_version_by_default(self, mock_run_themes, tmp_path):
+        result = runner.invoke(app, ["themes", str(tmp_path)])
+        assert result.exit_code == 0
+        mock_run_themes.assert_called_once_with(output_dir=tmp_path, version=None, file=None)
+
+    @patch("jkp.data.portfolio.run_themes")
+    def test_themes_version(self, mock_run_themes, tmp_path):
+        result = runner.invoke(app, ["themes", str(tmp_path), "--version", "v0"])
+        assert result.exit_code == 0
+        mock_run_themes.assert_called_once_with(output_dir=tmp_path, version="v0", file=None)
+
+    @patch("jkp.data.portfolio.run_themes")
+    def test_themes_file(self, mock_run_themes, tmp_path):
+        file = tmp_path / "mine.csv"
+        result = runner.invoke(app, ["themes", str(tmp_path), "--file", str(file)])
+        assert result.exit_code == 0
+        mock_run_themes.assert_called_once_with(output_dir=tmp_path, version=None, file=file)
+
+    @patch("jkp.data.portfolio.run_themes")
+    def test_themes_rejects_version_and_file(self, mock_run_themes, tmp_path):
+        result = runner.invoke(
+            app, ["themes", str(tmp_path), "--version", "v0", "--file", "mine.csv"]
+        )
+        assert result.exit_code != 0
+        mock_run_themes.assert_not_called()
+
+    def test_themes_help(self):
+        # The command's --version option is separate from the app-level --version.
+        result = runner.invoke(app, ["themes", "--help"])
+        assert result.exit_code == 0
+        assert "--file" in result.output
+        assert "themes version" in result.output
+
+
+@pytest.mark.unit
 class TestConnectCommand:
     """Test the connect command routes to wrds_credentials correctly."""
 

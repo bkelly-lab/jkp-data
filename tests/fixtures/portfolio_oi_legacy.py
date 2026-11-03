@@ -6,6 +6,11 @@ legacy path, which reruns ``portfolios()`` once per O/I component, against the
 current single-pass implementation and assert identical outputs. Copied
 verbatim; only relative imports were made absolute and pointed at the frozen
 ``portfolios``. Not used at runtime outside the test suite.
+
+Since #296 the live code no longer has ``_build_hml_lms`` or the getters for
+``factor_details.xlsx`` and ``cluster_labels.csv``. A frozen copy of
+``_build_hml_lms`` follows, and the v0 directions and theme labels are read
+from ``V0_DIR``, which the test points at its synthetic v0 themes folder.
 """
 
 from __future__ import annotations
@@ -23,6 +28,64 @@ from jkp.data.aux_functions import (
 from jkp.data.config import COLLECT_CHUNK_SIZE, PORTFOLIO_CHARS, PORTFOLIO_SETTINGS
 from jkp.data.output_writer import configure_output_format, convert_outputs_to_csv
 from jkp.data.paths import DataPaths
+
+V0_DIR: Path | None = None
+
+
+def _build_hml_lms(
+    pf_df: pl.DataFrame,
+    char_info: pl.DataFrame,
+    n_pfs: int,
+    date_col: str,
+    include_signal: bool,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Build HML (top minus bottom pf) and signed LMS factor returns.
+
+    Description:
+        Group `pf_df` by ``["excntry", "characteristic", date_col]``, compute
+        top-minus-bottom-portfolio diffs for return columns (and optionally
+        ``signal``), keep only groups containing both extreme portfolios, then
+        join `char_info` and re-sign each factor by ``direction``.
+    Output:
+        ``(hml, lms)`` tuple of DataFrames.
+    """
+    diff = lambda c: (  # noqa: E731
+        pl.col(c).filter(pl.col("pf") == n_pfs).first()
+        - pl.col(c).filter(pl.col("pf") == 1).first()
+    )
+    agg_exprs = [pl.col("pf").is_in([n_pfs, 1]).sum().alias("pfs")]
+    if include_signal:
+        agg_exprs.append(diff("signal").alias("signal"))
+    agg_exprs.extend(
+        [
+            (
+                pl.col("n").filter(pl.col("pf") == n_pfs).first()
+                + pl.col("n").filter(pl.col("pf") == 1).first()
+            ).alias("n_stocks"),
+            pl.col("n").filter(pl.col("pf").is_in([n_pfs, 1])).min().alias("n_stocks_min"),
+            diff("ret_ew").alias("ret_ew"),
+            diff("ret_vw").alias("ret_vw"),
+            diff("ret_vw_cap").alias("ret_vw_cap"),
+        ]
+    )
+
+    hml = (
+        pf_df.group_by(["excntry", "characteristic", date_col])
+        .agg(agg_exprs)
+        .filter(pl.col("pfs") == 2)
+        .drop("pfs")
+        .sort(["excntry", "characteristic", date_col])
+    )
+
+    resign_cols = (
+        ["signal", "ret_ew", "ret_vw", "ret_vw_cap"]
+        if include_signal
+        else ["ret_ew", "ret_vw", "ret_vw_cap"]
+    )
+    lms = char_info.join(hml, on="characteristic", how="left").with_columns(
+        [(pl.col(c) * pl.col("direction")).alias(c) for c in resign_cols]
+    )
+    return hml, lms
 
 
 def portfolios(
@@ -550,7 +613,6 @@ def _build_oi_factor_returns(
         ``regional_clusters_daily`` (values may be ``None``).
     """
     from jkp.data.aux_functions import (
-        _build_hml_lms,
         _build_regional_loop,
         _stack_outputs,
     )
@@ -691,7 +753,6 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
     # __getattr__, so helpers must be bound explicitly here. Also keeps
     # importing `jkp.data.portfolio` cheap (no eager duckdb/ibis pull).
     from jkp.data.aux_functions import (
-        _build_hml_lms,
         _build_regional_loop,
         _stack_outputs,
         _write_filtered,
@@ -718,19 +779,10 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
 
     # Extract Necessary Information
     # Read Factor details from bundled Excel file
-    from jkp.data.paths import (
-        get_cluster_labels_path,
-        get_country_classification_path,
-        get_factor_details_path,
-    )
+    from jkp.data.paths import get_country_classification_path
 
-    char_info = (
-        pl.read_excel(
-            get_factor_details_path(),
-            sheet_name="details",
-        )
-        .filter(pl.col("abr_jkp").is_not_null())
-        .select([pl.col("abr_jkp").alias("characteristic"), pl.col("direction").cast(pl.Int32)])
+    char_info = pl.read_csv(V0_DIR / "factor_directions.csv").select(
+        "characteristic", pl.col("direction").cast(pl.Int32)
     )
 
     # Read country classification details from bundled Excel file
@@ -770,7 +822,7 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
 
     # Read cluster labels from bundled CSV file
     cluster_labels = pl.read_csv(
-        get_cluster_labels_path(),
+        V0_DIR / "cluster_labels.csv",
         infer_schema_length=int(1e10),
     )
 
