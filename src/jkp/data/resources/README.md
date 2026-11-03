@@ -30,6 +30,11 @@ WRDS, CRSP, Compustat, or IBES vendor data:
   codes to industry groups. Sourced from Ken French's
   [data library](https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/data_library.html);
   subject to its own publicly-available terms.
+- **`characteristics.csv`** — The names of the characteristics in the
+  `characteristics/` output files, one per row. A new characteristic must be
+  added here. `tests/unit/test_themes.py` checks every characteristic in
+  `themes/themes.csv` against this list. Authored by Jensen, Kelly, and
+  Pedersen.
 - **`cluster_labels.csv`** — Maps firm characteristics to thematic clusters
   (e.g., "Low Leverage", "Investment", "Size", "Low Risk"). Authored by
   Jensen, Kelly, and Pedersen.

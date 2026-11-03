@@ -17,6 +17,11 @@ def descriptions() -> pl.DataFrame:
     return pl.read_csv(_resource_path("themes/theme_descriptions.csv"))
 
 
+@pytest.fixture(scope="module")
+def characteristics() -> pl.DataFrame:
+    return pl.read_csv(_resource_path("characteristics.csv"))
+
+
 def not_constant(df: pl.DataFrame, col: str, within: str) -> list[str]:
     """Groups of `within` where `col` takes more than one value."""
     counts = df.group_by(within).agg(pl.col(col).n_unique())
@@ -73,3 +78,9 @@ def test_one_version(themes, descriptions):
 def test_portfolio_characteristics_have_a_theme(themes):
     missing = sorted(set(PORTFOLIO_CHARS) - set(themes["characteristic"]))
     assert not missing, f"no theme for: {missing}"
+
+
+@pytest.mark.unit
+def test_themed_characteristics_exist(themes, characteristics):
+    unknown = sorted(set(themes["characteristic"]) - set(characteristics["characteristic"]))
+    assert not unknown, f"not in characteristics.csv: {unknown}"

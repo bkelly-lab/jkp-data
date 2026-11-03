@@ -83,6 +83,7 @@ Static reference data (`src/jkp/data/resources/cluster_labels.csv`, `src/jkp/dat
 
 **Modularity & structure:**
 - New pipeline functions should be added to `aux_functions.py` and called from `main.py`
+- A new characteristic in the `characteristics/` output must also be added to `src/jkp/data/resources/characteristics.csv`
 - Use the `@measure_time` decorator on pipeline-level functions
 - Use `collect_and_write()` for the lazy→eager→parquet workflow
 - Pipeline functions in `aux_functions.py` that touch the filesystem must accept `paths: DataPaths` as their first parameter and use it for all path construction (e.g. `paths.interim_dir / "foo.parquet"`, `paths.raw_tables_dir / ...`). Never use `os.chdir`, `os.system`, or bare relative path strings. DuckDB SQL strings should interpolate `Path.as_posix()` rather than rely on cwd.
