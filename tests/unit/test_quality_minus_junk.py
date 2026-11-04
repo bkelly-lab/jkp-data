@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 from datetime import date
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -288,6 +289,35 @@ class TestZRanks:
         df = _z_frame([1.0, 2.0, 3.0])
         result = z_ranks(df, "x", 2, "ascending")
         assert result.columns == ["excntry", "id", "eom", "z_x"]
+
+    def test_z_matches_exact_rank_moments_bit_for_bit(self) -> None:
+        """z equals (rank - exact mean) / sqrt(exact variance), each rounded once."""
+        vals = np.random.default_rng(0).integers(0, 300, 2_000).astype(float).tolist()
+        result = z_ranks(_z_frame(vals), "x", 2, "ascending").sort("id")
+
+        n = len(vals)
+        ranks = pl.Series(vals).rank(method="average").to_list()
+        sq_dev_x4 = sum(int(2 * r) ** 2 for r in ranks) - n * (n + 1) ** 2
+        sd = math.sqrt(float(Fraction(sq_dev_x4, 4 * (n - 1))))
+        assert result["z_x"].to_list() == [(r - (n + 1) / 2) / sd for r in ranks]
+
+    def test_z_independent_of_row_order(self) -> None:
+        """Shuffled rows give bit-identical z-scores."""
+        rng = np.random.default_rng(1)
+        n = 3_000
+        df = pl.DataFrame(
+            {
+                "excntry": rng.choice(["US", "GB"], n),
+                "id": np.arange(n),
+                "eom": [EOM] * n,
+                "x": rng.integers(0, 300, n).astype(float),
+            }
+        )
+        expected = z_ranks(df, "x", 2, "ascending").sort("id")
+        for seed in range(5):
+            shuffled = df.sample(fraction=1.0, shuffle=True, seed=seed)
+            result = z_ranks(shuffled, "x", 2, "ascending").sort("id")
+            assert_frame_equal(result, expected, check_exact=True)
 
 
 # ===========================================================================
@@ -694,6 +724,31 @@ class TestQmjAggregation:
             result_ab_a["qmj"].to_list(),
             **tolerance.STANDARD,
         )
+
+    def test_composites_equal_up_to_float_noise_tie(self) -> None:
+        """Stocks 1 and 2 have the same six profitability ranks in a different column order.
+
+        Their composites are equal in exact math but differ in the last bit when summed in
+        floating point. Without rounding, the second-stage rank orders them by that noise;
+        they must get the same qmj_prof.
+        """
+        n = 12
+        prof_ranks = {
+            "gp_at": [7, 12, 8, 6, 4, 11, 9, 1, 2, 5, 3, 10],
+            "ni_be": [12, 7, 9, 1, 11, 4, 3, 6, 8, 10, 2, 5],
+            "ni_at": [1, 8, 2, 4, 11, 5, 3, 10, 6, 12, 9, 7],
+            "ocf_at": [5, 4, 7, 2, 3, 9, 6, 8, 10, 12, 11, 1],
+            "gp_sale": [8, 5, 11, 3, 9, 6, 2, 1, 10, 12, 4, 7],
+            "oaccruals_at": [4, 1, 8, 12, 9, 6, 7, 5, 2, 3, 10, 11],
+        }
+        # oaccruals_at is ranked descending, so its values are flipped to keep these ranks.
+        overrides = {
+            c: [float(n + 1 - r) if c == "oaccruals_at" else float(r) for r in ranks]
+            for c, ranks in prof_ranks.items()
+        }
+        result = self._run(_group_frame(n=n, overrides=overrides)).sort("id")
+        qmj_prof = result["qmj_prof"].to_list()
+        assert qmj_prof[0] == qmj_prof[1], f"Tied composites got different scores: {qmj_prof[:2]}"
 
 
 # ===========================================================================

@@ -130,13 +130,14 @@ def collect_and_write(df, filename, collect_streaming=False):
         integrates with CSV conversion at pipeline end.
 
     Steps:
-        1) df.collect(streaming=collect_streaming).
+        1) df.collect() on the streaming engine if collect_streaming, else in-memory.
         2) write_parquet(filename).
 
     Output:
         Parquet file at `filename`.
     """
-    df.collect(streaming=collect_streaming).write_parquet(filename)
+    engine = "streaming" if collect_streaming else "in-memory"
+    df.collect(engine=engine).write_parquet(filename)
 
 
 def sic_naics_aux(filename):
@@ -254,10 +255,14 @@ def gen_firmshares(paths: DataPaths):
         2) Filter to INDL/STD/D/C rows with non-null shares & adj. factors.
         3) SELECT {gvkey, datadate, cshoq→csho_fund, ajexq→ajex_fund} from FUNDQ.
         4) UNION ALL with FUNDA {csho→csho_fund, ajex→ajex_fund}.
-        5) Write to raw_data_dfs/__firm_shares1.parquet.
+        5) Keep one record per (gvkey, datadate): FUNDQ over FUNDA (as SAS's union order
+           and stable nodupkey sort do). When a fiscal year-end change leaves two quarterly
+           records on one date, keep the one with a fiscal quarter, then the highest fyr.
+        6) Write to raw_data_dfs/__firm_shares1.parquet.
 
     Output:
-        Parquet: raw_data_dfs/__firm_shares1.parquet (gvkey, datadate, csho_fund, ajex_fund).
+        Parquet: raw_data_dfs/__firm_shares1.parquet (gvkey, datadate, csho_fund, ajex_fund),
+        unique on (gvkey, datadate).
     """
     con = ibis.duckdb.connect(threads=os.cpu_count())
     con.create_table("comp_fundq", con.read_parquet(paths.raw_tables_dir / "comp_fundq.parquet"))
@@ -267,16 +272,19 @@ def gen_firmshares(paths: DataPaths):
     )
     con.raw_sql("""
     CREATE TABLE __firm_shares1 AS
+    SELECT DISTINCT ON (gvkey, datadate) gvkey, datadate, csho_fund, ajex_fund
+    FROM (
+        SELECT gvkey, datadate, cshoq AS csho_fund, ajexq AS ajex_fund, 0 AS source_rank, fqtr, fyr
+        FROM comp_fundq
+        WHERE indfmt = 'INDL' AND datafmt = 'STD' AND popsrc = 'D' AND consol = 'C' AND cshoq IS NOT NULL AND ajexq IS NOT NULL
 
-    SELECT gvkey, datadate, cshoq AS csho_fund, ajexq AS ajex_fund
-    FROM comp_fundq
-    WHERE indfmt = 'INDL' AND datafmt = 'STD' AND popsrc = 'D' AND consol = 'C' AND cshoq IS NOT NULL AND ajexq IS NOT NULL
+        UNION ALL
 
-    UNION ALL
-
-    SELECT gvkey, datadate, csho AS csho_fund, ajex AS ajex_fund
-    FROM comp_funda
-    WHERE indfmt = 'INDL' AND datafmt = 'STD' AND popsrc = 'D' AND consol = 'C' AND csho IS NOT NULL AND ajex IS NOT NULL;
+        SELECT gvkey, datadate, csho AS csho_fund, ajex AS ajex_fund, 1 AS source_rank, NULL AS fqtr, fyr
+        FROM comp_funda
+        WHERE indfmt = 'INDL' AND datafmt = 'STD' AND popsrc = 'D' AND consol = 'C' AND csho IS NOT NULL AND ajex IS NOT NULL
+    )
+    ORDER BY gvkey, datadate, source_rank, fqtr IS NULL, fyr DESC;
     """)
     con.table("__firm_shares1").to_parquet(
         paths.interim_dir / "raw_data_dfs" / "__firm_shares1.parquet"
@@ -3212,8 +3220,10 @@ def comp_hgics(paths: DataPaths, lib):
         terminal dates and write separate outputs.
 
     Steps:
-        1) Load raw file (national/global); replace null gics with -999 sentinel.
-        2) Compute row counts and terminal rows; set open-ended indthru to (max(indfrom) or END_DATE).
+        1) Load raw file (national/global), sorted by (gvkey, indfrom); replace null gics
+           with -999 sentinel.
+        2) Compute row counts and terminal rows (latest indfrom per gvkey); set open-ended
+           indthru to (max(indfrom) or END_DATE).
         3) Create date ranges [indfrom, indthru]; explode; unique per (gvkey,date).
         4) Write to na_hgics.parquet or g_hgics.parquet.
 
@@ -3231,7 +3241,7 @@ def comp_hgics(paths: DataPaths, lib):
             "global": paths.interim_dir / "g_hgics.parquet",
         },
     }
-    data = pl.scan_parquet(file_paths["raw data"][lib])  # .sort(['gvkey', 'indfrom'])
+    data = pl.scan_parquet(file_paths["raw data"][lib]).sort(["gvkey", "indfrom"])
     if data.limit(1).collect().is_empty():
         warnings.warn(
             f"comp_hgics: {lib} GICS input is empty "
@@ -3292,7 +3302,8 @@ def comp_sic_naics(paths: DataPaths):
 
     Steps:
         1) Load NA and GL tables; drop a known problematic row; outer-join on (gvkey,datadate).
-        2) Coalesce ids/dates/codes; order to prefer non-null SIC; select distinct per (gvkey,date).
+        2) Coalesce ids/dates/codes; order to prefer the lowest non-null SIC, then non-null
+           NAICS on SIC ties; select distinct per (gvkey,date).
         3) Convert to daily spans by joining to next datadate; expand date ranges [datadate,end_date).
         4) Handle single-date rows; project to {gvkey,date,sic,naics}; deduplicate, sort.
         5) Write comp_other.parquet.
@@ -3360,7 +3371,8 @@ def comp_sic_naics(paths: DataPaths):
                 ORDER BY
                 t.gvkey,
                 t.date,
-                t.sic
+                t.sic,
+                t.naics NULLS LAST
                 ;
     """)
     comp = (
@@ -3374,13 +3386,14 @@ def comp_sic_naics(paths: DataPaths):
             .then(col("datadate"))
             .otherwise(col("end_date"))
         )
-        .with_columns(date=pl.date_ranges("datadate", "end_date", closed="left"))
-        .explode("date")
+        # A gvkey's last record has end_date == datadate, so its left-closed range is empty;
+        # explode() drops empty lists under Polars 2, so that record gets its date directly.
         .with_columns(
             date=pl.when(col("datadate") == col("end_date"))
-            .then(col("datadate"))
-            .otherwise(col("date"))
+            .then(pl.concat_list("datadate"))
+            .otherwise(pl.date_ranges("datadate", "end_date", closed="left"))
         )
+        .explode("date")
         .select(["gvkey", "date", "sic", "naics"])
         .unique(["gvkey", "date"])
         .sort(["gvkey", "date"])
@@ -3726,7 +3739,7 @@ def add_ret_exc_wins(
         )
         .drop(drop_cols)
     )
-    result.collect(streaming=(freq == "d")).write_parquet(data_path)
+    result.collect(engine="streaming" if freq == "d" else "in-memory").write_parquet(data_path)
 
 
 def load_mkt_returns_params(freq):
@@ -7033,7 +7046,7 @@ def div_cols(i, spc=False):
     num = (
         col(f"{div_var}1m_me")
         if (i == 1)
-        else col(f"{div_var}1m_me").rolling_sum(window_size=i, min_periods=1).over("id")
+        else col(f"{div_var}1m_me").rolling_sum(window_size=i, min_samples=1).over("id")
     )
     return (
         pl.when((col("count") >= i) & (col("me") != 0)).then(num / col("me")).otherwise(fl_none())
@@ -7165,7 +7178,7 @@ def market_chars_monthly(paths: DataPaths, data_path, market_ret_path, local_cur
         .sort(["id", "eom"])
     )
 
-    data.collect(streaming=True).write_parquet(paths.interim_dir / "market_chars_m.parquet")
+    data.collect().write_parquet(paths.interim_dir / "market_chars_m.parquet")
 
 
 @measure_time
@@ -8504,7 +8517,7 @@ def finish_daily_chars(paths: DataPaths, output_path):
     r1 = pl.scan_parquet(paths.interim_dir / "roll_apply_daily.parquet").with_columns(
         col("id").cast(pl.Int64)
     )
-    daily_chars = bidask.join(r1, how="outer_coalesce", on=["id", "eom"])
+    daily_chars = bidask.join(r1, how="full", coalesce=True, on=["id", "eom"])
     daily_chars = daily_chars.with_columns(
         betabab_1260d=col("corr_1260d") * col("rvol_252d") / col("__mktvol_252d"),
         rmax5_rvol_21d=col("rmax5_21d") / col("rvol_252d"),
@@ -8521,10 +8534,29 @@ def finish_daily_chars(paths: DataPaths, output_path):
 
 
 def z_ranks(data, var, __min, sort):
+    """
+    Description:
+        Compute standardized within-country z-scores for a variable.
+
+    Steps:
+        1) Rank variable by eom within each country (ascending/descending).
+        2) Keep months with at least __min stocks.
+        3) Standardize rank by its mean and sample std within (excntry, eom), both computed
+           exactly from integer rank sums so the z-score does not depend on row order or
+           thread count.
+        4) Clean NaN values.
+
+    Output:
+        DataFrame with ['excntry','id','eom', z_{var}].
+    """
     order = sort != "ascending"
-    exp_z_var = (col("rank") - pl.mean("rank").over(["excntry", "eom"])) / pl.std("rank").over(
-        ["excntry", "eom"]
-    )
+    # Average ranks are multiples of 0.5, so with t = 2*rank the group's rank mean is
+    # (n+1)/2 and its squared deviations sum to (sum(t^2) - n(n+1)^2)/4, both exact.
+    # pl.mean/pl.std over() add floats in an order that can change between runs.
+    n = pl.len().over(["excntry", "eom"]).cast(pl.Int64)
+    t = (2 * col("rank")).cast(pl.Int64)
+    sq_dev_x4 = (t * t).sum().over(["excntry", "eom"]) - n * (n + 1) * (n + 1)
+    exp_z_var = (col("rank") - (n + 1) / 2) / (sq_dev_x4 / (4 * (n - 1))).sqrt()
     z_df = (
         data.filter(col(var).is_not_nan())
         .filter(pl.count(var).over(["excntry", "eom"]) >= __min)
@@ -8547,16 +8579,18 @@ def z_ranks(data, var, __min, sort):
 def quality_minus_junk(paths: DataPaths, data_path, min_stks):
     """
     Description:
-        Compute standardized within-country z-scores for a variable.
+        Compute quality-minus-junk scores from within-country z-ranks.
 
     Steps:
-        1) Rank variable by eom within each country (ascending/descending).
-        2) Keep months with at least __min stocks.
-        3) Standardize rank by mean/std within (excntry, eom).
-        4) Clean NaN values.
+        1) Keep common, primary, main-exchange securities with non-null ret_exc and me.
+        2) z-rank the 16 quality inputs within (excntry, eom).
+        3) Average them into profitability, growth and safety composites, rounded to 10
+           decimals so composites equal up to floating-point noise tie exactly.
+        4) z-rank each composite (qmj_prof, qmj_growth, qmj_safety), then z-rank their
+           mean, also rounded to 10 decimals (qmj).
 
     Output:
-        LazyFrame with ['excntry','id','eom', z_{var}].
+        interim/qmj.parquet with ['excntry','id','eom','qmj_prof','qmj_growth','qmj_safety','qmj'].
     """
     z_vars = [
         "gp_at",
@@ -8637,13 +8671,13 @@ def quality_minus_junk(paths: DataPaths, data_path, min_stks):
     qmj = qmj.with_columns(
         __prof=pl.mean_horizontal(
             "z_gp_at", "z_ni_be", "z_ni_at", "z_ocf_at", "z_gp_sale", "z_oaccruals_at"
-        ),
+        ).round(10),
         __growth=pl.mean_horizontal(
             "z_gpoa_ch5", "z_roe_ch5", "z_roa_ch5", "z_cfoa_ch5", "z_gmar_ch5"
-        ),
+        ).round(10),
         __safety=pl.mean_horizontal(
             "z_betabab_1260d", "z_debt_at", "z_o_score", "z_z_score", "z___evol"
-        ),
+        ).round(10),
     ).select(["excntry", "id", "eom", "__prof", "__growth", "__safety"])
 
     ranks = {
@@ -8655,7 +8689,9 @@ def quality_minus_junk(paths: DataPaths, data_path, min_stks):
         .join(ranks["prof"], how="left", on=["excntry", "id", "eom"])
         .join(ranks["growth"], how="left", on=["excntry", "id", "eom"])
         .join(ranks["safety"], how="left", on=["excntry", "id", "eom"])
-        .with_columns(__qmj=(col("qmj_prof") + col("qmj_growth") + col("qmj_safety")) / 3)
+        .with_columns(
+            __qmj=((col("qmj_prof") + col("qmj_growth") + col("qmj_safety")) / 3).round(10)
+        )
     )
     __qmj = z_ranks(qmj, "__qmj", min_stks, "ascending").rename({"z___qmj": "qmj"})
     qmj = qmj.join(__qmj, how="left", on=["excntry", "id", "eom"]).drop("__qmj")
@@ -9009,7 +9045,7 @@ def merge_roll_apply_daily_results(paths: DataPaths):
     joint_file = pl.scan_parquet(file_paths[0])
     for i in file_paths[1:]:
         df_aux = pl.scan_parquet(i)
-        joint_file = joint_file.join(df_aux, how="outer_coalesce", on=["id_int", "aux_date"])
+        joint_file = joint_file.join(df_aux, how="full", coalesce=True, on=["id_int", "aux_date"])
 
     joint_file.with_columns(col("aux_date").cast(pl.Int64)).join(
         df_dates.lazy(),
@@ -10021,7 +10057,8 @@ def _build_hml_lms(
         pl.col(c).filter(pl.col("pf") == n_pfs).first()
         - pl.col(c).filter(pl.col("pf") == 1).first()
     )
-    agg_exprs = [pl.col("pf").is_in([n_pfs, 1]).sum().alias("pfs")]
+    is_extreme_pf = (pl.col("pf") == n_pfs) | (pl.col("pf") == 1)
+    agg_exprs = [is_extreme_pf.sum().alias("pfs")]
     if include_signal:
         agg_exprs.append(diff("signal").alias("signal"))
     agg_exprs.extend(
@@ -10030,7 +10067,7 @@ def _build_hml_lms(
                 pl.col("n").filter(pl.col("pf") == n_pfs).first()
                 + pl.col("n").filter(pl.col("pf") == 1).first()
             ).alias("n_stocks"),
-            pl.col("n").filter(pl.col("pf").is_in([n_pfs, 1])).min().alias("n_stocks_min"),
+            pl.col("n").filter(is_extreme_pf).min().alias("n_stocks_min"),
             diff("ret_ew").alias("ret_ew"),
             diff("ret_vw").alias("ret_vw"),
             diff("ret_vw_cap").alias("ret_vw_cap"),
