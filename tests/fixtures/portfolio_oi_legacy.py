@@ -10,7 +10,8 @@ verbatim; only relative imports were made absolute and pointed at the frozen
 Since #296 the live code no longer has ``_build_hml_lms`` or the getters for
 ``factor_details.xlsx`` and ``cluster_labels.csv``. A frozen copy of
 ``_build_hml_lms`` follows, and the v0 directions and theme labels are read
-from ``V0_DIR``, which the test points at its synthetic v0 themes folder.
+from ``V0_DIR``, which the test points at its synthetic v0 themes folder. Its
+``is_in`` on ``pf`` is written as two comparisons so that it also runs on Polars 2.
 """
 
 from __future__ import annotations
@@ -53,7 +54,8 @@ def _build_hml_lms(
         pl.col(c).filter(pl.col("pf") == n_pfs).first()
         - pl.col(c).filter(pl.col("pf") == 1).first()
     )
-    agg_exprs = [pl.col("pf").is_in([n_pfs, 1]).sum().alias("pfs")]
+    is_extreme_pf = (pl.col("pf") == n_pfs) | (pl.col("pf") == 1)
+    agg_exprs = [is_extreme_pf.sum().alias("pfs")]
     if include_signal:
         agg_exprs.append(diff("signal").alias("signal"))
     agg_exprs.extend(
@@ -62,7 +64,7 @@ def _build_hml_lms(
                 pl.col("n").filter(pl.col("pf") == n_pfs).first()
                 + pl.col("n").filter(pl.col("pf") == 1).first()
             ).alias("n_stocks"),
-            pl.col("n").filter(pl.col("pf").is_in([n_pfs, 1])).min().alias("n_stocks_min"),
+            pl.col("n").filter(is_extreme_pf).min().alias("n_stocks_min"),
             diff("ret_ew").alias("ret_ew"),
             diff("ret_vw").alias("ret_vw"),
             diff("ret_vw_cap").alias("ret_vw_cap"),
