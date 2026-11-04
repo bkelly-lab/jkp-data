@@ -46,6 +46,10 @@ REGIONAL_COUNTRIES_MIN = 3
 # inflation / hyperinflation regimes that distort returns).
 REGIONAL_COUNTRY_EXCL = ("ZWE", "VEN")
 
+# Themes version whose characteristics-managed portfolios stay unsigned (#297).
+# Every other version signs them, as it signs `hml`.
+UNSIGNED_CMP_VERSION = "v0"
+
 # The 153 characteristics of JKP (2023) (themes v0), sorted first. `jkp portfolio`
 # also sorts every other characteristic in a released themes version, and the
 # themes files decide which factors are signed. Production default;

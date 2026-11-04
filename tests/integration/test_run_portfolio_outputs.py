@@ -14,8 +14,9 @@ from pathlib import Path
 import polars as pl
 import pytest
 
+import jkp.data.portfolio as portfolio_module
 from jkp.data.output_writer import configure_output_format
-from jkp.data.portfolio import run_portfolio, run_themes
+from jkp.data.portfolio import _read_saved, run_portfolio, run_themes
 from tests.unit.portfolio.conftest import (
     build_synthetic_data,
     make_multi_region_classification,
@@ -242,6 +243,16 @@ def _files(root: Path, suffix: str = "parquet") -> set[str]:
     return {p.relative_to(root).as_posix() for p in root.rglob(f"*.{suffix}")}
 
 
+def _assert_cmp_signed(signed: pl.DataFrame, unsigned: pl.DataFrame) -> None:
+    """Each signed cmp row is the unsigned row times its direction, in the same order."""
+    keys = ["characteristic", "size_grp", "eom"]
+    assert signed.select(keys).equals(unsigned.select(keys))
+    joined = signed.join(unsigned, on=keys, suffix="_unsigned", validate="1:1")
+    for col in ("ret_weighted", "signal_weighted"):
+        expected = joined.select((pl.col(f"{col}_unsigned") * pl.col("direction")).alias(col))
+        assert joined.select(col).equals(expected), col
+
+
 class TestRunThemes:
     def test_no_option_rebuilds_only_the_current_version(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -286,8 +297,9 @@ class TestRunThemes:
         assert unsigned.height > 0
         keys = ["characteristic", "size_grp", "eom"]
 
+        assert unsigned.equals(unsigned.sort("excntry", *keys))
         v0 = pl.read_parquet(portfolios / "themes" / "v0" / "cmp.parquet")
-        assert v0.sort(keys).equals(unsigned.sort(keys))
+        assert v0.equals(unsigned)
 
         signed = pl.read_parquet(portfolios / "themes" / "v1.0" / "cmp.parquet")
         directions = pl.read_parquet(portfolios / "themes" / "v1.0" / "lms.parquet").select(
@@ -300,11 +312,7 @@ class TestRunThemes:
             .sort("characteristic")
             .equals(directions.unique().sort("characteristic"))
         )
-        joined = signed.join(unsigned, on=keys, suffix="_unsigned", validate="1:1")
-        assert joined.height == unsigned.height
-        for col in ("ret_weighted", "signal_weighted"):
-            expected = joined.select((pl.col(f"{col}_unsigned") * pl.col("direction")).alias(col))
-            assert joined.select(col).equals(expected), col
+        _assert_cmp_signed(signed, unsigned)
 
     def test_cmp_per_version_from_saved_csv(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -312,11 +320,48 @@ class TestRunThemes:
         _setup(tmp_path, monkeypatch)
         run_portfolio(output_format="csv", output_dir=tmp_path)
         run_themes(output_dir=tmp_path, version="v0")
-        out = _portfolios_dir(tmp_path) / "themes"
-        for version in ("v0", "v1.0"):
-            assert pl.read_csv(out / version / "cmp.csv").height > 0, version
-        assert "direction" not in pl.read_csv(out / "v0" / "cmp.csv").columns
-        assert "direction" in pl.read_csv(out / "v1.0" / "cmp.csv").columns
+        run_themes(output_dir=tmp_path)
+        portfolios = _portfolios_dir(tmp_path)
+        unsigned = pl.read_csv(portfolios / "cmp.csv")
+        assert unsigned.height > 0
+        v0 = pl.read_csv(portfolios / "themes" / "v0" / "cmp.csv")
+        assert "direction" not in v0.columns
+        assert v0.equals(unsigned)
+        _assert_cmp_signed(pl.read_csv(portfolios / "themes" / "v1.0" / "cmp.csv"), unsigned)
+
+    def test_cmp_off_removes_an_earlier_cmp(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _setup(tmp_path, monkeypatch)
+        run_portfolio(output_format="parquet", output_dir=tmp_path)
+        portfolios = _portfolios_dir(tmp_path)
+        _read_saved(portfolios / "cmp").write_csv(portfolios / "cmp.csv")
+
+        monkeypatch.setitem(portfolio_module.PORTFOLIO_SETTINGS, "cmp", {"us": False, "int": False})
+        run_portfolio(output_format="parquet", output_dir=tmp_path)
+        run_themes(output_dir=tmp_path)
+
+        assert not (portfolios / "cmp.parquet").exists()
+        assert not (portfolios / "cmp.csv").exists()
+        assert not (portfolios / "themes" / "v1.0" / "cmp.parquet").exists()
+
+    @pytest.mark.parametrize("output_format", ["parquet", "csv"])
+    def test_cmp_is_found_in_the_other_format(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, output_format: str
+    ) -> None:
+        _setup(tmp_path, monkeypatch)
+        run_portfolio(output_format=output_format, output_dir=tmp_path)
+        portfolios = _portfolios_dir(tmp_path)
+        cmp = _read_saved(portfolios / "cmp")
+        (portfolios / f"cmp.{output_format}").unlink()
+        if output_format == "parquet":
+            cmp.write_csv(portfolios / "cmp.csv")
+        else:
+            cmp.write_parquet(portfolios / "cmp.parquet")
+
+        run_themes(output_dir=tmp_path)
+
+        assert (portfolios / "themes" / "v1.0" / f"cmp.{output_format}").exists()
 
     def test_edited_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _setup(tmp_path, monkeypatch)
@@ -338,6 +383,13 @@ class TestRunThemes:
         )
         assert set(mine["characteristic"]) == {"char_a"}
         assert mine["ret_ew"].equals(-released["ret_ew"])
+        mine_cmp = pl.read_parquet(out / "my_themes" / "cmp.parquet")
+        released_cmp = pl.read_parquet(out / "v1.0" / "cmp.parquet").filter(
+            pl.col("characteristic") == "char_a"
+        )
+        assert set(mine_cmp["characteristic"]) == {"char_a"}
+        assert mine_cmp["ret_weighted"].equals(-released_cmp["ret_weighted"])
+        assert mine_cmp["signal_weighted"].equals(-released_cmp["signal_weighted"])
 
     def test_one_version(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _setup(tmp_path, monkeypatch, settings_overrides={"daily_pf": False})

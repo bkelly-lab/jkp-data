@@ -524,6 +524,26 @@ class TestWriteThemeVersions:
         assert v1["ret_weighted"].to_list() == [0.1, -0.2]
         assert v1["signal_weighted"].to_list() == [1.0, -2.0]
 
+    def test_characteristic_without_cmp_rows_is_printed(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        cmp = pl.DataFrame(
+            {
+                "characteristic": ["a"],
+                "size_grp": "large",
+                "eom": date(2020, 1, 31),
+                "n_stocks": [10],
+                "ret_weighted": [0.1],
+                "signal_weighted": [1.0],
+                "excntry": "USA",
+            }
+        )
+        self._write_cmp(tmp_path, cmp)
+
+        assert "No cmp rows for themes v1.0: ['b']" in capsys.readouterr().out
+        v1 = pl.read_parquet(tmp_path / "themes" / "v1.0" / "cmp.parquet")
+        assert v1["characteristic"].to_list() == ["a"]
+
     def test_no_cmp_file_without_cmp(self, tmp_path: Path) -> None:
         self._write_cmp(tmp_path, None)
         assert not list(tmp_path.rglob("cmp*"))

@@ -130,6 +130,15 @@ class TestBuildHmlAndSignFactors:
         assert signed["signal_weighted"].to_list() == [1.0, -2.0]
         assert signed["n_stocks"].to_list() == [10, 20]
 
+    def test_sign_factors_flips_any_return_or_signal_column(self):
+        factors = pl.DataFrame(
+            {"characteristic": ["char_a"], "n_stocks": [10], "ret_new": [0.1], "signal_new": [1.0]}
+        )
+        signed = _sign_factors(factors, _themes([-1], chars=("char_a",)))
+        assert signed["ret_new"].to_list() == [-0.1]
+        assert signed["signal_new"].to_list() == [-1.0]
+        assert signed["n_stocks"].to_list() == [10]
+
     def test_lms_keeps_only_themed_characteristics_in_hml_order(self):
         hml = _build_hml(_make_pf_df(), n_pfs=3, date_col="eom", include_signal=True)
         lms = _sign_factors(hml, _themes([-1], chars=("char_b",)))

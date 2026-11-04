@@ -105,9 +105,9 @@ def portfolio(
 ) -> None:
     """Generate factor portfolios from characteristics data.
 
-    Writes the signed factors and theme portfolios of the current themes version,
-    now v1.0, to portfolios/themes/v1.0/. Build another version, such as v0, from
-    the saved factors with: jkp themes OUTPUT_DIR --version v0
+    Writes the signed factors, CMP and theme portfolios of the current themes
+    version, now v1.0, to portfolios/themes/v1.0/. Build another version, such as
+    v0, from the saved factors with: jkp themes OUTPUT_DIR --version v0
     """
     from .portfolio import run_portfolio
 

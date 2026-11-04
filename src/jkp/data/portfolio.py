@@ -9,6 +9,7 @@ import polars as pl
 from .config import (
     PORTFOLIO_CHARS,
     PORTFOLIO_SETTINGS,
+    UNSIGNED_CMP_VERSION,
 )
 from .output_writer import (
     configure_output_format,
@@ -250,10 +251,11 @@ def _write_theme_versions(
            characteristics without an HML factor.
         2) Delete each version's folder, so no file of an earlier build remains.
         3) Write each version's outputs for each return series.
-        4) When ``cmp`` is given, write each version's CMP. v0 keeps the unsigned
-           CMP for its characteristics; later versions sign it. A characteristic
-           can lack CMP rows, since CMP is US-only by default and skips months
-           where the characteristic doesn't vary, so this step has no missing check.
+        4) When ``cmp`` is given, write each version's CMP. ``UNSIGNED_CMP_VERSION``
+           keeps the unsigned CMP for its characteristics; other versions sign it.
+           A characteristic can lack CMP rows, since CMP is US-only by default and
+           skips months where the characteristic doesn't vary, so this step prints
+           the characteristics with no rows instead of stopping.
     Output:
         Files under ``portfolios_dir/themes/<version>/``.
     """
@@ -288,10 +290,13 @@ def _write_theme_versions(
             )
 
     if cmp is not None:
+        cmp_chars = set(cmp["characteristic"].unique())
         for name, themes in theme_sets.items():
+            if absent := sorted(set(themes["characteristic"]) - cmp_chars):
+                print(f"No cmp rows for themes {name}: {absent}", flush=True)
             version_cmp = (
                 cmp.filter(pl.col("characteristic").is_in(themes["characteristic"].implode()))
-                if name == "v0"
+                if name == UNSIGNED_CMP_VERSION
                 else _sign_factors(cmp, themes)
             )
             _write_filtered(
@@ -326,7 +331,7 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
     Description:
         Orchestrate portfolio construction: configure output format, build
         factor portfolios for each country, write the unsigned results, and
-        build the signed factors and theme portfolios of the current themes
+        build the signed factors, CMP and theme portfolios of the current themes
         version. ``run_themes`` builds any other released version from the saved
         factors.
     Steps:
@@ -335,7 +340,8 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
         3) Construct portfolios per country (monthly, daily, industry) for
            ``PORTFOLIO_CHARS`` and every characteristic in a themes version.
         4) Aggregate cross-country results and compute HML factors.
-        5) Write output files.
+        5) Write output files. When CMP is off, delete a ``cmp`` file left by an
+           earlier run, so ``run_themes`` doesn't build from it.
         6) Write the current themes version's outputs under ``portfolios/themes/``.
         7) Optionally convert to CSV.
     Output:
@@ -502,8 +508,9 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
         hml_daily = None
 
     # Extract CMP returns
-    cmp_list = [d["cmp"] for d in portfolio_data.values() if "cmp" in d]
-    cmp_returns = pl.concat(cmp_list) if cmp_list else None
+    cmp_returns = _stack_outputs(
+        portfolio_data, "cmp", ["excntry", "characteristic", "size_grp", "eom"]
+    )
     if cmp_returns is None:
         print("No 'cmp' keys found")
 
@@ -519,6 +526,9 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
             _write_filtered(df, portfolios_dir / name, "eom", end_date)
     if cmp_returns is not None:
         _write_filtered(cmp_returns, portfolios_dir / "cmp.parquet", "eom", end_date)
+    else:
+        (portfolios_dir / "cmp.parquet").unlink(missing_ok=True)
+        (portfolios_dir / "cmp.csv").unlink(missing_ok=True)
 
     # Single-file outputs (daily)
     if settings["daily_pf"]:
@@ -594,7 +604,7 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
 
 
 def run_themes(*, output_dir: Path, version: str | None = None, file: Path | None = None) -> None:
-    """Build signed factors and theme portfolios from saved HML factors.
+    """Build signed factors, CMP and theme portfolios from saved HML factors and CMP.
 
     Description:
         Read the HML factors and CMP written by ``jkp portfolio`` and build the outputs
@@ -661,7 +671,7 @@ def run_themes(*, output_dir: Path, version: str | None = None, file: Path | Non
         theme_sets=theme_sets,
         hml_series=hml_series,
         cmp=_read_saved(portfolios_dir / "cmp")
-        if (portfolios_dir / f"cmp.{output_format}").exists()
+        if any((portfolios_dir / f"cmp.{ext}").exists() for ext in ("parquet", "csv"))
         else None,
         market=_read_saved(other_output_dir / "market_returns"),
         market_daily=_read_saved(other_output_dir / "market_returns_daily") if daily else None,

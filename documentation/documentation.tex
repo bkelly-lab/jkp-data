@@ -322,7 +322,7 @@ We share long/short factor returns on \url{jkpfactors.com/factor-returns}, but w
   \texttt{themes} & Theme returns per country: the mean of the theme's subtheme returns (\texttt{n\_subthemes}, \texttt{n\_factors}) \\
   \texttt{regional\_subthemes/} & Regional subtheme returns (one file per region; not for v0) \\
   \texttt{regional\_themes/} & Regional theme returns (one file per region) \\
-  \texttt{cmp} & Characteristics-managed portfolios, monthly: \texttt{ret\_weighted} and \texttt{signal\_weighted} times \texttt{direction}. In v0, unsigned with no \texttt{direction} column (Section \ref{sec:cmp}) \\
+  \texttt{cmp} & Characteristics-managed portfolios, monthly: \texttt{ret\_weighted} and \texttt{signal\_weighted} times \texttt{direction}. In v0, unsigned with no \texttt{direction} column. Written only when \texttt{cmp} is built, by default for U.S. data only (Section \ref{sec:cmp}) \\
   \hline
   \end{tabular}
   \end{center}
@@ -469,11 +469,11 @@ We share long/short factor returns on \url{jkpfactors.com/factor-returns}, but w
 
 \subsection{Characteristics-Managed Portfolio Returns (\texttt{cmp.csv})}\label{sec:cmp}
 \begin{itemize}
-    \item \texttt{cmp.csv} reports for each country, characteristic, and month the size-neutral long-short excess returns with the corresponding weighted characteristic.
+    \item \texttt{cmp.csv} reports for each country, characteristic, and month the size-neutral long-short excess returns with the corresponding weighted characteristic. By default it is built for U.S. data only (the \texttt{cmp} entry of \texttt{PORTFOLIO\_SETTINGS} in \texttt{config.py}). With that setting off, no \texttt{cmp.csv} is written.
     \item For each characteristic, country, and month, we form characteristics-managed portfolios (CMP) within predefined size groups based on \hyperref[app:nyse-breakpoints]{NYSE size breakpoints}. Only observations with non-missing characteristic values and returns are included.
     \item Within each size group and month, we compute each stock's percentile rank on the characteristic, demean the rank within the group, and scale the deviation so long and short weights offset and the gross weight is normalized. These weights create a within-size long-short portfolio that isolates the characteristic from size.
     \item Using the within-group weights, we compute the group's next-month excess return and the weighted signal level.
-    \item The top-level \texttt{cmp.csv} is unsigned: it always buys high values of the characteristic. Each \texttt{themes/\{version\}/} folder also has a \texttt{cmp.csv}. From v1.0 on, \texttt{ret\_weighted} and \texttt{signal\_weighted} are multiplied by the version's sign and a \texttt{direction} column records it, so the portfolio buys the side the version expects to earn more. In v0, \texttt{cmp.csv} stays unsigned, has no \texttt{direction} column and equals the top-level file for the 153 v0 characteristics.
+    \item The top-level \texttt{cmp.csv} is unsigned: it always buys high values of the characteristic. When it is built, each \texttt{themes/\{version\}/} folder also has a \texttt{cmp.csv}. From v1.0 on, \texttt{ret\_weighted} and \texttt{signal\_weighted} are multiplied by the version's sign and a \texttt{direction} column records it, so the portfolio buys the side the version expects to earn more. In v0, \texttt{cmp.csv} stays unsigned, has no \texttt{direction} column and equals the top-level file for the 153 v0 characteristics.
 \end{itemize}
 
 {\scriptsize
