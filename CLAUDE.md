@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This repo generates the Global Factor Data: 406 stock characteristics and their associated factor portfolios, based on "Is there a Replication Crisis in Finance?" by Jensen, Kelly, and Pedersen (Journal of Finance, 2023). It downloads data from WRDS (Wharton Research Data Services), computes characteristics from CRSP and Compustat sources, and constructs factor portfolios.
+This repo generates the Global Factor Data: 404 stock characteristics and their associated factor portfolios, based on "Is there a Replication Crisis in Finance?" by Jensen, Kelly, and Pedersen (Journal of Finance, 2023). It downloads data from WRDS (Wharton Research Data Services), computes characteristics from CRSP and Compustat sources, and constructs factor portfolios.
 
 ## Build & Run Commands
 
@@ -86,6 +86,7 @@ Static reference data (`src/jkp/data/resources/themes/`, `src/jkp/data/resources
 
 **Modularity & structure:**
 - New pipeline functions should be added to `aux_functions.py` and called from `main.py`
+- Adding, renaming or removing a characteristic in the `characteristics/` output requires the same change in `src/jkp/data/resources/characteristics.csv`
 - Use the `@measure_time` decorator on pipeline-level functions
 - Use `collect_and_write()` for the lazy→eager→parquet workflow
 - Pipeline functions in `aux_functions.py` that touch the filesystem must accept `paths: DataPaths` as their first parameter and use it for all path construction (e.g. `paths.interim_dir / "foo.parquet"`, `paths.raw_tables_dir / ...`). Never use `os.chdir`, `os.system`, or bare relative path strings. DuckDB SQL strings should interpolate `Path.as_posix()` rather than rely on cwd.

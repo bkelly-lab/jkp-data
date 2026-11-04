@@ -85,8 +85,9 @@ to the subtheme that best matches what it combines.
   a characteristic stays in its subtheme although it fits another better in the data.
 - `tests/unit/test_themes.py` checks the files: each characteristic in one subtheme and each
   subtheme in one theme, signs of ±1 that are constant where they should be, the naming
-  rules, a description for every group, one version, and a theme for every characteristic
-  that gets a factor portfolio.
+  rules, a description for every group, one version, a theme for every characteristic
+  that gets a factor portfolio, and that every characteristic is in
+  `src/jkp/data/resources/characteristics.csv`.
 - `theme_diagnostics.py` checks the grouping against correlations in the U.S. data.
 - `CHANGELOG_THEMES.md` records what changed in each version, and why.
 - Earlier versions are kept in `src/jkp/data/resources/themes/superseded_themes/vX.Y/`.

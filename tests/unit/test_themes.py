@@ -1,10 +1,17 @@
-"""The bundled themes files are a valid two-level grouping with consistent signs and names."""
+"""The bundled themes files are a valid two-level grouping with consistent signs and names.
+
+characteristics.csv lists the characteristics in the output. themes.csv, acc_chars_list() and the
+hand-kept daily names in daily_chars_columns() may use only listed names, and cluster_labels.csv
+must cover exactly the characteristics with factor portfolios.
+"""
 
 import polars as pl
 import pytest
 
+from jkp.data.aux_functions import acc_chars_list
 from jkp.data.config import PORTFOLIO_CHARS
 from jkp.data.paths import _resource_path
+from tests.conftest import daily_chars_columns
 
 
 @pytest.fixture(scope="module")
@@ -15,6 +22,17 @@ def themes() -> pl.DataFrame:
 @pytest.fixture(scope="module")
 def descriptions() -> pl.DataFrame:
     return pl.read_csv(_resource_path("themes/theme_descriptions.csv"))
+
+
+@pytest.fixture(scope="module")
+def characteristics() -> pl.DataFrame:
+    return pl.read_csv(_resource_path("characteristics.csv"))
+
+
+@pytest.fixture(scope="module")
+def clusters() -> pl.DataFrame:
+    # Searched for because #318 moves the file to themes/superseded_themes/v0/.
+    return pl.read_csv(next(_resource_path("").rglob("cluster_labels.csv")))
 
 
 def not_constant(df: pl.DataFrame, col: str, within: str) -> list[str]:
@@ -73,3 +91,26 @@ def test_one_version(themes, descriptions):
 def test_portfolio_characteristics_have_a_theme(themes):
     missing = sorted(set(PORTFOLIO_CHARS) - set(themes["characteristic"]))
     assert not missing, f"no theme for: {missing}"
+
+
+@pytest.mark.unit
+def test_themed_characteristics_exist(themes: pl.DataFrame, characteristics: pl.DataFrame) -> None:
+    unknown = sorted(set(themes["characteristic"]) - set(characteristics["characteristic"]))
+    assert not unknown, f"not in characteristics.csv: {unknown}"
+
+
+@pytest.mark.unit
+def test_code_characteristics_are_listed(characteristics: pl.DataFrame) -> None:
+    unknown = sorted(
+        (set(acc_chars_list()) | daily_chars_columns()) - set(characteristics["characteristic"])
+    )
+    assert not unknown, f"not in characteristics.csv: {unknown}"
+
+
+@pytest.mark.unit
+def test_cluster_labels_match_portfolio_characteristics(clusters: pl.DataFrame) -> None:
+    labels, portfolio = set(clusters["characteristic"]), set(PORTFOLIO_CHARS)
+    assert labels == portfolio, (
+        f"no cluster for: {sorted(portfolio - labels)}; "
+        f"not a portfolio characteristic: {sorted(labels - portfolio)}"
+    )
