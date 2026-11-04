@@ -201,9 +201,6 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
         portfolios,
     )
 
-    # Polars 2 runs a bare collect() on the streaming engine, whose parallel reductions
-    # are not bit-reproducible; keep the in-memory default of Polars 1.x.
-    pl.Config.set_engine_affinity("in-memory")
     paths = DataPaths(base_dir=output_dir)
     portfolios_dir = paths.processed_dir / "portfolios"
     other_output_dir = paths.processed_dir / "other_output"
@@ -329,6 +326,10 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
                     f"Skipping {component}: {ret_col} not found in daily return files",
                     flush=True,
                 )
+
+    # Polars 2 runs a bare collect() on the streaming engine, whose parallel reductions
+    # are not bit-reproducible; keep the in-memory default of Polars 1.x.
+    pl.Config.set_engine_affinity("in-memory")
 
     # Creating portfolios by using the portfolios function
     portfolio_data = {}
