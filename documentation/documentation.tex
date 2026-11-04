@@ -123,6 +123,9 @@ Jensen is at Yale School of Management; \url{www.tijensen.com}. Kelly is at AQR 
 \textbf{Date} & \textbf{Changes} \\
 \hline
 \endhead
+11-03-2026 & \textbullet~Factor portfolios for every characteristic in a released themes version, and signed factors and theme portfolios for each themes version. \texttt{pfs}, \texttt{hml} and \texttt{cmp} now cover the 402 characteristics of themes v1.0 (before: the 153 factors of \cite{JensenKellyPedersen2023}); their existing rows are unchanged. The signed outputs moved to \texttt{portfolios/themes/\{version\}/}: \texttt{lms}, \texttt{country\_factors/}, \texttt{regional\_factors/}, \texttt{themes} (before: \texttt{clusters}) and \texttt{regional\_themes/} (before: \texttt{regional\_clusters/}), and for v1.0 also \texttt{subthemes} and \texttt{regional\_subthemes/}. \texttt{jkp portfolio} writes the current version, v1.0, and \texttt{jkp themes data/ --version v0} writes v0. The column \texttt{cluster} is now \texttt{theme}, and theme files have a new \texttt{n\_subthemes} column. Apart from these renames, which break code that reads the old paths, all v0 values are the same as before up to float noise. A v1.0 theme return is the mean of its subtheme returns. See Section \ref{sec:theme-portfolios}. \\
+& \textbullet~Affected output files: all files under \texttt{portfolios/} except the industry portfolios. \\
+\hline
 10-15-2026 & \textbullet~Nulled rolling daily characteristics over constant or near-dead windows. Return-based characteristics (\texttt{rvol\_*}, \texttt{ivol\_capm\_*}, \texttt{ivol\_ff3\_*}, \texttt{ivol\_hxz4\_*}, \texttt{beta\_*}, \texttt{betadown\_*}, \texttt{beta\_dimson\_*}, \texttt{rmax*}, \texttt{rskew\_*}, \texttt{iskew\_*}, \texttt{coskew\_*}, \texttt{corr\_*}, \texttt{ami\_*}) are nulled when raw \texttt{ret} is constant over the window or zero on at least 90\% of its days. The check uses raw \texttt{ret} rather than \texttt{ret\_exc}, whose monthly risk-free steps would otherwise hide constant returns over multi-month windows (\texttt{\_252d}, \texttt{\_1260d}). \texttt{prc\_highprc\_*}, \texttt{dolvol\_var\_*} and \texttt{turnover\_var\_*} are nulled only when the adjusted price, dollar volume or turnover is exactly constant over the window. The derived \texttt{betabab\_1260d} and \texttt{rmax5\_rvol\_21d} become null with their inputs. Residual NaN/inf values are scrubbed in \texttt{finish\_daily\_chars}. \\
 & \textbullet~Affected output files: \texttt{characteristics/world\_data.parquet}, the per-country files under \texttt{characteristics/}, and downstream factor portfolios. \\
 \hline
@@ -204,7 +207,7 @@ Jensen is at Yale School of Management; \url{www.tijensen.com}. Kelly is at AQR 
 	\item The factor is then defined as the high-tercile return minus the low-tercile  return, corresponding to the excess return of a long-short zero-net-investment strategy.  The factor is long (short) the tercile identified by the original paper to have the highest (lowest) expected return.  
 	\item For a factor return to be non-missing, we require that it has at least 5 stocks in each of the long and short legs. We also require a minimum of 60 valid monthly observations for each country-specific factor for inclusion in our sample.  
 	\item We update characteristics with the most recent accounting data (which could be either annual or quarterly) starting four months after the end of the fiscal period.
-	\item To compute a cluster (theme) return, we first sign factors according to the original reference, then we equal-weight the returns of factors within a specific cluster. The signing convention and cluster allocation follows  \cite{JensenKellyPedersen2023} and we show it in table \ref{tbl:factor:details}.
+	\item To compute theme returns, we first sign each factor so that it is long the side the literature finds earns more. A themes version groups characteristics into subthemes and subthemes into themes. A subtheme return is the equal-weighted average of its signed factors, and a theme return is the equal-weighted average of its subtheme returns. In v0, the 13 themes of \cite{JensenKellyPedersen2023}, each theme is its own subtheme, so a theme return is the average of its factors; we show its signs and themes in table \ref{tbl:factor:details}. The themes files and their versions are in \texttt{src/jkp/data/resources/themes/} of the repository. See Section \ref{sec:theme-portfolios} for the output files.
 	\item In addition to standard excess-return factors, we construct daily overnight and intraday factor portfolios in both USD and local currency, following Lou, Polk, and Skouras (2019). Characteristic sorts and breakpoints are identical to the standard daily factors; only the contemporaneous daily return leg aggregated into portfolio weights differs (\texttt{ret\_overnight}, \texttt{ret\_intraday}, \texttt{ret\_overnight\_local}, or \texttt{ret\_intraday\_local}). See \hyperref[sec:oi-portfolios]{Overnight and Intraday Factor Portfolios} for output files.
 \end{itemize}
 
@@ -299,11 +302,37 @@ We share long/short factor returns on \url{jkpfactors.com/factor-returns}, but w
 \end{longtable}}
 
 
+\subsection{Signed Factors and Theme Portfolios (\texttt{themes/\{version\}/})}\label{sec:theme-portfolios}
+
+\begin{itemize}
+  \item \texttt{hml.csv} / \texttt{hml\_daily.csv} report the unsigned high-minus-low tercile spread for every characteristic in a released themes version. The outputs that depend on a themes version are written to \texttt{portfolios/themes/\{version\}/}. \texttt{jkp portfolio} writes the current version, \texttt{v1.0} (16 themes, 59 subthemes, 402 factors). Other released versions are written only when named: run \texttt{jkp themes data/ --version v0} after \texttt{jkp portfolio} to write \texttt{v0} (the 13 themes of \cite{JensenKellyPedersen2023}, 153 factors).
+  \item Each folder holds the files below. Daily files add the suffix \texttt{\_daily} and have \texttt{date} in place of \texttt{eom}.
+  \item A country's factor enters a regional factor if it has at least 5 stocks in each of the long and short legs. A country's theme or subtheme enters a regional theme or subtheme if it has at least one factor, as the v0 regional clusters did.
+
+  \begin{center}
+  \begin{tabular}{|l|p{10cm}|}
+  \hline
+  \textbf{Path} & \textbf{Description} \\
+  \hline
+  \texttt{lms} & Signed factors: \texttt{hml} times \texttt{direction} ($+1$ or $-1$), per country \\
+  \texttt{country\_factors/} & \texttt{lms} with one file per country \\
+  \texttt{regional\_factors/} & Regional signed factors (one file per region) \\
+  \texttt{subthemes} & Subtheme returns per country: the mean of the subtheme's signed factors (\texttt{n\_factors}). Not written for v0, where each theme is its own subtheme \\
+  \texttt{themes} & Theme returns per country: the mean of the theme's subtheme returns (\texttt{n\_subthemes}, \texttt{n\_factors}) \\
+  \texttt{regional\_subthemes/} & Regional subtheme returns (one file per region; not for v0) \\
+  \texttt{regional\_themes/} & Regional theme returns (one file per region) \\
+  \hline
+  \end{tabular}
+  \end{center}
+
+  \item The command \texttt{jkp themes} builds these folders from the saved \texttt{hml} files, without sorting again: the current version by default, another released version (\texttt{--version v0}), or an edited themes file (\texttt{--file my\_themes.csv}, written to \texttt{themes/my\_themes/}). An edited file may only use characteristics in a released version. Each build replaces the version's folder, and builds nothing if a characteristic has no \texttt{hml} factor. Rerunning \texttt{jkp portfolio} replaces only the current version's folder, so rerun \texttt{jkp themes data/ --version v0} afterwards or \texttt{themes/v0/} stays on the old data.
+\end{itemize}
+
 \subsection{Overnight and Intraday Factor Portfolios}\label{sec:oi-portfolios}
 
 \begin{itemize}
-  \item Alongside the standard excess-return daily factors (\texttt{pfs\_daily}, \texttt{hml\_daily}, \texttt{lms\_daily}, \ldots), we write parallel daily factor portfolios that use overnight or intraday stock returns as the return leg, in both USD and local currency.
-  \item Characteristic sorts, breakpoints, EW/VW/VW-cap weighting, and HML/LMS/cluster/regional aggregation reuse the standard portfolio machinery. Only the daily return column aggregated into portfolio weights changes.
+  \item Alongside the standard excess-return daily factors (\texttt{pfs\_daily}, \texttt{hml\_daily}, \ldots), we write parallel daily factor portfolios that use overnight or intraday stock returns as the return leg, in both USD and local currency.
+  \item Characteristic sorts, breakpoints, EW/VW/VW-cap weighting, and the signed-factor, theme and regional aggregation reuse the standard portfolio machinery. Only the daily return column aggregated into portfolio weights changes.
   \item The four components and their return columns are:
 
   \begin{center}
@@ -319,7 +348,7 @@ We share long/short factor returns on \url{jkpfactors.com/factor-returns}, but w
   \end{tabular}
   \end{center}
 
-  \item For each component \texttt{\{component\}}, the following outputs are written under \texttt{portfolios/}:
+  \item For each component \texttt{\{component\}}, the following outputs are written under \texttt{portfolios/}, the signed ones in \texttt{themes/\{version\}/} for each themes version built (Section \ref{sec:theme-portfolios}):
 
   \begin{center}
   \begin{tabular}{|l|p{8.5cm}|}
@@ -328,16 +357,18 @@ We share long/short factor returns on \url{jkpfactors.com/factor-returns}, but w
   \hline
   \texttt{pfs\_\{component\}.parquet} & Daily tercile portfolio returns \\
   \texttt{hml\_\{component\}.parquet} & Daily high-minus-low spreads \\
-  \texttt{lms\_\{component\}.parquet} & Daily long-minus-short factors \\
-  \texttt{clusters\_\{component\}.parquet} & Daily cluster (theme) factors \\
-  \texttt{regional\_factors\_\{component\}/} & Daily regional factors (one file per region) \\
-  \texttt{regional\_clusters\_\{component\}/} & Daily regional cluster factors \\
-  \texttt{country\_factors\_\{component\}/} & Daily per-country factors (one file per country) \\
+  \texttt{themes/\{version\}/lms\_\{component\}.parquet} & Daily signed factors \\
+  \texttt{themes/\{version\}/subthemes\_\{component\}.parquet} & Daily subtheme returns (not for v0) \\
+  \texttt{themes/\{version\}/themes\_\{component\}.parquet} & Daily theme returns \\
+  \texttt{themes/\{version\}/regional\_factors\_\{component\}/} & Daily regional factors (one file per region) \\
+  \texttt{themes/\{version\}/regional\_subthemes\_\{component\}/} & Daily regional subtheme returns (not for v0) \\
+  \texttt{themes/\{version\}/regional\_themes\_\{component\}/} & Daily regional theme returns \\
+  \texttt{themes/\{version\}/country\_factors\_\{component\}/} & Daily per-country factors (one file per country) \\
   \hline
   \end{tabular}
   \end{center}
 
-  \item Column schemas match the corresponding standard daily files (e.g.\ \texttt{pfs\_daily}, \texttt{lms\_daily}): \texttt{date}, \texttt{characteristic}, \texttt{excntry}, \texttt{ret\_ew}, \texttt{ret\_vw}, \texttt{ret\_vw\_cap}, and related fields.
+  \item Column schemas match the corresponding standard daily files (e.g.\ \texttt{pfs\_daily}, and \texttt{themes/\{version\}/lms\_daily} for the signed file): \texttt{date}, \texttt{characteristic}, \texttt{excntry}, \texttt{ret\_ew}, \texttt{ret\_vw}, \texttt{ret\_vw\_cap}, and related fields.
   \item Daily-return winsorization applies only to the standard \texttt{ret\_exc} path; O/I legs are aggregated as-is.
   \item For US/CRSP stocks, local and USD O/I components coincide. Local variants matter for international Compustat securities, where FX would otherwise enter the USD overnight residual. Because FX cancels in the open/close ratio, \texttt{ret\_intraday\_local} equals \texttt{ret\_intraday}, so the \texttt{intraday} and \texttt{intraday\_local} portfolio suites are identical.
   \item Industry portfolios and characteristics-managed portfolios (\texttt{cmp}) are not rebuilt for O/I components. Monthly overnight/intraday factor portfolios are not produced.
