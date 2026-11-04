@@ -251,7 +251,7 @@ def _write_theme_versions(
            characteristics without an HML factor.
         2) Delete each version's folder, so no file of an earlier build remains.
         3) Write each version's outputs for each return series.
-        4) When ``cmp`` is given, write each version's CMP. ``UNSIGNED_CMP_VERSION``
+        4) When ``cmp`` is given, write each version's ``lms_cmp_5``. ``UNSIGNED_CMP_VERSION``
            keeps the unsigned CMP for its characteristics; other versions sign it.
            A characteristic can lack CMP rows, since CMP is US-only by default and
            skips months where the characteristic doesn't vary, so this step prints
@@ -301,7 +301,7 @@ def _write_theme_versions(
             )
             _write_filtered(
                 version_cmp,
-                portfolios_dir / "themes" / name / "cmp.parquet",
+                portfolios_dir / "themes" / name / "lms_cmp_5.parquet",
                 "eom",
                 settings["end_date"],
             )
@@ -340,7 +340,7 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
         3) Construct portfolios per country (monthly, daily, industry) for
            ``PORTFOLIO_CHARS`` and every characteristic in a themes version.
         4) Aggregate cross-country results and compute HML factors.
-        5) Write output files. When CMP is off, delete a ``cmp`` file left by an
+        5) Write output files. When CMP is off, delete a ``hml_cmp_5`` file left by an
            earlier run, so ``run_themes`` doesn't build from it.
         6) Write the current themes version's outputs under ``portfolios/themes/``.
         7) Optionally convert to CSV.
@@ -529,10 +529,10 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
         if df is not None:
             _write_filtered(df, portfolios_dir / name, "eom", end_date)
     if cmp_returns is not None:
-        _write_filtered(cmp_returns, portfolios_dir / "cmp.parquet", "eom", end_date)
+        _write_filtered(cmp_returns, portfolios_dir / "hml_cmp_5.parquet", "eom", end_date)
     else:
-        (portfolios_dir / "cmp.parquet").unlink(missing_ok=True)
-        (portfolios_dir / "cmp.csv").unlink(missing_ok=True)
+        (portfolios_dir / "hml_cmp_5.parquet").unlink(missing_ok=True)
+        (portfolios_dir / "hml_cmp_5.csv").unlink(missing_ok=True)
 
     # Single-file outputs (daily)
     if settings["daily_pf"]:
@@ -618,7 +618,7 @@ def run_themes(*, output_dir: Path, version: str | None = None, file: Path | Non
     Steps:
         1) Load the requested themes version.
         2) Read each saved hml file (monthly, daily, overnight/intraday), the saved
-           cmp file if any, and the market returns, and write the version's outputs,
+           ``hml_cmp_5`` file if any, and the market returns, and write the version's outputs,
            replacing its folder.
         3) After a CSV run, convert the written folders to CSV.
     Output:
@@ -674,8 +674,8 @@ def run_themes(*, output_dir: Path, version: str | None = None, file: Path | Non
         portfolios_dir=portfolios_dir,
         theme_sets=theme_sets,
         hml_series=hml_series,
-        cmp=_read_saved(portfolios_dir / "cmp")
-        if any((portfolios_dir / f"cmp.{ext}").exists() for ext in ("parquet", "csv"))
+        cmp=_read_saved(portfolios_dir / "hml_cmp_5")
+        if any((portfolios_dir / f"hml_cmp_5.{ext}").exists() for ext in ("parquet", "csv"))
         else None,
         market=_read_saved(other_output_dir / "market_returns"),
         market_daily=_read_saved(other_output_dir / "market_returns_daily") if daily else None,

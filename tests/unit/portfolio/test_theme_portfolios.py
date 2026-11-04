@@ -516,9 +516,9 @@ class TestWriteThemeVersions:
         )
         self._write_cmp(tmp_path, cmp)
 
-        v0 = pl.read_parquet(tmp_path / "themes" / "v0" / "cmp.parquet")
+        v0 = pl.read_parquet(tmp_path / "themes" / "v0" / "lms_cmp_5.parquet")
         assert v0.equals(cmp.filter(pl.col("characteristic") != "c"))
-        v1 = pl.read_parquet(tmp_path / "themes" / "v1.0" / "cmp.parquet")
+        v1 = pl.read_parquet(tmp_path / "themes" / "v1.0" / "lms_cmp_5.parquet")
         assert v1["characteristic"].to_list() == ["a", "b"]
         assert v1["direction"].to_list() == [1, -1]
         assert v1["ret_weighted"].to_list() == [0.1, -0.2]
@@ -541,9 +541,9 @@ class TestWriteThemeVersions:
         self._write_cmp(tmp_path, cmp)
 
         assert "No cmp rows for themes v1.0: ['b']" in capsys.readouterr().out
-        v1 = pl.read_parquet(tmp_path / "themes" / "v1.0" / "cmp.parquet")
+        v1 = pl.read_parquet(tmp_path / "themes" / "v1.0" / "lms_cmp_5.parquet")
         assert v1["characteristic"].to_list() == ["a"]
 
     def test_no_cmp_file_without_cmp(self, tmp_path: Path) -> None:
         self._write_cmp(tmp_path, None)
-        assert not list(tmp_path.rglob("cmp*"))
+        assert not list(tmp_path.rglob("*cmp*"))

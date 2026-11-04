@@ -293,15 +293,15 @@ class TestRunThemes:
         run_portfolio(output_format="parquet", output_dir=tmp_path)
         run_themes(output_dir=tmp_path, version="v0")
         portfolios = _portfolios_dir(tmp_path)
-        unsigned = pl.read_parquet(portfolios / "cmp.parquet")
+        unsigned = pl.read_parquet(portfolios / "hml_cmp_5.parquet")
         assert unsigned.height > 0
         keys = ["characteristic", "size_grp", "eom"]
 
         assert unsigned.equals(unsigned.sort("excntry", *keys))
-        v0 = pl.read_parquet(portfolios / "themes" / "v0" / "cmp.parquet")
+        v0 = pl.read_parquet(portfolios / "themes" / "v0" / "lms_cmp_5.parquet")
         assert v0.equals(unsigned)
 
-        signed = pl.read_parquet(portfolios / "themes" / "v1.0" / "cmp.parquet")
+        signed = pl.read_parquet(portfolios / "themes" / "v1.0" / "lms_cmp_5.parquet")
         directions = pl.read_parquet(portfolios / "themes" / "v1.0" / "lms.parquet").select(
             "characteristic", "direction"
         )
@@ -322,12 +322,12 @@ class TestRunThemes:
         run_themes(output_dir=tmp_path, version="v0")
         run_themes(output_dir=tmp_path)
         portfolios = _portfolios_dir(tmp_path)
-        unsigned = pl.read_csv(portfolios / "cmp.csv")
+        unsigned = pl.read_csv(portfolios / "hml_cmp_5.csv")
         assert unsigned.height > 0
-        v0 = pl.read_csv(portfolios / "themes" / "v0" / "cmp.csv")
+        v0 = pl.read_csv(portfolios / "themes" / "v0" / "lms_cmp_5.csv")
         assert "direction" not in v0.columns
         assert v0.equals(unsigned)
-        _assert_cmp_signed(pl.read_csv(portfolios / "themes" / "v1.0" / "cmp.csv"), unsigned)
+        _assert_cmp_signed(pl.read_csv(portfolios / "themes" / "v1.0" / "lms_cmp_5.csv"), unsigned)
 
     def test_cmp_off_removes_an_earlier_cmp(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -335,15 +335,15 @@ class TestRunThemes:
         _setup(tmp_path, monkeypatch)
         run_portfolio(output_format="parquet", output_dir=tmp_path)
         portfolios = _portfolios_dir(tmp_path)
-        _read_saved(portfolios / "cmp").write_csv(portfolios / "cmp.csv")
+        _read_saved(portfolios / "hml_cmp_5").write_csv(portfolios / "hml_cmp_5.csv")
 
         monkeypatch.setitem(portfolio_module.PORTFOLIO_SETTINGS, "cmp", {"us": False, "int": False})
         run_portfolio(output_format="parquet", output_dir=tmp_path)
         run_themes(output_dir=tmp_path)
 
-        assert not (portfolios / "cmp.parquet").exists()
-        assert not (portfolios / "cmp.csv").exists()
-        assert not (portfolios / "themes" / "v1.0" / "cmp.parquet").exists()
+        assert not (portfolios / "hml_cmp_5.parquet").exists()
+        assert not (portfolios / "hml_cmp_5.csv").exists()
+        assert not (portfolios / "themes" / "v1.0" / "lms_cmp_5.parquet").exists()
 
     @pytest.mark.parametrize("output_format", ["parquet", "csv"])
     def test_cmp_is_found_in_the_other_format(
@@ -352,16 +352,28 @@ class TestRunThemes:
         _setup(tmp_path, monkeypatch)
         run_portfolio(output_format=output_format, output_dir=tmp_path)
         portfolios = _portfolios_dir(tmp_path)
-        cmp = _read_saved(portfolios / "cmp")
-        (portfolios / f"cmp.{output_format}").unlink()
+        cmp = _read_saved(portfolios / "hml_cmp_5")
+        (portfolios / f"hml_cmp_5.{output_format}").unlink()
         if output_format == "parquet":
-            cmp.write_csv(portfolios / "cmp.csv")
+            cmp.write_csv(portfolios / "hml_cmp_5.csv")
         else:
-            cmp.write_parquet(portfolios / "cmp.parquet")
+            cmp.write_parquet(portfolios / "hml_cmp_5.parquet")
 
         run_themes(output_dir=tmp_path)
 
-        assert (portfolios / "themes" / "v1.0" / f"cmp.{output_format}").exists()
+        assert (portfolios / "themes" / "v1.0" / f"lms_cmp_5.{output_format}").exists()
+
+    def test_cmp_file_is_not_read_as_an_hml_series(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _setup(tmp_path, monkeypatch)
+        run_portfolio(output_format="parquet", output_dir=tmp_path)
+
+        run_themes(output_dir=tmp_path)
+
+        out = _portfolios_dir(tmp_path) / "themes" / "v1.0"
+        assert not list(out.glob("themes_cmp*"))
+        assert "ret_weighted" in pl.read_parquet(out / "lms_cmp_5.parquet").columns
 
     def test_edited_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _setup(tmp_path, monkeypatch)
@@ -383,8 +395,8 @@ class TestRunThemes:
         )
         assert set(mine["characteristic"]) == {"char_a"}
         assert mine["ret_ew"].equals(-released["ret_ew"])
-        mine_cmp = pl.read_parquet(out / "my_themes" / "cmp.parquet")
-        released_cmp = pl.read_parquet(out / "v1.0" / "cmp.parquet").filter(
+        mine_cmp = pl.read_parquet(out / "my_themes" / "lms_cmp_5.parquet")
+        released_cmp = pl.read_parquet(out / "v1.0" / "lms_cmp_5.parquet").filter(
             pl.col("characteristic") == "char_a"
         )
         assert set(mine_cmp["characteristic"]) == {"char_a"}
