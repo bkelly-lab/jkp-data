@@ -31,7 +31,8 @@ def characteristics() -> pl.DataFrame:
 
 @pytest.fixture(scope="module")
 def clusters() -> pl.DataFrame:
-    return pl.read_csv(_resource_path("cluster_labels.csv"))
+    # Searched for because #318 moves the file to themes/superseded_themes/v0/.
+    return pl.read_csv(next(_resource_path("").rglob("cluster_labels.csv")))
 
 
 def not_constant(df: pl.DataFrame, col: str, within: str) -> list[str]:
