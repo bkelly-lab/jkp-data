@@ -23,6 +23,7 @@ import pytest
 
 import jkp.data.aux_functions as aux_functions
 from jkp.data.aux_functions import comp_hgics
+from jkp.data.config import END_DATE
 from jkp.data.paths import DataPaths
 
 
@@ -103,6 +104,35 @@ class TestCompHgics:
 
         output = pl.read_parquet(test_paths.interim_dir / "na_hgics.parquet")
         assert set(output.columns) == {"gvkey", "date", "gics"}
+
+    def test_open_interval_gets_end_date_when_not_last_in_file(self, test_paths: DataPaths) -> None:
+        """The latest, open-ended interval runs to END_DATE even when it is not the last row
+        in the input file.
+
+        The input is written by an unordered `.unique()`, so the terminal interval must be
+        found by `indfrom`, not by file position.
+        """
+        raw_data_dfs = test_paths.interim_dir / "raw_data_dfs"
+        pl.DataFrame(
+            {
+                "gvkey": ["001000", "001000"],
+                "indfrom": [_dt.date(2015, 6, 1), _dt.date(2010, 1, 1)],
+                "indthru": [None, _dt.date(2015, 5, 31)],
+                "gics": [10101020, 10101010],
+            }
+        ).write_parquet(raw_data_dfs / "comp_hgics_na.parquet")
+
+        comp_hgics(test_paths, "national")
+
+        output = pl.read_parquet(test_paths.interim_dir / "na_hgics.parquet")
+        last = output.filter(pl.col("date") == pl.col("date").max()).row(0, named=True)
+        assert last["date"] == END_DATE, f"Open interval should run to {END_DATE}, got {last}"
+        assert last["gics"] == 10101020, (
+            f"Latest date should carry the open interval's gics: {last}"
+        )
+        assert output.height == (END_DATE - _dt.date(2010, 1, 1)).days + 1, (
+            "Expected one row per day from the first indfrom through END_DATE"
+        )
 
     @pytest.mark.regression
     def test_independent_of_wall_clock(

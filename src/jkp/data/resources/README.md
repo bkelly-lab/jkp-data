@@ -30,6 +30,11 @@ WRDS, CRSP, Compustat, or IBES vendor data:
   codes to industry groups. Sourced from Ken French's
   [data library](https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/data_library.html);
   subject to its own publicly-available terms.
+- **`characteristics.csv`** — The names of the characteristics in the
+  `characteristics/` output files, one per row. The other columns in those
+  files are not characteristics: for example identifiers (`id`, `gvkey`), the
+  month's returns (`ret`, `ret_exc`) and industry codes (`sic`, `ff49`).
+  Authored by Jensen, Kelly, and Pedersen.
 - **`fx_cad_1960_1982.csv`** — Month-end Canadian dollar exchange rates (USD
   per CAD) from January 1960 to January 1982, used for Canadian-dollar values
   dated before Compustat's exchange rates begin in February 1982. Source:
