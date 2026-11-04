@@ -31,7 +31,13 @@ from .compustat_correction import (
     correct_decimal_errors,
     drop_unreliable_observations,
 )
-from .config import COLLECT_CHUNK_SIZE, CORRECTION_SPILL_COMPRESSION, END_DATE, MAIN_FILTERS
+from .config import (
+    CALENDAR_RUN_MAX_GAP_DAYS,
+    COLLECT_CHUNK_SIZE,
+    CORRECTION_SPILL_COMPRESSION,
+    END_DATE,
+    MAIN_FILTERS,
+)
 from .output_writer import write_dataframe
 from .paths import DataPaths, get_fx_cad_backfill_path
 from .wrds_connection import (
@@ -4027,17 +4033,34 @@ def one_row_per_date(df: pl.LazyFrame) -> pl.LazyFrame:
     """
     Description:
         Keep one quarterly row per (gvkey, datadate). Two rows share a date when a firm changes its
-        fiscal year-end and both its old and new fiscal calendars report the same quarter.
+        fiscal year-end and both its old and new fiscal calendars report the same quarter. The row of
+        the established calendar, whose current run of reports started first, is kept: it is the
+        series the firm was reporting on, which usually carries the four-quarter sums, and the choice
+        uses only dates up to the one being decided.
 
     Steps:
-        1) Per (gvkey, datadate), keep the row with the highest fyr, then the Global row, then the last
-           raw row (n).
+        1) Per (gvkey, fyr), split the dates into runs that break at a gap of more than
+           CALENDAR_RUN_MAX_GAP_DAYS, so semiannual reporting or one missing quarter (181-184 days)
+           doesn't end a run, and find where each row's run started.
+        2) Per (gvkey, datadate), keep the row whose run started first, then the highest fyr, then the
+           Global row, then the last raw row (n).
 
     Output:
         LazyFrame unique on (gvkey, datadate).
     """
-    return df.sort(["gvkey", "datadate", "fyr", pl.col("source") == "GLOBAL", "n"]).unique(
-        ["gvkey", "datadate"], keep="last"
+    new_run = (pl.col("datadate").diff().dt.total_days() > CALENDAR_RUN_MAX_GAP_DAYS).fill_null(
+        True
+    )
+    return (
+        df.sort(["gvkey", "fyr", "datadate"])
+        .with_columns(run=new_run.cum_sum().over("gvkey", "fyr"))
+        .with_columns(run_start=pl.col("datadate").min().over("gvkey", "fyr", "run"))
+        .sort(
+            ["gvkey", "datadate", "run_start", "fyr", pl.col("source") == "GLOBAL", "n"],
+            descending=[False, False, True, False, False, False],
+        )
+        .unique(["gvkey", "datadate"], keep="last")
+        .drop("run", "run_start")
     )
 
 
@@ -4229,7 +4252,7 @@ def standardized_accounting_data(
            quarterly: gvkey, fyr, fyearq, fqtr), keep the GLOBAL row.
         4) If convert_to_usd: join FX and convert listed vars (annual & quarterly).
         5) Load ME and join to annual/quarterly panels.
-        6) Quarterly: drop rows without fqtr and quarterize …y → …y_q, coalesce to …q; create ni_qtr/sale_qtr/ocf_qtr; cumulate 4Q flows with continuity checks; normalize currency codes; de-dupe to one row per (gvkey, datadate), keeping the highest fyr.
+        6) Quarterly: drop rows without fqtr and quarterize …y → …y_q, coalesce to …q; create ni_qtr/sale_qtr/ocf_qtr; cumulate 4Q flows with continuity checks; normalize currency codes; de-dupe to one row per (gvkey, datadate), keeping the established fiscal calendar.
         7) Annual: add empty quarterly helpers; join ME; sort.
         8) Optionally add helper variables.
         9) Unique by (gvkey, datadate), drop row index, sort, and write 'acc_std_ann.parquet' and 'acc_std_qtr.parquet'.
