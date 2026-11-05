@@ -69,7 +69,7 @@ Jensen is at Yale School of Management; \url{www.tijensen.com}. Kelly is at AQR 
 	year = {2023}
 }	
 	\end{verbatim}
-	\item The Global Factor Data includes 406 characteristics and their associated factor portfolios.  This is a superset of the 153 factors analyzed in Jensen, Kelly, and Pedersen (2023).
+	\item The Global Factor Data includes 404 characteristics and their associated factor portfolios.  This is a superset of the 153 factors analyzed in Jensen, Kelly, and Pedersen (2023).
         \item This documentation is grouped into sections covering data downloads, identifier variables, industry identifiers, helper functions, accounting characteristics, market-based characteristics, detailed characteristic construction, FX conversion rate construction, and factor details and citations.
             \begin{itemize}
                 \item Data downloads describe the files available on jkpfactors.com/factor-returns and their columns.
@@ -182,7 +182,7 @@ Jensen is at Yale School of Management; \url{www.tijensen.com}. Kelly is at AQR 
 \begin{itemize}
 	\item \textit{Annual data} refers to accounting data from annual reports sourced from COMP.FUNDA and COMP.G\_FUNDA. If both report the same firm (GVKEY) and fiscal period end (DATADATE), we use the COMP.G\_FUNDA record.
 	
-	\item \textit{Quarterly data} refers to accounting data from quarterly reports sourced from COMP.FUNDQ and COMP.G\_FUNDQ. If both report the same firm and fiscal quarter (GVKEY, FYR, FYEARQ, FQTR), we use the COMP.G\_FUNDQ record. We drop records without a fiscal quarter (FQTR), which Compustat keeps from a firm's old fiscal calendar after it changes its fiscal year-end. If one source reports the same fiscal quarter more than once, we keep the record with the earliest DATADATE. If a firm still has more than one record for the same DATADATE, which happens when both its old and new fiscal calendars report that quarter, we keep the record with the higher FYR. A remaining tie goes to the COMP.G\_FUNDQ record.
+	\item \textit{Quarterly data} refers to accounting data from quarterly reports sourced from COMP.FUNDQ and COMP.G\_FUNDQ. If both report the same firm and fiscal quarter (GVKEY, FYR, FYEARQ, FQTR), we use the COMP.G\_FUNDQ record. We drop records without a fiscal quarter (FQTR), which Compustat keeps from a firm's old fiscal calendar after it changes its fiscal year-end. If one source reports the same fiscal quarter more than once, we keep the record with the earliest DATADATE. If a firm still has more than one record for the same DATADATE, which happens when both its old and new fiscal calendars report that quarter, we keep the record of the established calendar: the one whose current run of reports, with no gap of more than 200 days, started first. If both runs started on the same DATADATE, we keep the record with the higher FYR, and a remaining tie goes to the COMP.G\_FUNDQ record.
 	
 	\item \textit{Final Dataset} refers to ``world\_data.parquet", the output dataset
 	
@@ -1801,7 +1801,7 @@ The abbreviation is used to refer to the accounting variable. A suffix of '\mbox
 	
 	Intangible Assets Change 3yr & intan\_gr3a &$\frac{INTAN_t-INTAN_{t-36}}{AT\mbox{*}_t}$\\
 	
-	Short-Term Debt Change 3yr & debst\_gr3a &$\frac{DEBTST_t-DEBTST_{t-36}}{AT\mbox{*}_t}$\\
+	Short-Term Debt Change 3yr & debtst\_gr3a &$\frac{DEBTST_t-DEBTST_{t-36}}{AT\mbox{*}_t}$\\
 	
 	Accounts Payable Change 3yr & ap\_gr3a & $\frac{AP_t-AP_{t-36}}{AT\mbox{*}_t}$\\
 	
@@ -1825,8 +1825,6 @@ The abbreviation is used to refer to the accounting variable. A suffix of '\mbox
 	
 	Operating Liabilities Change 3yr & ol\_gr3a &$ \frac{OL\mbox{*}_t-OL\mbox{*}_{t-36}}{AT\mbox{*}_t}$\\
 	
-	Net Operating Assets Change 3yr & noa\_gr3a &$\frac{NOA\mbox{*}_t-NOA\mbox{*}_{t-36}}{AT\mbox{*}_t}$ \\
-	
 	Financial Assets Change 3yr & fna\_gr3a &$\frac{FNA\mbox{*}_t-FNA\mbox{*}_{t-36}}{AT\mbox{*}_t}$\\
 	
 	Financial Liabilities Change 3yr & fnl\_gr3a &$\frac{FNL\mbox{*}_t-FNL\mbox{*}_{t-36}}{AT\mbox{*}_t}$\\
@@ -1847,8 +1845,6 @@ The abbreviation is used to refer to the accounting variable. A suffix of '\mbox
 	
 	Net Working Capital Change 3yr & nwc\_gr3a &$\frac{NWC\mbox{*}_t-NWC\mbox{*}_{t-36}}{AT\mbox{*}_t}$\\
 	
-	Inventory Change 1yr & inv\_gr3a &$\frac{INV_t-INV_{t-36}}{AT\mbox{*}_t}$\\
-	
 	Non-Current Operating Liabilities Change 3yr & ncol\_gr3a &$\frac{NCOL\mbox{*}_t-NCOL\mbox{*}_{t-36}}{AT\mbox{*}_t}$\\	
 	
 	Net Income Including Extraordinary Items Change 3yr & nix\_gr3a &$\frac{NIX\mbox{*}_t-NIX\mbox{*}_{t-36}}{AT\mbox{*}_t}$\\
@@ -1864,8 +1860,6 @@ The abbreviation is used to refer to the accounting variable. A suffix of '\mbox
 	Net Issuance Change 3yr & netis\_gr3a &$\frac{NETIS\mbox{*}_t-NETIS\mbox{*}_{t-36}}{AT\mbox{*}_t}$\\
 	
 	Financial Cash Flow Change 3yr & fincf\_gr3a &$\frac{FINCF\mbox{*}_t-FINCF\mbox{*}_{t-36}}{AT\mbox{*}_t}$\\
-	
-	Net Working Capital Change 3yr & nwc\_gr3a &$\frac{NWC\mbox{*}_t-NWC\mbox{*}_{t-36}}{AT\mbox{*}_t}$\\
 	
     Equity Net Payout Change 3yr & eqnpo\_gr3a & $ \frac{EQNPO\mbox{*}_t - EQNPO\mbox{*}_{t-36}}{AT\_t}$\\
 	
@@ -3376,7 +3370,6 @@ Accounts Payable Change 1yr & ap\_gr1a & & & & \\
 Income Tax Payable Change 1yr & txp\_gr1a & & & & \\
 Long-Term Debt Change 1yr & debtlt\_gr1a & & & & \\
 Deferred Taxes and Investment Credit Change 1yr & txditc\_gr1a & & & & \\
-Non-Current Operating Liabilities Change 1yr & ncol\_gr1a & & & & \\
 Operating Assets Change 1yr & oa\_gr1a & & & & \\
 Operating Liabilities Change 1yr & ol\_gr1a & & & & \\
 Financial Assets Change 1yr & fna\_gr1a & & & & \\
@@ -3420,7 +3413,6 @@ Non-Current Operating Assets Change 3yr & ncoa\_gr3a & & & & \\
 Net Non-Current Operating Assets Change 3yr & nncoa\_gr3a & & & & \\
 Operating Assets Change 3yr & oa\_gr3a & & & & \\
 Operating Liabilities Change 3yr & ol\_gr3a & & & & \\
-Net Operating Assets Change 3yr & noa\_gr3a & & & & \\
 Financial Assets Change 3yr & fna\_gr3a & & & & \\
 Financial Liabilities Change 3yr & fnl\_gr3a & & & & \\
 Net Financial Assets Change 3yr & nfna\_gr3a & & & & \\
@@ -3431,7 +3423,6 @@ Net Income Change 3yr & ni\_gr3a & & & & \\
 Depreciation and Amortization Change 3yr & dp\_gr3a & & & & \\
 Free Cash Flow Change 3yr & fcf\_gr3a & & & & \\
 Net Working Capital Change 3yr & nwc\_gr3a & & & & \\
-Inventory Change 1yr & inv\_gr3a & & & & \\
 Non-Current Operating Liabilities Change 3yr & ncol\_gr3a & & & & \\
 Net Income Including Extraordinary Items Change 3yr & nix\_gr3a & & & & \\
 Equity Net Issuance Change 3yr & eqnetis\_gr3a & & & & \\
@@ -3440,7 +3431,6 @@ Net Short-Term Debt Issuance Change 3yr & dstnetis\_gr3a & & & & \\
 Net Debt Issuance Change 3yr & dbnetis\_gr3a & & & & \\
 Net Issuance Change 3yr & netis\_gr3a & & & & \\
 Financial Cash Flow Change 3yr & fincf\_gr3a & & & & \\
-Net Working Capital Change 3yr & nwc\_gr3a & & & & \\
 Equity Net Payout Change 3yr & eqnpo\_gr3a & & & & \\
 Effective Tax Rate Change 3yr & tax\_gr3a & & & & \\
 Dividend Payout Ratio Change 3yr & div\_gr3a & & & & \\
@@ -3541,7 +3531,7 @@ Total Dividends scaled by ME & div\_me & & & & \\
 Equity Buyback scaled by ME & eqbb\_me & & & & \\
 Equity Issuance scaled by ME & eqis\_me & & & & \\
 Equity Net Issuance scaled by ME & eqnetis\_me & & & & \\
-Net Long-Term Debt Issuance scaled by MEV & & & & \\
+Net Long-Term Debt Issuance scaled by MEV & dltnetis\_mev & & & & \\
 Net Short-Term Debt Issuance scaled by MEV & dstnetis\_mev & & & & \\
 Net Debt Issuance scaled by MEV & dbnetis\_mev & & & & \\
 Net Issuance scaled by MEV & netis\_mev & & & & \\

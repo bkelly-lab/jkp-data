@@ -85,6 +85,7 @@ Pyright runs in CI but does not currently block PRs. It surfaces potential bugs 
 1. **Create a branch** for your changes
 
 2. **Write tests** for new functionality or bug fixes. See [tests/README.md](tests/README.md) for guidance.
+   If you add, rename or remove a characteristic, update `src/jkp/data/resources/characteristics.csv`.
 
 3. **Run tests locally** before pushing:
    ```bash
