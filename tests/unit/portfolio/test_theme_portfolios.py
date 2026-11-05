@@ -516,8 +516,9 @@ class TestWriteThemeVersions:
         )
         self._write_cmp(tmp_path, cmp)
 
-        v0 = pl.read_parquet(tmp_path / "themes" / "v0" / "lms_cmp_5.parquet")
+        v0 = pl.read_parquet(tmp_path / "themes" / "v0" / "cmp.parquet")
         assert v0.equals(cmp.filter(pl.col("characteristic") != "c"))
+        assert not (tmp_path / "themes" / "v0" / "lms_cmp_5.parquet").exists()
         v1 = pl.read_parquet(tmp_path / "themes" / "v1.0" / "lms_cmp_5.parquet")
         assert v1["characteristic"].to_list() == ["a", "b"]
         assert v1["direction"].to_list() == [1, -1]

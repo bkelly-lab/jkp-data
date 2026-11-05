@@ -298,8 +298,9 @@ class TestRunThemes:
         keys = ["characteristic", "size_grp", "eom"]
 
         assert unsigned.equals(unsigned.sort("excntry", *keys))
-        v0 = pl.read_parquet(portfolios / "themes" / "v0" / "lms_cmp_5.parquet")
+        v0 = pl.read_parquet(portfolios / "themes" / "v0" / "cmp.parquet")
         assert v0.equals(unsigned)
+        assert not (portfolios / "themes" / "v0" / "lms_cmp_5.parquet").exists()
 
         signed = pl.read_parquet(portfolios / "themes" / "v1.0" / "lms_cmp_5.parquet")
         directions = pl.read_parquet(portfolios / "themes" / "v1.0" / "lms.parquet").select(
@@ -324,7 +325,7 @@ class TestRunThemes:
         portfolios = _portfolios_dir(tmp_path)
         unsigned = pl.read_csv(portfolios / "hml_cmp_5.csv")
         assert unsigned.height > 0
-        v0 = pl.read_csv(portfolios / "themes" / "v0" / "lms_cmp_5.csv")
+        v0 = pl.read_csv(portfolios / "themes" / "v0" / "cmp.csv")
         assert "direction" not in v0.columns
         assert v0.equals(unsigned)
         _assert_cmp_signed(pl.read_csv(portfolios / "themes" / "v1.0" / "lms_cmp_5.csv"), unsigned)

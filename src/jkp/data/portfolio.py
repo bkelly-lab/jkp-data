@@ -251,9 +251,9 @@ def _write_theme_versions(
            characteristics without an HML factor.
         2) Delete each version's folder, so no file of an earlier build remains.
         3) Write each version's outputs for each return series.
-        4) When ``cmp`` is given, write each version's ``lms_cmp_5``. ``UNSIGNED_CMP_VERSION``
-           keeps the unsigned CMP for its characteristics; other versions sign it.
-           A characteristic can lack CMP rows, since CMP is US-only by default and
+        4) When ``cmp`` is given, write each version's signed ``lms_cmp_5``.
+           ``UNSIGNED_CMP_VERSION`` instead gets ``cmp``, the old file: the unsigned CMP
+           for its characteristics. A characteristic can lack CMP rows, since CMP is US-only by default and
            skips months where the characteristic doesn't vary, so this step prints
            the characteristics with no rows instead of stopping.
     Output:
@@ -294,14 +294,17 @@ def _write_theme_versions(
         for name, themes in theme_sets.items():
             if absent := sorted(set(themes["characteristic"]) - cmp_chars):
                 print(f"No cmp rows for themes {name}: {absent}", flush=True)
-            version_cmp = (
-                cmp.filter(pl.col("characteristic").is_in(themes["characteristic"].implode()))
-                if name == UNSIGNED_CMP_VERSION
-                else _sign_factors(cmp, themes)
-            )
+            if name == UNSIGNED_CMP_VERSION:
+                file_name = "cmp"
+                version_cmp = cmp.filter(
+                    pl.col("characteristic").is_in(themes["characteristic"].implode())
+                )
+            else:
+                file_name = "lms_cmp_5"
+                version_cmp = _sign_factors(cmp, themes)
             _write_filtered(
                 version_cmp,
-                portfolios_dir / "themes" / name / "lms_cmp_5.parquet",
+                portfolios_dir / "themes" / name / f"{file_name}.parquet",
                 "eom",
                 settings["end_date"],
             )
