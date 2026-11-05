@@ -124,6 +124,11 @@ OI_COMPONENTS = [
     ("intraday_local", "ret_intraday_local"),
 ]
 
+# FX cancels within a day, so this return column equals another by construction
+# (see `ret_intraday_local` in aux_functions.py): it is aggregated only once, and its
+# output files reuse the results of the column it equals.
+OI_SAME_COLUMN = {"ret_intraday_local": "ret_intraday"}
+
 
 def _write_theme_outputs(
     *,
@@ -470,7 +475,7 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
             ind_pf=settings["ind_pf"],
             ret_cutoffs=ret_cutoffs,
             ret_cutoffs_daily=ret_cutoffs_daily,
-            daily_oi_cols=[ret_col for _, ret_col in oi_components],
+            daily_oi_cols=[c for _, c in oi_components if c not in OI_SAME_COLUMN],
         )
         portfolio_data[ex] = result
 
@@ -594,16 +599,24 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
     # Overnight / Intraday daily factor portfolios (LPS 2019 decomposition).
     # The main pass aggregated each component's daily returns with the
     # standard ret_exc_lead1m sort; only post-processing runs per component.
+    oi_built: dict[str, tuple[pl.DataFrame, pl.DataFrame]] = {}
     for component, ret_col in oi_components:
-        pf_oi = _stack_outputs(
-            portfolio_data, f"pf_daily_{ret_col}", ["excntry", "characteristic", "pf", "date"]
-        )
-        if pf_oi is None or pf_oi.height == 0:
-            print(f"No {component} results produced", flush=True)
-            continue
+        source_col = OI_SAME_COLUMN.get(ret_col, ret_col)
+        if source_col in oi_built:
+            pf_oi, hml_oi = oi_built[source_col]
+        else:
+            pf_oi = _stack_outputs(
+                portfolio_data,
+                f"pf_daily_{source_col}",
+                ["excntry", "characteristic", "pf", "date"],
+            )
+            if pf_oi is None or pf_oi.height == 0:
+                print(f"No {component} results produced", flush=True)
+                continue
 
-        print(f"Building {component} daily factor portfolios...", flush=True)
-        hml_oi = _build_hml(pf_oi, settings["pfs"], "date", include_signal=False)
+            print(f"Building {component} daily factor portfolios...", flush=True)
+            hml_oi = _build_hml(pf_oi, settings["pfs"], "date", include_signal=False)
+            oi_built[source_col] = (pf_oi, hml_oi)
         _write_filtered(pf_oi, portfolios_dir / f"pfs_{component}.parquet", "date", end_date)
         _write_filtered(hml_oi, portfolios_dir / f"hml_{component}.parquet", "date", end_date)
         hml_series.append((f"_{component}", hml_oi, "date"))

@@ -10077,39 +10077,37 @@ def _build_hml(
     """Build HML (top minus bottom pf) factor returns.
 
     Description:
-        Group `pf_df` by ``["excntry", "characteristic", date_col]``, compute
-        top-minus-bottom-portfolio diffs for return columns (and optionally
-        ``signal``), and keep only groups containing both extreme portfolios.
+        Join the top and bottom portfolios on
+        ``["excntry", "characteristic", date_col]`` and take top-minus-bottom diffs
+        for return columns (and optionally ``signal``). The inner join keeps only
+        groups containing both extreme portfolios.
     Output:
         DataFrame sorted by ``["excntry", "characteristic", date_col]``.
     """
-    diff = lambda c: (  # noqa: E731
-        pl.col(c).filter(pl.col("pf") == n_pfs).first()
-        - pl.col(c).filter(pl.col("pf") == 1).first()
-    )
-    is_extreme_pf = (pl.col("pf") == n_pfs) | (pl.col("pf") == 1)
-    agg_exprs = [is_extreme_pf.sum().alias("pfs")]
-    if include_signal:
-        agg_exprs.append(diff("signal").alias("signal"))
-    agg_exprs.extend(
-        [
-            (
-                pl.col("n").filter(pl.col("pf") == n_pfs).first()
-                + pl.col("n").filter(pl.col("pf") == 1).first()
-            ).alias("n_stocks"),
-            pl.col("n").filter(is_extreme_pf).min().alias("n_stocks_min"),
-            diff("ret_ew").alias("ret_ew"),
-            diff("ret_vw").alias("ret_vw"),
-            diff("ret_vw_cap").alias("ret_vw_cap"),
-        ]
-    )
+    keys = ["excntry", "characteristic", date_col]
+    ret_cols = ["ret_ew", "ret_vw", "ret_vw_cap"]
+    signal_cols = ["signal"] if include_signal else []
+    extreme_pfs = pf_df.lazy().select(*keys, "pf", "n", *signal_cols, *ret_cols)
+    diff = lambda c: (pl.col(c) - pl.col(f"{c}_bottom")).alias(c)  # noqa: E731
 
     return (
-        pf_df.group_by(["excntry", "characteristic", date_col])
-        .agg(agg_exprs)
-        .filter(pl.col("pfs") == 2)
-        .drop("pfs")
-        .sort(["excntry", "characteristic", date_col])
+        extreme_pfs.filter(pl.col("pf") == n_pfs)
+        .join(
+            extreme_pfs.filter(pl.col("pf") == 1),
+            on=keys,
+            how="inner",
+            suffix="_bottom",
+            nulls_equal=True,
+        )
+        .select(
+            *keys,
+            *[diff(c) for c in signal_cols],
+            (pl.col("n") + pl.col("n_bottom")).alias("n_stocks"),
+            pl.min_horizontal("n", "n_bottom").alias("n_stocks_min"),
+            *[diff(c) for c in ret_cols],
+        )
+        .sort(keys)
+        .collect()
     )
 
 
@@ -10267,60 +10265,148 @@ def _theme_returns(
     return subthemes, theme_returns
 
 
-def _pf_daily_lazy(
-    sub: pl.LazyFrame, daily: pl.DataFrame, x: str, ret_cols: list[str]
-) -> pl.LazyFrame:
-    """Aggregate daily portfolio returns for every return column in one pass.
+def _pf_returns_lazy(sub: pl.LazyFrame, x: str) -> pl.LazyFrame:
+    """Aggregate one characteristic's monthly portfolio returns.
 
     Description:
-        Weight each stock by its formation-month EW/VW/VW-cap weight within
-        ``(eom, pf)`` and apply the weights to the following month's daily
-        returns. All ``ret_cols`` share the sort, the weights and the join;
-        each column gets its own count and weighted sums.
+        Group stocks by ``(pf, eom)`` and compute the count, the median signal and
+        the EW/VW/VW-cap returns of the following month.
+    Output:
+        LazyFrame keyed by ``(pf, eom)``, with ``eom`` moved to the return month and
+        ``characteristic`` = ``x``.
+    """
+    return (
+        sub.group_by(["pf", "eom"])
+        .agg(
+            [
+                pl.lit(x).alias("characteristic"),
+                pl.len().alias("n"),
+                pl.median("var").alias("signal"),
+                pl.mean("ret_exc_lead1m").alias("ret_ew"),
+                ((pl.col("ret_exc_lead1m") * pl.col("me")).sum() / pl.col("me").sum()).alias(
+                    "ret_vw"
+                ),
+                (
+                    (pl.col("ret_exc_lead1m") * pl.col("me_cap")).sum() / pl.col("me_cap").sum()
+                ).alias("ret_vw_cap"),
+            ]
+        )
+        .with_columns(pl.col("eom").dt.offset_by("1mo").dt.month_end().alias("eom"))
+    )
+
+
+def _stock_days(data: pl.DataFrame, daily: pl.DataFrame, ret_cols: list[str]) -> pl.DataFrame:
+    """Join daily returns to their formation month once, for all characteristics.
+
+    Description:
+        Every characteristic's daily portfolios sum the same stock-day values and
+        differ only in which portfolio holds each stock, so the join and the
+        value-weighted numerators are computed here once per country. Sorting by date
+        lets ``_pf_daily_lazy`` group by date without hashing.
     Steps:
-        1) Build per-stock weights within ``(eom, pf)``.
-        2) Join to daily returns on the formation month; keep rows with a
-           portfolio and at least one non-null return column.
-        3) Aggregate by ``(pf, date)``: per column ``c``, ``n_{c}`` counts its
-           non-null returns and ``ret_{ew,vw,vw_cap}_{c}`` are weighted sums.
+        1) Keep daily rows with at least one non-null return column.
+        2) Join to the stock-months of the preceding month, which carry row number ``sm``.
+        3) Sort by ``(date, sm)``, so sums add up in the same order on every run.
+        4) Compute ``vw_{c}`` = ``c * me`` and ``cap_{c}`` = ``c * me_cap``.
+    Output:
+        DataFrame with ``sm``, ``date``, ``eom_lag1`` and, per return column ``c``,
+        ``c``, ``vw_{c}`` and ``cap_{c}``.
+    """
+    return (
+        daily.lazy()
+        .filter(pl.any_horizontal(pl.col(ret_cols).is_not_null()))
+        .join(
+            data.lazy().select("id", "eom", "sm", "me", "me_cap"),
+            left_on=["id", "eom_lag1"],
+            right_on=["id", "eom"],
+            how="inner",
+        )
+        .sort("date", "sm")
+        .select(
+            "sm",
+            "date",
+            "eom_lag1",
+            *ret_cols,
+            *[(pl.col(c) * pl.col("me")).alias(f"vw_{c}") for c in ret_cols],
+            *[(pl.col(c) * pl.col("me_cap")).alias(f"cap_{c}") for c in ret_cols],
+        )
+        .collect()
+    )
+
+
+def _pf_daily_lazy(
+    stock_days: pl.DataFrame,
+    assigned: pl.DataFrame,
+    n_stock_months: int,
+    x: str,
+    ret_cols: list[str],
+    n_pfs: int,
+) -> pl.LazyFrame:
+    """Aggregate one characteristic's daily portfolio returns for every return column.
+
+    Description:
+        Apply each stock's formation-month EW/VW/VW-cap weight within ``(eom, pf)`` to
+        the following month's daily returns. Weights are not renormalised when a stock
+        has no return on a date. ``assigned`` holds the characteristic's portfolios and
+        ``stock_days`` the values shared by all characteristics (``_stock_days``).
+    Steps:
+        1) Look up each stock-day's portfolio by stock-month row number.
+        2) For each portfolio, sum by date: per column ``c``, the count of non-null
+           returns and the numerators of the three weightings.
+        3) Divide by the formation-month denominators of ``(eom, pf)``.
     Output:
         Wide LazyFrame keyed by ``(pf, date)`` with ``characteristic`` = ``x``.
         A column whose returns are all null on a row has ``n_{c} == 0``; split
         it out with ``_split_daily_leg``.
     """
-    weights = (
-        sub.group_by(["eom", "pf"])
-        .agg(
-            [
-                pl.col("id"),
-                (1 / pl.len()).alias("w_ew"),
-                (pl.col("me") / pl.col("me").sum()).alias("w_vw"),
-                (pl.col("me_cap") / pl.col("me_cap").sum()).alias("w_vw_cap"),
-            ]
-        )
-        .explode("id", "w_vw", "w_vw_cap")
+    pf_by_row = pl.repeat(None, n_stock_months, dtype=pl.UInt8, eager=True).scatter(
+        assigned["sm"], assigned["pf"].cast(pl.UInt8)
     )
-    return (
-        weights.join(
-            daily.lazy(),
-            left_on=["id", "eom"],
-            right_on=["id", "eom_lag1"],
-            how="left",
-        )
-        .filter(pl.col("pf").is_not_null() & pl.any_horizontal(pl.col(ret_cols).is_not_null()))
-        .group_by(["pf", "date"])
+    denominators = (
+        assigned.lazy()
+        .group_by("eom", "pf")
         .agg(
-            [pl.lit(x).alias("characteristic")]
-            + [
+            pl.len().alias("den_ew"),
+            pl.col("me").sum().alias("den_vw"),
+            pl.col("me_cap").sum().alias("den_vw_cap"),
+        )
+    )
+    numerators = [
+        expr
+        for c in ret_cols
+        for expr in (
+            pl.col(c).count().alias(f"n_{c}"),
+            pl.col(c).sum().alias(f"num_ew_{c}"),
+            pl.col(f"vw_{c}").sum().alias(f"num_vw_{c}"),
+            pl.col(f"cap_{c}").sum().alias(f"num_vw_cap_{c}"),
+        )
+    ]
+    by_pf = [
+        stock_days.lazy()
+        .filter(pl.lit(pf_by_row).gather(pl.col("sm")) == pf)
+        .with_columns(pl.col("date").set_sorted())
+        .group_by("date")
+        .agg(pl.col("eom_lag1").first(), *numerators)
+        .with_columns(pl.lit(float(pf)).alias("pf"))
+        for pf in range(1, n_pfs + 1)
+    ]
+    return (
+        pl.concat(by_pf)
+        .join(denominators, left_on=["eom_lag1", "pf"], right_on=["eom", "pf"], how="inner")
+        .select(
+            "pf",
+            "date",
+            pl.lit(x).alias("characteristic"),
+            *[
                 expr
                 for c in ret_cols
                 for expr in (
-                    pl.col(c).count().alias(f"n_{c}"),
-                    (pl.col("w_ew") * pl.col(c)).sum().alias(f"ret_ew_{c}"),
-                    (pl.col("w_vw") * pl.col(c)).sum().alias(f"ret_vw_{c}"),
-                    (pl.col("w_vw_cap") * pl.col(c)).sum().alias(f"ret_vw_cap_{c}"),
+                    pl.col(f"n_{c}"),
+                    (pl.col(f"num_ew_{c}") / pl.col("den_ew")).alias(f"ret_ew_{c}"),
+                    (pl.col(f"num_vw_{c}") / pl.col("den_vw")).alias(f"ret_vw_{c}"),
+                    (pl.col(f"num_vw_cap_{c}") / pl.col("den_vw_cap")).alias(f"ret_vw_cap_{c}"),
                 )
-            ]
+            ],
         )
     )
 
@@ -10368,6 +10454,78 @@ def _cmp_size_group(n_groups: int) -> pl.Expr:
             .otherwise(pl.lit("small"))
         )
     return pl.col("size_grp")
+
+
+def _cmp_char_lazy(keyed: pl.DataFrame, x: str) -> pl.LazyFrame:
+    """Build one characteristic's characteristics-managed portfolios.
+
+    Description:
+        Rank-weight the stocks of each group ``k`` (one size group in one month) on
+        ``x``. ``keyed`` is shared by all characteristics of a size grouping.
+    Steps:
+        1) Keep stocks with a value of ``x``.
+        2) Center each stock's rank: ``rank / (n + 1) - 0.5``. The average of ``n``
+           ranks is ``(n + 1) / 2``, so 0.5 is the group mean.
+        3) Sum the return and ``x`` times the centered rank, and scale both by half
+           the sum of absolute centered ranks, so each side's weights sum to one.
+        4) Drop groups where ``x`` does not vary.
+    Output:
+        LazyFrame with columns ``[characteristic, size_grp, eom, n_stocks,
+        ret_weighted, signal_weighted]``.
+    """
+    centered_rank = (pl.col("var").rank("average") / (pl.len() + 1)).over("k") - 0.5
+    return (
+        keyed.lazy()
+        .select("k", "size_grp", "eom", "ret_exc_lead1m", pl.col(x).alias("var"))
+        .filter(pl.col("var").is_not_null())
+        .with_columns(centered_rank.alias("dev"))
+        .group_by("k")
+        .agg(
+            pl.col("size_grp").first(),
+            pl.col("eom").first(),
+            pl.len().alias("n_stocks"),
+            (pl.col("ret_exc_lead1m") * pl.col("dev")).sum().alias("num_ret"),
+            (pl.col("var") * pl.col("dev")).sum().alias("num_signal"),
+            pl.col("dev").abs().sum().alias("dev_abs"),
+            pl.col("var").std().alias("sd_var"),
+        )
+        .filter(pl.col("sd_var") != 0)
+        .select(
+            pl.lit(x).alias("characteristic"),
+            "size_grp",
+            "eom",
+            "n_stocks",
+            (pl.col("num_ret") / (pl.col("dev_abs") / 2)).alias("ret_weighted"),
+            (pl.col("num_signal") / (pl.col("dev_abs") / 2)).alias("signal_weighted"),
+        )
+    )
+
+
+def _cmp_returns(data: pl.DataFrame, chars: list[str], n_groups: int, excntry: str) -> pl.DataFrame:
+    """Build a country's characteristics-managed portfolios for one size grouping.
+
+    Description:
+        Run ``_cmp_char_lazy`` for every characteristic. The integer group key is
+        computed once here and spares each characteristic a string-key grouping.
+    Steps:
+        1) Attach the size group and the key of each (size group, month).
+        2) Collect the characteristics in chunks to bound peak memory.
+        3) Stack them, move ``eom`` to the return month and attach ``excntry``.
+    Output:
+        DataFrame with columns ``[characteristic, size_grp, eom, n_stocks,
+        ret_weighted, signal_weighted, excntry]``.
+    """
+    keyed = data.select(
+        "eom", "ret_exc_lead1m", *chars, _cmp_size_group(n_groups).alias("size_grp")
+    ).with_columns(pl.struct("size_grp", "eom").rank("dense").alias("k"))
+    frames: list[pl.DataFrame] = []
+    for start in range(0, len(chars), COLLECT_CHUNK_SIZE):
+        chunk = chars[start : start + COLLECT_CHUNK_SIZE]
+        frames.extend(pl.collect_all([_cmp_char_lazy(keyed, x) for x in chunk]))
+    return pl.concat(frames).with_columns(
+        pl.col("eom").dt.offset_by("1mo").dt.month_end().alias("eom"),
+        pl.lit(excntry.upper()).alias("excntry"),
+    )
 
 
 def portfolios(
@@ -10585,17 +10743,22 @@ def portfolios(
                     excntry,
                 )
 
+    # Stock-months get a row number, so a characteristic's portfolios can be looked up
+    # from the stock-day table shared by all characteristics.
+    data = data.with_row_index("sm")
+    stock_days = _stock_days(data, daily, daily_ret_cols) if daily_pf else None
+    del daily
+
     # Creating portfolios for all the characteristics.
     #
     # Each characteristic builds a per-char lazy pipeline (ECDF -> pf
-    # assignment -> monthly/daily aggregation).  The pipelines accumulate in
-    # ``pf_returns_lazys`` / ``pf_daily_lazys`` and are batch-collected via
-    # ``pl.collect_all`` so polars can execute them concurrently on its thread
-    # pool.  The signals=True branch is the exception: it needs the
-    # intermediate ``sub`` frame alive after each collect to compute
-    # pf_signals, so it collects eagerly per-char.
-    pf_returns_lazys: list[pl.LazyFrame] = []
-    pf_daily_lazys: list[pl.LazyFrame] = []
+    # assignment).  The pipelines accumulate in ``char_subs`` and are
+    # batch-collected via ``pl.collect_all`` so polars can execute them
+    # concurrently on its thread pool; the monthly and daily aggregation of each
+    # batch runs from the collected portfolios.  The signals=True branch is the
+    # exception: it needs the intermediate ``sub`` frame alive after each collect
+    # to compute pf_signals, so it collects eagerly per-char.
+    char_subs: dict[str, pl.LazyFrame] = {}
     char_pfs: list[dict] = []  # populated only when signals=True
 
     # Single shared LazyFrame node for the preprocessed data. All per-char
@@ -10612,10 +10775,9 @@ def portfolios(
                 .filter(pl.col("var").is_not_null())
                 .select(
                     [
-                        "id",
+                        "sm",
                         "eom",
                         "var",
-                        "size_grp",
                         "ret_exc_lead1m",
                         "me",
                         "me_cap",
@@ -10654,30 +10816,10 @@ def portfolios(
             )
         )
 
-        # Monthly pf_returns lazy frame for this char.
-        pf_returns_x = (
-            sub.group_by(["pf", "eom"])
-            .agg(
-                [
-                    pl.lit(x).alias("characteristic"),
-                    pl.len().alias("n"),
-                    pl.median("var").alias("signal"),
-                    pl.mean("ret_exc_lead1m").alias("ret_ew"),
-                    ((pl.col("ret_exc_lead1m") * pl.col("me")).sum() / pl.col("me").sum()).alias(
-                        "ret_vw"
-                    ),
-                    (
-                        (pl.col("ret_exc_lead1m") * pl.col("me_cap")).sum() / pl.col("me_cap").sum()
-                    ).alias("ret_vw_cap"),
-                ]
-            )
-            .with_columns(pl.col("eom").dt.offset_by("1mo").dt.month_end().alias("eom"))
-        )
-
         if signals:
             # Eager path: collect immediately, then compute pf_signals.
             op: dict = {}
-            op["pf_returns"] = pf_returns_x.collect()
+            op["pf_returns"] = _pf_returns_lazy(sub, x).collect()
 
             if signals_w == "ew":
                 w_expr = (1 / pl.col("eom").len()).over(["pf", "eom"])
@@ -10703,15 +10845,14 @@ def portfolios(
             op["signals"] = pf_signals.collect()
 
             if daily_pf:
-                op["pf_daily"] = _pf_daily_lazy(sub, daily, x, daily_ret_cols).collect()
+                op["pf_daily"] = _pf_daily_lazy(
+                    stock_days, sub.collect(), data.height, x, daily_ret_cols, pfs
+                ).collect()
 
             char_pfs.append(op)
         else:
             # Lazy path: accumulate LazyFrames for batch collect_all.
-            pf_returns_lazys.append(pf_returns_x)
-
-            if daily_pf:
-                pf_daily_lazys.append(_pf_daily_lazy(sub, daily, x, daily_ret_cols))
+            char_subs[x] = sub
 
     # Batch-collect per-char lazy pipelines in chunks to bound peak memory
     # (see COLLECT_CHUNK_SIZE in config.py).
@@ -10722,10 +10863,11 @@ def portfolios(
         pf_returns_df = pl.concat([op["pf_returns"] for op in char_pfs])
         if daily_pf:
             pf_daily_df = pl.concat([op["pf_daily"] for op in char_pfs])
-    elif pf_returns_lazys:
+    elif char_subs:
         ret_dfs: list[pl.DataFrame] = []
         daily_dfs: list[pl.DataFrame] = []
-        n_chars = len(pf_returns_lazys)
+        char_names = list(char_subs)
+        n_chars = len(char_names)
         n_chunks = (n_chars + COLLECT_CHUNK_SIZE - 1) // COLLECT_CHUNK_SIZE
         for chunk_idx, start in enumerate(range(0, n_chars, COLLECT_CHUNK_SIZE)):
             end = min(start + COLLECT_CHUNK_SIZE, n_chars)
@@ -10733,13 +10875,20 @@ def portfolios(
                 f"   Chars {start + 1}-{end} of {n_chars} (chunk {chunk_idx + 1}/{n_chunks})",
                 flush=True,
             )
-            chunk_ret = pf_returns_lazys[start:end]
-            chunk_daily = pf_daily_lazys[start:end] if daily_pf else []
-            collected = pl.collect_all(chunk_ret + chunk_daily)
-            n_ret_chunk = len(chunk_ret)
-            ret_dfs.extend(df for df in collected[:n_ret_chunk] if df.height > 0)
+            chunk = char_names[start:end]
+            assigned = pl.collect_all([char_subs[x] for x in chunk])
+            monthly = pl.collect_all(
+                [_pf_returns_lazy(df.lazy(), x) for x, df in zip(chunk, assigned, strict=True)]
+            )
+            ret_dfs.extend(df for df in monthly if df.height > 0)
             if daily_pf:
-                daily_dfs.extend(df for df in collected[n_ret_chunk:] if df.height > 0)
+                daily_chunk = pl.collect_all(
+                    [
+                        _pf_daily_lazy(stock_days, df, data.height, x, daily_ret_cols, pfs)
+                        for x, df in zip(chunk, assigned, strict=True)
+                    ]
+                )
+                daily_dfs.extend(df for df in daily_chunk if df.height > 0)
         pf_returns_df = pl.concat(ret_dfs) if ret_dfs else None
         if daily_pf:
             pf_daily_df = pl.concat(daily_dfs) if daily_dfs else None
@@ -10780,41 +10929,8 @@ def portfolios(
                 )
 
     if cmp_key:
-        # Vectorized over all characteristics: unpivot to long form, then compute
-        # ranks/weights/aggregates in a single lazy pipeline.
-        grp = ["characteristic", "size_grp", "eom"]
-        n_grp = pl.len().over(grp)
-        p_rank = pl.col("var").rank("average").over(grp) / (n_grp + 1)
-        p_rank_dev = p_rank - p_rank.mean().over(grp)
-        weight = p_rank_dev / (p_rank_dev.abs().sum().over(grp) / 2)
-
         for n_groups in CMP_SIZE_GROUPS:
-            output[f"cmp_{n_groups}"] = (
-                data.lazy()
-                .with_columns(_cmp_size_group(n_groups).alias("size_grp"))
-                .unpivot(
-                    on=chars,
-                    index=["eom", "size_grp", "ret_exc_lead1m"],
-                    variable_name="characteristic",
-                    value_name="var",
-                )
-                .filter(pl.col("var").is_not_null())
-                .with_columns(weight.alias("weight"))
-                .group_by(grp)
-                .agg(
-                    pl.len().alias("n_stocks"),
-                    (pl.col("ret_exc_lead1m") * pl.col("weight")).sum().alias("ret_weighted"),
-                    (pl.col("var") * pl.col("weight")).sum().alias("signal_weighted"),
-                    pl.col("var").std().alias("sd_var"),
-                )
-                .filter(pl.col("sd_var") != 0)
-                .drop("sd_var")
-                .with_columns(
-                    pl.col("eom").dt.offset_by("1mo").dt.month_end().alias("eom"),
-                    pl.lit(excntry.upper()).alias("excntry"),
-                )
-                .collect()
-            )
+            output[f"cmp_{n_groups}"] = _cmp_returns(data, chars, n_groups, excntry)
 
     return output
 

@@ -1,9 +1,9 @@
 """Unit tests for ``_pf_daily_lazy`` and ``_split_daily_leg``.
 
-The two helpers aggregate several daily return columns through one shared
-weights-to-daily join and then split the wide result into one long frame per
-column. These tests pin the per-leg counts, weighted sums and the dropping of
-legs with no non-null returns on a date.
+The helpers aggregate several daily return columns through one shared stock-day
+table and then split the wide result into one long frame per column. These tests
+pin the per-leg counts, weighted sums and the dropping of legs with no non-null
+returns on a date.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from datetime import date
 import polars as pl
 import pytest
 
-from jkp.data.aux_functions import _pf_daily_lazy, _split_daily_leg
+from jkp.data.aux_functions import _pf_daily_lazy, _split_daily_leg, _stock_days
 
 RET_COLS = ["ret_exc", "ret_overnight"]
 
@@ -27,15 +27,17 @@ def wide() -> pl.DataFrame:
     Day 5: every return is null, so the row is dropped by the join filter.
     """
     eom = date(2020, 1, 31)
-    sub = pl.LazyFrame(
+    data = pl.DataFrame(
         {
-            "eom": [eom, eom],
-            "pf": [1.0, 1.0],
+            "sm": [0, 1],
             "id": [1, 2],
+            "eom": [eom, eom],
             "me": [1.0, 3.0],
             "me_cap": [1.0, 1.0],
-        }
+        },
+        schema_overrides={"sm": pl.UInt32},
     )
+    assigned = data.with_columns(pl.lit(1.0).alias("pf"))
     daily = pl.DataFrame(
         {
             "id": [1, 2, 1, 2, 1, 2],
@@ -45,7 +47,12 @@ def wide() -> pl.DataFrame:
             "ret_overnight": [0.03, None, 0.01, 0.02, None, None],
         }
     )
-    return _pf_daily_lazy(sub, daily, "char_a", RET_COLS).collect().sort("date")
+    stock_days = _stock_days(data, daily, RET_COLS)
+    return (
+        _pf_daily_lazy(stock_days, assigned, data.height, "char_a", RET_COLS, n_pfs=3)
+        .collect()
+        .sort("date")
+    )
 
 
 @pytest.mark.unit
