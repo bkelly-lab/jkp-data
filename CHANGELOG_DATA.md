@@ -5,7 +5,7 @@ This repository ports the original SAS pipeline ([ReplicationCrisis](https://git
 
 ## 04-11-2026
 __Changes__:
-- Added `ret_local` column to per-country daily return files (`return_data/daily_rets_by_country/*.parquet`). This local-currency total return was already present in `world_dsf.parquet` and `world_ret_monthly.parquet` but was missing from the country split ([#322] (https://github.com/bkelly-lab/jkp-data/pull/322)).
+- Added `ret_local` column to per-country daily return files (`return_data/daily_rets_by_country/*.parquet`). This local-currency total return was already present in `world_dsf.parquet` and `world_ret_monthly.parquet` but was missing from the country split ([#322](https://github.com/bkelly-lab/jkp-data/pull/322)).
 
 ## 03-11-2026
 __Changes__:
