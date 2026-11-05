@@ -21,10 +21,12 @@ from typing import TypeVar
 
 import duckdb
 import ibis
+import numpy as np
 import polars as pl
 import polars_ds as pds
 import polars_ols  # noqa: F401 - required for least_squares method on polars expressions
 from ibis import _
+from numba import get_num_threads, njit, prange
 from polars import col
 
 from .compustat_correction import (
@@ -10265,52 +10267,192 @@ def _theme_returns(
     return subthemes, theme_returns
 
 
-def _pf_returns_lazy(sub: pl.LazyFrame, x: str) -> pl.LazyFrame:
-    """Aggregate one characteristic's monthly portfolio returns.
+def _pf_medians_lazy(assigned: pl.DataFrame, x: str) -> pl.LazyFrame:
+    """Median characteristic of one characteristic's portfolios in each month.
 
-    Description:
-        Group stocks by ``(pf, eom)`` and compute the count, the median signal and
-        the EW/VW/VW-cap returns of the following month.
     Output:
-        LazyFrame keyed by ``(pf, eom)``, with ``eom`` moved to the return month and
-        ``characteristic`` = ``x``.
+        LazyFrame with columns ``[pf, eom, signal, characteristic]``.
     """
     return (
-        sub.group_by(["pf", "eom"])
-        .agg(
-            [
-                pl.lit(x).alias("characteristic"),
-                pl.len().alias("n"),
-                pl.median("var").alias("signal"),
-                pl.mean("ret_exc_lead1m").alias("ret_ew"),
-                ((pl.col("ret_exc_lead1m") * pl.col("me")).sum() / pl.col("me").sum()).alias(
-                    "ret_vw"
-                ),
-                (
-                    (pl.col("ret_exc_lead1m") * pl.col("me_cap")).sum() / pl.col("me_cap").sum()
-                ).alias("ret_vw_cap"),
-            ]
-        )
+        assigned.lazy()
+        .group_by(["pf", "eom"])
+        .agg(pl.median("var").alias("signal"))
+        .with_columns(pl.lit(x).alias("characteristic"))
+    )
+
+
+# Values per row in ``_sum_rows_kernel``. A fixed count lets the compiler vectorize the
+# innermost loop.
+_SUM_VALUES = 16
+
+
+@njit(parallel=True, cache=True, error_model="numpy")
+def _sum_rows_kernel(
+    task_starts, period_starts, stock_months, values, pf_by_row, n_chars, n_bins, out
+):
+    """Add each row's values to the totals of its period, characteristic and portfolio.
+
+    Description:
+        Threads take runs of periods, and rows within a period are added in the given
+        order, so the sums are the same for any number of threads. Bin 0 of each
+        characteristic collects its unassigned stocks, which spares the loop a branch.
+    Output:
+        Fills ``out``, flattened by period, characteristic, bin and value.
+    """
+    per_period = n_chars * n_bins * _SUM_VALUES
+    for task in prange(task_starts.size - 1):
+        for period in range(task_starts[task], task_starts[task + 1]):
+            totals = np.zeros(per_period)
+            for row in range(period_starts[period], period_starts[period + 1]):
+                pf_row = stock_months[row] * n_chars
+                value_row = row * _SUM_VALUES
+                for char in range(n_chars):
+                    at = (char * n_bins + pf_by_row[pf_row + char]) * _SUM_VALUES
+                    for k in range(_SUM_VALUES):
+                        totals[at + k] += values[value_row + k]
+            out[period * per_period : (period + 1) * per_period] = totals
+
+
+def _sum_by_portfolio(
+    rows: pl.DataFrame,
+    period: str,
+    value_cols: list[str],
+    pf_by_row: np.ndarray,
+    n_pfs: int,
+) -> tuple[pl.Series, np.ndarray]:
+    """Sum row values by period, characteristic and portfolio, for all characteristics at once.
+
+    Description:
+        Every characteristic sums the same values and differs only in which portfolio
+        holds each stock-month, so one pass over ``rows`` does the work of a filter and
+        group-by per characteristic. NaN stays in its own portfolio's sum.
+    Steps:
+        1) Find where each period starts. ``rows`` must be sorted by ``period``, hold
+           the stock-month number ``sm``, and have no nulls in ``value_cols``.
+        2) Give each thread a run of periods with a similar row count, since the number
+           of stocks in a period varies widely.
+        3) Pad to ``_SUM_VALUES`` columns, run the kernel and drop the unassigned bin.
+    Output:
+        The periods, and an array indexed by ``(period, characteristic, pf - 1, value)``
+        with values in the order of ``value_cols``.
+    """
+    if len(value_cols) > _SUM_VALUES:
+        raise ValueError(f"{len(value_cols)} value columns, at most {_SUM_VALUES} fit")
+    runs = rows[period].rle().struct.unnest()
+    period_starts = np.concatenate(([0], np.cumsum(runs["len"].to_numpy(), dtype=np.int64)))
+    task_starts = np.unique(
+        np.searchsorted(period_starts, np.linspace(0, rows.height, get_num_threads() + 1))
+    )
+    padding = [pl.lit(0.0).alias(f"_pad_{i}") for i in range(_SUM_VALUES - len(value_cols))]
+    n_chars = pf_by_row.shape[1]
+    out = np.zeros(runs.height * n_chars * (n_pfs + 1) * _SUM_VALUES)
+    _sum_rows_kernel(
+        task_starts.astype(np.int64),
+        period_starts,
+        rows["sm"].to_numpy().astype(np.int64),
+        rows.select(*value_cols, *padding).to_numpy(order="c").ravel(),
+        pf_by_row.ravel(),
+        n_chars,
+        n_pfs + 1,
+        out,
+    )
+    totals = out.reshape(runs.height, n_chars, n_pfs + 1, _SUM_VALUES)
+    return runs["value"].alias(period), totals[:, :, 1:, : len(value_cols)]
+
+
+def _month_totals(
+    data: pl.DataFrame, pf_by_row: np.ndarray, n_pfs: int
+) -> tuple[pl.Series, np.ndarray]:
+    """Sum each month's portfolios for all characteristics.
+
+    Description:
+        These totals give the monthly returns, and their stock counts and market caps
+        are the denominators of the following month's daily returns.
+    Output:
+        The months, and an array indexed by ``(month, characteristic, pf - 1, value)``
+        with values ``n``, return, return times ``me``, return times ``me_cap``, ``me``
+        and ``me_cap``.
+    """
+    value_cols = ["n", "ret", "ret_me", "ret_me_cap", "me", "me_cap"]
+    return _sum_by_portfolio(
+        data.select(
+            "sm",
+            "eom",
+            pl.lit(1.0).alias("n"),
+            pl.col("ret_exc_lead1m").alias("ret"),
+            (pl.col("ret_exc_lead1m") * pl.col("me")).alias("ret_me"),
+            (pl.col("ret_exc_lead1m") * pl.col("me_cap")).alias("ret_me_cap"),
+            "me",
+            "me_cap",
+        ).sort("sm"),
+        "eom",
+        value_cols,
+        pf_by_row,
+        n_pfs,
+    )
+
+
+def _portfolio_rows(
+    periods: pl.Series, numerators: np.ndarray, denominators: np.ndarray, chars: list[str]
+) -> pl.DataFrame:
+    """Turn portfolio sums into returns, one row per period, characteristic and portfolio.
+
+    Description:
+        ``numerators`` holds the count and the EW, VW and VW-cap sums by period,
+        characteristic and portfolio; ``denominators`` holds the formation month's stock
+        count, ``me`` and ``me_cap`` in the same layout. A portfolio with a count of zero
+        has no row. The division is raw rather than ``safe_div``, since a zero
+        denominator gives NaN or infinity in the published series.
+    Output:
+        DataFrame with columns ``[pf, <period>, characteristic, n, ret_ew, ret_vw,
+        ret_vw_cap]``.
+    """
+    period_i, char_i, pf_i = np.nonzero(numerators[:, :, :, 0] > 0)
+    numerator = numerators[period_i, char_i, pf_i]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        returns = numerator[:, 1:] / denominators[period_i, char_i, pf_i]
+    return pl.DataFrame(
+        {
+            "pf": pf_i + 1.0,
+            periods.name: periods.gather(period_i),
+            "characteristic": pl.Series(chars).gather(char_i),
+            "n": numerator[:, 0].astype(np.uint32),
+            "ret_ew": returns[:, 0],
+            "ret_vw": returns[:, 1],
+            "ret_vw_cap": returns[:, 2],
+        }
+    )
+
+
+def _pf_returns(
+    months: pl.Series, month_totals: np.ndarray, medians: pl.DataFrame, chars: list[str]
+) -> pl.DataFrame:
+    """Build the monthly portfolio returns of all characteristics.
+
+    Output:
+        DataFrame with columns ``[pf, eom, characteristic, n, signal, ret_ew, ret_vw,
+        ret_vw_cap]``, with ``eom`` moved to the return month.
+    """
+    return (
+        _portfolio_rows(months, month_totals[:, :, :, :4], month_totals[:, :, :, [0, 4, 5]], chars)
+        .join(medians, on=["pf", "eom", "characteristic"])
+        .select("pf", "eom", "characteristic", "n", "signal", "ret_ew", "ret_vw", "ret_vw_cap")
         .with_columns(pl.col("eom").dt.offset_by("1mo").dt.month_end().alias("eom"))
     )
 
 
 def _stock_days(data: pl.DataFrame, daily: pl.DataFrame, ret_cols: list[str]) -> pl.DataFrame:
-    """Join daily returns to their formation month once, for all characteristics.
+    """Join daily returns to their formation month and prepare the values to sum.
 
-    Description:
-        Every characteristic's daily portfolios sum the same stock-day values and
-        differ only in which portfolio holds each stock, so the join and the
-        value-weighted numerators are computed here once per country. Sorting by date
-        lets ``_pf_daily_lazy`` group by date without hashing.
     Steps:
         1) Keep daily rows with at least one non-null return column.
-        2) Join to the stock-months of the preceding month, which carry row number ``sm``.
+        2) Join to the stock-months of the preceding month, which carry the number ``sm``.
         3) Sort by ``(date, sm)``, so sums add up in the same order on every run.
-        4) Compute ``vw_{c}`` = ``c * me`` and ``cap_{c}`` = ``c * me_cap``.
+        4) Per return column ``c``, compute the non-null flag ``n_{c}`` and the values
+           ``c``, ``vw_{c}`` = ``c * me`` and ``cap_{c}`` = ``c * me_cap``, with nulls as
+           0 so they add nothing to the sums.
     Output:
-        DataFrame with ``sm``, ``date``, ``eom_lag1`` and, per return column ``c``,
-        ``c``, ``vw_{c}`` and ``cap_{c}``.
+        DataFrame with ``sm``, ``date`` and the four columns per return column.
     """
     return (
         daily.lazy()
@@ -10325,111 +10467,55 @@ def _stock_days(data: pl.DataFrame, daily: pl.DataFrame, ret_cols: list[str]) ->
         .select(
             "sm",
             "date",
-            "eom_lag1",
-            *ret_cols,
-            *[(pl.col(c) * pl.col("me")).alias(f"vw_{c}") for c in ret_cols],
-            *[(pl.col(c) * pl.col("me_cap")).alias(f"cap_{c}") for c in ret_cols],
+            *[
+                expr
+                for c in ret_cols
+                for expr in (
+                    pl.col(c).is_not_null().cast(pl.Float64).alias(f"n_{c}"),
+                    pl.col(c).fill_null(0.0),
+                    (pl.col(c) * pl.col("me")).fill_null(0.0).alias(f"vw_{c}"),
+                    (pl.col(c) * pl.col("me_cap")).fill_null(0.0).alias(f"cap_{c}"),
+                )
+            ],
         )
         .collect()
     )
 
 
-def _pf_daily_lazy(
+def _pf_daily_returns(
     stock_days: pl.DataFrame,
-    assigned: pl.DataFrame,
-    n_stock_months: int,
-    x: str,
+    pf_by_row: np.ndarray,
+    months: pl.Series,
+    month_totals: np.ndarray,
+    chars: list[str],
     ret_cols: list[str],
     n_pfs: int,
-) -> pl.LazyFrame:
-    """Aggregate one characteristic's daily portfolio returns for every return column.
+) -> dict[str, pl.DataFrame]:
+    """Build the daily portfolio returns of all characteristics, per return column.
 
     Description:
-        Apply each stock's formation-month EW/VW/VW-cap weight within ``(eom, pf)`` to
+        Apply each stock's formation-month EW/VW/VW-cap weight within its portfolio to
         the following month's daily returns. Weights are not renormalised when a stock
-        has no return on a date. ``assigned`` holds the characteristic's portfolios and
-        ``stock_days`` the values shared by all characteristics (``_stock_days``).
-    Steps:
-        1) Look up each stock-day's portfolio by stock-month row number.
-        2) For each portfolio, sum by date: per column ``c``, the count of non-null
-           returns and the numerators of the three weightings.
-        3) Divide by the formation-month denominators of ``(eom, pf)``.
+        has no return on a date. A date where a return column has no values has no row
+        for that column.
     Output:
-        Wide LazyFrame keyed by ``(pf, date)`` with ``characteristic`` = ``x``.
-        A column whose returns are all null on a row has ``n_{c} == 0``; split
-        it out with ``_split_daily_leg``.
+        One DataFrame per return column, with the columns of ``_portfolio_rows``.
     """
-    pf_by_row = pl.repeat(None, n_stock_months, dtype=pl.UInt8, eager=True).scatter(
-        assigned["sm"], assigned["pf"].cast(pl.UInt8)
-    )
-    denominators = (
-        assigned.lazy()
-        .group_by("eom", "pf")
-        .agg(
-            pl.len().alias("den_ew"),
-            pl.col("me").sum().alias("den_vw"),
-            pl.col("me_cap").sum().alias("den_vw_cap"),
-        )
-    )
-    numerators = [
-        expr
-        for c in ret_cols
-        for expr in (
-            pl.col(c).count().alias(f"n_{c}"),
-            pl.col(c).sum().alias(f"num_ew_{c}"),
-            pl.col(f"vw_{c}").sum().alias(f"num_vw_{c}"),
-            pl.col(f"cap_{c}").sum().alias(f"num_vw_cap_{c}"),
-        )
-    ]
-    by_pf = [
-        stock_days.lazy()
-        .filter(pl.lit(pf_by_row).gather(pl.col("sm")) == pf)
-        .with_columns(pl.col("date").set_sorted())
-        .group_by("date")
-        .agg(pl.col("eom_lag1").first(), *numerators)
-        .with_columns(pl.lit(float(pf)).alias("pf"))
-        for pf in range(1, n_pfs + 1)
-    ]
-    return (
-        pl.concat(by_pf)
-        .join(denominators, left_on=["eom_lag1", "pf"], right_on=["eom", "pf"], how="inner")
-        .select(
-            "pf",
-            "date",
-            pl.lit(x).alias("characteristic"),
-            *[
-                expr
-                for c in ret_cols
-                for expr in (
-                    pl.col(f"n_{c}"),
-                    (pl.col(f"num_ew_{c}") / pl.col("den_ew")).alias(f"ret_ew_{c}"),
-                    (pl.col(f"num_vw_{c}") / pl.col("den_vw")).alias(f"ret_vw_{c}"),
-                    (pl.col(f"num_vw_cap_{c}") / pl.col("den_vw_cap")).alias(f"ret_vw_cap_{c}"),
-                )
-            ],
-        )
-    )
-
-
-def _split_daily_leg(wide: pl.DataFrame, c: str) -> pl.DataFrame:
-    """Extract one return column's daily portfolio returns from a wide frame.
-
-    Description:
-        Rows where column ``c`` had no non-null returns are dropped, since
-        their sums are 0 rather than null.
-    Output:
-        DataFrame with columns ``[pf, date, characteristic, n, ret_ew,
-        ret_vw, ret_vw_cap]``.
-    """
-    return wide.filter(pl.col(f"n_{c}") > 0).select(
-        "pf",
+    dates, day_totals = _sum_by_portfolio(
+        stock_days,
         "date",
-        "characteristic",
-        pl.col(f"n_{c}").alias("n"),
-        pl.col(f"ret_ew_{c}").alias("ret_ew"),
-        pl.col(f"ret_vw_{c}").alias("ret_vw"),
-        pl.col(f"ret_vw_cap_{c}").alias("ret_vw_cap"),
+        [f"{prefix}{c}" for c in ret_cols for prefix in ("n_", "", "vw_", "cap_")],
+        pf_by_row,
+        n_pfs,
     )
+    formation_month = np.searchsorted(
+        months.to_numpy(), dates.dt.month_start().dt.offset_by("-1d").to_numpy()
+    )
+    denominators = month_totals[:, :, :, [0, 4, 5]][formation_month]
+    return {
+        c: _portfolio_rows(dates, day_totals[:, :, :, 4 * i : 4 * i + 4], denominators, chars)
+        for i, c in enumerate(ret_cols)
+    }
 
 
 # main portfolios function to create the portfolios
@@ -10743,67 +10829,37 @@ def portfolios(
                     excntry,
                 )
 
-    # Stock-months get a row number, so a characteristic's portfolios can be looked up
-    # from the stock-day table shared by all characteristics.
-    data = data.with_row_index("sm")
+    # Stock-months are numbered by (month, id). Month order keeps each month's rows together
+    # in the portfolio matrix below, and the numbering does not depend on the row order of
+    # ``data``, so sums add up in the same order on every run.
+    data = data.with_columns((pl.struct("eom", "id").rank("ordinal") - 1).alias("sm"))
     stock_days = _stock_days(data, daily, daily_ret_cols) if daily_pf else None
     del daily
 
     # Creating portfolios for all the characteristics.
     #
-    # Each characteristic builds a per-char lazy pipeline (ECDF -> pf
-    # assignment).  The pipelines accumulate in ``char_subs`` and are
-    # batch-collected via ``pl.collect_all`` so polars can execute them
-    # concurrently on its thread pool; the monthly and daily aggregation of each
-    # batch runs from the collected portfolios.  The signals=True branch is the
-    # exception: it needs the intermediate ``sub`` frame alive after each collect
-    # to compute pf_signals, so it collects eagerly per-char.
-    char_subs: dict[str, pl.LazyFrame] = {}
-    char_pfs: list[dict] = []  # populated only when signals=True
-
+    # Each characteristic builds a lazy pipeline (ECDF -> pf assignment), collected in
+    # chunks via ``pl.collect_all`` so polars can run them concurrently on its thread pool.
+    # The portfolios go into one matrix, from which the monthly and daily sums of all
+    # characteristics are computed in one pass.
+    #
     # Single shared LazyFrame node for the preprocessed data. All per-char
     # pipelines branch off this node, enabling polars' common-subplan
     # elimination (CSE) in collect_all to avoid redundant scans.
     data_lazy = data.lazy()
-
+    assigned_cols = ["sm", "eom", "var", "bp_stock", *(["me", "me_cap"] if signals else [])]
+    char_subs: dict[str, pl.LazyFrame] = {}
     for x in chars:
         # Alias current char into a 'var' column on the per-char subset.
         # Operate on `sub` only -- `data` is not mutated.
-        if not signals:
-            sub = (
-                data_lazy.with_columns(pl.col(x).cast(pl.Float64).alias("var"))
-                .filter(pl.col("var").is_not_null())
-                .select(
-                    [
-                        "sm",
-                        "eom",
-                        "var",
-                        "ret_exc_lead1m",
-                        "me",
-                        "me_cap",
-                        "bp_stock",
-                    ]
-                )
-            )
-        else:
-            sub = data_lazy.with_columns(pl.col(x).cast(pl.Float64).alias("var")).filter(
-                pl.col("var").is_not_null()
-            )
-
-        sub = sub.with_columns(bp_n=pl.sum("bp_stock").over("eom")).filter(
-            pl.col("bp_n") >= bp_min_n
-        )
-
-        # Skip chars with no data after the bp_n filter.  For the
-        # collect_all path we cannot cheaply check emptiness without an
-        # eager collect, so we optimistically build the lazy pipeline and
-        # drop empty results after the batch collect.  For signals=True
-        # we still need the eager gate because the pf_signals block
-        # requires intermediate access to ``sub``.
-        if signals and sub.limit(1).collect().height == 0:
-            continue
-
         sub = (
+            data_lazy.with_columns(pl.col(x).cast(pl.Float64).alias("var"))
+            .filter(pl.col("var").is_not_null())
+            .select(assigned_cols)
+            .with_columns(bp_n=pl.sum("bp_stock").over("eom"))
+            .filter(pl.col("bp_n") >= bp_min_n)
+        )
+        char_subs[x] = (
             add_ecdf(sub)
             .with_columns(
                 pl.when(pl.col("cdf") == pl.col("cdf").min().over("eom"))
@@ -10816,93 +10872,67 @@ def portfolios(
             )
         )
 
+    if signals:
+        if signals_w == "ew":
+            w_expr = (1 / pl.col("eom").len()).over(["pf", "eom"])
+        elif signals_w == "vw":
+            w_expr = (pl.col("me") / pl.col("me").sum()).over(["pf", "eom"])
+        elif signals_w == "vw_cap":
+            w_expr = (pl.col("me_cap") / pl.col("me_cap").sum()).over(["pf", "eom"])
+
+    # Portfolio of each stock-month (rows) by characteristic (columns); 0 means none.
+    pf_by_row = np.zeros((data.height, len(chars)), dtype=np.uint8)
+    medians: list[pl.DataFrame] = []
+    signal_dfs: list[pl.DataFrame] = []
+    # Collect in chunks to bound peak memory (see COLLECT_CHUNK_SIZE in config.py).
+    n_chunks = (len(chars) + COLLECT_CHUNK_SIZE - 1) // COLLECT_CHUNK_SIZE
+    for chunk_idx, start in enumerate(range(0, len(chars), COLLECT_CHUNK_SIZE)):
+        chunk = chars[start : start + COLLECT_CHUNK_SIZE]
+        print(
+            f"   Chars {start + 1}-{start + len(chunk)} of {len(chars)} "
+            f"(chunk {chunk_idx + 1}/{n_chunks})",
+            flush=True,
+        )
+        assigned = pl.collect_all([char_subs[x] for x in chunk])
+        for char_idx, df in enumerate(assigned, start):
+            pf_by_row[df["sm"].to_numpy(), char_idx] = df["pf"].to_numpy()
+        medians.extend(
+            pl.collect_all([_pf_medians_lazy(df, x) for x, df in zip(chunk, assigned, strict=True)])
+        )
         if signals:
-            # Eager path: collect immediately, then compute pf_signals.
-            op: dict = {}
-            op["pf_returns"] = _pf_returns_lazy(sub, x).collect()
-
-            if signals_w == "ew":
-                w_expr = (1 / pl.col("eom").len()).over(["pf", "eom"])
-            elif signals_w == "vw":
-                w_expr = (pl.col("me") / pl.col("me").sum()).over(["pf", "eom"])
-            elif signals_w == "vw_cap":
-                w_expr = (pl.col("me_cap") / pl.col("me_cap").sum()).over(["pf", "eom"])
-
-            sub = sub.with_columns(w_expr.alias("w"))
-
-            # Aggregate to one row per (pf, eom): weighted sum of the current
-            # characteristic ``x`` (treating null var values as 0).
-            pf_signals = (
-                sub.group_by(["pf", "eom"])
-                .agg(
-                    (pl.col("w") * pl.col("var").fill_null(0)).sum().alias("signal"),
-                )
-                .with_columns(
-                    pl.lit(x).alias("characteristic"),
-                    pl.col("eom").dt.offset_by("1mo").dt.month_end().alias("eom"),
-                )
-            )
-            op["signals"] = pf_signals.collect()
-
-            if daily_pf:
-                op["pf_daily"] = _pf_daily_lazy(
-                    stock_days, sub.collect(), data.height, x, daily_ret_cols, pfs
-                ).collect()
-
-            char_pfs.append(op)
-        else:
-            # Lazy path: accumulate LazyFrames for batch collect_all.
-            char_subs[x] = sub
-
-    # Batch-collect per-char lazy pipelines in chunks to bound peak memory
-    # (see COLLECT_CHUNK_SIZE in config.py).
-    pf_returns_df: pl.DataFrame | None = None
-    pf_daily_df: pl.DataFrame | None = None
-
-    if signals and char_pfs:
-        pf_returns_df = pl.concat([op["pf_returns"] for op in char_pfs])
-        if daily_pf:
-            pf_daily_df = pl.concat([op["pf_daily"] for op in char_pfs])
-    elif char_subs:
-        ret_dfs: list[pl.DataFrame] = []
-        daily_dfs: list[pl.DataFrame] = []
-        char_names = list(char_subs)
-        n_chars = len(char_names)
-        n_chunks = (n_chars + COLLECT_CHUNK_SIZE - 1) // COLLECT_CHUNK_SIZE
-        for chunk_idx, start in enumerate(range(0, n_chars, COLLECT_CHUNK_SIZE)):
-            end = min(start + COLLECT_CHUNK_SIZE, n_chars)
-            print(
-                f"   Chars {start + 1}-{end} of {n_chars} (chunk {chunk_idx + 1}/{n_chunks})",
-                flush=True,
-            )
-            chunk = char_names[start:end]
-            assigned = pl.collect_all([char_subs[x] for x in chunk])
-            monthly = pl.collect_all(
-                [_pf_returns_lazy(df.lazy(), x) for x, df in zip(chunk, assigned, strict=True)]
-            )
-            ret_dfs.extend(df for df in monthly if df.height > 0)
-            if daily_pf:
-                daily_chunk = pl.collect_all(
+            # One row per (pf, eom): weighted sum of the characteristic, null values as 0.
+            signal_dfs.extend(
+                pl.collect_all(
                     [
-                        _pf_daily_lazy(stock_days, df, data.height, x, daily_ret_cols, pfs)
+                        df.lazy()
+                        .with_columns(w_expr.alias("w"))
+                        .group_by(["pf", "eom"])
+                        .agg((pl.col("w") * pl.col("var").fill_null(0)).sum().alias("signal"))
+                        .with_columns(
+                            pl.lit(x).alias("characteristic"),
+                            pl.col("eom").dt.offset_by("1mo").dt.month_end().alias("eom"),
+                        )
                         for x, df in zip(chunk, assigned, strict=True)
                     ]
                 )
-                daily_dfs.extend(df for df in daily_chunk if df.height > 0)
-        pf_returns_df = pl.concat(ret_dfs) if ret_dfs else None
-        if daily_pf:
-            pf_daily_df = pl.concat(daily_dfs) if daily_dfs else None
+            )
 
     output = {}
-    if pf_returns_df is not None:
-        output["pf_returns"] = pf_returns_df
-    if daily_pf and pf_daily_df is not None:
+    months, month_totals = _month_totals(data, pf_by_row, pfs)
+    pf_returns = _pf_returns(months, month_totals, pl.concat(medians), chars)
+    if pf_returns.height > 0:
+        output["pf_returns"] = pf_returns
+    if daily_pf:
         # One long frame per return column: ret_exc -> "pf_daily", each
         # O/I column c -> "pf_daily_{c}". Empty legs are left out.
-        for c in daily_ret_cols:
-            leg = _split_daily_leg(pf_daily_df, c)
+        legs = _pf_daily_returns(
+            stock_days, pf_by_row, months, month_totals, chars, daily_ret_cols, pfs
+        )
+        for c, leg in legs.items():
             if leg.height > 0:
                 output["pf_daily" if c == "ret_exc" else f"pf_daily_{c}"] = leg
+    del stock_days, pf_by_row
+
     # Handle industry portfolio returns if ind_pf is true
     if ind_pf:
         output["gics_returns"] = ind_gics
@@ -10923,8 +10953,8 @@ def portfolios(
                 output[key] = output[key].with_columns(
                     pl.lit(excntry).str.to_uppercase().alias("excntry")
                 )
-            if signals and char_pfs:
-                output["signals"] = pl.concat([op["signals"] for op in char_pfs]).with_columns(
+            if signals:
+                output["signals"] = pl.concat(signal_dfs).with_columns(
                     pl.lit(excntry).str.to_uppercase().alias("excntry")
                 )
 

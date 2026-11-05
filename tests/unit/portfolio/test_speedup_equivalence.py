@@ -1,4 +1,4 @@
-"""Equivalence of the fast CMP, daily and HML paths with the code they replaced.
+"""Equivalence of the fast CMP, monthly, daily and HML paths with the code they replaced.
 
 The ``_old_*`` functions are frozen copies of the slower implementations. The panel
 is built to break a rewrite: ties across breakpoints, a third of breakpoint stocks
@@ -22,8 +22,10 @@ from jkp.data.aux_functions import (
     _build_hml,
     _cmp_returns,
     _cmp_size_group,
-    _pf_daily_lazy,
-    _split_daily_leg,
+    _month_totals,
+    _pf_daily_returns,
+    _pf_medians_lazy,
+    _pf_returns,
     _stock_days,
     add_ecdf,
 )
@@ -53,6 +55,28 @@ CHARS = [
     "c_constant_month",
 ]
 EOMS = month_ends(6)
+
+
+def _old_pf_returns_lazy(sub: pl.LazyFrame, x: str) -> pl.LazyFrame:
+    """Frozen: one group-by per characteristic."""
+    return (
+        sub.group_by(["pf", "eom"])
+        .agg(
+            [
+                pl.lit(x).alias("characteristic"),
+                pl.len().alias("n"),
+                pl.median("var").alias("signal"),
+                pl.mean("ret_exc_lead1m").alias("ret_ew"),
+                ((pl.col("ret_exc_lead1m") * pl.col("me")).sum() / pl.col("me").sum()).alias(
+                    "ret_vw"
+                ),
+                (
+                    (pl.col("ret_exc_lead1m") * pl.col("me_cap")).sum() / pl.col("me_cap").sum()
+                ).alias("ret_vw_cap"),
+            ]
+        )
+        .with_columns(pl.col("eom").dt.offset_by("1mo").dt.month_end().alias("eom"))
+    )
 
 
 def _old_pf_daily_lazy(
@@ -93,6 +117,19 @@ def _old_pf_daily_lazy(
                 )
             ]
         )
+    )
+
+
+def _old_split_daily_leg(wide: pl.DataFrame, c: str) -> pl.DataFrame:
+    """Frozen: one return column's rows of the wide daily result."""
+    return wide.filter(pl.col(f"n_{c}") > 0).select(
+        "pf",
+        "date",
+        "characteristic",
+        pl.col(f"n_{c}").alias("n"),
+        pl.col(f"ret_ew_{c}").alias("ret_ew"),
+        pl.col(f"ret_vw_{c}").alias("ret_vw"),
+        pl.col(f"ret_vw_cap_{c}").alias("ret_vw_cap"),
     )
 
 
@@ -243,7 +280,7 @@ def panel() -> pl.DataFrame:
                 & (~thin_month | (pl.col("id") < 6))
             ).alias("bp_stock"),
         )
-        .with_row_index("sm")
+        .with_columns((pl.struct("eom", "id").rank("ordinal") - 1).alias("sm"))
     )
 
 
@@ -303,34 +340,75 @@ def _assigned(panel: pl.DataFrame, x: str) -> pl.LazyFrame:
     )
 
 
+@pytest.fixture(scope="module")
+def pf_by_row(panel: pl.DataFrame) -> np.ndarray:
+    """Portfolio of each stock-month by characteristic, as in ``portfolios()``."""
+    matrix = np.zeros((panel.height, len(CHARS)), dtype=np.uint8)
+    for j, x in enumerate(CHARS):
+        assigned = _assigned(panel, x).collect()
+        matrix[assigned["sm"].to_numpy(), j] = assigned["pf"].to_numpy()
+    return matrix
+
+
+@pytest.fixture(scope="module")
+def month_sums(panel: pl.DataFrame, pf_by_row: np.ndarray) -> tuple[pl.Series, np.ndarray]:
+    return _month_totals(panel, pf_by_row, PFS)
+
+
+@pytest.fixture(scope="module")
+def new_monthly(panel: pl.DataFrame, month_sums: tuple[pl.Series, np.ndarray]) -> pl.DataFrame:
+    months, totals = month_sums
+    medians = pl.collect_all([_pf_medians_lazy(_assigned(panel, x).collect(), x) for x in CHARS])
+    return _pf_returns(months, totals, pl.concat(medians), CHARS)
+
+
+@pytest.fixture(scope="module")
+def new_daily(
+    panel: pl.DataFrame,
+    daily: pl.DataFrame,
+    pf_by_row: np.ndarray,
+    month_sums: tuple[pl.Series, np.ndarray],
+) -> dict[str, pl.DataFrame]:
+    months, totals = month_sums
+    stock_days = _stock_days(panel, daily, RET_COLS)
+    return _pf_daily_returns(stock_days, pf_by_row, months, totals, CHARS, RET_COLS, PFS)
+
+
+@pytest.mark.unit
+class TestMonthlyEquivalence:
+    @pytest.mark.parametrize("x", [c for c in CHARS if c != "c_all_null"])
+    def test_monthly_matches_old(
+        self, panel: pl.DataFrame, new_monthly: pl.DataFrame, x: str
+    ) -> None:
+        old = _old_pf_returns_lazy(_assigned(panel, x), x).collect()
+        new = new_monthly.filter(pl.col("characteristic") == x)
+        _assert_within_tolerance(old, new, ["pf", "eom"])
+
+    def test_all_null_characteristic_gives_no_rows(self, new_monthly: pl.DataFrame) -> None:
+        assert "c_all_null" not in new_monthly["characteristic"].to_list()
+
+
 @pytest.mark.unit
 class TestDailyEquivalence:
     @pytest.mark.parametrize("x", [c for c in CHARS if c != "c_all_null"])
     @pytest.mark.parametrize("ret_col", RET_COLS)
     def test_daily_leg_matches_old(
-        self, panel: pl.DataFrame, daily: pl.DataFrame, x: str, ret_col: str
+        self,
+        panel: pl.DataFrame,
+        daily: pl.DataFrame,
+        new_daily: dict[str, pl.DataFrame],
+        x: str,
+        ret_col: str,
     ) -> None:
-        sub = _assigned(panel, x)
-        old = _old_pf_daily_lazy(sub, daily, x, RET_COLS).collect()
-        new = _pf_daily_lazy(
-            _stock_days(panel, daily, RET_COLS), sub.collect(), panel.height, x, RET_COLS, PFS
-        ).collect()
-        _assert_within_tolerance(
-            _split_daily_leg(old, ret_col), _split_daily_leg(new, ret_col), ["pf", "date"]
-        )
+        wide = _old_pf_daily_lazy(_assigned(panel, x), daily, x, RET_COLS).collect()
+        new = new_daily[ret_col].filter(pl.col("characteristic") == x)
+        _assert_within_tolerance(_old_split_daily_leg(wide, ret_col), new, ["pf", "date"])
 
+    @pytest.mark.parametrize("ret_col", RET_COLS)
     def test_all_null_characteristic_gives_no_rows(
-        self, panel: pl.DataFrame, daily: pl.DataFrame
+        self, new_daily: dict[str, pl.DataFrame], ret_col: str
     ) -> None:
-        new = _pf_daily_lazy(
-            _stock_days(panel, daily, RET_COLS),
-            _assigned(panel, "c_all_null").collect(),
-            panel.height,
-            "c_all_null",
-            RET_COLS,
-            PFS,
-        ).collect()
-        assert new.height == 0
+        assert "c_all_null" not in new_daily[ret_col]["characteristic"].to_list()
 
     def test_panel_reaches_the_awkward_cases(
         self, panel: pl.DataFrame, daily: pl.DataFrame
@@ -339,11 +417,13 @@ class TestDailyEquivalence:
         min_tied = _assigned(panel, "c_min_tied").collect()
         assert min_tied.filter(pl.col("var") == 0.0)["cdf"].unique().to_list() == [0.00000001]
         assert min_tied.filter(pl.col("var") == 0.0)["pf"].unique().to_list() == [1.0]
-        leg = _split_daily_leg(
+        leg = _old_split_daily_leg(
             _old_pf_daily_lazy(_assigned(panel, "c_cont"), daily, "c_cont", RET_COLS).collect(),
             "ret_exc",
         )
         assert leg["ret_vw"].is_nan().sum() > 0
+        monthly = _old_pf_returns_lazy(_assigned(panel, "c_cont"), "c_cont").collect()
+        assert monthly["ret_vw"].is_nan().sum() > 0
         assert EOMS[5] not in _assigned(panel, "c_cont").collect()["eom"].to_list()
 
 
