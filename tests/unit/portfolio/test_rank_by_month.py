@@ -129,11 +129,11 @@ class TestCmp:
         row = self._cmp(_frame([1.0, 2.0, 3.0, 4.0], ret=[0.01, 0.02, 0.03, 0.04]), 1).row(
             0, named=True
         )
-        # Centered ranks -0.3, -0.1, 0.1, 0.3, with half their absolute sum 0.4.
+        # Centered ranks -3, -1, 1, 3, with half their absolute sum 4.
         assert row["size_grp"] == "all"
         assert row["n_stocks"] == 4
-        assert row["ret_weighted"] == pytest.approx(0.01 / 0.4)
-        assert row["signal_weighted"] == pytest.approx(1.0 / 0.4)
+        assert row["ret_weighted"] == pytest.approx(0.1 / 4)
+        assert row["signal_weighted"] == pytest.approx(10.0 / 4)
         assert row["eom"] == date(2020, 2, 29)
         assert row["excntry"] == "USA"
 
@@ -141,9 +141,13 @@ class TestCmp:
         row = self._cmp(_frame([1.0, 1.0, 2.0, 2.0], ret=[0.01, 0.03, 0.05, 0.07]), 1).row(
             0, named=True
         )
-        # Centered ranks -0.2, -0.2, 0.2, 0.2, with half their absolute sum 0.4.
-        assert row["ret_weighted"] == pytest.approx((0.2 * (0.12 - 0.04)) / 0.4)
-        assert row["signal_weighted"] == pytest.approx((0.2 * 4.0 - 0.2 * 2.0) / 0.4)
+        # Centered ranks -2, -2, 2, 2, with half their absolute sum 4.
+        assert row["ret_weighted"] == pytest.approx((2 * (0.12 - 0.04)) / 4)
+        assert row["signal_weighted"] == pytest.approx((2 * 4.0 - 2 * 2.0) / 4)
+
+    def test_whole_number_characteristic_is_exact(self) -> None:
+        row = self._cmp(_frame([400.0] * 1000 + [424.0] * 2001), 1).row(0, named=True)
+        assert row["signal_weighted"] == 24.0
 
     def test_each_grouping_ranks_within_its_own_groups(self) -> None:
         data = _frame(

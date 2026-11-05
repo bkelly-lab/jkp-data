@@ -10439,8 +10439,10 @@ def _rank_rows_kernel(
         Medians: a portfolio's stocks sit next to each other in the sorted order.
 
         Characteristics-managed portfolios: within a size group, tied stocks share their
-        average rank, centered as ``rank / (n + 1) - 0.5``. A group needs two stocks and
-        a value that varies, and infinite values count as varying.
+        average rank. The centered rank is the whole number ``2 * rank - (n + 1)``, which
+        is ``rank / (n + 1) - 0.5`` times ``2 * (n + 1)``. That factor cancels in the ratios
+        of ``_cmp_returns``, and whole numbers add without rounding error. A group needs
+        two stocks and a value that varies, and infinite values count as varying.
     Output:
         Fills ``pf_by_row``, flattened by row and characteristic; ``medians``, indexed by
         ``(month, characteristic, pf - 1)``; and ``cmp_totals``, indexed by ``(month,
@@ -10517,8 +10519,7 @@ def _rank_rows_kernel(
                         size = size_code[row]
                         pf_by_row[row * n_chars + char] = tie_pf
                         for group in (0, two_groups[size], 3 + size):
-                            rank = group_seen[group] + (tie_n[group] + 1) * 0.5
-                            centered = rank / (group_n[group] + 1) - 0.5
+                            centered = 2 * group_seen[group] + tie_n[group] - group_n[group]
                             sums[group, 0] += ret[row] * centered
                             sums[group, 1] += value * centered
                             sums[group, 2] += abs(centered)
