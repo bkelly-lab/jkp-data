@@ -10204,25 +10204,26 @@ def theme_versions(themes_dir: Path) -> dict[str, Path]:
     return versions
 
 
-def _sign_factors(hml: pl.DataFrame, themes: pl.DataFrame) -> pl.DataFrame:
-    """Sign the HML factors of a themes version (LMS).
+def _sign_factors(factors: pl.DataFrame, themes: pl.DataFrame) -> pl.DataFrame:
+    """Sign the factors of a themes version: HML into LMS, or the unsigned CMP.
 
     Description:
         Keep the factors of the characteristics in ``themes`` and multiply their
-        returns, and ``signal`` when present, by ``direction``, so each factor buys
-        the side its theme favours. The caller checks that every characteristic
-        has a factor (``_write_theme_versions`` in ``portfolio.py``).
+        return and signal columns (``ret_*`` and ``signal*``) by ``direction``, so
+        each factor buys the side its theme favours. For HML factors, the caller
+        checks that every characteristic has a factor (``_write_theme_versions`` in
+        ``portfolio.py``).
     Steps:
-        1) Join ``direction`` to ``hml`` by characteristic, in ``hml``'s row order.
+        1) Join ``direction`` to ``factors`` by characteristic, in ``factors``' row order.
         2) Multiply the return and signal columns by ``direction``.
     Output:
-        DataFrame with ``characteristic``, ``direction`` and the ``hml`` columns, in
-        ``hml``'s row order.
+        DataFrame with ``characteristic``, ``direction`` and the ``factors`` columns,
+        in ``factors``' row order.
     """
-    resign = [c for c in ("signal", "ret_ew", "ret_vw", "ret_vw_cap") if c in hml.columns]
+    resign = [c for c in factors.columns if c.startswith(("ret_", "signal"))]
     return (
         themes.select("characteristic", "direction")
-        .join(hml, on="characteristic", how="inner", maintain_order="right")
+        .join(factors, on="characteristic", how="inner", maintain_order="right")
         .with_columns(pl.col(resign) * pl.col("direction"))
     )
 

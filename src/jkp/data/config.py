@@ -52,6 +52,10 @@ REGIONAL_COUNTRIES_MIN = 3
 # inflation / hyperinflation regimes that distort returns).
 REGIONAL_COUNTRY_EXCL = ("ZWE", "VEN")
 
+# Themes version that keeps the old `cmp` file: the unsigned characteristics-managed
+# portfolios (#297). Every other version writes `lms_cmp_5`, signed as `lms` signs `hml`.
+UNSIGNED_CMP_VERSION = "v0"
+
 # The 153 characteristics of JKP (2023) (themes v0), sorted first. `jkp portfolio`
 # also sorts every other characteristic in a released themes version, and the
 # themes files decide which factors are signed. Production default;

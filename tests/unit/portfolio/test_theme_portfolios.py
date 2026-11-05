@@ -476,9 +476,75 @@ class TestWriteThemeVersions:
                     ("", pl.DataFrame({"characteristic": ["a", "b"]}), "eom"),
                     ("_daily", pl.DataFrame({"characteristic": ["a"]}), "date"),
                 ],
+                cmp=None,
                 market=pl.DataFrame(),
                 market_daily=None,
                 regions=pl.DataFrame(),
                 settings={},
             )
         assert [p.name for p in old.parent.iterdir()] == ["themes.parquet"]
+
+    @staticmethod
+    def _write_cmp(tmp_path: Path, cmp: pl.DataFrame | None) -> None:
+        # "b" has sign -1 in both versions; "c" is in no version.
+        themes = pl.DataFrame(
+            {"characteristic": ["a", "b"], "theme": "T", "subtheme": "S", "direction": [1, -1]},
+            schema_overrides={"direction": pl.Int32},
+        )
+        _write_theme_versions(
+            portfolios_dir=tmp_path,
+            theme_sets={"v0": themes, "v1.0": themes},
+            hml_series=[],
+            cmp=cmp,
+            market=pl.DataFrame(),
+            market_daily=None,
+            regions=pl.DataFrame(),
+            settings={"end_date": date(2030, 12, 31)},
+        )
+
+    def test_cmp_is_signed_except_in_v0(self, tmp_path: Path) -> None:
+        cmp = pl.DataFrame(
+            {
+                "characteristic": ["a", "b", "c"],
+                "size_grp": "large",
+                "eom": date(2020, 1, 31),
+                "n_stocks": [10, 20, 30],
+                "ret_weighted": [0.1, 0.2, 0.3],
+                "signal_weighted": [1.0, 2.0, 3.0],
+                "excntry": "USA",
+            }
+        )
+        self._write_cmp(tmp_path, cmp)
+
+        v0 = pl.read_parquet(tmp_path / "themes" / "v0" / "cmp.parquet")
+        assert v0.equals(cmp.filter(pl.col("characteristic") != "c"))
+        assert not (tmp_path / "themes" / "v0" / "lms_cmp_5.parquet").exists()
+        v1 = pl.read_parquet(tmp_path / "themes" / "v1.0" / "lms_cmp_5.parquet")
+        assert v1["characteristic"].to_list() == ["a", "b"]
+        assert v1["direction"].to_list() == [1, -1]
+        assert v1["ret_weighted"].to_list() == [0.1, -0.2]
+        assert v1["signal_weighted"].to_list() == [1.0, -2.0]
+
+    def test_characteristic_without_cmp_rows_is_printed(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        cmp = pl.DataFrame(
+            {
+                "characteristic": ["a"],
+                "size_grp": "large",
+                "eom": date(2020, 1, 31),
+                "n_stocks": [10],
+                "ret_weighted": [0.1],
+                "signal_weighted": [1.0],
+                "excntry": "USA",
+            }
+        )
+        self._write_cmp(tmp_path, cmp)
+
+        assert "No cmp rows for themes v1.0: ['b']" in capsys.readouterr().out
+        v1 = pl.read_parquet(tmp_path / "themes" / "v1.0" / "lms_cmp_5.parquet")
+        assert v1["characteristic"].to_list() == ["a"]
+
+    def test_no_cmp_file_without_cmp(self, tmp_path: Path) -> None:
+        self._write_cmp(tmp_path, None)
+        assert not list(tmp_path.rglob("*cmp*"))

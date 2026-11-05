@@ -103,6 +103,42 @@ class TestBuildHmlAndSignFactors:
         assert "signal" not in hml.columns
         assert "signal" not in lms.columns
 
+    def test_sign_factors_flips_cmp_columns(self):
+        cmp = pl.DataFrame(
+            {
+                "characteristic": ["char_a", "char_b"],
+                "size_grp": "large",
+                "eom": date(2020, 1, 31),
+                "n_stocks": [10, 20],
+                "ret_weighted": [0.1, 0.2],
+                "signal_weighted": [1.0, 2.0],
+                "excntry": "USA",
+            }
+        )
+        signed = _sign_factors(cmp, _themes([1, -1]))
+        assert signed.columns == [
+            "characteristic",
+            "direction",
+            "size_grp",
+            "eom",
+            "n_stocks",
+            "ret_weighted",
+            "signal_weighted",
+            "excntry",
+        ]
+        assert signed["ret_weighted"].to_list() == [0.1, -0.2]
+        assert signed["signal_weighted"].to_list() == [1.0, -2.0]
+        assert signed["n_stocks"].to_list() == [10, 20]
+
+    def test_sign_factors_flips_any_return_or_signal_column(self):
+        factors = pl.DataFrame(
+            {"characteristic": ["char_a"], "n_stocks": [10], "ret_new": [0.1], "signal_new": [1.0]}
+        )
+        signed = _sign_factors(factors, _themes([-1], chars=("char_a",)))
+        assert signed["ret_new"].to_list() == [-0.1]
+        assert signed["signal_new"].to_list() == [-1.0]
+        assert signed["n_stocks"].to_list() == [10]
+
     def test_lms_keeps_only_themed_characteristics_in_hml_order(self):
         hml = _build_hml(_make_pf_df(), n_pfs=3, date_col="eom", include_signal=True)
         lms = _sign_factors(hml, _themes([-1], chars=("char_b",)))

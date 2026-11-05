@@ -75,7 +75,22 @@ NUMERIC_COLS_BY_FILE: dict[str, dict[str, dict]] = {
         "ret_vw": STANDARD,
         "ret_vw_cap": STANDARD,
     },
-    "cmp": {"n_stocks": TIGHT, "ret_weighted": STANDARD, "signal_weighted": STANDARD},
+    "cmp": {
+        "n_stocks": TIGHT,
+        "ret_weighted": STANDARD,
+        "signal_weighted": STANDARD,
+    },
+    "hml_cmp_5": {
+        "n_stocks": TIGHT,
+        "ret_weighted": STANDARD,
+        "signal_weighted": STANDARD,
+    },
+    "lms_cmp_5": {
+        "direction": TIGHT,
+        "n_stocks": TIGHT,
+        "ret_weighted": STANDARD,
+        "signal_weighted": STANDARD,
+    },
     "industry_gics": {
         "n": TIGHT,
         "ret_ew": TIGHT,

@@ -105,9 +105,9 @@ def portfolio(
 ) -> None:
     """Generate factor portfolios from characteristics data.
 
-    Writes the signed factors and theme portfolios of the current themes version,
-    now v1.0, to portfolios/themes/v1.0/. Build another version, such as v0, from
-    the saved factors with: jkp themes OUTPUT_DIR --version v0
+    Writes the signed factors, CMP and theme portfolios of the current themes
+    version, now v1.0, to portfolios/themes/v1.0/. Build another version, such as
+    v0, from the saved factors with: jkp themes OUTPUT_DIR --version v0
     """
     from .portfolio import run_portfolio
 
@@ -132,7 +132,7 @@ def themes(
         "portfolios/themes/<file name without extension>/.",
     ),
 ) -> None:
-    """Build signed factors and theme portfolios from the saved HML factors.
+    """Build signed factors and theme portfolios from the saved HML factors and CMP.
 
     With no option, builds the current themes version, the one in themes.csv
     (now v1.0). jkp portfolio runs this step at the end, so run this command to
