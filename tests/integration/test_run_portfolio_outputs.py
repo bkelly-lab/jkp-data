@@ -299,8 +299,8 @@ class TestRunThemes:
 
         assert unsigned.equals(unsigned.sort("excntry", *keys))
         v0_dir = portfolios / "themes" / "v0"
-        assert [p.name for p in v0_dir.glob("*cmp*")] == ["lms_cmp_5.parquet"]
-        v0 = pl.read_parquet(v0_dir / "lms_cmp_5.parquet")
+        assert [p.name for p in v0_dir.glob("*cmp*")] == ["cmp.parquet"]
+        v0 = pl.read_parquet(v0_dir / "cmp.parquet")
         assert v0.equals(unsigned.filter(pl.col("excntry") == "USA"))
 
         signed = pl.read_parquet(portfolios / "themes" / "v1.0" / "lms_cmp_5.parquet")
@@ -346,7 +346,7 @@ class TestRunThemes:
         portfolios = _portfolios_dir(tmp_path)
         unsigned = pl.read_csv(portfolios / "hml_cmp_5.csv")
         assert unsigned.height > 0
-        v0 = pl.read_csv(portfolios / "themes" / "v0" / "lms_cmp_5.csv")
+        v0 = pl.read_csv(portfolios / "themes" / "v0" / "cmp.csv")
         assert "direction" not in v0.columns
         assert v0.equals(unsigned.filter(pl.col("excntry") == "USA"))
         for n_groups in (1, 2, 5):

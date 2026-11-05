@@ -253,10 +253,10 @@ def _write_theme_versions(
            characteristics without an HML factor.
         2) Delete each version's folder, so no file of an earlier build remains.
         3) Write each version's outputs for each return series.
-        4) Write each version's ``lms_cmp_{n}`` for the size groupings in ``cmp``, which
-           maps the number of size groups to the unsigned CMP. Versions sign it, except
-           ``UNSIGNED_CMP_VERSION``, which keeps the unsigned US rows of
-           ``UNSIGNED_CMP_SIZE_GROUPS`` size groups for its characteristics. A
+        4) Write each version's signed ``lms_cmp_{n}`` for the size groupings in ``cmp``,
+           which maps the number of size groups to the unsigned CMP.
+           ``UNSIGNED_CMP_VERSION`` instead gets ``cmp``, the old file: the unsigned US
+           rows of ``UNSIGNED_CMP_SIZE_GROUPS`` size groups for its characteristics. A
            characteristic can lack CMP rows, since CMP skips months where the
            characteristic doesn't vary, so this step prints the characteristics with
            no rows instead of stopping.
@@ -294,26 +294,28 @@ def _write_theme_versions(
             )
 
     for name, themes in theme_sets.items():
-        if name == UNSIGNED_CMP_VERSION:
+        if name != UNSIGNED_CMP_VERSION:
             version_cmp = {
-                n_groups: df.filter(
+                f"lms_cmp_{n_groups}": _sign_factors(df, themes) for n_groups, df in cmp.items()
+            }
+        elif UNSIGNED_CMP_SIZE_GROUPS in cmp:
+            version_cmp = {
+                "cmp": cmp[UNSIGNED_CMP_SIZE_GROUPS].filter(
                     pl.col("excntry") == "USA",
                     pl.col("characteristic").is_in(themes["characteristic"].implode()),
                 )
-                for n_groups, df in cmp.items()
-                if n_groups == UNSIGNED_CMP_SIZE_GROUPS
             }
         else:
-            version_cmp = {n_groups: _sign_factors(df, themes) for n_groups, df in cmp.items()}
-        for n_groups, df in version_cmp.items():
+            version_cmp = {}
+        for file_name, df in version_cmp.items():
             if df.is_empty():
                 continue
             cmp_chars = set(df["characteristic"].unique())
             if absent := sorted(set(themes["characteristic"]) - cmp_chars):
-                print(f"No lms_cmp_{n_groups} rows for themes {name}: {absent}", flush=True)
+                print(f"No {file_name} rows for themes {name}: {absent}", flush=True)
             _write_filtered(
                 df,
-                portfolios_dir / "themes" / name / f"lms_cmp_{n_groups}.parquet",
+                portfolios_dir / "themes" / name / f"{file_name}.parquet",
                 "eom",
                 settings["end_date"],
             )
