@@ -139,8 +139,8 @@ class TestStackOutputs:
             eoms = char_df["eom"].unique().sort().to_list()
             cmp_key = ex.lower() == "usa"
             out = _run(country_dir, ex, chars, eoms, cmp_key=cmp_key)
-            if "cmp" in out:
-                cmp_pieces.append(out["cmp"])
+            if "cmp_5" in out:
+                cmp_pieces.append(out["cmp_5"])
 
         assert len(cmp_pieces) == 1
         stacked = pl.concat(cmp_pieces)

@@ -273,7 +273,7 @@ def _expected_keys(config: dict) -> set[str]:
             if config["excntry"].lower() == "usa":
                 keys.add("ff49_daily")
     if config["cmp_key"]:
-        keys.add("cmp")
+        keys.update({"cmp_1", "cmp_2", "cmp_5"})
     if config["signals"]:
         keys.add("signals")
     return keys
@@ -370,5 +370,6 @@ class TestPortfoliosMatrix:
                     assert set(out["ff49_daily"].columns) == FF49_DAILY_COLS
 
         if config["cmp_key"]:
-            assert set(out["cmp"].columns) == CMP_COLS
-            assert out["cmp"].height > 0
+            for key in ("cmp_1", "cmp_2", "cmp_5"):
+                assert set(out[key].columns) == CMP_COLS
+                assert out[key].height > 0

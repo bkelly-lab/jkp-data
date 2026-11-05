@@ -197,11 +197,15 @@ def _new_path(legacy_rel: str) -> str:
 class TestOiSinglePassEquivalence:
     def test_same_files(self, outputs: tuple[Path, Path]) -> None:
         legacy, new = outputs
-        # The legacy code has only the top-level cmp, not the lms_cmp_5 in themes/v0/.
+        # The legacy code has only the top-level cmp, with five size groups, not the
+        # other groupings or the lms_cmp_5 in themes/v0/.
+        not_in_legacy = {
+            "hml_cmp_1.parquet",
+            "hml_cmp_2.parquet",
+            "themes/v0/lms_cmp_5.parquet",
+        }
         v0_and_unsigned = {
-            f
-            for f in _files(new)
-            if not f.startswith("themes/v1.0/") and f != "themes/v0/lms_cmp_5.parquet"
+            f for f in _files(new) if not f.startswith("themes/v1.0/") and f not in not_in_legacy
         }
         assert v0_and_unsigned == {_new_path(f) for f in _files(legacy)}
 

@@ -55,6 +55,12 @@ REGIONAL_COUNTRY_EXCL = ("ZWE", "VEN")
 # Themes version whose characteristics-managed portfolios stay unsigned (#297).
 # Every other version signs them, as it signs `hml`.
 UNSIGNED_CMP_VERSION = "v0"
+# That version's file keeps its layout from before #323: US rows, five size groups.
+UNSIGNED_CMP_SIZE_GROUPS = 5
+
+# Size groupings of the characteristics-managed portfolios (#323), one file each:
+# everything (`all`), `big` and `small`, or the five groups of `size_grp`.
+CMP_SIZE_GROUPS = (1, 2, 5)
 
 # The 153 characteristics of JKP (2023) (themes v0), sorted first. `jkp portfolio`
 # also sorts every other characteristic in a released themes version, and the
@@ -233,7 +239,7 @@ PORTFOLIO_SETTINGS = {
     "wins_ret": True,
     "bps": "non_mc",
     "bp_min_n": PORTFOLIO_BP_MIN_N,
-    "cmp": {"us": True, "int": False},
+    "cmp": {"us": True, "int": True},
     "signals": {"us": False, "int": False, "standardize": True, "weight": "vw_cap"},
     "regional_pfs": {
         "country_excl": list(REGIONAL_COUNTRY_EXCL),

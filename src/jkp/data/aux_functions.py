@@ -33,6 +33,7 @@ from .compustat_correction import (
 )
 from .config import (
     CALENDAR_RUN_MAX_GAP_DAYS,
+    CMP_SIZE_GROUPS,
     COLLECT_CHUNK_SIZE,
     CORRECTION_SPILL_COMPRESSION,
     END_DATE,
@@ -10346,6 +10347,29 @@ def _split_daily_leg(wide: pl.DataFrame, c: str) -> pl.DataFrame:
 
 
 # main portfolios function to create the portfolios
+def _cmp_size_group(n_groups: int) -> pl.Expr:
+    """
+    Description:
+        Size group of a stock in a characteristics-managed portfolio with ``n_groups``
+        size groups.
+    Steps:
+        1) One group: every stock is in ``all``.
+        2) Two groups: mega and large are ``big``; small, micro and nano are ``small``.
+        3) Five groups: ``size_grp`` as it is.
+    Output:
+        Expression for the size group.
+    """
+    if n_groups == 1:
+        return pl.lit("all")
+    if n_groups == 2:
+        return (
+            pl.when(pl.col("size_grp").is_in(["mega", "large"]))
+            .then(pl.lit("big"))
+            .otherwise(pl.lit("small"))
+        )
+    return pl.col("size_grp")
+
+
 def portfolios(
     paths: DataPaths,
     excntry,
@@ -10764,31 +10788,33 @@ def portfolios(
         p_rank_dev = p_rank - p_rank.mean().over(grp)
         weight = p_rank_dev / (p_rank_dev.abs().sum().over(grp) / 2)
 
-        output["cmp"] = (
-            data.lazy()
-            .unpivot(
-                on=chars,
-                index=["eom", "size_grp", "ret_exc_lead1m"],
-                variable_name="characteristic",
-                value_name="var",
+        for n_groups in CMP_SIZE_GROUPS:
+            output[f"cmp_{n_groups}"] = (
+                data.lazy()
+                .with_columns(_cmp_size_group(n_groups).alias("size_grp"))
+                .unpivot(
+                    on=chars,
+                    index=["eom", "size_grp", "ret_exc_lead1m"],
+                    variable_name="characteristic",
+                    value_name="var",
+                )
+                .filter(pl.col("var").is_not_null())
+                .with_columns(weight.alias("weight"))
+                .group_by(grp)
+                .agg(
+                    pl.len().alias("n_stocks"),
+                    (pl.col("ret_exc_lead1m") * pl.col("weight")).sum().alias("ret_weighted"),
+                    (pl.col("var") * pl.col("weight")).sum().alias("signal_weighted"),
+                    pl.col("var").std().alias("sd_var"),
+                )
+                .filter(pl.col("sd_var") != 0)
+                .drop("sd_var")
+                .with_columns(
+                    pl.col("eom").dt.offset_by("1mo").dt.month_end().alias("eom"),
+                    pl.lit(excntry.upper()).alias("excntry"),
+                )
+                .collect()
             )
-            .filter(pl.col("var").is_not_null())
-            .with_columns(weight.alias("weight"))
-            .group_by(grp)
-            .agg(
-                pl.len().alias("n_stocks"),
-                (pl.col("ret_exc_lead1m") * pl.col("weight")).sum().alias("ret_weighted"),
-                (pl.col("var") * pl.col("weight")).sum().alias("signal_weighted"),
-                pl.col("var").std().alias("sd_var"),
-            )
-            .filter(pl.col("sd_var") != 0)
-            .drop("sd_var")
-            .with_columns(
-                pl.col("eom").dt.offset_by("1mo").dt.month_end().alias("eom"),
-                pl.lit(excntry.upper()).alias("excntry"),
-            )
-            .collect()
-        )
 
     return output
 

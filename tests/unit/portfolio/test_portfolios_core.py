@@ -220,7 +220,9 @@ class TestNanCharacteristics:
                 )
             )
         with_null, with_nan = results
-        keys = ["pf_returns", "pf_daily", "cmp"] + (["signals"] if signals else [])
+        keys = ["pf_returns", "pf_daily", "cmp_1", "cmp_2", "cmp_5"] + (
+            ["signals"] if signals else []
+        )
         for key in keys:
             assert with_null[key].height > 0
             assert_frame_equal(with_null[key], with_nan[key], check_row_order=False)

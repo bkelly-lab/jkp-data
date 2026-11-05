@@ -92,7 +92,7 @@ def _build_settings(cfg: dict) -> dict:
         "wins_ret": True,
         "bps": cfg["bps"],
         "bp_min_n": 5,
-        "cmp": {"us": cfg["cmp_us"], "int": False},
+        "cmp": {"us": cfg["cmp_us"], "int": cfg["cmp_us"]},
         "signals": {
             "us": cfg["signals_us"],
             "int": False,

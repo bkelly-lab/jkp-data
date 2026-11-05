@@ -3,6 +3,11 @@ This change log keeps track of changes to the underlying data set. In brackets, 
 
 This repository ports the original SAS pipeline ([ReplicationCrisis](https://github.com/bkelly-lab/ReplicationCrisis)) to Python using Polars. Entries up to and including 05-03-2025 are from the original change log.
 
+## 04-11-2026
+__Changes__:
+- Characteristics-managed portfolios with 1, 2 and 5 size groups, for all countries ([#323](https://github.com/bkelly-lab/jkp-data/issues/323)). `portfolios/` now has `hml_cmp_1` (`size_grp` is `all`, the full universe) and `hml_cmp_2` (`big` is mega and large, `small` is small, micro and nano) next to `hml_cmp_5`, and each `portfolios/themes/<version>/` folder from v1.0 on has the signed `lms_cmp_1`, `lms_cmp_2` and `lms_cmp_5`. The `cmp` setting is now on for non-US countries, so `hml_cmp_5` and `lms_cmp_5` gain their rows; the US rows are unchanged. `themes/v0/` stays as it was: only `lms_cmp_5`, with US rows and five size groups, unsigned. Each row reports `n_stocks`, and no minimum is applied. Weights come from ranks, not market cap, so with one size group micro and nano stocks make up most of the portfolio.
+- Affected output files: `hml_cmp_5` and `themes/<version>/lms_cmp_5` from v1.0 on gain non-US rows; `hml_cmp_1`, `hml_cmp_2`, `themes/<version>/lms_cmp_1` and `lms_cmp_2` are new.
+
 ## 03-11-2026
 __Changes__:
 - Fixed firms losing their current GICS code ([#309](https://github.com/bkelly-lab/jkp-data/pull/309)). `comp_hgics` gives each firm's open-ended GICS interval an end date, but it treated the last row in file order as the firm's latest interval instead of the row with the latest start date. When the two differed, the current interval kept a null end date and was dropped, so the firm had no GICS from the start of that interval onward. 658,866 stock-months (6,446 securities of 6,265 firms, August 1999 to December 2025) now have a GICS code where it was missing, most in the USA (114,793), Japan (94,734), China (60,140), Taiwan (52,791), Korea (37,829) and Canada (32,127). No stock-month that already had a GICS code changes. The GICS industry portfolios (`industry_gics`) gain 3,376 monthly and 69,877 daily rows, and returns of existing industry-months change where the newly classified stocks join.
