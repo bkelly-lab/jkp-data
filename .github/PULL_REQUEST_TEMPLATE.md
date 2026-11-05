@@ -43,6 +43,7 @@
 - [ ] I have run the linter locally (`ruff check src/jkp/data/ tests/`)
 - [ ] I have verified the pipeline runs successfully after my changes
 - [ ] I have updated documentation if needed
+- [ ] If this PR adds, removes, or renames an output file or column in `data/processed/`, I have updated the Output Reference in `documentation/documentation.tex`
 - [ ] I have considered whether this change affects factor calculations
 
 ## Additional Notes
