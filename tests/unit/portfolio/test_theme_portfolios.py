@@ -516,8 +516,9 @@ class TestWriteThemeVersions:
         )
         self._write_cmp(tmp_path, {5: cmp})
 
-        v0 = pl.read_parquet(tmp_path / "themes" / "v0" / "lms_cmp_5.parquet")
+        v0 = pl.read_parquet(tmp_path / "themes" / "v0" / "cmp.parquet")
         assert v0.equals(cmp.filter(pl.col("characteristic") != "c"))
+        assert not (tmp_path / "themes" / "v0" / "lms_cmp_5.parquet").exists()
         v1 = pl.read_parquet(tmp_path / "themes" / "v1.0" / "lms_cmp_5.parquet")
         assert v1["characteristic"].to_list() == ["a", "b"]
         assert v1["direction"].to_list() == [1, -1]
@@ -567,10 +568,8 @@ class TestWriteThemeVersions:
         self._write_cmp(tmp_path, {1: cmp, 2: cmp, 5: cmp})
 
         v0 = tmp_path / "themes" / "v0"
-        assert [p.name for p in v0.glob("*cmp*")] == ["lms_cmp_5.parquet"]
-        assert pl.read_parquet(v0 / "lms_cmp_5.parquet").equals(
-            cmp.filter(pl.col("excntry") == "USA")
-        )
+        assert [p.name for p in v0.glob("*cmp*")] == ["cmp.parquet"]
+        assert pl.read_parquet(v0 / "cmp.parquet").equals(cmp.filter(pl.col("excntry") == "USA"))
 
     def test_later_versions_sign_every_grouping_and_country(self, tmp_path: Path) -> None:
         cmp = self._cmp_two_countries()
@@ -585,5 +584,5 @@ class TestWriteThemeVersions:
         cmp = self._cmp_two_countries().filter(pl.col("excntry") == "FRA")
         self._write_cmp(tmp_path, {5: cmp})
 
-        assert not (tmp_path / "themes" / "v0" / "lms_cmp_5.parquet").exists()
+        assert not (tmp_path / "themes" / "v0" / "cmp.parquet").exists()
         assert (tmp_path / "themes" / "v1.0" / "lms_cmp_5.parquet").exists()

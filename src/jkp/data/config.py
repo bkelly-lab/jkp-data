@@ -51,8 +51,8 @@ REGIONAL_COUNTRIES_MIN = 3
 # inflation / hyperinflation regimes that distort returns).
 REGIONAL_COUNTRY_EXCL = ("ZWE", "VEN")
 
-# Themes version whose characteristics-managed portfolios stay unsigned (#297).
-# Every other version signs them, as it signs `hml`.
+# Themes version that keeps the old `cmp` file: the unsigned characteristics-managed
+# portfolios (#297). Every other version writes `lms_cmp_{n}`, signed as `lms` signs `hml`.
 UNSIGNED_CMP_VERSION = "v0"
 # That version's file keeps its layout from before #323: US rows, five size groups.
 UNSIGNED_CMP_SIZE_GROUPS = 5
