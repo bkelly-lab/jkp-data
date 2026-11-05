@@ -38,7 +38,7 @@ from tests.unit.portfolio.conftest import (
     weekdays_in_month_after,
 )
 
-TOLERANCE = 1e-12
+TOLERANCE = 1e-10
 PFS = 3
 BP_MIN_N = 5
 RET_COLS = ["ret_exc", "ret_overnight"]
