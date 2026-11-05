@@ -1,4 +1,4 @@
-"""Equivalence of the fast CMP, monthly, daily and HML paths with the code they replaced.
+"""Equivalence of the fast portfolio paths with the code they replaced.
 
 The ``_old_*`` functions are frozen copies of the slower implementations. The panel
 is built to break a rewrite: ties across breakpoints, a third of breakpoint stocks
@@ -21,16 +21,16 @@ import pytest
 from jkp.data.aux_functions import (
     _build_hml,
     _cmp_returns,
-    _cmp_size_group,
     _month_totals,
     _pf_daily_returns,
-    _pf_medians_lazy,
     _pf_returns,
+    _pf_signals,
+    _rank_by_month,
     _stock_days,
-    add_ecdf,
 )
 from jkp.data.config import CMP_SIZE_GROUPS
 from jkp.data.portfolio import run_portfolio
+from tests.fixtures.portfolio_oi_legacy import add_ecdf
 from tests.unit.portfolio.conftest import (
     SYNTHETIC_CHARS,
     build_synthetic_data,
@@ -53,6 +53,7 @@ CHARS = [
     "c_nan",
     "c_all_null",
     "c_constant_month",
+    "c_inf_month",
 ]
 EOMS = month_ends(6)
 
@@ -133,6 +134,38 @@ def _old_split_daily_leg(wide: pl.DataFrame, c: str) -> pl.DataFrame:
     )
 
 
+def _old_pf_signals(sub: pl.LazyFrame, x: str, signals_w: str) -> pl.LazyFrame:
+    """Frozen: weighted characteristic per portfolio, from one characteristic's assigned rows."""
+    if signals_w == "ew":
+        w_expr = (1 / pl.col("eom").len()).over(["pf", "eom"])
+    elif signals_w == "vw":
+        w_expr = (pl.col("me") / pl.col("me").sum()).over(["pf", "eom"])
+    else:
+        w_expr = (pl.col("me_cap") / pl.col("me_cap").sum()).over(["pf", "eom"])
+    return (
+        sub.with_columns(w_expr.alias("w"))
+        .group_by(["pf", "eom"])
+        .agg((pl.col("w") * pl.col("var").fill_null(0)).sum().alias("signal"))
+        .with_columns(
+            pl.lit(x).alias("characteristic"),
+            pl.col("eom").dt.offset_by("1mo").dt.month_end().alias("eom"),
+        )
+    )
+
+
+def _old_cmp_size_group(n_groups: int) -> pl.Expr:
+    """Frozen: size group of a stock with ``n_groups`` size groups."""
+    if n_groups == 1:
+        return pl.lit("all")
+    if n_groups == 2:
+        return (
+            pl.when(pl.col("size_grp").is_in(["mega", "large"]))
+            .then(pl.lit("big"))
+            .otherwise(pl.lit("small"))
+        )
+    return pl.col("size_grp")
+
+
 def _old_cmp_returns(
     data: pl.DataFrame, chars: list[str], n_groups: int, excntry: str
 ) -> pl.DataFrame:
@@ -144,7 +177,7 @@ def _old_cmp_returns(
     weight = p_rank_dev / (p_rank_dev.abs().sum().over(grp) / 2)
     return (
         data.lazy()
-        .with_columns(_cmp_size_group(n_groups).alias("size_grp"))
+        .with_columns(_old_cmp_size_group(n_groups).alias("size_grp"))
         .unpivot(
             on=chars,
             index=["eom", "size_grp", "ret_exc_lead1m"],
@@ -257,6 +290,7 @@ def panel() -> pl.DataFrame:
             ),
             pl.Series("c_nan", np.where(rng.random(n) < 0.4, np.nan, rng.normal(0, 1, n))),
             pl.Series("c_constant_month", rng.normal(0, 1, n)),
+            pl.Series("c_inf_month", rng.normal(0, 1, n)),
         )
         .with_columns(
             pl.lit(None, dtype=pl.Float64).alias("c_all_null"),
@@ -265,6 +299,11 @@ def panel() -> pl.DataFrame:
             .then(2.5)
             .otherwise(pl.col("c_constant_month"))
             .alias("c_constant_month"),
+            # Every stock infinite: the CMP standard deviation is NaN, so the group stays.
+            pl.when(pl.col("eom") == EOMS[3])
+            .then(np.inf)
+            .otherwise(pl.col("c_inf_month"))
+            .alias("c_inf_month"),
             pl.when(zero_me_month).then(0.0).otherwise(pl.col("me")).alias("me"),
             # One nano stock a month: a single-stock group in the five-group CMP.
             pl.when(pl.col("id") == pl.col("id").min().over("eom"))
@@ -280,7 +319,8 @@ def panel() -> pl.DataFrame:
                 & (~thin_month | (pl.col("id") < 6))
             ).alias("bp_stock"),
         )
-        .with_columns((pl.struct("eom", "id").rank("ordinal") - 1).alias("sm"))
+        .sort("eom", "id")
+        .with_row_index("sm")
     )
 
 
@@ -341,13 +381,13 @@ def _assigned(panel: pl.DataFrame, x: str) -> pl.LazyFrame:
 
 
 @pytest.fixture(scope="module")
-def pf_by_row(panel: pl.DataFrame) -> np.ndarray:
-    """Portfolio of each stock-month by characteristic, as in ``portfolios()``."""
-    matrix = np.zeros((panel.height, len(CHARS)), dtype=np.uint8)
-    for j, x in enumerate(CHARS):
-        assigned = _assigned(panel, x).collect()
-        matrix[assigned["sm"].to_numpy(), j] = assigned["pf"].to_numpy()
-    return matrix
+def ranked(panel: pl.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    return _rank_by_month(panel, CHARS, PFS, BP_MIN_N)
+
+
+@pytest.fixture(scope="module")
+def pf_by_row(ranked: tuple[np.ndarray, np.ndarray, np.ndarray]) -> np.ndarray:
+    return ranked[0]
 
 
 @pytest.fixture(scope="module")
@@ -356,10 +396,12 @@ def month_sums(panel: pl.DataFrame, pf_by_row: np.ndarray) -> tuple[pl.Series, n
 
 
 @pytest.fixture(scope="module")
-def new_monthly(panel: pl.DataFrame, month_sums: tuple[pl.Series, np.ndarray]) -> pl.DataFrame:
+def new_monthly(
+    ranked: tuple[np.ndarray, np.ndarray, np.ndarray],
+    month_sums: tuple[pl.Series, np.ndarray],
+) -> pl.DataFrame:
     months, totals = month_sums
-    medians = pl.collect_all([_pf_medians_lazy(_assigned(panel, x).collect(), x) for x in CHARS])
-    return _pf_returns(months, totals, pl.concat(medians), CHARS)
+    return _pf_returns(months, totals, ranked[1], CHARS)
 
 
 @pytest.fixture(scope="module")
@@ -372,6 +414,30 @@ def new_daily(
     months, totals = month_sums
     stock_days = _stock_days(panel, daily, RET_COLS)
     return _pf_daily_returns(stock_days, pf_by_row, months, totals, CHARS, RET_COLS, PFS)
+
+
+@pytest.mark.unit
+class TestAssignmentEquivalence:
+    @pytest.mark.parametrize("x", CHARS)
+    def test_portfolios_match_old_exactly(
+        self, panel: pl.DataFrame, pf_by_row: np.ndarray, x: str
+    ) -> None:
+        assigned = _assigned(panel, x).collect()
+        old = np.zeros(panel.height, dtype=np.uint8)
+        old[assigned["sm"].to_numpy()] = assigned["pf"].to_numpy()
+        assert np.array_equal(old, pf_by_row[:, CHARS.index(x)])
+
+
+@pytest.mark.unit
+class TestSignalsEquivalence:
+    @pytest.mark.parametrize("signals_w", ["ew", "vw", "vw_cap"])
+    def test_signals_match_old(
+        self, panel: pl.DataFrame, pf_by_row: np.ndarray, signals_w: str
+    ) -> None:
+        new = _pf_signals(panel, pf_by_row, CHARS, signals_w)
+        for x in [c for c in CHARS if c != "c_all_null"]:
+            old = _old_pf_signals(_assigned(panel, x), x, signals_w).collect()
+            _assert_within_tolerance(old, new.filter(pl.col("characteristic") == x), ["pf", "eom"])
 
 
 @pytest.mark.unit
@@ -430,18 +496,41 @@ class TestDailyEquivalence:
 @pytest.mark.unit
 class TestCmpEquivalence:
     @pytest.mark.parametrize("n_groups", CMP_SIZE_GROUPS)
-    def test_cmp_matches_old(self, panel: pl.DataFrame, n_groups: int) -> None:
+    def test_cmp_matches_old(
+        self,
+        panel: pl.DataFrame,
+        ranked: tuple[np.ndarray, np.ndarray, np.ndarray],
+        month_sums: tuple[pl.Series, np.ndarray],
+        n_groups: int,
+    ) -> None:
         old = _old_cmp_returns(panel, CHARS, n_groups, "usa")
-        new = _cmp_returns(panel, CHARS, n_groups, "usa")
+        new = _cmp_returns(month_sums[0], ranked[2], CHARS, n_groups, "usa")
         _assert_within_tolerance(old, new, ["characteristic", "size_grp", "eom"])
 
-    def test_constant_and_single_stock_groups_are_dropped(self, panel: pl.DataFrame) -> None:
-        new = _cmp_returns(panel, CHARS, 5, "usa")
+    def test_constant_and_single_stock_groups_are_dropped(
+        self,
+        ranked: tuple[np.ndarray, np.ndarray, np.ndarray],
+        month_sums: tuple[pl.Series, np.ndarray],
+    ) -> None:
+        new = _cmp_returns(month_sums[0], ranked[2], CHARS, 5, "usa")
         assert "nano" not in new["size_grp"].to_list()
         assert "c_all_null" not in new["characteristic"].to_list()
         constant_return_month = pl.Series([EOMS[1]]).dt.offset_by("1mo").dt.month_end()[0]
         constant = new.filter(pl.col("characteristic") == "c_constant_month")
         assert constant_return_month not in constant["eom"].to_list()
+
+    def test_group_of_infinite_values_stays_with_nan(
+        self,
+        ranked: tuple[np.ndarray, np.ndarray, np.ndarray],
+        month_sums: tuple[pl.Series, np.ndarray],
+    ) -> None:
+        new = _cmp_returns(month_sums[0], ranked[2], CHARS, 1, "usa")
+        return_month = pl.Series([EOMS[3]]).dt.offset_by("1mo").dt.month_end()[0]
+        row = new.filter(
+            (pl.col("characteristic") == "c_inf_month") & (pl.col("eom") == return_month)
+        )
+        assert row.height == 1
+        assert row["ret_weighted"].is_nan().all()
 
 
 @pytest.mark.unit

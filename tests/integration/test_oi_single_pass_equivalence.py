@@ -64,8 +64,10 @@ def _add_oi_columns(processed: Path, excntry: str, seed: int) -> None:
         winsorization applies to them. The daily file gets the four O/I
         columns with: stock-days where only ``ret_exc`` is present, a date
         where every O/I return is null, stock-days where only the O/I returns
-        are present, extra nulls in the local legs only, and extreme Compustat
-        returns beyond the daily cutoffs. DEU has the columns but all null.
+        are present, extra nulls in the local overnight leg only, and extreme
+        Compustat returns beyond the daily cutoffs. ``ret_intraday_local`` equals
+        ``ret_intraday``, as in the production builders. DEU has the columns but
+        all null.
     """
     char_path = processed / "characteristics" / f"{excntry}.parquet"
     daily_path = processed / "return_data" / "daily_rets_by_country" / f"{excntry}.parquet"
@@ -105,8 +107,10 @@ def _add_oi_columns(processed: Path, excntry: str, seed: int) -> None:
             *[pl.when(~pl.col("no_open")).then(pl.col(c)).alias(c) for c in OI_COLS],
         )
         .with_columns(
-            pl.when(~pl.col("local_extra_null")).then(pl.col(c)).alias(c)
-            for c in ("ret_overnight_local", "ret_intraday_local")
+            pl.when(~pl.col("local_extra_null"))
+            .then(pl.col("ret_overnight_local"))
+            .alias("ret_overnight_local"),
+            ret_intraday_local=pl.col("ret_intraday"),
         )
         .drop("no_open", "no_close", "local_extra_null", "extreme")
     )
