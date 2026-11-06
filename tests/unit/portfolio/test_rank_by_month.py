@@ -165,6 +165,60 @@ class TestCmp:
     def test_constant_group_is_dropped(self) -> None:
         assert self._cmp(_frame([2.5, 2.5, 2.5]), 1).height == 0
 
+    @pytest.mark.parametrize(
+        "values",
+        [
+            [0.5, 0.5 + 1e-14],
+            [0.1, 0.1 + 1e-14, 0.1 + 2e-14],
+            [0.0, 1e-16],
+            [-1e-16, 1e-16],
+            [0.5, 0.5 + 1e-10],
+        ],
+    )
+    def test_group_at_or_below_the_minimum_std_is_dropped(self, values: list[float]) -> None:
+        assert self._cmp(_frame(values), 1).height == 0
+
+    @pytest.mark.parametrize(
+        "values",
+        [
+            [0.5, 0.5 + 1e-9],
+            [0.0, 2e-10],
+            [1e6, 1e6 + 1e-8],
+            [1.0, np.inf],
+            [np.inf, np.inf],
+            [-np.inf, np.inf],
+            [-1e308, 1e308],
+        ],
+    )
+    def test_group_above_the_minimum_std_stays(self, values: list[float]) -> None:
+        assert self._cmp(_frame(values), 1).height == 1
+
+    @pytest.mark.parametrize(("target", "rows"), [(0.99e-10, 0), (1.01e-10, 1)])
+    def test_minimum_is_on_the_sample_std_with_ties(self, target: float, rows: int) -> None:
+        raw = np.array([0.0, 0.0, 0.0, 1.0, 1.0, 2.0, 7.0, 7.0, 7.0, 7.0])
+        values = 0.25 + raw * target / raw.std(ddof=1)
+        assert self._cmp(_frame(values.tolist()), 1).height == rows
+
+    @pytest.mark.parametrize(("n_tied", "rows"), [(399, 0), (99, 1)])
+    def test_minimum_is_on_the_std_not_the_range(self, n_tied: int, rows: int) -> None:
+        # One stock 1.1e-9 from the rest: the std is 5.5e-11 with 400 stocks, 1.1e-10 with 100.
+        assert self._cmp(_frame([0.0] * n_tied + [1.1e-9]), 1).height == rows
+
+    def test_minimum_std_does_not_depend_on_row_order(self) -> None:
+        rng = np.random.default_rng(0)
+        raw = rng.normal(size=50)
+        values = 0.25 + raw * 1e-10 / raw.std(ddof=1)
+        rows = {self._cmp(_frame(rng.permutation(values).tolist()), 1).height for _ in range(20)}
+        assert len(rows) == 1
+
+    def test_minimum_std_applies_group_by_group(self) -> None:
+        data = _frame(
+            [0.5, 0.5 + 1e-14, 1.0, 2.0],
+            size_grp=["mega", "mega", "large", "large"],
+        )
+        assert self._cmp(data, 5)["size_grp"].to_list() == ["large"]
+        assert self._cmp(data, 1)["size_grp"].to_list() == ["all"]
+
     def test_single_stock_group_is_dropped(self) -> None:
         assert self._cmp(_frame([2.5]), 1).height == 0
 

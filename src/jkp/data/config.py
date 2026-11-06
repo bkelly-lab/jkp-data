@@ -61,6 +61,11 @@ UNSIGNED_CMP_SIZE_GROUPS = 5
 # everything (`all`), `big` and `small`, or the five groups of `size_grp`.
 CMP_SIZE_GROUPS = (1, 2, 5)
 
+# A characteristics-managed group has a row only if the sample standard deviation of its
+# characteristic is above this. Below it, the ranks would mostly order rounding noise. The value
+# is our choice (#324), it is absolute, and it applies to every characteristic.
+CMP_MIN_STD = 1e-10
+
 # The 153 characteristics of JKP (2023) (themes v0), sorted first. `jkp portfolio`
 # also sorts every other characteristic in a released themes version, and the
 # themes files decide which factors are signed. Production default;

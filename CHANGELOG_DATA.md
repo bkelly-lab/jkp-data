@@ -3,6 +3,11 @@ This change log keeps track of changes to the underlying data set. In brackets, 
 
 This repository ports the original SAS pipeline ([ReplicationCrisis](https://github.com/bkelly-lab/ReplicationCrisis)) to Python using Polars. Entries up to and including 05-03-2025 are from the original change log.
 
+## 06-11-2026
+__Changes__:
+- A size group in the characteristics-managed portfolios now has a row only if the sample standard deviation of its characteristic that month is above 1e-10 ([#324](https://github.com/bkelly-lab/jkp-data/issues/324)). The previous rule kept any group whose standard deviation was not exactly zero, so groups that differ only by rounding error got long and short positions set by that error, and whether a few of them had a row depended on row order. The cutoff is our choice, is absolute, and applies to every characteristic. It removes 2,096 rows from `hml_cmp_1` (0.018%), 2,793 from `hml_cmp_2` (0.014%) and 5,929 from `hml_cmp_5` (0.014%), and the matching rows from the themes files. In the US that is 3, 11 and 47 rows; the 47 in `hml_cmp_5` are all `chcsho_*`, from 1931 to 1969.
+- Affected output files: `hml_cmp_1`, `hml_cmp_2`, `hml_cmp_5`, `themes/<version>/lms_cmp_1`, `lms_cmp_2`, `lms_cmp_5` and `themes/v0/cmp`.
+
 ## 04-11-2026
 __Changes__:
 - Characteristics-managed portfolios with 1, 2 and 5 size groups, for all countries ([#323](https://github.com/bkelly-lab/jkp-data/issues/323)). `portfolios/` now has `hml_cmp_1` (`size_grp` is `all`, the full universe) and `hml_cmp_2` (`big` is mega and large, `small` is small, micro and nano) next to `hml_cmp_5`, and each `portfolios/themes/<version>/` folder from v1.0 on has the signed `lms_cmp_1`, `lms_cmp_2` and `lms_cmp_5`. The `cmp` setting is now on for non-US countries, so `hml_cmp_5` and `lms_cmp_5` gain their rows; the US rows are unchanged. `themes/v0/` stays as it was: only `cmp`, with US rows and five size groups, unsigned. Each row reports `n_stocks`, and no minimum is applied. Weights come from ranks, not market cap, so with one size group micro and nano stocks make up most of the portfolio.

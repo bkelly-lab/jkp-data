@@ -35,6 +35,7 @@ from .compustat_correction import (
 )
 from .config import (
     CALENDAR_RUN_MAX_GAP_DAYS,
+    CMP_MIN_STD,
     CMP_SIZE_GROUPS,
     COLLECT_CHUNK_SIZE,
     CORRECTION_SPILL_COMPRESSION,
@@ -10422,6 +10423,7 @@ def _rank_rows_kernel(
     n_chars,
     n_pfs,
     bp_min_n,
+    min_std,
     pf_by_row,
     medians,
     cmp_totals,
@@ -10442,7 +10444,9 @@ def _rank_rows_kernel(
         average rank. The centered rank is the whole number ``2 * rank - (n + 1)``, which
         is ``rank / (n + 1) - 0.5`` times ``2 * (n + 1)``. That factor cancels in the ratios
         of ``_cmp_returns``, and whole numbers add without rounding error. A group needs
-        two stocks and a value that varies, and infinite values count as varying.
+        two stocks and a sample standard deviation above ``min_std``, or it would rank
+        rounding noise. It is built up over the sorted values, so it doesn't depend on row
+        order. Infinite values count as varying.
     Output:
         Fills ``pf_by_row``, flattened by row and characteristic; ``medians``, indexed by
         ``(month, characteristic, pf - 1)``; and ``cmp_totals``, indexed by ``(month,
@@ -10459,8 +10463,8 @@ def _rank_rows_kernel(
         group_n = np.zeros(8, dtype=np.int64)
         group_seen = np.zeros(8, dtype=np.int64)
         tie_n = np.zeros(8, dtype=np.int64)
-        group_first = np.zeros(8)
-        group_last = np.zeros(8)
+        group_mean = np.zeros(8)
+        group_ss = np.zeros(8)
         sums = np.zeros((8, 3))
         for month in range(first_month, stop_month):
             for char in range(n_chars):
@@ -10486,6 +10490,8 @@ def _rank_rows_kernel(
                 pf = 0
                 pf_start = 0
                 group_seen[:] = 0
+                group_mean[:] = 0.0
+                group_ss[:] = 0.0
                 sums[:] = 0.0
                 tie = 0
                 while tie < n:
@@ -10525,16 +10531,18 @@ def _rank_rows_kernel(
                             sums[group, 2] += abs(centered)
                     for group in range(8):
                         if tie_n[group] > 0:
-                            if group_seen[group] == 0:
-                                group_first[group] = value
-                            group_last[group] = value
                             group_seen[group] += tie_n[group]
+                            delta = value - group_mean[group]
+                            group_mean[group] += delta * (tie_n[group] / group_seen[group])
+                            group_ss[group] += tie_n[group] * delta * (value - group_mean[group])
                     tie = tie_stop
                 if pf > 0:
                     medians[month, char, pf - 1] = _sorted_median(vals, order, pf_start, n)
                 for group in range(8):
-                    constant = group_first[group] == group_last[group]
-                    if group_n[group] >= 2 and not (constant and np.isfinite(group_first[group])):
+                    if group_n[group] < 2:
+                        continue
+                    # An infinite value makes this NaN, which isn't <= min_std, so the group stays.
+                    if not np.sqrt(group_ss[group] / (group_n[group] - 1)) <= min_std:
                         cmp_totals[month, char, group, 0] = group_n[group]
                         cmp_totals[month, char, group, 1:] = sums[group]
 
@@ -10569,6 +10577,7 @@ def _rank_by_month(
         n_chars,
         n_pfs,
         bp_min_n,
+        CMP_MIN_STD,
         pf_by_row,
         medians,
         cmp_totals,
