@@ -25,6 +25,7 @@ DAILY_RET_COLS = [
     "date",
     "me",
     "ret",
+    "ret_local",
     "ret_exc",
     "ret_exc_wins",
     "ret_intraday",
