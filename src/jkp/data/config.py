@@ -23,11 +23,6 @@ MAIN_FILTERS = {
     "exch_main": 1,
 }
 
-# Number of per-characteristic lazy pipelines collected concurrently per
-# chunk in `_pf_signals()`' chunked `collect_all` logic (bounds peak memory
-# when running over hundreds of characteristics).
-COLLECT_CHUNK_SIZE = 16
-
 # Number of portfolios characteristics are sorted into (e.g. 3 -> tertiles).
 PORTFOLIO_PFS = 3
 
@@ -244,7 +239,6 @@ PORTFOLIO_SETTINGS = {
     "bps": "non_mc",
     "bp_min_n": PORTFOLIO_BP_MIN_N,
     "cmp": {"us": True, "int": True},
-    "signals": {"us": False, "int": False, "standardize": True, "weight": "vw_cap"},
     "regional_pfs": {
         "country_excl": list(REGIONAL_COUNTRY_EXCL),
         "country_weights": "market_cap",

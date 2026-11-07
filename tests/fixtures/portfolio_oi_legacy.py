@@ -25,9 +25,11 @@ from jkp.data.aux_functions import (
     _build_industry_daily_returns,
     _build_industry_monthly_returns,
 )
-from jkp.data.config import COLLECT_CHUNK_SIZE, PORTFOLIO_CHARS, PORTFOLIO_SETTINGS
+from jkp.data.config import PORTFOLIO_CHARS, PORTFOLIO_SETTINGS
 from jkp.data.output_writer import configure_output_format, convert_outputs_to_csv
 from jkp.data.paths import DataPaths
+
+COLLECT_CHUNK_SIZE = 16
 
 V0_DIR: Path | None = None
 

@@ -59,12 +59,6 @@ def _setup(
         "bps": "non_mc",
         "bp_min_n": 5,
         "cmp": {"us": True, "int": True},
-        "signals": {
-            "us": False,
-            "int": False,
-            "standardize": True,
-            "weight": "vw_cap",
-        },
         "regional_pfs": {
             "country_excl": ["ZWE", "VEN"],
             "country_weights": "market_cap",

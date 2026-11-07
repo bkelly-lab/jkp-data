@@ -20,9 +20,6 @@ from tests.unit.portfolio.conftest import (
 COMMON_KWARGS = {
     "pfs": 3,
     "bp_min_n": 5,
-    "signals": False,
-    "signals_standardize": True,
-    "signals_w": "vw_cap",
     "daily_pf": False,
     "ind_pf": False,
     "wins_ret": True,

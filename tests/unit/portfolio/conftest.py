@@ -608,20 +608,6 @@ def make_breakpoint_divergent_dataset(seed: int = 42) -> pl.DataFrame:
     )
 
 
-def make_signals_dataset(seed: int = 42, null_rate: float = 0.10) -> pl.DataFrame:
-    """Like ``make_known_monotone_dataset`` but with intentionally null cells."""
-    df = make_known_monotone_dataset(seed=seed, n_chars=3, n_eoms=6, n_ids=60)
-    rng = np.random.default_rng(seed + 1)
-    char_cols = [c for c in df.columns if c.startswith("char_")]
-    n = df.height
-    for col in char_cols:
-        mask = rng.random(n) < null_rate
-        vals = df[col].to_numpy().copy()
-        vals[mask] = np.nan
-        df = df.with_columns(pl.Series(col, vals, dtype=pl.Float64))
-    return df
-
-
 def make_cmp_dataset(seed: int = 42) -> pl.DataFrame:
     """Includes a ``(size_grp, eom)`` cohort with ``sd_var == 0``."""
     df = make_known_monotone_dataset(seed=seed, n_chars=2, n_eoms=4, n_ids=40)

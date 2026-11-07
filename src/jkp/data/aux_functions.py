@@ -37,7 +37,6 @@ from .config import (
     CALENDAR_RUN_MAX_GAP_DAYS,
     CMP_MIN_STD,
     CMP_SIZE_GROUPS,
-    COLLECT_CHUNK_SIZE,
     CORRECTION_SPILL_COMPRESSION,
     END_DATE,
     MAIN_FILTERS,
@@ -10585,54 +10584,6 @@ def _rank_by_month(
     return pf_by_row.reshape(data.height, n_chars), medians, cmp_totals
 
 
-def _pf_signals(
-    data: pl.DataFrame, pf_by_row: np.ndarray, chars: list[str], signals_w: str
-) -> pl.DataFrame:
-    """Build the weighted average characteristic of each portfolio in each month.
-
-    Steps:
-        1) Pick the weight within a portfolio and month: equal, by ``me`` or by ``me_cap``.
-        2) Per characteristic, keep the stock-months in a portfolio and sum weight times
-           characteristic, in chunks to bound peak memory (see ``COLLECT_CHUNK_SIZE``).
-    Output:
-        DataFrame with columns ``[pf, eom, signal, characteristic]``, with ``eom`` moved to
-        the return month.
-    """
-    if signals_w == "ew":
-        w_expr = (1 / pl.col("eom").len()).over(["pf", "eom"])
-    elif signals_w == "vw":
-        w_expr = (pl.col("me") / pl.col("me").sum()).over(["pf", "eom"])
-    elif signals_w == "vw_cap":
-        w_expr = (pl.col("me_cap") / pl.col("me_cap").sum()).over(["pf", "eom"])
-    frames: list[pl.DataFrame] = []
-    for start in range(0, len(chars), COLLECT_CHUNK_SIZE):
-        chunk = chars[start : start + COLLECT_CHUNK_SIZE]
-        frames.extend(
-            pl.collect_all(
-                [
-                    data.lazy()
-                    .select(
-                        "eom",
-                        "me",
-                        "me_cap",
-                        pl.col(x).cast(pl.Float64).alias("var"),
-                        pl.lit(pl.Series("pf", pf_by_row[:, start + i])).cast(pl.Float64),
-                    )
-                    .filter(pl.col("pf") > 0)
-                    .with_columns(w_expr.alias("w"))
-                    .group_by(["pf", "eom"])
-                    .agg((pl.col("w") * pl.col("var")).sum().alias("signal"))
-                    .with_columns(
-                        pl.lit(x).alias("characteristic"),
-                        pl.col("eom").dt.offset_by("1mo").dt.month_end().alias("eom"),
-                    )
-                    for i, x in enumerate(chunk)
-                ]
-            )
-        )
-    return pl.concat(frames)
-
-
 def _stock_days(data: pl.DataFrame, daily: pl.DataFrame, ret_cols: list[str]) -> pl.DataFrame:
     """Join daily returns to their formation month and prepare the values to sum.
 
@@ -10758,9 +10709,6 @@ def portfolios(
     source=None,  # Use data from "CRSP", "Compustat" or both: ["CRSP", "COMPUSTAT"]. Default: both.
     wins_ret=True,  # Should Compustat returns be winsorized at the 0.1% and 99.9% of CRSP returns?
     cmp_key=False,  # Create characteristics managed size portfolios?
-    signals=False,  # Create portfolio signals?
-    signals_standardize=False,  # Map chars to [-0.5, +0.5]?,
-    signals_w="vw_cap",  # Weighting for signals: in c("ew", "vw", "vw_cap")
     daily_pf=False,  # Should daily return be estimated
     ind_pf=True,  # Should industry portfolio returns be estimated
     ret_cutoffs=None,  # Data frame for monthly winsorization. Neccesary when wins_ret=T
@@ -10906,26 +10854,6 @@ def portfolios(
     # Collect daily lazy frame if present (needed for industry returns and per-char daily).
     daily = daily_lazy.collect() if daily_lazy is not None else None
 
-    # standardizing signals
-    if signals_standardize and signals:
-        data = (
-            data
-            # Ranking within groups defined by 'eom'
-            .with_columns(
-                [
-                    (pl.col(char).rank(method="min").over("eom").cast(pl.Int64)).alias(char)
-                    for char in chars
-                ]
-            )
-            # normalizing ranks
-            .with_columns(
-                [
-                    (((pl.col(char) / pl.col(char).max()) - pl.lit(0.5)).over("eom")).alias(char)
-                    for char in chars
-                ]
-            )
-        )
-
     if ind_pf:
         ind_gics = _build_industry_monthly_returns(
             data,
@@ -10996,7 +10924,7 @@ def portfolios(
             if excntry.lower() == "usa":
                 output["ff49_daily"] = ind_ff49_daily
 
-    # Add excntry to pf_returns and pf_daily, and aggregate signals
+    # Add excntry to pf_returns and pf_daily
     if len(output) > 0:
         if "pf_returns" in output and output["pf_returns"].height > 0:
             output["pf_returns"] = output["pf_returns"].with_columns(
@@ -11004,10 +10932,6 @@ def portfolios(
             )
             for key in [k for k in output if k.startswith("pf_daily")]:
                 output[key] = output[key].with_columns(
-                    pl.lit(excntry).str.to_uppercase().alias("excntry")
-                )
-            if signals:
-                output["signals"] = _pf_signals(data, pf_by_row, chars, signals_w).with_columns(
                     pl.lit(excntry).str.to_uppercase().alias("excntry")
                 )
 

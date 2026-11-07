@@ -43,6 +43,7 @@ SETTINGS = {
     "bps": "non_mc",
     "bp_min_n": 5,
     "cmp": {"us": True, "int": False},
+    # Read only by the frozen legacy code.
     "signals": {"us": False, "int": False, "standardize": True, "weight": "vw_cap"},
     "regional_pfs": {
         "country_excl": ["ZWE", "VEN"],
@@ -149,26 +150,15 @@ def _sorted(df: pl.DataFrame) -> pl.DataFrame:
     return df.sort(keys, nulls_last=True)
 
 
-@pytest.fixture(scope="module", params=[False, True], ids=["signals_off", "signals_on"])
-def outputs(
-    request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPathFactory
-) -> tuple[Path, Path]:
-    """Run the legacy and the single-pass builds on identical inputs.
-
-    Parametrized over ``signals`` because the signals branch of ``portfolios()``
-    builds the daily legs on its own eager path.
-    """
-    signals = request.param
-    settings = {
-        **SETTINGS,
-        "signals": {**SETTINGS["signals"], "us": signals, "int": signals},
-    }
+@pytest.fixture(scope="module")
+def outputs(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path]:
+    """Run the legacy and the single-pass builds on identical inputs."""
     mp = pytest.MonkeyPatch()
     legacy_root = tmp_path_factory.mktemp("legacy")
     new_root = tmp_path_factory.mktemp("new")
     _build_inputs(legacy_root)
     _build_inputs(new_root)
-    _patch(mp, tmp_path_factory.mktemp("resources"), settings)
+    _patch(mp, tmp_path_factory.mktemp("resources"), SETTINGS)
     try:
         portfolio_oi_legacy.run_portfolio(output_format="parquet", output_dir=legacy_root)
         run_portfolio(output_format="parquet", output_dir=new_root)

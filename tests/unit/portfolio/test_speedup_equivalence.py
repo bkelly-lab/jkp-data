@@ -24,7 +24,6 @@ from jkp.data.aux_functions import (
     _month_totals,
     _pf_daily_returns,
     _pf_returns,
-    _pf_signals,
     _rank_by_month,
     _stock_days,
 )
@@ -131,25 +130,6 @@ def _old_split_daily_leg(wide: pl.DataFrame, c: str) -> pl.DataFrame:
         pl.col(f"ret_ew_{c}").alias("ret_ew"),
         pl.col(f"ret_vw_{c}").alias("ret_vw"),
         pl.col(f"ret_vw_cap_{c}").alias("ret_vw_cap"),
-    )
-
-
-def _old_pf_signals(sub: pl.LazyFrame, x: str, signals_w: str) -> pl.LazyFrame:
-    """Frozen: weighted characteristic per portfolio, from one characteristic's assigned rows."""
-    if signals_w == "ew":
-        w_expr = (1 / pl.col("eom").len()).over(["pf", "eom"])
-    elif signals_w == "vw":
-        w_expr = (pl.col("me") / pl.col("me").sum()).over(["pf", "eom"])
-    else:
-        w_expr = (pl.col("me_cap") / pl.col("me_cap").sum()).over(["pf", "eom"])
-    return (
-        sub.with_columns(w_expr.alias("w"))
-        .group_by(["pf", "eom"])
-        .agg((pl.col("w") * pl.col("var").fill_null(0)).sum().alias("signal"))
-        .with_columns(
-            pl.lit(x).alias("characteristic"),
-            pl.col("eom").dt.offset_by("1mo").dt.month_end().alias("eom"),
-        )
     )
 
 
@@ -429,18 +409,6 @@ class TestAssignmentEquivalence:
 
 
 @pytest.mark.unit
-class TestSignalsEquivalence:
-    @pytest.mark.parametrize("signals_w", ["ew", "vw", "vw_cap"])
-    def test_signals_match_old(
-        self, panel: pl.DataFrame, pf_by_row: np.ndarray, signals_w: str
-    ) -> None:
-        new = _pf_signals(panel, pf_by_row, CHARS, signals_w)
-        for x in [c for c in CHARS if c != "c_all_null"]:
-            old = _old_pf_signals(_assigned(panel, x), x, signals_w).collect()
-            _assert_within_tolerance(old, new.filter(pl.col("characteristic") == x), ["pf", "eom"])
-
-
-@pytest.mark.unit
 class TestMonthlyEquivalence:
     @pytest.mark.parametrize("x", [c for c in CHARS if c != "c_all_null"])
     def test_monthly_matches_old(
@@ -613,7 +581,6 @@ def test_intraday_local_files_reuse_intraday(
             "bps": "non_mc",
             "bp_min_n": 3,
             "cmp": {"us": False, "int": False},
-            "signals": {"us": False, "int": False, "standardize": True, "weight": "vw_cap"},
             "regional_pfs": {
                 "country_excl": [],
                 "country_weights": "market_cap",

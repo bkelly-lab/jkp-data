@@ -264,12 +264,6 @@ class TestClusterPortfolios:
             "bps": "non_mc",
             "bp_min_n": 3,
             "cmp": {"us": False, "int": False},
-            "signals": {
-                "us": False,
-                "int": False,
-                "standardize": True,
-                "weight": "vw_cap",
-            },
             "regional_pfs": {
                 "country_excl": ["ZWE", "VEN"],
                 "country_weights": "market_cap",

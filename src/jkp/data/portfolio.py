@@ -466,11 +466,6 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
             source=settings["source"],
             wins_ret=settings["wins_ret"],
             cmp_key=settings["cmp"]["us"] if ex.lower() == "usa" else settings["cmp"]["int"],
-            signals=settings["signals"]["us"]
-            if ex.lower() == "usa"
-            else settings["signals"]["int"],
-            signals_standardize=settings["signals"]["standardize"],
-            signals_w=settings["signals"]["weight"],
             daily_pf=settings["daily_pf"],
             ind_pf=settings["ind_pf"],
             ret_cutoffs=ret_cutoffs,

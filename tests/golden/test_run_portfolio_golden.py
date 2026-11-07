@@ -31,7 +31,6 @@ PROFILES: dict[str, dict] = {
     "default_monthly": {
         "bps": "non_mc",
         "source": ["CRSP", "COMPUSTAT"],
-        "signals_us": False,
         "cmp_us": False,
         "daily_pf": False,
         "ind_pf": True,
@@ -39,7 +38,6 @@ PROFILES: dict[str, dict] = {
     "nyse_breakpoints": {
         "bps": "nyse",
         "source": ["CRSP", "COMPUSTAT"],
-        "signals_us": False,
         "cmp_us": False,
         "daily_pf": False,
         "ind_pf": True,
@@ -47,15 +45,6 @@ PROFILES: dict[str, dict] = {
     "crsp_only": {
         "bps": "non_mc",
         "source": ["CRSP"],
-        "signals_us": False,
-        "cmp_us": False,
-        "daily_pf": False,
-        "ind_pf": False,
-    },
-    "signals_on": {
-        "bps": "non_mc",
-        "source": ["CRSP", "COMPUSTAT"],
-        "signals_us": True,
         "cmp_us": False,
         "daily_pf": False,
         "ind_pf": False,
@@ -63,7 +52,6 @@ PROFILES: dict[str, dict] = {
     "cmp_on": {
         "bps": "non_mc",
         "source": ["CRSP", "COMPUSTAT"],
-        "signals_us": False,
         "cmp_us": True,
         "daily_pf": False,
         "ind_pf": True,
@@ -71,7 +59,6 @@ PROFILES: dict[str, dict] = {
     "full_daily": {
         "bps": "non_mc",
         "source": ["CRSP", "COMPUSTAT"],
-        "signals_us": False,
         "cmp_us": False,
         "daily_pf": True,
         "ind_pf": True,
@@ -93,12 +80,6 @@ def _build_settings(cfg: dict) -> dict:
         "bps": cfg["bps"],
         "bp_min_n": 5,
         "cmp": {"us": cfg["cmp_us"], "int": cfg["cmp_us"]},
-        "signals": {
-            "us": cfg["signals_us"],
-            "int": False,
-            "standardize": True,
-            "weight": "vw_cap",
-        },
         "regional_pfs": {
             "country_excl": ["ZWE", "VEN"],
             "country_weights": "market_cap",

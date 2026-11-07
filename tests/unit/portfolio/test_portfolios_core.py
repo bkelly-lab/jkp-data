@@ -41,7 +41,6 @@ class TestPortfoliosCore:
             source=["CRSP", "COMPUSTAT"],
             wins_ret=True,
             cmp_key=False,
-            signals=False,
             daily_pf=True,
             ind_pf=True,
             ret_cutoffs=ret_cut,
@@ -133,7 +132,6 @@ class TestPortfoliosCore:
             source=["CRSP", "COMPUSTAT"],
             wins_ret=True,
             cmp_key=False,
-            signals=False,
             daily_pf=False,
             ind_pf=False,
             ret_cutoffs=tight_ret_cut,
@@ -150,7 +148,6 @@ class TestPortfoliosCore:
             source=["CRSP", "COMPUSTAT"],
             wins_ret=False,
             cmp_key=False,
-            signals=False,
             daily_pf=False,
             ind_pf=False,
             ret_cutoffs=tight_ret_cut,
@@ -181,10 +178,7 @@ class TestNanCharacteristics:
     """NaN characteristic values are left out of the sort, exactly like nulls."""
 
     @pytest.mark.unit
-    @pytest.mark.parametrize("signals", [False, True])
-    def test_nan_values_give_the_same_portfolios_as_nulls(
-        self, tmp_path: Path, seed: int, signals: bool
-    ):
+    def test_nan_values_give_the_same_portfolios_as_nulls(self, tmp_path: Path, seed: int):
         results = []
         for name, fill in [("null", None), ("nan", float("nan"))]:
             data_root = tmp_path / name / "processed"
@@ -211,8 +205,6 @@ class TestNanCharacteristics:
                     source=["CRSP", "COMPUSTAT"],
                     wins_ret=True,
                     cmp_key=True,
-                    signals=signals,
-                    signals_standardize=signals,
                     daily_pf=True,
                     ind_pf=False,
                     ret_cutoffs=ret_cut,
@@ -220,10 +212,7 @@ class TestNanCharacteristics:
                 )
             )
         with_null, with_nan = results
-        keys = ["pf_returns", "pf_daily", "cmp_1", "cmp_2", "cmp_5"] + (
-            ["signals"] if signals else []
-        )
-        for key in keys:
+        for key in ["pf_returns", "pf_daily", "cmp_1", "cmp_2", "cmp_5"]:
             assert with_null[key].height > 0
             assert_frame_equal(with_null[key], with_nan[key], check_row_order=False)
 
@@ -251,7 +240,6 @@ class TestPortfoliosDaily:
             source=["CRSP", "COMPUSTAT"],
             wins_ret=True,
             cmp_key=False,
-            signals=False,
             daily_pf=True,
             ind_pf=False,
             ret_cutoffs=ret_cut,
