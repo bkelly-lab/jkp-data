@@ -11185,11 +11185,18 @@ def _write_split_by_key(
         Apply the `date_col <= end_date` filter, then for each unique key value
         that is neither None nor the empty string, write the matching rows to
         ``{folder_path}/{key}.parquet``. Numeric/boolean keys (including 0 and
-        False) are kept; only None and "" are skipped.
+        False) are kept; only None and "" are skipped. A key with no rows up to
+        ``end_date`` gets an empty file. The files are written together, in one
+        ``collect_all`` of lazy sinks.
     """
     folder_path.mkdir(parents=True, exist_ok=True)
-    for key in df[key_col].unique():
-        if key is None or key == "":
-            continue
-        filtered = df.filter((pl.col(date_col) <= end_date) & (pl.col(key_col) == key))
-        write_dataframe(filtered, folder_path / f"{key}.parquet")
+    rows = df.lazy().filter(pl.col(date_col) <= end_date)
+    pl.collect_all(
+        [
+            rows.filter(pl.col(key_col) == key).sink_parquet(
+                folder_path / f"{key}.parquet", lazy=True
+            )
+            for key in df[key_col].unique()
+            if key is not None and key != ""
+        ]
+    )
