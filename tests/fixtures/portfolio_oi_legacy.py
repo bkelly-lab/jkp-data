@@ -507,7 +507,7 @@ def portfolios(
                 pf_daily_lazys.append(pf_daily_x)
 
     # Batch-collect per-char lazy pipelines in chunks to bound peak memory
-    # (see COLLECT_CHUNK_SIZE in config.py).
+    # (see COLLECT_CHUNK_SIZE above).
     pf_returns_df: pl.DataFrame | None = None
     pf_daily_df: pl.DataFrame | None = None
 

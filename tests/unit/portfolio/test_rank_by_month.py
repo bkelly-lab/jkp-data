@@ -227,6 +227,10 @@ class TestCmp:
         assert row["n_stocks"] == 2
         assert np.isnan(row["ret_weighted"])
 
+    def test_more_portfolios_than_the_array_holds_raises(self) -> None:
+        with pytest.raises(ValueError, match="256 portfolios, at most 255 fit"):
+            _rank_by_month(pl.DataFrame(), [], 256, 1)
+
     def test_unknown_size_group_raises(self) -> None:
         with pytest.raises(pl.exceptions.InvalidOperationError):
             _rank_by_month(_frame([1.0, 2.0], size_grp=["mega", "giant"]), ["c"], 3, 1)

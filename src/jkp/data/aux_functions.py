@@ -10032,9 +10032,11 @@ def _build_hml(
         Join the top and bottom portfolios on
         ``["excntry", "characteristic", date_col]`` and take top-minus-bottom diffs
         for return columns (and optionally ``signal``). The inner join keeps only
-        groups containing both extreme portfolios.
+        groups containing both extreme portfolios, and one portfolio has no top minus
+        bottom, so it gives no rows.
     Output:
-        DataFrame sorted by ``["excntry", "characteristic", date_col]``.
+        DataFrame sorted by ``["excntry", "characteristic", date_col]``. Raises if a group
+        has more than one row for an extreme portfolio.
     """
     keys = ["excntry", "characteristic", date_col]
     ret_cols = ["ret_ew", "ret_vw", "ret_vw_cap"]
@@ -10045,11 +10047,12 @@ def _build_hml(
     return (
         extreme_pfs.filter(pl.col("pf") == n_pfs)
         .join(
-            extreme_pfs.filter(pl.col("pf") == 1),
+            extreme_pfs.filter(pl.col("pf") == 1, pl.lit(n_pfs > 1)),
             on=keys,
             how="inner",
             suffix="_bottom",
             nulls_equal=True,
+            validate="1:1",
         )
         .select(
             *keys,
@@ -10242,8 +10245,15 @@ _SUM_VALUES = 16
 
 @njit(parallel=True, cache=True, error_model="numpy")
 def _sum_rows_kernel(
-    task_starts, period_starts, stock_months, values, pf_by_row, n_chars, n_bins, out
-):
+    task_starts: np.ndarray,
+    period_starts: np.ndarray,
+    stock_months: np.ndarray,
+    values: np.ndarray,
+    pf_by_row: np.ndarray,
+    n_chars: int,
+    n_bins: int,
+    out: np.ndarray,
+) -> None:
     """Add each row's values to the totals of its period, characteristic and portfolio.
 
     Description:
@@ -10401,7 +10411,7 @@ _CMP_GROUPS = {
 
 
 @njit(cache=True, error_model="numpy")
-def _sorted_median(vals, order, start, stop):
+def _sorted_median(vals: np.ndarray, order: np.ndarray, start: int, stop: int) -> float:
     """Median of ``vals[order[start:stop]]``, which is sorted, using the arithmetic of Polars."""
     middle = start + (stop - start) // 2
     if (stop - start) % 2 == 1:
@@ -10413,20 +10423,20 @@ def _sorted_median(vals, order, start, stop):
 
 @njit(parallel=True, cache=True, error_model="numpy")
 def _rank_rows_kernel(
-    task_starts,
-    month_starts,
-    values,
-    bp_stock,
-    size_code,
-    ret,
-    n_chars,
-    n_pfs,
-    bp_min_n,
-    min_std,
-    pf_by_row,
-    medians,
-    cmp_totals,
-):
+    task_starts: np.ndarray,
+    month_starts: np.ndarray,
+    values: np.ndarray,
+    bp_stock: np.ndarray,
+    size_code: np.ndarray,
+    ret: np.ndarray,
+    n_chars: int,
+    n_pfs: int,
+    bp_min_n: int,
+    min_std: float,
+    pf_by_row: np.ndarray,
+    medians: np.ndarray,
+    cmp_totals: np.ndarray,
+) -> None:
     """Sort each characteristic within each month and read the results off the sorted order.
 
     Description:
@@ -10560,6 +10570,8 @@ def _rank_by_month(
         ``medians``, indexed by ``(month, characteristic, pf - 1)``; and ``cmp_totals``,
         laid out as in ``_rank_rows_kernel``.
     """
+    if n_pfs > np.iinfo(np.uint8).max:
+        raise ValueError(f"{n_pfs} portfolios, at most {np.iinfo(np.uint8).max} fit")
     months, month_starts, task_starts = _period_tasks(data["eom"])
     size_codes = {label: code for code, label in enumerate(_CMP_GROUPS[5][1])}
     n_chars = len(chars)
@@ -10661,7 +10673,6 @@ def _pf_daily_returns(
     }
 
 
-# main portfolios function to create the portfolios
 def _cmp_returns(
     months: pl.Series, cmp_totals: np.ndarray, chars: list[str], n_groups: int, excntry: str
 ) -> pl.DataFrame:
@@ -10698,6 +10709,7 @@ def _cmp_returns(
     )
 
 
+# main portfolios function to create the portfolios
 def portfolios(
     paths: DataPaths,
     excntry,
@@ -10714,10 +10726,16 @@ def portfolios(
     ret_cutoffs=None,  # Data frame for monthly winsorization. Neccesary when wins_ret=T
     ret_cutoffs_daily=None,  # Data frame for daily winsorization. Neccesary when wins_ret=T and daily_pf=T
     daily_oi_cols: list[str]
-    | None = None,  # Extra daily return columns aggregated alongside ret_exc (not winsorized)
+    | None = None,  # Extra daily return columns aggregated alongside ret_exc (not winsorized), at most 3
 ):
     if source is None:
         source = ["CRSP", "COMPUSTAT"]
+    daily_ret_cols = ["ret_exc", *(daily_oi_cols or [])]
+    # Each daily return column sums four values.
+    if daily_pf and 4 * len(daily_ret_cols) > _SUM_VALUES:
+        raise ValueError(
+            f"{len(daily_ret_cols)} daily return columns, at most {_SUM_VALUES // 4} fit"
+        )
     # characerteristics data
     file_path = paths.processed_dir / "characteristics" / f"{excntry}.parquet"
 
@@ -10791,7 +10809,6 @@ def portfolios(
     daily_file_path = (
         paths.processed_dir / "return_data" / "daily_rets_by_country" / f"{excntry}.parquet"
     )
-    daily_ret_cols = ["ret_exc", *(daily_oi_cols or [])]
     if daily_pf:
         daily_lazy = (
             pl.scan_parquet(daily_file_path)
@@ -10892,12 +10909,10 @@ def portfolios(
                     excntry,
                 )
 
-    stock_days = _stock_days(data, daily, daily_ret_cols) if daily_pf else None
-    del daily
-
     # One sort per month and characteristic forms the portfolios of all characteristics. Their
     # monthly and daily returns then come from one pass over the rows.
     pf_by_row, medians, cmp_totals = _rank_by_month(data, chars, pfs, bp_min_n)
+    data = data.drop(chars)
     output = {}
     months, month_totals = _month_totals(data, pf_by_row, pfs)
     pf_returns = _pf_returns(months, month_totals, medians, chars)
@@ -10906,13 +10921,15 @@ def portfolios(
     if daily_pf:
         # One long frame per return column: ret_exc -> "pf_daily", each
         # O/I column c -> "pf_daily_{c}". Empty legs are left out.
+        stock_days = _stock_days(data, daily, daily_ret_cols)
+        del data, daily
         legs = _pf_daily_returns(
             stock_days, pf_by_row, months, month_totals, chars, daily_ret_cols, pfs
         )
         for c, leg in legs.items():
             if leg.height > 0:
                 output["pf_daily" if c == "ret_exc" else f"pf_daily_{c}"] = leg
-    del stock_days
+        del stock_days
 
     # Handle industry portfolio returns if ind_pf is true
     if ind_pf:
@@ -10925,15 +10942,8 @@ def portfolios(
                 output["ff49_daily"] = ind_ff49_daily
 
     # Add excntry to pf_returns and pf_daily
-    if len(output) > 0:
-        if "pf_returns" in output and output["pf_returns"].height > 0:
-            output["pf_returns"] = output["pf_returns"].with_columns(
-                pl.lit(excntry).str.to_uppercase().alias("excntry")
-            )
-            for key in [k for k in output if k.startswith("pf_daily")]:
-                output[key] = output[key].with_columns(
-                    pl.lit(excntry).str.to_uppercase().alias("excntry")
-                )
+    for key in [k for k in output if k == "pf_returns" or k.startswith("pf_daily")]:
+        output[key] = output[key].with_columns(pl.lit(excntry).str.to_uppercase().alias("excntry"))
 
     if cmp_key:
         for n_groups in CMP_SIZE_GROUPS:

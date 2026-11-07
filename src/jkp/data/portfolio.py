@@ -114,18 +114,33 @@ def _regions(settings: dict) -> pl.DataFrame:
     )
 
 
-# Overnight / intraday daily return components: (name, daily return column).
+# Overnight / intraday daily return components: (name, daily return column). FX cancels within
+# a day, so `ret_intraday_local` equals `ret_intraday` by construction (see aux_functions.py) and
+# `intraday_local` is built from `ret_intraday`; `_check_intraday_local` guards the equality.
+# `portfolios()` limits the number of distinct columns.
 OI_COMPONENTS = [
     ("overnight", "ret_overnight"),
     ("intraday", "ret_intraday"),
     ("overnight_local", "ret_overnight_local"),
-    ("intraday_local", "ret_intraday_local"),
+    ("intraday_local", "ret_intraday"),
 ]
 
-# FX cancels within a day, so this return column equals another by construction
-# (see `ret_intraday_local` in aux_functions.py): it is aggregated only once, and its
-# output files reuse the results of the column it equals.
-OI_SAME_COLUMN = {"ret_intraday_local": "ret_intraday"}
+
+def _check_intraday_local(daily_path: Path) -> None:
+    """Stop if ``ret_intraday_local`` isn't the ``ret_intraday`` published under its name.
+
+    Description:
+        One country's daily file is enough, as the same builders write every country's
+        columns. Files without either column have nothing to check.
+    Output:
+        None. Raises ``ValueError`` if the columns differ.
+    """
+    daily = pl.scan_parquet(daily_path)
+    if not {"ret_intraday", "ret_intraday_local"} <= set(daily.collect_schema().names()):
+        return
+    differ = daily.select(pl.col("ret_intraday").ne_missing(pl.col("ret_intraday_local")).any())
+    if differ.collect().item():
+        raise ValueError(f"ret_intraday_local differs from ret_intraday in {daily_path}")
 
 
 def _write_theme_outputs(
@@ -437,6 +452,7 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
             / "daily_rets_by_country"
             / f"{countries[0]}.parquet"
         )
+        _check_intraday_local(sample_path)
         daily_schema = pl.scan_parquet(sample_path).collect_schema()
         for component, ret_col in OI_COMPONENTS:
             if ret_col in daily_schema.names():
@@ -446,6 +462,7 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
                     f"Skipping {component}: {ret_col} not found in daily return files",
                     flush=True,
                 )
+    oi_columns = list(dict.fromkeys(ret_col for _, ret_col in oi_components))
 
     # Polars 2 runs a bare collect() on the streaming engine, whose parallel reductions
     # are not bit-reproducible; keep the in-memory default of Polars 1.x.
@@ -470,7 +487,7 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
             ind_pf=settings["ind_pf"],
             ret_cutoffs=ret_cutoffs,
             ret_cutoffs_daily=ret_cutoffs_daily,
-            daily_oi_cols=[c for _, c in oi_components if c not in OI_SAME_COLUMN],
+            daily_oi_cols=oi_columns,
         )
         portfolio_data[ex] = result
 
@@ -540,11 +557,7 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
     end_date = settings["end_date"]
 
     # Single-file outputs (monthly)
-    monthly_outputs = [
-        (pf_returns, "pfs.parquet"),
-        (hml_returns, "hml.parquet"),
-    ]
-    for df, name in monthly_outputs:
+    for df, name in [(pf_returns, "pfs.parquet"), (hml_returns, "hml.parquet")]:
         if df is not None:
             _write_filtered(df, portfolios_dir / name, "eom", end_date)
     for n_groups in CMP_SIZE_GROUPS:
@@ -561,30 +574,24 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
 
     # Single-file outputs (daily)
     if settings["daily_pf"]:
-        daily_outputs = [
-            (pf_daily, "pfs_daily.parquet"),
-            (hml_daily, "hml_daily.parquet"),
-        ]
-        for df, name in daily_outputs:
+        for df, name in [(pf_daily, "pfs_daily.parquet"), (hml_daily, "hml_daily.parquet")]:
             if df is not None:
                 _write_filtered(df, portfolios_dir / name, "date", end_date)
 
     # Industry returns
     if settings["ind_pf"]:
-        ind_monthly = [
+        for df, name in [
             (gics_returns, "industry_gics.parquet"),
             (ff49_returns, "industry_ff49.parquet"),
-        ]
-        for df, name in ind_monthly:
+        ]:
             if df is not None:
                 _write_filtered(df, portfolios_dir / name, "eom", end_date)
 
     if settings["ind_pf"] and settings["daily_pf"]:
-        ind_daily = [
+        for df, name in [
             (gics_daily, "industry_gics_daily.parquet"),
             (ff49_daily, "industry_ff49_daily.parquet"),
-        ]
-        for df, name in ind_daily:
+        ]:
             if df is not None:
                 _write_filtered(df, portfolios_dir / name, "date", end_date)
 
@@ -594,27 +601,28 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
     # Overnight / Intraday daily factor portfolios (LPS 2019 decomposition).
     # The main pass aggregated each component's daily returns with the
     # standard ret_exc_lead1m sort; only post-processing runs per component.
-    oi_built: dict[str, tuple[pl.DataFrame, pl.DataFrame]] = {}
-    for component, ret_col in oi_components:
-        source_col = OI_SAME_COLUMN.get(ret_col, ret_col)
-        if source_col in oi_built:
-            pf_oi, hml_oi = oi_built[source_col]
-        else:
-            pf_oi = _stack_outputs(
-                portfolio_data,
-                f"pf_daily_{source_col}",
-                ["excntry", "characteristic", "pf", "date"],
-            )
-            if pf_oi is None or pf_oi.height == 0:
-                print(f"No {component} results produced", flush=True)
-                continue
+    for ret_col in oi_columns:
+        components = [component for component, c in oi_components if c == ret_col]
+        names = " and ".join(components)
+        pf_oi = _stack_outputs(
+            portfolio_data,
+            f"pf_daily_{ret_col}",
+            ["excntry", "characteristic", "pf", "date"],
+        )
+        if pf_oi is None or pf_oi.height == 0:
+            print(f"No {names} results produced", flush=True)
+            continue
 
-            print(f"Building {component} daily factor portfolios...", flush=True)
-            hml_oi = _build_hml(pf_oi, settings["pfs"], "date", include_signal=False)
-            oi_built[source_col] = (pf_oi, hml_oi)
-        _write_filtered(pf_oi, portfolios_dir / f"pfs_{component}.parquet", "date", end_date)
-        _write_filtered(hml_oi, portfolios_dir / f"hml_{component}.parquet", "date", end_date)
-        hml_series.append((f"_{component}", hml_oi, "date"))
+        print(f"Building {names} daily factor portfolios...", flush=True)
+        hml_oi = _build_hml(pf_oi, settings["pfs"], "date", include_signal=False)
+        for component in components:
+            _write_filtered(pf_oi, portfolios_dir / f"pfs_{component}.parquet", "date", end_date)
+            _write_filtered(hml_oi, portfolios_dir / f"hml_{component}.parquet", "date", end_date)
+            hml_series.append((f"_{component}", hml_oi, "date"))
+        del pf_oi
+
+    # The themes step needs only the HML factors and CMP, so free the rest first.
+    del portfolio_data, pf_returns, pf_daily, gics_returns, ff49_returns, gics_daily, ff49_daily
 
     # Signed factors and theme portfolios of the current themes version.
     # The CSV conversion runs even if the themes step fails.

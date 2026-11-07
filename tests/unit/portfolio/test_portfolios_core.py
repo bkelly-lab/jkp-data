@@ -10,7 +10,7 @@ import pytest
 from polars.testing import assert_frame_equal
 
 from jkp.data.paths import DataPaths
-from jkp.data.portfolio import portfolios
+from jkp.data.portfolio import _check_intraday_local, portfolios
 from tests.unit.portfolio.conftest import (
     SYNTHETIC_CHARS,
     make_cutoffs,
@@ -172,6 +172,46 @@ class TestPortfoliosCore:
             pf_no_win["ret_ew"].to_numpy(),
             atol=1e-12,
         )
+
+
+class TestChecksBeforeWork:
+    @pytest.mark.unit
+    def test_too_many_daily_columns_raise_before_any_read(self, tmp_path: Path):
+        with pytest.raises(ValueError, match="5 daily return columns, at most 4 fit"):
+            portfolios(
+                paths=DataPaths(base_dir=tmp_path),
+                excntry="SYN",
+                chars=SYNTHETIC_CHARS,
+                pfs=3,
+                bps="non_mc",
+                bp_min_n=10,
+                nyse_size_cutoffs=None,
+                daily_pf=True,
+                daily_oi_cols=["a", "b", "c", "d"],
+            )
+
+
+class TestCheckIntradayLocal:
+    @pytest.mark.unit
+    def test_equal_columns_pass(self, tmp_path: Path):
+        path = tmp_path / "daily.parquet"
+        values = [0.1, None, float("nan")]
+        pl.DataFrame({"ret_intraday": values, "ret_intraday_local": values}).write_parquet(path)
+        _check_intraday_local(path)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("local", [[0.1, 0.3], [0.1, None]])
+    def test_different_columns_raise(self, tmp_path: Path, local: list[float | None]):
+        path = tmp_path / "daily.parquet"
+        pl.DataFrame({"ret_intraday": [0.1, 0.2], "ret_intraday_local": local}).write_parquet(path)
+        with pytest.raises(ValueError, match="ret_intraday_local differs"):
+            _check_intraday_local(path)
+
+    @pytest.mark.unit
+    def test_file_without_the_columns_passes(self, tmp_path: Path):
+        path = tmp_path / "daily.parquet"
+        pl.DataFrame({"ret_exc": [0.1]}).write_parquet(path)
+        _check_intraday_local(path)
 
 
 class TestNanCharacteristics:
