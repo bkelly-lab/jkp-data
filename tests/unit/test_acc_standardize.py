@@ -1,11 +1,16 @@
-"""Tests for the NA/Global stacking, quarterization and one-row-per-date steps of ``standardized_accounting_data``."""
+"""Tests for the INDFMT filter, NA/Global stacking, quarterization and one-row-per-date steps of ``standardized_accounting_data``."""
 
 from datetime import date, timedelta
 
 import polars as pl
 import pytest
 
-from jkp.data.aux_functions import one_row_per_date, prefer_global, quarterize
+from jkp.data.aux_functions import (
+    apply_indfmt_filter,
+    one_row_per_date,
+    prefer_global,
+    quarterize,
+)
 from jkp.data.config import CALENDAR_RUN_MAX_GAP_DAYS
 
 QK = ["gvkey", "fyr", "fyearq", "fqtr"]
@@ -282,3 +287,32 @@ class TestOneRowPerDate:
         )
         out = one_row_per_date(df).collect()
         assert out.select("source", "atq").rows() == [("GLOBAL", 10.0)]
+
+
+@pytest.mark.unit
+class TestApplyIndfmtFilter:
+    @staticmethod
+    def _rows(rows: list[tuple[int, str]]) -> pl.LazyFrame:
+        """(fyr, indfmt) rows of one firm on one date."""
+        return pl.LazyFrame(
+            [("001", date(2010, 3, 31), fyr, fmt) for fyr, fmt in rows],
+            schema={"gvkey": pl.String, "datadate": pl.Date, "fyr": pl.Int16, "indfmt": pl.String},
+            orient="row",
+        )
+
+    @pytest.mark.parametrize(
+        ("rows", "kept"),
+        [
+            ([(12, "INDL")], [12]),
+            ([(12, "FS")], [12]),
+            ([(12, "INDL"), (12, "FS")], [12]),
+            ([(3, "INDL"), (12, "INDL")], [3, 12]),
+            ([(3, "FS"), (12, "FS")], [3, 12]),
+            ([(3, "FS"), (12, "INDL"), (12, "FS")], [12]),
+        ],
+    )
+    def test_keeps_indl_rows_else_all(self, rows: list[tuple[int, str]], kept: list[int]) -> None:
+        """INDL rows win; a date without one keeps every row, one per fiscal calendar."""
+        out = apply_indfmt_filter(self._rows(rows)).collect()
+        assert "indfmt" not in out.columns
+        assert sorted(out["fyr"].to_list()) == kept

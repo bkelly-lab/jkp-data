@@ -4146,27 +4146,22 @@ def load_raw_fund_table_and_filter(filename, start_date, source_str, mode):
     return df
 
 
-def apply_indfmt_filter(df):
+def apply_indfmt_filter(df: pl.LazyFrame) -> pl.LazyFrame:
     """
     Description:
-        Resolve dual-format rows per (gvkey, datadate), preferring INDL when both exist.
+        Keep one report format per (gvkey, datadate): the INDL rows if the date has any,
+        else all its rows (FS). A date reported on two fiscal calendars keeps one row per
+        calendar; one_row_per_date picks between them later.
 
     Steps:
-        1) Count rows over [gvkey, datadate].
-        2) Keep singletons or pairs where indfmt == 'INDL'.
-        3) Drop helper columns.
+        1) Keep rows with indfmt == 'INDL', and every row of a date without an INDL row.
+        2) Drop indfmt.
 
     Output:
         Frame with one format per (gvkey, datadate).
     """
-    df = (
-        df.with_columns(count_indfmt=pl.len().over(["gvkey", "datadate"]))
-        .filter(
-            (col("count_indfmt") == 1) | ((col("count_indfmt") == 2) & (col("indfmt") == "INDL"))
-        )
-        .drop(["indfmt", "count_indfmt"])
-    )
-    return df
+    is_indl = pl.col("indfmt") == "INDL"
+    return df.filter(is_indl | ~is_indl.any().over(["gvkey", "datadate"])).drop("indfmt")
 
 
 def add_fx_and_convert_vars(df, fx_df, vars, freq):
