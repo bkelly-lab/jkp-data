@@ -117,7 +117,8 @@ def _regions(settings: dict) -> pl.DataFrame:
 # Overnight / intraday daily return components: (name, daily return column). FX cancels within
 # a day, so `ret_intraday_local` equals `ret_intraday` by construction (see aux_functions.py) and
 # `intraday_local` is built from `ret_intraday`; `_check_intraday_local` guards the equality.
-# `portfolios()` limits the number of distinct columns.
+# At most 3 distinct columns: with `ret_exc` they fill the 16 sums per row of
+# `_sum_rows_kernel` (`_SUM_VALUES`), and `_sum_by_portfolio` raises on more.
 OI_COMPONENTS = [
     ("overnight", "ret_overnight"),
     ("intraday", "ret_intraday"),
@@ -400,11 +401,15 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
     configure_output_format(output_format)
 
     # Get list of countries from characteristics files; null_country holds stocks
-    # with a null excntry and is not a country.
+    # with a null excntry and is not a country. Sorted by the uppercased stem, which is
+    # each country's excntry: the pf stacks below rely on this order.
     countries = sorted(
-        p.stem
-        for p in chars_dir.glob("*.parquet")
-        if "world" not in p.stem and p.stem != "null_country"
+        (
+            p.stem
+            for p in chars_dir.glob("*.parquet")
+            if "world" not in p.stem and p.stem != "null_country"
+        ),
+        key=str.upper,
     )
 
     # Sort every characteristic that a released themes version signs, so jkp themes

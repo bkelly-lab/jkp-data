@@ -10356,59 +10356,65 @@ def _portfolio_rows_kernel(
     denominators: np.ndarray,
     formation: np.ndarray,
     char_order: np.ndarray,
+    n_tasks: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Pick the portfolios with stocks and divide their sums, one characteristic per thread.
+    """Pick the portfolios with stocks and divide their sums, in parallel over characteristics.
 
     Description:
         ``numerators`` is indexed by ``(period, characteristic, pf - 1, value)`` with the
         count and the three sums; ``denominators`` by ``(month, characteristic, pf - 1,
         value)``, and ``formation`` gives each period's month. Rows come out by
-        characteristic in ``char_order``, then portfolio, then period. One thread writes
-        each characteristic in a fixed order, so the rows are the same for any number of
-        threads.
+        characteristic in ``char_order``, then portfolio, then period. Each of ``n_tasks``
+        threads takes a block of adjacent characteristics and walks the periods in order,
+        so it reads neighbouring memory; each cell's rows go to that cell's own place in the
+        output, so the rows are the same for any number of threads.
     Steps:
-        1) Count each characteristic's portfolio-periods with a positive count.
-        2) Write each one's indexes, count and the three sums divided by the
-           denominators, from the characteristic's first row on.
+        1) Count each characteristic's and portfolio's periods with a positive count.
+        2) Give each cell its first row, in ``char_order`` and portfolio order.
+        3) Write each period's indexes, count and the three sums divided by the
+           denominators at its cell's next row.
     Output:
         Per row: period, characteristic and ``pf - 1`` indexes, the count, and an array of
         the three returns indexed by ``(return, row)``.
     """
     n_periods, n_chars, n_pfs = numerators.shape[0], numerators.shape[1], numerators.shape[2]
-    counts = np.zeros(n_chars, dtype=np.int64)
-    for rank in prange(n_chars):
-        char = char_order[rank]
-        count = 0
+    block = -(-n_chars // n_tasks)
+    counts = np.zeros((n_chars, n_pfs), dtype=np.int64)
+    for task in prange(n_tasks):
+        for period in range(n_periods):
+            for char in range(task * block, min(n_chars, (task + 1) * block)):
+                for pf in range(n_pfs):
+                    if numerators[period, char, pf, 0] > 0:
+                        counts[char, pf] += 1
+    next_row = np.empty((n_chars, n_pfs), dtype=np.int64)
+    n_rows = 0
+    for rank in range(n_chars):
         for pf in range(n_pfs):
-            for period in range(n_periods):
-                if numerators[period, char, pf, 0] > 0:
-                    count += 1
-        counts[rank] = count
-    starts = np.zeros(n_chars + 1, dtype=np.int64)
-    starts[1:] = np.cumsum(counts)
-    n_rows = starts[n_chars]
+            next_row[char_order[rank], pf] = n_rows
+            n_rows += counts[char_order[rank], pf]
     period_i = np.empty(n_rows, dtype=np.int64)
     char_i = np.empty(n_rows, dtype=np.int64)
     pf_i = np.empty(n_rows, dtype=np.int64)
     n = np.empty(n_rows, dtype=np.uint32)
     returns = np.empty((3, n_rows))
-    for rank in prange(n_chars):
-        char = char_order[rank]
-        row = starts[rank]
-        for pf in range(n_pfs):
-            for period in range(n_periods):
-                count = numerators[period, char, pf, 0]
-                if count > 0:
-                    month = formation[period]
-                    period_i[row] = period
-                    char_i[row] = char
-                    pf_i[row] = pf
-                    n[row] = np.uint32(count)
-                    for k in range(3):
-                        returns[k, row] = (
-                            numerators[period, char, pf, k + 1] / denominators[month, char, pf, k]
-                        )
-                    row += 1
+    for task in prange(n_tasks):
+        for period in range(n_periods):
+            month = formation[period]
+            for char in range(task * block, min(n_chars, (task + 1) * block)):
+                for pf in range(n_pfs):
+                    n_stocks = numerators[period, char, pf, 0]
+                    if n_stocks > 0:
+                        at = next_row[char, pf]
+                        period_i[at] = period
+                        char_i[at] = char
+                        pf_i[at] = pf
+                        n[at] = np.uint32(n_stocks)
+                        for k in range(3):
+                            returns[k, at] = (
+                                numerators[period, char, pf, k + 1]
+                                / denominators[month, char, pf, k]
+                            )
+                        next_row[char, pf] = at + 1
     return period_i, char_i, pf_i, n, returns
 
 
@@ -10434,9 +10440,14 @@ def _portfolio_rows(
         DataFrame with columns ``[pf, <period>, characteristic, n, ret_ew, ret_vw,
         ret_vw_cap]``, and ``signal`` from ``signals`` (indexed like the sums) when given.
     """
+    # The kernel does not check bounds, so check its indexes here.
+    if numerators.shape[1:3] != denominators.shape[1:3] or len(formation) != len(numerators):
+        raise ValueError("numerators, denominators and formation do not line up")
+    if len(formation) and not 0 <= formation.min() <= formation.max() < len(denominators):
+        raise ValueError("formation holds a month outside denominators")
     char_order = np.argsort(np.array(chars), kind="stable")
     period_i, char_i, pf_i, n, returns = _portfolio_rows_kernel(
-        numerators, denominators, formation, char_order
+        numerators, denominators, formation, char_order, get_num_threads()
     )
     rows = pl.DataFrame(
         {

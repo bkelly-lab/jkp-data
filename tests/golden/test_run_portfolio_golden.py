@@ -14,6 +14,7 @@ import shutil
 from datetime import date
 from pathlib import Path
 
+import polars as pl
 import pytest
 
 from tests.unit.portfolio.conftest import (
@@ -146,5 +147,13 @@ def test_run_portfolio_golden(
     extra = sorted(str(r) for r in actual_rels - fixture_rels)
     if extra:
         failures.append(f"unexpected extra outputs: {extra}")
+
+    # The pf stacks are not sorted after the country loop, so check they come in key order.
+    # compare_parquets sorts both sides and would not see an order error.
+    for path in sorted(output_root.glob("pfs*.parquet")):
+        pfs = pl.read_parquet(path)
+        keys = ["excntry", "characteristic", "pf", "eom" if "eom" in pfs.columns else "date"]
+        if not pfs.equals(pfs.sort(keys)):
+            failures.append(f"{path.name} is not sorted by {keys}")
 
     assert not failures, "\n".join(failures)

@@ -199,6 +199,16 @@ class TestPortfolioRows:
             numba.set_num_threads(before)
         assert all(result == results[0] for result in results)
 
+    def test_a_formation_month_outside_the_denominators_raises(self) -> None:
+        """The kernel does not check bounds, so ``_portfolio_rows`` checks its indexes."""
+        months = pl.Series("eom", [date(2020, 1, 31)])
+        numerators = np.ones((1, len(CHARS), N_PFS, 4))
+        denominators = np.ones((1, len(CHARS), N_PFS, 3))
+        with pytest.raises(ValueError, match="outside denominators"):
+            _portfolio_rows(months, numerators, denominators, np.array([1]), CHARS)
+        with pytest.raises(ValueError, match="do not line up"):
+            _portfolio_rows(months, numerators, denominators[:, :1], np.array([0]), CHARS)
+
     def test_no_stocks_gives_an_empty_frame_with_the_dtypes(self) -> None:
         months = pl.Series("eom", [date(2020, 1, 31)])
         numerators = np.zeros((1, len(CHARS), N_PFS, 4))
