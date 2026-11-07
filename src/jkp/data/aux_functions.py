@@ -10350,36 +10350,108 @@ def _month_totals(
     )
 
 
+@njit(parallel=True, cache=True, error_model="numpy")
+def _portfolio_rows_kernel(
+    numerators: np.ndarray,
+    denominators: np.ndarray,
+    formation: np.ndarray,
+    char_order: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Pick the portfolios with stocks and divide their sums, one characteristic per thread.
+
+    Description:
+        ``numerators`` is indexed by ``(period, characteristic, pf - 1, value)`` with the
+        count and the three sums; ``denominators`` by ``(month, characteristic, pf - 1,
+        value)``, and ``formation`` gives each period's month. Rows come out by
+        characteristic in ``char_order``, then portfolio, then period. One thread writes
+        each characteristic in a fixed order, so the rows are the same for any number of
+        threads.
+    Steps:
+        1) Count each characteristic's portfolio-periods with a positive count.
+        2) Write each one's indexes, count and the three sums divided by the
+           denominators, from the characteristic's first row on.
+    Output:
+        Per row: period, characteristic and ``pf - 1`` indexes, the count, and an array of
+        the three returns indexed by ``(return, row)``.
+    """
+    n_periods, n_chars, n_pfs = numerators.shape[0], numerators.shape[1], numerators.shape[2]
+    counts = np.zeros(n_chars, dtype=np.int64)
+    for rank in prange(n_chars):
+        char = char_order[rank]
+        count = 0
+        for pf in range(n_pfs):
+            for period in range(n_periods):
+                if numerators[period, char, pf, 0] > 0:
+                    count += 1
+        counts[rank] = count
+    starts = np.zeros(n_chars + 1, dtype=np.int64)
+    starts[1:] = np.cumsum(counts)
+    n_rows = starts[n_chars]
+    period_i = np.empty(n_rows, dtype=np.int64)
+    char_i = np.empty(n_rows, dtype=np.int64)
+    pf_i = np.empty(n_rows, dtype=np.int64)
+    n = np.empty(n_rows, dtype=np.uint32)
+    returns = np.empty((3, n_rows))
+    for rank in prange(n_chars):
+        char = char_order[rank]
+        row = starts[rank]
+        for pf in range(n_pfs):
+            for period in range(n_periods):
+                count = numerators[period, char, pf, 0]
+                if count > 0:
+                    month = formation[period]
+                    period_i[row] = period
+                    char_i[row] = char
+                    pf_i[row] = pf
+                    n[row] = np.uint32(count)
+                    for k in range(3):
+                        returns[k, row] = (
+                            numerators[period, char, pf, k + 1] / denominators[month, char, pf, k]
+                        )
+                    row += 1
+    return period_i, char_i, pf_i, n, returns
+
+
 def _portfolio_rows(
-    periods: pl.Series, numerators: np.ndarray, denominators: np.ndarray, chars: list[str]
+    periods: pl.Series,
+    numerators: np.ndarray,
+    denominators: np.ndarray,
+    formation: np.ndarray,
+    chars: list[str],
+    signals: np.ndarray | None = None,
 ) -> pl.DataFrame:
     """Turn portfolio sums into returns, one row per period, characteristic and portfolio.
 
     Description:
         ``numerators`` holds the count and the EW, VW and VW-cap sums by period,
-        characteristic and portfolio; ``denominators`` holds the formation month's stock
-        count, ``me`` and ``me_cap`` in the same layout. A portfolio with a count of zero
-        has no row. The division is raw rather than ``safe_div``, since a zero
+        characteristic and portfolio; ``denominators`` holds each month's stock count,
+        ``me`` and ``me_cap`` in the same layout, and ``formation`` gives the month that
+        weights each period. A portfolio with a count of zero has no row. Rows are sorted
+        by characteristic name, portfolio and period, so stacking countries in sorted
+        order needs no sort. The division is raw rather than ``safe_div``, since a zero
         denominator gives NaN or infinity in the published series.
     Output:
         DataFrame with columns ``[pf, <period>, characteristic, n, ret_ew, ret_vw,
-        ret_vw_cap]``.
+        ret_vw_cap]``, and ``signal`` from ``signals`` (indexed like the sums) when given.
     """
-    period_i, char_i, pf_i = np.nonzero(numerators[:, :, :, 0] > 0)
-    numerator = numerators[period_i, char_i, pf_i]
-    with np.errstate(divide="ignore", invalid="ignore"):
-        returns = numerator[:, 1:] / denominators[period_i, char_i, pf_i]
-    return pl.DataFrame(
+    char_order = np.argsort(np.array(chars), kind="stable")
+    period_i, char_i, pf_i, n, returns = _portfolio_rows_kernel(
+        numerators, denominators, formation, char_order
+    )
+    rows = pl.DataFrame(
         {
             "pf": pf_i + 1.0,
             periods.name: periods.gather(period_i),
             "characteristic": pl.Series(chars).gather(char_i),
-            "n": numerator[:, 0].astype(np.uint32),
-            "ret_ew": returns[:, 0],
-            "ret_vw": returns[:, 1],
-            "ret_vw_cap": returns[:, 2],
+            "n": n,
+            "ret_ew": returns[0],
+            "ret_vw": returns[1],
+            "ret_vw_cap": returns[2],
         }
     )
+    if signals is not None:
+        rows = rows.with_columns(pl.Series("signal", signals[period_i, char_i, pf_i]))
+    return rows
 
 
 def _pf_returns(
@@ -10392,11 +10464,15 @@ def _pf_returns(
         ret_vw_cap]``, with ``eom`` moved to the return month.
     """
     return (
-        _portfolio_rows(months, month_totals[:, :, :, :4], month_totals[:, :, :, [0, 4, 5]], chars)
-        .with_columns(
-            pl.Series("signal", medians[month_totals[:, :, :, 0] > 0]),
-            pl.col("eom").dt.offset_by("1mo").dt.month_end().alias("eom"),
+        _portfolio_rows(
+            months,
+            month_totals[:, :, :, :4],
+            month_totals[:, :, :, [0, 4, 5]],
+            np.arange(months.len()),
+            chars,
+            signals=medians,
         )
+        .with_columns(pl.col("eom").dt.offset_by("1mo").dt.month_end().alias("eom"))
         .select("pf", "eom", "characteristic", "n", "signal", "ret_ew", "ret_vw", "ret_vw_cap")
     )
 
@@ -10666,9 +10742,11 @@ def _pf_daily_returns(
     formation_month = np.searchsorted(
         months.to_numpy(), dates.dt.month_start().dt.offset_by("-1d").to_numpy()
     )
-    denominators = month_totals[:, :, :, [0, 4, 5]][formation_month]
+    denominators = month_totals[:, :, :, [0, 4, 5]]
     return {
-        c: _portfolio_rows(dates, day_totals[:, :, :, 4 * i : 4 * i + 4], denominators, chars)
+        c: _portfolio_rows(
+            dates, day_totals[:, :, :, 4 * i : 4 * i + 4], denominators, formation_month, chars
+        )
         for i, c in enumerate(ret_cols)
     }
 
@@ -11067,12 +11145,13 @@ def _build_regional_loop(
 def _stack_outputs(
     portfolio_data: dict,
     key: str,
-    sort_cols: list[str],
+    sort_cols: list[str] | None,
     select_cols: list[str] | None = None,
 ) -> pl.DataFrame | None:
     """Concatenate per-country sub-results under `key`, sort, optionally project.
 
-    Returns None when no country produced this key.
+    ``sort_cols=None`` keeps the concatenation order, for pieces that already come sorted
+    from countries in sorted order. Returns None when no country produced this key.
     """
     pieces = [d[key] for d in portfolio_data.values() if d and key in d]
     if not pieces:
@@ -11080,7 +11159,7 @@ def _stack_outputs(
     out = pl.concat(pieces)
     if select_cols is not None:
         out = out.select(select_cols)
-    return out.sort(sort_cols)
+    return out if sort_cols is None else out.sort(sort_cols)
 
 
 def _write_filtered(

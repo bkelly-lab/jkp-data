@@ -491,11 +491,13 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
         )
         portfolio_data[ex] = result
 
-    # Aggregating portfolio returns across countries
+    # Aggregating portfolio returns across countries. The pf outputs need no sort: countries
+    # run in sorted order and _portfolio_rows sorts each one's rows by characteristic, pf and
+    # date, so the stack is in (excntry, characteristic, pf, date) order.
     pf_returns = _stack_outputs(
         portfolio_data,
         "pf_returns",
-        sort_cols=["excntry", "characteristic", "pf", "eom"],
+        sort_cols=None,
         select_cols=[
             "excntry",
             "characteristic",
@@ -509,9 +511,7 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
         ],
     )
     pf_daily = (
-        _stack_outputs(portfolio_data, "pf_daily", ["excntry", "characteristic", "pf", "date"])
-        if settings["daily_pf"]
-        else None
+        _stack_outputs(portfolio_data, "pf_daily", sort_cols=None) if settings["daily_pf"] else None
     )
 
     # Industry classification returns
@@ -604,11 +604,8 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
     for ret_col in oi_columns:
         components = [component for component, c in oi_components if c == ret_col]
         names = " and ".join(components)
-        pf_oi = _stack_outputs(
-            portfolio_data,
-            f"pf_daily_{ret_col}",
-            ["excntry", "characteristic", "pf", "date"],
-        )
+        # Already in key order, as pf_daily above.
+        pf_oi = _stack_outputs(portfolio_data, f"pf_daily_{ret_col}", sort_cols=None)
         if pf_oi is None or pf_oi.height == 0:
             print(f"No {names} results produced", flush=True)
             continue
