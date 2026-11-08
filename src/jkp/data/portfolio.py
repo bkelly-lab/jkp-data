@@ -16,7 +16,7 @@ from .paths import DataPaths
 
 # add_ecdf / portfolios / regional_data and the private build/write helpers
 # are resolved lazily from `aux_functions` via `__getattr__` below so that
-# `import jkp.data.portfolio` doesn't pull duckdb/ibis at import time.
+# `import jkp.data.portfolio` doesn't pull duckdb at import time.
 __all__ = [  # noqa: F822 — lazy via __getattr__
     "add_ecdf",
     "_build_industry_daily_returns",
@@ -191,7 +191,7 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
     """
     # Function-local: LOAD_GLOBAL inside this function bypasses module
     # __getattr__, so helpers must be bound explicitly here. Also keeps
-    # importing `jkp.data.portfolio` cheap (no eager duckdb/ibis pull).
+    # importing `jkp.data.portfolio` cheap (no eager duckdb pull).
     from .aux_functions import (
         _build_hml_lms,
         _build_regional_loop,

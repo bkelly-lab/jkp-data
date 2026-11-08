@@ -103,7 +103,7 @@ Output:
 - Return Polars expressions from helper functions (like `safe_div`)
 - Use `safe_div()` for any division — never raw `/`
 - **Do not use `sum_sas` or `sub_sas` in new code.** These are legacy functions that replicate SAS null semantics (treat null as 0 when any input is non-null). They exist for backward compatibility in existing characteristic calculations. New code should use standard Polars null propagation, or explicit `pl.coalesce()` when null-as-zero behavior is needed.
-- Prefer Polars over DuckDB/Ibis for new code. Existing code uses DuckDB via Ibis for some complex SQL aggregations, but new work should use Polars expressions and lazy evaluation where possible.
+- Prefer Polars over DuckDB for new code. Existing code uses DuckDB SQL for some complex aggregations, but new work should use Polars expressions and lazy evaluation where possible.
 
 **Type hints:**
 - Add type annotations to new functions (parameters and return types), even though older code in `aux_functions.py` lacks them
