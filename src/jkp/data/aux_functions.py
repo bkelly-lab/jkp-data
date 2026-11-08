@@ -327,59 +327,30 @@ def gen_prihist_files(paths: DataPaths):
         intervals from NA and Global history tables.
 
     Steps:
-        1) Load comp_sec_history and comp_g_sec_history into DuckDB.
-        2) Create three tables by item code: PRIHISTROW (global), PRIHISTUSA (NA), PRIHISTCAN (NA).
+        1) Read comp_sec_history and comp_g_sec_history in place with DuckDB.
+        2) Select three item codes: PRIHISTROW (global), PRIHISTUSA (NA), PRIHISTCAN (NA).
         3) Keep gvkey, itemvalue→flag, effdate, thrudate.
         4) Write each to raw_data_dfs as separate Parquet files.
 
     Output:
         Parquets: __prihistrow.parquet, __prihistusa.parquet, __prihistcan.parquet.
     """
-    con = ibis.duckdb.connect(threads=os.cpu_count())
-    con.create_table(
-        "comp_sec_history",
-        con.read_parquet(paths.raw_tables_dir / "comp_sec_history.parquet"),
-    )
-    con.create_table(
-        "comp_g_sec_history",
-        con.read_parquet(paths.raw_tables_dir / "comp_g_sec_history.parquet"),
-    )
-    con.raw_sql("""
-    CREATE TABLE __prihistrow AS
-    SELECT gvkey,
-        itemvalue AS prihistrow,
-        effdate,
-        thrudate
-    FROM comp_g_sec_history
-    WHERE item = 'PRIHISTROW';
-
-    CREATE TABLE __prihistusa AS
-    SELECT gvkey,
-        itemvalue AS prihistusa,
-        effdate,
-        thrudate
-    FROM comp_sec_history
-    WHERE item = 'PRIHISTUSA';
-
-    CREATE TABLE __prihistcan AS
-    SELECT gvkey,
-        itemvalue AS prihistcan,
-        effdate,
-        thrudate
-    FROM comp_sec_history
-    WHERE item = 'PRIHISTCAN';
-    """)
-
-    con.table("__prihistrow").to_parquet(
-        paths.interim_dir / "raw_data_dfs" / "__prihistrow.parquet"
-    )
-    con.table("__prihistusa").to_parquet(
-        paths.interim_dir / "raw_data_dfs" / "__prihistusa.parquet"
-    )
-    con.table("__prihistcan").to_parquet(
-        paths.interim_dir / "raw_data_dfs" / "__prihistcan.parquet"
-    )
-    con.disconnect()
+    sec_history = (paths.raw_tables_dir / "comp_sec_history.parquet").as_posix()
+    g_sec_history = (paths.raw_tables_dir / "comp_g_sec_history.parquet").as_posix()
+    with _duckdb_connect(paths) as con:
+        for item, source in [
+            ("prihistrow", g_sec_history),
+            ("prihistusa", sec_history),
+            ("prihistcan", sec_history),
+        ]:
+            out = (paths.interim_dir / "raw_data_dfs" / f"__{item}.parquet").as_posix()
+            con.execute(f"""
+            COPY (
+                SELECT gvkey, itemvalue AS {item}, effdate, thrudate
+                FROM read_parquet('{source}')
+                WHERE item = '{item.upper()}'
+            ) TO '{out}' (FORMAT PARQUET)
+            """)
 
 
 def gen_fx1(paths: DataPaths):
