@@ -1914,7 +1914,7 @@ def gen_comp_msf(paths: DataPaths):
         3) UNION the two sources; for each {gvkey,iid,eom} window count n rows.
         4) Keep either the single row (n=1) or, if n=2, prefer source=1 (SECD).
         5) Drop helper columns and deduplicate on {gvkey, iid, eom}, keeping the
-           row with the latest datadate (closest to month-end).
+           row with the latest datadate (closest to month-end), then the highest prcstd.
         6) Write to __comp_msf.parquet.
 
     Output:
@@ -1955,7 +1955,8 @@ def gen_comp_msf(paths: DataPaths):
     secm = (paths.interim_dir / "secm_data.parquet").as_posix()
     out = (paths.interim_dir / "__comp_msf.parquet").as_posix()
     (paths.interim_dir / "aux_msf.ddb").unlink(missing_ok=True)
-    # Deterministic dedup: keep latest datadate per {gvkey, iid, eom}.
+    # Deterministic dedup: keep latest datadate per {gvkey, iid, eom}, then the highest
+    # prcstd (the prepare_comp_sf rule).
     # Investigation (issue #69) found 0 duplicates in current data, but the
     # original .distinct() was non-deterministic — different runs/engines could
     # pick different rows if duplicates appear in a future data vintage.
@@ -1973,7 +1974,9 @@ def gen_comp_msf(paths: DataPaths):
             SELECT * EXCLUDE (n, source)
             FROM counted
             WHERE n = 1 OR (n = 2 AND source = 1)
-            QUALIFY ROW_NUMBER() OVER (PARTITION BY gvkey, iid, eom ORDER BY datadate DESC) = 1
+            QUALIFY ROW_NUMBER() OVER (
+                PARTITION BY gvkey, iid, eom ORDER BY datadate DESC, prcstd DESC
+            ) = 1
         ) TO '{out}' (FORMAT PARQUET)
         """)
 
