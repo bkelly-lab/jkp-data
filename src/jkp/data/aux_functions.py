@@ -4709,7 +4709,8 @@ def add_helper_vars(paths: DataPaths, data):
         Generate monthly-complete accounting panels per (gvkey,curcd), join originals, and compute a rich set of helper *_x variables.
 
     Steps:
-        1) Register data with DuckDB; build monthly grid from min/max datadate; left-join raw rows; deduplicate per date.
+        1) Register data with DuckDB; build monthly grid from min/max datadate; left-join raw rows;
+           deduplicate per date, keeping Global over NA, then the lowest row index n.
         2) Bring grid to Polars; sanitize key vars; construct building blocks (sale_x, debt_x, pstk_x, opex_x, etc.).
         3) Derive financial aggregates (seq_x, nwc_x, be_x/bev_x, ebitda_x/ebit_x/op_x/ope_x, oa_x/ol_x/noa_x, etc.).
         4) Compute flows/changes (cowc_x, nncoa_x, oacc_x, tacc_x, netis_x, dbnetis_x) with 12-month diffs where available; guard with early-count rules.
@@ -4767,7 +4768,7 @@ def add_helper_vars(paths: DataPaths, data):
         FROM helpers1_base
         QUALIFY ROW_NUMBER() OVER (
             PARTITION BY gvkey, curcd, datadate
-            ORDER   BY datadate
+            ORDER   BY datadate, source, n
             ) = 1
         )
 
