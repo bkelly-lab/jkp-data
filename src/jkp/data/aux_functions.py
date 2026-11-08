@@ -8908,6 +8908,10 @@ def save_daily_ret(paths: DataPaths):
 
     Output:
         'return_data/daily_rets_by_country/{country}.parquet' files for all countries.
+        Each file contains columns: id, date, me, ret, ret_local, ret_exc,
+        ret_exc_wins, ret_intraday, ret_overnight, ret_intraday_local,
+        ret_overnight_local. The excntry partition key is stripped from the
+        row data after partitioning.
     """
     data = (
         pl.scan_parquet(paths.interim_dir / "world_dsf_output.parquet")
@@ -8918,6 +8922,7 @@ def save_daily_ret(paths: DataPaths):
                 "date",
                 "me",
                 "ret",
+                "ret_local",
                 "ret_exc",
                 "ret_exc_wins",
                 "ret_intraday",

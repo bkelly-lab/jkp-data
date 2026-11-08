@@ -715,6 +715,443 @@ Nano  & Below 1st percentile. \\
     return\_exc\_99\_99 & 99.99th percentile of excess return. \\[1ex]
 
 \end{longtable}}
+
+\section{Output Reference}\label{sec:output-reference}
+
+This section gives the purpose, key, frequency, and column layout of every file or folder the pipeline writes under \texttt{data/processed/}.  Files that already have a column table elsewhere in this document are cross-referenced.
+
+%----------------------------------------------------------------------
+\subsection{Return Data (\texttt{return\_data/})}
+
+%--- world_dsf ---
+\subsubsection{\texttt{world\_dsf.parquet}}\label{sec:world-dsf}
+\begin{itemize}
+  \item Daily stock-level returns for all securities passing the MAIN filter (\texttt{obs\_main=1}, \texttt{common=1}, \texttt{exch\_main=1}, \texttt{primary\_sec=1}).
+  \item Key: \texttt{(id, date)}.  Frequency: daily.
+  \item All monetary amounts are in USD unless otherwise noted.
+\end{itemize}
+
+{\scriptsize
+\begin{longtable}{@{\extracolsep{\fill}}|l|m{14.2cm}|@{}}
+\caption{\texttt{world\_dsf.parquet} Data Columns \label{world-dsf-cols}}\\
+\hline
+Name & Description \\
+\hline
+\endfirsthead
+\hline
+Name & Description \\
+\hline
+\endhead
+\hline
+\endfoot
+\hline\hline
+\endlastfoot
+
+id\rule{0pt}{10pt} & Unique security $\times$ source identifier. \\[1ex]
+excntry & ISO country code of the exchange. \\[1ex]
+exch\_main & 1 if the exchange is a prominent exchange, 0 otherwise. \\[1ex]
+common & 1 if the security is a common stock, 0 otherwise. \\[1ex]
+primary\_sec & 1 if this is the primary listing in the month. \\[1ex]
+bidask & Bid--ask spread, computed as $(\mathit{ask} - \mathit{bid}) / \mathit{mid}$. \\[1ex]
+curcd & ISO currency code of the security's local currency. \\[1ex]
+fx & Exchange rate (USD per local currency unit). \\[1ex]
+date & Trading date. \\[1ex]
+eom & End-of-month date to which this trading day belongs. \\[1ex]
+adjfct & Cumulative price adjustment factor. \\[1ex]
+shares & Shares outstanding. \\[1ex]
+me & Market equity in USD. \\[1ex]
+dolvol & Dollar trading volume in USD. \\[1ex]
+tvol & Share volume traded. \\[1ex]
+prc & Price per share in USD (unadjusted; local price $\times$ \texttt{fx}). \\[1ex]
+prc\_high & Intraday high price in USD (unadjusted; local high $\times$ \texttt{fx}). \\[1ex]
+prc\_low & Intraday low price in USD (unadjusted; local low $\times$ \texttt{fx}). \\[1ex]
+ret\_local & Close-to-close return in local currency. \\[1ex]
+ret & Close-to-close return in USD. \\[1ex]
+ret\_exc & Excess return in USD (over the US T-bill rate, or the Fama--French risk-free rate when the T-bill rate is missing). \\[1ex]
+ret\_exc\_wins & Winsorized excess return in USD. Compustat returns clipped at the 0.1\%/99.9\% of CRSP returns in the same period; CRSP returns are unchanged. \\[1ex]
+ret\_intraday & Intraday (open-to-close) return in USD. \\[1ex]
+ret\_overnight & Overnight return in USD. $(1+\texttt{ret}) = (1+\texttt{ret\_intraday})(1+\texttt{ret\_overnight})$. \\[1ex]
+ret\_intraday\_local & Intraday return in local currency ($=\texttt{ret\_intraday}$; FX cancels). \\[1ex]
+ret\_overnight\_local & Overnight return in local currency. $(1+\texttt{ret\_local}) = (1+\texttt{ret\_intraday\_local})(1+\texttt{ret\_overnight\_local})$. \\[1ex]
+ret\_lag\_dif & Return lag difference used for quality control. \\[1ex]
+source\_crsp & 1 if the return data source is CRSP, 0 if Compustat. \\[1ex]
+obs\_main & 1 if this is the preferred observation when multiple sources exist for the same security-month (CRSP preferred over Compustat); one of the four \texttt{MAIN\_FILTERS} conditions. \\[1ex]
+
+\end{longtable}}
+
+%--- world_ret_monthly ---
+\subsubsection{\texttt{world\_ret\_monthly.parquet}}\label{sec:world-ret-monthly}
+\begin{itemize}
+  \item Monthly stock-level returns for all securities passing the MAIN filter.
+  \item Key: \texttt{(id, eom)}.  Frequency: monthly.
+  \item The overnight/intraday return columns are compounded from daily returns: $r_{\mathrm{month}} = \prod_{d}(1+r_d)-1$.
+\end{itemize}
+
+{\scriptsize
+\begin{longtable}{@{\extracolsep{\fill}}|l|m{14.2cm}|@{}}
+\caption{\texttt{world\_ret\_monthly.parquet} Data Columns \label{world-ret-monthly-cols}}\\
+\hline
+Name & Description \\
+\hline
+\endfirsthead
+\hline
+Name & Description \\
+\hline
+\endhead
+\hline
+\endfoot
+\hline\hline
+\endlastfoot
+
+excntry\rule{0pt}{10pt} & ISO country code of the exchange. \\[1ex]
+id & Unique security $\times$ source identifier. \\[1ex]
+source\_crsp & 1 if the return data source is CRSP, 0 if Compustat. \\[1ex]
+eom & End-of-month date. \\[1ex]
+me & Market equity in USD at end of month. \\[1ex]
+ret\_exc & Excess return in USD. \\[1ex]
+ret & Total return in USD. \\[1ex]
+ret\_local & Total return in local currency. \\[1ex]
+ret\_exc\_wins & Winsorized excess return in USD. \\[1ex]
+ret\_intraday & Monthly compounded intraday return in USD. \\[1ex]
+ret\_overnight & Monthly compounded overnight return in USD. \\[1ex]
+ret\_intraday\_local & Monthly compounded intraday return in local currency ($=\texttt{ret\_intraday}$). \\[1ex]
+ret\_overnight\_local & Monthly compounded overnight return in local currency. \\[1ex]
+ret\_intraday\_lead1m & One-month-ahead compounded intraday return in USD. \\[1ex]
+ret\_overnight\_lead1m & One-month-ahead compounded overnight return in USD. \\[1ex]
+ret\_intraday\_local\_lead1m & One-month-ahead compounded intraday return in local currency. \\[1ex]
+ret\_overnight\_local\_lead1m & One-month-ahead compounded overnight return in local currency. \\[1ex]
+
+\end{longtable}}
+
+%--- daily_rets_by_country ---
+\subsubsection{\texttt{daily\_rets\_by\_country/\{ISO3\}.parquet}}\label{sec:daily-rets-by-country}
+\begin{itemize}
+  \item Country-partitioned subset of the daily stock file.  One parquet file per country (e.g.\ \texttt{USA.parquet}, \texttt{CAN.parquet}).  Rows with null \texttt{excntry} are written to \texttt{null\_country.parquet}.
+  \item Key: \texttt{(id, date)}.  Frequency: daily.
+  \item Contains the same return columns as \texttt{world\_dsf.parquet} minus the metadata and screening columns.
+\end{itemize}
+
+{\scriptsize
+\begin{longtable}{@{\extracolsep{\fill}}|l|m{14.2cm}|@{}}
+\caption{\texttt{daily\_rets\_by\_country/\{ISO3\}.parquet} Data Columns \label{daily-rets-cols}}\\
+\hline
+Name & Description \\
+\hline
+\endfirsthead
+\hline
+Name & Description \\
+\hline
+\endhead
+\hline
+\endfoot
+\hline\hline
+\endlastfoot
+
+id\rule{0pt}{10pt} & Unique security $\times$ source identifier. \\[1ex]
+date & Trading date. \\[1ex]
+me & Market equity in USD. \\[1ex]
+ret & Close-to-close return in USD. \\[1ex]
+ret\_local & Close-to-close return in local currency. \\[1ex]
+ret\_exc & Excess return in USD. \\[1ex]
+ret\_exc\_wins & Winsorized excess return in USD. \\[1ex]
+ret\_intraday & Intraday return in USD. \\[1ex]
+ret\_overnight & Overnight return in USD. \\[1ex]
+ret\_intraday\_local & Intraday return in local currency. \\[1ex]
+ret\_overnight\_local & Overnight return in local currency. \\[1ex]
+
+\end{longtable}}
+
+%----------------------------------------------------------------------
+\subsection{Characteristics (\texttt{characteristics/})}
+
+\begin{itemize}
+  \item \textbf{\texttt{world\_data.parquet}} contains the full characteristics panel for all securities passing the MAIN filter.  Key: \texttt{(id, eom)}.  Frequency: monthly.
+  \item \textbf{\texttt{\{ISO3\}.parquet}} (e.g.\ \texttt{USA.parquet}) contains the same data partitioned by country.  Each file has identical columns.
+  \item Columns comprise the identifier variables (Table~\ref{identification_var}), accounting characteristics (Table~\ref{accounting_char}), and market-based characteristics (Table~\ref{market_char}).  There are over 400 characteristic columns; see those tables for the full list.
+\end{itemize}
+
+%----------------------------------------------------------------------
+\subsection{Accounting Data (\texttt{accounting\_data/})}
+
+\begin{itemize}
+  \item \textbf{\texttt{annual.parquet}} and \textbf{\texttt{quarterly.parquet}} contain standardized Compustat accounting data.  Key: \texttt{(gvkey, datadate)}.  Frequency: annual/quarterly.
+  \item Only rows with a non-null \texttt{source} (either \texttt{NA} for North America or \texttt{GLOBAL} for Compustat Global) are included.  All monetary values are converted to USD.
+  \item Accounting variable definitions are given in Table~\ref{accounting_var}.
+  \item The quarterly file also contains trailing four-quarter (TTM) sums for income/cash-flow items and the annualized quarterly variants of all accounting variables.
+  \item When helper variables are enabled (the default), additional derived columns with an \texttt{\_x} suffix (e.g.\ \texttt{at\_x}, \texttt{sale\_x}, \texttt{be\_x}) are included.  These are constructed in \texttt{add\_helper\_vars()} and used downstream by the characteristic calculations.
+\end{itemize}
+
+%----------------------------------------------------------------------
+\subsection{Other Output (\texttt{other\_output/})}
+
+This folder contains market-level returns, asset-pricing factors, and portfolio-construction cutoffs.  The cutoff files are documented elsewhere: \texttt{nyse\_cutoffs.parquet} (Table~\ref{nyse-cutoffs}), \texttt{return\_cutoffs.parquet} (Table~\ref{return-cutoffs}), and \texttt{return\_cutoffs\_daily.parquet} (Table~\ref{return-cutoffs-daily}).
+
+%--- market_returns ---
+\subsubsection{\texttt{market\_returns.parquet} / \texttt{market\_returns\_daily.parquet}}\label{sec:market-returns}
+\begin{itemize}
+  \item Country-level market returns aggregated from the stock-level data.
+  \item Key: \texttt{(excntry, eom)} (monthly) or \texttt{(excntry, date)} (daily).
+\end{itemize}
+
+{\scriptsize
+\begin{longtable}{@{\extracolsep{\fill}}|l|m{14.2cm}|@{}}
+\caption{\texttt{market\_returns*.parquet} Data Columns \label{market-returns-cols}}\\
+\hline
+Name & Description \\
+\hline
+\endfirsthead
+\hline
+Name & Description \\
+\hline
+\endhead
+\hline
+\endfoot
+\hline\hline
+\endlastfoot
+
+excntry\rule{0pt}{10pt} & ISO country code. \\[1ex]
+eom / date & End-of-month date (monthly file) or trading date (daily file). \\[1ex]
+stocks & Number of stocks in the market portfolio. \\[1ex]
+me\_lag1 & Lagged aggregate market equity in USD. \\[1ex]
+dolvol\_lag1 & Lagged aggregate dollar volume in USD. \\[1ex]
+mkt\_vw\_lcl & Value-weighted market return in local currency. \\[1ex]
+mkt\_ew\_lcl & Equal-weighted market return in local currency. \\[1ex]
+mkt\_vw & Value-weighted market return in USD. \\[1ex]
+mkt\_ew & Equal-weighted market return in USD. \\[1ex]
+mkt\_vw\_exc & Value-weighted excess market return in USD. \\[1ex]
+mkt\_ew\_exc & Equal-weighted excess market return in USD. \\[1ex]
+mkt\_vw\_cap\_exc & Capped-value-weighted excess market return in USD. \\[1ex]
+
+\end{longtable}}
+
+%--- ap_factors ---
+\subsubsection{\texttt{ap\_factors\_monthly.parquet} / \texttt{ap\_factors\_daily.parquet}}\label{sec:ap-factors}
+\begin{itemize}
+  \item Fama--French three-factor and Hou--Xue--Zhang four-factor asset-pricing factors, one row per country--period.
+  \item Key: \texttt{(excntry, eom)} (monthly) or \texttt{(excntry, date)} (daily).
+\end{itemize}
+
+{\scriptsize
+\begin{longtable}{@{\extracolsep{\fill}}|l|m{14.2cm}|@{}}
+\caption{\texttt{ap\_factors*.parquet} Data Columns \label{ap-factors-cols}}\\
+\hline
+Name & Description \\
+\hline
+\endfirsthead
+\hline
+Name & Description \\
+\hline
+\endhead
+\hline
+\endfoot
+\hline\hline
+\endlastfoot
+
+excntry\rule{0pt}{10pt} & ISO country code. \\[1ex]
+eom / date & End-of-month date or trading date. \\[1ex]
+mktrf & Value-weighted excess market return (same as \texttt{mkt\_vw\_exc}). \\[1ex]
+hml & Fama--French HML (high minus low book-to-market). \\[1ex]
+smb\_ff & Fama--French SMB (small minus big). \\[1ex]
+inv & Hou--Xue--Zhang investment factor. \\[1ex]
+roe & Hou--Xue--Zhang profitability (ROE) factor. \\[1ex]
+smb\_hxz & Hou--Xue--Zhang SMB. \\[1ex]
+
+\end{longtable}}
+
+%----------------------------------------------------------------------
+\subsection{Portfolios (\texttt{portfolios/})}\label{sec:portfolio-outputs}
+
+This folder contains factor portfolios, cluster (theme) portfolios, industry returns, and regional aggregates.  Files already documented elsewhere are cross-referenced.
+
+\begin{itemize}
+  \item \textbf{\texttt{pfs.parquet}} / \textbf{\texttt{pfs\_daily.parquet}}: Tercile portfolio returns.  See Table~\ref{pfs-monthly} and Table~\ref{pfs-daily}.
+  \item \textbf{\texttt{cmp.parquet}}: Characteristics-managed portfolio returns.  See Table~\ref{cmp}.
+  \item \textbf{\texttt{industry\_gics.parquet}} / \textbf{\texttt{industry\_gics\_daily.parquet}}: GICS industry returns.  See Table~\ref{industry_gics}.
+  \item \textbf{\texttt{industry\_ff49.parquet}} / \textbf{\texttt{industry\_ff49\_daily.parquet}}: Fama--French 49 industry returns.  See Table~\ref{industry_ff49}.
+  \item O/I factor portfolios (\texttt{*\_\{overnight, intraday, overnight\_local, intraday\_local\}}): see Section~\ref{sec:oi-portfolios}.
+\end{itemize}
+
+%--- hml ---
+\subsubsection{\texttt{hml.parquet} / \texttt{hml\_daily.parquet}}\label{sec:hml}
+\begin{itemize}
+  \item High-minus-low factor spreads: the return of the top-tercile portfolio minus the bottom-tercile portfolio for each characteristic.
+  \item Key: \texttt{(excntry, characteristic, eom)} (monthly) or \texttt{(excntry, characteristic, date)} (daily).
+  \item The monthly file includes the \texttt{signal} column; the daily file omits it.
+\end{itemize}
+
+{\scriptsize
+\begin{longtable}{@{\extracolsep{\fill}}|l|m{14.2cm}|@{}}
+\caption{\texttt{hml*.parquet} Data Columns \label{hml-cols}}\\
+\hline
+Name & Description \\
+\hline
+\endfirsthead
+\hline
+Name & Description \\
+\hline
+\endhead
+\hline
+\endfoot
+\hline\hline
+\endlastfoot
+
+excntry\rule{0pt}{10pt} & ISO country code. \\[1ex]
+characteristic & Characteristic name used for the sort. \\[1ex]
+eom / date & End-of-month date or trading date. \\[1ex]
+signal & Difference in median signal between the top and bottom tercile (monthly only). \\[1ex]
+n\_stocks & Number of stocks in the top and bottom legs combined. \\[1ex]
+n\_stocks\_min & Minimum number of stocks across top and bottom legs. \\[1ex]
+ret\_ew & Equal-weighted HML return. \\[1ex]
+ret\_vw & Value-weighted HML return. \\[1ex]
+ret\_vw\_cap & Capped-value-weighted HML return. \\[1ex]
+
+\end{longtable}}
+
+%--- lms ---
+\subsubsection{\texttt{lms.parquet} / \texttt{lms\_daily.parquet}}\label{sec:lms}
+\begin{itemize}
+  \item Long-minus-short factor returns: \texttt{hml} returns signed by the direction indicated in the original reference.  A factor with $\texttt{direction}=1$ is long the high tercile; $\texttt{direction}=-1$ is long the low tercile.
+  \item Key: \texttt{(excntry, characteristic, eom)} (monthly) or \texttt{(excntry, characteristic, date)} (daily).
+\end{itemize}
+
+{\scriptsize
+\begin{longtable}{@{\extracolsep{\fill}}|l|m{14.2cm}|@{}}
+\caption{\texttt{lms*.parquet} Data Columns \label{lms-cols}}\\
+\hline
+Name & Description \\
+\hline
+\endfirsthead
+\hline
+Name & Description \\
+\hline
+\endhead
+\hline
+\endfoot
+\hline\hline
+\endlastfoot
+
+characteristic\rule{0pt}{10pt} & Characteristic name. \\[1ex]
+direction & Sign convention from the original reference: 1 (long high) or $-1$ (long low). \\[1ex]
+excntry & ISO country code. \\[1ex]
+eom / date & End-of-month date or trading date. \\[1ex]
+signal & Signed difference in median signal (monthly only). \\[1ex]
+n\_stocks & Number of stocks in the long and short legs combined. \\[1ex]
+n\_stocks\_min & Minimum number of stocks across long and short legs. \\[1ex]
+ret\_ew & Equal-weighted LMS return. \\[1ex]
+ret\_vw & Value-weighted LMS return. \\[1ex]
+ret\_vw\_cap & Capped-value-weighted LMS return. \\[1ex]
+
+\end{longtable}}
+
+%--- clusters ---
+\subsubsection{\texttt{clusters.parquet} / \texttt{clusters\_daily.parquet}}\label{sec:clusters}
+\begin{itemize}
+  \item Cluster (theme) portfolio returns.  Each cluster equal-weights the signed LMS returns of the factors assigned to that theme.
+  \item Key: \texttt{(excntry, cluster, eom)} (monthly) or \texttt{(excntry, cluster, date)} (daily).
+  \item Cluster names and factor assignments are shown in Table~\ref{tab:clusters:factors}.
+\end{itemize}
+
+{\scriptsize
+\begin{longtable}{@{\extracolsep{\fill}}|l|m{14.2cm}|@{}}
+\caption{\texttt{clusters*.parquet} Data Columns \label{clusters-cols}}\\
+\hline
+Name & Description \\
+\hline
+\endfirsthead
+\hline
+Name & Description \\
+\hline
+\endhead
+\hline
+\endfoot
+\hline\hline
+\endlastfoot
+
+excntry\rule{0pt}{10pt} & ISO country code. \\[1ex]
+cluster & Cluster (theme) name. \\[1ex]
+eom / date & End-of-month date or trading date. \\[1ex]
+n\_factors & Number of LMS factors averaged in this cluster. \\[1ex]
+ret\_ew & Equal-weighted cluster return (mean of constituent EW factor returns). \\[1ex]
+ret\_vw & Value-weighted cluster return (mean of constituent VW factor returns). \\[1ex]
+ret\_vw\_cap & Capped-value-weighted cluster return. \\[1ex]
+
+\end{longtable}}
+
+%--- regional_factors ---
+\subsubsection{\texttt{regional\_factors/\{region\}.parquet} / \texttt{regional\_factors\_daily/}}\label{sec:regional-factors}
+\begin{itemize}
+  \item Regional factor returns: LMS factor returns aggregated across countries within a region.  One file per region (e.g.\ \texttt{developed.parquet}, \texttt{emerging.parquet}).
+  \item Key: \texttt{(region, characteristic, eom)} (monthly) or \texttt{(region, characteristic, date)} (daily).
+\end{itemize}
+
+{\scriptsize
+\begin{longtable}{@{\extracolsep{\fill}}|l|m{14.2cm}|@{}}
+\caption{\texttt{regional\_factors*.parquet} Data Columns \label{regional-factors-cols}}\\
+\hline
+Name & Description \\
+\hline
+\endfirsthead
+\hline
+Name & Description \\
+\hline
+\endhead
+\hline
+\endfoot
+\hline\hline
+\endlastfoot
+
+region\rule{0pt}{10pt} & MSCI region name. \\[1ex]
+characteristic & Characteristic name. \\[1ex]
+direction & Sign convention from the original reference. \\[1ex]
+eom / date & End-of-month date or trading date. \\[1ex]
+n\_countries & Number of countries contributing to the regional return. \\[1ex]
+ret\_ew & Equal-weighted regional factor return. \\[1ex]
+ret\_vw & Value-weighted regional factor return (weighted by lagged country market equity). \\[1ex]
+ret\_vw\_cap & Capped-value-weighted regional factor return. \\[1ex]
+mkt\_vw\_exc & Value-weighted excess market return for the region. \\[1ex]
+
+\end{longtable}}
+
+%--- regional_clusters ---
+\subsubsection{\texttt{regional\_clusters/\{region\}.parquet} / \texttt{regional\_clusters\_daily/}}\label{sec:regional-clusters}
+\begin{itemize}
+  \item Regional cluster returns: cluster (theme) returns aggregated across countries within a region.  One file per region.
+  \item Key: \texttt{(region, cluster, eom)} (monthly) or \texttt{(region, cluster, date)} (daily).
+\end{itemize}
+
+{\scriptsize
+\begin{longtable}{@{\extracolsep{\fill}}|l|m{14.2cm}|@{}}
+\caption{\texttt{regional\_clusters*.parquet} Data Columns \label{regional-clusters-cols}}\\
+\hline
+Name & Description \\
+\hline
+\endfirsthead
+\hline
+Name & Description \\
+\hline
+\endhead
+\hline
+\endfoot
+\hline\hline
+\endlastfoot
+
+region\rule{0pt}{10pt} & MSCI region name. \\[1ex]
+cluster & Cluster (theme) name. \\[1ex]
+eom / date & End-of-month date or trading date. \\[1ex]
+n\_countries & Number of countries contributing. \\[1ex]
+ret\_ew & Equal-weighted regional cluster return. \\[1ex]
+ret\_vw & Value-weighted regional cluster return. \\[1ex]
+ret\_vw\_cap & Capped-value-weighted regional cluster return. \\[1ex]
+mkt\_vw\_exc & Value-weighted excess market return for the region. \\[1ex]
+
+\end{longtable}}
+
+%--- country_factors ---
+\subsubsection{\texttt{country\_factors/\{ISO3\}.parquet} / \texttt{country\_factors\_daily/}}\label{sec:country-factors}
+\begin{itemize}
+  \item Per-country LMS factor returns, partitioned into one file per country.  Column layout is identical to \texttt{lms.parquet} (Table~\ref{lms-cols}).
+  \item Key: \texttt{(excntry, characteristic, eom)} (monthly) or \texttt{(excntry, characteristic, date)} (daily).
+\end{itemize}
     
 \section{Identifier Variables}
 This section covers all of the variables that give firm/date level identifiers and information. Variables prefixed with \texttt{comp\_} are drawn from Compustat. For CRSP-sourced rows, \texttt{primaryexch} and \texttt{conditionaltype} are native CRSP CIZ security-descriptor fields (not legacy CRSP V1 share or exchange codes).
@@ -767,7 +1204,7 @@ This section covers all of the variables that give firm/date level identifiers a
 		
 		curcd & Currency of \textit{prc\_local} and the currency used to calculated \textit{ret\_local}. \\[1ex]
 		
-		fx & Ratio of \textit{curcd} to USD at the date of observation\\[1ex]
+		fx & Exchange rate (USD per unit of \textit{curcd}) at the date of observation\\[1ex]
 		
 		common & Indicator for common stocks. If CRSP is the source, common is one for ordinary common shares: equity securities with common subtype, no special share type, and issuer type ACOR or CORP (derived from CRSP CIZ fields at construction). If Compustat is the source, common is one if TPCI is '0'  \\[1ex]
 		

@@ -3,6 +3,10 @@ This change log keeps track of changes to the underlying data set. In brackets, 
 
 This repository ports the original SAS pipeline ([ReplicationCrisis](https://github.com/bkelly-lab/ReplicationCrisis)) to Python using Polars. Entries up to and including 05-03-2025 are from the original change log.
 
+## 05-11-2026
+__Changes__:
+- Added `ret_local` column to per-country daily return files (`return_data/daily_rets_by_country/*.parquet`). This local-currency total return was already present in `world_dsf.parquet` and `world_ret_monthly.parquet` but was missing from the country split ([#322](https://github.com/bkelly-lab/jkp-data/pull/322)).
+
 ## 03-11-2026
 __Changes__:
 - Fixed firms losing their current GICS code ([#309](https://github.com/bkelly-lab/jkp-data/pull/309)). `comp_hgics` gives each firm's open-ended GICS interval an end date, but it treated the last row in file order as the firm's latest interval instead of the row with the latest start date. When the two differed, the current interval kept a null end date and was dropped, so the firm had no GICS from the start of that interval onward. 658,866 stock-months (6,446 securities of 6,265 firms, August 1999 to December 2025) now have a GICS code where it was missing, most in the USA (114,793), Japan (94,734), China (60,140), Taiwan (52,791), Korea (37,829) and Canada (32,127). No stock-month that already had a GICS code changes. The GICS industry portfolios (`industry_gics`) gain 3,376 monthly and 69,877 daily rows, and returns of existing industry-months change where the newly classified stocks join.
