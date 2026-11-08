@@ -1910,7 +1910,7 @@ def gen_comp_msf(paths: DataPaths):
 
     Steps:
         1) Ensure secd_data.parquet and secm_data.parquet exist (run gen_secd_data/gen_secm_data).
-        2) Load both; select a common column set and cast types consistently.
+        2) Read both in place; select a common column set and cast types consistently.
         3) UNION the two sources; for each {gvkey,iid,eom} window count n rows.
         4) Keep either the single row (n=1) or, if n=2, prefer source=1 (SECD).
         5) Drop helper columns and deduplicate on {gvkey, iid, eom}, keeping the
@@ -1948,38 +1948,34 @@ def gen_comp_msf(paths: DataPaths):
         "prcstd",
         "source",
     ]
+    cols = ", ".join(
+        f"CAST({c} AS DOUBLE) AS {c}" if c in ("ajexdi", "prc_local") else c for c in common_vars
+    )
+    secd = (paths.interim_dir / "secd_data.parquet").as_posix()
+    secm = (paths.interim_dir / "secm_data.parquet").as_posix()
+    out = (paths.interim_dir / "__comp_msf.parquet").as_posix()
     (paths.interim_dir / "aux_msf.ddb").unlink(missing_ok=True)
-    con = ibis.duckdb.connect(str(paths.interim_dir / "aux_msf.ddb"), threads=os.cpu_count())
-    secd = (
-        con.read_parquet(paths.interim_dir / "secd_data.parquet")
-        .select(common_vars)
-        .cast({"ajexdi": "float", "prc_local": "float"})
-    )
-    secm = (
-        con.read_parquet(paths.interim_dir / "secm_data.parquet")
-        .select(common_vars)
-        .cast({"ajexdi": "float", "prc_local": "float"})
-    )
-    window = ibis.window(group_by=["gvkey", "iid", "eom"], order_by="datadate")
     # Deterministic dedup: keep latest datadate per {gvkey, iid, eom}.
     # Investigation (issue #69) found 0 duplicates in current data, but the
     # original .distinct() was non-deterministic — different runs/engines could
     # pick different rows if duplicates appear in a future data vintage.
-    dedup_window = ibis.window(
-        group_by=["gvkey", "iid", "eom"],
-        order_by=ibis.desc("datadate"),
-    )
-    __comp_msf = (
-        secd.union(secm)
-        .mutate(n=_.gvkey.count().over(window))
-        .filter([(_.n == 1) | ((_.n == 2) & (_.source == 1))])
-        .drop(["n", "source"])
-        .mutate(_rn=ibis.row_number().over(dedup_window))
-        .filter(_._rn == 0)
-        .drop("_rn")
-    )
-    __comp_msf.to_parquet(paths.interim_dir / "__comp_msf.parquet")
-    con.disconnect()
+    with _duckdb_connect(paths, paths.interim_dir / "aux_msf.ddb") as con:
+        con.execute(f"""
+        COPY (
+            WITH counted AS (
+                SELECT *, COUNT(gvkey) OVER (PARTITION BY gvkey, iid, eom) AS n
+                FROM (
+                    SELECT {cols} FROM read_parquet('{secd}')
+                    UNION ALL
+                    SELECT {cols} FROM read_parquet('{secm}')
+                )
+            )
+            SELECT * EXCLUDE (n, source)
+            FROM counted
+            WHERE n = 1 OR (n = 2 AND source = 1)
+            QUALIFY ROW_NUMBER() OVER (PARTITION BY gvkey, iid, eom ORDER BY datadate DESC) = 1
+        ) TO '{out}' (FORMAT PARQUET)
+        """)
 
 
 def comp_exchanges(paths: DataPaths):
