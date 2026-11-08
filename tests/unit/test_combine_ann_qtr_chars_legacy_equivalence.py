@@ -1,10 +1,10 @@
-"""Equivalence tests: the DuckDB combine_ann_qtr_chars must reproduce the legacy Ibis output.
+"""Equivalence tests: the DuckDB combine_ann_qtr_chars must reproduce the legacy output.
 
 combine_ann_qtr_chars changed in two ways. A full outer join replaced the left join on the
 annual panel, so firm-months with only quarterly characteristics are now kept, and one DuckDB
-COPY replaced the Ibis query. These tests run the SQL the legacy Ibis code generated (captured
-from Ibis 12.0 before Ibis was removed) on the same random inputs and assert that every month the
-legacy code wrote is unchanged, and that every added month equals its quarterly input row.
+COPY replaced the old query. These tests run the legacy SQL on the same random inputs and assert
+that every month the legacy code wrote is unchanged, and that every added month equals its
+quarterly input row.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ KEY = ["gvkey", "public_date"]
 
 
 def _legacy_combine(interim_dir: Path, ann_df_path: Path, qtr_df_path: Path) -> None:
-    """Pre-rewrite combine_ann_qtr_chars: the SQL Ibis 12.0 generated for CHAR_VARS and Q_SUFFIX.
+    """Pre-rewrite combine_ann_qtr_chars: the legacy SQL for CHAR_VARS and Q_SUFFIX.
 
     Only the view names became read_parquet() calls and the table names ann/qtr.
     """
@@ -161,7 +161,7 @@ def outputs(tmp_path_factory: pytest.TempPathFactory) -> tuple[pl.DataFrame, ...
 
 @pytest.mark.unit
 class TestCombineAnnQtrCharsEquivalence:
-    """combine_ann_qtr_chars must match the legacy Ibis SQL on every month it wrote."""
+    """combine_ann_qtr_chars must match the legacy SQL on every month it wrote."""
 
     def test_annual_months_match_legacy(self, outputs: tuple[pl.DataFrame, ...]) -> None:
         ann, _, new, legacy = outputs

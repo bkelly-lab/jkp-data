@@ -26,7 +26,7 @@ You will receive:
 Read `CLAUDE.md` to understand the project's coding conventions, especially:
 - `safe_div()` requirement (C1)
 - No new `sum_sas`/`sub_sas` (C2)
-- No new DuckDB/Ibis (C3)
+- No new DuckDB (C3)
 - Namespaced `pl.col()` (C5)
 - Lazy reading with `pl.scan_parquet()` (C6)
 - Type annotations (C7)
