@@ -5,7 +5,7 @@ This repository ports the original SAS pipeline ([ReplicationCrisis](https://git
 
 ## 09-11-2026
 __Changes__:
-- Added the minority-interest items `mibt` and `mibn` to `accounting_data/annual.parquet`, and `mibtq` and `mibnq` to `accounting_data/quarterly.parquet`. Since 2009 Compustat reports the redeemable (`mib`) and non-redeemable (`mibn`) parts of minority interest separately, with `mibt` their total; they are converted to US dollars like `mib`. The new Fama-French factor builder uses them in operating profitability outside the US. Existing columns and values are unchanged.
+- Added the minority-interest items `mibt` and `mibn` to `accounting_data/annual.parquet`, and `mibtq` and `mibnq` to `accounting_data/quarterly.parquet` ([#335](https://github.com/bkelly-lab/jkp-data/pull/335)). Since 2009 Compustat reports the redeemable (`mib`) and non-redeemable (`mibn`) parts of minority interest separately, with `mibt` their total; they are converted to US dollars like `mib`. The new Fama-French factor builder uses them in operating profitability outside the US. Existing columns and values are unchanged.
 
 ## 05-11-2026
 __Changes__:
