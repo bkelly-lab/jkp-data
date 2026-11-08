@@ -17,14 +17,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import polars as pl
 import pytest
 
-from jkp.data.aux_functions import gen_ff_data, mom_rev_cols
+from jkp.data.aux_functions import gen_ff_data
 from jkp.data.paths import DataPaths
 from tests.golden._golden_helpers import (
     cwd,
     regen_or_compare,
+    stage_ff_mom_input,
     stage_synthetic_slices,
 )
 
@@ -40,21 +40,7 @@ OUTPUTS = {
 @pytest.mark.regression
 def test_gen_ff_data_golden(test_paths: DataPaths, request: pytest.FixtureRequest) -> None:
     stage_synthetic_slices(test_paths)
-    interim = test_paths.interim_dir
-    # UMD reads ret_12_1 from market_chars_m. The synthetic world_msf lacks most
-    # inputs of market_chars_monthly, so build just ret_12_1 with its helper.
-    (
-        pl.read_parquet(interim / "world_msf.parquet")
-        .sort(["id", "eom"])
-        .with_columns(
-            ret_x=pl.col("ret"),
-            ri_x=(1 + pl.col("ret").fill_null(0.0)).cum_prod().over("id"),
-            count=pl.col("id").cum_count().over("id"),
-        )
-        .with_columns(mom_rev_cols(1, 12).over("id"))
-        .select("id", "eom", "ret_12_1")
-        .write_parquet(interim / "market_chars_m.parquet")
-    )
+    stage_ff_mom_input(test_paths)
     with cwd(test_paths.interim_dir):
         gen_ff_data(
             test_paths,

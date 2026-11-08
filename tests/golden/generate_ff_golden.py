@@ -19,7 +19,12 @@ from pathlib import Path
 
 from jkp.data.aux_functions import gen_ff_data
 from jkp.data.paths import DataPaths
-from tests.golden._golden_helpers import SYNTHETIC_SLICES_DIR, cwd, stage_synthetic_slices
+from tests.golden._golden_helpers import (
+    SYNTHETIC_SLICES_DIR,
+    cwd,
+    stage_ff_mom_input,
+    stage_synthetic_slices,
+)
 
 GOLDEN_DIR = Path(__file__).parent / "fixtures" / "ff"
 OUTPUTS = (
@@ -36,6 +41,7 @@ def regenerate(out_dir: Path, slices_dir: Path = SYNTHETIC_SLICES_DIR) -> None:
         paths.raw_tables_dir.mkdir(parents=True, exist_ok=True)
         paths.interim_dir.mkdir(parents=True, exist_ok=True)
         stage_synthetic_slices(paths, slices_dir)
+        stage_ff_mom_input(paths)
         with cwd(paths.interim_dir):
             gen_ff_data(
                 paths,

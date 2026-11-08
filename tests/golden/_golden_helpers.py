@@ -37,6 +37,8 @@ from typing import TYPE_CHECKING
 import numpy as np
 import polars as pl
 
+from jkp.data.aux_functions import mom_rev_cols
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator
 
@@ -88,6 +90,26 @@ def stage_synthetic_slices(paths: DataPaths, src_dir: Path = SYNTHETIC_SLICES_DI
     _link(src_dir / "world_data.parquet", paths.interim_dir / "world_data_prelim.parquet")
     for subdir, name in INTERIM_SUBDIR_FILES:
         _link(src_dir / name, paths.interim_dir / subdir / name)
+
+
+def stage_ff_mom_input(paths: DataPaths) -> None:
+    """Write interim market_chars_m.parquet with only ret_12_1, the UMD input.
+
+    The synthetic world_msf lacks most inputs of market_chars_monthly, so only
+    ret_12_1 is built, with the pipeline's own mom_rev_cols.
+    """
+    (
+        pl.read_parquet(paths.interim_dir / "world_msf.parquet")
+        .sort(["id", "eom"])
+        .with_columns(
+            ret_x=pl.col("ret"),
+            ri_x=(1 + pl.col("ret").fill_null(0.0)).cum_prod().over("id"),
+            count=pl.col("id").cum_count().over("id"),
+        )
+        .with_columns(mom_rev_cols(1, 12).over("id"))
+        .select("id", "eom", "ret_12_1")
+        .write_parquet(paths.interim_dir / "market_chars_m.parquet")
+    )
 
 
 def _link(src: Path, dst: Path) -> None:
