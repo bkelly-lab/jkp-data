@@ -36,6 +36,7 @@ from jkp.data.aux_functions import (
     _mp_add_leg_score,
     _mp_anomaly_pct_panel,
     _mp_build_comp_us_inputs,
+    _mp_daily_vw_returns,
     _mp_diff_legs,
     _mp_distress_book_equity_mb,
     _mp_distress_bounds,
@@ -57,6 +58,8 @@ from jkp.data.aux_functions import (
     _mp_truncate_thin,
     _mp_vw_monthly,
     _mp_world_distress_lagged_inputs,
+    _mp_world_load_world_data,
+    _mp_world_load_world_dsf,
     _mp_world_monthly_lagged_me_panel,
     _mp_world_percentile_rank_anomalies,
 )
@@ -68,6 +71,7 @@ from jkp.data.config import (
     MP_MIN_STKS_BP_WORLD,
     MP_PERF_IDX,
     MP_POSITIVE_ANOMALIES,
+    MP_WORLD_JKP_CHAR,
 )
 
 # ---------------------------------------------------------------------------
@@ -2521,3 +2525,81 @@ class TestMpWorldBuildPortfoliosDaily:
 
     def test_skipped(self):
         pytest.skip("covered by golden test: requires world_dsf.parquet on filesystem")
+
+
+def _main_sample(n: int) -> dict[str, list[int]]:
+    return {c: [1] * n for c in ("common", "primary_sec", "obs_main", "exch_main")}
+
+
+class TestMpWorldGapReturns:
+    """ROW returns spanning a gap are excluded, as in ff_load_world_panel:
+    monthly ret_lag_dif != 1, daily ret_lag_dif > 5 days."""
+
+    def test_monthly_gap_return_is_nulled_row_kept(self, tmp_path):
+        n = 3
+        chars = ["ret_12_1", "eqnpo_12m", "chcsho_12m", *MP_WORLD_JKP_CHAR.values()]
+        pl.DataFrame(
+            {
+                "id": [1, 2, 3],
+                "permno": [None] * n,
+                "gvkey": ["001"] * n,
+                "excntry": ["GBR"] * n,
+                "eom": [date(2001, 1, 31)] * n,
+                "me": [10.0] * n,
+                "prc": [5.0] * n,
+                "ret": [0.01, 0.02, 0.03],
+                "ret_lag_dif": [1, 2, None],
+                "adjfct": [1.0] * n,
+                "shares": [2.0] * n,
+                "size_grp": ["small"] * n,
+                **_main_sample(n),
+                **{c: [0.1] * n for c in chars},
+            }
+        ).write_parquet(tmp_path / "world_data_prelim.parquet")
+        out = _mp_world_load_world_data(tmp_path).sort("id")
+        assert out["ret"].to_list() == [0.01, None, None]
+        assert "ret_lag_dif" not in out.columns
+
+    def test_daily_loader_drops_returns_over_five_days(self, tmp_path):
+        n = 3
+        pl.DataFrame(
+            {
+                "id": [1, 2, 3],
+                "excntry": ["GBR"] * n,
+                "date": [date(2001, 1, 8)] * n,
+                "eom": [date(2001, 1, 31)] * n,
+                "ret": [0.01, 0.02, 0.03],
+                "ret_lag_dif": [3, 5, 6],
+                **_main_sample(n),
+            }
+        ).write_parquet(tmp_path / "world_dsf.parquet")
+        assert _mp_world_load_world_dsf(tmp_path)["id"].sort().to_list() == [1, 2]
+
+    def test_daily_vw_excludes_gap_return(self, tmp_path):
+        import duckdb
+
+        eom = date(2001, 1, 31)
+        pl.DataFrame(
+            {
+                "id": [1, 2],
+                "eom": [eom, eom],
+                "date": [date(2001, 1, 8)] * 2,
+                "ret": [0.01, 0.50],
+                "ret_lag_dif": [1, 6],
+            }
+        ).write_parquet(tmp_path / "world_dsf.parquet")
+        panel = pl.DataFrame(
+            {"id": [1, 2], "excntry": ["GBR"] * 2, "eom": [eom, eom], "mktcap": [10.0, 10.0]}
+        )
+        out = _mp_daily_vw_returns(
+            panel,
+            ["excntry"],
+            duckdb.connect(),
+            daily_path=(tmp_path / "world_dsf.parquet").as_posix(),
+            id_col="id",
+            table="panel_w",
+            qualify_group=True,
+            max_gap_days=5,
+        )
+        assert out["vwret"].to_list() == [0.01]
+        assert out["_freq_"].to_list() == [1]

@@ -9173,23 +9173,27 @@ def _mp_daily_vw_returns(
     id_col: str,
     table: str,
     qualify_group: bool,
+    max_gap_days: int | None = None,
 ) -> pl.DataFrame:
     """Daily VW portfolio returns. Joins the monthly bucket panel onto the
     daily return file per (id, eom) via DuckDB read_parquet; the float
     reduction runs in Polars after a total-order sort — DuckDB's multi-
     threaded SUM accumulates in morsel order and is not run-to-run stable.
-    Returns one row per (date, *group_cols) with vwret and _freq_."""
+    max_gap_days: drop returns with ret_lag_dif above it (world_dsf only; CRSP
+    daily has no such column). Returns one row per (date, *group_cols) with
+    vwret and _freq_."""
     mp_con.register(table, panel)
     group_sql = ", ".join(group_cols)
     # Qualify with a.<col> when group cols (e.g. excntry) exist on both join
     # sides, else DuckDB raises a BinderError.
     sel_sql = ", ".join(f"a.{c}" for c in group_cols) if qualify_group else group_sql
+    gap_sql = "" if max_gap_days is None else f" AND b.ret_lag_dif <= {max_gap_days}"
     joined = mp_con.execute(f"""
         SELECT b.date AS date, a.mktcap, b.ret AS ret_d, {sel_sql}, a.{id_col} AS _sid
         FROM {table} a
         JOIN read_parquet('{daily_path}') b
           ON a.{id_col} = b.{id_col} AND a.eom = b.eom
-        WHERE b.ret IS NOT NULL AND a.mktcap IS NOT NULL
+        WHERE b.ret IS NOT NULL AND a.mktcap IS NOT NULL{gap_sql}
     """).pl()
     return (
         joined.sort(["date", *group_cols, "_sid"])
@@ -9391,7 +9395,8 @@ def _mp_world_daily_factor_returns(
 ) -> pl.DataFrame:
     """World daily UMO (mgmt/perf) and SMB factor returns per (excntry, date),
     VW against world_dsf on id. Same construction as the US version with
-    per-country grouping."""
+    per-country grouping; returns spanning more than 5 days are dropped, as in
+    ff_load_world_panel."""
     daily_path = (interim_dir / "world_dsf.parquet").as_posix()
     leg_umo = {}
     for name, panel in legs.items():
@@ -9407,6 +9412,7 @@ def _mp_world_daily_factor_returns(
                 id_col="id",
                 table="panel_w",
                 qualify_group=True,
+                max_gap_days=5,
             )
             .filter(col("_freq_") >= min_obs)
             .pipe(_mp_filter_full_buckets, 6, by=["excntry", "date"])
@@ -9426,6 +9432,7 @@ def _mp_world_daily_factor_returns(
             id_col="id",
             table="panel_w",
             qualify_group=True,
+            max_gap_days=5,
         )
         .filter(col("_freq_") >= min_obs)
         .pipe(_mp_filter_full_buckets, 2, by=["excntry", "date"])
@@ -9457,7 +9464,8 @@ def _mp_world_load_world_data(
 
     Reads the prelim file (not final world_data.parquet) because gen_mispricing_data
     runs before merge_qmj_to_world_data in run_pipeline; the 17 columns selected here
-    all live in the prelim and are not modified by the downstream merges."""
+    all live in the prelim and are not modified by the downstream merges.
+    Returns spanning a gap (ret_lag_dif != 1) are nulled, as in ff_load_world_panel."""
     p = interim_dir / "world_data_prelim.parquet"
     cols_keep = [
         "id",
@@ -9491,7 +9499,8 @@ def _mp_world_load_world_data(
         )
     else:
         scan = scan.join(ids.lazy(), on="id", how="semi")
-    df = scan.select(cols_keep).collect()
+    gap_ret = pl.when(col("ret_lag_dif") == 1).then(col("ret")).otherwise(None)
+    df = scan.with_columns(ret=gap_ret).select(cols_keep).collect()
     floats = ["me", "prc", "ret", "adjfct", "shares", "ret_12_1", "eqnpo_12m", "chcsho_12m"] + list(
         MP_WORLD_JKP_CHAR.values()
     )
@@ -9517,10 +9526,14 @@ def _mp_world_load_world_dsf(
     interim_dir: Path, start_dt: date = date(1963, 1, 1), ids: pl.DataFrame | None = None
 ) -> pl.DataFrame:
     """Daily world stock panel filtered to common/exch_main. For DISTRESS SIGMA.
-    ids: every ex-US day of these securities instead (the outside pass)."""
+    ids: every ex-US day of these securities instead (the outside pass).
+    Returns spanning more than 5 days are dropped, as in ff_load_world_panel."""
     p = interim_dir / "world_dsf.parquet"
     scan = pl.scan_parquet(p).filter(
-        (col("excntry") != "USA") & (col("date") >= start_dt) & col("ret").is_not_null()
+        (col("excntry") != "USA")
+        & (col("date") >= start_dt)
+        & col("ret").is_not_null()
+        & (col("ret_lag_dif") <= 5)
     )
     if ids is None:
         scan = scan.filter(
@@ -16669,7 +16682,8 @@ def _dhs_load_row_panel(interim_dir: Path, beg: int, end: int) -> pl.DataFrame:
     record per (id, eom) with the HXZ tie-break; primaryexch null
     (ROW has no NYSE; the FIN breakpoint pool uses size_grp). cyear maps
     July(t)..June(t+1) to t in [beg, end]. Dtypes match the US panel's so
-    pl.concat(vertical) leaves US bytes intact."""
+    pl.concat(vertical) leaves US bytes intact. Returns spanning a gap
+    (ret_lag_dif != 1) are nulled, as in ff_load_world_panel."""
     sic = (
         pl.scan_parquet(interim_dir / "world_msf.parquet")
         .select("id", "eom", "naics", pl.col("sic").cast(pl.Int64).alias("siccd"))
@@ -16710,7 +16724,11 @@ def _dhs_load_row_panel(interim_dir: Path, beg: int, end: int) -> pl.DataFrame:
             .otherwise(None)
             .cast(pl.Int32)
             .alias("cyear"),
-            pl.col("ret").cast(pl.Float64),
+            pl.when(pl.col("ret_lag_dif") == 1)
+            .then(pl.col("ret"))
+            .otherwise(None)
+            .cast(pl.Float64)
+            .alias("ret"),
             pl.col("me").cast(pl.Float64).alias("CRSPSIZE"),
             "lagCRSPSIZE",
             pl.lit(None, dtype=pl.String).alias("primaryexch"),

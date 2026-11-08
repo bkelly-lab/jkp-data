@@ -25,6 +25,7 @@ from jkp.data.aux_functions import (
     _dhs_ibes_announcements,
     _dhs_ibes_gvkey_link,
     _dhs_load_row_daily,
+    _dhs_load_row_panel,
     _dhs_non_financial,
     _dhs_row_chars,
 )
@@ -404,6 +405,35 @@ class TestDhsLoadRowDaily:
         panel_rows, abr = _align_abr_frames(1, gate=6)
         out = _dhs_align_abr(panel_rows.with_columns(siccd=pl.lit(6020)), abr)
         assert out.height > 0
+
+
+class TestDhsLoadRowPanel:
+    """ROW monthly panel: a return spanning a gap (ret_lag_dif != 1) is nulled,
+    as in ff_load_world_panel; the row stays for ME and breakpoints."""
+
+    def test_gap_return_is_nulled_row_kept(self, tmp_path):
+        eoms = [date(2001, 1, 31), date(2001, 2, 28), date(2001, 3, 31)]
+        pl.DataFrame(
+            {"id": [1] * 3, "eom": eoms, "naics": [None] * 3, "sic": [2000] * 3}
+        ).write_parquet(tmp_path / "world_msf.parquet")
+        pl.DataFrame(
+            {
+                "id": [1] * 3,
+                "excntry": ["GBR"] * 3,
+                "eom": eoms,
+                "common": [1] * 3,
+                "primary_sec": [1] * 3,
+                "obs_main": [1] * 3,
+                "exch_main": [1] * 3,
+                "me": [10.0, 11.0, 12.0],
+                "ret": [0.01, 0.02, 0.03],
+                "ret_lag_dif": [1, 3, 1],
+                "size_grp": ["small"] * 3,
+            }
+        ).write_parquet(tmp_path / "world_data_prelim.parquet")
+        out = _dhs_load_row_panel(tmp_path, 2000, 2001).sort("eom")
+        assert out["ret"].to_list() == [0.01, None, 0.03]
+        assert out["CRSPSIZE"].to_list() == [10.0, 11.0, 12.0]
 
 
 class TestDhsCharsUnscreened:

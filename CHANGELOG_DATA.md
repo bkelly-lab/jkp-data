@@ -3,6 +3,13 @@ This change log keeps track of changes to the underlying data set. In brackets, 
 
 This repository ports the original SAS pipeline ([ReplicationCrisis](https://github.com/bkelly-lab/ReplicationCrisis)) to Python using Polars. Entries up to and including 05-03-2025 are from the original change log.
 
+## 08-11-2026
+__Changes__:
+- ROW Stambaugh-Yuan mispricing and DHS factors now exclude returns that span a gap in a stock's return series, as the FF and HXZ factors already do: monthly returns with `ret_lag_dif` ≠ 1 and daily returns with `ret_lag_dif` > 5 days. Before, the mispricing factors (monthly, daily, and the daily returns behind DISTRESS volatility) and the DHS monthly factors treated a return accumulated over a trading halt as a one-period return. DHS daily already applied the rule.
+
+__Impact__:
+- To be measured on the next factors rerun.
+
 ## 20-10-2026
 __Changes__:
 - US `mktrf` in `ap_factors_monthly` and `ap_factors_daily` now follows Fama-French: CRSP common stocks (share codes 10/11), US-incorporated, listed on NYSE/AMEX/NASDAQ, weighted by the previous month's (day's) market equity of each permno. Weights are per permno, so every share class counts. The risk-free rate is unchanged: the CRSP 30-day T-bill, with the Fama-French `rf` as fallback (divided by 21 for daily). Non-US `mktrf` (`mkt_vw_exc`) and `market_returns*` are unchanged. This supersedes the 05-10-2026 statement that `mktrf` is unchanged.

@@ -957,6 +957,7 @@ def gen_world_data(
             "me",
             "prc",
             "ret",
+            "ret_lag_dif",
             "adjfct",
             "shares",
             "common",
