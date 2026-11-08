@@ -3,6 +3,10 @@ This change log keeps track of changes to the underlying data set. In brackets, 
 
 This repository ports the original SAS pipeline ([ReplicationCrisis](https://github.com/bkelly-lab/ReplicationCrisis)) to Python using Polars. Entries up to and including 05-03-2025 are from the original change log.
 
+## 08-11-2026
+__Changes__:
+- Added the minority-interest items `mibt` and `mibn` to `accounting_data/annual.parquet`, and `mibtq` and `mibnq` to `accounting_data/quarterly.parquet`. Since 2009 Compustat reports the redeemable (`mib`) and non-redeemable (`mibn`) parts of minority interest separately, with `mibt` their total; they are converted to US dollars like `mib`. The new Fama-French factor builder uses them in operating profitability outside the US. Existing columns and values are unchanged.
+
 ## 05-11-2026
 __Changes__:
 - Added `ret_local` column to per-country daily return files (`return_data/daily_rets_by_country/*.parquet`). This local-currency total return was already present in `world_dsf.parquet` and `world_ret_monthly.parquet` but was missing from the country split ([#322](https://github.com/bkelly-lab/jkp-data/pull/322)).
