@@ -580,10 +580,12 @@ def gen_crsp_sf(paths: DataPaths, freq):
                 ON s.permno = n.permno
                 AND s.{p}caldt >= n.secinfostartdt
                 AND s.{p}caldt <= n.secinfoenddt
+            -- a null link date is open-ended; COALESCE (not OR ... IS NULL) keeps every
+            -- condition a comparison, so DuckDB hash-joins instead of a nested loop
             LEFT JOIN read_parquet('{lnkhist}') AS l
                 ON s.permno = l.lpermno
-                AND (s.{p}caldt >= l.linkdt OR l.linkdt IS NULL)
-                AND (s.{p}caldt <= l.linkenddt OR l.linkenddt IS NULL)
+                AND s.{p}caldt >= COALESCE(l.linkdt, DATE '-infinity')
+                AND s.{p}caldt <= COALESCE(l.linkenddt, DATE 'infinity')
                 AND l.linktype IN ('LC', 'LU', 'LS')
         ) TO '{out}' (FORMAT PARQUET)
         """)
