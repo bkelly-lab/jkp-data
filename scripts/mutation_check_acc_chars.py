@@ -3,8 +3,8 @@ Mutation check of the accounting-stage tests (issue #303, step 6). Not part of C
 
 Each mutation replaces one snippet of src/jkp/data/aux_functions.py with a plausible bug. For each
 one the script copies src/, tests/ and pyproject.toml to a temporary folder, applies the mutation
-there and runs the accounting-stage tests on the copy. A mutation is killed when a test fails; a
-survivor is a bug no test notices. The working tree is never changed. The unmutated copy runs
+there and runs the accounting-stage tests on the copy. A mutation is killed when a test fails,
+crashed when only an exception stops a test, and survived when no test notices it. The working tree is never changed. The unmutated copy runs
 first and must pass.
 
 Run on Yale from the repository root (every mutation runs the stage several times):
@@ -33,8 +33,6 @@ TESTS = [
     "tests/golden/test_acc_chars_golden.py",
     "tests/integration/test_accounting_stage_pipeline.py",
 ]
-# pytest's exit code when tests ran and at least one failed
-TESTS_FAILED = 1
 
 # (name, snippet of TARGET, mutated snippet)
 MUTATIONS: list[tuple[str, str, str]] = [
@@ -288,14 +286,36 @@ def _copy(root: Path) -> dict[str, str]:
     return {**os.environ, "PYTHONPATH": os.pathsep.join([str(root / "src"), str(root)])}
 
 
-def _pytest(root: Path, env: dict[str, str], workers: int) -> int:
+def _pytest(root: Path, env: dict[str, str], workers: int) -> tuple[int, str]:
+    """pytest's exit code and its last output line, e.g. '1 failed, 144 passed in 28s'."""
     tests = sorted(str(p.relative_to(root)) for pattern in TESTS for p in root.glob(pattern))
     args = ["-x", "-q", "-p", "no:cacheprovider", "--no-cov", "-n", str(workers), *tests]
     command = [sys.executable, "-m", "pytest", *args]
-    return subprocess.run(command, cwd=root, env=env, capture_output=True).returncode
+    result = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True)
+    lines = result.stdout.strip().splitlines()
+    return result.returncode, lines[-1].strip("= ") if lines else ""
 
 
-def run(old: str, new: str, workers: int) -> tuple[int, float]:
+def _status(code: int, summary: str) -> str:
+    """
+    Description:
+        Classify one run. With xdist, -x exits with code 2 (interrupted) after the first
+        failure, so the summary line, not the exit code, tells a failure from other stops.
+    Steps:
+        1) Exit 0: every test passed, so the mutation survived.
+        2) A failed test: killed. Only an error (an exception in a fixture, such as the stage
+           raising): crashed. Anything else: the exit code.
+    Output:
+        "SURVIVED", "killed", "crashed" or "exit <code>".
+    """
+    if code == 0:
+        return "SURVIVED"
+    if " failed" in f" {summary}":
+        return "killed"
+    return "crashed" if " error" in f" {summary}" else f"exit {code}"
+
+
+def run(old: str, new: str, workers: int) -> tuple[int, str, float]:
     """
     Description:
         Run the accounting tests on a copy of the code with old replaced by new.
@@ -304,7 +324,7 @@ def run(old: str, new: str, workers: int) -> tuple[int, float]:
         2) Check that Python imports aux_functions from the copy.
         3) Run TESTS with pytest, stopping at the first failure.
     Output:
-        (pytest's exit code, seconds taken).
+        (pytest's exit code, its summary line, seconds taken).
     """
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -315,8 +335,8 @@ def run(old: str, new: str, workers: int) -> tuple[int, float]:
         imported = subprocess.run(probe, env=env, capture_output=True, text=True, check=True)
         assert Path(imported.stdout.strip()) == target, imported.stdout
         start = time.monotonic()
-        code = _pytest(root, env, workers)
-        return code, time.monotonic() - start
+        code, summary = _pytest(root, env, workers)
+        return code, summary, time.monotonic() - start
 
 
 def check_snippets() -> list[str]:
@@ -336,18 +356,18 @@ def main() -> None:
     if args.check:
         print(f"{len(MUTATIONS)} snippets each occur once")
         return
-    code, seconds = run("", "", args.workers)
-    print(f"baseline  exit {code}  {seconds:.0f}s", flush=True)
+    code, summary, seconds = run("", "", args.workers)
+    print(f"baseline  {seconds:4.0f}s  {summary}", flush=True)
     if code != 0:
         sys.exit("the unmutated tests fail")
     survivors = []
     for name, old, new in MUTATIONS:
         if args.k not in name:
             continue
-        code, seconds = run(old, new, args.workers)
-        status = "killed" if code == TESTS_FAILED else "SURVIVED" if code == 0 else f"exit {code}"
-        print(f"{status:8}  {seconds:4.0f}s  {name}", flush=True)
-        if code != TESTS_FAILED:
+        code, summary, seconds = run(old, new, args.workers)
+        status = _status(code, summary)
+        print(f"{status:8}  {seconds:4.0f}s  {name}  [{summary}]", flush=True)
+        if status not in ("killed", "crashed"):
             survivors.append(name)
     print(f"{len(survivors)} not killed: {survivors}")
     sys.exit(1 if survivors else 0)
