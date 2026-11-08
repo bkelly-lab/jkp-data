@@ -1768,72 +1768,63 @@ def gen_secd_data(paths: DataPaths):
         resolving multiple daily rows and computing monthly highs/lows/divs/volume.
 
     Steps:
-        1) Read __comp_dsf.parquet into DuckDB.
-        2) Define window over {gvkey, iid, eom}.
-        3) Compute monthly aggregates at adjusted units:
+        1) Read __comp_dsf.parquet in place with DuckDB.
+        2) Compute monthly aggregates per {gvkey, iid, eom} over all daily rows, at adjusted units:
         - prc_highm/prc_lowm: month max/min using pre-adjusted local price with ajexdi.
         - div_*m: sum of monthly dividends (by type) adjusted.
         - cshtrm: sum of adjusted share turnover; dolvolm: sum of USD dollar volume.
+        3) Keep valid rows (local price/currency present, prcstd in {3,4,10}) on the last valid
+        datadate in the month (ties kept); scale the aggregates by each row's ajexdi.
         - source=1 to mark SECD pipeline.
-        4) Keep valid rows (local price/currency present, prcstd in {3,4,10});
-        pick the last datadate in the month.
-        5) Write to secd_data.parquet.
+        4) Write to secd_data.parquet, sorted by gvkey, iid, eom.
 
     Output:
         Parquet: secd_data.parquet (monthly aggregates from daily Compustat pipeline).
     """
+    dsf = (paths.interim_dir / "__comp_dsf.parquet").as_posix()
+    out = (paths.interim_dir / "secd_data.parquet").as_posix()
+    valid = "prc_local IS NOT NULL AND curcdd IS NOT NULL AND prcstd IN (3, 4, 10)"
     (paths.interim_dir / "aux_msf.ddb").unlink(missing_ok=True)
-    con = ibis.duckdb.connect(str(paths.interim_dir / "aux_msf.ddb"), threads=os.cpu_count())
-    table = con.read_parquet(paths.interim_dir / "__comp_dsf.parquet")
-    window = ibis.window(group_by=["gvkey", "iid", "eom"])
-    new_table = (
-        table.mutate(
-            prc_highm=ibis.greatest(
-                (_.prc / _.ajexdi).max().over(window),
-                (_.prc_high / _.ajexdi).max().over(window),
+    with _duckdb_connect(paths, paths.interim_dir / "aux_msf.ddb") as con:
+        con.execute(f"""
+        COPY (
+            WITH monthly AS (
+                SELECT
+                    gvkey,
+                    iid,
+                    eom,
+                    GREATEST(MAX(prc / ajexdi), MAX(prc_high / ajexdi)) AS prc_high_adj,
+                    LEAST(MIN(prc / ajexdi), MIN(prc_low / ajexdi)) AS prc_low_adj,
+                    SUM(div_tot / ajexdi) AS div_tot_adj,
+                    SUM(div_cash / ajexdi) AS div_cash_adj,
+                    SUM(div_spc / ajexdi) AS div_spc_adj,
+                    SUM(cshtrd / ajexdi) AS cshtr_adj,
+                    SUM(dolvol) AS dolvol,
+                    MAX(datadate) FILTER (WHERE {valid}) AS max_date
+                FROM read_parquet('{dsf}')
+                GROUP BY gvkey, iid, eom
             )
-            * _.ajexdi,
-            prc_lowm=ibis.least(
-                (_.prc / _.ajexdi).min().over(window),
-                (_.prc_low / _.ajexdi).min().over(window),
-            )
-            * _.ajexdi,
-            div_totm=(_.div_tot / _.ajexdi).sum().over(window) * _.ajexdi,
-            div_cashm=(_.div_cash / _.ajexdi).sum().over(window) * _.ajexdi,
-            div_spcm=(_.div_spc / _.ajexdi).sum().over(window) * _.ajexdi,
-            cshtrm=(_.cshtrd / _.ajexdi).sum().over(window) * _.ajexdi,
-            dolvolm=_.dolvol.sum().over(window),
-            source=1,
-        )
-        .filter((_.prc_local.notnull()) & (_.curcdd.notnull()) & (_.prcstd.isin([3, 4, 10])))
-        .mutate(max_date=_.datadate.max().over(window))
-        .filter(_.max_date == _.datadate)
-        .drop(
-            [
-                "cshtrd",
-                "div_tot",
-                "div_cash",
-                "div_spc",
-                "dolvol",
-                "prc_high",
-                "prc_low",
-                "max_date",
-            ]
-        )
-        .rename(
-            {
-                "div_tot": "div_totm",
-                "div_cash": "div_cashm",
-                "div_spc": "div_spcm",
-                "dolvol": "dolvolm",
-                "prc_high": "prc_highm",
-                "prc_low": "prc_lowm",
-            }
-        )
-        .order_by(["gvkey", "iid", "eom"])
-    )
-    new_table.to_parquet(paths.interim_dir / "secd_data.parquet")
-    con.disconnect()
+            SELECT
+                d.* EXCLUDE (cshtrd, div_tot, div_cash, div_spc, dolvol, prc_high, prc_low),
+                m.prc_high_adj * d.ajexdi AS prc_high,
+                m.prc_low_adj * d.ajexdi AS prc_low,
+                m.div_tot_adj * d.ajexdi AS div_tot,
+                m.div_cash_adj * d.ajexdi AS div_cash,
+                m.div_spc_adj * d.ajexdi AS div_spc,
+                m.cshtr_adj * d.ajexdi AS cshtrm,
+                m.dolvol,
+                1 AS source
+            FROM read_parquet('{dsf}') AS d
+            -- IS NOT DISTINCT FROM: NULL keys form one group, as in GROUP BY
+            JOIN monthly AS m
+                ON d.gvkey IS NOT DISTINCT FROM m.gvkey
+                AND d.iid IS NOT DISTINCT FROM m.iid
+                AND d.eom IS NOT DISTINCT FROM m.eom
+                AND d.datadate = m.max_date
+            WHERE {valid}
+            ORDER BY d.gvkey, d.iid, d.eom
+        ) TO '{out}' (FORMAT PARQUET)
+        """)
 
 
 def gen_secm_data(paths: DataPaths):
