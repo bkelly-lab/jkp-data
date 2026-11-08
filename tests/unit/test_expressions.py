@@ -491,6 +491,19 @@ class TestSafeDivEdgeCases:
             f"Expected 5.0, got {result['my_custom_ratio'][0]}"
         )
 
+    def test_safe_div_accepts_expressions_and_literals(self):
+        """Expression and literal arguments give the same result as column names."""
+        df = pl.DataFrame({"a": [10.0, 3.0, 4.0], "b": [2.0, 3.0, 2.0]})
+        result = df.select(
+            by_name=safe_div("a", "b", "x", mode=1),
+            by_expr=safe_div(pl.col("a") - pl.col("b"), pl.col("b") - 3.0, "y", mode=1),
+            by_literal=safe_div("a", 2, "z", mode=1),
+        )
+
+        assert result["by_name"].to_list() == [5.0, 1.0, 2.0]
+        assert result["by_expr"].to_list() == [-8.0, None, -2.0]
+        assert result["by_literal"].to_list() == [5.0, 1.5, 2.0]
+
 
 class TestExpressionChaining:
     """Tests for chaining expression utilities."""
