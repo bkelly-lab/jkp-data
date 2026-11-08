@@ -20,11 +20,9 @@ from pathlib import Path
 from typing import TypeVar
 
 import duckdb
-import ibis
 import polars as pl
 import polars_ds as pds
 import polars_ols  # noqa: F401 - required for least_squares method on polars expressions
-from ibis import _
 from polars import col
 
 from .compustat_correction import (
@@ -7064,84 +7062,68 @@ def firm_age(paths: DataPaths, data_path):
         Compute firm age in months using earliest of CRSP, Compustat accounting, or Compustat returns dates.
 
     Steps:
-        1) Load identifiers/dates from inputs; get earliest dates per gvkey/permco.
+        1) Read identifiers/dates in place with DuckDB; get earliest dates per gvkey/permco.
         2) Join earliest sources to each (id, eom); also get first observed eom per id.
         3) Age = months between eom and min(first_obs, first_alt). Write result.
 
     Output:
         'firm_age.parquet' with [id, eom, age].
     """
-    con = ibis.duckdb.connect(threads=os.cpu_count())
-    data = con.read_parquet(data_path).select(["gvkey", "permco", "id", "eom"])
-    comp_secm = con.read_parquet(paths.raw_tables_dir / "comp_secm.parquet").select(
-        ["gvkey", "datadate"]
-    )
-    comp_gsecm = (
-        con.read_parquet(paths.raw_tables_dir / "comp_g_secd.parquet")
-        .filter(_.monthend == 1)
-        .select(["gvkey", "datadate"])
-    )
-    comp_ret_age = (
-        comp_secm.union(comp_gsecm)
-        .group_by("gvkey")
-        .agg(comp_ret_first=_.datadate.min())
-        .mutate(
-            comp_ret_first=(
-                (_.comp_ret_first - ibis.interval(years=1)).year().cast("string") + "-12-31"
-            ).cast("date")
-        )
-    )
-    comp_funda = con.read_parquet(paths.raw_tables_dir / "comp_funda.parquet").select(
-        ["gvkey", "datadate"]
-    )
-    comp_gfunda = con.read_parquet(paths.raw_tables_dir / "comp_g_funda.parquet").select(
-        ["gvkey", "datadate"]
-    )
-    comp_acc_age = (
-        comp_funda.union(comp_gfunda)
-        .group_by("gvkey")
-        .agg(comp_acc_first=_.datadate.min())
-        .mutate(
-            comp_acc_first=(
-                (_.comp_acc_first - ibis.interval(years=1)).year().cast("string") + "-12-31"
-            ).cast("date")
-        )
-    )
-    crsp_age = (
-        con.read_parquet(paths.interim_dir / "raw_data_dfs" / "crsp_msf_v2_aug.parquet")
-        .group_by("permco")
-        .agg(crsp_first=_.mthcaldt.min())
-    )
-    con.create_table("data", data.to_polars())
-    con.create_table("comp_ret_age", comp_ret_age.to_polars())
-    con.create_table("comp_acc_age", comp_acc_age.to_polars())
-    con.create_table("crsp_age", crsp_age.to_polars())
-    sql_query = """
-                    CREATE TABLE age1 AS
-                    SELECT
-                        a.id,
-                        a.eom,
-                        LEAST(b.crsp_first, c.comp_acc_first, d.comp_ret_first) AS first_obs
-                    FROM data AS a
-                    LEFT JOIN crsp_age AS b ON a.permco = b.permco
-                    LEFT JOIN comp_acc_age AS c ON a.gvkey = c.gvkey
-                    LEFT JOIN comp_ret_age AS d ON a.gvkey = d.gvkey;
-
-                    CREATE TABLE age2 AS
-                    SELECT  *, MIN(eom) OVER (PARTITION BY id) AS first_alt
-                    FROM age1;
-
-                    CREATE TABLE age3 AS
-                    SELECT
-                        id, eom,
-                        (DATE_PART('year', eom) - DATE_PART('year', LEAST(first_obs, first_alt))) * 12 +
-                        (DATE_PART('month', eom) - DATE_PART('month', LEAST(first_obs, first_alt))) AS age
-                    FROM age2
-                    ORDER BY id, eom;
-    """
-    con.raw_sql(sql_query)
-    con.table("age3").to_parquet(paths.interim_dir / "firm_age.parquet")
-    con.disconnect()
+    data = Path(data_path).as_posix()
+    secm = (paths.raw_tables_dir / "comp_secm.parquet").as_posix()
+    g_secd = (paths.raw_tables_dir / "comp_g_secd.parquet").as_posix()
+    funda = (paths.raw_tables_dir / "comp_funda.parquet").as_posix()
+    g_funda = (paths.raw_tables_dir / "comp_g_funda.parquet").as_posix()
+    crsp_msf = (paths.interim_dir / "raw_data_dfs" / "crsp_msf_v2_aug.parquet").as_posix()
+    out = (paths.interim_dir / "firm_age.parquet").as_posix()
+    with _duckdb_connect(paths) as con:
+        con.execute(f"""
+        COPY (
+            WITH comp_ret_age AS (
+                SELECT gvkey, make_date(year(MIN(datadate)) - 1, 12, 31) AS comp_ret_first
+                FROM (
+                    SELECT gvkey, datadate FROM read_parquet('{secm}')
+                    UNION ALL
+                    SELECT gvkey, datadate FROM read_parquet('{g_secd}') WHERE monthend = 1
+                )
+                GROUP BY gvkey
+            ),
+            comp_acc_age AS (
+                SELECT gvkey, make_date(year(MIN(datadate)) - 1, 12, 31) AS comp_acc_first
+                FROM (
+                    SELECT gvkey, datadate FROM read_parquet('{funda}')
+                    UNION ALL
+                    SELECT gvkey, datadate FROM read_parquet('{g_funda}')
+                )
+                GROUP BY gvkey
+            ),
+            crsp_age AS (
+                SELECT permco, MIN(mthcaldt) AS crsp_first
+                FROM read_parquet('{crsp_msf}')
+                GROUP BY permco
+            ),
+            age1 AS (
+                SELECT
+                    a.id,
+                    a.eom,
+                    LEAST(b.crsp_first, c.comp_acc_first, d.comp_ret_first) AS first_obs
+                FROM read_parquet('{data}') AS a
+                LEFT JOIN crsp_age AS b ON a.permco = b.permco
+                LEFT JOIN comp_acc_age AS c ON a.gvkey = c.gvkey
+                LEFT JOIN comp_ret_age AS d ON a.gvkey = d.gvkey
+            ),
+            age2 AS (
+                SELECT *, MIN(eom) OVER (PARTITION BY id) AS first_alt
+                FROM age1
+            )
+            SELECT
+                id, eom,
+                (DATE_PART('year', eom) - DATE_PART('year', LEAST(first_obs, first_alt))) * 12 +
+                (DATE_PART('month', eom) - DATE_PART('month', LEAST(first_obs, first_alt))) AS age
+            FROM age2
+            ORDER BY id, eom
+        ) TO '{out}' (FORMAT PARQUET)
+        """)
 
 
 def char_pf_rets():
