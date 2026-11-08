@@ -1692,17 +1692,16 @@ def gen_comp_dsf(
     # pass at the final COPY instead of materializing five intermediate
     # tables to the .ddb file. The NASDAQ cshtrd UPDATE is folded into the
     # __comp_dsf_na view as an equivalent CASE expression.
-    con = ibis.duckdb.connect(str(paths.interim_dir / "aux_comp_dsf.ddb"), threads=os.cpu_count())
-
-    con.raw_sql(f"""
+    with _duckdb_connect(paths, paths.interim_dir / "aux_comp_dsf.ddb") as con:
+        con.execute(f"""
     CREATE VIEW comp_g_secd AS SELECT * FROM read_parquet('{g_secd_path.as_posix()}');
     CREATE VIEW comp_secd AS SELECT * FROM read_parquet('{secd_path.as_posix()}');
     CREATE VIEW __firm_shares2 AS
         SELECT * FROM read_parquet('{(paths.interim_dir / "__firm_shares2.parquet").as_posix()}');
     CREATE VIEW fx AS SELECT * FROM read_parquet('{(paths.interim_dir / "fx_data.parquet").as_posix()}');
-    """)
+        """)
 
-    con.raw_sql("""
+        con.execute("""
     CREATE VIEW __comp_dsf_global AS
     SELECT
         gvkey, iid, datadate, tpci, exchg, prcstd, curcdd, prccd / qunit AS prc_local, ajexdi, cshoc / 1e6 AS cshoc,
@@ -1799,28 +1798,24 @@ def gen_comp_dsf(
 
     FROM __comp_dsf2;
 
-    """)
-
-    # Drop unreliable observations from the USD-converted data
-    if apply_correction:
-        # One streaming pass: DuckDB executes the whole view pipeline, joins
-        # the exchange-country mapping (needed for country-specific filters),
-        # external-sorts by the filter group/sort keys, and writes the spill
-        # file directly — no pre-filter round-trip, and the slim path skips its
-        # own sort (presorted=True).
-        comp_exchanges(paths).select(["exchg", "excntry"]).write_parquet(
-            paths.interim_dir / "__corr_exchanges.parquet"
-        )
-        sorted_path = paths.interim_dir / "__corr_filter_sorted.parquet"
-        # insertion-order preservation is irrelevant under an explicit ORDER BY
-        # and only inflates the external sort's memory; temp_directory
-        # guarantees the sort can spill (the slim path verifies the resulting
-        # order before trusting it)
-        con.raw_sql(f"""
-        SET preserve_insertion_order = false;
-        SET temp_directory = '{(paths.interim_dir / "__duckdb_tmp").as_posix()}';
         """)
-        con.raw_sql(f"""
+
+        if apply_correction:
+            # One streaming pass: DuckDB executes the whole view pipeline, joins
+            # the exchange-country mapping (needed for country-specific filters),
+            # external-sorts by the filter group/sort keys, and writes the spill
+            # file directly — no pre-filter round-trip, and the slim path skips its
+            # own sort (presorted=True).
+            comp_exchanges(paths).select(["exchg", "excntry"]).write_parquet(
+                paths.interim_dir / "__corr_exchanges.parquet"
+            )
+            sorted_path = paths.interim_dir / "__corr_filter_sorted.parquet"
+            # insertion-order preservation is irrelevant under an explicit ORDER BY
+            # and only inflates the external sort's memory; the connection's
+            # temp_directory lets the sort spill (the slim path verifies the
+            # resulting order before trusting it)
+            con.execute("SET preserve_insertion_order = false")
+            con.execute(f"""
         COPY (
             SELECT t.*, e.excntry
             FROM __comp_dsf3 AS t
@@ -1828,9 +1823,15 @@ def gen_comp_dsf(
                 USING (exchg)
             ORDER BY gvkey NULLS FIRST, iid NULLS FIRST, datadate NULLS FIRST
         ) TO '{sorted_path.as_posix()}' (FORMAT PARQUET);
-        """)
-        con.disconnect()
+            """)
+        else:
+            con.execute(f"""
+        COPY (SELECT * FROM __comp_dsf3)
+        TO '{(paths.interim_dir / "__comp_dsf.parquet").as_posix()}' (FORMAT PARQUET);
+            """)
 
+    # Drop unreliable observations from the USD-converted data
+    if apply_correction:
         df = drop_unreliable_observations(
             pl.scan_parquet(sorted_path),
             group_cols=["gvkey", "iid"],
@@ -1845,13 +1846,6 @@ def gen_comp_dsf(
         # Clean up temp files
         for f in paths.interim_dir.glob("__corr_*.parquet"):
             f.unlink()
-
-    else:
-        con.raw_sql(f"""
-        COPY (SELECT * FROM __comp_dsf3)
-        TO '{(paths.interim_dir / "__comp_dsf.parquet").as_posix()}' (FORMAT PARQUET);
-        """)
-        con.disconnect()
 
     # Clean up corrected temp files if they exist
     if apply_correction:
