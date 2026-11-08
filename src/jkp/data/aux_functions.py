@@ -1545,11 +1545,6 @@ def gen_comp_dsf(
     Output:
         Parquet: __comp_dsf.parquet (daily Compustat security observations in USD).
     """
-    (paths.interim_dir / "aux_comp_dsf.ddb").unlink(missing_ok=True)
-
-    # Prepare FX data
-    fx_daily = compustat_fx(paths)
-
     # Repair decimal-shift errors in the raw data (local currency)
     if apply_correction:
         # Load and correct Global data (no ADRRC). spill_dir selects the
@@ -1598,9 +1593,10 @@ def gen_comp_dsf(
     # Original SQL processing
     # Views, not tables: the whole merge/FX/USD pipeline streams in a single
     # pass at the final COPY instead of materializing five intermediate
-    # tables to the .ddb file. The NASDAQ cshtrd UPDATE is folded into the
+    # tables. The NASDAQ cshtrd UPDATE is folded into the
     # __comp_dsf_na view as an equivalent CASE expression.
-    with _duckdb_connect(paths, paths.interim_dir / "aux_comp_dsf.ddb") as con:
+    fx_daily = compustat_fx(paths)
+    with _duckdb_connect(paths) as con:
         con.register("fx", fx_daily)
         con.execute(f"""
     CREATE VIEW comp_g_secd AS SELECT * FROM read_parquet('{g_secd_path.as_posix()}');
@@ -1782,8 +1778,7 @@ def gen_secd_data(paths: DataPaths):
     dsf = (paths.interim_dir / "__comp_dsf.parquet").as_posix()
     out = (paths.interim_dir / "secd_data.parquet").as_posix()
     valid = "prc_local IS NOT NULL AND curcdd IS NOT NULL AND prcstd IN (3, 4, 10)"
-    (paths.interim_dir / "aux_msf.ddb").unlink(missing_ok=True)
-    with _duckdb_connect(paths, paths.interim_dir / "aux_msf.ddb") as con:
+    with _duckdb_connect(paths) as con:
         con.execute(f"""
         COPY (
             WITH monthly AS (
@@ -1845,11 +1840,10 @@ def gen_secm_data(paths: DataPaths):
     Output:
         Parquet: secm_data.parquet (monthly Compustat SECM-based observations in USD).
     """
-    (paths.interim_dir / "aux_comp_secm.ddb").unlink(missing_ok=True)
     secm = (paths.raw_tables_dir / "comp_secm.parquet").as_posix()
     firm_shares2 = (paths.interim_dir / "__firm_shares2.parquet").as_posix()
     out = (paths.interim_dir / "secm_data.parquet").as_posix()
-    with _duckdb_connect(paths, paths.interim_dir / "aux_comp_secm.ddb") as con:
+    with _duckdb_connect(paths) as con:
         con.register("fx", compustat_fx(paths).rename({"datadate": "date"}))
         con.execute(f"""
         COPY (
@@ -1950,13 +1944,12 @@ def gen_comp_msf(paths: DataPaths):
     secd = (paths.interim_dir / "secd_data.parquet").as_posix()
     secm = (paths.interim_dir / "secm_data.parquet").as_posix()
     out = (paths.interim_dir / "__comp_msf.parquet").as_posix()
-    (paths.interim_dir / "aux_msf.ddb").unlink(missing_ok=True)
     # Deterministic dedup: keep latest datadate per {gvkey, iid, eom}, then the highest
     # prcstd (the prepare_comp_sf rule).
     # Investigation (issue #69) found 0 duplicates in current data, but the
     # original .distinct() was non-deterministic — different runs/engines could
     # pick different rows if duplicates appear in a future data vintage.
-    with _duckdb_connect(paths, paths.interim_dir / "aux_msf.ddb") as con:
+    with _duckdb_connect(paths) as con:
         con.execute(f"""
         COPY (
             WITH counted AS (
@@ -4613,8 +4606,7 @@ def add_helper_vars(paths: DataPaths, data):
     Output:
         LazyFrame with monthly-complete panel and standardized helper variables (…_x) for downstream ratios/factors.
     """
-    (paths.interim_dir / "aux_add_helpers.ddb").unlink(missing_ok=True)
-    with _duckdb_connect(paths, paths.interim_dir / "aux_add_helpers.ddb") as con:
+    with _duckdb_connect(paths) as con:
         con.register("data", data.rename({"at": "at_var"}).collect())
         helpers2 = con.sql("""
         WITH comp_dates1 AS (
@@ -4662,7 +4654,7 @@ def add_helper_vars(paths: DataPaths, data):
         FROM helpers1_base
         QUALIFY ROW_NUMBER() OVER (
             PARTITION BY gvkey, curcd, datadate
-            ORDER   BY datadate, source, n
+            ORDER BY datadate, source <> 'GLOBAL', n
             ) = 1
         )
 
@@ -5576,7 +5568,7 @@ def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min) -> pl.
 
     months = 12 * __n
     data = Path(data_path).as_posix()
-    with _duckdb_connect(paths, paths.interim_dir / "aux_earnings_pers.ddb") as con:
+    with _duckdb_connect(paths) as con:
         result = con.sql(f"""
     WITH raw_table AS (
       SELECT gvkey, curcd, datadate, ni_x, at_x
@@ -5678,7 +5670,6 @@ def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min) -> pl.
     HAVING COUNT(*) >= {__min}
     ORDER BY gvkey, curcd, calc_date
     """).pl()
-    (paths.interim_dir / "aux_earnings_pers.ddb").unlink(missing_ok=True)
     return result
 
 
@@ -7448,17 +7439,17 @@ def market_beta(paths: DataPaths, output_path, data_path, fcts_path, __n, __min)
     Output:
         Parquet at output_path with [id, eom, beta_{__n}m, ivol_capm_{__n}m].
     """
-    con = prep_data_factor_regs(paths, data_path, fcts_path)
-    base_data = con.table("__msf2").pl().lazy()
-    df = pl.concat(
-        [process_window(base_data, w, "capm", __n, __min) for w in gen_aux_windows(__n)]
-    ).collect()
-    ids = con.sql("SELECT DISTINCT id, id_int FROM __msf2").pl()
-    dates = (
-        con.sql("SELECT DISTINCT aux_date, eom FROM __msf2")
-        .pl()
-        .with_columns(col("aux_date").cast(pl.Int32))
-    )
+    with prep_data_factor_regs(paths, data_path, fcts_path) as con:
+        base_data = con.table("__msf2").pl().lazy()
+        df = pl.concat(
+            [process_window(base_data, w, "capm", __n, __min) for w in gen_aux_windows(__n)]
+        ).collect()
+        ids = con.sql("SELECT DISTINCT id, id_int FROM __msf2").pl()
+        dates = (
+            con.sql("SELECT DISTINCT aux_date, eom FROM __msf2")
+            .pl()
+            .with_columns(col("aux_date").cast(pl.Int32))
+        )
     res = (
         df.with_columns(col("aux_date").cast(pl.Int32))
         .join(ids, how="inner", on="id_int")
@@ -7474,7 +7465,6 @@ def market_beta(paths: DataPaths, output_path, data_path, fcts_path, __n, __min)
         .sort(["id", "eom"])
     )
     res.write_parquet(output_path)
-    con.close()
 
 
 @measure_time
@@ -7493,20 +7483,20 @@ def residual_momentum(paths: DataPaths, output_path, data_path, fcts_path, __n, 
         as a *stem*, not a full path — the parameter name is a holdover from
         the pre-refactor signature.
     """
-    con = prep_data_factor_regs(paths, data_path, fcts_path)
-    base_data = con.table("__msf2").pl().lazy()
-    df = pl.concat(
-        [
-            process_window(base_data, w, "res_mom", __n, __min, incl, skip)
-            for w in gen_aux_windows(__n)
-        ]
-    ).collect()
-    ids = con.sql("SELECT DISTINCT id, id_int FROM __msf2").pl()
-    dates = (
-        con.sql("SELECT DISTINCT aux_date, eom FROM __msf2")
-        .pl()
-        .with_columns(col("aux_date").cast(pl.Int32))
-    )
+    with prep_data_factor_regs(paths, data_path, fcts_path) as con:
+        base_data = con.table("__msf2").pl().lazy()
+        df = pl.concat(
+            [
+                process_window(base_data, w, "res_mom", __n, __min, incl, skip)
+                for w in gen_aux_windows(__n)
+            ]
+        ).collect()
+        ids = con.sql("SELECT DISTINCT id, id_int FROM __msf2").pl()
+        dates = (
+            con.sql("SELECT DISTINCT aux_date, eom FROM __msf2")
+            .pl()
+            .with_columns(col("aux_date").cast(pl.Int32))
+        )
     res = (
         df.with_columns(col("aux_date").cast(pl.Int32))
         .join(ids, how="inner", on="id_int")
@@ -7515,7 +7505,6 @@ def residual_momentum(paths: DataPaths, output_path, data_path, fcts_path, __n, 
         .sort(["id", "eom"])
     )
     res.write_parquet(paths.interim_dir / f"{output_path}_{incl}_{skip}.parquet")
-    con.close()
 
 
 def zero_obs_gate_ok() -> pl.Expr:
