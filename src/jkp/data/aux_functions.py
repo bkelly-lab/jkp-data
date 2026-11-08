@@ -1372,7 +1372,7 @@ def aug_msf_v2(paths: DataPaths):
         missing for non-TR monthly rows (e.g., BA). Called from gen_raw_data_dfs().
 
     Steps:
-        1) Read msf_v2 (monthly) and dsf_v2 (daily) from raw_tables parquet.
+        1) Read msf_v2 (monthly) and dsf_v2 (daily) in place with DuckDB.
         2) Filter dsf_v2 to dlyprcflg == "TR", construct yyyymm from dlycaldt, and keep (permno, yyyymm, dlyprc).
         3) For each (permno, yyyymm), compute:
            - mthaskhi = max(dlyprc)
@@ -1385,44 +1385,30 @@ def aug_msf_v2(paths: DataPaths):
         Writes raw_data_dfs/crsp_msf_v2_aug.parquet with all original columns
         plus mthaskhi and mthbidlo.
     """
-    con = ibis.duckdb.connect(threads=os.cpu_count())
-    msf = con.read_parquet(paths.raw_tables_dir / "crsp_msf_v2.parquet")
-    dsf = con.read_parquet(paths.raw_tables_dir / "crsp_dsf_v2.parquet")
-
-    dt = dsf.dlycaldt.cast("date")
-
-    d = (
-        dsf.filter(dsf.dlyprcflg == "TR")
-        .mutate(
-            yyyymm=(dt.year() * 100 + dt.month()).cast("int32"),
-            dlyprc=dsf.dlyprc.cast("double"),
-        )
-        .select(["permno", "yyyymm", "dlyprc"])
-    )
-
-    m = d.group_by(["permno", "yyyymm"]).aggregate(
-        mthaskhi=d.dlyprc.max(),
-        mthbidlo=d.dlyprc.min(),
-    )
-
-    msf_joined = msf.join(
-        m,
-        how="left",
-        predicates=[msf.permno == m.permno, msf.yyyymm == m.yyyymm],
-    ).select([msf] + [m.mthaskhi, m.mthbidlo])
-
-    msf_aug = msf_joined.mutate(
-        mthaskhi=ibis.cases(
-            (msf_joined.mthprcflg == "TR", msf_joined.mthaskhi),
-            else_=ibis.null(),
-        ),
-        mthbidlo=ibis.cases(
-            (msf_joined.mthprcflg == "TR", msf_joined.mthbidlo),
-            else_=ibis.null(),
-        ),
-    )
-
-    msf_aug.to_parquet(paths.interim_dir / "raw_data_dfs" / "crsp_msf_v2_aug.parquet")
+    msf = (paths.raw_tables_dir / "crsp_msf_v2.parquet").as_posix()
+    dsf = (paths.raw_tables_dir / "crsp_dsf_v2.parquet").as_posix()
+    out = (paths.interim_dir / "raw_data_dfs" / "crsp_msf_v2_aug.parquet").as_posix()
+    with _duckdb_connect(paths) as con:
+        con.execute(f"""
+        COPY (
+            WITH d AS (
+                SELECT
+                    permno,
+                    CAST(year(dlycaldt) * 100 + month(dlycaldt) AS INTEGER) AS yyyymm,
+                    MAX(CAST(dlyprc AS DOUBLE)) AS mthaskhi,
+                    MIN(CAST(dlyprc AS DOUBLE)) AS mthbidlo
+                FROM read_parquet('{dsf}')
+                WHERE dlyprcflg = 'TR'
+                GROUP BY ALL
+            )
+            SELECT
+                m.*,
+                CASE WHEN m.mthprcflg = 'TR' THEN d.mthaskhi END AS mthaskhi,
+                CASE WHEN m.mthprcflg = 'TR' THEN d.mthbidlo END AS mthbidlo
+            FROM read_parquet('{msf}') AS m
+            LEFT JOIN d ON m.permno = d.permno AND m.yyyymm = d.yyyymm
+        ) TO '{out}' (FORMAT PARQUET)
+        """)
 
 
 def build_mcti(paths: DataPaths):
