@@ -256,25 +256,39 @@ def ex_country_aux(filename):
     return df
 
 
-def header_aux(comp_path, gcomp_path, output_path):
+def header_aux(paths: DataPaths) -> None:
     """
     Description:
         Build a unified Compustat header table combining NA and Global sources (one row per gvkey).
 
     Steps:
-        1) Read NA and Global header parquets into Ibis.
+        1) Read the NA and Global company headers in place with DuckDB.
         2) Select gvkey, prirow, priusa, prican from each.
-        3) Union tables and take the first occurrence per gvkey.
-        4) Write to `output_path` and close connection.
+        3) Union the tables and take the first non-null value of each code per gvkey.
+        4) Write to raw_data_dfs/__header.parquet.
 
     Output:
         Parquet header file with unique gvkey rows.
     """
-    con = ibis.duckdb.connect(threads=os.cpu_count())
-    comp = con.read_parquet(comp_path).select(["gvkey", "prirow", "priusa", "prican"])
-    g_comp = con.read_parquet(gcomp_path).select(["gvkey", "prirow", "priusa", "prican"])
-    comp.union(g_comp).distinct(on="gvkey", keep="first").to_parquet(output_path)
-    con.disconnect()
+    company = (paths.raw_tables_dir / "comp_company.parquet").as_posix()
+    g_company = (paths.raw_tables_dir / "comp_g_company.parquet").as_posix()
+    out = (paths.interim_dir / "raw_data_dfs" / "__header.parquet").as_posix()
+    with _duckdb_connect(paths) as con:
+        con.execute(f"""
+        COPY (
+            SELECT
+                gvkey,
+                FIRST(prirow) FILTER (WHERE prirow IS NOT NULL) AS prirow,
+                FIRST(priusa) FILTER (WHERE priusa IS NOT NULL) AS priusa,
+                FIRST(prican) FILTER (WHERE prican IS NOT NULL) AS prican
+            FROM (
+                SELECT gvkey, prirow, priusa, prican FROM read_parquet('{company}')
+                UNION ALL
+                SELECT gvkey, prirow, priusa, prican FROM read_parquet('{g_company}')
+            )
+            GROUP BY gvkey
+        ) TO '{out}' (FORMAT PARQUET)
+        """)
 
 
 def gen_firmshares(paths: DataPaths):
@@ -487,11 +501,7 @@ def gen_raw_data_dfs(paths: DataPaths):
         ]
     )
     collect_and_write(__ex_country1, paths.interim_dir / "raw_data_dfs" / "__ex_country1.parquet")
-    header_aux(
-        paths.raw_tables_dir / "comp_company.parquet",
-        paths.raw_tables_dir / "comp_g_company.parquet",
-        paths.interim_dir / "raw_data_dfs" / "__header.parquet",
-    )
+    header_aux(paths)
     gen_prihist_files(paths)
     gen_fx1(paths)
     aug_msf_v2(paths)
