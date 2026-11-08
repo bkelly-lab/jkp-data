@@ -1712,9 +1712,7 @@ def gen_comp_dsf(
             # external-sorts by the filter group/sort keys, and writes the spill
             # file directly — no pre-filter round-trip, and the slim path skips its
             # own sort (presorted=True).
-            comp_exchanges(paths).select(["exchg", "excntry"]).write_parquet(
-                paths.interim_dir / "__corr_exchanges.parquet"
-            )
+            con.register("exchanges", comp_exchanges(paths).select(["exchg", "excntry"]))
             sorted_path = paths.interim_dir / "__corr_filter_sorted.parquet"
             # insertion-order preservation is irrelevant under an explicit ORDER BY
             # and only inflates the external sort's memory; the connection's
@@ -1725,7 +1723,7 @@ def gen_comp_dsf(
         COPY (
             SELECT t.*, e.excntry
             FROM __comp_dsf3 AS t
-            LEFT JOIN read_parquet('{(paths.interim_dir / "__corr_exchanges.parquet").as_posix()}') AS e
+            LEFT JOIN exchanges AS e
                 USING (exchg)
             ORDER BY gvkey NULLS FIRST, iid NULLS FIRST, datadate NULLS FIRST
         ) TO '{sorted_path.as_posix()}' (FORMAT PARQUET);
