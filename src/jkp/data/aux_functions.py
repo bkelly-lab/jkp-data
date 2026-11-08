@@ -5665,7 +5665,7 @@ def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min):
         Earnings persistence: AR(1) of NI/AT (annual steps) with rolling cohorts.
 
     Steps:
-        1) Load gvkey,curcd,datadate,ni_x,at_x; create __ni_at=ni_x/at_x (at_x>0).
+        1) Read gvkey,curcd,datadate,ni_x,at_x in place; create __ni_at=ni_x/at_x (at_x>0).
         2) Keep obs with __ni_at and its 12-month lag; build calendar cohorts by month for N years.
         3) For each (gvkey,curcd,calc_date,grp) with ≥ __min obs, run OLS __ni_at on lag.
         4) Aggregate to slope (ni_ar1) and residual std (ni_ivol); save. ni_ar1 is null when
@@ -5680,18 +5680,16 @@ def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min):
     """
 
     months = 12 * __n
-    con = ibis.duckdb.connect(
-        str(paths.interim_dir / "aux_earnings_pers.ddb"), threads=os.cpu_count()
-    )
-    con.create_table(
-        "raw_table",
-        pl.scan_parquet(data_path).select(["gvkey", "curcd", "datadate", "ni_x", "at_x"]).collect(),
-        overwrite=True,
-    )
-
-    con.raw_sql(f"""
-    CREATE OR REPLACE TABLE base_data AS
-    WITH base AS (
+    data = Path(data_path).as_posix()
+    out = (paths.interim_dir / "ni_ar_res.parquet").as_posix()
+    with _duckdb_connect(paths, paths.interim_dir / "aux_earnings_pers.ddb") as con:
+        con.execute(f"""
+    COPY (
+    WITH raw_table AS (
+      SELECT gvkey, curcd, datadate, ni_x, at_x
+      FROM read_parquet('{data}')
+    ),
+    base AS (
       SELECT
         gvkey,
         curcd,
@@ -5699,7 +5697,8 @@ def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min):
         CASE WHEN at_x > 0 THEN ni_x / at_x END AS __ni_at,
         ROW_NUMBER() OVER (PARTITION BY gvkey, curcd ORDER BY datadate) AS rn
       FROM raw_table
-    )
+    ),
+    base_data AS (
     SELECT
       gvkey,
       curcd,
@@ -5710,15 +5709,17 @@ def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min):
       END AS __ni_at_l1
     FROM base
     QUALIFY __ni_at IS NOT NULL AND __ni_at_l1 IS NOT NULL
-    ORDER BY gvkey, curcd, datadate;
+    ORDER BY gvkey, curcd, datadate
+    ),
 
-    CREATE OR REPLACE TABLE dates_apply AS
+    dates_apply AS (
     SELECT
       datadate,
       (ROW_NUMBER() OVER (ORDER BY datadate) % {months}) AS grp
-    FROM (SELECT DISTINCT datadate FROM base_data);
+    FROM (SELECT DISTINCT datadate FROM base_data)
+    ),
 
-    CREATE OR REPLACE TABLE calc_dates AS
+    calc_dates AS (
     SELECT
       a.datadate,
       b.datadate AS calc_date,
@@ -5727,9 +5728,10 @@ def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min):
     JOIN dates_apply b
       ON a.datadate > make_date(EXTRACT(YEAR FROM b.datadate) - {__n}, 12, 31)
      AND a.datadate <= b.datadate
-     AND EXTRACT(MONTH FROM a.datadate) = EXTRACT(MONTH FROM b.datadate);
+     AND EXTRACT(MONTH FROM a.datadate) = EXTRACT(MONTH FROM b.datadate)
+    ),
 
-    CREATE OR REPLACE TABLE calc_data AS
+    calc_data AS (
     SELECT
       a.*,
       c.calc_date,
@@ -5740,10 +5742,10 @@ def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min):
     QUALIFY COUNT(*) OVER (
       PARTITION BY a.gvkey, a.curcd, c.calc_date
     ) >= {__min}
-    ORDER BY a.gvkey, c.calc_date;
+    ORDER BY a.gvkey, c.calc_date
+    ),
 
-    CREATE OR REPLACE TABLE reg_results AS
-    WITH fit AS (
+    fit AS (
       SELECT
         gvkey,
         curcd,
@@ -5781,10 +5783,9 @@ def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min):
     FROM resids
     GROUP BY gvkey, curcd, calc_grp, calc_date, slope
     HAVING COUNT(*) >= {__min}
-    ORDER BY gvkey, curcd, calc_date;
+    ORDER BY gvkey, curcd, calc_date
+    ) TO '{out}' (FORMAT PARQUET)
     """)
-    con.table("reg_results").to_parquet(paths.interim_dir / "ni_ar_res.parquet")
-    con.disconnect()
     (paths.interim_dir / "aux_earnings_pers.ddb").unlink(missing_ok=True)
 
 
