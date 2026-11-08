@@ -3,7 +3,7 @@ This change log keeps track of changes to the underlying data set. In brackets, 
 
 This repository ports the original SAS pipeline ([ReplicationCrisis](https://github.com/bkelly-lab/ReplicationCrisis)) to Python using Polars. Entries up to and including 05-03-2025 are from the original change log.
 
-## 07-11-2026
+## 08-11-2026
 __Changes__:
 - Characteristics-managed portfolios with 1, 2 and 5 size groups, for all countries ([#327](https://github.com/bkelly-lab/jkp-data/pull/327)). `portfolios/` now has `hml_cmp_1` (`size_grp` is `all`, the full universe) and `hml_cmp_2` (`big` is mega and large, `small` is small, micro and nano) next to `hml_cmp_5`, and each `portfolios/themes/<version>/` folder from v1.0 on has the signed `lms_cmp_1`, `lms_cmp_2` and `lms_cmp_5`. The `cmp` setting is now on for non-US countries, so `hml_cmp_5` and `lms_cmp_5` gain their rows; the US rows change only by the rule in the next entry. `themes/v0/` stays as it was: only `cmp`, with US rows and five size groups, unsigned. Each row reports `n_stocks`, and no minimum is applied. Weights come from ranks, not market cap, so with one size group micro and nano stocks make up most of the portfolio.
 - Affected output files: `hml_cmp_5` and `themes/<version>/lms_cmp_5` from v1.0 on gain non-US rows; `hml_cmp_1`, `hml_cmp_2`, `themes/<version>/lms_cmp_1` and `lms_cmp_2` are new.
