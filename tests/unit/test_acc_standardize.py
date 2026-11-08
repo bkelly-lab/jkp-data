@@ -318,6 +318,7 @@ class TestApplyIndfmtFilter:
             ([(3, "INDL"), (12, "INDL")], [(3, "INDL"), (12, "INDL")], [(3, "INDL"), (12, "INDL")]),
             ([(3, "FS"), (12, "FS")], [(3, "FS"), (12, "FS")], [(3, "FS"), (12, "FS")]),
             ([(3, "FS"), (12, "INDL"), (12, "FS")], [(3, "FS"), (12, "INDL")], [(12, "INDL")]),
+            # Deliberate: quarterly keeps both calendars, and one_row_per_date may keep the FS row.
             ([(3, "INDL"), (12, "FS")], [(3, "INDL"), (12, "FS")], [(3, "INDL")]),
         ],
     )
