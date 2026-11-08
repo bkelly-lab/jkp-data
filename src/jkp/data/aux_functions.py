@@ -7502,13 +7502,11 @@ def prep_data_factor_regs(
     """
 
     (paths.interim_dir / "aux_factor_regs.ddb").unlink(missing_ok=True)
-    con = ibis.duckdb.connect(
-        str(paths.interim_dir / "aux_factor_regs.ddb"), threads=os.cpu_count()
-    )
+    con = _duckdb_connect(paths, paths.interim_dir / "aux_factor_regs.ddb")
 
     data_path_posix = Path(data_path).as_posix()
     fcts_path_posix = Path(fcts_path).as_posix()
-    con.raw_sql(f"""
+    con.execute(f"""
     CREATE OR REPLACE VIEW data_msf AS
     SELECT *
     FROM read_parquet('{data_path_posix}');
@@ -7575,16 +7573,14 @@ def market_beta(paths: DataPaths, output_path, data_path, fcts_path, __n, __min)
         Parquet at output_path with [id, eom, beta_{__n}m, ivol_capm_{__n}m].
     """
     con = prep_data_factor_regs(paths, data_path, fcts_path)
-    base_data = con.table("__msf2").to_polars().lazy()
+    base_data = con.table("__msf2").pl().lazy()
     df = pl.concat(
         [process_window(base_data, w, "capm", __n, __min) for w in gen_aux_windows(__n)]
     ).collect()
-    ids = con.table("__msf2").select(["id", "id_int"]).distinct().to_polars()
+    ids = con.sql("SELECT DISTINCT id, id_int FROM __msf2").pl()
     dates = (
-        con.table("__msf2")
-        .select(["aux_date", "eom"])
-        .distinct()
-        .to_polars()
+        con.sql("SELECT DISTINCT aux_date, eom FROM __msf2")
+        .pl()
         .with_columns(col("aux_date").cast(pl.Int32))
     )
     res = (
@@ -7602,7 +7598,7 @@ def market_beta(paths: DataPaths, output_path, data_path, fcts_path, __n, __min)
         .sort(["id", "eom"])
     )
     res.write_parquet(output_path)
-    con.disconnect()
+    con.close()
 
 
 @measure_time
@@ -7622,19 +7618,17 @@ def residual_momentum(paths: DataPaths, output_path, data_path, fcts_path, __n, 
         the pre-refactor signature.
     """
     con = prep_data_factor_regs(paths, data_path, fcts_path)
-    base_data = con.table("__msf2").to_polars().lazy()
+    base_data = con.table("__msf2").pl().lazy()
     df = pl.concat(
         [
             process_window(base_data, w, "res_mom", __n, __min, incl, skip)
             for w in gen_aux_windows(__n)
         ]
     ).collect()
-    ids = con.table("__msf2").select(["id", "id_int"]).distinct().to_polars()
+    ids = con.sql("SELECT DISTINCT id, id_int FROM __msf2").pl()
     dates = (
-        con.table("__msf2")
-        .select(["aux_date", "eom"])
-        .distinct()
-        .to_polars()
+        con.sql("SELECT DISTINCT aux_date, eom FROM __msf2")
+        .pl()
         .with_columns(col("aux_date").cast(pl.Int32))
     )
     res = (
@@ -7645,7 +7639,7 @@ def residual_momentum(paths: DataPaths, output_path, data_path, fcts_path, __n, 
         .sort(["id", "eom"])
     )
     res.write_parquet(paths.interim_dir / f"{output_path}_{incl}_{skip}.parquet")
-    con.disconnect()
+    con.close()
 
 
 def zero_obs_gate_ok() -> pl.Expr:
