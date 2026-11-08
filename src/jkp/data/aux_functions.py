@@ -574,8 +574,8 @@ def gen_crsp_sf(paths: DataPaths, freq):
                 s.{p}prc * (s.shrout / 1000) AS me,
                 s.ticker
             FROM read_parquet('{sf.as_posix()}') AS s
-            -- adds no columns (the security file's own columns win on name clashes), but
-            -- overlapping name records repeat a row, so the join stays
+            -- kept from the SAS code (msenames supplied shrcd/exchcd there); adds no
+            -- columns, and CRSP name records don't overlap, so it adds no rows
             LEFT JOIN read_parquet('{senames}') AS n
                 ON s.permno = n.permno
                 AND s.{p}caldt >= n.secinfostartdt
