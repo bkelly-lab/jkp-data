@@ -30,16 +30,7 @@ from jkp.data.config import END_DATE
 
 
 def _write_lookup_tables(raw_tables: Path) -> None:
-    """Write the minimal lookup parquet files required by gen_crsp_sf()."""
-    pl.DataFrame(
-        {
-            "permno": [10001],
-            "secinfostartdt": [date(2020, 1, 1)],
-            "secinfoenddt": [date(2020, 1, 31)],
-            "ticker": ["NAMES"],
-        }
-    ).write_parquet(raw_tables / "crsp_stksecurityinfohist.parquet")
-
+    """Write the minimal lookup parquet file required by gen_crsp_sf()."""
     pl.DataFrame(
         {
             "lpermno": [10001],
@@ -119,8 +110,8 @@ def _read_crsp_sf(paths, freq: str) -> pl.DataFrame:
 
 
 @pytest.mark.parametrize("freq", ["m", "d"])
-def test_gen_crsp_sf_exposes_ticker_after_senames_join(freq: str, test_paths) -> None:
-    """gen_crsp_sf() keeps the security file's ticker, not the names table's, after the join."""
+def test_gen_crsp_sf_exposes_security_file_ticker(freq: str, test_paths) -> None:
+    """gen_crsp_sf() carries the security file's ticker and identifiers through."""
     raw_tables = test_paths.raw_tables_dir
 
     _write_lookup_tables(raw_tables)
@@ -155,6 +146,29 @@ def test_gen_crsp_sf_exposes_ticker_after_senames_join(freq: str, test_paths) ->
     assert ticker_by_date[unmatched_date] == "TEST2", (
         f"Expected ticker TEST2 on {unmatched_date}, got {ticker_by_date[unmatched_date]!r}"
     )
+
+
+@pytest.mark.parametrize("freq", ["m", "d"])
+def test_gen_crsp_sf_ignores_overlapping_name_records(freq: str, test_paths) -> None:
+    """Overlapping CRSP name records don't repeat a security-date row (#333)."""
+    raw_tables = test_paths.raw_tables_dir
+    _write_lookup_tables(raw_tables)
+    _write_sf_fixture(raw_tables, freq)
+    # Both records cover the first fixture date; the second also covers the other one.
+    pl.DataFrame(
+        {
+            "permno": [10001, 10001],
+            "secinfostartdt": [date(2020, 1, 1), date(2020, 1, 1)],
+            "secinfoenddt": [date(2020, 1, 31), date(2020, 12, 31)],
+            "ticker": ["OLD", "NEW"],
+        }
+    ).write_parquet(raw_tables / "crsp_stksecurityinfohist.parquet")
+
+    gen_crsp_sf(test_paths, freq)
+    df = _read_crsp_sf(test_paths, freq)
+
+    assert df.height == 2
+    assert df.select("permno", "date").is_unique().all()
 
 
 @pytest.mark.parametrize(("freq", "flag"), [("m", "A"), ("d", "Y")])

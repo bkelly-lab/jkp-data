@@ -508,15 +508,14 @@ def gen_raw_data_dfs(paths: DataPaths):
 def gen_crsp_sf(paths: DataPaths, freq):
     """
     Description:
-        Build CRSP security file enriched with names and CCM link history (monthly or daily).
+        Build CRSP security file enriched with the CCM link history (monthly or daily).
 
     Steps:
-        1) Read crsp_{freq}sf, crsp_stksecurityinfohist, and ccmxpf_lnkhist in place with DuckDB.
-        2) Join SF to SENAMES on permno with date in [secinfostartdt, secinfoenddt].
-        3) Join to CCM link history on permno and link date window, linktype in {LC, LU, LS}.
-        4) Compute fields: bidask flag, abs(prc), shrout (thousands), ME, prc_high/low (valid only if prc>0),
+        1) Read crsp_{freq}sf and ccmxpf_lnkhist in place with DuckDB.
+        2) Join to CCM link history on permno and link date window, linktype in {LC, LU, LS}.
+        3) Compute fields: bidask flag, abs(prc), shrout (thousands), ME, prc_high/low (valid only if prc>0),
         main exchange flag, and carry identifiers.
-        5) Select standardized columns and write them.
+        4) Select standardized columns and write them.
 
     Output:
         Writes raw_data_dfs/__crsp_sf_{freq}.parquet with standardized CRSP {m|d} security fields.
@@ -533,7 +532,6 @@ def gen_crsp_sf(paths: DataPaths, freq):
         prc_close = "CASE WHEN s.dlyprc > 0 AND s.dlyclose > 0 THEN s.dlyclose END"
     else:
         raise ValueError(f"Unknown freq: {freq}")
-    senames = (paths.raw_tables_dir / "crsp_stksecurityinfohist.parquet").as_posix()
     lnkhist = (paths.raw_tables_dir / "crsp_ccmxpf_lnkhist.parquet").as_posix()
     out = (paths.interim_dir / "raw_data_dfs" / f"__crsp_sf_{freq}.parquet").as_posix()
     with _duckdb_connect(paths) as con:
@@ -574,12 +572,6 @@ def gen_crsp_sf(paths: DataPaths, freq):
                 s.{p}prc * (s.shrout / 1000) AS me,
                 s.ticker
             FROM read_parquet('{sf.as_posix()}') AS s
-            -- adds no columns (the security file's own columns win on name clashes), but
-            -- overlapping name records repeat a row, so the join stays
-            LEFT JOIN read_parquet('{senames}') AS n
-                ON s.permno = n.permno
-                AND s.{p}caldt >= n.secinfostartdt
-                AND s.{p}caldt <= n.secinfoenddt
             -- a null link date is open-ended; COALESCE (not OR ... IS NULL) keeps every
             -- condition a comparison, so DuckDB hash-joins instead of a nested loop
             LEFT JOIN read_parquet('{lnkhist}') AS l
