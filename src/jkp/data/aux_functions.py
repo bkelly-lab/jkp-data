@@ -359,33 +359,31 @@ def gen_fx1(paths: DataPaths):
         Build daily FX (to USD) series per currency using Compustat daily exchange rates.
 
     Steps:
-        1) Load comp_exrt_dly into DuckDB.
-        2) Join table to itself on (fromcurd, datadate) with fromcurd='GBP' and b.tocurd='USD'.
+        1) Read comp_exrt_dly in place with DuckDB.
+        2) Join it to itself on (fromcurd, datadate) with fromcurd='GBP' and b.tocurd='USD'.
         3) Compute fx = b.exratd / a.exratd, label a.tocurd as curcdd.
         4) DISTINCT rows and write out.
 
     Output:
         Parquet: raw_data_dfs/__fx1.parquet (curcdd, datadate, fx to USD).
     """
-    con = ibis.duckdb.connect(threads=os.cpu_count())
-    con.create_table(
-        "comp_exrt_dly", con.read_parquet(paths.raw_tables_dir / "comp_exrt_dly.parquet")
-    )
-    con.raw_sql("""
-    CREATE TABLE __fx1 AS
-    SELECT DISTINCT
-    a.tocurd AS curcdd,
-    a.datadate,
-    b.exratd / a.exratd AS fx
-    FROM comp_exrt_dly AS a
-    JOIN comp_exrt_dly AS b
-    ON a.fromcurd = b.fromcurd
-    AND a.datadate = b.datadate
-    WHERE a.fromcurd = 'GBP'
-    AND b.tocurd  = 'USD';
-    """)
-    con.table("__fx1").to_parquet(paths.interim_dir / "raw_data_dfs" / "__fx1.parquet")
-    con.disconnect()
+    exrt = (paths.raw_tables_dir / "comp_exrt_dly.parquet").as_posix()
+    out = (paths.interim_dir / "raw_data_dfs" / "__fx1.parquet").as_posix()
+    with _duckdb_connect(paths) as con:
+        con.execute(f"""
+        COPY (
+            SELECT DISTINCT
+            a.tocurd AS curcdd,
+            a.datadate,
+            b.exratd / a.exratd AS fx
+            FROM read_parquet('{exrt}') AS a
+            JOIN read_parquet('{exrt}') AS b
+            ON a.fromcurd = b.fromcurd
+            AND a.datadate = b.datadate
+            WHERE a.fromcurd = 'GBP'
+            AND b.tocurd  = 'USD'
+        ) TO '{out}' (FORMAT PARQUET)
+        """)
 
 
 @measure_time
