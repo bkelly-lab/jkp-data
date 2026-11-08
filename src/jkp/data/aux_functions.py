@@ -264,7 +264,9 @@ def header_aux(paths: DataPaths) -> None:
     Steps:
         1) Read the NA and Global company headers in place with DuckDB.
         2) Select gvkey, prirow, priusa, prican from each.
-        3) Union the tables and take the first non-null value of each code per gvkey.
+        3) Keep one row per gvkey: the Global header's row when the gvkey is in both, as
+           prefer_global does for accounting data. (The SAS code kept the NA header's row; the
+           two headers agree on these codes for every shared gvkey in current data.)
         4) Write to raw_data_dfs/__header.parquet.
 
     Output:
@@ -276,17 +278,13 @@ def header_aux(paths: DataPaths) -> None:
     with _duckdb_connect(paths) as con:
         con.execute(f"""
         COPY (
-            SELECT
-                gvkey,
-                FIRST(prirow) FILTER (WHERE prirow IS NOT NULL) AS prirow,
-                FIRST(priusa) FILTER (WHERE priusa IS NOT NULL) AS priusa,
-                FIRST(prican) FILTER (WHERE prican IS NOT NULL) AS prican
+            SELECT DISTINCT ON (gvkey) gvkey, prirow, priusa, prican
             FROM (
-                SELECT gvkey, prirow, priusa, prican FROM read_parquet('{company}')
+                SELECT gvkey, prirow, priusa, prican, 0 AS src FROM read_parquet('{g_company}')
                 UNION ALL
-                SELECT gvkey, prirow, priusa, prican FROM read_parquet('{g_company}')
+                SELECT gvkey, prirow, priusa, prican, 1 AS src FROM read_parquet('{company}')
             )
-            GROUP BY gvkey
+            ORDER BY gvkey, src
         ) TO '{out}' (FORMAT PARQUET)
         """)
 

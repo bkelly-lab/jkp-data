@@ -78,6 +78,7 @@ There are slight divergences between outputs, the main sources of them are:
 - **Numerical precision:** Differences in floating-point handling between SAS and Python can alter inequality evaluations and calculated values.
 - **Data revisions:** Underlying data may have changed.
 - **Algorithmic adjustments:** Differences due to updates in `standardized_accounting_data` for improved duplicate handling.
+- **Company header:** When a `gvkey` appears in both the North America and the Global company header, Python uses the Global header's primary-security codes (`prirow`, `priusa`, `prican`), as it does for accounting data. The SAS code used the North America header. On current data the two headers agree for every such `gvkey` (2,960), so no value changes.
 
 Next, we show a strong alignment between the characteristics and factors produced by the SAS/R code with those from the new Python code. 
 

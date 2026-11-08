@@ -1156,7 +1156,7 @@ This section covers all of the variables that give firm/date level identifiers a
 		
 		iid & Permanent two-digit addition to 'gvkey' that identifies specific security of a firm from Compustat\\[1ex]
 		
-		primary\_sec &  Primary security as identified by Compustat. A 'gvkey' can have up to three different primary securities ('iid)' at a given time (US, CA, and international). All observations from CRSP has \texttt{primary\_sec=1}.  \\[1ex]
+		primary\_sec &  Primary security as identified by Compustat. A 'gvkey' can have up to three different primary securities ('iid)' at a given time (US, CA, and international). All observations from CRSP has \texttt{primary\_sec=1}. When a 'gvkey' appears in both the North America and the Global company header, the Global header's primary-security codes are used, as for accounting data. The SAS code used the North America header. On current data the two headers agree for every such 'gvkey' (2,960), so no value changes.  \\[1ex]
 		
 		permco & Permanent unique firm identifier from CRSP\\[1ex]
 		
