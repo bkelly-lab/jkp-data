@@ -146,6 +146,33 @@ def collect_and_write(df, filename, collect_streaming=False):
     df.collect(engine=engine).write_parquet(filename)
 
 
+def _duckdb_connect(paths: DataPaths, database: Path | None = None) -> duckdb.DuckDBPyConnection:
+    """
+    Description:
+        Open a DuckDB connection for a pipeline step.
+
+    Steps:
+        1) Connect to `database`, or in memory when None.
+        2) Use as many threads as CPUs this process may run on (the Slurm allocation, not the
+           node; os.cpu_count() reports the node).
+        3) Spill to interim/__duckdb_tmp, never the working directory.
+
+    Output:
+        DuckDB connection; use it as a context manager so it closes on every exit path.
+    """
+    if hasattr(os, "sched_getaffinity"):
+        threads = len(os.sched_getaffinity(0))
+    else:  # macOS has no CPU affinity
+        threads = os.cpu_count()
+    return duckdb.connect(
+        str(database) if database else ":memory:",
+        config={
+            "threads": threads,
+            "temp_directory": (paths.interim_dir / "__duckdb_tmp").as_posix(),
+        },
+    )
+
+
 def sic_naics_aux(filename):
     """
     Description:
@@ -257,7 +284,7 @@ def gen_firmshares(paths: DataPaths):
         from quarterly (FUNDQ) and annual (FUNDA) NA files.
 
     Steps:
-        1) Load FUNDQ and FUNDA into DuckDB (rename FUNDA at_→at to avoid conflicts).
+        1) Read FUNDQ and FUNDA in place with DuckDB.
         2) Filter to INDL/STD/D/C rows with non-null shares & adj. factors.
         3) SELECT {gvkey, datadate, cshoq→csho_fund, ajexq→ajex_fund} from FUNDQ.
         4) UNION ALL with FUNDA {csho→csho_fund, ajex→ajex_fund}.
@@ -270,32 +297,27 @@ def gen_firmshares(paths: DataPaths):
         Parquet: raw_data_dfs/__firm_shares1.parquet (gvkey, datadate, csho_fund, ajex_fund),
         unique on (gvkey, datadate).
     """
-    con = ibis.duckdb.connect(threads=os.cpu_count())
-    con.create_table("comp_fundq", con.read_parquet(paths.raw_tables_dir / "comp_fundq.parquet"))
-    con.create_table(
-        "comp_funda",
-        con.read_parquet(paths.raw_tables_dir / "comp_funda.parquet").rename({"at_": "at"}),
-    )
-    con.raw_sql("""
-    CREATE TABLE __firm_shares1 AS
-    SELECT DISTINCT ON (gvkey, datadate) gvkey, datadate, csho_fund, ajex_fund
-    FROM (
-        SELECT gvkey, datadate, cshoq AS csho_fund, ajexq AS ajex_fund, 0 AS source_rank, fqtr, fyr
-        FROM comp_fundq
-        WHERE indfmt = 'INDL' AND datafmt = 'STD' AND popsrc = 'D' AND consol = 'C' AND cshoq IS NOT NULL AND ajexq IS NOT NULL
+    fundq = (paths.raw_tables_dir / "comp_fundq.parquet").as_posix()
+    funda = (paths.raw_tables_dir / "comp_funda.parquet").as_posix()
+    out = (paths.interim_dir / "raw_data_dfs" / "__firm_shares1.parquet").as_posix()
+    with _duckdb_connect(paths) as con:
+        con.execute(f"""
+        COPY (
+            SELECT DISTINCT ON (gvkey, datadate) gvkey, datadate, csho_fund, ajex_fund
+            FROM (
+                SELECT gvkey, datadate, cshoq AS csho_fund, ajexq AS ajex_fund, 0 AS source_rank, fqtr, fyr
+                FROM read_parquet('{fundq}')
+                WHERE indfmt = 'INDL' AND datafmt = 'STD' AND popsrc = 'D' AND consol = 'C' AND cshoq IS NOT NULL AND ajexq IS NOT NULL
 
-        UNION ALL
+                UNION ALL
 
-        SELECT gvkey, datadate, csho AS csho_fund, ajex AS ajex_fund, 1 AS source_rank, NULL AS fqtr, fyr
-        FROM comp_funda
-        WHERE indfmt = 'INDL' AND datafmt = 'STD' AND popsrc = 'D' AND consol = 'C' AND csho IS NOT NULL AND ajex IS NOT NULL
-    )
-    ORDER BY gvkey, datadate, source_rank, fqtr IS NULL, fyr DESC;
-    """)
-    con.table("__firm_shares1").to_parquet(
-        paths.interim_dir / "raw_data_dfs" / "__firm_shares1.parquet"
-    )
-    con.disconnect()
+                SELECT gvkey, datadate, csho AS csho_fund, ajex AS ajex_fund, 1 AS source_rank, NULL AS fqtr, fyr
+                FROM read_parquet('{funda}')
+                WHERE indfmt = 'INDL' AND datafmt = 'STD' AND popsrc = 'D' AND consol = 'C' AND csho IS NOT NULL AND ajex IS NOT NULL
+            )
+            ORDER BY gvkey, datadate, source_rank, fqtr IS NULL, fyr DESC
+        ) TO '{out}' (FORMAT PARQUET)
+        """)
 
 
 def gen_prihist_files(paths: DataPaths):
