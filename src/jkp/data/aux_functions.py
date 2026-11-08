@@ -1518,7 +1518,7 @@ def gen_comp_dsf(
         prices/returns/volumes/dividends; store as __comp_dsf.parquet.
 
     Steps:
-        1) Materialize daily FX to fx_data.parquet.
+        1) Build daily FX in Polars; DuckDB reads the frame directly.
         2) If apply_correction, repair decimal-shift errors in the raw data.
         3) Register SECD, G_SECD, firm-shares, and FX in DuckDB.
         4) Create __comp_dsf_global from G_SECD: local prices, highs/lows (if prcstd≠5),
@@ -1546,7 +1546,7 @@ def gen_comp_dsf(
     (paths.interim_dir / "aux_comp_dsf.ddb").unlink(missing_ok=True)
 
     # Prepare FX data
-    compustat_fx(paths).write_parquet(paths.interim_dir / "fx_data.parquet")
+    fx_daily = compustat_fx(paths)
 
     # Repair decimal-shift errors in the raw data (local currency)
     if apply_correction:
@@ -1599,12 +1599,12 @@ def gen_comp_dsf(
     # tables to the .ddb file. The NASDAQ cshtrd UPDATE is folded into the
     # __comp_dsf_na view as an equivalent CASE expression.
     with _duckdb_connect(paths, paths.interim_dir / "aux_comp_dsf.ddb") as con:
+        con.register("fx", fx_daily)
         con.execute(f"""
     CREATE VIEW comp_g_secd AS SELECT * FROM read_parquet('{g_secd_path.as_posix()}');
     CREATE VIEW comp_secd AS SELECT * FROM read_parquet('{secd_path.as_posix()}');
     CREATE VIEW __firm_shares2 AS
         SELECT * FROM read_parquet('{(paths.interim_dir / "__firm_shares2.parquet").as_posix()}');
-    CREATE VIEW fx AS SELECT * FROM read_parquet('{(paths.interim_dir / "fx_data.parquet").as_posix()}');
         """)
 
         con.execute("""
@@ -1832,7 +1832,8 @@ def gen_secm_data(paths: DataPaths):
         harmonize units, convert to USD, and output month-end rows.
 
     Steps:
-        1) Materialize daily FX as fx_data.parquet; read SECM, firm-shares, and FX in place with DuckDB.
+        1) Build daily FX in Polars (DuckDB reads the frame directly); read SECM and firm-shares
+        in place with DuckDB.
         2) In CTE:
         - Map SECM fields to local price/hi/low/ajex, compute cshoc fallback from firm-shares,
             adjust NASDAQ cshtrm by historical factors.
@@ -1845,14 +1846,11 @@ def gen_secm_data(paths: DataPaths):
         Parquet: secm_data.parquet (monthly Compustat SECM-based observations in USD).
     """
     (paths.interim_dir / "aux_comp_secm.ddb").unlink(missing_ok=True)
-    compustat_fx(paths).rename({"datadate": "date"}).write_parquet(
-        paths.interim_dir / "fx_data.parquet"
-    )
     secm = (paths.raw_tables_dir / "comp_secm.parquet").as_posix()
     firm_shares2 = (paths.interim_dir / "__firm_shares2.parquet").as_posix()
-    fx = (paths.interim_dir / "fx_data.parquet").as_posix()
     out = (paths.interim_dir / "secm_data.parquet").as_posix()
     with _duckdb_connect(paths, paths.interim_dir / "aux_comp_secm.ddb") as con:
+        con.register("fx", compustat_fx(paths).rename({"datadate": "date"}))
         con.execute(f"""
         COPY (
         WITH base AS (
@@ -1876,9 +1874,9 @@ def gen_secm_data(paths: DataPaths):
         FROM read_parquet('{secm}') AS a
         LEFT JOIN read_parquet('{firm_shares2}') AS b
             ON a.gvkey    = b.gvkey  AND a.datadate = b.ddate
-        LEFT JOIN read_parquet('{fx}') AS c
+        LEFT JOIN fx AS c
             ON a.curcdm   = c.curcdd AND a.datadate = c.date
-        LEFT JOIN read_parquet('{fx}') AS d
+        LEFT JOIN fx AS d
             ON a.curcddvm = d.curcdd AND a.datadate = d.date
         )
         SELECT
