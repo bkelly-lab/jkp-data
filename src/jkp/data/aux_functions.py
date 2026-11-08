@@ -503,8 +503,8 @@ def gen_raw_data_dfs(paths: DataPaths):
     gen_prihist_files(paths)
     gen_fx1(paths)
     aug_msf_v2(paths)
-    gen_crsp_sf(paths, "m").to_parquet(paths.interim_dir / "raw_data_dfs" / "__crsp_sf_m.parquet")
-    gen_crsp_sf(paths, "d").to_parquet(paths.interim_dir / "raw_data_dfs" / "__crsp_sf_d.parquet")
+    gen_crsp_sf(paths, "m")
+    gen_crsp_sf(paths, "d")
 
 
 def gen_crsp_sf(paths: DataPaths, freq):
@@ -513,168 +513,82 @@ def gen_crsp_sf(paths: DataPaths, freq):
         Build CRSP security file enriched with names and CCM link history (monthly or daily).
 
     Steps:
-        1) Load crsp_{freq}sf, crsp_{freq}senames, and ccmxpf_lnkhist into Ibis.
+        1) Read crsp_{freq}sf, crsp_stksecurityinfohist, and ccmxpf_lnkhist in place with DuckDB.
         2) Join SF to SENAMES on permno with date in [secinfostartdt, secinfoenddt].
         3) Join to CCM link history on permno and link date window, linktype in {LC, LU, LS}.
         4) Compute fields: bidask flag, abs(prc), shrout (thousands), ME, prc_high/low (valid only if prc>0),
         main exchange flag, and carry identifiers.
-        5) Select standardized columns and return the Ibis table.
+        5) Select standardized columns and write them.
 
     Output:
-        Ibis table (not written) with standardized CRSP {m|d} security fields.
+        Writes raw_data_dfs/__crsp_sf_{freq}.parquet with standardized CRSP {m|d} security fields.
     """
-    con = ibis.duckdb.connect(threads=os.cpu_count())
+    # CIZ name mapping by frequency: column prefix, high/low price columns, open/close prices
     if freq == "m":
-        sf = con.read_parquet(paths.interim_dir / "raw_data_dfs" / "crsp_msf_v2_aug.parquet")
+        sf = paths.interim_dir / "raw_data_dfs" / "crsp_msf_v2_aug.parquet"
+        p, high, low = "mth", "mthaskhi", "mthbidlo"
+        prc_open = prc_close = "NULL"
     elif freq == "d":
-        sf = con.read_parquet(paths.raw_tables_dir / "crsp_dsf_v2.parquet")
+        sf = paths.raw_tables_dir / "crsp_dsf_v2.parquet"
+        p, high, low = "dly", "dlyhigh", "dlylow"
+        prc_open = "CASE WHEN s.dlyprc > 0 AND s.dlyopen > 0 THEN s.dlyopen END"
+        prc_close = "CASE WHEN s.dlyprc > 0 AND s.dlyclose > 0 THEN s.dlyclose END"
     else:
         raise ValueError(f"Unknown freq: {freq}")
-    senames = con.read_parquet(paths.raw_tables_dir / "crsp_stksecurityinfohist.parquet")
-    ccmxpf_lnkhist = con.read_parquet(paths.raw_tables_dir / "crsp_ccmxpf_lnkhist.parquet")
-
-    # ---------- CIZ name mapping by frequency ----------
-    if freq == "m":
-        date_expr = sf.mthcaldt.cast("date")
-        prc_expr = sf.mthprc
-        prcflg_expr = sf.mthprcflg
-        ret_expr = sf.mthret
-        retx_expr = sf.mthretx
-        vol_expr = sf.mthvol
-        prcflg_expr = sf.mthprcflg
-        cfacshr_expr = sf.mthcumfacshr
-        askhi_expr = sf.mthaskhi
-        bidlo_expr = sf.mthbidlo
-        del_flag_expr = sf.mthdelflg
-        open_expr = None
-        close_expr = None
-    else:  # freq == "d", validated above
-        date_expr = sf.dlycaldt.cast("date")
-        prc_expr = sf.dlyprc
-        prcflg_expr = sf.dlyprcflg
-        ret_expr = sf.dlyret
-        retx_expr = sf.dlyretx
-        vol_expr = sf.dlyvol
-        cfacshr_expr = sf.dlycumfacshr
-        askhi_expr = sf.dlyhigh
-        bidlo_expr = sf.dlylow
-        open_expr = sf.dlyopen
-        close_expr = sf.dlyclose
-        del_flag_expr = sf.dlydelflg
-
-    sf_senames_join = sf.join(
-        senames,
-        how="left",
-        predicates=[
-            (sf.permno == senames.permno),
-            (date_expr >= senames.secinfostartdt.cast("date")),
-            (date_expr <= senames.secinfoenddt.cast("date")),
-        ],
-    )
-
-    full_join = sf_senames_join.join(
-        ccmxpf_lnkhist,
-        how="left",
-        predicates=[
-            (sf.permno == ccmxpf_lnkhist.lpermno),
-            ((date_expr >= ccmxpf_lnkhist.linkdt.cast("date")) | ccmxpf_lnkhist.linkdt.isnull()),
-            (
-                (date_expr <= ccmxpf_lnkhist.linkenddt.cast("date"))
-                | ccmxpf_lnkhist.linkenddt.isnull()
-            ),
-            ccmxpf_lnkhist.linktype.isin(["LC", "LU", "LS"]),
-        ],
-    )
-
-    bidask_expr = ibis.cases(
-        (prcflg_expr == "BA", 1),
-        (prcflg_expr == "TR", 0),
-        else_=ibis.null(),
-    ).cast("int32")
-
-    securitytype_expr = sf.securitytype
-    securitysubtype_expr = sf.securitysubtype
-    sharetype_expr = sf.sharetype
-    issuertype_expr = sf.issuertype
-
-    is_common_expr = (
-        (securitytype_expr == "EQTY")
-        & (securitysubtype_expr == "COM")
-        & (sharetype_expr == "NS")
-        & (issuertype_expr.isin(["ACOR", "CORP"]))
-    )
-
-    primaryexch_expr = sf.primaryexch
-    conditionaltype_expr = sf.conditionaltype
-
-    exch_main_expr = (primaryexch_expr.isin(["A", "N", "Q"]) & (conditionaltype_expr == "RW")).cast(
-        "int32"
-    )
-    crsp_nyse_expr = ((primaryexch_expr == "N") & (conditionaltype_expr == "RW")).cast("int32")
-
-    prc_open_mutate = (
-        ibis.cases(((prc_expr > 0) & (open_expr > 0), open_expr), else_=ibis.null())
-        if open_expr is not None
-        else ibis.null()
-    )
-    prc_close_mutate = (
-        ibis.cases(((prc_expr > 0) & (close_expr > 0), close_expr), else_=ibis.null())
-        if close_expr is not None
-        else ibis.null()
-    )
-
-    result = full_join.mutate(
-        date=date_expr,
-        bidask=bidask_expr,
-        prc=prc_expr,
-        shrout=(sf.shrout / 1000),
-        me=(prc_expr * (sf.shrout / 1000)),
-        prc_high=ibis.cases(((prc_expr > 0) & (askhi_expr > 0), askhi_expr), else_=ibis.null()),
-        prc_low=ibis.cases(((prc_expr > 0) & (bidlo_expr > 0), bidlo_expr), else_=ibis.null()),
-        prc_open=prc_open_mutate,
-        prc_close=prc_close_mutate,
-        iid=ccmxpf_lnkhist.liid,
-        ret=ret_expr,
-        retx=retx_expr,
-        cfacshr=cfacshr_expr,
-        vol=vol_expr,
-        # MthDelFlg/DlyDelFlg; gates the delisting-return adjustment in prepare_crsp_sf
-        del_flag=del_flag_expr,
-        common=is_common_expr.cast("int32"),
-        primaryexch=primaryexch_expr,
-        conditionaltype=conditionaltype_expr,
-        exch_main=exch_main_expr,
-        crsp_nyse=crsp_nyse_expr,
-        gvkey=ccmxpf_lnkhist.gvkey,
-    ).select(
-        [
-            "permno",
-            "permco",
-            "date",
-            "bidask",
-            "prc",
-            "prc_open",
-            "prc_close",
-            "shrout",
-            "ret",
-            "retx",
-            "cfacshr",
-            "vol",
-            "prc_high",
-            "prc_low",
-            "del_flag",
-            "common",
-            "primaryexch",
-            "conditionaltype",
-            "crsp_nyse",
-            "gvkey",
-            "iid",
-            "exch_main",
-            "me",
-            "ticker",
-        ]
-    )
-    return result
+    senames = (paths.raw_tables_dir / "crsp_stksecurityinfohist.parquet").as_posix()
+    lnkhist = (paths.raw_tables_dir / "crsp_ccmxpf_lnkhist.parquet").as_posix()
+    out = (paths.interim_dir / "raw_data_dfs" / f"__crsp_sf_{freq}.parquet").as_posix()
+    with _duckdb_connect(paths) as con:
+        con.execute(f"""
+        COPY (
+            SELECT
+                s.permno,
+                s.permco,
+                s.{p}caldt AS date,
+                CAST(CASE WHEN s.{p}prcflg = 'BA' THEN 1 WHEN s.{p}prcflg = 'TR' THEN 0 END AS INTEGER)
+                    AS bidask,
+                s.{p}prc AS prc,
+                {prc_open} AS prc_open,
+                {prc_close} AS prc_close,
+                s.shrout / 1000 AS shrout,
+                s.{p}ret AS ret,
+                s.{p}retx AS retx,
+                s.{p}cumfacshr AS cfacshr,
+                s.{p}vol AS vol,
+                CASE WHEN s.{p}prc > 0 AND s.{high} > 0 THEN s.{high} END AS prc_high,
+                CASE WHEN s.{p}prc > 0 AND s.{low} > 0 THEN s.{low} END AS prc_low,
+                -- MthDelFlg/DlyDelFlg; gates the delisting-return adjustment in prepare_crsp_sf
+                s.{p}delflg AS del_flag,
+                CAST(
+                    s.securitytype = 'EQTY'
+                    AND s.securitysubtype = 'COM'
+                    AND s.sharetype = 'NS'
+                    AND s.issuertype IN ('ACOR', 'CORP')
+                    AS INTEGER
+                ) AS common,
+                s.primaryexch,
+                s.conditionaltype,
+                CAST(s.primaryexch = 'N' AND s.conditionaltype = 'RW' AS INTEGER) AS crsp_nyse,
+                l.gvkey,
+                l.liid AS iid,
+                CAST(s.primaryexch IN ('A', 'N', 'Q') AND s.conditionaltype = 'RW' AS INTEGER)
+                    AS exch_main,
+                s.{p}prc * (s.shrout / 1000) AS me,
+                s.ticker
+            FROM read_parquet('{sf.as_posix()}') AS s
+            -- adds no columns (the security file's own columns win on name clashes), but
+            -- overlapping name records repeat a row, so the join stays
+            LEFT JOIN read_parquet('{senames}') AS n
+                ON s.permno = n.permno
+                AND s.{p}caldt >= n.secinfostartdt
+                AND s.{p}caldt <= n.secinfoenddt
+            LEFT JOIN read_parquet('{lnkhist}') AS l
+                ON s.permno = l.lpermno
+                AND (s.{p}caldt >= l.linkdt OR l.linkdt IS NULL)
+                AND (s.{p}caldt <= l.linkenddt OR l.linkenddt IS NULL)
+                AND l.linktype IN ('LC', 'LU', 'LS')
+        ) TO '{out}' (FORMAT PARQUET)
+        """)
 
 
 def get_columns(conn, conninfo, lib, table):
