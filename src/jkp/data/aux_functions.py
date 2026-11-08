@@ -4709,7 +4709,7 @@ def add_helper_vars(paths: DataPaths, data):
         Generate monthly-complete accounting panels per (gvkey,curcd), join originals, and compute a rich set of helper *_x variables.
 
     Steps:
-        1) Create a temp DuckDB; load data; build monthly grid from min/max datadate; left-join raw rows; deduplicate per date.
+        1) Register data with DuckDB; build monthly grid from min/max datadate; left-join raw rows; deduplicate per date.
         2) Bring grid to Polars; sanitize key vars; construct building blocks (sale_x, debt_x, pstk_x, opex_x, etc.).
         3) Derive financial aggregates (seq_x, nwc_x, be_x/bev_x, ebitda_x/ebit_x/op_x/ope_x, oa_x/ol_x/noa_x, etc.).
         4) Compute flows/changes (cowc_x, nncoa_x, oacc_x, tacc_x, netis_x, dbnetis_x) with 12-month diffs where available; guard with early-count rules.
@@ -4719,12 +4719,10 @@ def add_helper_vars(paths: DataPaths, data):
         LazyFrame with monthly-complete panel and standardized helper variables (…_x) for downstream ratios/factors.
     """
     (paths.interim_dir / "aux_add_helpers.ddb").unlink(missing_ok=True)
-    con = ibis.duckdb.connect(
-        str(paths.interim_dir / "aux_add_helpers.ddb"), threads=os.cpu_count()
-    )
-    con.create_table("data", data.rename({"at": "at_var"}).collect(), overwrite=True)
-    con.raw_sql("""
-        CREATE OR REPLACE TABLE comp_dates1 AS
+    with _duckdb_connect(paths, paths.interim_dir / "aux_add_helpers.ddb") as con:
+        con.register("data", data.rename({"at": "at_var"}).collect())
+        helpers2 = con.sql("""
+        WITH comp_dates1 AS (
         SELECT
             gvkey,
             curcd,
@@ -4732,9 +4730,9 @@ def add_helper_vars(paths: DataPaths, data):
             MAX(datadate) AS end_date
         FROM data
         GROUP BY gvkey, curcd
-        ;
+        ),
 
-        CREATE OR REPLACE TABLE comp_dates2 AS
+        comp_dates2 AS (
         SELECT
         c.gvkey,
         c.curcd,
@@ -4749,38 +4747,30 @@ def add_helper_vars(paths: DataPaths, data):
             date_trunc('month', c.end_date),
             INTERVAL '1 month'
         ) AS gs(month_start)
-        ORDER BY c.gvkey, c.curcd, datadate
-        ;
+        ),
 
-        CREATE OR REPLACE TABLE helpers1_base AS
+        helpers1_base AS (
         SELECT
         a.gvkey,
         a.curcd,
         a.datadate,
-        b.*,
+        b.* EXCLUDE (gvkey, curcd, datadate),
         (b.gvkey IS NOT NULL)::INTEGER AS data_available
         FROM comp_dates2 AS a
         LEFT JOIN data AS b
         USING (gvkey, curcd, datadate)
-        ;
+        ),
 
-        CREATE OR REPLACE TABLE helpers1 AS
+        helpers1 AS (
         SELECT
         *
-        FROM (
-        SELECT
-            *,
-            ROW_NUMBER() OVER (
+        FROM helpers1_base
+        QUALIFY ROW_NUMBER() OVER (
             PARTITION BY gvkey, curcd, datadate
             ORDER   BY datadate
-            ) AS rn
-        FROM helpers1_base
-        ) t
-        WHERE rn = 1
-        ORDER BY gvkey, curcd, datadate
-        ;
+            ) = 1
+        )
 
-        CREATE OR REPLACE TABLE helpers2 AS
         SELECT
         *,
         ROW_NUMBER() OVER (
@@ -4789,13 +4779,7 @@ def add_helper_vars(paths: DataPaths, data):
         ) AS count
         FROM helpers1
         ORDER BY gvkey, curcd, datadate
-        ;
-
-        ALTER TABLE helpers2 DROP COLUMN gvkey_1;
-        ALTER TABLE helpers2 DROP COLUMN curcd_1;
-        ALTER TABLE helpers2 DROP COLUMN datadate_1;
-        ALTER TABLE helpers2 DROP COLUMN rn;
-    """)
+        """).pl()
 
     c1 = (
         (col("dltis").is_null())
@@ -4806,7 +4790,7 @@ def add_helper_vars(paths: DataPaths, data):
     c2 = (col("dlcch").is_null()) & (col("count") <= 12)
     sort_vars = ["gvkey", "curcd", "datadate"]
 
-    base = con.table("helpers2").to_polars().rename({"at_var": "at"}).lazy()
+    base = helpers2.rename({"at_var": "at"}).lazy()
     base = base.sort(sort_vars).with_columns(
         [
             pl.when(col(var) >= 0).then(col(var)).otherwise(fl_none()).alias(var)
