@@ -482,6 +482,44 @@ def test_my_pipeline_function(test_paths):
 
 `test_paths` is a `DataPaths` instance rooted at `temp_data_dir` (which is itself a per-test `tmp_path` with the pipeline subdirectory layout already created). Use this rather than constructing `DataPaths` manually or relying on `monkeypatch.chdir` — that pattern is being phased out.
 
+## Synthetic Compustat
+
+WRDS rows can't be committed, so the accounting stage (`standardized_accounting_data`, `create_acc_chars`, `combine_ann_qtr_chars`) runs end to end in the tests on synthetic Compustat data, sampled from statistics of the real data.
+
+### What is committed
+
+| Path | Contents |
+|---|---|
+| `tests/golden/compustat_profile.json` | Statistics of the real inputs and outputs: schemas, null and sign rates, quantiles, correlations. No rows or firm identifiers. Written on Yale by `tests/golden/calibration/profile_compustat.py`. |
+| `tests/golden/synthetic_compustat.py` | Seeded generator. Random firms (gvkey 900001 up) are sampled from the profile. Persona firms (900101 up) each plant one edge case or past bug, listed in its docstring. |
+| `tests/golden/fixtures/synthetic_compustat/` | The generator's output: `comp_funda`, `comp_fundq`, `comp_g_funda`, `comp_g_fundq`, `comp_exrt_dly` and `interim/world_msf`, in the real schemas. |
+| `tests/golden/fixtures/acc_chars/` | Goldens of the stage's output (`generate_acc_chars_golden.py`): every persona row, the June and December rows of the random firms, and a fingerprint of every column. |
+
+### Tests that use it
+
+- `golden/test_synthetic_compustat.py`: the data obey the rules in `golden/compustat_invariants.py`, each persona plants its case, and the output's null rates and sign shares are near the real ones.
+- `golden/test_acc_chars_golden.py`: the output equals the goldens, also on one Polars thread.
+- `integration/test_accounting_stage_pipeline.py`: keys, columns and public-date row counts of every stage file.
+- `unit/test_acc_chars_oracle.py` (`methodology`): every characteristic equals `unit/acc_char_oracle.py`, plain Python written from `accounting_chars.sas` with line citations.
+- `property/test_acc_chars_metamorphic.py`: doubled money, added firms, a currency twin, relabeled gvkeys and shifted dates change the output as they should.
+
+`scripts/mutation_check_acc_chars.py` (not in CI) checks that these tests catch a list of planted bugs.
+
+### Refreshing
+
+Refresh only on a new WRDS vintage, or when the stage starts to read something the generator doesn't model. Work in a fresh clone on Yale:
+
+1. `sbatch tests/golden/calibration/profile_compustat.slurm` rewrites the profile.
+2. `PYTHONPATH=src uv run --no-sync python -m tests.golden.synthetic_compustat` regenerates the inputs.
+3. `PYTHONPATH=src:. uv run --no-sync python -m pytest tests/golden/test_acc_chars_golden.py --regen-golden` regenerates the goldens.
+4. `sbatch tests/golden/calibration/check_no_leak.slurm` must print only zeros: no synthetic gvkey or (datadate, assets, sales) row occurs in the real data.
+
+### What to review on regeneration
+
+- The profile diff holds aggregates only.
+- `test_synthetic_compustat.py` passes.
+- Every golden change is explained by the profile or generator change. A persona's output that changes without one is a change in the stage.
+
 ## Troubleshooting
 
 ### "Module not found" errors
