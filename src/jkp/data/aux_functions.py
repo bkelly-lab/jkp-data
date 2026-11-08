@@ -1935,7 +1935,7 @@ def gen_secm_data(paths: DataPaths):
         harmonize units, convert to USD, and output month-end rows.
 
     Steps:
-        1) Materialize daily FX as fx_data.parquet; register SECM, firm-shares, and FX in DuckDB.
+        1) Materialize daily FX as fx_data.parquet; read SECM, firm-shares, and FX in place with DuckDB.
         2) In CTE:
         - Map SECM fields to local price/hi/low/ajex, compute cshoc fallback from firm-shares,
             adjust NASDAQ cshtrm by historical factors.
@@ -1948,27 +1948,16 @@ def gen_secm_data(paths: DataPaths):
         Parquet: secm_data.parquet (monthly Compustat SECM-based observations in USD).
     """
     (paths.interim_dir / "aux_comp_secm.ddb").unlink(missing_ok=True)
-    con = ibis.duckdb.connect(str(paths.interim_dir / "aux_comp_secm.ddb"), threads=os.cpu_count())
-
     compustat_fx(paths).rename({"datadate": "date"}).write_parquet(
         paths.interim_dir / "fx_data.parquet"
     )
-    con.create_table(
-        "comp_secm",
-        con.read_parquet(paths.raw_tables_dir / "comp_secm.parquet"),
-        overwrite=True,
-    )
-    con.create_table(
-        "__firm_shares2",
-        con.read_parquet(paths.interim_dir / "__firm_shares2.parquet"),
-        overwrite=True,
-    )
-    con.create_table("fx", con.read_parquet(paths.interim_dir / "fx_data.parquet"), overwrite=True)
-
-    con.raw_sql("""
-        DROP TABLE IF EXISTS __comp_secm2;
-
-        CREATE TABLE __comp_secm2 AS
+    secm = (paths.raw_tables_dir / "comp_secm.parquet").as_posix()
+    firm_shares2 = (paths.interim_dir / "__firm_shares2.parquet").as_posix()
+    fx = (paths.interim_dir / "fx_data.parquet").as_posix()
+    out = (paths.interim_dir / "secm_data.parquet").as_posix()
+    with _duckdb_connect(paths, paths.interim_dir / "aux_comp_secm.ddb") as con:
+        con.execute(f"""
+        COPY (
         WITH base AS (
         SELECT
             a.gvkey, a.iid, a.datadate, last_day(a.datadate) AS eom, a.tpci, a.exchg, a.dvpsxm,
@@ -1987,12 +1976,12 @@ def gen_secm_data(paths: DataPaths):
             CASE WHEN a.curcdm    = 'USD' THEN 1 ELSE c.fx END AS fx,
             CASE WHEN a.curcddvm  = 'USD' THEN 1 ELSE d.fx END AS fx_div,
             a.prccm / a.ajexm * a.trfm AS ri_local
-        FROM comp_secm AS a
-        LEFT JOIN __firm_shares2 AS b
+        FROM read_parquet('{secm}') AS a
+        LEFT JOIN read_parquet('{firm_shares2}') AS b
             ON a.gvkey    = b.gvkey  AND a.datadate = b.ddate
-        LEFT JOIN fx AS c
+        LEFT JOIN read_parquet('{fx}') AS c
             ON a.curcdm   = c.curcdd AND a.datadate = c.date
-        LEFT JOIN fx AS d
+        LEFT JOIN read_parquet('{fx}') AS d
             ON a.curcddvm = d.curcdd AND a.datadate = d.date
         )
         SELECT
@@ -2009,9 +1998,9 @@ def gen_secm_data(paths: DataPaths):
         dvpsxm         * fx_div            AS div_tot,
         NULL::DOUBLE                       AS div_cash,
         NULL::DOUBLE                       AS div_spc
-        FROM base;
-    """)
-    con.table("__comp_secm2").to_parquet(paths.interim_dir / "secm_data.parquet")
+        FROM base
+        ) TO '{out}' (FORMAT PARQUET)
+        """)
 
 
 def gen_comp_msf(paths: DataPaths):
