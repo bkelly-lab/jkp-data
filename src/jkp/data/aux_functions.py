@@ -3291,30 +3291,21 @@ def comp_sic_naics(paths: DataPaths):
     Output:
         Parquet comp_other.parquet with daily SIC/NAICS per gvkey.
     """
-    con = ibis.duckdb.connect(threads=os.cpu_count())
-    con.create_table(
-        "sic_naics_na",
-        con.read_parquet(paths.interim_dir / "raw_data_dfs" / "sic_naics_na.parquet"),
-    )
-    con.create_table(
-        "sic_naics_gl",
-        con.read_parquet(paths.interim_dir / "raw_data_dfs" / "sic_naics_gl.parquet"),
-    )
-    con.raw_sql("""
-                CREATE TABLE comp2 AS
+    na = (paths.interim_dir / "raw_data_dfs" / "sic_naics_na.parquet").as_posix()
+    gl = (paths.interim_dir / "raw_data_dfs" / "sic_naics_gl.parquet").as_posix()
+    with _duckdb_connect(paths) as con:
+        comp5 = con.sql(f"""
+                WITH comp2 AS (
                 SELECT *
-                FROM sic_naics_na
+                FROM read_parquet('{na}')
                 WHERE NOT (
                     gvkey   = '175650'
                     AND datadate = DATE '2005-12-31'
                     AND naics IS NULL
-                );
+                )
+                ),
 
-                CREATE TABLE comp3 AS
-                SELECT *
-                FROM sic_naics_gl;
-
-                CREATE TABLE comp4 AS
+                comp4 AS (
                 SELECT
                     a.gvkey    AS gvkeya,
                     a.datadate AS datea,
@@ -3325,12 +3316,12 @@ def comp_sic_naics(paths: DataPaths):
                     b.sic      AS sicb,
                     b.naics    AS naicsb
                 FROM comp2 AS a
-                FULL OUTER JOIN comp3 AS b
+                FULL OUTER JOIN read_parquet('{gl}') AS b
                 ON a.gvkey    = b.gvkey
-                AND a.datadate = b.datadate;
+                AND a.datadate = b.datadate
+                ),
 
-                CREATE TABLE comp5 AS
-                WITH t AS (
+                t AS (
                 SELECT
                     LPAD(COALESCE(gvkeya, gvkeyb), 6, '0') AS gvkey,
                     COALESCE(datea, dateb)            AS date,
@@ -3353,12 +3344,9 @@ def comp_sic_naics(paths: DataPaths):
                 t.date,
                 t.sic,
                 t.naics NULLS LAST
-                ;
-    """)
+        """).pl()
     comp = (
-        con.table("comp5")
-        .to_polars()
-        .lazy()
+        comp5.lazy()
         .sort(["gvkey", "datadate"])
         .with_columns(end_date=col("datadate").shift(-1).over("gvkey"))
         .with_columns(
@@ -3379,7 +3367,6 @@ def comp_sic_naics(paths: DataPaths):
         .sort(["gvkey", "date"])
     )
     comp.sink_parquet(paths.interim_dir / "comp_other.parquet")
-    con.disconnect()
 
 
 @measure_time
