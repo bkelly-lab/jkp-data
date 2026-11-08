@@ -35,12 +35,12 @@ GOLDEN_NAMES = ["personas", "random", "fingerprint"]
 KEYS = ["gvkey", "public_date"]
 
 
-def run_stage(paths: DataPaths) -> None:
+def run_stage(paths: DataPaths, input_dir: Path = INPUT_DIR) -> None:
     """
     Description:
-        Run the accounting stage on the synthetic inputs, in main.py's order.
+        Run the accounting stage on the synthetic inputs in input_dir, in main.py's order.
     Steps:
-        1) Create the folder tree; copy the synthetic raw tables and world_msf into it.
+        1) Create the folder tree; copy input_dir's raw tables and world_msf into it.
         2) Build __fx1 from comp_exrt_dly (gen_fx1, which the download step runs in main.py).
         3) standardized_accounting_data, create_acc_chars (annual, then quarterly),
            combine_ann_qtr_chars, with main.py's arguments.
@@ -48,8 +48,8 @@ def run_stage(paths: DataPaths) -> None:
         The stage's files in paths.interim_dir, ending with acc_chars_world.parquet.
     """
     af.setup_folder_structure(paths)
-    shutil.copytree(INPUT_DIR / "raw" / "raw_tables", paths.raw_tables_dir, dirs_exist_ok=True)
-    shutil.copy(INPUT_DIR / "interim" / "world_msf.parquet", paths.interim_dir)
+    shutil.copytree(input_dir / "raw" / "raw_tables", paths.raw_tables_dir, dirs_exist_ok=True)
+    shutil.copy(input_dir / "interim" / "world_msf.parquet", paths.interim_dir)
     af.gen_fx1(paths)
     i = paths.interim_dir
     msf = i / "world_msf.parquet"
