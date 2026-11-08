@@ -4151,8 +4151,8 @@ def apply_indfmt_filter(df: pl.LazyFrame, keys: list[str]) -> pl.LazyFrame:
     Description:
         Keep one report format per key: the INDL rows if the key has any, else all its rows (FS).
         Quarterly data are keyed by (gvkey, datadate, fyr), so the format is chosen within each
-        fiscal calendar and only one_row_per_date picks between calendars. Annual data carry no
-        fyr and are keyed by (gvkey, datadate).
+        fiscal calendar and only one_row_per_date picks between calendars. The annual frame has
+        no fyr column and is keyed by (gvkey, datadate).
 
     Steps:
         1) Keep rows with indfmt == 'INDL', and every row of a key without an INDL row.
