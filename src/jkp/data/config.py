@@ -221,6 +221,87 @@ ROLLING_DAILY_SPECS: list[tuple[str, int, list[str]]] = [
     ("_1260d", 750, ["mktcorr"]),
 ]
 
+# ============================================================================
+# FF factor pipeline (gen_ff_data)
+# ============================================================================
+
+# ISO-3 code for the United States; sentinel for excntry-branched filters in
+# the unified FF pipeline (US-strict NYSE breakpoint pool, US-bypassed
+# min-stocks gates).
+US_EXCNTRY = "USA"
+
+# Min firms per (excntry, June(y)) for ROW breakpoints; US bypassed.
+FF_MIN_STOCKS_BP = 10
+
+# Min firms per (excntry, date, bucket) for ROW VW; US bypassed.
+FF_MIN_STOCKS_PF = 3
+
+# ROW formation ME tolerance (months): a stock with no June (or December) row,
+# e.g. halted, takes its last ME up to this many months earlier. US unaffected.
+FF_ROW_FORMATION_ME_LOOKBACK = 2
+
+# CRSP -99.0 missing-return sentinel: treat as 0 return when compounding the
+# UMD prior-(2-12) signal, per FF convention.
+FF_MISSING_RET_CODE = -99.0
+FF_MISSING_RET_TOL = 1e-6
+
+# UMD signal window lengths (trading days for daily, calendar months for monthly).
+FF_UMD_DAILY_SKIP = 21
+FF_UMD_DAILY_LOOKBACK = 251
+FF_UMD_MONTHLY_LOOKBACK = 12
+FF_UMD_MONTHLY_SKIP = 1
+
+# Non-US UMD halt tolerance: min rows in the momentum window (monthly t-12..t-2 =
+# 11 months; daily t-250..t-21 = 230 trading days). Compustat Global records a
+# halt as missing rows, not French's -99.0. Endpoints stay strict; US needs all.
+FF_UMD_ROW_MIN_MONTHS = 6
+FF_UMD_ROW_MIN_DAYS = 115
+
+# DFF (Davis-Fama-French) hand-collected Moody's BE splice into the US FF path.
+# When True, union DFF BE (permno-keyed, bundled resource) with Compustat BE;
+# DFF fills (permno, formation year) cells Compustat lacks, extending SMB/HML
+# back to 1926-07 (and UMD to ~1927-01 via the longer CRSP panel). Per DFF
+# (2000) the two BE sets are disjoint by construction: "we collect book common
+# equity (BE) from 1925 to 1996 for all NYSE industrial firms that do not have
+# BE data on Compustat."
+FF_USE_DFF_BE = True
+
+# Strict DFF (2000) replication gate: "beginning in 1954 we merge the
+# hand-collected data ... with the Compustat data". True drops Compustat BE
+# from formations before June FF_DFF_MERGE_YEAR prior to the union (pre-1954
+# Compustat rows are backfill French never used). Default False: union
+# whatever Compustat exists.
+FF_DFF_GATE_COMPUSTAT_PRE1954 = False
+FF_DFF_MERGE_YEAR = 1954
+
+# On a (permno, year) collision the BE value is coalesced DFF-first
+# (be = coalesce(dff.be, comp.be)) while the Compustat row keeps its
+# accounting fields: most collisions are Compustat rows with NULL BE (early
+# balance-sheet fields absent from the current vintage), and where both are
+# non-null the sources agree (median |log ratio| ~ 0).
+
+# Synthetic per-firm Compustat-history count for DFF-only rows so they clear
+# the count >= 2 BM eligibility gate (_ff_bm_eligible). DFF rows carry no
+# Compustat fiscal-year history; this count feeds ONLY the eligibility gate —
+# op/inv stay null so DFF rows drop out of OP/INV (RMW/CMA) sorts.
+FF_DFF_SYNTH_COUNT = 2
+
+# CCM link-window backdating rescue for the early-1960s Compustat expansion.
+# Compustat added ~200 (mostly small) NYSE/AMEX firms per year around 1964-66
+# and backfilled their fy1962-64 statements; CCM stamps linkdt at coverage
+# start, so those fiscal years sit BEFORE the link window and the standard
+# linkdt <= June(t) filter rejects them. French uses them (his ME x OP
+# portfolio counts exceed ours by ~200/yr in 1963-65 and match from 1966;
+# diagnosed 2026-06: 208/206/192 of the misses are window-only failures with
+# a valid L*/P-C link and a fy(t-1) funda row, median linkdt 2.6y after the
+# formation). Rescue: for June formations in [FROM, THROUGH], accept a link
+# whose linkdt is after the formation when it is the permno's first link and
+# starts within FF_CCM_BACKDATE_MAX_YEARS of the formation (kills recycled-
+# permno misattribution, e.g. a 2001 link claiming a 1963 row).
+FF_CCM_BACKDATE_FROM = 1963
+FF_CCM_BACKDATE_THROUGH = 1966
+FF_CCM_BACKDATE_MAX_YEARS = 5
+
 PORTFOLIO_SETTINGS = {
     "end_date": END_DATE,
     "pfs": PORTFOLIO_PFS,

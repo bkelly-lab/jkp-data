@@ -81,3 +81,8 @@ def get_fx_cad_backfill_path() -> Path:
 def get_data_readme_path() -> Path:
     """Return the path to the bundled data directory README file."""
     return _resource_path("README.md")
+
+
+def get_dff_be_path() -> Path:
+    """Return the path to the bundled DFF_BE_With_Nonindust.txt file."""
+    return _resource_path("DFF_BE_With_Nonindust.txt")
