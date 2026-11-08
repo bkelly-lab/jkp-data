@@ -5552,7 +5552,7 @@ def chg_var1_to_var2(df, name, var1, var2, horizon):
     return df
 
 
-def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min):
+def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min) -> pl.DataFrame:
     """
     Description:
         Earnings persistence: AR(1) of NI/AT (annual steps) with rolling cohorts.
@@ -5561,7 +5561,7 @@ def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min):
         1) Read gvkey,curcd,datadate,ni_x,at_x in place; create __ni_at=ni_x/at_x (at_x>0).
         2) Keep obs with __ni_at and its 12-month lag; build calendar cohorts by month for N years.
         3) For each (gvkey,curcd,calc_date,grp) with ≥ __min obs, run OLS __ni_at on lag.
-        4) Aggregate to slope (ni_ar1) and residual std (ni_ivol); save. ni_ar1 is null when
+        4) Aggregate to slope (ni_ar1) and residual std (ni_ivol). ni_ar1 is null when
            the lagged NI/AT does not vary in the window (regr_slope returns NaN). The
            regressions and the std read their rows in datadate order: unordered, the float
            sums follow DuckDB's thread scheduling and the low bits change between runs. The
@@ -5569,15 +5569,13 @@ def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min):
            acc_std_ann/acc_std_qtr (deduplicated on gvkey, datadate).
 
     Output:
-        Writes 'ni_ar_res.parquet' with [gvkey, curcd, datadate, ni_ar1, ni_ivol].
+        DataFrame with [gvkey, curcd, datadate, ni_ar1, ni_ivol].
     """
 
     months = 12 * __n
     data = Path(data_path).as_posix()
-    out = (paths.interim_dir / "ni_ar_res.parquet").as_posix()
     with _duckdb_connect(paths, paths.interim_dir / "aux_earnings_pers.ddb") as con:
-        con.execute(f"""
-    COPY (
+        result = con.sql(f"""
     WITH raw_table AS (
       SELECT gvkey, curcd, datadate, ni_x, at_x
       FROM read_parquet('{data}')
@@ -5677,9 +5675,9 @@ def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min):
     GROUP BY gvkey, curcd, calc_grp, calc_date, slope
     HAVING COUNT(*) >= {__min}
     ORDER BY gvkey, curcd, calc_date
-    ) TO '{out}' (FORMAT PARQUET)
-    """)
+    """).pl()
     (paths.interim_dir / "aux_earnings_pers.ddb").unlink(missing_ok=True)
+    return result
 
 
 def scale_me(var):
@@ -6314,7 +6312,7 @@ def add_earnings_persistence_and_expand(paths: DataPaths, df, data_path, lag_to_
         Attach AR(1) earnings persistence (ni_ar1, ni_ivol) and expand to public dates.
 
     Steps:
-        1) Run persistence job over input parquet (N=5 yrs, min=5) → 'ni_ar_res.parquet'.
+        1) Run persistence job over input parquet (N=5 yrs, min=5).
         2) Join on (gvkey,curcd,datadate); keep rows with data_available=1.
         3) Set start_date = datadate + lag_to_pub months; end_date = min(next_start−1mo, datadate+max_lag).
         4) Expand monthly between start/end to 'public_date'.
@@ -6322,8 +6320,7 @@ def add_earnings_persistence_and_expand(paths: DataPaths, df, data_path, lag_to_
     Output:
         Expanded DataFrame keyed by (gvkey, public_date) with persistence fields.
     """
-    compute_earnings_persistence(paths, data_path, 5, 5)
-    earnings_pers = pl.scan_parquet(paths.interim_dir / "ni_ar_res.parquet")
+    earnings_pers = compute_earnings_persistence(paths, data_path, 5, 5).lazy()
     df = (
         df.join(earnings_pers, on=["gvkey", "curcd", "datadate"], how="left")
         .filter(col("data_available") == 1)
