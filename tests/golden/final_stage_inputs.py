@@ -169,6 +169,7 @@ def build_daily(seed: int = 42) -> pl.DataFrame:
             }
             for c in (
                 "ret",
+                "ret_local",
                 "ret_exc",
                 "ret_exc_wins",
                 "ret_intraday",
