@@ -5,8 +5,8 @@ Covers Stage 1 (_hxz_add_me_lag1_ym, hxz_attach_siccd), Stage 2
 (hxz_impute_be_clean_surplus, hxz_supplement_q4_shares, hxz_merge_be_chain,
 hxz_link_compustat), the characteristic tables (hxz_annual_characteristics,
 hxz_roe_by_month), Stage 4 (_hxz_nyse_breaks, _hxz_country_breaks,
-_hxz_classify_size_ia, _hxz_classify_roe, hxz_classify_portfolios), and Stage 5
-(hxz_compute_factors).
+_hxz_classify_size_ia, _hxz_classify_roe, hxz_classify_portfolios), Stage 5
+(hxz_compute_factors), and the two-calendar quarter dedup (one_row_per_date).
 
 Does NOT call gen_hxz_data (covered by golden test) and does NOT require
 WRDS I/O for helpers that only need in-memory DataFrames.
@@ -33,6 +33,7 @@ from jkp.data.aux_functions import (
     hxz_impute_be_clean_surplus,
     hxz_merge_be_chain,
     hxz_roe_by_month,
+    one_row_per_date,
 )
 from jkp.data.config import (
     HXZ_MIN_STOCKS_BP,
@@ -1682,3 +1683,55 @@ class TestHxzCharacteristicTables:
         assert at(30, 2019, 11) == [0.2]
         # No sample start: a 1966 Roe exists; a quarter without rdq is never used
         assert [at(40, 1966, m) for m in (2, 3, 6, 7)] == [[], [0.1], [0.1], []]
+
+
+# ---------------------------------------------------------------------------
+# Two fiscal calendars on one quarter end — one_row_per_date after the BEQ chain
+# ---------------------------------------------------------------------------
+
+
+class TestHxzTwoCalendarQuarters:
+    """A firm that changes its fiscal year-end reports some quarter ends under
+    both calendars. The BEQ chain runs on both; one_row_per_date then keeps the
+    established calendar's row, and the new calendar's next quarter still lags
+    to the shared quarter end."""
+
+    def test_established_calendar_kept_and_lag_intact(self):
+        # FYE December, then June: 1999-09-30 and 1999-12-31 appear as FY1999
+        # Q3/Q4 (fyr 12) and as FY2000 Q1/Q2 (fyr 6).
+        fq = pl.DataFrame(
+            [
+                (date(1999, 3, 31), 12, 1999, 1, 100.0, 0),
+                (date(1999, 6, 30), 12, 1999, 2, 101.0, 1),
+                (date(1999, 9, 30), 12, 1999, 3, 102.0, 2),
+                (date(1999, 12, 31), 12, 1999, 4, 103.0, 3),
+                (date(1999, 9, 30), 6, 2000, 1, 102.5, 4),
+                (date(1999, 12, 31), 6, 2000, 2, 103.5, 5),
+                (date(2000, 3, 31), 6, 2000, 3, 104.0, 6),
+            ],
+            schema=["datadate", "fyr", "fyearq", "fqtr", "beq", "n"],
+            orient="row",
+        ).with_columns(
+            gvkey=pl.lit("g1"),
+            ibq=pl.lit(1.0),
+            dvpsxq=pl.lit(0.0),
+            cshoq_eff=pl.lit(1.0),
+            ajexq_eff=pl.lit(1.0),
+        )
+        out = (
+            hxz_impute_be_clean_surplus(fq)
+            .lazy()
+            .with_columns(source=pl.lit("NA"))
+            .pipe(one_row_per_date)
+            .collect()
+            .sort("datadate")
+        )
+        assert out["datadate"].to_list() == [
+            date(1999, 3, 31),
+            date(1999, 6, 30),
+            date(1999, 9, 30),
+            date(1999, 12, 31),
+            date(2000, 3, 31),
+        ]
+        assert out["fyr"].to_list() == [12, 12, 12, 12, 6]
+        assert out["beq_lag1"].to_list() == [None, 100.0, 101.0, 102.0, 103.5]

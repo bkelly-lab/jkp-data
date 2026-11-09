@@ -11800,9 +11800,10 @@ def hxz_load_funda(raw_dir: Path) -> pl.DataFrame:
 def hxz_load_fundq(raw_dir: Path) -> pl.DataFrame:
     """Compustat quarterly BEQ: SEQQ → CEQQ+PSTKQ → ATQ−LTQ, plus TXDITCQ,
     minus PS_q (PSTKRQ → PSTKQ → 0). One row per (gvkey, fyearq, fqtr); rows
-    without a fiscal quarter are dropped.
+    without a fiscal quarter are dropped. fyr and the raw row number n are kept
+    for one_row_per_date.
 
-    Output: Eager [gvkey, datadate, fyearq, fqtr, rdq, ibq, dvpsxq, cshoq, ajexq, beq].
+    Output: Eager [gvkey, datadate, fyr, fyearq, fqtr, rdq, ibq, dvpsxq, cshoq, ajexq, beq, n].
     """
     floats = [
         "ibq", "dvpsxq", "cshoq", "ajexq",
@@ -11810,6 +11811,7 @@ def hxz_load_fundq(raw_dir: Path) -> pl.DataFrame:
     ]  # fmt: skip
     return (
         pl.scan_parquet(raw_dir / "comp_fundq.parquet")
+        .with_row_index("n")
         .filter(_compustat_na_filter() & pl.col("fqtr").is_not_null())
         .with_columns(
             pl.col(*floats).cast(pl.Float64),
@@ -11837,6 +11839,7 @@ def hxz_load_fundq(raw_dir: Path) -> pl.DataFrame:
         .select(
             "gvkey",
             "datadate",
+            "fyr",
             "fyearq",
             "fqtr",
             "rdq",
@@ -11845,6 +11848,7 @@ def hxz_load_fundq(raw_dir: Path) -> pl.DataFrame:
             "cshoq",
             "ajexq",
             "beq",
+            "n",
         )  # fmt: skip
         .collect()
     )
@@ -12719,9 +12723,13 @@ def gen_hxz_data(
           pre-1972 proxy of Hou, Xue and Zhang (2019) is not used. The factors
           start in January 1972 in the US (rdq coverage) and January 1967
           elsewhere; the characteristics cover every world_msf month.
+        - Two fiscal calendars can report the same quarter end; after the BEQ
+          chain, which uses both, one_row_per_date keeps the established one, as
+          the accounting stage does.
     Steps:
         1) US quarterly BEQ chain (fundq, Q4 shares, annual BE, clean-surplus
-           imputation); US annual and ex-US Compustat.
+           imputation), then one row per quarter end; US annual and ex-US
+           Compustat.
         2) The I/A and Roe tables; write the characteristics: every world_msf
            security-month joined on its July-June year and year-month.
         3) Monthly panel; size, I/A and Roe portfolios from the same tables.
@@ -12745,6 +12753,12 @@ def gen_hxz_data(
         .pipe(hxz_supplement_q4_shares, funda_us, raw_dir)
         .pipe(hxz_merge_be_chain, funda_us)
         .pipe(hxz_impute_be_clean_surplus)
+        .lazy()
+        .with_columns(source=pl.lit("NA"))
+        .pipe(one_row_per_date)
+        .drop("fyr", "source", "n")
+        .sort("gvkey", "datadate")
+        .collect()
     )
     funda_row = hxz_load_compustat_row(raw_dir, interim_dir)
     annual = hxz_annual_characteristics(raw_dir, interim_dir, funda_us, funda_row)
