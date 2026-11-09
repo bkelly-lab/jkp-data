@@ -4146,27 +4146,23 @@ def load_raw_fund_table_and_filter(filename, start_date, source_str, mode):
     return df
 
 
-def apply_indfmt_filter(df):
+def apply_indfmt_filter(df: pl.LazyFrame, keys: list[str]) -> pl.LazyFrame:
     """
     Description:
-        Resolve dual-format rows per (gvkey, datadate), preferring INDL when both exist.
+        Keep one report format per key: the INDL rows if the key has any, else all its rows (FS).
+        Quarterly data are keyed by (gvkey, datadate, fyr), so the format is chosen within each
+        fiscal calendar and only one_row_per_date picks between calendars. The annual frame has
+        no fyr column and is keyed by (gvkey, datadate).
 
     Steps:
-        1) Count rows over [gvkey, datadate].
-        2) Keep singletons or pairs where indfmt == 'INDL'.
-        3) Drop helper columns.
+        1) Keep rows with indfmt == 'INDL', and every row of a key without an INDL row.
+        2) Drop indfmt.
 
     Output:
-        Frame with one format per (gvkey, datadate).
+        Frame with one format per key.
     """
-    df = (
-        df.with_columns(count_indfmt=pl.len().over(["gvkey", "datadate"]))
-        .filter(
-            (col("count_indfmt") == 1) | ((col("count_indfmt") == 2) & (col("indfmt") == "INDL"))
-        )
-        .drop(["indfmt", "count_indfmt"])
-    )
-    return df
+    is_indl = pl.col("indfmt") == "INDL"
+    return df.filter(is_indl | ~is_indl.any().over(keys)).drop("indfmt")
 
 
 def add_fx_and_convert_vars(df, fx_df, vars, freq):
@@ -4387,7 +4383,7 @@ def standardized_accounting_data(
                 + [fl_none().alias(i) for i in ["gp", "pstkrv", "pstkl", "itcb", "xad", "txbcof"]]
                 + query_vars
             )
-            .pipe(apply_indfmt_filter)
+            .pipe(apply_indfmt_filter, ["gvkey", "datadate"])
         )
         # Quarterly global data:
         vars_not_in_query = [
@@ -4444,7 +4440,7 @@ def standardized_accounting_data(
                 ]
                 + query_vars
             )
-            .pipe(apply_indfmt_filter)
+            .pipe(apply_indfmt_filter, ["gvkey", "datadate", "fyr"])
         )
     if coverage in ["na", "world"]:
         # Annual north american data:
