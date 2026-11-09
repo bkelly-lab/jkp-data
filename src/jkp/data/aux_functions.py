@@ -1708,7 +1708,9 @@ def gen_comp_dsf(
             # the exchange country feeds the filters' country-specific price thresholds
             con.register("exchanges", comp_exchanges(paths).select(["exchg", "excntry"]))
             unfiltered_path = paths.interim_dir / "__corr_filter_input.parquet"
-            # row order is not needed: the filter step sorts the columns it uses
+            # sorted so __comp_dsf is written in key order: gen_secd_data's float sums
+            # depend on row order. Insertion-order preservation is irrelevant under an
+            # explicit ORDER BY and only inflates the sort's memory
             con.execute("SET preserve_insertion_order = false")
             con.execute(f"""
         COPY (
@@ -1716,6 +1718,7 @@ def gen_comp_dsf(
             FROM __comp_dsf3 AS t
             LEFT JOIN exchanges AS e
                 USING (exchg)
+            ORDER BY gvkey NULLS FIRST, iid NULLS FIRST, datadate NULLS FIRST
         ) TO '{unfiltered_path.as_posix()}' (FORMAT PARQUET);
             """)
         else:
