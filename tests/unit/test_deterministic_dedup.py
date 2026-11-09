@@ -165,9 +165,10 @@ class TestDropDuplicateSecurityDates:
             path = test_paths.interim_dir / f"merged_{i}.parquet"
             data.write_parquet(path)
             drop_duplicate_security_dates(test_paths, path)
-            results.append(pl.read_parquet(path))
+            # row order is not part of the contract
+            results.append(pl.read_parquet(path).sort("gvkey"))
 
-        assert results[0].equals(results[1]), "Output should not depend on input order"
+        assert results[0].equals(results[1]), "Kept rows should not depend on input order"
         assert results[0].columns == df.columns
         assert results[0]["gvkey"].to_list() == sorted(set(df["gvkey"]))
         assert results[0].filter(pl.col("gvkey") != "unique")["prc_local"].to_list() == [2.0] * 5
