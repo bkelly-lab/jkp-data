@@ -5725,13 +5725,14 @@ def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min):
         1) Load gvkey,curcd,datadate,ni_x,at_x; create __ni_at=ni_x/at_x (at_x>0).
         2) Keep obs with __ni_at and its 12-month lag; build calendar cohorts by month for N years.
         3) For each (gvkey,curcd,calc_date,grp) with ≥ __min obs, run OLS __ni_at on lag.
-        4) Aggregate to slope (ni_ar1) and residual std (ni_ivol); save. Both are null when
-           the std of lagged NI/AT in the window is at or below NI_AT_MIN_STD, and ni_ar1
-           is also null when the slope is NaN (a NaN input). The
+        4) Aggregate to slope (ni_ar1) and residual std (ni_ivol); save. ni_ar1 is null when
+           the lagged NI/AT does not vary in the window (regr_slope returns NaN). The
            regressions and the std read their rows in datadate order: unordered, the float
            sums follow DuckDB's thread scheduling and the low bits change between runs. The
            order is total only if datadate is unique per (gvkey, curcd), which holds for
-           acc_std_ann/acc_std_qtr (deduplicated on gvkey, datadate).
+           acc_std_ann/acc_std_qtr (deduplicated on gvkey, datadate). Both ni_ar1 and
+           ni_ivol are null when the std of lagged NI/AT in the window is at or below
+           NI_AT_MIN_STD, and ni_ar1 also when the slope is NaN (a NaN input).
 
     Output:
         Writes 'ni_ar_res.parquet' with [gvkey, curcd, datadate, ni_ar1, ni_ivol].
