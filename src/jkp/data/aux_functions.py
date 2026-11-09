@@ -1706,7 +1706,8 @@ def gen_comp_dsf(
         """)
 
         # row order is not needed: the filter step sorts the columns it uses, and every
-        # other reader of __comp_dsf sorts or groups by key itself
+        # other reader of __comp_dsf sorts or groups by key itself (gen_secd_data's float
+        # sums then vary at about 1e-15, within the 1e-10 tolerance)
         con.execute("SET preserve_insertion_order = false")
         if apply_correction:
             # the exchange country feeds the filters' country-specific price thresholds
@@ -1831,7 +1832,7 @@ def gen_secd_data(paths: DataPaths):
         - div_*m: sum of monthly dividends (by type) adjusted.
         - cshtrm: sum of adjusted share turnover; dolvolm: sum of USD dollar volume.
         3) Keep valid rows (local price/currency present, prcstd in {3,4,10}) on the last valid
-        datadate in the month (ties kept); scale the aggregates by each row's ajexdi.
+        datadate in the month; scale the aggregates by each row's ajexdi.
         - source=1 to mark SECD pipeline.
         4) Write to secd_data.parquet, sorted by gvkey, iid, eom.
 

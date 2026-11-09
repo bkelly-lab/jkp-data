@@ -166,7 +166,7 @@ class TestDropDuplicateSecurityDates:
             data.write_parquet(path)
             drop_duplicate_security_dates(test_paths, path)
             # row order is not part of the contract
-            results.append(pl.read_parquet(path).sort("gvkey"))
+            results.append(pl.read_parquet(path).sort(["gvkey", "iid", "datadate"]))
 
         assert results[0].equals(results[1]), "Kept rows should not depend on input order"
         assert results[0].columns == df.columns
