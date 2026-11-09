@@ -3,6 +3,10 @@ This change log keeps track of changes to the underlying data set. In brackets, 
 
 This repository ports the original SAS pipeline ([ReplicationCrisis](https://github.com/bkelly-lab/ReplicationCrisis)) to Python using Polars. Entries up to and including 05-03-2025 are from the original change log.
 
+## 09-11-2026
+__Changes__:
+- Rolling regressions and return statistics now share one guard against near-constant windows ([#339](https://github.com/bkelly-lab/jkp-data/pull/339)). The return-based characteristics guarded since #269 (`rvol_*`, `ivol_*`, `beta_*`, `betadown_*`, `beta_dimson_*`, `rmax*`, `rskew_*`, `iskew_*`, `coskew_*`, `corr_*`, `ami_*`, including the monthly `beta_60m` and `ivol_capm_60m`) and, newly, `resff3_12_1` and `resff3_6_1` are null when the standard deviation of raw USD `ret` over the window is at most 1e-6, or `ret` is zero in at least 90% of it. Before, only an exactly constant `ret` counted, and residual momentum had no guard. `ni_ar1` and `ni_ivol` are null when the standard deviation of lagged NI/AT over the regression window is at most 1e-6. Before, only an exactly constant lagged NI/AT nulled them. Both floors are our choice: on the current data, any floor from 1e-8 to 1e-6 nulls the same residual-momentum windows, and no daily or `beta_60m` window changes below 1e-5. In the intermediate outputs, 11 residual-momentum windows per horizon become null (one US security whose returns vary by about 1e-9; it is not in the published characteristics), as do 3 earnings-persistence windows (1 annual, 2 quarterly, with slopes near 4e5). In the published characteristics, 5 stock-months of one Indian security (2012–2013) lose `ni_ar1` (about 3.8e5) and `ni_ivol`. No other published value changes.
+
 ## 05-11-2026
 __Changes__:
 - Added `ret_local` column to per-country daily return files (`return_data/daily_rets_by_country/*.parquet`). This local-currency total return was already present in `world_dsf.parquet` and `world_ret_monthly.parquet` but was missing from the country split ([#322](https://github.com/bkelly-lab/jkp-data/pull/322)).
