@@ -2128,11 +2128,18 @@ def add_primary_sec(paths: DataPaths, data_path, datevar, file_name):
     Steps:
         1) Per (gvkey, iid, datevar), range-join the three histories and the header on the
            key columns only; primary_sec = 1 if iid matches any region.
-        2) Join primary_sec back onto the full rows and write file_name sorted by
-           (gvkey, iid, datevar).
+        2) Join primary_sec back onto the full rows, keep one row per (gvkey, iid, datevar)
+           and write file_name sorted by (gvkey, iid, datevar). The daily input is already
+           unique (drop_duplicate_security_dates); this catches a key repeated by a later
+           join or on the monthly path. Of rows sharing a key, keep the one with a valid
+           price (prc_local and curcdd present, prcstd in {3, 4, 10}), then the highest
+           prcstd, then a main exchange (exch_main), then the highest dolvol; any remaining
+           tie goes to the first row in the order of all columns, as in
+           drop_duplicate_security_dates.
 
     Output:
-        Parquet at file_name: the input rows plus an integer column primary_sec ∈ {0,1}.
+        Parquet at file_name: one row per (gvkey, iid, datevar) of the input, plus an
+        integer column primary_sec ∈ {0,1}.
     """
     raw_data_dfs = paths.interim_dir / "raw_data_dfs"
     data = Path(data_path).as_posix()
@@ -2169,15 +2176,47 @@ def add_primary_sec(paths: DataPaths, data_path, datevar, file_name):
                 LEFT JOIN read_parquet('{header}') AS e
                     ON a.gvkey = e.gvkey
                 GROUP BY a.gvkey, a.iid, a.{datevar}
+            ),
+            dup_keys AS (
+                SELECT gvkey, iid, {datevar}
+                FROM read_parquet('{data}')
+                GROUP BY gvkey, iid, {datevar}
+                HAVING count(*) > 1
+            ),
+            -- of rows sharing a key, keep one by the rule in the docstring; ordering every
+            -- column is costly, so only the rows of duplicated keys go through it
+            deduped AS (
+                SELECT t.*
+                FROM read_parquet('{data}') AS t
+                -- IS NOT DISTINCT FROM: NULL keys form one group, as in GROUP BY
+                ANTI JOIN dup_keys AS k
+                    ON t.gvkey IS NOT DISTINCT FROM k.gvkey
+                    AND t.iid IS NOT DISTINCT FROM k.iid
+                    AND t.{datevar} IS NOT DISTINCT FROM k.{datevar}
+                UNION ALL
+                (SELECT DISTINCT ON (t.gvkey, t.iid, t.{datevar}) t.*
+                 FROM read_parquet('{data}') AS t
+                 SEMI JOIN dup_keys AS k
+                     ON t.gvkey IS NOT DISTINCT FROM k.gvkey
+                     AND t.iid IS NOT DISTINCT FROM k.iid
+                     AND t.{datevar} IS NOT DISTINCT FROM k.{datevar}
+                 ORDER BY gvkey, iid, {datevar},
+                     -- a row gen_secd_data keeps
+                     COALESCE(prc_local IS NOT NULL AND curcdd IS NOT NULL
+                              AND prcstd IN (3, 4, 10), FALSE) DESC,
+                     -- gen_returns_df's rule, so prices and the return come from one row
+                     prcstd DESC NULLS LAST,
+                     exch_main DESC NULLS LAST,
+                     dolvol DESC NULLS LAST,
+                     COLUMNS(* EXCLUDE (gvkey, iid, {datevar})))
             )
-            SELECT data.*, flags.primary_sec
-            FROM read_parquet('{data}') AS data
-            -- IS NOT DISTINCT FROM: NULL keys form one group, as in GROUP BY
+            SELECT deduped.*, flags.primary_sec
+            FROM deduped
             JOIN flags
-                ON data.gvkey IS NOT DISTINCT FROM flags.gvkey
-                AND data.iid IS NOT DISTINCT FROM flags.iid
-                AND data.{datevar} IS NOT DISTINCT FROM flags.{datevar}
-            ORDER BY data.gvkey, data.iid, data.{datevar}
+                ON deduped.gvkey IS NOT DISTINCT FROM flags.gvkey
+                AND deduped.iid IS NOT DISTINCT FROM flags.iid
+                AND deduped.{datevar} IS NOT DISTINCT FROM flags.{datevar}
+            ORDER BY deduped.gvkey, deduped.iid, deduped.{datevar}
         ) TO '{Path(file_name).as_posix()}' (FORMAT PARQUET)
         """)
 
