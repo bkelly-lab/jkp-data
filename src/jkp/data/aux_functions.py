@@ -5726,7 +5726,8 @@ def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min):
         2) Keep obs with __ni_at and its 12-month lag; build calendar cohorts by month for N years.
         3) For each (gvkey,curcd,calc_date,grp) with ≥ __min obs, run OLS __ni_at on lag.
         4) Aggregate to slope (ni_ar1) and residual std (ni_ivol); save. Both are null when
-           the std of lagged NI/AT in the window is at or below NI_AT_MIN_STD. The
+           the std of lagged NI/AT in the window is at or below NI_AT_MIN_STD, and ni_ar1
+           is also null when the slope is NaN (a NaN input). The
            regressions and the std read their rows in datadate order: unordered, the float
            sums follow DuckDB's thread scheduling and the low bits change between runs. The
            order is total only if datadate is unique per (gvkey, curcd), which holds for
@@ -5837,7 +5838,7 @@ def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min):
       gvkey,
       curcd,
       calc_date as datadate,
-      CASE WHEN x_sd > {NI_AT_MIN_STD} THEN slope END AS ni_ar1,
+      CASE WHEN x_sd > {NI_AT_MIN_STD} AND NOT isnan(slope) THEN slope END AS ni_ar1,
       CASE WHEN x_sd > {NI_AT_MIN_STD} THEN stddev_samp(resid ORDER BY datadate) END AS ni_ivol,
     FROM resids
     GROUP BY gvkey, curcd, calc_grp, calc_date, slope, x_sd
@@ -9396,8 +9397,8 @@ def res_mom(df, sfx, __min, incl, skip):
 
     Steps:
         1) OLS: ret_exc ~ mktrf + hml + smb_ff (with intercept) → residuals per (id_int,group_number).
-           Residuals are null when raw ret is near-constant over the window (_guard_constant
-           with RET_MIN_STD), so the score is null too.
+           Residuals are null when raw ret is near-constant over the window or zero in at
+           least 90% of its months (_guard_constant with RET_MIN_STD), so the score is null too.
         2) Filter to windows inside (max_date - incl, max_date - skip].
         3) Require at least __min obs; compute mean(res)/std(res).
 
@@ -9437,7 +9438,7 @@ def res_mom(df, sfx, __min, incl, skip):
 
 # Maximum fraction of exact-zero observations allowed in a rolling window before
 # a return-based statistic is nulled. Catches near-dead stocks (e.g. one trade
-# in 21 days ≈ 0.95 zeros) that bit-exact min!=max would miss.
+# in 21 days ≈ 0.95 zeros) that the std floor (RET_MIN_STD) would miss.
 CONSTANT_MAX_ZERO_FRAC = 0.9
 
 
@@ -9454,8 +9455,8 @@ def _guard_constant(
         or window.
 
     Steps:
-        1) If min_std is set, require std(input_col) > min_std (near-constant → null);
-           return statistics pass RET_MIN_STD. Otherwise require
+        1) If min_std is set, require std(input_col) > min_std (near-constant → null),
+           ignoring NaN as min/max do; return statistics pass RET_MIN_STD. Otherwise require
            min(input_col) != max(input_col) (perfectly constant → null).
         2) If max_zero_frac is set, also require mean(input_col == 0) < max_zero_frac
            so near-dead windows are nulled (window-level analogue of zero_obs /
@@ -9468,7 +9469,7 @@ def _guard_constant(
     if min_std is None:
         varying = pl.col(input_col).min() != pl.col(input_col).max()
     else:
-        varying = pl.col(input_col).std() > min_std
+        varying = pl.col(input_col).fill_nan(None).std() > min_std
     if max_zero_frac is None:
         ok = varying
     else:
@@ -9483,7 +9484,7 @@ def rvol(df, sfx, __min):
 
     Steps:
         1) Group by (id_int, group_number).
-        2) Compute std(ret_exc); null when raw ``ret`` is constant / near-dead.
+        2) Compute std(ret_exc); null when raw ``ret`` is near-constant / near-dead.
 
     Output:
         LazyFrame with f'rvol{sfx}'.
@@ -9504,7 +9505,7 @@ def rmax(df, sfx, __min):
     Steps:
         1) Group by (id_int,group_number).
         2) Compute mean of top 5 returns and max return; null when ``ret`` is
-           constant / near-dead.
+           near-constant / near-dead.
 
     Output:
         LazyFrame with f'rmax5{sfx}' and f'rmax1{sfx}'.
@@ -9527,7 +9528,7 @@ def skew(df, sfx, __min):
 
     Steps:
         1) Group by (id_int,group_number).
-        2) Compute unbiased skew(ret_exc); null when raw ``ret`` is constant /
+        2) Compute unbiased skew(ret_exc); null when raw ``ret`` is near-constant /
            near-dead (does not rely on Polars emitting NaN).
 
     Output:
@@ -9585,7 +9586,7 @@ def capm(df, sfx, __min):
     Steps:
         1) For each (id_int,group_number), compute beta = cov(ret_exc,mktrf)/var(mktrf).
         2) Compute residuals and their std as ivol_capm.
-        3) Null beta and ivol when raw ``ret`` is constant / near-dead.
+        3) Null beta and ivol when raw ``ret`` is near-constant / near-dead.
 
     Output:
         LazyFrame with f'beta{sfx}' and f'ivol_capm{sfx}'.
@@ -9617,7 +9618,7 @@ def ami(df, sfx, __min):
     Steps:
         1) Define dolvol guard (None if zero).
         2) Group by (id_int,group_number); compute mean(|ret|/dolvol * 1e6) and count;
-           null when raw ``ret`` is constant / near-dead (avoids ami=0 for dead stocks).
+           null when raw ``ret`` is near-constant / near-dead (avoids ami=0 for dead stocks).
         3) Keep groups with n ≥ __min.
 
     Output:
@@ -9648,7 +9649,7 @@ def downbeta(df, sfx, __min):
     Steps:
         1) Filter mktrf < 0.
         2) Group by (id_int,group_number); compute beta as cov/var; require n ≥ __min/2;
-           null when raw ``ret`` is constant / near-dead.
+           null when raw ``ret`` is near-constant / near-dead.
 
     Output:
         LazyFrame with f'betadown{sfx}'.
@@ -9696,7 +9697,7 @@ def capm_ext(df, sfx, __min):
     Steps:
         1) Compute beta and alpha; residuals = ret_exc − (alpha + beta*mktrf).
         2) Aggregate per (id_int,group_number): std(res), skew(res), coskew = E[res*(mktrf−E mktrf)^2]/(sqrt(E[res^2])*sqrt(E[(mktrf−E)^2])).
-        3) Null all columns when raw ``ret`` is constant / near-dead.
+        3) Null all columns when raw ``ret`` is near-constant / near-dead.
 
     Output:
         LazyFrame with [f'beta_{sfx}', f'ivol_capm{sfx}', f'iskew_capm{sfx}', f'coskew{sfx}'].
@@ -9735,7 +9736,7 @@ def ff3(df, sfx, __min):
     Steps:
         1) OLS: ret_exc ~ mktrf + smb_ff + hml; require factors present.
         2) Aggregate per (id_int,group_number): std(residuals, ddof=3), skew(residuals);
-           null when raw ``ret`` is constant / near-dead.
+           null when raw ``ret`` is near-constant / near-dead.
 
     Output:
         LazyFrame with [f'ivol_ff3{sfx}', f'iskew_ff3{sfx}'].
@@ -9766,7 +9767,7 @@ def hxz4(df, sfx, __min):
     Steps:
         1) OLS: ret_exc ~ mktrf + smb_hxz + roe + inv; require all factors.
         2) Aggregate per (id_int,group_number): std(residuals, ddof=4), skew(residuals);
-           null when raw ``ret`` is constant / near-dead.
+           null when raw ``ret`` is near-constant / near-dead.
 
     Output:
         LazyFrame with [f'ivol_hxz4{sfx}', f'iskew_hxz4{sfx}'].
@@ -9909,7 +9910,7 @@ def mktcorr(df, sfx, __min):
     Steps:
         1) Group by (id_int, group_number); count rows.
         2) Require count >= __min; compute Pearson corr; null when raw ``ret`` is
-           constant / near-dead (RF-immune; avoids finite junk corr at _1260d).
+           near-constant / near-dead (RF-immune; avoids finite junk corr at _1260d).
 
     Output:
         LazyFrame with f'corr{sfx}'.

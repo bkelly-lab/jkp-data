@@ -87,6 +87,27 @@ def test_ni_ar1_and_ni_ivol_null_when_lagged_ni_at_nearly_constant(
 
 
 @pytest.mark.unit
+def test_ni_ar1_is_never_nan_with_a_nan_input(test_paths: DataPaths, tmp_path) -> None:
+    """A NaN NI passes the std floor in DuckDB (NaN sorts above every number); the
+    slope it produces is still written as null, not NaN."""
+    eoms = pl.date_range(date(2000, 1, 1), date(2007, 12, 1), "1mo", eager=True).dt.month_end()
+    n = len(eoms)
+    ni = np.random.default_rng(2).normal(5.0, 2.0, n)
+    ni[-1] = np.nan  # December 2007: the y of the last window
+    raw = pl.DataFrame({"gvkey": "D", "curcd": "USD", "datadate": eoms, "ni_x": ni, "at_x": 100.0})
+    data_path = tmp_path / "acc.parquet"
+    raw.write_parquet(data_path)
+
+    compute_earnings_persistence(test_paths, data_path, 5, 5)
+    out = pl.read_parquet(test_paths.interim_dir / "ni_ar_res.parquet")
+
+    last = out.filter(pl.col("datadate") == date(2007, 12, 31))
+    assert last.height == 1
+    assert last["ni_ar1"].item() is None
+    assert out["ni_ar1"].is_nan().sum() == 0
+
+
+@pytest.mark.unit
 def test_output_does_not_depend_on_thread_count(
     test_paths: DataPaths, tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

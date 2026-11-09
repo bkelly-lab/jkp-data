@@ -96,6 +96,14 @@ class TestGuardConstantHelper:
         )
         np.testing.assert_allclose(result["val"][0], 1e-5, **tolerance.STANDARD)
 
+    def test_min_std_ignores_nan(self):
+        """A constant window with one NaN day stays null, as with the min/max test."""
+        df = pl.DataFrame({"x": [0.01, 0.01, 0.01, float("nan")], "grp": [1, 1, 1, 1]})
+        result = df.group_by("grp").agg(
+            _guard_constant("x", pl.col("x").max(), min_std=RET_MIN_STD).alias("val")
+        )
+        assert result["val"][0] is None
+
     def test_min_std_in_window_context(self):
         """With .over() (as in res_mom) every row of a near-constant group is null."""
         df = pl.DataFrame({"x": [0.01, 0.01 + 1e-9, 0.01, 0.03], "grp": [1, 1, 2, 2]})
