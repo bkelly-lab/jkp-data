@@ -123,6 +123,9 @@ Jensen is at Yale School of Management; \url{www.tijensen.com}. Kelly is at AQR 
 \textbf{Date} & \textbf{Changes} \\
 \hline
 \endhead
+11-09-2026 & \textbullet~Rolling regressions and return statistics share one guard against near-constant windows. The return-based characteristics guarded since 10-15-2026, including the monthly \texttt{beta\_60m} and \texttt{ivol\_capm\_60m}, and now also \texttt{resff3\_12\_1} and \texttt{resff3\_6\_1}, are null when the standard deviation of raw USD \texttt{ret} over the window is at most $10^{-6}$, or \texttt{ret} is zero in at least 90\% of it. Before, only an exactly constant \texttt{ret} counted, and residual momentum had no guard. \texttt{ni\_ar1} and \texttt{ni\_ivol} are null when the standard deviation of lagged NI/AT over the regression window is at most $10^{-6}$. On the current data this changes 5 published stock-months of one security (\texttt{ni\_ar1} about $3.8\times10^{5}$). \\
+& \textbullet~Affected output files: \texttt{characteristics/world\_data.parquet}, the per-country files under \texttt{characteristics/}, and downstream factor portfolios. \\
+\hline
 11-06-2026 & \textbullet~A size group in the characteristics-managed portfolios now has a row only if the sample standard deviation of its characteristic that month is above $10^{-10}$, instead of above zero. Groups that differ only by rounding error got long and short positions set by that error. The cutoff is our choice, is absolute, and applies to every characteristic. It removes 2,096 rows from \texttt{hml\_cmp\_1}, 2,793 from \texttt{hml\_cmp\_2} and 5,929 from \texttt{hml\_cmp\_5} (0.014\% to 0.018\%). \\
 & \textbullet~Affected output files: \texttt{hml\_cmp\_\{1,2,5\}}, \texttt{themes/\{version\}/lms\_cmp\_\{1,2,5\}} and \texttt{themes/v0/cmp}. \\
 \hline

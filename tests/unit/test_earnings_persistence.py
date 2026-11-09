@@ -45,6 +45,66 @@ def test_ni_ar1_is_null_when_lagged_ni_at_does_not_vary(test_paths: DataPaths, t
 
 
 @pytest.mark.unit
+def test_ni_ar1_and_ni_ivol_null_when_lagged_ni_at_nearly_constant(
+    test_paths: DataPaths, tmp_path
+) -> None:
+    """Lagged NI/AT that is constant (B) or varies by ~1e-8 (C, std below NI_AT_MIN_STD)
+    nulls both ni_ar1 and ni_ivol; a varying firm (A) keeps both."""
+    eoms = pl.date_range(date(2000, 1, 1), date(2007, 12, 1), "1mo", eager=True).dt.month_end()
+    n = len(eoms)
+    i = np.arange(n)
+    raw = pl.DataFrame(
+        {
+            "gvkey": ["A"] * n + ["B"] * n + ["C"] * n,
+            "curcd": "USD",
+            "datadate": pl.concat([eoms, eoms, eoms]),
+            "ni_x": np.concatenate(
+                [
+                    np.random.default_rng(0).normal(5.0, 2.0, n),
+                    np.full(n, 5.0),
+                    5.0 + 1e-6 * ((i % 7) - 3),
+                ]
+            ),
+            "at_x": 100.0,
+        }
+    )
+    data_path = tmp_path / "acc.parquet"
+    raw.write_parquet(data_path)
+
+    out = compute_earnings_persistence(test_paths, data_path, 5, 5)
+
+    for gvkey in ("B", "C"):
+        firm = out.filter(pl.col("gvkey") == gvkey)
+        assert firm.height > 0
+        assert firm["ni_ar1"].null_count() == firm.height, gvkey
+        assert firm["ni_ivol"].null_count() == firm.height, gvkey
+    varying = out.filter(pl.col("gvkey") == "A")
+    assert varying.height > 0
+    assert varying["ni_ar1"].is_finite().all()
+    assert varying["ni_ivol"].is_finite().all()
+
+
+@pytest.mark.unit
+def test_ni_ar1_is_never_nan_with_a_nan_input(test_paths: DataPaths, tmp_path) -> None:
+    """A NaN NI/AT as the dependent variable leaves the lagged NI/AT finite, so the window
+    passes the std floor, but its slope is NaN; ni_ar1 is still written as null, not NaN."""
+    eoms = pl.date_range(date(2000, 1, 1), date(2007, 12, 1), "1mo", eager=True).dt.month_end()
+    n = len(eoms)
+    ni = np.random.default_rng(2).normal(5.0, 2.0, n)
+    ni[-1] = np.nan  # December 2007: the y of the last window
+    raw = pl.DataFrame({"gvkey": "D", "curcd": "USD", "datadate": eoms, "ni_x": ni, "at_x": 100.0})
+    data_path = tmp_path / "acc.parquet"
+    raw.write_parquet(data_path)
+
+    out = compute_earnings_persistence(test_paths, data_path, 5, 5)
+
+    last = out.filter(pl.col("datadate") == date(2007, 12, 31))
+    assert last.height == 1
+    assert last["ni_ar1"].item() is None
+    assert out["ni_ar1"].is_nan().sum() == 0
+
+
+@pytest.mark.unit
 def test_output_does_not_depend_on_thread_count(
     test_paths: DataPaths, tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
