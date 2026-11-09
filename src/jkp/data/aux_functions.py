@@ -10816,7 +10816,11 @@ def _compustat_id_gvkey(interim_dir: Path) -> pl.LazyFrame:
 
 
 def ff_annual_characteristics(
-    interim_dir: Path, acc_us: pl.DataFrame, ccm2a: pl.DataFrame, comp_world: pl.DataFrame
+    interim_dir: Path,
+    acc_us: pl.DataFrame,
+    ccm2a: pl.DataFrame,
+    comp_world: pl.DataFrame,
+    crsp_m: pl.LazyFrame,
 ) -> pl.DataFrame:
     """
     Description:
@@ -10831,8 +10835,10 @@ def ff_annual_characteristics(
            elsewhere.
         2) December y-1 ME, kept when > 0: me_company in the US (all share classes
            of the company), the security's me elsewhere; no December row, no
-           December ME. dec_universe flags a December row in the FF universe
-           (always in the US); like count, it is a sort screen, not a formula input.
+           December ME. dec_universe flags a December row in the FF universe: in
+           the US, the permno is in FF's CRSP sample that month (crsp_m, from
+           ff_load_crsp_panel); elsewhere, JKP's main sample. Like count, it is a
+           sort screen, not a formula input.
         3) Full join on (id, port_year); beme = be / dec_me.
     Output:
         Eager [id, port_year, be, op, inv, count, dec_me, dec_universe, beme].
@@ -10855,6 +10861,9 @@ def ff_annual_characteristics(
         how="vertical_relaxed",
     ).select("id", *acc_cols, port_year=pl.col("year") + 1)
     us = pl.col("excntry") == US_EXCNTRY
+    us_sample = crsp_m.filter(pl.col("date").dt.month() == 12).select(
+        id=pl.col("permno"), port_year=pl.col("date").dt.year() + 1, in_us_sample=pl.lit(True)
+    )
     dec_me = (
         pl.scan_parquet(interim_dir / "world_msf.parquet")
         .filter(pl.col("eom").dt.month() == 12)
@@ -10862,9 +10871,19 @@ def ff_annual_characteristics(
             pl.col("id").cast(pl.Int64),
             port_year=pl.col("eom").dt.year() + 1,
             dec_me=pl.when(us).then(pl.col("me_company")).otherwise(pl.col("me")),
-            dec_universe=(us | _ff_world_universe()).fill_null(False),
+            us=us,
+            world_universe=_ff_world_universe().fill_null(False),
         )
         .filter(pl.col("dec_me") > 0)
+        .join(us_sample, on=["id", "port_year"], how="left")
+        .select(
+            "id",
+            "port_year",
+            "dec_me",
+            dec_universe=pl.when(pl.col("us"))
+            .then(pl.col("in_us_sample").fill_null(False))
+            .otherwise(pl.col("world_universe")),
+        )
     )
     return (
         accounting.join(dec_me, on=["id", "port_year"], how="full", coalesce=True)
@@ -11602,7 +11621,8 @@ def gen_ff_data(
     acc_us = _ff_us_accounting(raw_dir, ff5=True).collect()
     ccm2a = ff_load_compustat_us(acc_us, raw_dir, ff5=True, use_dff=FF_USE_DFF_BE)
     comp_world = ff_load_world_compustat(raw_dir, interim_dir)
-    annual = ff_annual_characteristics(interim_dir, acc_us, ccm2a, comp_world)
+    crsp_m = ff_load_crsp_panel(raw_dir, interim_dir, "monthly")
+    annual = ff_annual_characteristics(interim_dir, acc_us, ccm2a, comp_world, crsp_m)
     (
         pl.scan_parquet(interim_dir / "world_msf.parquet")
         .select("excntry", pl.col("id").cast(pl.Int64), date=pl.col("eom"))
@@ -11622,9 +11642,7 @@ def gen_ff_data(
     panel_m = pl.concat(
         pl.collect_all(
             [
-                ff_load_crsp_panel(raw_dir, interim_dir, "monthly").pipe(
-                    _ff_us_rets_weights_lazy, "monthly"
-                ),
+                crsp_m.pipe(_ff_us_rets_weights_lazy, "monthly"),
                 ff_load_world_panel(interim_dir, "monthly").pipe(
                     _ff_row_rets_weights_lazy, "monthly"
                 ),
