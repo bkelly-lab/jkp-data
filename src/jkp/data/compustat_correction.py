@@ -243,6 +243,10 @@ def correct_decimal_errors(
         independently, then adjPRC = PRCCD/AJEXDI and adjCSHO = CSHOC*AJEXDI,
         and reconstruct PRCCD/CSHOC. Only the keys and value columns are
         sorted and collected; spill files go to spill_dir (required).
+        df is read twice, once to collect the kernel columns and once inside
+        the returned plan to splice the results back by row position, so it
+        must yield the same rows in the same order both times (e.g. a scan of
+        a file that is not overwritten before the result is collected or sunk).
     Args:
         correction_method: 'multiplier' (fixed 10x/100x/1000x multipliers),
             'interpolation' (endpoint geometric mean), 'floor' (multipliers,
@@ -365,6 +369,10 @@ def drop_unreliable_observations(
         of Section 8 of Bessembinder et al. (2023) Data Appendix. Runs the full
         filter chain as one numba pass per security, preserving
         sequential-survivor semantics. Memory-bounded array path.
+        df is read twice, once to collect the kernel columns and once inside
+        the returned plan to filter by row position, so it must yield the same
+        rows in the same order both times (e.g. a scan of a file that is not
+        overwritten before the result is collected or sunk).
     Steps:
         1) Collect the kernel columns, sorted by security and date.
         2) Build typed NumPy inputs (kernel arrays + low-volume decision).
