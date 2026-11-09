@@ -38,17 +38,19 @@ def _month_end(i: int) -> date:
 
 
 def _frame(rows: list[dict[str, Any]]) -> pl.LazyFrame:
-    """Build the input frame; unspecified input columns are null."""
+    """Build the input frame with the source and row index n the raw-table loader adds;
+    unspecified input columns are null."""
     data: dict[str, list[Any]] = {
         "gvkey": [r.get("gvkey", "A") for r in rows],
         "curcd": [r.get("curcd", "USD") for r in rows],
         "datadate": [r.get("datadate", JAN) for r in rows],
+        "source": [r.get("source", "NA") for r in rows],
     }
     for c in INPUT_COLS:
         data[c] = [r.get(c) for r in rows]
-    schema = {"gvkey": pl.String, "curcd": pl.String, "datadate": pl.Date}
+    schema = {"gvkey": pl.String, "curcd": pl.String, "datadate": pl.Date, "source": pl.String}
     schema.update(dict.fromkeys(INPUT_COLS, pl.Float64))
-    return pl.DataFrame(data, schema=schema).lazy()
+    return pl.DataFrame(data, schema=schema).with_row_index("n").lazy()
 
 
 def _run(test_paths: DataPaths, rows: list[dict[str, Any]]) -> pl.DataFrame:

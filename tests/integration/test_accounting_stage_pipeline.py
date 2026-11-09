@@ -21,7 +21,6 @@ pytestmark = pytest.mark.integration
 STAGE_FILES = {
     "acc_std_ann": ["gvkey", "datadate"],
     "acc_std_qtr": ["gvkey", "datadate"],
-    "ni_ar_res": ["gvkey", "curcd", "datadate"],
     "achars_world": KEYS,
     "qchars_world": KEYS,
     "acc_chars_world": KEYS,
