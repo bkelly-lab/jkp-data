@@ -144,6 +144,11 @@ def _write_fixtures(paths: DataPaths) -> Path:
     ).with_columns(
         prc=pl.int_range(pl.len()).cast(pl.Float64) * 1.5,
         curcdd=pl.lit("USD"),
+        # columns add_primary_sec's duplicate-key rule reads
+        prc_local=pl.lit(1.0),
+        prcstd=pl.lit(10),
+        exch_main=pl.lit(1),
+        dolvol=pl.lit(1.0),
     )
     data = data.with_columns(prc=pl.when(pl.col("iid") == "02").then(None).otherwise("prc"))
     data_path = paths.interim_dir / "__comp_sf2.parquet"

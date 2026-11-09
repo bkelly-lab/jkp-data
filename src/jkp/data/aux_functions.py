@@ -2059,8 +2059,11 @@ def add_primary_sec(paths: DataPaths, data_path, datevar, file_name):
         1) Per (gvkey, iid, datevar), range-join the three histories and the header on the
            key columns only; primary_sec = 1 if iid matches any region.
         2) Join primary_sec back onto the full rows, keep one row per (gvkey, iid, datevar)
-           and write file_name sorted by (gvkey, iid, datevar). Of rows sharing a key, the
-           first in the order of all columns is kept, whatever the input order.
+           and write file_name sorted by (gvkey, iid, datevar). Of rows sharing a key, keep
+           the one with a valid price (prc_local and curcdd present, prcstd in {3, 4, 10}),
+           then the highest prcstd, then a main exchange (exch_main), then the highest
+           dolvol; any remaining tie goes to the first row in the order of all columns,
+           so the choice never depends on the input order.
 
     Output:
         Parquet at file_name: one row per (gvkey, iid, datevar) of the input, plus an
@@ -2108,9 +2111,8 @@ def add_primary_sec(paths: DataPaths, data_path, datevar, file_name):
                 GROUP BY gvkey, iid, {datevar}
                 HAVING count(*) > 1
             ),
-            -- of rows sharing a key, keep the first in the order of all columns, so the
-            -- choice does not depend on the input's row order; ordering every column is
-            -- costly, so only the rows of duplicated keys go through it
+            -- of rows sharing a key, keep one by the rule in the docstring; ordering every
+            -- column is costly, so only the rows of duplicated keys go through it
             deduped AS (
                 SELECT *
                 FROM read_parquet('{data}')
@@ -2119,7 +2121,15 @@ def add_primary_sec(paths: DataPaths, data_path, datevar, file_name):
                 (SELECT DISTINCT ON (gvkey, iid, {datevar}) *
                  FROM read_parquet('{data}')
                  SEMI JOIN dup_keys USING (gvkey, iid, {datevar})
-                 ORDER BY gvkey, iid, {datevar}, COLUMNS(* EXCLUDE (gvkey, iid, {datevar})))
+                 ORDER BY gvkey, iid, {datevar},
+                     -- a row gen_secd_data keeps
+                     COALESCE(prc_local IS NOT NULL AND curcdd IS NOT NULL
+                              AND prcstd IN (3, 4, 10), FALSE) DESC,
+                     -- gen_returns_df's rule, so prices and the return come from one row
+                     prcstd DESC NULLS LAST,
+                     exch_main DESC NULLS LAST,
+                     dolvol DESC NULLS LAST,
+                     COLUMNS(* EXCLUDE (gvkey, iid, {datevar})))
             )
             SELECT deduped.*, flags.primary_sec
             FROM deduped

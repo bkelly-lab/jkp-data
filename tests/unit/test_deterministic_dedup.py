@@ -5,7 +5,8 @@ Verifies that the dedup locations covered in this file resolve duplicates
 using economically meaningful tie-breaking rules (issue #69):
 
 1. add_primary_sec(): prefer primary_sec=1 over primary_sec=0; of rows sharing a key,
-   keep the first in the order of all columns
+   keep a valid price, then the highest prcstd, a main exchange, the highest dolvol,
+   and finally the first in the order of all columns
 2. gen_returns_df(): keep highest prcstd per {gvkey, iid, datadate}
 """
 
@@ -40,6 +41,12 @@ class TestAddPrimarySecDedup:
                     date(2024, 2, 29),
                 ],
                 "prc": [10.0, 11.0, 20.0, 21.0],
+                # columns the duplicate-key rule reads
+                "prc_local": [10.0, 11.0, 20.0, 21.0],
+                "curcdd": ["USD"] * 4,
+                "prcstd": [10] * 4,
+                "exch_main": [1] * 4,
+                "dolvol": [1.0] * 4,
             }
         )
         input_path = test_paths.interim_dir / "input.parquet"
@@ -115,30 +122,44 @@ class TestAddPrimarySecDedup:
             "iid='02' matches prihistrow='02' from range 2, so primary_sec=1 should win"
         )
 
-    def test_duplicate_keys_keep_first_in_column_order(self, setup_paths) -> None:
-        """Rows sharing (gvkey, iid, datadate) collapse to one, the first in the order of
-        all columns, whatever the input order."""
+    def test_duplicate_keys_keep_one_row_by_rule(self, setup_paths) -> None:
+        """Rows sharing (gvkey, iid, datadate) collapse to one: a valid price, then the
+        highest prcstd, a main exchange, the highest dolvol, then the first in the order
+        of all columns, whatever the input order. In each gvkey the kept row (prc_local 2)
+        loses on every later step and on column order, so only the named step picks it."""
         from jkp.data.aux_functions import add_primary_sec
 
         paths, _, _ = setup_paths
-        rows = pl.DataFrame(
-            {
-                "gvkey": ["001000"] * 4,
-                "iid": ["01", "01", "01", "02"],
-                "datadate": [date(2024, 1, 31)] * 4,
-                "prc": [10.0, 9.0, 9.0, 20.0],
-            }
-        )
+        # gvkey, prc_local, curcdd, prcstd, exch_main, dolvol
+        rows = [
+            ("valid", 2.0, "USD", 3, 0, 1.0),
+            ("valid", 1.0, "USD", 5, 1, 9.0),
+            ("prcstd", 2.0, "USD", 10, 0, 1.0),
+            ("prcstd", 1.0, "USD", 3, 1, 9.0),
+            ("exch_main", 2.0, "USD", 4, 1, 1.0),
+            ("exch_main", 1.0, "USD", 4, 0, 9.0),
+            ("dolvol", 2.0, "USD", 4, 1, 9.0),
+            ("dolvol", 1.0, "USD", 4, 1, 1.0),
+            ("columns", 2.0, "USD", 4, 1, 1.0),
+            ("columns", 2.0, "USD", 4, 1, 1.0),
+            ("columns", 3.0, "USD", 4, 1, 1.0),
+        ]
+        df = pl.DataFrame(
+            rows,
+            schema=["gvkey", "prc_local", "curcdd", "prcstd", "exch_main", "dolvol"],
+            orient="row",
+        ).with_columns(iid=pl.lit("01"), datadate=pl.lit(date(2024, 1, 31)))
         results = []
-        for i, df in enumerate([rows, rows.reverse()]):
+        for i, data in enumerate([df, df.reverse()]):
             input_path = paths.interim_dir / f"dup_input_{i}.parquet"
             output_path = paths.interim_dir / f"dup_output_{i}.parquet"
-            df.write_parquet(input_path)
+            data.write_parquet(input_path)
             add_primary_sec(paths, input_path, "datadate", output_path)
             results.append(pl.read_parquet(output_path))
 
         assert results[0].equals(results[1]), "Output should not depend on input order"
-        assert results[0].select("iid", "prc").rows() == [("01", 9.0), ("02", 20.0)]
+        assert results[0].height == 5
+        assert set(results[0]["prc_local"]) == {2.0}
 
 
 class TestGenReturnsDfDedup:
