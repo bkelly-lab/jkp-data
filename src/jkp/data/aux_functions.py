@@ -7111,8 +7111,9 @@ def market_chars_monthly(paths: DataPaths, data_path, market_ret_path, local_cur
         .sort(["id", "eom"])
     )
 
-    # The streaming engine returns this frame in ~115k chunks; writing them unmerged takes ~20x longer.
-    data.collect().rechunk().write_parquet(paths.interim_dir / "market_chars_m.parquet")
+    # In-memory: the streaming engine runs each of seasonality()'s ~260 shift() terms as its own node
+    # and is about 3x slower here.
+    data.collect(engine="in-memory").write_parquet(paths.interim_dir / "market_chars_m.parquet")
 
 
 @measure_time
