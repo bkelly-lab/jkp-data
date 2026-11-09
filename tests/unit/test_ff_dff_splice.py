@@ -17,7 +17,6 @@ from datetime import date
 import polars as pl
 import pytest
 
-from jkp.data import config
 from jkp.data.aux_functions import ff_load_compustat_us
 
 # Reuse the synthetic comp_funda/lnkhist builders from the dedup tests.
@@ -65,7 +64,7 @@ class TestDffSplice:
         assert row["gvkey"][0] is None
         assert row["op"][0] is None
         assert row["inv"][0] is None
-        assert row["count"][0] == config.FF_DFF_SYNTH_COUNT
+        assert row["count"][0] is None  # no Compustat history
 
     def test_year_offset_alignment(self, tmp_path):
         # DFF be(t=1930) must land as unioned year=1929 so cyp1 = 1930 = june_year,

@@ -691,10 +691,11 @@ class TestFFPrepareCharsLeftJoin:
         assert row["me"][0] == 300.0  # in the lenient size-median pool
 
     def test_chars_filter_recovers_inner_join_rows(self):
-        """The chars call site filters count & dec_me non-null to reproduce
-        the pre-left-join row set."""
+        """The chars call site keeps rows with an accounting row (count or be
+        non-null) and non-null dec_me, reproducing the pre-left-join row set."""
         chars = self._run_us()
-        kept = chars.filter(pl.col("count").is_not_null() & pl.col("dec_me").is_not_null())
+        has_acc = pl.col("count").is_not_null() | pl.col("be").is_not_null()
+        kept = chars.filter(has_acc & pl.col("dec_me").is_not_null())
         assert kept["id"].to_list() == [1]
 
     def test_row_no_dec_me_stock_kept_op_inv_sortable(self):

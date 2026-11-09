@@ -280,12 +280,6 @@ FF_DFF_MERGE_YEAR = 1954
 # balance-sheet fields absent from the current vintage), and where both are
 # non-null the sources agree (median |log ratio| ~ 0).
 
-# Synthetic per-firm Compustat-history count for DFF-only rows so they clear
-# the count >= 2 BM eligibility gate (_ff_bm_eligible). DFF rows carry no
-# Compustat fiscal-year history; this count feeds ONLY the eligibility gate —
-# op/inv stay null so DFF rows drop out of OP/INV (RMW/CMA) sorts.
-FF_DFF_SYNTH_COUNT = 2
-
 # CCM link-window backdating rescue for the early-1960s Compustat expansion.
 # Compustat added ~200 (mostly small) NYSE/AMEX firms per year around 1964-66
 # and backfilled their fy1962-64 statements; CCM stamps linkdt at coverage

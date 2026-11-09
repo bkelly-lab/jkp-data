@@ -41,7 +41,6 @@ from .config import (
     FF_CCM_BACKDATE_THROUGH,
     FF_DFF_GATE_COMPUSTAT_PRE1954,
     FF_DFF_MERGE_YEAR,
-    FF_DFF_SYNTH_COUNT,
     FF_MIN_STOCKS_BP,
     FF_MIN_STOCKS_PF,
     FF_MISSING_RET_CODE,
@@ -10289,7 +10288,8 @@ def _ff_merge_dff_be(
             # join (cyp1 = year + 1 = t = june_year) pairs it with Dec(t−1) ME.
             year=pl.col("year") - 1,
             gvkey=pl.lit(None, dtype=pl.Utf8),
-            count=pl.lit(FF_DFF_SYNTH_COUNT, dtype=pl.Int64),
+            # No Compustat history; the US sorts apply no count gate.
+            count=pl.lit(None, dtype=pl.Int64),
             **{c: pl.lit(None, dtype=pl.Float64) for c in keep},
         )
         .select(select_cols)
@@ -10317,15 +10317,7 @@ def _ff_merge_dff_be(
     comp_pool = (
         comp_pool.select(select_cols)
         .join(dff.select([*keys, "be"]).rename({"be": "_be_dff"}), on=keys, how="left")
-        .with_columns(
-            be=pl.coalesce("_be_dff", "be"),
-            # A DFF-covered cell is eligible regardless of Compustat history:
-            # hand-collected BE needs no backfill-bias seasoning, so it clears the
-            # count >= 2 BM gate like a standalone DFF row.
-            count=pl.when(pl.col("_be_dff").is_not_null())
-            .then(pl.max_horizontal("count", pl.lit(FF_DFF_SYNTH_COUNT, dtype=pl.Int64)))
-            .otherwise(pl.col("count")),
-        )
+        .with_columns(be=pl.coalesce("_be_dff", "be"))
         .drop("_be_dff")
     )
     dff_only = dff.join(comp_pool.select(keys), on=keys, how="anti")
@@ -11786,12 +11778,13 @@ def _ff_build_freq(
     if freq != "monthly":
         return factors, None
 
-    # count is non-null iff the June stock had a Compustat/DFF row; with the dec_me
-    # condition this reproduces the pre-left-join chars row set (extra rows only widen
-    # the US size-median pool).
+    # A June stock had an accounting row iff count (Compustat) or be (DFF-only) is
+    # non-null; with the dec_me condition this reproduces the pre-left-join chars row
+    # set (extra rows only widen the US size-median pool).
+    has_acc = pl.col("count").is_not_null() | pl.col("be").is_not_null()
     chars = ff_build_characteristics(
         panel,
-        data_chars.filter(pl.col("count").is_not_null() & pl.col("dec_me").is_not_null()),
+        data_chars.filter(has_acc & pl.col("dec_me").is_not_null()),
         freq,
         mom_signal=mom_signal,
     )
