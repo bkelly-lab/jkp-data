@@ -191,7 +191,7 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
     """
     # Function-local: LOAD_GLOBAL inside this function bypasses module
     # __getattr__, so helpers must be bound explicitly here. Also keeps
-    # importing `jkp.data.portfolio` cheap (no eager duckdb pull).
+    # importing `jkp.data.portfolio` cheap (no eager duckdb/ibis pull).
     from .aux_functions import (
         _build_hml_lms,
         _build_regional_loop,
