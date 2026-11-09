@@ -24,6 +24,7 @@ import polars as pl
 from jkp.data.aux_functions import (
     _ff_global_be_op_inv,
     _ff_load_funda_global,
+    _ff_us_accounting,
     ff_load_compustat_us,
     ff_load_world_compustat,
 )
@@ -148,7 +149,7 @@ def test_ff_load_compustat_us_collapses_and_recovers_inv(tmp_path):
     _write_funda(tmp_path / "comp_funda.parquet", _fiscal_change_rows("001", indl=True))
     _write_lnkhist(tmp_path / "crsp_ccmxpf_lnkhist.parquet", "001", 10001)
 
-    out = ff_load_compustat_us(tmp_path, ff5=True)
+    out = ff_load_compustat_us(_ff_us_accounting(tmp_path, True).collect(), tmp_path, ff5=True)
 
     # Unique per (permno, year) — no fiscal-change fan-out.
     keyed = out.select("permno", "year")
@@ -180,7 +181,7 @@ class TestUsBeLadder:
         row = _funda_row("001", date(2019, 12, 31), 100.0, indl=True, **over)
         _write_funda(tmp_path / "comp_funda.parquet", [row])
         _write_lnkhist(tmp_path / "crsp_ccmxpf_lnkhist.parquet", "001", 10001)
-        out = ff_load_compustat_us(tmp_path, ff5=True)
+        out = ff_load_compustat_us(_ff_us_accounting(tmp_path, True).collect(), tmp_path, ff5=True)
         assert out.height == 1
         return out
 
@@ -259,7 +260,7 @@ class TestCcmBackdateRescue:
     def _run(tmp_path, funda_rows, lnk_rows):
         _write_funda(tmp_path / "comp_funda.parquet", funda_rows)
         _write_lnkhist_rows(tmp_path / "crsp_ccmxpf_lnkhist.parquet", lnk_rows)
-        return ff_load_compustat_us(tmp_path, ff5=True)
+        return ff_load_compustat_us(_ff_us_accounting(tmp_path, True).collect(), tmp_path, ff5=True)
 
     def test_backfilled_year_rescued(self, tmp_path):
         # fy1962 -> jun_end 1963-06-30, inside [1963, 1966]; link starts

@@ -17,7 +17,7 @@ from datetime import date
 import polars as pl
 import pytest
 
-from jkp.data.aux_functions import ff_load_compustat_us
+from jkp.data.aux_functions import _ff_us_accounting, ff_load_compustat_us
 
 # Reuse the synthetic comp_funda/lnkhist builders from the dedup tests.
 from tests.unit.test_ff_compustat_dedup import _funda_row, _write_funda, _write_lnkhist
@@ -49,14 +49,24 @@ def _compustat_inputs(tmp_path, *, gvkey="001", permno=10001, years=(2018, 2019)
 class TestDffSplice:
     def test_use_dff_false_is_noop(self, tmp_path):
         _compustat_inputs(tmp_path)
-        base = ff_load_compustat_us(tmp_path, ff5=True).sort(["permno", "year"])
-        off = ff_load_compustat_us(tmp_path, ff5=True, use_dff=False).sort(["permno", "year"])
+        base = ff_load_compustat_us(
+            _ff_us_accounting(tmp_path, True).collect(), tmp_path, ff5=True
+        ).sort(["permno", "year"])
+        off = ff_load_compustat_us(
+            _ff_us_accounting(tmp_path, True).collect(), tmp_path, ff5=True, use_dff=False
+        ).sort(["permno", "year"])
         assert off.equals(base)
 
     def test_dff_fills_missing_permno_year(self, tmp_path):
         _compustat_inputs(tmp_path, permno=10001)
         dff = _write_dff(tmp_path / "dff.txt", [(20002, 1930, 1932, {1930: 5.0, 1931: 6.0})])
-        out = ff_load_compustat_us(tmp_path, ff5=True, use_dff=True, dff_path=dff)
+        out = ff_load_compustat_us(
+            _ff_us_accounting(tmp_path, True).collect(),
+            tmp_path,
+            ff5=True,
+            use_dff=True,
+            dff_path=dff,
+        )
 
         row = out.filter((pl.col("permno") == 20002) & (pl.col("year") == 1929))
         assert row.height == 1
@@ -71,7 +81,13 @@ class TestDffSplice:
         # pairing with Dec(1929) ME downstream.
         _compustat_inputs(tmp_path)
         dff = _write_dff(tmp_path / "dff.txt", [(20002, 1930, 1930, {1930: 5.0})])
-        out = ff_load_compustat_us(tmp_path, ff5=True, use_dff=True, dff_path=dff)
+        out = ff_load_compustat_us(
+            _ff_us_accounting(tmp_path, True).collect(),
+            tmp_path,
+            ff5=True,
+            use_dff=True,
+            dff_path=dff,
+        )
 
         dff_rows = out.filter(pl.col("permno") == 20002)
         assert dff_rows["year"].to_list() == [1929]
@@ -83,7 +99,13 @@ class TestDffSplice:
         # same permno: ONE merged row — DFF be, Compustat identity/accounting.
         _compustat_inputs(tmp_path, permno=10001, years=(2018, 2019))
         dff = _write_dff(tmp_path / "dff.txt", [(10001, 2020, 2020, {2020: 999.0})])
-        out = ff_load_compustat_us(tmp_path, ff5=True, use_dff=True, dff_path=dff)
+        out = ff_load_compustat_us(
+            _ff_us_accounting(tmp_path, True).collect(),
+            tmp_path,
+            ff5=True,
+            use_dff=True,
+            dff_path=dff,
+        )
 
         rows = out.filter((pl.col("permno") == 10001) & (pl.col("year") == 2019))
         assert rows.height == 1
@@ -102,7 +124,13 @@ class TestDffSplice:
         _write_funda(tmp_path / "comp_funda.parquet", rows)
         _write_lnkhist(tmp_path / "crsp_ccmxpf_lnkhist.parquet", "001", 10001)
         dff = _write_dff(tmp_path / "dff.txt", [(10001, 2020, 2020, {2020: 55.0})])
-        out = ff_load_compustat_us(tmp_path, ff5=True, use_dff=True, dff_path=dff)
+        out = ff_load_compustat_us(
+            _ff_us_accounting(tmp_path, True).collect(),
+            tmp_path,
+            ff5=True,
+            use_dff=True,
+            dff_path=dff,
+        )
 
         row = out.filter((pl.col("permno") == 10001) & (pl.col("year") == 2019))
         assert row.height == 1
@@ -115,8 +143,14 @@ class TestDffSplice:
             tmp_path / "dff.txt",
             [(20002, 1930, 1932, {1930: 5.0, 1931: 6.0, 1932: 7.0})],
         )
-        base = ff_load_compustat_us(tmp_path, ff5=True)
-        out = ff_load_compustat_us(tmp_path, ff5=True, use_dff=True, dff_path=dff)
+        base = ff_load_compustat_us(_ff_us_accounting(tmp_path, True).collect(), tmp_path, ff5=True)
+        out = ff_load_compustat_us(
+            _ff_us_accounting(tmp_path, True).collect(),
+            tmp_path,
+            ff5=True,
+            use_dff=True,
+            dff_path=dff,
+        )
 
         assert out.height == base.height + 3
         keyed = out.select("permno", "year")
@@ -125,7 +159,13 @@ class TestDffSplice:
     def test_negative_dff_be_dropped(self, tmp_path):
         _compustat_inputs(tmp_path)
         dff = _write_dff(tmp_path / "dff.txt", [(20002, 1930, 1931, {1930: -5.0, 1931: 6.0})])
-        out = ff_load_compustat_us(tmp_path, ff5=True, use_dff=True, dff_path=dff)
+        out = ff_load_compustat_us(
+            _ff_us_accounting(tmp_path, True).collect(),
+            tmp_path,
+            ff5=True,
+            use_dff=True,
+            dff_path=dff,
+        )
 
         assert out.filter(pl.col("permno") == 20002)["year"].to_list() == [1930]
 
@@ -134,7 +174,13 @@ class TestDffSplice:
         # beme scale is applied downstream, not in the loader.
         _compustat_inputs(tmp_path)
         dff = _write_dff(tmp_path / "dff.txt", [(20002, 1930, 1930, {1930: 67.743})])
-        out = ff_load_compustat_us(tmp_path, ff5=True, use_dff=True, dff_path=dff)
+        out = ff_load_compustat_us(
+            _ff_us_accounting(tmp_path, True).collect(),
+            tmp_path,
+            ff5=True,
+            use_dff=True,
+            dff_path=dff,
+        )
 
         assert out.filter(pl.col("permno") == 20002)["be"][0] == pytest.approx(67.743)
 
@@ -143,7 +189,13 @@ class TestDffSplice:
         # Compustat fiscal years 1950/1951 -> formations June 1951/1952 < 1954: dropped.
         _compustat_inputs(tmp_path, permno=10001, years=(1950, 1951))
         dff = _write_dff(tmp_path / "dff.txt", [(20002, 1930, 1930, {1930: 5.0})])
-        out = ff_load_compustat_us(tmp_path, ff5=True, use_dff=True, dff_path=dff)
+        out = ff_load_compustat_us(
+            _ff_us_accounting(tmp_path, True).collect(),
+            tmp_path,
+            ff5=True,
+            use_dff=True,
+            dff_path=dff,
+        )
 
         assert out.filter(pl.col("permno") == 10001).height == 0
         assert out.filter(pl.col("permno") == 20002).height == 1
@@ -157,7 +209,13 @@ class TestDffSplice:
                 (20002, 1930, 1930, {1930: 5.0}),
             ],
         )
-        out = ff_load_compustat_us(tmp_path, ff5=True, use_dff=True, dff_path=dff)
+        out = ff_load_compustat_us(
+            _ff_us_accounting(tmp_path, True).collect(),
+            tmp_path,
+            ff5=True,
+            use_dff=True,
+            dff_path=dff,
+        )
 
         keyed = out.select("permno", "year")
         assert keyed.height == keyed.unique().height

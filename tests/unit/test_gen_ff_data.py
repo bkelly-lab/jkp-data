@@ -5,15 +5,13 @@ Covers:
   - _ff_bm_eligible / _ff_op_eligible / _ff_inv_eligible / _ff_mom_eligible
   - ff_country_breakpoints, _ff_bm_breaks / _ff_op_breaks / _ff_inv_breaks,
     _ff_size_breaks
-  - _ff_us_finish_prepare / _ff_row_finish_prepare (no-BE June stocks kept
-    for the size pool)
+  - _ff_row_june, ff_annual_characteristics, ff_load_crsp_panel (monthly ME)
   - ff_assign_portfolios
   - ff_assign_to_panel
   - _ff_vw_leg
   - ff_compute_factors
   - _ff_mom_signal_monthly, _ff_mom_signal_daily
   - ff_compute_umd_factor
-  - ff_build_characteristics
 """
 
 from __future__ import annotations
@@ -27,7 +25,6 @@ import pytest
 from jkp.data.aux_functions import (
     _ff_bm_breaks,
     _ff_bm_eligible,
-    _ff_fill_characteristics,
     _ff_inv_breaks,
     _ff_inv_eligible,
     _ff_mom_eligible,
@@ -37,19 +34,17 @@ from jkp.data.aux_functions import (
     _ff_mom_source_us,
     _ff_op_breaks,
     _ff_op_eligible,
-    _ff_row_finish_prepare,
+    _ff_row_june,
     _ff_row_rets_weights_lazy,
     _ff_size_breaks,
-    _ff_us_finish_prepare,
-    _ff_us_rets_weights_lazy,
     _ff_vw_leg,
+    ff_annual_characteristics,
     ff_assign_portfolios,
     ff_assign_to_panel,
-    ff_build_characteristics,
-    ff_characteristics_extra,
     ff_compute_factors,
     ff_compute_umd_factor,
     ff_country_breakpoints,
+    ff_load_crsp_panel,
     ff_load_world_panel,
 )
 from jkp.data.config import (
@@ -617,201 +612,184 @@ class TestFFSpecBreaks:
 
 
 # =============================================================================
-# TestFFPrepareCharsLeftJoin
+# TestFFRowJune
 # =============================================================================
 
 
-class TestFFPrepareCharsLeftJoin:
-    """No-BE June stocks survive the comp join in the finish-prepare step
-    (_ff_us_finish_prepare / _ff_row_finish_prepare): they widen the US
-    size-median pool with null accounting fields, while
-    comp-matched rows are unchanged and recoverable via count.is_not_null().
-    In both branches, stocks without Dec(t-1) ME also stay (null dec_me/beme,
-    sortable on OP/INV)."""
+class TestFFRowJune:
+    """_ff_row_june: a stock with no June row forms on its last row up to
+    FF_ROW_FORMATION_ME_LOOKBACK (2) months earlier, if it trades again later
+    that year."""
 
     @staticmethod
-    def _run_us():
-        # permno 1: Dec ME + comp row; permno 2: Dec ME, no comp row;
-        # permno 3: comp row, no Dec 2019 row (listed Jan-Jun 2020).
-        panel = pl.DataFrame(
-            {
-                "permno": [1, 1, 2, 2, 3],
-                "date": [date(2019, 12, 31), date(2020, 6, 30)] * 2 + [date(2020, 6, 30)],
-                "retadj": [0.01] * 5,
-                "retx": [0.01] * 5,
-                "me": [100.0, 110.0, 200.0, 210.0, 300.0],
-                "prc": [10.0] * 5,
-                "exchcd": [1] * 5,
-                "shrcd": [10] * 5,
-            }
-        ).sort("permno", "date")
-        comp = pl.DataFrame(
-            {
-                "permno": [1, 3],
-                "year": [2019, 2019],
-                "datadate": [date(2019, 12, 31)] * 2,
-                "be": [0.05, 0.07],
-                "op": [0.2, 0.3],
-                "inv": [0.1, 0.15],
-                "count": [3, 4],
-            },
-            schema_overrides={"year": pl.Int32},
-        )
-        _, data_chars = _ff_us_finish_prepare(
-            _ff_us_rets_weights_lazy(panel.lazy(), "monthly").collect(), comp
-        )
-        return data_chars
-
-    def test_no_comp_stock_kept_with_null_accounting(self):
-        chars = self._run_us()
-        assert chars.height == 3
-        row = chars.filter(pl.col("id") == 2)
-        assert row.height == 1
-        for c in ("be", "op", "inv", "count", "beme"):
-            assert row[c][0] is None
-        assert row["dec_me"][0] == 200.0
-
-    def test_comp_matched_row_unchanged(self):
-        chars = self._run_us()
-        row = chars.filter(pl.col("id") == 1)
-        assert row["count"][0] == 3
-        # beme = be($M) / dec_me($M) = 0.05 / 100 (both in USD millions)
-        assert abs(row["beme"][0] - 0.0005) < 1e-12
-
-    def test_us_no_dec_me_stock_kept_op_inv_sortable(self):
-        """US stock without Dec(t-1) ME keeps comp op/inv (French's OP/INV
-        sorts need June ME only) but gets null beme (no B/M sort)."""
-        chars = self._run_us()
-        row = chars.filter(pl.col("id") == 3)
-        assert row.height == 1
-        assert row["dec_me"][0] is None
-        assert row["beme"][0] is None
-        assert row["op"][0] == 0.3
-        assert row["inv"][0] == 0.15
-        assert row["me"][0] == 300.0  # in the lenient size-median pool
-
-    def test_chars_filter_recovers_inner_join_rows(self):
-        """The chars call site keeps rows with an accounting row (count or be
-        non-null) and non-null dec_me, reproducing the pre-left-join row set."""
-        chars = self._run_us()
-        has_acc = pl.col("count").is_not_null() | pl.col("be").is_not_null()
-        kept = chars.filter(has_acc & pl.col("dec_me").is_not_null())
-        assert kept["id"].to_list() == [1]
-
-    def test_row_no_dec_me_stock_kept_op_inv_sortable(self):
-        """ROW stock without Dec(t-1) ME survives with null dec_me/beme and
-        keeps comp op/inv (US parity)."""
-        panel = pl.DataFrame(
-            {
-                "excntry": ["GBR"] * 5,
-                "id": [1, 1, 2, 2, 3],
-                "gvkey": ["g1", "g1", "g2", "g2", "g3"],
-                "date": [date(2019, 12, 31), date(2020, 6, 30)] * 2 + [date(2020, 6, 30)],
-                "ret": [0.01] * 5,
-                "me": [100.0, 110.0, 200.0, 210.0, 300.0],
-                "size_grp": ["large"] * 5,
-            }
-        ).sort("id", "date")
-        comp = pl.DataFrame(
-            {
-                "gvkey": ["g1", "g3"],
-                "year": [2019, 2019],
-                "datadate": [date(2019, 12, 31)] * 2,
-                "be": [50.0, 70.0],
-                "op": [0.2, 0.3],
-                "inv": [0.1, 0.15],
-                "count": [3, 4],
-            },
-            schema_overrides={"year": pl.Int32},
-        )
-        _, data_chars = _ff_row_finish_prepare(
-            _ff_row_rets_weights_lazy(panel.lazy(), "monthly").collect(), comp
-        )
-        # id 2 (no comp) kept by the left comp join; id 3 (no Dec ME) kept by
-        # the left dec_me join with null dec_me/beme but comp op/inv intact.
-        assert sorted(data_chars["id"].to_list()) == [1, 2, 3]
-        row = data_chars.filter(pl.col("id") == 3)
-        assert row["dec_me"][0] is None
-        assert row["beme"][0] is None
-        assert row["op"][0] == 0.3
-        assert row["inv"][0] == 0.15
-        assert row["me"][0] == 300.0
-
-
-# =============================================================================
-# TestFFRowFormationMeTolerance
-# =============================================================================
-
-
-class TestFFRowFormationMeTolerance:
-    """ROW June/December formation ME falls back to the last row up to
-    FF_ROW_FORMATION_ME_LOOKBACK (2) months earlier when the formation-month
-    row is missing (trading halt); a June fallback needs a later row that year."""
-
-    @staticmethod
-    def _run():
+    def _run() -> pl.DataFrame:
         rows = {
-            1: [(date(2019, 12, 31), 100.0), (date(2020, 6, 30), 110.0)],  # no halt
-            2: [  # halted over Dec and June, resumes in August
-                (date(2019, 11, 30), 200.0),
-                (date(2020, 5, 31), 210.0),
-                (date(2020, 8, 31), 220.0),
-            ],
-            3: [(date(2019, 12, 31), 300.0), (date(2020, 5, 31), 310.0)],  # delisted in May
-            4: [  # last pre-June row is outside the window
-                (date(2019, 12, 31), 400.0),
-                (date(2020, 3, 31), 410.0),
-                (date(2020, 7, 31), 420.0),
-            ],
-            5: [(date(2019, 9, 30), 500.0), (date(2020, 6, 30), 510.0)],  # Dec gap too long
+            1: [(date(2020, 5, 31), 100.0), (date(2020, 6, 30), 110.0)],  # no halt
+            2: [(date(2020, 5, 31), 210.0), (date(2020, 8, 31), 220.0)],  # halted, resumes
+            3: [(date(2020, 5, 31), 310.0)],  # delisted in May
+            4: [(date(2020, 3, 31), 410.0), (date(2020, 7, 31), 420.0)],  # outside window
         }
         recs = [(i, d, me) for i, obs in rows.items() for d, me in obs]
         panel = pl.DataFrame(
             {
                 "excntry": ["GBR"] * len(recs),
                 "id": [r[0] for r in recs],
-                "gvkey": [f"g{r[0]}" for r in recs],
                 "date": [r[1] for r in recs],
                 "ret": [0.01] * len(recs),
                 "me": [r[2] for r in recs],
                 "size_grp": ["large"] * len(recs),
             }
-        ).sort("id", "date")
-        comp = pl.DataFrame(
-            {
-                "gvkey": [f"g{i}" for i in rows],
-                "year": [2019] * len(rows),
-                "datadate": [date(2019, 12, 31)] * len(rows),
-                "be": [50.0] * len(rows),
-                "op": [0.2] * len(rows),
-                "inv": [0.1] * len(rows),
-                "count": [3] * len(rows),
-            },
-            schema_overrides={"year": pl.Int32},
         )
-        _, data_chars = _ff_row_finish_prepare(
-            _ff_row_rets_weights_lazy(panel.lazy(), "monthly").collect(), comp
-        )
-        return data_chars.sort("id")
+        return _ff_row_june(_ff_row_rets_weights_lazy(panel.lazy(), "monthly").collect()).sort("id")
 
     def test_formation_rows(self):
-        chars = self._run()
-        # 3 (delisted, no later row) and 4 (Mar row outside window) get no June row
-        assert chars["id"].to_list() == [1, 2, 5]
-        assert chars["date"].unique().to_list() == [date(2020, 6, 30)]
+        june = self._run()
+        assert june["id"].to_list() == [1, 2]
+        assert june["date"].unique().to_list() == [date(2020, 6, 30)]
 
-    def test_no_halt_unchanged(self):
-        row = self._run().filter(pl.col("id") == 1)
-        assert (row["me"][0], row["dec_me"][0]) == (110.0, 100.0)
+    def test_formation_me(self):
+        assert self._run()["me"].to_list() == [110.0, 210.0]
 
-    def test_halted_stock_uses_last_me_in_window(self):
-        row = self._run().filter(pl.col("id") == 2)
-        assert (row["me"][0], row["dec_me"][0]) == (210.0, 200.0)
 
-    def test_dec_me_outside_window_stays_null(self):
-        row = self._run().filter(pl.col("id") == 5)
-        assert row["me"][0] == 510.0
-        assert row["dec_me"][0] is None
+# =============================================================================
+# TestFFAnnualCharacteristics
+# =============================================================================
+
+
+def _write_annual_world_msf(tmp_path) -> None:
+    """world_msf rows for ff_annual_characteristics (all fiscal 2019 -> port_year 2020).
+
+    GBR (Compustat): 10 Dec ME 50; 11 Dec ME 0; 13 halted, last row in Nov;
+    14 last row in Sep (outside the window). US: 20 Compustat-only (me 55,
+    me_company 60); 21 Compustat-only with a Nov row only; 30 CRSP (me 40,
+    me_company 60, world_msf gvkey g20); 31 CRSP with no accounting.
+    """
+    rows = [
+        # id, excntry, gvkey, eom, me, me_company, source_crsp
+        (10, "GBR", "g10", date(2019, 12, 31), 50.0, 50.0, 0),
+        (11, "GBR", "g11", date(2019, 12, 31), 0.0, 0.0, 0),
+        (13, "GBR", "g13", date(2019, 11, 30), 200.0, 200.0, 0),
+        (14, "GBR", "g14", date(2019, 9, 30), 400.0, 400.0, 0),
+        (20, US_EXCNTRY, "g20", date(2019, 12, 31), 55.0, 60.0, 0),
+        (21, US_EXCNTRY, "g21", date(2019, 11, 30), 80.0, 80.0, 0),
+        (30, US_EXCNTRY, "g20", date(2019, 12, 31), 40.0, 60.0, 1),
+        (31, US_EXCNTRY, None, date(2019, 12, 31), 70.0, 70.0, 1),
+    ]
+    cols = ["id", "excntry", "gvkey", "eom", "me", "me_company", "source_crsp"]
+    pl.DataFrame(rows, schema=cols, orient="row").write_parquet(tmp_path / "world_msf.parquet")
+
+
+def _acc(gvkeys: list[str], be: float, op: float, inv: float | None, count: int) -> pl.DataFrame:
+    n = len(gvkeys)
+    return pl.DataFrame(
+        {
+            "gvkey": gvkeys,
+            "datadate": [date(2019, 12, 31)] * n,
+            "year": [2019] * n,
+            "be": [be] * n,
+            "op": [op] * n,
+            "inv": [inv] * n,
+            "count": [count] * n,
+        },
+        schema_overrides={"inv": pl.Float64},
+    )
+
+
+class TestFFAnnualCharacteristics:
+    """ff_annual_characteristics: one table for the published characteristics and
+    the June sorts; it reads no sample screens."""
+
+    @staticmethod
+    def _run(tmp_path) -> dict[int, dict]:
+        _write_annual_world_msf(tmp_path)
+        acc_us = _acc(["g20", "g21"], be=30.0, op=0.2, inv=None, count=1)
+        comp_world = _acc(["g10", "g11", "g13", "g14"], be=25.0, op=0.1, inv=0.05, count=1)
+        ccm2a = _acc(["g30"], be=40.0, op=0.3, inv=0.02, count=3).with_columns(permno=pl.lit(30))
+        out = ff_annual_characteristics(tmp_path, acc_us, ccm2a, comp_world)
+        assert out.select("id", "port_year").is_duplicated().sum() == 0
+        assert out["port_year"].unique().to_list() == [2020]
+        return {r["id"]: r for r in out.iter_rows(named=True)}
+
+    def test_row_dec_me_and_beme(self, tmp_path):
+        """count = 1 is a sort screen, not a formula input: beme is defined."""
+        r = self._run(tmp_path)[10]
+        assert (r["dec_me"], r["count"]) == (50.0, 1)
+        assert r["beme"] == pytest.approx(25.0 / 50.0)
+
+    def test_zero_dec_me_nulls_beme_only(self, tmp_path):
+        r = self._run(tmp_path)[11]
+        assert r["dec_me"] is None and r["beme"] is None
+        assert r["op"] == pytest.approx(0.1)
+        assert r["inv"] == pytest.approx(0.05)
+
+    def test_row_dec_me_lookback(self, tmp_path):
+        out = self._run(tmp_path)
+        assert out[13]["dec_me"] == 200.0  # November row inside the window
+        assert out[14]["dec_me"] is None  # September row outside it
+        assert out[14]["op"] == pytest.approx(0.1)
+
+    def test_us_compustat_only_uses_me_company_and_acc_us(self, tmp_path):
+        r = self._run(tmp_path)[20]
+        assert r["dec_me"] == 60.0
+        assert r["beme"] == pytest.approx(30.0 / 60.0)
+        assert r["op"] == pytest.approx(0.2)
+
+    def test_us_dec_me_needs_december(self, tmp_path):
+        r = self._run(tmp_path)[21]
+        assert r["dec_me"] is None and r["beme"] is None
+        assert r["be"] == 30.0
+
+    def test_us_crsp_uses_ccm2a_not_world_msf_gvkey(self, tmp_path):
+        r = self._run(tmp_path)[30]
+        assert (r["be"], r["count"], r["dec_me"]) == (40.0, 3, 60.0)
+        assert r["beme"] == pytest.approx(40.0 / 60.0)
+
+    def test_dec_me_without_accounting_kept(self, tmp_path):
+        r = self._run(tmp_path)[31]
+        assert r["dec_me"] == 70.0
+        assert r["be"] is None and r["beme"] is None
+
+
+# =============================================================================
+# TestFFLoadCrspPanel
+# =============================================================================
+
+
+class TestFFLoadCrspPanel:
+    """ff_load_crsp_panel: one permno per permco; monthly ME is JKP's me_company."""
+
+    def test_monthly_me_is_me_company(self, tmp_path):
+        n = 3
+        pl.DataFrame(
+            {
+                "permno": [1, 2, 3],
+                "permco": [100, 100, 200],
+                "mthcaldt": [date(2020, 6, 30)] * n,
+                "mthret": [0.01] * n,
+                "mthretx": [0.01] * n,
+                "mthprc": [10.0, 5.0, 8.0],
+                "shrout": [1000.0] * n,
+                "sharetype": ["NS"] * n,
+                "securitytype": ["EQTY"] * n,
+                "securitysubtype": ["COM"] * n,
+                "usincflg": ["Y"] * n,
+                "issuertype": ["CORP"] * n,
+                "primaryexch": ["N"] * n,
+            }
+        ).write_parquet(tmp_path / "crsp_msf_v2.parquet")
+        pl.DataFrame(
+            {
+                "id": [1, 2],
+                "eom": [date(2020, 6, 30)] * 2,
+                "source_crsp": [1, 1],
+                "me_company": [25.0, 25.0],
+            }
+        ).write_parquet(tmp_path / "world_msf.parquet")
+        out = ff_load_crsp_panel(tmp_path, tmp_path, "monthly").collect().sort("permno")
+        # permno 1 has the larger CIZ ME (10 vs 5); its me is me_company (25), not
+        # the CIZ permco sum (15). permno 3 has no world_msf row.
+        assert out["permno"].to_list() == [1, 3]
+        assert out["me"].to_list() == [25.0, None]
 
 
 # =============================================================================
@@ -2241,360 +2219,3 @@ class TestFFComputeUmdFactor:
         panel = _make_mom_panel(excntry=US_EXCNTRY)
         result = ff_compute_umd_factor(panel)
         assert result["umd_ff"][0] is not None
-
-
-# =============================================================================
-# TestFFBuildCharacteristics
-# =============================================================================
-
-
-def _make_char_panel(freq: str = "monthly") -> pl.DataFrame:
-    """Build a minimal panel for ff_build_characteristics."""
-    if freq == "monthly":
-        dates = [date(2020, 8, 31), date(2020, 9, 30)]
-    else:
-        # Daily: one per-day in August 2020
-        from datetime import timedelta
-
-        start = date(2020, 8, 3)
-        dates = [start + timedelta(days=i) for i in range(5)]
-
-    n = len(dates)
-    return pl.DataFrame(
-        {
-            "excntry": [US_EXCNTRY] * n,
-            "id": [1] * n,
-            "date": dates,
-            "ret": [0.01] * n,
-            "me": [100.0] * n,
-            "w": [1.0] * n,
-        }
-    )
-
-
-def _make_june_chars(
-    beme: float = 1.5, op: float | None = 0.2, inv: float | None = 0.05
-) -> pl.DataFrame:
-    """Minimal June snapshot with beme/op/inv for characteristics."""
-    return pl.DataFrame(
-        {
-            "excntry": [US_EXCNTRY],
-            "id": [1],
-            "date": [date(2020, 6, 30)],
-            "beme": [beme],
-            "op": [op],
-            "inv": [inv],
-        },
-        schema={
-            "excntry": pl.Utf8,
-            "id": pl.Int64,
-            "date": pl.Date,
-            "beme": pl.Float64,
-            "op": pl.Float64,
-            "inv": pl.Float64,
-        },
-    )
-
-
-class TestFFBuildCharacteristics:
-    """Tests for ff_build_characteristics()."""
-
-    def test_output_schema_monthly(self):
-        """Monthly output has date, excntry, id, me_ff, beme_ff, op_ff, inv_ff."""
-        panel = _make_char_panel("monthly")
-        june = _make_june_chars()
-        result = ff_build_characteristics(panel, june, freq="monthly")
-        for col in ("date", "excntry", "id", "me_ff", "beme_ff", "op_ff", "inv_ff"):
-            assert col in result.columns
-
-    def test_me_ff_matches_panel_me(self, tolerance):
-        """me_ff is taken directly from panel's me column."""
-        panel = _make_char_panel("monthly")
-        june = _make_june_chars()
-        result = ff_build_characteristics(panel, june, freq="monthly")
-        np.testing.assert_allclose(
-            result["me_ff"].to_numpy(),
-            [100.0, 100.0],
-            **tolerance.TIGHT,
-        )
-
-    def test_beme_ff_from_june(self, tolerance):
-        """beme_ff is the June beme value broadcast to panel rows."""
-        panel = _make_char_panel("monthly")
-        june = _make_june_chars(beme=2.5)
-        result = ff_build_characteristics(panel, june, freq="monthly")
-        np.testing.assert_allclose(
-            result["beme_ff"].to_numpy(),
-            [2.5, 2.5],
-            **tolerance.TIGHT,
-        )
-
-    def test_null_beme_propagates(self):
-        """Null beme in june propagates to beme_ff."""
-        panel = _make_char_panel("monthly")
-        june = _make_june_chars(beme=None)
-        result = ff_build_characteristics(panel, june, freq="monthly")
-        assert result["beme_ff"].is_null().all()
-
-    def test_op_ff_from_june(self, tolerance):
-        """op_ff is the June op value."""
-        panel = _make_char_panel("monthly")
-        june = _make_june_chars(op=0.35)
-        result = ff_build_characteristics(panel, june, freq="monthly")
-        np.testing.assert_allclose(
-            result["op_ff"].to_numpy(),
-            [0.35, 0.35],
-            **tolerance.TIGHT,
-        )
-
-    def test_null_op_propagates(self):
-        """Null op in june propagates to op_ff."""
-        panel = _make_char_panel("monthly")
-        june = _make_june_chars(op=None)
-        result = ff_build_characteristics(panel, june, freq="monthly")
-        assert result["op_ff"].is_null().all()
-
-    def test_sorted_by_date_excntry_id(self):
-        """Output is sorted by (date, excntry, id)."""
-        panel = _make_char_panel("monthly")
-        june = _make_june_chars()
-        result = ff_build_characteristics(panel, june, freq="monthly")
-        dates = result["date"].to_list()
-        assert dates == sorted(dates)
-
-    def test_mom_signal_joined_as_umd_ff(self, tolerance):
-        """When mom_signal is provided, umd_ff column is added."""
-        panel = _make_char_panel("monthly")
-        june = _make_june_chars()
-        mom_signal = pl.DataFrame(
-            {
-                "excntry": [US_EXCNTRY, US_EXCNTRY],
-                "id": [1, 1],
-                "date": [date(2020, 8, 31), date(2020, 9, 30)],
-                "mom_2_12": [0.15, 0.20],
-            }
-        )
-        result = ff_build_characteristics(panel, june, freq="monthly", mom_signal=mom_signal)
-        assert "umd_ff" in result.columns
-        np.testing.assert_allclose(result["umd_ff"][0], 0.15, **tolerance.TIGHT)
-
-    def test_no_mom_signal_no_umd_ff(self):
-        """Without mom_signal, umd_ff is absent."""
-        panel = _make_char_panel("monthly")
-        june = _make_june_chars()
-        result = ff_build_characteristics(panel, june, freq="monthly")
-        assert "umd_ff" not in result.columns
-
-    def test_daily_downsampled_to_monthly(self):
-        """Daily input is downsampled to last trading day per (excntry, id, month)."""
-        panel = _make_char_panel("daily")
-        june = _make_june_chars()
-        result = ff_build_characteristics(panel, june, freq="daily")
-        # All daily rows are in Aug 2020 → should collapse to 1 row
-        assert len(result) == 1
-
-    def test_no_match_in_june_excluded(self):
-        """Panel rows with no matching June formation year are dropped."""
-        # Panel in 2021, June has formation year 2020 → Jul-Jun(y+1); 2020/07→2021/06 uses 2020
-        # Use dates well outside the formation window
-        panel = pl.DataFrame(
-            {
-                "excntry": [US_EXCNTRY],
-                "id": [99],  # no match in june
-                "date": [date(2020, 8, 31)],
-                "ret": [0.01],
-                "me": [100.0],
-                "w": [1.0],
-            }
-        )
-        june = _make_june_chars()  # id=1
-        result = ff_build_characteristics(panel, june, freq="monthly")
-        assert len(result) == 0
-
-
-# =============================================================================
-# Unscreened characteristics (screens decide factor membership only)
-# =============================================================================
-
-
-def _months(start: date, n: int) -> list[date]:
-    """n month-ends starting at start's month."""
-    return (
-        pl.date_range(start, start.replace(year=start.year + 3), "1mo", eager=True)
-        .dt.month_end()[:n]
-        .to_list()
-    )
-
-
-def _write_extra_inputs(tmp_path) -> None:
-    """world_msf for a GBR non-common stock (10), a GBR stock with zero ME (11),
-    a GBR stock with no price at t-13 (12), a US Compustat-only row (20) and a US
-    CRSP stock (30) whose world_msf gvkey is 20's; comp_world / comp_funda /
-    ccm2a accounting for fiscal 2019; JKP ret_12_1."""
-    eoms = _months(date(2019, 6, 30), 15)  # Jun 2019 .. Aug 2020
-    rows = []
-    for i, cty, gv, me in [
-        (10, "GBR", "g10", 50.0),
-        (11, "GBR", "g11", 0.0),
-        (12, "GBR", "g12", 50.0),
-        (20, US_EXCNTRY, "g20", 60.0),
-        (30, US_EXCNTRY, "g20", 60.0),
-    ]:
-        for d in eoms:
-            no_prc = i == 12 and d == date(2019, 7, 31)
-            rows.append(
-                {
-                    "excntry": cty,
-                    "id": i,
-                    "gvkey": gv,
-                    "eom": d,
-                    "me_company": me,
-                    "prc": None if no_prc else 5.0,
-                    "ret": 0.01,
-                    "ret_lag_dif": 1,
-                    "common": 0,
-                    "source_crsp": int(i == 30),
-                }
-            )
-    pl.DataFrame(rows).write_parquet(tmp_path / "world_msf.parquet")
-    pl.DataFrame(
-        {"id": [10, 11, 12, 20, 30], "eom": [date(2020, 7, 31)] * 5, "ret_12_1": [0.2] * 5}
-    ).write_parquet(tmp_path / "market_chars_m.parquet")
-    f64 = [
-        "pstkrv",
-        "pstkl",
-        "pstk",
-        "seq",
-        "ceq",
-        "lt",
-        "at",
-        "txditc",
-        "revt",
-        "cogs",
-        "xsga",
-        "xint",
-        "mib",
-        "mibt",
-        "mibn",
-    ]
-    funda = {c: [None] for c in f64} | {"seq": [30.0], "at": [100.0], "revt": [10.0], "cogs": [4.0]}
-    pl.DataFrame(
-        {
-            "gvkey": ["g20"],
-            "datadate": [date(2019, 12, 31)],
-            "indfmt": ["INDL"],
-            "datafmt": ["STD"],
-            "popsrc": ["D"],
-            "consol": ["C"],
-            **funda,
-        },
-        schema_overrides=dict.fromkeys(f64, pl.Float64),
-    ).write_parquet(tmp_path / "comp_funda.parquet")
-
-
-_COMP_WORLD = pl.DataFrame(
-    {
-        "gvkey": ["g10", "g11", "g12"],
-        "datadate": [date(2019, 12, 31)] * 3,
-        "year": [2019] * 3,
-        "be": [25.0] * 3,
-        "op": [0.1] * 3,
-        "inv": [0.05] * 3,
-        "count": [1] * 3,
-    }
-)
-
-
-_CCM2A = pl.DataFrame(
-    {
-        "gvkey": ["g30"],
-        "permno": [30],
-        "year": [2019],
-        "datadate": [date(2019, 12, 31)],
-        "be": [40.0],
-        "op": [0.3],
-        "inv": [0.02],
-        "count": [3],
-    }
-)
-
-
-class TestFFCharacteristicsExtra:
-    """ff_characteristics_extra: characteristics without the FF sample screens."""
-
-    def _aug(self, tmp_path) -> pl.DataFrame:
-        _write_extra_inputs(tmp_path)
-        out = ff_characteristics_extra(tmp_path, tmp_path, _CCM2A, _COMP_WORLD).collect()
-        return out.filter(pl.col("date") == date(2020, 8, 31)).sort("id")
-
-    def test_screened_out_stock_gets_all_characteristics(self, tmp_path):
-        """Non-common, count=1, no June formation row: every formula is defined."""
-        r = self._aug(tmp_path).filter(pl.col("id") == 10).row(0, named=True)
-        assert r["me_ff"] == pytest.approx(50.0)
-        assert r["beme_ff"] == pytest.approx(25.0 / 50.0)  # Dec-2019 me_company
-        assert r["op_ff"] == pytest.approx(0.1)
-        assert r["inv_ff"] == pytest.approx(0.05)
-        assert r["umd_ff"] == pytest.approx(0.2)
-
-    def test_us_compustat_only_row_uses_ff_strict_accounting(self, tmp_path):
-        r = self._aug(tmp_path).filter(pl.col("id") == 20).row(0, named=True)
-        assert r["beme_ff"] == pytest.approx(30.0 / 60.0)
-        assert r["op_ff"] == pytest.approx((10.0 - 4.0) / 30.0)
-        assert r["inv_ff"] is None  # no prior fiscal year
-
-    def test_us_crsp_row_uses_ccm_link(self, tmp_path):
-        """A CRSP permno takes ccm2a's accounting, not its world_msf gvkey's."""
-        r = self._aug(tmp_path).filter(pl.col("id") == 30).row(0, named=True)
-        assert r["beme_ff"] == pytest.approx(40.0 / 60.0)
-        assert r["op_ff"] == pytest.approx(0.3)
-        assert r["inv_ff"] == pytest.approx(0.02)
-
-    def test_formula_nulls_stay_null(self, tmp_path):
-        out = self._aug(tmp_path)
-        zero_me = out.filter(pl.col("id") == 11).row(0, named=True)
-        assert zero_me["me_ff"] is None and zero_me["beme_ff"] is None
-        assert zero_me["op_ff"] == pytest.approx(0.1)  # op does not need ME
-        no_start_price = out.filter(pl.col("id") == 12).row(0, named=True)
-        assert no_start_price["umd_ff"] is None
-
-
-class TestFFFillCharacteristics:
-    """_ff_fill_characteristics: screened cells win; empty cells are filled."""
-
-    def test_coalesce_order(self):
-        d = date(2020, 8, 31)
-        cols = ["me_ff", "beme_ff", "op_ff", "inv_ff", "umd_ff"]
-        chars = pl.DataFrame(
-            {
-                "date": [d],
-                "excntry": ["GBR"],
-                "id": [1],
-                "me_ff": [100.0],
-                "beme_ff": [1.0],
-                "op_ff": [None],
-                "inv_ff": [None],
-                "umd_ff": [None],
-            },
-            schema_overrides=dict.fromkeys(cols, pl.Float64),
-        )
-        panel = pl.DataFrame(
-            {"excntry": ["GBR"] * 2, "id": [1, 2], "date": [d] * 2, "me": [100.0, 70.0]}
-        )
-        extra = pl.DataFrame(
-            {
-                "excntry": ["GBR"] * 3,
-                "id": [1, 2, 3],
-                "date": [d] * 3,
-                "me_ff": [999.0, 80.0, 90.0],
-                "beme_ff": [2.0, 0.5, 0.6],
-                "op_ff": [0.3, None, 0.4],
-                "inv_ff": [None] * 3,
-                "umd_ff": [0.1, 0.2, 0.3],
-            },
-            schema_overrides=dict.fromkeys(cols, pl.Float64),
-        ).lazy()
-        out = _ff_fill_characteristics(chars, panel, extra).sort("id")
-        assert out["me_ff"].to_list() == [100.0, 70.0, 90.0]  # screened, panel, extra
-        assert out["beme_ff"].to_list() == [1.0, 0.5, 0.6]
-        assert out["op_ff"].to_list() == [0.3, None, 0.4]
-        assert out["umd_ff"].to_list() == [0.1, 0.2, 0.3]
