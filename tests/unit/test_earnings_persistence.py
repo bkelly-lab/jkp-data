@@ -46,6 +46,47 @@ def test_ni_ar1_is_null_when_lagged_ni_at_does_not_vary(test_paths: DataPaths, t
 
 
 @pytest.mark.unit
+def test_ni_ar1_and_ni_ivol_null_when_lagged_ni_at_nearly_constant(
+    test_paths: DataPaths, tmp_path
+) -> None:
+    """Lagged NI/AT that is constant (B) or varies by ~1e-8 (C, std below NI_AT_MIN_STD)
+    nulls both ni_ar1 and ni_ivol; a varying firm (A) keeps both."""
+    eoms = pl.date_range(date(2000, 1, 1), date(2007, 12, 1), "1mo", eager=True).dt.month_end()
+    n = len(eoms)
+    i = np.arange(n)
+    raw = pl.DataFrame(
+        {
+            "gvkey": ["A"] * n + ["B"] * n + ["C"] * n,
+            "curcd": "USD",
+            "datadate": pl.concat([eoms, eoms, eoms]),
+            "ni_x": np.concatenate(
+                [
+                    np.random.default_rng(0).normal(5.0, 2.0, n),
+                    np.full(n, 5.0),
+                    5.0 + 1e-6 * ((i % 7) - 3),
+                ]
+            ),
+            "at_x": 100.0,
+        }
+    )
+    data_path = tmp_path / "acc.parquet"
+    raw.write_parquet(data_path)
+
+    compute_earnings_persistence(test_paths, data_path, 5, 5)
+    out = pl.read_parquet(test_paths.interim_dir / "ni_ar_res.parquet")
+
+    for gvkey in ("B", "C"):
+        firm = out.filter(pl.col("gvkey") == gvkey)
+        assert firm.height > 0
+        assert firm["ni_ar1"].null_count() == firm.height, gvkey
+        assert firm["ni_ivol"].null_count() == firm.height, gvkey
+    varying = out.filter(pl.col("gvkey") == "A")
+    assert varying.height > 0
+    assert varying["ni_ar1"].is_finite().all()
+    assert varying["ni_ivol"].is_finite().all()
+
+
+@pytest.mark.unit
 def test_output_does_not_depend_on_thread_count(
     test_paths: DataPaths, tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -37,6 +37,8 @@ from .config import (
     CORRECTION_SPILL_COMPRESSION,
     END_DATE,
     MAIN_FILTERS,
+    NI_AT_MIN_STD,
+    RET_MIN_STD,
 )
 from .output_writer import write_dataframe
 from .paths import DataPaths, get_fx_cad_backfill_path
@@ -5723,8 +5725,8 @@ def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min):
         1) Load gvkey,curcd,datadate,ni_x,at_x; create __ni_at=ni_x/at_x (at_x>0).
         2) Keep obs with __ni_at and its 12-month lag; build calendar cohorts by month for N years.
         3) For each (gvkey,curcd,calc_date,grp) with ≥ __min obs, run OLS __ni_at on lag.
-        4) Aggregate to slope (ni_ar1) and residual std (ni_ivol); save. ni_ar1 is null when
-           the lagged NI/AT does not vary in the window (regr_slope returns NaN). The
+        4) Aggregate to slope (ni_ar1) and residual std (ni_ivol); save. Both are null when
+           the std of lagged NI/AT in the window is at or below NI_AT_MIN_STD. The
            regressions and the std read their rows in datadate order: unordered, the float
            sums follow DuckDB's thread scheduling and the low bits change between runs. The
            order is total only if datadate is unique per (gvkey, curcd), which holds for
@@ -5812,7 +5814,10 @@ def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min):
         ) AS slope,
         regr_intercept(__ni_at, __ni_at_l1 ORDER BY datadate) OVER (
           PARTITION BY gvkey, curcd, calc_grp, calc_date
-        ) AS intercept
+        ) AS intercept,
+        stddev_samp(__ni_at_l1 ORDER BY datadate) OVER (
+          PARTITION BY gvkey, curcd, calc_grp, calc_date
+        ) AS x_sd
       FROM calc_data
       WHERE __ni_at IS NOT NULL AND __ni_at_l1 IS NOT NULL
     ),
@@ -5824,6 +5829,7 @@ def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min):
         calc_date,
         datadate,
         slope,
+        x_sd,
         (__ni_at - (intercept + slope * __ni_at_l1)) AS resid
       FROM fit
     )
@@ -5831,10 +5837,10 @@ def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min):
       gvkey,
       curcd,
       calc_date as datadate,
-      CASE WHEN NOT isnan(slope) THEN slope END AS ni_ar1,
-      stddev_samp(resid ORDER BY datadate) AS ni_ivol,
+      CASE WHEN x_sd > {NI_AT_MIN_STD} THEN slope END AS ni_ar1,
+      CASE WHEN x_sd > {NI_AT_MIN_STD} THEN stddev_samp(resid ORDER BY datadate) END AS ni_ivol,
     FROM resids
-    GROUP BY gvkey, curcd, calc_grp, calc_date, slope
+    GROUP BY gvkey, curcd, calc_grp, calc_date, slope, x_sd
     HAVING COUNT(*) >= {__min}
     ORDER BY gvkey, curcd, calc_date;
     """)
@@ -9390,6 +9396,8 @@ def res_mom(df, sfx, __min, incl, skip):
 
     Steps:
         1) OLS: ret_exc ~ mktrf + hml + smb_ff (with intercept) → residuals per (id_int,group_number).
+           Residuals are null when raw ret is near-constant over the window (_guard_constant
+           with RET_MIN_STD), so the score is null too.
         2) Filter to windows inside (max_date - incl, max_date - skip].
         3) Require at least __min obs; compute mean(res)/std(res).
 
@@ -9397,11 +9405,13 @@ def res_mom(df, sfx, __min, incl, skip):
         LazyFrame with column f'resff3_{incl}_{skip}' per (id_int, group_number).
     """
 
-    res_exp = (
-        pl.col("ret_exc")
-        .least_squares.ols("mktrf", "hml", "smb_ff", add_intercept=True, mode="residuals")
-        .over(["id_int", "group_number"])
-    )
+    res_exp = _guard_constant(
+        "ret",
+        pl.col("ret_exc").least_squares.ols(
+            "mktrf", "hml", "smb_ff", add_intercept=True, mode="residuals"
+        ),
+        min_std=RET_MIN_STD,
+    ).over(["id_int", "group_number"])
     df = (
         # Fix within-group row order before the OLS: base_data comes from a
         # multithreaded DuckDB scan whose row order is nondeterministic, and the
@@ -9435,23 +9445,30 @@ def _guard_constant(
     input_col: str,
     stat_expr: pl.Expr,
     *,
+    min_std: float | None = None,
     max_zero_frac: float | None = CONSTANT_MAX_ZERO_FRAC,
 ) -> pl.Expr:
     """
     Description:
-        Null ``stat_expr`` when ``input_col`` is degenerate within a group_by group.
+        Null ``stat_expr`` when ``input_col`` is degenerate within a group_by group
+        or window.
 
     Steps:
-        1) Require min(input_col) != max(input_col) (perfectly constant → null).
+        1) If min_std is set, require std(input_col) > min_std (near-constant → null);
+           return statistics pass RET_MIN_STD. Otherwise require
+           min(input_col) != max(input_col) (perfectly constant → null).
         2) If max_zero_frac is set, also require mean(input_col == 0) < max_zero_frac
            so near-dead windows are nulled (window-level analogue of zero_obs /
            zero_trades). Pass max_zero_frac=None for non-return columns (prices,
            volumes) where a zero-fraction screen is not meaningful.
 
     Output:
-        Polars expression usable inside .agg().
+        Polars expression usable inside .agg() or with .over().
     """
-    varying = pl.col(input_col).min() != pl.col(input_col).max()
+    if min_std is None:
+        varying = pl.col(input_col).min() != pl.col(input_col).max()
+    else:
+        varying = pl.col(input_col).std() > min_std
     if max_zero_frac is None:
         ok = varying
     else:
@@ -9472,7 +9489,9 @@ def rvol(df, sfx, __min):
         LazyFrame with f'rvol{sfx}'.
     """
     df = df.group_by(["id_int", "group_number"]).agg(
-        _guard_constant("ret", col("ret_exc").cast(pl.Float64).std()).alias(f"rvol{sfx}")
+        _guard_constant("ret", col("ret_exc").cast(pl.Float64).std(), min_std=RET_MIN_STD).alias(
+            f"rvol{sfx}"
+        )
     )
     return df
 
@@ -9492,8 +9511,10 @@ def rmax(df, sfx, __min):
     """
     df = df.group_by(["id_int", "group_number"]).agg(
         [
-            _guard_constant("ret", col("ret").top_k(5).mean()).alias(f"rmax5{sfx}"),
-            _guard_constant("ret", col("ret").max()).alias(f"rmax1{sfx}"),
+            _guard_constant("ret", col("ret").top_k(5).mean(), min_std=RET_MIN_STD).alias(
+                f"rmax5{sfx}"
+            ),
+            _guard_constant("ret", col("ret").max(), min_std=RET_MIN_STD).alias(f"rmax1{sfx}"),
         ]
     )
     return df
@@ -9513,7 +9534,9 @@ def skew(df, sfx, __min):
         LazyFrame with f'rskew{sfx}'.
     """
     df = df.group_by(["id_int", "group_number"]).agg(
-        _guard_constant("ret", col("ret_exc").skew(bias=False)).alias(f"rskew{sfx}")
+        _guard_constant("ret", col("ret_exc").skew(bias=False), min_std=RET_MIN_STD).alias(
+            f"rskew{sfx}"
+        )
     )
     return df
 
@@ -9578,8 +9601,8 @@ def capm(df, sfx, __min):
         .group_by(["id_int", "group_number"])
         .agg(
             [
-                _guard_constant("ret", beta_expr).alias(f"beta{sfx}"),
-                _guard_constant("ret", ivol_expr).alias(f"ivol_capm{sfx}"),
+                _guard_constant("ret", beta_expr, min_std=RET_MIN_STD).alias(f"beta{sfx}"),
+                _guard_constant("ret", ivol_expr, min_std=RET_MIN_STD).alias(f"ivol_capm{sfx}"),
             ]
         )
     )
@@ -9605,7 +9628,9 @@ def ami(df, sfx, __min):
         df.group_by(["id_int", "group_number"])
         .agg(
             [
-                _guard_constant("ret", (col("ret").abs() / aux_1 * 1e6).mean()).alias(f"ami{sfx}"),
+                _guard_constant(
+                    "ret", (col("ret").abs() / aux_1 * 1e6).mean(), min_std=RET_MIN_STD
+                ).alias(f"ami{sfx}"),
                 pl.count("dolvol_d").alias("n"),
             ]
         )
@@ -9633,9 +9658,9 @@ def downbeta(df, sfx, __min):
         .group_by(["id_int", "group_number"])
         .agg(
             [
-                _guard_constant("ret", pl.cov("ret_exc", "mktrf") / pl.var("mktrf")).alias(
-                    f"betadown{sfx}"
-                ),
+                _guard_constant(
+                    "ret", pl.cov("ret_exc", "mktrf") / pl.var("mktrf"), min_std=RET_MIN_STD
+                ).alias(f"betadown{sfx}"),
                 pl.count("ret_exc").alias("n"),
             ]
         )
@@ -9685,10 +9710,18 @@ def capm_ext(df, sfx, __min):
 
     df = df.group_by(["id_int", "group_number"]).agg(
         [
-            _guard_constant("ret", beta_col.cast(pl.Float64)).alias(f"beta{sfx}"),
-            _guard_constant("ret", residual_col.std()).alias(f"ivol_capm{sfx}"),
-            _guard_constant("ret", residual_col.skew(bias=False)).alias(f"iskew_capm{sfx}"),
-            _guard_constant("ret", exp_coskew1 / exp_coskew2).alias(f"coskew{sfx}"),
+            _guard_constant("ret", beta_col.cast(pl.Float64), min_std=RET_MIN_STD).alias(
+                f"beta{sfx}"
+            ),
+            _guard_constant("ret", residual_col.std(), min_std=RET_MIN_STD).alias(
+                f"ivol_capm{sfx}"
+            ),
+            _guard_constant("ret", residual_col.skew(bias=False), min_std=RET_MIN_STD).alias(
+                f"iskew_capm{sfx}"
+            ),
+            _guard_constant("ret", exp_coskew1 / exp_coskew2, min_std=RET_MIN_STD).alias(
+                f"coskew{sfx}"
+            ),
         ]
     )
     return df
@@ -9714,8 +9747,12 @@ def ff3(df, sfx, __min):
         df.filter(col("smb_ff").is_not_null() & col("hml").is_not_null())
         .group_by(["id_int", "group_number"])
         .agg(
-            _guard_constant("ret", res_exp.std(ddof=3)).alias(f"ivol_ff3{sfx}"),
-            _guard_constant("ret", res_exp.skew(bias=False)).alias(f"iskew_ff3{sfx}"),
+            _guard_constant("ret", res_exp.std(ddof=3), min_std=RET_MIN_STD).alias(
+                f"ivol_ff3{sfx}"
+            ),
+            _guard_constant("ret", res_exp.skew(bias=False), min_std=RET_MIN_STD).alias(
+                f"iskew_ff3{sfx}"
+            ),
         )
     )
     return df
@@ -9743,8 +9780,12 @@ def hxz4(df, sfx, __min):
         )
         .group_by(["id_int", "group_number"])
         .agg(
-            _guard_constant("ret", res_exp.std(ddof=4)).alias(f"ivol_hxz4{sfx}"),
-            _guard_constant("ret", res_exp.skew(bias=False)).alias(f"iskew_hxz4{sfx}"),
+            _guard_constant("ret", res_exp.std(ddof=4), min_std=RET_MIN_STD).alias(
+                f"ivol_hxz4{sfx}"
+            ),
+            _guard_constant("ret", res_exp.skew(bias=False), min_std=RET_MIN_STD).alias(
+                f"iskew_hxz4{sfx}"
+            ),
         )
     )
     return df
@@ -9877,7 +9918,9 @@ def mktcorr(df, sfx, __min):
         df.group_by(["id_int", "group_number"])
         .agg(
             pl.len().alias("n"),
-            _guard_constant("ret", pl.corr("ret_exc_3l", "mkt_exc_3l")).alias(f"corr{sfx}"),
+            _guard_constant("ret", pl.corr("ret_exc_3l", "mkt_exc_3l"), min_std=RET_MIN_STD).alias(
+                f"corr{sfx}"
+            ),
         )
         .filter(col("n") >= __min)
         .drop("n")
@@ -9891,31 +9934,23 @@ def dimsonbeta(
     Description:
         Dimson β = sum of slopes from OLS ret_exc ~ mktrf_{-1,0,+1} per
         (id_int, group_number) via polars-ds `pds.lin_reg`. Null when raw ``ret``
-        is constant / near-dead.
+        is near-constant / near-dead (_guard_constant with RET_MIN_STD).
     Output:
         LazyFrame with f'beta_dimson{sfx}'.
     """
     name = f"beta_dimson{sfx}"
-    beta_expr = pl.col("coeffs").list.head(3).list.sum()
-    varying = pl.col("ret").min() != pl.col("ret").max()
-    not_near_dead = (pl.col("ret") == 0).mean() < CONSTANT_MAX_ZERO_FRAC
+    coeffs = pds.lin_reg(
+        "mktrf_lg1",
+        "mktrf",
+        "mktrf_ld1",
+        target="ret_exc",
+        add_bias=True,
+        solver="cholesky",
+    )
     return (
         df.group_by(["id_int", "group_number"])
         .agg(
-            coeffs=pds.lin_reg(
-                "mktrf_lg1",
-                "mktrf",
-                "mktrf_ld1",
-                target="ret_exc",
-                add_bias=True,
-                solver="cholesky",
-            ),
-            ret_ok=(varying & not_near_dead),
-        )
-        .select(
-            "id_int",
-            "group_number",
-            pl.when(pl.col("ret_ok")).then(beta_expr).otherwise(None).alias(name),
+            _guard_constant("ret", coeffs.list.head(3).list.sum(), min_std=RET_MIN_STD).alias(name)
         )
         .filter(pl.col(name).is_not_null() & pl.col(name).is_not_nan())
     )

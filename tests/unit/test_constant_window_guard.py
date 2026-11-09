@@ -32,6 +32,7 @@ from jkp.data.aux_functions import (
     skew,
     turnover,
 )
+from jkp.data.config import RET_MIN_STD
 
 # ---------------------------------------------------------------------------
 # Helper: _guard_constant expression
@@ -77,6 +78,34 @@ class TestGuardConstantHelper:
         result = df.group_by("grp").agg(_guard_constant("x", pl.col("x").std()).alias("val"))
         assert result["val"][0] is None
         assert (n - 1) / n >= CONSTANT_MAX_ZERO_FRAC
+
+    def test_min_std_nulls_near_constant_series(self):
+        """std ~1e-9, min != max, no zeros: the exact test keeps it, the std floor nulls it."""
+        df = pl.DataFrame({"x": [0.01, 0.01 + 1e-9, 0.01 - 1e-9], "grp": [1, 1, 1]})
+        result = df.group_by("grp").agg(
+            exact=_guard_constant("x", pl.col("x").mean()),
+            floored=_guard_constant("x", pl.col("x").mean(), min_std=RET_MIN_STD),
+        )
+        assert result["exact"][0] is not None
+        assert result["floored"][0] is None
+
+    def test_min_std_keeps_series_above_floor(self, tolerance):
+        df = pl.DataFrame({"x": [0.01, 0.01 + 1e-5, 0.01 - 1e-5], "grp": [1, 1, 1]})
+        result = df.group_by("grp").agg(
+            _guard_constant("x", pl.col("x").std(), min_std=RET_MIN_STD).alias("val")
+        )
+        np.testing.assert_allclose(result["val"][0], 1e-5, **tolerance.STANDARD)
+
+    def test_min_std_in_window_context(self):
+        """With .over() (as in res_mom) every row of a near-constant group is null."""
+        df = pl.DataFrame({"x": [0.01, 0.01 + 1e-9, 0.01, 0.03], "grp": [1, 1, 2, 2]})
+        out = df.with_columns(
+            val=_guard_constant("x", pl.col("x") - pl.col("x").mean(), min_std=RET_MIN_STD).over(
+                "grp"
+            )
+        )
+        assert out.filter(pl.col("grp") == 1)["val"].null_count() == 2
+        assert out.filter(pl.col("grp") == 2)["val"].null_count() == 0
 
 
 # ---------------------------------------------------------------------------
@@ -414,6 +443,79 @@ class TestConstantWindowDimsonbeta:
         )
         result = dimsonbeta(df, "_21d", __min=15)
         assert len(result) == 0  # filter drops null beta
+
+
+# ---------------------------------------------------------------------------
+# Near-constant windows: std(ret) at or below RET_MIN_STD
+# ---------------------------------------------------------------------------
+
+
+def _window_df(ret_scale: float, n: int = 800) -> pl.DataFrame:
+    """One (id_int, group_number) window with every column the return statistics read.
+
+    ret = 0.01 + ret_scale * sin(1.3 i), so std(ret) scales with ret_scale, min != max
+    and no day is zero: only the std floor can null a small-scale window.
+    """
+    i = np.arange(n)
+    ret = 0.01 + ret_scale * np.sin(1.3 * i)
+    mktrf = 0.001 * ((i % 7) - 3)
+    return pl.DataFrame(
+        {
+            "id_int": [1] * n,
+            "group_number": [10] * n,
+            "aux_date": i,
+            "ret": ret,
+            "ret_exc": ret - 1e-4,
+            "mktrf": mktrf,
+            "mktrf_ld1": 0.001 * ((i % 5) - 2),
+            "mktrf_lg1": 0.001 * ((i % 3) - 1),
+            "smb_ff": 0.002 * ((i % 5) - 2),
+            "hml": 0.001 * ((i % 3) - 1),
+            "smb_hxz": 0.002 * ((i % 5) - 2),
+            "roe": 0.001 * ((i % 3) - 1),
+            "inv": 0.001 * ((i % 4) - 2),
+            "ret_exc_3l": 3 * (ret - 1e-4),
+            "mkt_exc_3l": 3 * mktrf + 0.0005 * np.cos(0.7 * i),
+            "dolvol_d": [1e6] * n,
+        }
+    )
+
+
+_RETURN_STATS = [
+    (rvol, "_21d", 15, ["rvol_21d"]),
+    (rmax, "_21d", 15, ["rmax5_21d", "rmax1_21d"]),
+    (skew, "_21d", 15, ["rskew_21d"]),
+    (capm, "_252d", 120, ["beta_252d", "ivol_capm_252d"]),
+    (capm_ext, "_21d", 15, ["beta_21d", "ivol_capm_21d", "iskew_capm_21d", "coskew_21d"]),
+    (ff3, "_21d", 15, ["ivol_ff3_21d", "iskew_ff3_21d"]),
+    (hxz4, "_21d", 15, ["ivol_hxz4_21d", "iskew_hxz4_21d"]),
+    (downbeta, "_252d", 120, ["betadown_252d"]),
+    (ami, "_126d", 60, ["ami_126d"]),
+    (mktcorr, "_1260d", 750, ["corr_1260d"]),
+    (dimsonbeta, "_21d", 15, ["beta_dimson_21d"]),
+]
+
+
+@pytest.mark.parametrize(
+    ("func", "sfx", "min_obs", "cols"), _RETURN_STATS, ids=[f[0].__name__ for f in _RETURN_STATS]
+)
+class TestNearConstantWindow:
+    """std(ret) ~1e-9 passes the exact-constant and 90%-zero tests but not the std floor."""
+
+    def test_near_constant_ret_nulls_stat(self, func, sfx, min_obs, cols):
+        result = func(_window_df(1e-9), sfx, __min=min_obs)
+        if func is dimsonbeta:
+            assert len(result) == 0  # filter drops null beta
+            return
+        assert len(result) == 1
+        for c in cols:
+            assert result[c][0] is None, c
+
+    def test_varying_ret_keeps_stat(self, func, sfx, min_obs, cols):
+        result = func(_window_df(0.02), sfx, __min=min_obs)
+        assert len(result) == 1
+        for c in cols:
+            assert np.isfinite(result[c][0]), c
 
 
 # ---------------------------------------------------------------------------

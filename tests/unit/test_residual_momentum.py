@@ -380,6 +380,17 @@ def test_single_month_removal_crosses_min_obs_boundary(test_paths, nuke: str | N
 
 
 @pytest.mark.unit
+def test_near_constant_ret_gives_no_score(test_paths) -> None:
+    """A window whose raw ret varies by ~1e-9 (std below RET_MIN_STD) gets no score;
+    the same stock with ordinary returns is scored (test_single_month_removal...)."""
+    world, fcts = _custom_frames()
+    k = pl.int_range(pl.len()) % 5 - 2
+    world = world.with_columns(ret=0.01 + 1e-9 * k).with_columns(ret_exc=pl.col("ret") - 0.001)
+    out = _run_frames(test_paths, 12, 1, world, fcts)
+    assert out.filter(pl.col("id") == 1000)["resff3_12_1"].drop_nulls().len() == 0
+
+
+@pytest.mark.unit
 def test_output_unique_id_eom(test_paths) -> None:
     """(id, eom) is a unique key in the output — no duplicate rows per stock-month."""
     out = _run(test_paths, 12, 1)
