@@ -1705,9 +1705,9 @@ def gen_comp_dsf(
 
         """)
 
-        # both branches write __comp_dsf in key order: gen_secd_data's float sums depend on
-        # row order. Insertion-order preservation is irrelevant under an explicit ORDER BY
-        # and only inflates the sort's memory
+        # row order is not needed: the filter step sorts the columns it uses, and every
+        # other reader of __comp_dsf sorts or groups by key itself (gen_secd_data's float
+        # sums then vary at about 1e-15, within the 1e-10 tolerance)
         con.execute("SET preserve_insertion_order = false")
         if apply_correction:
             # the exchange country feeds the filters' country-specific price thresholds
@@ -1719,17 +1719,13 @@ def gen_comp_dsf(
             FROM __comp_dsf3 AS t
             LEFT JOIN exchanges AS e
                 USING (exchg)
-            ORDER BY gvkey NULLS FIRST, iid NULLS FIRST, datadate NULLS FIRST
         ) TO '{unfiltered_path.as_posix()}' (FORMAT PARQUET);
             """)
             merged_path = unfiltered_path
         else:
             merged_path = paths.interim_dir / "__comp_dsf.parquet"
             con.execute(f"""
-        COPY (
-            SELECT * FROM __comp_dsf3
-            ORDER BY gvkey NULLS FIRST, iid NULLS FIRST, datadate NULLS FIRST
-        ) TO '{merged_path.as_posix()}' (FORMAT PARQUET);
+        COPY (SELECT * FROM __comp_dsf3) TO '{merged_path.as_posix()}' (FORMAT PARQUET);
             """)
 
     drop_duplicate_security_dates(paths, merged_path)
@@ -1765,11 +1761,11 @@ def drop_duplicate_security_dates(paths: DataPaths, file_path: Path) -> None:
 
     Steps:
         1) Find keys held by more than one row; if there are none, leave the file as is.
-        2) Otherwise rewrite file_path sorted by (gvkey, iid, datadate). Rows with a unique
-           key stay as they are. Of rows sharing a key, keep the one with a valid price
-           (prc_local and curcdd present, prcstd in {3, 4, 10}), then the highest prcstd,
-           then a main exchange (exch_main), then the highest dolvol, then the first in the
-           order of all columns, so the choice never depends on the input order.
+        2) Otherwise rewrite file_path. Rows with a unique key stay as they are. Of rows
+           sharing a key, keep the one with a valid price (prc_local and curcdd present,
+           prcstd in {3, 4, 10}), then the highest prcstd, then a main exchange (exch_main),
+           then the highest dolvol, then the first in the order of all columns, so the choice
+           never depends on the input order.
 
     Output:
         file_path with one row per (gvkey, iid, datadate).
@@ -1790,8 +1786,7 @@ def drop_duplicate_security_dates(paths: DataPaths, file_path: Path) -> None:
         if con.execute("SELECT count(*) FROM dup_keys").fetchone()[0] == 0:
             return
         con.register("exchanges", comp_exchanges(paths).select(["exchg", "exch_main"]))
-        # insertion-order preservation is irrelevant under an explicit ORDER BY and only
-        # inflates the sort's memory
+        # row order is not needed (see gen_comp_dsf)
         con.execute("SET preserve_insertion_order = false")
         deduped = file_path.with_name(f"{file_path.stem}_deduped.parquet")
         con.execute(f"""
@@ -1819,7 +1814,6 @@ def drop_duplicate_security_dates(paths: DataPaths, file_path: Path) -> None:
             ANTI JOIN dup_keys AS k ON {same_key}
             UNION ALL
             SELECT * EXCLUDE (_exch_main) FROM kept
-            ORDER BY gvkey NULLS FIRST, iid NULLS FIRST, datadate NULLS FIRST
         ) TO '{deduped.as_posix()}' (FORMAT PARQUET)
         """)
     deduped.replace(file_path)
@@ -1838,7 +1832,7 @@ def gen_secd_data(paths: DataPaths):
         - div_*m: sum of monthly dividends (by type) adjusted.
         - cshtrm: sum of adjusted share turnover; dolvolm: sum of USD dollar volume.
         3) Keep valid rows (local price/currency present, prcstd in {3,4,10}) on the last valid
-        datadate in the month (ties kept); scale the aggregates by each row's ajexdi.
+        datadate in the month; scale the aggregates by each row's ajexdi.
         - source=1 to mark SECD pipeline.
         4) Write to secd_data.parquet, sorted by gvkey, iid, eom.
 
