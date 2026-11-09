@@ -1944,11 +1944,8 @@ def gen_comp_msf(paths: DataPaths):
     secd = (paths.interim_dir / "secd_data.parquet").as_posix()
     secm = (paths.interim_dir / "secm_data.parquet").as_posix()
     out = (paths.interim_dir / "__comp_msf.parquet").as_posix()
-    # Deterministic dedup: keep latest datadate per {gvkey, iid, eom}, then the highest
-    # prcstd (the prepare_comp_sf rule).
-    # Investigation (issue #69) found 0 duplicates in current data, but the
-    # original .distinct() was non-deterministic — different runs/engines could
-    # pick different rows if duplicates appear in a future data vintage.
+    # Deterministic dedup (issue #69): keep the latest datadate per {gvkey, iid, eom},
+    # then the highest prcstd, the prepare_comp_sf rule.
     with _duckdb_connect(paths) as con:
         con.execute(f"""
         COPY (
