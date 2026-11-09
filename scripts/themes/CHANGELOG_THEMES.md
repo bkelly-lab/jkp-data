@@ -7,7 +7,6 @@ Changes to the economic themes, newest first. See [README.md](README.md) for the
 - Readable names for individual characteristics, following the naming principles in the
   README (for example, Book-to-market for `be_me`). Until then,
   characteristics are identified by their JKP codes.
-- Theme portfolios in `jkp portfolio` built from these themes; they still use v0.
 - Short codes for themes and subthemes (for example, three letters such as VAL or MOM) for
   regression tables and figures.
 
@@ -181,4 +180,5 @@ The 13 themes of Jensen, Kelly and Pedersen (2023), "Is There a Replication Cris
 Finance?", *Journal of Finance*, for 153 factors, derived by clustering factor returns. Archived
 in `superseded_themes/v0/`. `cluster_labels.csv` gives each factor's theme, and
 `factor_directions.csv` gives the direction each factor was signed by, copied from
-`factor_details.xlsx`. Still used by the theme portfolios in `jkp portfolio`.
+`factor_details.xlsx`. `jkp themes data/ --version v0` builds its factors and theme portfolios, in
+`portfolios/themes/v0/`.

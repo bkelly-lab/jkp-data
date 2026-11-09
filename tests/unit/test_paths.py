@@ -4,12 +4,12 @@ from pathlib import Path
 
 from jkp.data.paths import (
     DataPaths,
-    get_cluster_labels_path,
+    _resource_path,
     get_country_classification_path,
     get_data_readme_path,
-    get_factor_details_path,
     get_fx_cad_backfill_path,
     get_siccodes_path,
+    get_themes_dir,
 )
 
 
@@ -49,10 +49,11 @@ class TestResourcePaths:
         assert isinstance(path, Path)
         assert path.exists(), f"Siccodes49.txt not found at {path}"
 
-    def test_cluster_labels_exists(self):
-        path = get_cluster_labels_path()
+    def test_themes_dir_exists(self):
+        path = get_themes_dir()
         assert isinstance(path, Path)
-        assert path.exists(), f"cluster_labels.csv not found at {path}"
+        assert (path / "themes.csv").exists(), f"themes.csv not found in {path}"
+        assert (path / "superseded_themes" / "v0" / "cluster_labels.csv").exists()
 
     def test_country_classification_exists(self):
         path = get_country_classification_path()
@@ -60,7 +61,7 @@ class TestResourcePaths:
         assert path.exists(), f"country_classification.xlsx not found at {path}"
 
     def test_factor_details_exists(self):
-        path = get_factor_details_path()
+        path = _resource_path("factor_details.xlsx")
         assert isinstance(path, Path)
         assert path.exists(), f"factor_details.xlsx not found at {path}"
 
