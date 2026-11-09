@@ -2122,12 +2122,12 @@ def load_rf_and_exchange_data(paths: DataPaths):
         Tuple of (crsp_mcti LazyFrame, ff_factors_monthly LazyFrame, exchanges DataFrame).
     """
     crsp_mcti = (
-        pl.read_parquet(paths.interim_dir / "raw_data_dfs" / "crsp_mcti_t30ret.parquet")
+        pl.scan_parquet(paths.interim_dir / "raw_data_dfs" / "crsp_mcti_t30ret.parquet")
         .with_columns(merge_aux=gen_MMYY_column("caldt"))
         .drop("caldt")
     )
     ff_factors_monthly = (
-        pl.read_parquet(paths.interim_dir / "raw_data_dfs" / "ff_factors_monthly.parquet")
+        pl.scan_parquet(paths.interim_dir / "raw_data_dfs" / "ff_factors_monthly.parquet")
         .with_columns(merge_aux=gen_MMYY_column("date"))
         .drop("date")
     )
@@ -2252,10 +2252,10 @@ def gen_temporary_sf(paths: DataPaths, freq, __returns, __delist):
     Output:
         Polars LazyFrame with returns adjusted for delisting.
     """
-    base = pl.read_parquet(paths.interim_dir / f"__comp_{freq}sf.parquet")
+    base = pl.scan_parquet(paths.interim_dir / f"__comp_{freq}sf.parquet")
     temp_sf = (
-        base.join(__returns, how="left", on=["gvkey", "iid", "datadate"])
-        .join(__delist, how="left", on=["gvkey", "iid"])
+        base.join(__returns.lazy(), how="left", on=["gvkey", "iid", "datadate"])
+        .join(__delist.lazy(), how="left", on=["gvkey", "iid"])
         .filter((col("datadate") <= col("date_delist")) | (col("date_delist").is_null()))
         .with_columns(
             ret=pl.when(col("datadate") == col("date_delist"))
@@ -2292,7 +2292,7 @@ def add_rf_and_exchange_data_to_temporary_sf(paths: DataPaths, freq, temp_sf):
         .with_columns(ret_exc=col("ret") - pl.coalesce(["t30ret", "rf"]) / scale)
         .drop(["merge_aux", "rf", "t30ret"])
         .with_columns(col("exchg").cast(pl.Int64))
-        .join(__exchanges, how="left", on=["exchg"])
+        .join(__exchanges.lazy(), how="left", on=["exchg"])
     )
     return temp_sf
 
@@ -2326,7 +2326,6 @@ def process_comp_sf1(paths: DataPaths, freq):
         primary_sec, and for daily: ret_intraday, ret_overnight,
         ret_intraday_local, ret_overnight_local).
     """
-    # Eager mode is faster here
     if freq == "m":
         gen_comp_msf(paths)
     __returns = gen_returns_df(paths, freq)
@@ -2334,7 +2333,7 @@ def process_comp_sf1(paths: DataPaths, freq):
     __comp_sf2 = gen_temporary_sf(paths, freq, __returns, __delist)
     __comp_sf2 = add_rf_and_exchange_data_to_temporary_sf(paths, freq, __comp_sf2)
 
-    if freq == "d" and "prc_open" in __comp_sf2.columns:
+    if freq == "d" and "prc_open" in __comp_sf2.collect_schema().names():
         __comp_sf2 = (
             __comp_sf2.with_columns(
                 ret_intraday=pl.when((col("prc_open") > 0) & (col("prc") > 0))
@@ -2356,7 +2355,7 @@ def process_comp_sf1(paths: DataPaths, freq):
             )
         )
 
-    __comp_sf2.write_parquet(paths.interim_dir / "__comp_sf2.parquet")
+    __comp_sf2.sink_parquet(paths.interim_dir / "__comp_sf2.parquet")
     del __comp_sf2
     add_primary_sec(
         paths,
