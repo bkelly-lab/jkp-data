@@ -23,6 +23,7 @@ from .aux_functions import (
     finish_daily_chars,
     firm_age,
     gen_ff_data,
+    gen_hxz_data,
     gen_raw_data_dfs,
     market_beta,
     market_chars_monthly,
@@ -150,6 +151,12 @@ def run_pipeline(
         interim / "ff_factors_monthly.parquet",
         interim / "ff_factors_daily.parquet",
         interim / "ff_characteristics.parquet",
+    )
+    gen_hxz_data(
+        paths,
+        interim / "hxz_factors_monthly.parquet",
+        interim / "hxz_factors_daily.parquet",
+        interim / "hxz_characteristics.parquet",
     )
     ap_factors(
         paths,
