@@ -226,7 +226,7 @@ ROLLING_DAILY_SPECS: list[tuple[str, int, list[str]]] = [
 # (betas, residual vols and skews, correlations, residual momentum) are null.
 # Our choice (#338): on the 2026-11 data, 1e-6 nulls no daily window beyond the
 # exact-constant / 90%-zero rule and only the 11 residual-momentum windows per
-# variant whose returns vary by about 1e-9.
+# horizon whose returns vary by about 1e-9.
 RET_MIN_STD = 1e-6
 
 # Floor on the standard deviation of lagged NI/AT, the regressor of earnings
