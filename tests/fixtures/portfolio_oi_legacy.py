@@ -24,13 +24,34 @@ import polars as pl
 from jkp.data.aux_functions import (
     _build_industry_daily_returns,
     _build_industry_monthly_returns,
-    add_ecdf,
 )
-from jkp.data.config import COLLECT_CHUNK_SIZE, PORTFOLIO_CHARS, PORTFOLIO_SETTINGS
+from jkp.data.config import PORTFOLIO_CHARS, PORTFOLIO_SETTINGS
 from jkp.data.output_writer import configure_output_format, convert_outputs_to_csv
 from jkp.data.paths import DataPaths
 
+COLLECT_CHUNK_SIZE = 16
+
 V0_DIR: Path | None = None
+
+
+def add_ecdf(df: pl.DataFrame | pl.LazyFrame) -> pl.DataFrame | pl.LazyFrame:
+    """Frozen: per-month ECDF of ``var`` over breakpoint stocks, asof-joined to every row."""
+    bp_ecdf = (
+        df.filter(pl.col("bp_stock"))
+        .group_by(["eom", "var"])
+        .agg(pl.len().alias("n_ref"))
+        .sort(["eom", "var"])
+        .select(
+            "eom",
+            "var",
+            (pl.col("n_ref").cum_sum() / pl.col("n_ref").sum()).over("eom").alias("cdf"),
+        )
+    )
+    return (
+        df.sort(["eom", "var"])
+        .join_asof(bp_ecdf, on="var", by="eom", strategy="backward", check_sortedness=False)
+        .with_columns(pl.col("cdf").fill_null(0.0))
+    )
 
 
 def _build_hml_lms(
@@ -486,7 +507,7 @@ def portfolios(
                 pf_daily_lazys.append(pf_daily_x)
 
     # Batch-collect per-char lazy pipelines in chunks to bound peak memory
-    # (see COLLECT_CHUNK_SIZE in config.py).
+    # (see COLLECT_CHUNK_SIZE above).
     pf_returns_df: pl.DataFrame | None = None
     pf_daily_df: pl.DataFrame | None = None
 

@@ -7,8 +7,11 @@ from typing import Any as _Any
 import polars as pl
 
 from .config import (
+    CMP_SIZE_GROUPS,
     PORTFOLIO_CHARS,
     PORTFOLIO_SETTINGS,
+    UNSIGNED_CMP_SIZE_GROUPS,
+    UNSIGNED_CMP_VERSION,
 )
 from .output_writer import (
     configure_output_format,
@@ -16,11 +19,10 @@ from .output_writer import (
 )
 from .paths import DataPaths
 
-# add_ecdf / portfolios / regional_data and the private build/write helpers
+# portfolios / regional_data and the private build/write helpers
 # are resolved lazily from `aux_functions` via `__getattr__` below so that
 # `import jkp.data.portfolio` doesn't pull duckdb/ibis at import time.
 __all__ = [  # noqa: F822 — lazy via __getattr__
-    "add_ecdf",
     "_build_industry_daily_returns",
     "_build_industry_monthly_returns",
     "_build_hml",
@@ -36,7 +38,6 @@ __all__ = [  # noqa: F822 — lazy via __getattr__
 
 _LAZY_REEXPORTS = frozenset(
     {
-        "add_ecdf",
         "_build_industry_daily_returns",
         "_build_industry_monthly_returns",
         "_build_hml",
@@ -113,13 +114,34 @@ def _regions(settings: dict) -> pl.DataFrame:
     )
 
 
-# Overnight / intraday daily return components: (name, daily return column).
+# Overnight / intraday daily return components: (name, daily return column). FX cancels within
+# a day, so `ret_intraday_local` equals `ret_intraday` by construction (see aux_functions.py) and
+# `intraday_local` is built from `ret_intraday`; `_check_intraday_local` guards the equality.
+# At most 3 distinct columns: with `ret_exc` they fill the 16 sums per row of
+# `_sum_rows_kernel` (`_SUM_VALUES`), and `_sum_by_portfolio` raises on more.
 OI_COMPONENTS = [
     ("overnight", "ret_overnight"),
     ("intraday", "ret_intraday"),
     ("overnight_local", "ret_overnight_local"),
-    ("intraday_local", "ret_intraday_local"),
+    ("intraday_local", "ret_intraday"),
 ]
+
+
+def _check_intraday_local(daily_path: Path) -> None:
+    """Stop if ``ret_intraday_local`` isn't the ``ret_intraday`` published under its name.
+
+    Description:
+        One country's daily file is enough, as the same builders write every country's
+        columns. Files without either column have nothing to check.
+    Output:
+        None. Raises ``ValueError`` if the columns differ.
+    """
+    daily = pl.scan_parquet(daily_path)
+    if not {"ret_intraday", "ret_intraday_local"} <= set(daily.collect_schema().names()):
+        return
+    differ = daily.select(pl.col("ret_intraday").ne_missing(pl.col("ret_intraday_local")).any())
+    if differ.collect().item():
+        raise ValueError(f"ret_intraday_local differs from ret_intraday in {daily_path}")
 
 
 def _write_theme_outputs(
@@ -232,12 +254,13 @@ def _write_theme_versions(
     portfolios_dir: Path,
     theme_sets: dict[str, pl.DataFrame],
     hml_series: list[tuple[str, pl.DataFrame, str]],
+    cmp: dict[int, pl.DataFrame],
     market: pl.DataFrame,
     market_daily: pl.DataFrame | None,
     regions: pl.DataFrame,
     settings: dict,
 ) -> None:
-    """Write the signed factors and theme portfolios of each themes version.
+    """Write the signed factors, CMP and theme portfolios of each themes version.
 
     Description:
         Used by ``jkp portfolio`` and ``jkp themes``. A missing factor
@@ -249,9 +272,18 @@ def _write_theme_versions(
            characteristics without an HML factor.
         2) Delete each version's folder, so no file of an earlier build remains.
         3) Write each version's outputs for each return series.
+        4) Write each version's signed ``lms_cmp_{n}`` for the size groupings in ``cmp``,
+           which maps the number of size groups to the unsigned CMP.
+           ``UNSIGNED_CMP_VERSION`` instead gets ``cmp``, the old file: the unsigned US
+           rows of ``UNSIGNED_CMP_SIZE_GROUPS`` size groups for its characteristics. A
+           characteristic can lack CMP rows, since CMP skips months where the
+           characteristic doesn't vary, so this step prints the characteristics with
+           no rows instead of stopping.
     Output:
         Files under ``portfolios_dir/themes/<version>/``.
     """
+    from .aux_functions import _sign_factors, _write_filtered
+
     missing = []
     for suffix, hml, _ in hml_series:
         factors = set(hml["characteristic"].unique())
@@ -280,6 +312,33 @@ def _write_theme_versions(
                 settings=settings,
             )
 
+    for name, themes in theme_sets.items():
+        if name != UNSIGNED_CMP_VERSION:
+            version_cmp = {
+                f"lms_cmp_{n_groups}": _sign_factors(df, themes) for n_groups, df in cmp.items()
+            }
+        elif UNSIGNED_CMP_SIZE_GROUPS in cmp:
+            version_cmp = {
+                "cmp": cmp[UNSIGNED_CMP_SIZE_GROUPS].filter(
+                    pl.col("excntry") == "USA",
+                    pl.col("characteristic").is_in(themes["characteristic"].implode()),
+                )
+            }
+        else:
+            version_cmp = {}
+        for file_name, df in version_cmp.items():
+            if df.is_empty():
+                continue
+            cmp_chars = set(df["characteristic"].unique())
+            if absent := sorted(set(themes["characteristic"]) - cmp_chars):
+                print(f"No {file_name} rows for themes {name}: {absent}", flush=True)
+            _write_filtered(
+                df,
+                portfolios_dir / "themes" / name / f"{file_name}.parquet",
+                "eom",
+                settings["end_date"],
+            )
+
 
 def _read_saved(path: Path) -> pl.DataFrame:
     """Read a saved output file, as parquet or, after a CSV run, as CSV.
@@ -305,7 +364,7 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
     Description:
         Orchestrate portfolio construction: configure output format, build
         factor portfolios for each country, write the unsigned results, and
-        build the signed factors and theme portfolios of the current themes
+        build the signed factors, CMP and theme portfolios of the current themes
         version. ``run_themes`` builds any other released version from the saved
         factors.
     Steps:
@@ -314,7 +373,8 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
         3) Construct portfolios per country (monthly, daily, industry) for
            ``PORTFOLIO_CHARS`` and every characteristic in a themes version.
         4) Aggregate cross-country results and compute HML factors.
-        5) Write output files.
+        5) Write output files. When CMP is off, delete ``hml_cmp_{n}`` files left by an
+           earlier run, so ``run_themes`` doesn't build from them.
         6) Write the current themes version's outputs under ``portfolios/themes/``.
         7) Optionally convert to CSV.
     Output:
@@ -322,7 +382,7 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
     """
     # Function-local: LOAD_GLOBAL inside this function bypasses module
     # __getattr__, so helpers must be bound explicitly here. Also keeps
-    # importing `jkp.data.portfolio` cheap (no eager duckdb/ibis pull).
+    # importing `jkp.data.portfolio` cheap (no eager duckdb pull).
     from .aux_functions import (
         _build_hml,
         _stack_outputs,
@@ -341,11 +401,15 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
     configure_output_format(output_format)
 
     # Get list of countries from characteristics files; null_country holds stocks
-    # with a null excntry and is not a country.
+    # with a null excntry and is not a country. Sorted by the uppercased stem, which is
+    # each country's excntry: the pf stacks below rely on this order.
     countries = sorted(
-        p.stem
-        for p in chars_dir.glob("*.parquet")
-        if "world" not in p.stem and p.stem != "null_country"
+        (
+            p.stem
+            for p in chars_dir.glob("*.parquet")
+            if "world" not in p.stem and p.stem != "null_country"
+        ),
+        key=str.upper,
     )
 
     # Sort every characteristic that a released themes version signs, so jkp themes
@@ -393,6 +457,7 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
             / "daily_rets_by_country"
             / f"{countries[0]}.parquet"
         )
+        _check_intraday_local(sample_path)
         daily_schema = pl.scan_parquet(sample_path).collect_schema()
         for component, ret_col in OI_COMPONENTS:
             if ret_col in daily_schema.names():
@@ -402,6 +467,7 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
                     f"Skipping {component}: {ret_col} not found in daily return files",
                     flush=True,
                 )
+    oi_columns = list(dict.fromkeys(ret_col for _, ret_col in oi_components))
 
     # Polars 2 runs a bare collect() on the streaming engine, whose parallel reductions
     # are not bit-reproducible; keep the in-memory default of Polars 1.x.
@@ -422,24 +488,21 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
             source=settings["source"],
             wins_ret=settings["wins_ret"],
             cmp_key=settings["cmp"]["us"] if ex.lower() == "usa" else settings["cmp"]["int"],
-            signals=settings["signals"]["us"]
-            if ex.lower() == "usa"
-            else settings["signals"]["int"],
-            signals_standardize=settings["signals"]["standardize"],
-            signals_w=settings["signals"]["weight"],
             daily_pf=settings["daily_pf"],
             ind_pf=settings["ind_pf"],
             ret_cutoffs=ret_cutoffs,
             ret_cutoffs_daily=ret_cutoffs_daily,
-            daily_oi_cols=[ret_col for _, ret_col in oi_components],
+            daily_oi_cols=oi_columns,
         )
         portfolio_data[ex] = result
 
-    # Aggregating portfolio returns across countries
+    # Aggregating portfolio returns across countries. The pf outputs need no sort: countries
+    # run in sorted order and _portfolio_rows sorts each one's rows by characteristic, pf and
+    # date, so the stack is in (excntry, characteristic, pf, date) order.
     pf_returns = _stack_outputs(
         portfolio_data,
         "pf_returns",
-        sort_cols=["excntry", "characteristic", "pf", "eom"],
+        sort_cols=None,
         select_cols=[
             "excntry",
             "characteristic",
@@ -453,9 +516,7 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
         ],
     )
     pf_daily = (
-        _stack_outputs(portfolio_data, "pf_daily", ["excntry", "characteristic", "pf", "date"])
-        if settings["daily_pf"]
-        else None
+        _stack_outputs(portfolio_data, "pf_daily", sort_cols=None) if settings["daily_pf"] else None
     )
 
     # Industry classification returns
@@ -485,50 +546,57 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
         hml_daily = None
 
     # Extract CMP returns
-    cmp_list = [d["cmp"] for d in portfolio_data.values() if "cmp" in d]
-    cmp_returns = pl.concat(cmp_list) if cmp_list else None
-    if cmp_returns is None:
+    cmp_returns = {
+        n_groups: stacked
+        for n_groups in CMP_SIZE_GROUPS
+        if (
+            stacked := _stack_outputs(
+                portfolio_data, f"cmp_{n_groups}", ["excntry", "characteristic", "size_grp", "eom"]
+            )
+        )
+        is not None
+    }
+    if not cmp_returns:
         print("No 'cmp' keys found")
 
     end_date = settings["end_date"]
 
     # Single-file outputs (monthly)
-    monthly_outputs = [
-        (pf_returns, "pfs.parquet"),
-        (hml_returns, "hml.parquet"),
-    ]
-    for df, name in monthly_outputs:
+    for df, name in [(pf_returns, "pfs.parquet"), (hml_returns, "hml.parquet")]:
         if df is not None:
             _write_filtered(df, portfolios_dir / name, "eom", end_date)
-    if cmp_returns is not None:
-        _write_filtered(cmp_returns, portfolios_dir / "cmp.parquet", "eom", end_date)
+    for n_groups in CMP_SIZE_GROUPS:
+        if n_groups in cmp_returns:
+            _write_filtered(
+                cmp_returns[n_groups],
+                portfolios_dir / f"hml_cmp_{n_groups}.parquet",
+                "eom",
+                end_date,
+            )
+        else:
+            (portfolios_dir / f"hml_cmp_{n_groups}.parquet").unlink(missing_ok=True)
+            (portfolios_dir / f"hml_cmp_{n_groups}.csv").unlink(missing_ok=True)
 
     # Single-file outputs (daily)
     if settings["daily_pf"]:
-        daily_outputs = [
-            (pf_daily, "pfs_daily.parquet"),
-            (hml_daily, "hml_daily.parquet"),
-        ]
-        for df, name in daily_outputs:
+        for df, name in [(pf_daily, "pfs_daily.parquet"), (hml_daily, "hml_daily.parquet")]:
             if df is not None:
                 _write_filtered(df, portfolios_dir / name, "date", end_date)
 
     # Industry returns
     if settings["ind_pf"]:
-        ind_monthly = [
+        for df, name in [
             (gics_returns, "industry_gics.parquet"),
             (ff49_returns, "industry_ff49.parquet"),
-        ]
-        for df, name in ind_monthly:
+        ]:
             if df is not None:
                 _write_filtered(df, portfolios_dir / name, "eom", end_date)
 
     if settings["ind_pf"] and settings["daily_pf"]:
-        ind_daily = [
+        for df, name in [
             (gics_daily, "industry_gics_daily.parquet"),
             (ff49_daily, "industry_ff49_daily.parquet"),
-        ]
-        for df, name in ind_daily:
+        ]:
             if df is not None:
                 _write_filtered(df, portfolios_dir / name, "date", end_date)
 
@@ -538,19 +606,25 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
     # Overnight / Intraday daily factor portfolios (LPS 2019 decomposition).
     # The main pass aggregated each component's daily returns with the
     # standard ret_exc_lead1m sort; only post-processing runs per component.
-    for component, ret_col in oi_components:
-        pf_oi = _stack_outputs(
-            portfolio_data, f"pf_daily_{ret_col}", ["excntry", "characteristic", "pf", "date"]
-        )
+    for ret_col in oi_columns:
+        components = [component for component, c in oi_components if c == ret_col]
+        names = " and ".join(components)
+        # Already in key order, as pf_daily above.
+        pf_oi = _stack_outputs(portfolio_data, f"pf_daily_{ret_col}", sort_cols=None)
         if pf_oi is None or pf_oi.height == 0:
-            print(f"No {component} results produced", flush=True)
+            print(f"No {names} results produced", flush=True)
             continue
 
-        print(f"Building {component} daily factor portfolios...", flush=True)
+        print(f"Building {names} daily factor portfolios...", flush=True)
         hml_oi = _build_hml(pf_oi, settings["pfs"], "date", include_signal=False)
-        _write_filtered(pf_oi, portfolios_dir / f"pfs_{component}.parquet", "date", end_date)
-        _write_filtered(hml_oi, portfolios_dir / f"hml_{component}.parquet", "date", end_date)
-        hml_series.append((f"_{component}", hml_oi, "date"))
+        for component in components:
+            _write_filtered(pf_oi, portfolios_dir / f"pfs_{component}.parquet", "date", end_date)
+            _write_filtered(hml_oi, portfolios_dir / f"hml_{component}.parquet", "date", end_date)
+            hml_series.append((f"_{component}", hml_oi, "date"))
+        del pf_oi
+
+    # The themes step needs only the HML factors and CMP, so free the rest first.
+    del portfolio_data, pf_returns, pf_daily, gics_returns, ff49_returns, gics_daily, ff49_daily
 
     # Signed factors and theme portfolios of the current themes version.
     # The CSV conversion runs even if the themes step fails.
@@ -560,6 +634,7 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
             portfolios_dir=portfolios_dir,
             theme_sets={current: released[current]},
             hml_series=[s for s in hml_series if s[1] is not None],
+            cmp=cmp_returns,
             market=market,
             market_daily=market_daily,
             regions=regions,
@@ -576,17 +651,18 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
 
 
 def run_themes(*, output_dir: Path, version: str | None = None, file: Path | None = None) -> None:
-    """Build signed factors and theme portfolios from saved HML factors.
+    """Build signed factors, CMP and theme portfolios from saved HML factors and CMP.
 
     Description:
-        Read the HML factors written by ``jkp portfolio`` and build the outputs
+        Read the HML factors and CMP written by ``jkp portfolio`` and build the outputs
         of the current themes version, of another released version named by
         ``version``, or of an edited themes file in the v1.0 format (``file``).
         Outputs are written in the format of the saved files.
     Steps:
         1) Load the requested themes version.
-        2) Read each saved hml file (monthly, daily, overnight/intraday) and the
-           market returns, and write each version's outputs, replacing its folder.
+        2) Read each saved hml file (monthly, daily, overnight/intraday), the saved
+           ``hml_cmp_{n}`` files if any, and the market returns, and write the version's
+           outputs, replacing its folder.
         3) After a CSV run, convert the written folders to CSV.
     Output:
         Files under ``portfolios/themes/<version>/``, or
@@ -641,6 +717,14 @@ def run_themes(*, output_dir: Path, version: str | None = None, file: Path | Non
         portfolios_dir=portfolios_dir,
         theme_sets=theme_sets,
         hml_series=hml_series,
+        cmp={
+            n_groups: _read_saved(portfolios_dir / f"hml_cmp_{n_groups}")
+            for n_groups in CMP_SIZE_GROUPS
+            if any(
+                (portfolios_dir / f"hml_cmp_{n_groups}.{ext}").exists()
+                for ext in ("parquet", "csv")
+            )
+        },
         market=_read_saved(other_output_dir / "market_returns"),
         market_daily=_read_saved(other_output_dir / "market_returns_daily") if daily else None,
         regions=_regions(settings),

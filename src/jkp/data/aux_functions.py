@@ -27,13 +27,18 @@ import polars_ols  # noqa: F401 - required for least_squares method on polars ex
 from ibis import _
 from polars import col
 
+# isort: split
+import numpy as np
+from numba import get_num_threads, njit, prange
+
 from .compustat_correction import (
     correct_decimal_errors,
     drop_unreliable_observations,
 )
 from .config import (
     CALENDAR_RUN_MAX_GAP_DAYS,
-    COLLECT_CHUNK_SIZE,
+    CMP_MIN_STD,
+    CMP_SIZE_GROUPS,
     CORRECTION_SPILL_COMPRESSION,
     END_DATE,
     MAIN_FILTERS,
@@ -9921,56 +9926,6 @@ def dimsonbeta(
     )
 
 
-def add_ecdf(
-    df: pl.DataFrame | pl.LazyFrame,
-    group_cols: list[str] | None = None,
-) -> pl.DataFrame | pl.LazyFrame:
-    """Attach an empirical-CDF ``cdf`` column per group.
-
-    Build the ECDF of ``var`` over the rows where ``bp_stock`` is true (the
-    breakpoint sample), then asof-join the CDF values back onto every row of
-    ``df`` within each group defined by ``group_cols``. Non-breakpoint rows
-    receive the CDF of the nearest breakpoint ``var`` ≤ their own; rows
-    below any breakpoint value receive ``0.0``.
-
-    Args:
-        df: Frame containing ``var`` and boolean ``bp_stock`` columns.
-        group_cols: Columns defining the ECDF groups. Defaults to ``["eom"]``.
-
-    Returns:
-        Same container type as ``df`` (eager → eager, lazy → lazy) with a
-        ``cdf`` column appended; original columns are preserved and rows
-        are sorted by ``group_cols + ["var"]``.
-    """
-    group_cols = ["eom"] if group_cols is None else list(group_cols)
-    sort_cols = group_cols + ["var"]
-
-    # ECDF on the breakpoint sample: cumulative share of distinct var values
-    # within each group, sorted by var so cum_sum runs in ascending order.
-    bp_ecdf = (
-        df.filter(pl.col("bp_stock"))
-        .group_by(sort_cols)
-        .agg(pl.len().alias("n_ref"))
-        .sort(sort_cols)
-        .select(
-            *group_cols,
-            "var",
-            (pl.col("n_ref").cum_sum() / pl.col("n_ref").sum()).over(group_cols).alias("cdf"),
-        )
-    )
-
-    # asof-join the ECDF onto every row; rows below any bp value get null,
-    # filled with 0.0 to match the convention expected downstream.
-    # Both sides are sorted within each `by` group; skip the sortedness check
-    # (Polars can't verify it with `by` and would warn at collect time,
-    # outside any catch_warnings context).
-    return (
-        df.sort(sort_cols)
-        .join_asof(bp_ecdf, on="var", by=group_cols, strategy="backward", check_sortedness=False)
-        .with_columns(pl.col("cdf").fill_null(0.0))
-    )
-
-
 def _build_industry_daily_returns(
     data: pl.DataFrame,
     daily: pl.DataFrame,
@@ -10081,39 +10036,40 @@ def _build_hml(
     """Build HML (top minus bottom pf) factor returns.
 
     Description:
-        Group `pf_df` by ``["excntry", "characteristic", date_col]``, compute
-        top-minus-bottom-portfolio diffs for return columns (and optionally
-        ``signal``), and keep only groups containing both extreme portfolios.
+        Join the top and bottom portfolios on
+        ``["excntry", "characteristic", date_col]`` and take top-minus-bottom diffs
+        for return columns (and optionally ``signal``). The inner join keeps only
+        groups containing both extreme portfolios, and one portfolio has no top minus
+        bottom, so it gives no rows.
     Output:
-        DataFrame sorted by ``["excntry", "characteristic", date_col]``.
+        DataFrame sorted by ``["excntry", "characteristic", date_col]``. Raises if a group
+        has more than one row for an extreme portfolio.
     """
-    diff = lambda c: (  # noqa: E731
-        pl.col(c).filter(pl.col("pf") == n_pfs).first()
-        - pl.col(c).filter(pl.col("pf") == 1).first()
-    )
-    is_extreme_pf = (pl.col("pf") == n_pfs) | (pl.col("pf") == 1)
-    agg_exprs = [is_extreme_pf.sum().alias("pfs")]
-    if include_signal:
-        agg_exprs.append(diff("signal").alias("signal"))
-    agg_exprs.extend(
-        [
-            (
-                pl.col("n").filter(pl.col("pf") == n_pfs).first()
-                + pl.col("n").filter(pl.col("pf") == 1).first()
-            ).alias("n_stocks"),
-            pl.col("n").filter(is_extreme_pf).min().alias("n_stocks_min"),
-            diff("ret_ew").alias("ret_ew"),
-            diff("ret_vw").alias("ret_vw"),
-            diff("ret_vw_cap").alias("ret_vw_cap"),
-        ]
-    )
+    keys = ["excntry", "characteristic", date_col]
+    ret_cols = ["ret_ew", "ret_vw", "ret_vw_cap"]
+    signal_cols = ["signal"] if include_signal else []
+    extreme_pfs = pf_df.lazy().select(*keys, "pf", "n", *signal_cols, *ret_cols)
+    diff = lambda c: (pl.col(c) - pl.col(f"{c}_bottom")).alias(c)  # noqa: E731
 
     return (
-        pf_df.group_by(["excntry", "characteristic", date_col])
-        .agg(agg_exprs)
-        .filter(pl.col("pfs") == 2)
-        .drop("pfs")
-        .sort(["excntry", "characteristic", date_col])
+        extreme_pfs.filter(pl.col("pf") == n_pfs)
+        .join(
+            extreme_pfs.filter(pl.col("pf") == 1, pl.lit(n_pfs > 1)),
+            on=keys,
+            how="inner",
+            suffix="_bottom",
+            nulls_equal=True,
+            validate="1:1",
+        )
+        .select(
+            *keys,
+            *[diff(c) for c in signal_cols],
+            (pl.col("n") + pl.col("n_bottom")).alias("n_stocks"),
+            pl.min_horizontal("n", "n_bottom").alias("n_stocks_min"),
+            *[diff(c) for c in ret_cols],
+        )
+        .sort(keys)
+        .collect()
     )
 
 
@@ -10209,25 +10165,26 @@ def theme_versions(themes_dir: Path) -> dict[str, Path]:
     return versions
 
 
-def _sign_factors(hml: pl.DataFrame, themes: pl.DataFrame) -> pl.DataFrame:
-    """Sign the HML factors of a themes version (LMS).
+def _sign_factors(factors: pl.DataFrame, themes: pl.DataFrame) -> pl.DataFrame:
+    """Sign the factors of a themes version: HML into LMS, or the unsigned CMP.
 
     Description:
         Keep the factors of the characteristics in ``themes`` and multiply their
-        returns, and ``signal`` when present, by ``direction``, so each factor buys
-        the side its theme favours. The caller checks that every characteristic
-        has a factor (``_write_theme_versions`` in ``portfolio.py``).
+        return and signal columns (``ret_*`` and ``signal*``) by ``direction``, so
+        each factor buys the side its theme favours. For HML factors, the caller
+        checks that every characteristic has a factor (``_write_theme_versions`` in
+        ``portfolio.py``).
     Steps:
-        1) Join ``direction`` to ``hml`` by characteristic, in ``hml``'s row order.
+        1) Join ``direction`` to ``factors`` by characteristic, in ``factors``' row order.
         2) Multiply the return and signal columns by ``direction``.
     Output:
-        DataFrame with ``characteristic``, ``direction`` and the ``hml`` columns, in
-        ``hml``'s row order.
+        DataFrame with ``characteristic``, ``direction`` and the ``factors`` columns,
+        in ``factors``' row order.
     """
-    resign = [c for c in ("signal", "ret_ew", "ret_vw", "ret_vw_cap") if c in hml.columns]
+    resign = [c for c in factors.columns if c.startswith(("ret_", "signal"))]
     return (
         themes.select("characteristic", "direction")
-        .join(hml, on="characteristic", how="inner", maintain_order="right")
+        .join(factors, on="characteristic", how="inner", maintain_order="right")
         .with_columns(pl.col(resign) * pl.col("direction"))
     )
 
@@ -10270,82 +10227,581 @@ def _theme_returns(
     return subthemes, theme_returns
 
 
-def _pf_daily_lazy(
-    sub: pl.LazyFrame, daily: pl.DataFrame, x: str, ret_cols: list[str]
-) -> pl.LazyFrame:
-    """Aggregate daily portfolio returns for every return column in one pass.
+def _period_tasks(periods: pl.Series) -> tuple[pl.Series, np.ndarray, np.ndarray]:
+    """Split a sorted period column into runs of periods for the threads of a kernel.
 
     Description:
-        Weight each stock by its formation-month EW/VW/VW-cap weight within
-        ``(eom, pf)`` and apply the weights to the following month's daily
-        returns. All ``ret_cols`` share the sort, the weights and the join;
-        each column gets its own count and weighted sums.
-    Steps:
-        1) Build per-stock weights within ``(eom, pf)``.
-        2) Join to daily returns on the formation month; keep rows with a
-           portfolio and at least one non-null return column.
-        3) Aggregate by ``(pf, date)``: per column ``c``, ``n_{c}`` counts its
-           non-null returns and ``ret_{ew,vw,vw_cap}_{c}`` are weighted sums.
+        Each thread gets periods with a similar row count, since the number of stocks in
+        a period varies widely.
     Output:
-        Wide LazyFrame keyed by ``(pf, date)`` with ``characteristic`` = ``x``.
-        A column whose returns are all null on a row has ``n_{c} == 0``; split
-        it out with ``_split_daily_leg``.
+        The distinct periods; each period's first row, then the row count; and each
+        task's first period, then the period count.
     """
-    weights = (
-        sub.group_by(["eom", "pf"])
-        .agg(
-            [
-                pl.col("id"),
-                (1 / pl.len()).alias("w_ew"),
-                (pl.col("me") / pl.col("me").sum()).alias("w_vw"),
-                (pl.col("me_cap") / pl.col("me_cap").sum()).alias("w_vw_cap"),
-            ]
-        )
-        .explode("id", "w_vw", "w_vw_cap")
+    runs = periods.rle().struct.unnest()
+    period_starts = np.concatenate(([0], np.cumsum(runs["len"].to_numpy(), dtype=np.int64)))
+    task_starts = np.unique(
+        np.searchsorted(period_starts, np.linspace(0, periods.len(), get_num_threads() + 1))
     )
+    return runs["value"].alias(periods.name), period_starts, task_starts.astype(np.int64)
+
+
+# Values per row in ``_sum_rows_kernel``. A fixed count lets the compiler vectorize the
+# innermost loop.
+_SUM_VALUES = 16
+
+
+@njit(parallel=True, cache=True, error_model="numpy")
+def _sum_rows_kernel(
+    task_starts: np.ndarray,
+    period_starts: np.ndarray,
+    stock_months: np.ndarray,
+    values: np.ndarray,
+    pf_by_row: np.ndarray,
+    n_chars: int,
+    n_bins: int,
+    out: np.ndarray,
+) -> None:
+    """Add each row's values to the totals of its period, characteristic and portfolio.
+
+    Description:
+        Threads take runs of periods, and rows within a period are added in the given
+        order, so the sums are the same for any number of threads. Bin 0 of each
+        characteristic collects its unassigned stocks, which spares the loop a branch.
+    Output:
+        Fills ``out``, flattened by period, characteristic, bin and value.
+    """
+    per_period = n_chars * n_bins * _SUM_VALUES
+    for task in prange(task_starts.size - 1):
+        for period in range(task_starts[task], task_starts[task + 1]):
+            totals = np.zeros(per_period)
+            for row in range(period_starts[period], period_starts[period + 1]):
+                pf_row = stock_months[row] * n_chars
+                value_row = row * _SUM_VALUES
+                for char in range(n_chars):
+                    at = (char * n_bins + pf_by_row[pf_row + char]) * _SUM_VALUES
+                    for k in range(_SUM_VALUES):
+                        totals[at + k] += values[value_row + k]
+            out[period * per_period : (period + 1) * per_period] = totals
+
+
+def _sum_by_portfolio(
+    rows: pl.DataFrame,
+    period: str,
+    value_cols: list[str],
+    pf_by_row: np.ndarray,
+    n_pfs: int,
+) -> tuple[pl.Series, np.ndarray]:
+    """Sum row values by period, characteristic and portfolio, for all characteristics at once.
+
+    Description:
+        Every characteristic sums the same values and differs only in which portfolio
+        holds each stock-month, so one pass over ``rows`` does the work of a filter and
+        group-by per characteristic. NaN stays in its own portfolio's sum.
+    Steps:
+        1) Split the periods among the threads. ``rows`` must be sorted by ``period``,
+           hold the stock-month number ``sm``, and have no nulls in ``value_cols``.
+        2) Pad to ``_SUM_VALUES`` columns, run the kernel and drop the unassigned bin.
+    Output:
+        The periods, and an array indexed by ``(period, characteristic, pf - 1, value)``
+        with values in the order of ``value_cols``.
+    """
+    if len(value_cols) > _SUM_VALUES:
+        raise ValueError(f"{len(value_cols)} value columns, at most {_SUM_VALUES} fit")
+    periods, period_starts, task_starts = _period_tasks(rows[period])
+    padding = [pl.lit(0.0).alias(f"_pad_{i}") for i in range(_SUM_VALUES - len(value_cols))]
+    n_chars = pf_by_row.shape[1]
+    out = np.zeros(periods.len() * n_chars * (n_pfs + 1) * _SUM_VALUES)
+    _sum_rows_kernel(
+        task_starts,
+        period_starts,
+        rows["sm"].to_numpy().astype(np.int64),
+        rows.select(*value_cols, *padding).to_numpy(order="c").ravel(),
+        pf_by_row.ravel(),
+        n_chars,
+        n_pfs + 1,
+        out,
+    )
+    totals = out.reshape(periods.len(), n_chars, n_pfs + 1, _SUM_VALUES)
+    return periods, totals[:, :, 1:, : len(value_cols)]
+
+
+def _month_totals(
+    data: pl.DataFrame, pf_by_row: np.ndarray, n_pfs: int
+) -> tuple[pl.Series, np.ndarray]:
+    """Sum each month's portfolios for all characteristics.
+
+    Description:
+        These totals give the monthly returns, and their stock counts and market caps
+        are the denominators of the following month's daily returns.
+    Output:
+        The months, and an array indexed by ``(month, characteristic, pf - 1, value)``
+        with values ``n``, return, return times ``me``, return times ``me_cap``, ``me``
+        and ``me_cap``.
+    """
+    value_cols = ["n", "ret", "ret_me", "ret_me_cap", "me", "me_cap"]
+    return _sum_by_portfolio(
+        data.select(
+            "sm",
+            "eom",
+            pl.lit(1.0).alias("n"),
+            pl.col("ret_exc_lead1m").alias("ret"),
+            (pl.col("ret_exc_lead1m") * pl.col("me")).alias("ret_me"),
+            (pl.col("ret_exc_lead1m") * pl.col("me_cap")).alias("ret_me_cap"),
+            "me",
+            "me_cap",
+        ),
+        "eom",
+        value_cols,
+        pf_by_row,
+        n_pfs,
+    )
+
+
+@njit(parallel=True, cache=True, error_model="numpy")
+def _portfolio_rows_kernel(
+    numerators: np.ndarray,
+    denominators: np.ndarray,
+    formation: np.ndarray,
+    char_order: np.ndarray,
+    n_tasks: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Pick the portfolios with stocks and divide their sums, in parallel over characteristics.
+
+    Description:
+        ``numerators`` is indexed by ``(period, characteristic, pf - 1, value)`` with the
+        count and the three sums; ``denominators`` by ``(month, characteristic, pf - 1,
+        value)``, and ``formation`` gives each period's month. Rows come out by
+        characteristic in ``char_order``, then portfolio, then period. Each of ``n_tasks``
+        threads takes a block of adjacent characteristics and walks the periods in order,
+        so it reads neighbouring memory; each cell's rows go to that cell's own place in the
+        output, so the rows are the same for any number of threads.
+    Steps:
+        1) Count each characteristic's and portfolio's periods with a positive count.
+        2) Give each cell its first row, in ``char_order`` and portfolio order.
+        3) Write each period's indexes, count and the three sums divided by the
+           denominators at its cell's next row.
+    Output:
+        Per row: period, characteristic and ``pf - 1`` indexes, the count, and an array of
+        the three returns indexed by ``(return, row)``.
+    """
+    n_periods, n_chars, n_pfs = numerators.shape[0], numerators.shape[1], numerators.shape[2]
+    block = -(-n_chars // n_tasks)
+    counts = np.zeros((n_chars, n_pfs), dtype=np.int64)
+    for task in prange(n_tasks):
+        for period in range(n_periods):
+            for char in range(task * block, min(n_chars, (task + 1) * block)):
+                for pf in range(n_pfs):
+                    if numerators[period, char, pf, 0] > 0:
+                        counts[char, pf] += 1
+    next_row = np.empty((n_chars, n_pfs), dtype=np.int64)
+    n_rows = 0
+    for rank in range(n_chars):
+        for pf in range(n_pfs):
+            next_row[char_order[rank], pf] = n_rows
+            n_rows += counts[char_order[rank], pf]
+    period_i = np.empty(n_rows, dtype=np.int64)
+    char_i = np.empty(n_rows, dtype=np.int64)
+    pf_i = np.empty(n_rows, dtype=np.int64)
+    n = np.empty(n_rows, dtype=np.uint32)
+    returns = np.empty((3, n_rows))
+    for task in prange(n_tasks):
+        for period in range(n_periods):
+            month = formation[period]
+            for char in range(task * block, min(n_chars, (task + 1) * block)):
+                for pf in range(n_pfs):
+                    n_stocks = numerators[period, char, pf, 0]
+                    if n_stocks > 0:
+                        at = next_row[char, pf]
+                        period_i[at] = period
+                        char_i[at] = char
+                        pf_i[at] = pf
+                        n[at] = np.uint32(n_stocks)
+                        for k in range(3):
+                            returns[k, at] = (
+                                numerators[period, char, pf, k + 1]
+                                / denominators[month, char, pf, k]
+                            )
+                        next_row[char, pf] = at + 1
+    return period_i, char_i, pf_i, n, returns
+
+
+def _portfolio_rows(
+    periods: pl.Series,
+    numerators: np.ndarray,
+    denominators: np.ndarray,
+    formation: np.ndarray,
+    chars: list[str],
+    signals: np.ndarray | None = None,
+) -> pl.DataFrame:
+    """Turn portfolio sums into returns, one row per period, characteristic and portfolio.
+
+    Description:
+        ``numerators`` holds the count and the EW, VW and VW-cap sums by period,
+        characteristic and portfolio; ``denominators`` holds each month's stock count,
+        ``me`` and ``me_cap`` in the same layout, and ``formation`` gives the month that
+        weights each period. A portfolio with a count of zero has no row. Rows are sorted
+        by characteristic name, portfolio and period, so stacking countries in sorted
+        order needs no sort. The division is raw rather than ``safe_div``, since a zero
+        denominator gives NaN or infinity in the published series.
+    Output:
+        DataFrame with columns ``[pf, <period>, characteristic, n, ret_ew, ret_vw,
+        ret_vw_cap]``, and ``signal`` from ``signals`` (indexed like the sums) when given.
+    """
+    # The kernel does not check bounds, so check its indexes here.
+    if numerators.shape[1:3] != denominators.shape[1:3] or len(formation) != len(numerators):
+        raise ValueError("numerators, denominators and formation do not line up")
+    if len(formation) and not 0 <= formation.min() <= formation.max() < len(denominators):
+        raise ValueError("formation holds a month outside denominators")
+    char_order = np.argsort(np.array(chars), kind="stable")
+    period_i, char_i, pf_i, n, returns = _portfolio_rows_kernel(
+        numerators, denominators, formation, char_order, get_num_threads()
+    )
+    rows = pl.DataFrame(
+        {
+            "pf": pf_i + 1.0,
+            periods.name: periods.gather(period_i),
+            "characteristic": pl.Series(chars).gather(char_i),
+            "n": n,
+            "ret_ew": returns[0],
+            "ret_vw": returns[1],
+            "ret_vw_cap": returns[2],
+        }
+    )
+    if signals is not None:
+        rows = rows.with_columns(pl.Series("signal", signals[period_i, char_i, pf_i]))
+    return rows
+
+
+def _pf_returns(
+    months: pl.Series, month_totals: np.ndarray, medians: np.ndarray, chars: list[str]
+) -> pl.DataFrame:
+    """Build the monthly portfolio returns of all characteristics.
+
+    Output:
+        DataFrame with columns ``[pf, eom, characteristic, n, signal, ret_ew, ret_vw,
+        ret_vw_cap]``, with ``eom`` moved to the return month.
+    """
     return (
-        weights.join(
-            daily.lazy(),
-            left_on=["id", "eom"],
-            right_on=["id", "eom_lag1"],
-            how="left",
+        _portfolio_rows(
+            months,
+            month_totals[:, :, :, :4],
+            month_totals[:, :, :, [0, 4, 5]],
+            np.arange(months.len()),
+            chars,
+            signals=medians,
         )
-        .filter(pl.col("pf").is_not_null() & pl.any_horizontal(pl.col(ret_cols).is_not_null()))
-        .group_by(["pf", "date"])
-        .agg(
-            [pl.lit(x).alias("characteristic")]
-            + [
+        .with_columns(pl.col("eom").dt.offset_by("1mo").dt.month_end().alias("eom"))
+        .select("pf", "eom", "characteristic", "n", "signal", "ret_ew", "ret_vw", "ret_vw_cap")
+    )
+
+
+# Size groups of the characteristics-managed portfolios: the first slot of each grouping in
+# ``_rank_rows_kernel`` and its labels. Every stock is in one group per grouping.
+_CMP_GROUPS = {
+    1: (0, ["all"]),
+    2: (1, ["big", "small"]),
+    5: (3, ["mega", "large", "small", "micro", "nano"]),
+}
+
+
+@njit(cache=True, error_model="numpy")
+def _sorted_median(vals: np.ndarray, order: np.ndarray, start: int, stop: int) -> float:
+    """Median of ``vals[order[start:stop]]``, which is sorted, using the arithmetic of Polars."""
+    middle = start + (stop - start) // 2
+    if (stop - start) % 2 == 1:
+        return vals[order[middle]]
+    low = vals[order[middle - 1]]
+    high = vals[order[middle]]
+    return low if low == high else 0.5 * (high - low) + low
+
+
+@njit(parallel=True, cache=True, error_model="numpy")
+def _rank_rows_kernel(
+    task_starts: np.ndarray,
+    month_starts: np.ndarray,
+    values: np.ndarray,
+    bp_stock: np.ndarray,
+    size_code: np.ndarray,
+    ret: np.ndarray,
+    n_chars: int,
+    n_pfs: int,
+    bp_min_n: int,
+    min_std: float,
+    pf_by_row: np.ndarray,
+    medians: np.ndarray,
+    cmp_totals: np.ndarray,
+) -> None:
+    """Sort each characteristic within each month and read the results off the sorted order.
+
+    Description:
+        Threads take runs of months. Each characteristic's stocks are walked from the
+        lowest value to the highest, one group of tied values at a time, which gives:
+
+        Portfolios: a stock's ECDF value is the share of the month's breakpoint stocks
+        at or below its value. Stocks at the month's lowest ECDF value get 1e-8, so they
+        are in portfolio 1. A month with under ``bp_min_n`` breakpoint stocks has none.
+
+        Medians: a portfolio's stocks sit next to each other in the sorted order.
+
+        Characteristics-managed portfolios: within a size group, tied stocks share their
+        average rank. The centered rank is the whole number ``2 * rank - (n + 1)``, which
+        is ``rank / (n + 1) - 0.5`` times ``2 * (n + 1)``. That factor cancels in the ratios
+        of ``_cmp_returns``, and whole numbers add without rounding error. A group needs
+        two stocks and a sample standard deviation above ``min_std``, or it would rank
+        rounding noise. It is built up over the sorted values, so it doesn't depend on row
+        order. Infinite values count as varying.
+    Output:
+        Fills ``pf_by_row``, flattened by row and characteristic; ``medians``, indexed by
+        ``(month, characteristic, pf - 1)``; and ``cmp_totals``, indexed by ``(month,
+        characteristic, group, value)``, with values stock count, sum of return times
+        centered rank, sum of characteristic times centered rank, and sum of absolute
+        centered ranks. Groups are all, big, small, then the five of ``size_grp``.
+    """
+    two_groups = np.array([1, 1, 2, 2, 2])
+    for task in prange(task_starts.size - 1):
+        first_month, stop_month = task_starts[task], task_starts[task + 1]
+        most_rows = np.diff(month_starts[first_month : stop_month + 1]).max()
+        vals = np.empty(most_rows)
+        rows = np.empty(most_rows, dtype=np.int64)
+        group_n = np.zeros(8, dtype=np.int64)
+        group_seen = np.zeros(8, dtype=np.int64)
+        tie_n = np.zeros(8, dtype=np.int64)
+        group_mean = np.zeros(8)
+        group_ss = np.zeros(8)
+        sums = np.zeros((8, 3))
+        for month in range(first_month, stop_month):
+            for char in range(n_chars):
+                n = 0
+                n_bp = 0
+                group_n[:] = 0
+                for row in range(month_starts[month], month_starts[month + 1]):
+                    value = values[row * n_chars + char]
+                    if value == value:
+                        vals[n] = value
+                        rows[n] = row
+                        n += 1
+                        n_bp += bp_stock[row]
+                        size = size_code[row]
+                        group_n[0] += 1
+                        group_n[two_groups[size]] += 1
+                        group_n[3 + size] += 1
+                if n == 0:
+                    continue
+                order = np.argsort(vals[:n])
+                seen_bp = 0
+                lowest_bp = -1
+                pf = 0
+                pf_start = 0
+                group_seen[:] = 0
+                group_mean[:] = 0.0
+                group_ss[:] = 0.0
+                sums[:] = 0.0
+                tie = 0
+                while tie < n:
+                    value = vals[order[tie]]
+                    tie_stop = tie + 1
+                    while tie_stop < n and vals[order[tie_stop]] == value:
+                        tie_stop += 1
+                    tie_n[:] = 0
+                    for i in range(tie, tie_stop):
+                        row = rows[order[i]]
+                        seen_bp += bp_stock[row]
+                        size = size_code[row]
+                        tie_n[0] += 1
+                        tie_n[two_groups[size]] += 1
+                        tie_n[3 + size] += 1
+                    tie_pf = 0
+                    if n_bp >= bp_min_n:
+                        if lowest_bp < 0:
+                            lowest_bp = seen_bp
+                        cdf = 0.00000001 if seen_bp == lowest_bp else seen_bp / n_bp
+                        tie_pf = int(min(max(np.ceil(cdf * n_pfs), 1.0), n_pfs))
+                        if tie_pf != pf:
+                            if pf > 0:
+                                medians[month, char, pf - 1] = _sorted_median(
+                                    vals, order, pf_start, tie
+                                )
+                            pf = tie_pf
+                            pf_start = tie
+                    for i in range(tie, tie_stop):
+                        row = rows[order[i]]
+                        size = size_code[row]
+                        pf_by_row[row * n_chars + char] = tie_pf
+                        for group in (0, two_groups[size], 3 + size):
+                            centered = 2 * group_seen[group] + tie_n[group] - group_n[group]
+                            sums[group, 0] += ret[row] * centered
+                            sums[group, 1] += value * centered
+                            sums[group, 2] += abs(centered)
+                    for group in range(8):
+                        if tie_n[group] > 0:
+                            group_seen[group] += tie_n[group]
+                            delta = value - group_mean[group]
+                            group_mean[group] += delta * (tie_n[group] / group_seen[group])
+                            group_ss[group] += tie_n[group] * delta * (value - group_mean[group])
+                    tie = tie_stop
+                if pf > 0:
+                    medians[month, char, pf - 1] = _sorted_median(vals, order, pf_start, n)
+                for group in range(8):
+                    if group_n[group] < 2:
+                        continue
+                    # An infinite value makes this NaN, which isn't <= min_std, so the group stays.
+                    if not np.sqrt(group_ss[group] / (group_n[group] - 1)) <= min_std:
+                        cmp_totals[month, char, group, 0] = group_n[group]
+                        cmp_totals[month, char, group, 1:] = sums[group]
+
+
+def _rank_by_month(
+    data: pl.DataFrame, chars: list[str], n_pfs: int, bp_min_n: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Form the portfolios, their medians and the CMP sums of all characteristics.
+
+    Description:
+        Portfolio assignment, medians and CMP ranks all follow from one sort of a
+        characteristic within a month, so they are computed together in ``_rank_rows_kernel``.
+        ``data`` must be sorted by ``eom``.
+    Output:
+        ``pf_by_row``, indexed by ``(row, characteristic)`` with 0 for no portfolio;
+        ``medians``, indexed by ``(month, characteristic, pf - 1)``; and ``cmp_totals``,
+        laid out as in ``_rank_rows_kernel``.
+    """
+    if n_pfs > np.iinfo(np.uint8).max:
+        raise ValueError(f"{n_pfs} portfolios, at most {np.iinfo(np.uint8).max} fit")
+    months, month_starts, task_starts = _period_tasks(data["eom"])
+    size_codes = {label: code for code, label in enumerate(_CMP_GROUPS[5][1])}
+    n_chars = len(chars)
+    pf_by_row = np.zeros(data.height * n_chars, dtype=np.uint8)
+    medians = np.full((months.len(), n_chars, n_pfs), np.nan)
+    cmp_totals = np.zeros((months.len(), n_chars, 8, 4))
+    _rank_rows_kernel(
+        task_starts,
+        month_starts,
+        data.select(pl.col(chars).cast(pl.Float64)).to_numpy(order="c").ravel(),
+        data["bp_stock"].fill_null(False).cast(pl.UInt8).to_numpy(),
+        data["size_grp"].replace_strict(size_codes, return_dtype=pl.UInt8).to_numpy(),
+        data["ret_exc_lead1m"].to_numpy(),
+        n_chars,
+        n_pfs,
+        bp_min_n,
+        CMP_MIN_STD,
+        pf_by_row,
+        medians,
+        cmp_totals,
+    )
+    return pf_by_row.reshape(data.height, n_chars), medians, cmp_totals
+
+
+def _stock_days(data: pl.DataFrame, daily: pl.DataFrame, ret_cols: list[str]) -> pl.DataFrame:
+    """Join daily returns to their formation month and prepare the values to sum.
+
+    Steps:
+        1) Keep daily rows with at least one non-null return column.
+        2) Join to the stock-months of the preceding month, which carry the number ``sm``.
+        3) Sort by ``(date, sm)``, so sums add up in the same order on every run.
+        4) Per return column ``c``, compute the non-null flag ``n_{c}`` and the values
+           ``c``, ``vw_{c}`` = ``c * me`` and ``cap_{c}`` = ``c * me_cap``, with nulls as
+           0 so they add nothing to the sums.
+    Output:
+        DataFrame with ``sm``, ``date`` and the four columns per return column.
+    """
+    return (
+        daily.lazy()
+        .filter(pl.any_horizontal(pl.col(ret_cols).is_not_null()))
+        .join(
+            data.lazy().select("id", "eom", "sm", "me", "me_cap"),
+            left_on=["id", "eom_lag1"],
+            right_on=["id", "eom"],
+            how="inner",
+        )
+        .sort("date", "sm")
+        .select(
+            "sm",
+            "date",
+            *[
                 expr
                 for c in ret_cols
                 for expr in (
-                    pl.col(c).count().alias(f"n_{c}"),
-                    (pl.col("w_ew") * pl.col(c)).sum().alias(f"ret_ew_{c}"),
-                    (pl.col("w_vw") * pl.col(c)).sum().alias(f"ret_vw_{c}"),
-                    (pl.col("w_vw_cap") * pl.col(c)).sum().alias(f"ret_vw_cap_{c}"),
+                    pl.col(c).is_not_null().cast(pl.Float64).alias(f"n_{c}"),
+                    pl.col(c).fill_null(0.0),
+                    (pl.col(c) * pl.col("me")).fill_null(0.0).alias(f"vw_{c}"),
+                    (pl.col(c) * pl.col("me_cap")).fill_null(0.0).alias(f"cap_{c}"),
                 )
-            ]
+            ],
         )
+        .collect()
     )
 
 
-def _split_daily_leg(wide: pl.DataFrame, c: str) -> pl.DataFrame:
-    """Extract one return column's daily portfolio returns from a wide frame.
+def _pf_daily_returns(
+    stock_days: pl.DataFrame,
+    pf_by_row: np.ndarray,
+    months: pl.Series,
+    month_totals: np.ndarray,
+    chars: list[str],
+    ret_cols: list[str],
+    n_pfs: int,
+) -> dict[str, pl.DataFrame]:
+    """Build the daily portfolio returns of all characteristics, per return column.
 
     Description:
-        Rows where column ``c`` had no non-null returns are dropped, since
-        their sums are 0 rather than null.
+        Apply each stock's formation-month EW/VW/VW-cap weight within its portfolio to
+        the following month's daily returns. Weights are not renormalised when a stock
+        has no return on a date. A date where a return column has no values has no row
+        for that column.
     Output:
-        DataFrame with columns ``[pf, date, characteristic, n, ret_ew,
-        ret_vw, ret_vw_cap]``.
+        One DataFrame per return column, with the columns of ``_portfolio_rows``.
     """
-    return wide.filter(pl.col(f"n_{c}") > 0).select(
-        "pf",
+    dates, day_totals = _sum_by_portfolio(
+        stock_days,
         "date",
-        "characteristic",
-        pl.col(f"n_{c}").alias("n"),
-        pl.col(f"ret_ew_{c}").alias("ret_ew"),
-        pl.col(f"ret_vw_{c}").alias("ret_vw"),
-        pl.col(f"ret_vw_cap_{c}").alias("ret_vw_cap"),
+        [f"{prefix}{c}" for c in ret_cols for prefix in ("n_", "", "vw_", "cap_")],
+        pf_by_row,
+        n_pfs,
+    )
+    formation_month = np.searchsorted(
+        months.to_numpy(), dates.dt.month_start().dt.offset_by("-1d").to_numpy()
+    )
+    denominators = month_totals[:, :, :, [0, 4, 5]]
+    return {
+        c: _portfolio_rows(
+            dates, day_totals[:, :, :, 4 * i : 4 * i + 4], denominators, formation_month, chars
+        )
+        for i, c in enumerate(ret_cols)
+    }
+
+
+def _cmp_returns(
+    months: pl.Series, cmp_totals: np.ndarray, chars: list[str], n_groups: int, excntry: str
+) -> pl.DataFrame:
+    """Build a country's characteristics-managed portfolios for one size grouping.
+
+    Description:
+        Scale the return and characteristic sums of ``_rank_by_month`` by half the sum of
+        absolute centered ranks, so each side's weights sum to one. The division is raw
+        rather than ``safe_div``, since a group of infinite values gives NaN in the
+        published series.
+    Output:
+        DataFrame with columns ``[characteristic, size_grp, eom, n_stocks, ret_weighted,
+        signal_weighted, excntry]``, with ``eom`` moved to the return month.
+    """
+    first_slot, labels = _CMP_GROUPS[n_groups]
+    totals = cmp_totals[:, :, first_slot : first_slot + len(labels)]
+    month_i, char_i, group_i = np.nonzero(totals[:, :, :, 0] > 0)
+    sums = totals[month_i, char_i, group_i]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ret_weighted = sums[:, 1] / (sums[:, 3] / 2)
+        signal_weighted = sums[:, 2] / (sums[:, 3] / 2)
+    return pl.DataFrame(
+        {
+            "characteristic": pl.Series(chars).gather(char_i),
+            "size_grp": pl.Series(labels).gather(group_i),
+            "eom": months.gather(month_i),
+            "n_stocks": sums[:, 0].astype(np.uint32),
+            "ret_weighted": ret_weighted,
+            "signal_weighted": signal_weighted,
+        }
+    ).with_columns(
+        pl.col("eom").dt.offset_by("1mo").dt.month_end().alias("eom"),
+        pl.lit(excntry.upper()).alias("excntry"),
     )
 
 
@@ -10361,18 +10817,21 @@ def portfolios(
     source=None,  # Use data from "CRSP", "Compustat" or both: ["CRSP", "COMPUSTAT"]. Default: both.
     wins_ret=True,  # Should Compustat returns be winsorized at the 0.1% and 99.9% of CRSP returns?
     cmp_key=False,  # Create characteristics managed size portfolios?
-    signals=False,  # Create portfolio signals?
-    signals_standardize=False,  # Map chars to [-0.5, +0.5]?,
-    signals_w="vw_cap",  # Weighting for signals: in c("ew", "vw", "vw_cap")
     daily_pf=False,  # Should daily return be estimated
     ind_pf=True,  # Should industry portfolio returns be estimated
     ret_cutoffs=None,  # Data frame for monthly winsorization. Neccesary when wins_ret=T
     ret_cutoffs_daily=None,  # Data frame for daily winsorization. Neccesary when wins_ret=T and daily_pf=T
     daily_oi_cols: list[str]
-    | None = None,  # Extra daily return columns aggregated alongside ret_exc (not winsorized)
+    | None = None,  # Extra daily return columns aggregated alongside ret_exc (not winsorized), at most 3
 ):
     if source is None:
         source = ["CRSP", "COMPUSTAT"]
+    daily_ret_cols = ["ret_exc", *(daily_oi_cols or [])]
+    # Each daily return column sums four values.
+    if daily_pf and 4 * len(daily_ret_cols) > _SUM_VALUES:
+        raise ValueError(
+            f"{len(daily_ret_cols)} daily return columns, at most {_SUM_VALUES // 4} fit"
+        )
     # characerteristics data
     file_path = paths.processed_dir / "characteristics" / f"{excntry}.parquet"
 
@@ -10446,7 +10905,6 @@ def portfolios(
     daily_file_path = (
         paths.processed_dir / "return_data" / "daily_rets_by_country" / f"{excntry}.parquet"
     )
-    daily_ret_cols = ["ret_exc", *(daily_oi_cols or [])]
     if daily_pf:
         daily_lazy = (
             pl.scan_parquet(daily_file_path)
@@ -10501,31 +10959,13 @@ def portfolios(
                 .drop(["p001", "p999", "eom"])
             )
 
-    # Collect the lazy chain once — the single fused read + preprocess pass.
-    data = data_lazy.collect()
+    # Collect the lazy chain once — the single fused read + preprocess pass. Stock-months are
+    # numbered in (month, id) order: the kernels read each month's rows side by side, and the
+    # numbering does not depend on the scan's row order, so sums add up the same way every run.
+    data = data_lazy.collect().sort("eom", "id").with_row_index("sm")
 
     # Collect daily lazy frame if present (needed for industry returns and per-char daily).
     daily = daily_lazy.collect() if daily_lazy is not None else None
-
-    # standardizing signals
-    if signals_standardize and signals:
-        data = (
-            data
-            # Ranking within groups defined by 'eom'
-            .with_columns(
-                [
-                    (pl.col(char).rank(method="min").over("eom").cast(pl.Int64)).alias(char)
-                    for char in chars
-                ]
-            )
-            # normalizing ranks
-            .with_columns(
-                [
-                    (((pl.col(char) / pl.col(char).max()) - pl.lit(0.5)).over("eom")).alias(char)
-                    for char in chars
-                ]
-            )
-        )
 
     if ind_pf:
         ind_gics = _build_industry_monthly_returns(
@@ -10565,175 +11005,28 @@ def portfolios(
                     excntry,
                 )
 
-    # Creating portfolios for all the characteristics.
-    #
-    # Each characteristic builds a per-char lazy pipeline (ECDF -> pf
-    # assignment -> monthly/daily aggregation).  The pipelines accumulate in
-    # ``pf_returns_lazys`` / ``pf_daily_lazys`` and are batch-collected via
-    # ``pl.collect_all`` so polars can execute them concurrently on its thread
-    # pool.  The signals=True branch is the exception: it needs the
-    # intermediate ``sub`` frame alive after each collect to compute
-    # pf_signals, so it collects eagerly per-char.
-    pf_returns_lazys: list[pl.LazyFrame] = []
-    pf_daily_lazys: list[pl.LazyFrame] = []
-    char_pfs: list[dict] = []  # populated only when signals=True
-
-    # Single shared LazyFrame node for the preprocessed data. All per-char
-    # pipelines branch off this node, enabling polars' common-subplan
-    # elimination (CSE) in collect_all to avoid redundant scans.
-    data_lazy = data.lazy()
-
-    for x in chars:
-        # Alias current char into a 'var' column on the per-char subset.
-        # Operate on `sub` only -- `data` is not mutated.
-        if not signals:
-            sub = (
-                data_lazy.with_columns(pl.col(x).cast(pl.Float64).alias("var"))
-                .filter(pl.col("var").is_not_null())
-                .select(
-                    [
-                        "id",
-                        "eom",
-                        "var",
-                        "size_grp",
-                        "ret_exc_lead1m",
-                        "me",
-                        "me_cap",
-                        "bp_stock",
-                    ]
-                )
-            )
-        else:
-            sub = data_lazy.with_columns(pl.col(x).cast(pl.Float64).alias("var")).filter(
-                pl.col("var").is_not_null()
-            )
-
-        sub = sub.with_columns(bp_n=pl.sum("bp_stock").over("eom")).filter(
-            pl.col("bp_n") >= bp_min_n
-        )
-
-        # Skip chars with no data after the bp_n filter.  For the
-        # collect_all path we cannot cheaply check emptiness without an
-        # eager collect, so we optimistically build the lazy pipeline and
-        # drop empty results after the batch collect.  For signals=True
-        # we still need the eager gate because the pf_signals block
-        # requires intermediate access to ``sub``.
-        if signals and sub.limit(1).collect().height == 0:
-            continue
-
-        sub = (
-            add_ecdf(sub)
-            .with_columns(
-                pl.when(pl.col("cdf") == pl.col("cdf").min().over("eom"))
-                .then(0.00000001)
-                .otherwise(pl.col("cdf"))
-                .alias("cdf")
-            )
-            .with_columns(
-                (pl.col("cdf") * pfs).ceil().clip(lower_bound=1, upper_bound=pfs).alias("pf")
-            )
-        )
-
-        # Monthly pf_returns lazy frame for this char.
-        pf_returns_x = (
-            sub.group_by(["pf", "eom"])
-            .agg(
-                [
-                    pl.lit(x).alias("characteristic"),
-                    pl.len().alias("n"),
-                    pl.median("var").alias("signal"),
-                    pl.mean("ret_exc_lead1m").alias("ret_ew"),
-                    ((pl.col("ret_exc_lead1m") * pl.col("me")).sum() / pl.col("me").sum()).alias(
-                        "ret_vw"
-                    ),
-                    (
-                        (pl.col("ret_exc_lead1m") * pl.col("me_cap")).sum() / pl.col("me_cap").sum()
-                    ).alias("ret_vw_cap"),
-                ]
-            )
-            .with_columns(pl.col("eom").dt.offset_by("1mo").dt.month_end().alias("eom"))
-        )
-
-        if signals:
-            # Eager path: collect immediately, then compute pf_signals.
-            op: dict = {}
-            op["pf_returns"] = pf_returns_x.collect()
-
-            if signals_w == "ew":
-                w_expr = (1 / pl.col("eom").len()).over(["pf", "eom"])
-            elif signals_w == "vw":
-                w_expr = (pl.col("me") / pl.col("me").sum()).over(["pf", "eom"])
-            elif signals_w == "vw_cap":
-                w_expr = (pl.col("me_cap") / pl.col("me_cap").sum()).over(["pf", "eom"])
-
-            sub = sub.with_columns(w_expr.alias("w"))
-
-            # Aggregate to one row per (pf, eom): weighted sum of the current
-            # characteristic ``x`` (treating null var values as 0).
-            pf_signals = (
-                sub.group_by(["pf", "eom"])
-                .agg(
-                    (pl.col("w") * pl.col("var").fill_null(0)).sum().alias("signal"),
-                )
-                .with_columns(
-                    pl.lit(x).alias("characteristic"),
-                    pl.col("eom").dt.offset_by("1mo").dt.month_end().alias("eom"),
-                )
-            )
-            op["signals"] = pf_signals.collect()
-
-            if daily_pf:
-                op["pf_daily"] = _pf_daily_lazy(sub, daily, x, daily_ret_cols).collect()
-
-            char_pfs.append(op)
-        else:
-            # Lazy path: accumulate LazyFrames for batch collect_all.
-            pf_returns_lazys.append(pf_returns_x)
-
-            if daily_pf:
-                pf_daily_lazys.append(_pf_daily_lazy(sub, daily, x, daily_ret_cols))
-
-    # Batch-collect per-char lazy pipelines in chunks to bound peak memory
-    # (see COLLECT_CHUNK_SIZE in config.py).
-    pf_returns_df: pl.DataFrame | None = None
-    pf_daily_df: pl.DataFrame | None = None
-
-    if signals and char_pfs:
-        pf_returns_df = pl.concat([op["pf_returns"] for op in char_pfs])
-        if daily_pf:
-            pf_daily_df = pl.concat([op["pf_daily"] for op in char_pfs])
-    elif pf_returns_lazys:
-        ret_dfs: list[pl.DataFrame] = []
-        daily_dfs: list[pl.DataFrame] = []
-        n_chars = len(pf_returns_lazys)
-        n_chunks = (n_chars + COLLECT_CHUNK_SIZE - 1) // COLLECT_CHUNK_SIZE
-        for chunk_idx, start in enumerate(range(0, n_chars, COLLECT_CHUNK_SIZE)):
-            end = min(start + COLLECT_CHUNK_SIZE, n_chars)
-            print(
-                f"   Chars {start + 1}-{end} of {n_chars} (chunk {chunk_idx + 1}/{n_chunks})",
-                flush=True,
-            )
-            chunk_ret = pf_returns_lazys[start:end]
-            chunk_daily = pf_daily_lazys[start:end] if daily_pf else []
-            collected = pl.collect_all(chunk_ret + chunk_daily)
-            n_ret_chunk = len(chunk_ret)
-            ret_dfs.extend(df for df in collected[:n_ret_chunk] if df.height > 0)
-            if daily_pf:
-                daily_dfs.extend(df for df in collected[n_ret_chunk:] if df.height > 0)
-        pf_returns_df = pl.concat(ret_dfs) if ret_dfs else None
-        if daily_pf:
-            pf_daily_df = pl.concat(daily_dfs) if daily_dfs else None
-
+    # One sort per month and characteristic forms the portfolios of all characteristics. Their
+    # monthly and daily returns then come from one pass over the rows.
+    pf_by_row, medians, cmp_totals = _rank_by_month(data, chars, pfs, bp_min_n)
+    data = data.drop(chars)
     output = {}
-    if pf_returns_df is not None:
-        output["pf_returns"] = pf_returns_df
-    if daily_pf and pf_daily_df is not None:
+    months, month_totals = _month_totals(data, pf_by_row, pfs)
+    pf_returns = _pf_returns(months, month_totals, medians, chars)
+    if pf_returns.height > 0:
+        output["pf_returns"] = pf_returns
+    if daily_pf:
         # One long frame per return column: ret_exc -> "pf_daily", each
         # O/I column c -> "pf_daily_{c}". Empty legs are left out.
-        for c in daily_ret_cols:
-            leg = _split_daily_leg(pf_daily_df, c)
+        stock_days = _stock_days(data, daily, daily_ret_cols)
+        del data, daily
+        legs = _pf_daily_returns(
+            stock_days, pf_by_row, months, month_totals, chars, daily_ret_cols, pfs
+        )
+        for c, leg in legs.items():
             if leg.height > 0:
                 output["pf_daily" if c == "ret_exc" else f"pf_daily_{c}"] = leg
+        del stock_days
+
     # Handle industry portfolio returns if ind_pf is true
     if ind_pf:
         output["gics_returns"] = ind_gics
@@ -10744,55 +11037,13 @@ def portfolios(
             if excntry.lower() == "usa":
                 output["ff49_daily"] = ind_ff49_daily
 
-    # Add excntry to pf_returns and pf_daily, and aggregate signals
-    if len(output) > 0:
-        if "pf_returns" in output and output["pf_returns"].height > 0:
-            output["pf_returns"] = output["pf_returns"].with_columns(
-                pl.lit(excntry).str.to_uppercase().alias("excntry")
-            )
-            for key in [k for k in output if k.startswith("pf_daily")]:
-                output[key] = output[key].with_columns(
-                    pl.lit(excntry).str.to_uppercase().alias("excntry")
-                )
-            if signals and char_pfs:
-                output["signals"] = pl.concat([op["signals"] for op in char_pfs]).with_columns(
-                    pl.lit(excntry).str.to_uppercase().alias("excntry")
-                )
+    # Add excntry to pf_returns and pf_daily
+    for key in [k for k in output if k == "pf_returns" or k.startswith("pf_daily")]:
+        output[key] = output[key].with_columns(pl.lit(excntry).str.to_uppercase().alias("excntry"))
 
     if cmp_key:
-        # Vectorized over all characteristics: unpivot to long form, then compute
-        # ranks/weights/aggregates in a single lazy pipeline.
-        grp = ["characteristic", "size_grp", "eom"]
-        n_grp = pl.len().over(grp)
-        p_rank = pl.col("var").rank("average").over(grp) / (n_grp + 1)
-        p_rank_dev = p_rank - p_rank.mean().over(grp)
-        weight = p_rank_dev / (p_rank_dev.abs().sum().over(grp) / 2)
-
-        output["cmp"] = (
-            data.lazy()
-            .unpivot(
-                on=chars,
-                index=["eom", "size_grp", "ret_exc_lead1m"],
-                variable_name="characteristic",
-                value_name="var",
-            )
-            .filter(pl.col("var").is_not_null())
-            .with_columns(weight.alias("weight"))
-            .group_by(grp)
-            .agg(
-                pl.len().alias("n_stocks"),
-                (pl.col("ret_exc_lead1m") * pl.col("weight")).sum().alias("ret_weighted"),
-                (pl.col("var") * pl.col("weight")).sum().alias("signal_weighted"),
-                pl.col("var").std().alias("sd_var"),
-            )
-            .filter(pl.col("sd_var") != 0)
-            .drop("sd_var")
-            .with_columns(
-                pl.col("eom").dt.offset_by("1mo").dt.month_end().alias("eom"),
-                pl.lit(excntry.upper()).alias("excntry"),
-            )
-            .collect()
-        )
+        for n_groups in CMP_SIZE_GROUPS:
+            output[f"cmp_{n_groups}"] = _cmp_returns(months, cmp_totals, chars, n_groups, excntry)
 
     return output
 
@@ -10912,12 +11163,13 @@ def _build_regional_loop(
 def _stack_outputs(
     portfolio_data: dict,
     key: str,
-    sort_cols: list[str],
+    sort_cols: list[str] | None,
     select_cols: list[str] | None = None,
 ) -> pl.DataFrame | None:
     """Concatenate per-country sub-results under `key`, sort, optionally project.
 
-    Returns None when no country produced this key.
+    ``sort_cols=None`` keeps the concatenation order, for pieces that already come sorted
+    from countries in sorted order. Returns None when no country produced this key.
     """
     pieces = [d[key] for d in portfolio_data.values() if d and key in d]
     if not pieces:
@@ -10925,7 +11177,7 @@ def _stack_outputs(
     out = pl.concat(pieces)
     if select_cols is not None:
         out = out.select(select_cols)
-    return out.sort(sort_cols)
+    return out if sort_cols is None else out.sort(sort_cols)
 
 
 def _write_filtered(
@@ -10951,11 +11203,18 @@ def _write_split_by_key(
         Apply the `date_col <= end_date` filter, then for each unique key value
         that is neither None nor the empty string, write the matching rows to
         ``{folder_path}/{key}.parquet``. Numeric/boolean keys (including 0 and
-        False) are kept; only None and "" are skipped.
+        False) are kept; only None and "" are skipped. A key with no rows up to
+        ``end_date`` gets an empty file. The files are written together, in one
+        ``collect_all`` of lazy sinks.
     """
     folder_path.mkdir(parents=True, exist_ok=True)
-    for key in df[key_col].unique():
-        if key is None or key == "":
-            continue
-        filtered = df.filter((pl.col(date_col) <= end_date) & (pl.col(key_col) == key))
-        write_dataframe(filtered, folder_path / f"{key}.parquet")
+    rows = df.lazy().filter(pl.col(date_col) <= end_date)
+    pl.collect_all(
+        [
+            rows.filter(pl.col(key_col) == key).sink_parquet(
+                folder_path / f"{key}.parquet", lazy=True
+            )
+            for key in df[key_col].unique()
+            if key is not None and key != ""
+        ]
+    )

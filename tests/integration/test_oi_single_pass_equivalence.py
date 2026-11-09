@@ -43,6 +43,7 @@ SETTINGS = {
     "bps": "non_mc",
     "bp_min_n": 5,
     "cmp": {"us": True, "int": False},
+    # Read only by the frozen legacy code.
     "signals": {"us": False, "int": False, "standardize": True, "weight": "vw_cap"},
     "regional_pfs": {
         "country_excl": ["ZWE", "VEN"],
@@ -64,8 +65,10 @@ def _add_oi_columns(processed: Path, excntry: str, seed: int) -> None:
         winsorization applies to them. The daily file gets the four O/I
         columns with: stock-days where only ``ret_exc`` is present, a date
         where every O/I return is null, stock-days where only the O/I returns
-        are present, extra nulls in the local legs only, and extreme Compustat
-        returns beyond the daily cutoffs. DEU has the columns but all null.
+        are present, extra nulls in the local overnight leg only, and extreme
+        Compustat returns beyond the daily cutoffs. ``ret_intraday_local`` equals
+        ``ret_intraday``, as in the production builders. DEU has the columns but
+        all null.
     """
     char_path = processed / "characteristics" / f"{excntry}.parquet"
     daily_path = processed / "return_data" / "daily_rets_by_country" / f"{excntry}.parquet"
@@ -105,8 +108,10 @@ def _add_oi_columns(processed: Path, excntry: str, seed: int) -> None:
             *[pl.when(~pl.col("no_open")).then(pl.col(c)).alias(c) for c in OI_COLS],
         )
         .with_columns(
-            pl.when(~pl.col("local_extra_null")).then(pl.col(c)).alias(c)
-            for c in ("ret_overnight_local", "ret_intraday_local")
+            pl.when(~pl.col("local_extra_null"))
+            .then(pl.col("ret_overnight_local"))
+            .alias("ret_overnight_local"),
+            ret_intraday_local=pl.col("ret_intraday"),
         )
         .drop("no_open", "no_close", "local_extra_null", "extreme")
     )
@@ -145,26 +150,15 @@ def _sorted(df: pl.DataFrame) -> pl.DataFrame:
     return df.sort(keys, nulls_last=True)
 
 
-@pytest.fixture(scope="module", params=[False, True], ids=["signals_off", "signals_on"])
-def outputs(
-    request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPathFactory
-) -> tuple[Path, Path]:
-    """Run the legacy and the single-pass builds on identical inputs.
-
-    Parametrized over ``signals`` because the signals branch of ``portfolios()``
-    builds the daily legs on its own eager path.
-    """
-    signals = request.param
-    settings = {
-        **SETTINGS,
-        "signals": {**SETTINGS["signals"], "us": signals, "int": signals},
-    }
+@pytest.fixture(scope="module")
+def outputs(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path]:
+    """Run the legacy and the single-pass builds on identical inputs."""
     mp = pytest.MonkeyPatch()
     legacy_root = tmp_path_factory.mktemp("legacy")
     new_root = tmp_path_factory.mktemp("new")
     _build_inputs(legacy_root)
     _build_inputs(new_root)
-    _patch(mp, tmp_path_factory.mktemp("resources"), settings)
+    _patch(mp, tmp_path_factory.mktemp("resources"), SETTINGS)
     try:
         portfolio_oi_legacy.run_portfolio(output_format="parquet", output_dir=legacy_root)
         run_portfolio(output_format="parquet", output_dir=new_root)
@@ -179,6 +173,7 @@ def _files(root: Path) -> set[str]:
 
 
 _MOVED = [
+    (r"^cmp\.parquet$", "hml_cmp_5.parquet"),
     (r"^lms(.*)\.parquet$", r"themes/v0/lms\1.parquet"),
     (r"^clusters(.*)\.parquet$", r"themes/v0/themes\1.parquet"),
     (r"^(country_factors|regional_factors)(.*)/", r"themes/v0/\1\2/"),
@@ -196,7 +191,16 @@ def _new_path(legacy_rel: str) -> str:
 class TestOiSinglePassEquivalence:
     def test_same_files(self, outputs: tuple[Path, Path]) -> None:
         legacy, new = outputs
-        v0_and_unsigned = {f for f in _files(new) if not f.startswith("themes/v1.0/")}
+        # The legacy code has only the top-level cmp, with five size groups, not the
+        # other groupings or the copy in themes/v0/.
+        not_in_legacy = {
+            "hml_cmp_1.parquet",
+            "hml_cmp_2.parquet",
+            "themes/v0/cmp.parquet",
+        }
+        v0_and_unsigned = {
+            f for f in _files(new) if not f.startswith("themes/v1.0/") and f not in not_in_legacy
+        }
         assert v0_and_unsigned == {_new_path(f) for f in _files(legacy)}
 
     def test_oi_outputs_written(self, outputs: tuple[Path, Path]) -> None:

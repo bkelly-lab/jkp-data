@@ -7,6 +7,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
+from jkp.data.aux_functions import _stack_outputs
 from jkp.data.paths import DataPaths
 from jkp.data.portfolio import portfolios
 from tests.unit.portfolio.conftest import (
@@ -23,9 +24,6 @@ COMMON_KWARGS = {
     "bp_min_n": 5,
     "source": ["CRSP", "COMPUSTAT"],
     "wins_ret": True,
-    "signals": False,
-    "signals_standardize": False,
-    "signals_w": "vw_cap",
     "daily_pf": False,
     "ind_pf": True,
     "cmp_key": False,
@@ -54,6 +52,34 @@ def _run(
 
 class TestStackOutputs:
     """Verify per-country ``portfolios()`` results stack cleanly across countries."""
+
+    def test_pf_stacks_are_sorted_without_a_sort(self, tmp_path: Path) -> None:
+        """``run_portfolio`` stacks the pf outputs unsorted: countries run in sorted order
+        and each country's rows come sorted, even with ``chars`` out of name order."""
+        chars = SYNTHETIC_CHARS[:3][::-1]
+        portfolio_data = {}
+        for i, ex in enumerate(["FRA", "USA"]):
+            processed = tmp_path / ex / "processed"
+            char_df, daily_df = write_synthetic_country(
+                processed, ex, chars, seed=42 + i, n_ids=60, n_months=6
+            )
+            daily_df.with_columns((pl.col("ret_exc") / 2).alias("ret_overnight")).write_parquet(
+                processed / "return_data" / "daily_rets_by_country" / f"{ex}.parquet"
+            )
+            eoms = char_df["eom"].unique().sort().to_list()
+            portfolio_data[ex] = _run(
+                tmp_path / ex, ex, chars, eoms, daily_pf=True, daily_oi_cols=["ret_overnight"]
+            )
+        for key, period in [
+            ("pf_returns", "eom"),
+            ("pf_daily", "date"),
+            ("pf_daily_ret_overnight", "date"),
+        ]:
+            stacked = _stack_outputs(portfolio_data, key, sort_cols=None)
+            keys = stacked.select("excntry", "characteristic", "pf", period)
+            assert set(keys["excntry"]) == {"FRA", "USA"}
+            assert set(keys["characteristic"]) == set(chars)
+            assert keys.equals(keys.sort(keys.columns)), key
 
     def test_stack_two_countries_pf_returns(self, tmp_path: Path) -> None:
         chars = SYNTHETIC_CHARS[:2]
@@ -139,8 +165,8 @@ class TestStackOutputs:
             eoms = char_df["eom"].unique().sort().to_list()
             cmp_key = ex.lower() == "usa"
             out = _run(country_dir, ex, chars, eoms, cmp_key=cmp_key)
-            if "cmp" in out:
-                cmp_pieces.append(out["cmp"])
+            if "cmp_5" in out:
+                cmp_pieces.append(out["cmp_5"])
 
         assert len(cmp_pieces) == 1
         stacked = pl.concat(cmp_pieces)

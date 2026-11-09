@@ -119,6 +119,21 @@ class TestWriteSplitByKey:
         b_rows = pl.read_parquet(folder / "b.parquet")
         assert b_rows["value"].to_list() == [3.0]
 
+    def test_key_with_only_late_rows_gets_an_empty_file(self, tmp_path: Path) -> None:
+        df = pl.DataFrame(
+            {
+                "key": ["a", "b"],
+                "eom": [date(2020, 1, 31), date(2021, 1, 31)],
+                "value": [1.0, 2.0],
+            }
+        )
+        folder = tmp_path / "split"
+        _write_split_by_key(df, folder, "key", "eom", date(2020, 12, 31))
+
+        b_rows = pl.read_parquet(folder / "b.parquet")
+        assert b_rows.height == 0
+        assert b_rows.schema == df.schema
+
     def test_empty_input_creates_folder_no_files(self, tmp_path: Path) -> None:
         df = pl.DataFrame(
             schema={"key": pl.String, "eom": pl.Date, "value": pl.Float64},

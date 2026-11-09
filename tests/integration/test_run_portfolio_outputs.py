@@ -14,8 +14,9 @@ from pathlib import Path
 import polars as pl
 import pytest
 
+import jkp.data.portfolio as portfolio_module
 from jkp.data.output_writer import configure_output_format
-from jkp.data.portfolio import run_portfolio, run_themes
+from jkp.data.portfolio import _read_saved, run_portfolio, run_themes
 from tests.unit.portfolio.conftest import (
     build_synthetic_data,
     make_multi_region_classification,
@@ -57,13 +58,7 @@ def _setup(
         "wins_ret": True,
         "bps": "non_mc",
         "bp_min_n": 5,
-        "cmp": {"us": True, "int": False},
-        "signals": {
-            "us": False,
-            "int": False,
-            "standardize": True,
-            "weight": "vw_cap",
-        },
+        "cmp": {"us": True, "int": True},
         "regional_pfs": {
             "country_excl": ["ZWE", "VEN"],
             "country_weights": "market_cap",
@@ -242,6 +237,16 @@ def _files(root: Path, suffix: str = "parquet") -> set[str]:
     return {p.relative_to(root).as_posix() for p in root.rglob(f"*.{suffix}")}
 
 
+def _assert_cmp_signed(signed: pl.DataFrame, unsigned: pl.DataFrame) -> None:
+    """Each signed cmp row is the unsigned row times its direction, in the same order."""
+    keys = ["excntry", "characteristic", "size_grp", "eom"]
+    assert signed.select(keys).equals(unsigned.select(keys))
+    joined = signed.join(unsigned, on=keys, suffix="_unsigned", validate="1:1")
+    for col in ("ret_weighted", "signal_weighted"):
+        expected = joined.select((pl.col(f"{col}_unsigned") * pl.col("direction")).alias(col))
+        assert joined.select(col).equals(expected), col
+
+
 class TestRunThemes:
     def test_no_option_rebuilds_only_the_current_version(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -277,6 +282,121 @@ class TestRunThemes:
         for rel, df in v1.items():
             assert pl.read_parquet(out / "v1.0" / rel).equals(df), rel
 
+    def test_cmp_per_version(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _setup(tmp_path, monkeypatch)
+        run_portfolio(output_format="parquet", output_dir=tmp_path)
+        run_themes(output_dir=tmp_path, version="v0")
+        portfolios = _portfolios_dir(tmp_path)
+        unsigned = pl.read_parquet(portfolios / "hml_cmp_5.parquet")
+        assert set(unsigned["excntry"]) == {"USA", "FRA"}
+        keys = ["characteristic", "size_grp", "eom"]
+
+        assert unsigned.equals(unsigned.sort("excntry", *keys))
+        v0_dir = portfolios / "themes" / "v0"
+        assert [p.name for p in v0_dir.glob("*cmp*")] == ["cmp.parquet"]
+        v0 = pl.read_parquet(v0_dir / "cmp.parquet")
+        assert v0.equals(unsigned.filter(pl.col("excntry") == "USA"))
+
+        signed = pl.read_parquet(portfolios / "themes" / "v1.0" / "lms_cmp_5.parquet")
+        directions = pl.read_parquet(portfolios / "themes" / "v1.0" / "lms.parquet").select(
+            "characteristic", "direction"
+        )
+        assert set(directions["direction"]) == {-1, 1}
+        assert (
+            signed.select("characteristic", "direction")
+            .unique()
+            .sort("characteristic")
+            .equals(directions.unique().sort("characteristic"))
+        )
+        _assert_cmp_signed(signed, unsigned)
+
+        for n_groups, names in ((1, {"all"}), (2, {"big", "small"})):
+            grouped = pl.read_parquet(portfolios / f"hml_cmp_{n_groups}.parquet")
+            assert set(grouped["size_grp"]) == names
+            assert set(grouped["excntry"]) == {"USA", "FRA"}
+            _assert_cmp_signed(
+                pl.read_parquet(portfolios / "themes" / "v1.0" / f"lms_cmp_{n_groups}.parquet"),
+                grouped,
+            )
+
+    def test_cmp_international_off_writes_only_us(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _setup(tmp_path, monkeypatch)
+        monkeypatch.setitem(portfolio_module.PORTFOLIO_SETTINGS, "cmp", {"us": True, "int": False})
+        run_portfolio(output_format="parquet", output_dir=tmp_path)
+        portfolios = _portfolios_dir(tmp_path)
+        for n_groups in (1, 2, 5):
+            cmp = pl.read_parquet(portfolios / f"hml_cmp_{n_groups}.parquet")
+            assert set(cmp["excntry"]) == {"USA"}
+
+    def test_cmp_per_version_from_saved_csv(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _setup(tmp_path, monkeypatch)
+        run_portfolio(output_format="csv", output_dir=tmp_path)
+        run_themes(output_dir=tmp_path, version="v0")
+        run_themes(output_dir=tmp_path)
+        portfolios = _portfolios_dir(tmp_path)
+        unsigned = pl.read_csv(portfolios / "hml_cmp_5.csv")
+        assert unsigned.height > 0
+        v0 = pl.read_csv(portfolios / "themes" / "v0" / "cmp.csv")
+        assert "direction" not in v0.columns
+        assert v0.equals(unsigned.filter(pl.col("excntry") == "USA"))
+        for n_groups in (1, 2, 5):
+            _assert_cmp_signed(
+                pl.read_csv(portfolios / "themes" / "v1.0" / f"lms_cmp_{n_groups}.csv"),
+                pl.read_csv(portfolios / f"hml_cmp_{n_groups}.csv"),
+            )
+
+    def test_cmp_off_removes_an_earlier_cmp(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _setup(tmp_path, monkeypatch)
+        run_portfolio(output_format="parquet", output_dir=tmp_path)
+        portfolios = _portfolios_dir(tmp_path)
+        for n_groups in (1, 2, 5):
+            cmp = _read_saved(portfolios / f"hml_cmp_{n_groups}")
+            cmp.write_csv(portfolios / f"hml_cmp_{n_groups}.csv")
+
+        monkeypatch.setitem(portfolio_module.PORTFOLIO_SETTINGS, "cmp", {"us": False, "int": False})
+        run_portfolio(output_format="parquet", output_dir=tmp_path)
+        run_themes(output_dir=tmp_path)
+
+        assert not list(portfolios.rglob("*cmp*"))
+
+    @pytest.mark.parametrize("output_format", ["parquet", "csv"])
+    def test_cmp_is_found_in_the_other_format(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, output_format: str
+    ) -> None:
+        _setup(tmp_path, monkeypatch)
+        run_portfolio(output_format=output_format, output_dir=tmp_path)
+        portfolios = _portfolios_dir(tmp_path)
+        cmp = _read_saved(portfolios / "hml_cmp_5")
+        (portfolios / f"hml_cmp_5.{output_format}").unlink()
+        if output_format == "parquet":
+            cmp.write_csv(portfolios / "hml_cmp_5.csv")
+        else:
+            cmp.write_parquet(portfolios / "hml_cmp_5.parquet")
+
+        run_themes(output_dir=tmp_path)
+
+        assert (portfolios / "themes" / "v1.0" / f"lms_cmp_5.{output_format}").exists()
+
+    def test_cmp_file_is_not_read_as_an_hml_series(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _setup(tmp_path, monkeypatch)
+        run_portfolio(output_format="parquet", output_dir=tmp_path)
+
+        run_themes(output_dir=tmp_path)
+
+        out = _portfolios_dir(tmp_path) / "themes" / "v1.0"
+        assert not list(out.glob("themes_cmp*"))
+        for n_groups in (1, 2, 5):
+            cmp = pl.read_parquet(out / f"lms_cmp_{n_groups}.parquet")
+            assert "ret_weighted" in cmp.columns
+
     def test_edited_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _setup(tmp_path, monkeypatch)
         run_portfolio(output_format="parquet", output_dir=tmp_path)
@@ -297,6 +417,13 @@ class TestRunThemes:
         )
         assert set(mine["characteristic"]) == {"char_a"}
         assert mine["ret_ew"].equals(-released["ret_ew"])
+        mine_cmp = pl.read_parquet(out / "my_themes" / "lms_cmp_5.parquet")
+        released_cmp = pl.read_parquet(out / "v1.0" / "lms_cmp_5.parquet").filter(
+            pl.col("characteristic") == "char_a"
+        )
+        assert set(mine_cmp["characteristic"]) == {"char_a"}
+        assert mine_cmp["ret_weighted"].equals(-released_cmp["ret_weighted"])
+        assert mine_cmp["signal_weighted"].equals(-released_cmp["signal_weighted"])
 
     def test_one_version(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _setup(tmp_path, monkeypatch, settings_overrides={"daily_pf": False})
