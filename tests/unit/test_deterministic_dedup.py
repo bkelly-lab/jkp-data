@@ -4,7 +4,8 @@ Tests for deterministic deduplication in the Compustat stock file pipeline.
 Verifies that the dedup locations covered in this file resolve duplicates
 using economically meaningful tie-breaking rules (issue #69):
 
-1. add_primary_sec(): prefer primary_sec=1 over primary_sec=0
+1. add_primary_sec(): prefer primary_sec=1 over primary_sec=0; of rows sharing a key,
+   keep the first in the order of all columns
 2. gen_returns_df(): keep highest prcstd per {gvkey, iid, datadate}
 """
 
@@ -113,6 +114,31 @@ class TestAddPrimarySecDedup:
         assert iid02["primary_sec"].to_list() == [1, 1], (
             "iid='02' matches prihistrow='02' from range 2, so primary_sec=1 should win"
         )
+
+    def test_duplicate_keys_keep_first_in_column_order(self, setup_paths) -> None:
+        """Rows sharing (gvkey, iid, datadate) collapse to one, the first in the order of
+        all columns, whatever the input order."""
+        from jkp.data.aux_functions import add_primary_sec
+
+        paths, _, _ = setup_paths
+        rows = pl.DataFrame(
+            {
+                "gvkey": ["001000"] * 4,
+                "iid": ["01", "01", "01", "02"],
+                "datadate": [date(2024, 1, 31)] * 4,
+                "prc": [10.0, 9.0, 9.0, 20.0],
+            }
+        )
+        results = []
+        for i, df in enumerate([rows, rows.reverse()]):
+            input_path = paths.interim_dir / f"dup_input_{i}.parquet"
+            output_path = paths.interim_dir / f"dup_output_{i}.parquet"
+            df.write_parquet(input_path)
+            add_primary_sec(paths, input_path, "datadate", output_path)
+            results.append(pl.read_parquet(output_path))
+
+        assert results[0].equals(results[1]), "Output should not depend on input order"
+        assert results[0].select("iid", "prc").rows() == [("01", 9.0), ("02", 20.0)]
 
 
 class TestGenReturnsDfDedup:

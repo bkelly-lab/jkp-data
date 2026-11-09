@@ -2058,11 +2058,13 @@ def add_primary_sec(paths: DataPaths, data_path, datevar, file_name):
     Steps:
         1) Per (gvkey, iid, datevar), range-join the three histories and the header on the
            key columns only; primary_sec = 1 if iid matches any region.
-        2) Join primary_sec back onto the full rows and write file_name sorted by
-           (gvkey, iid, datevar).
+        2) Join primary_sec back onto the full rows, keep one row per (gvkey, iid, datevar)
+           and write file_name sorted by (gvkey, iid, datevar). Of rows sharing a key, the
+           first in the order of all columns is kept, whatever the input order.
 
     Output:
-        Parquet at file_name: the input rows plus an integer column primary_sec ∈ {0,1}.
+        Parquet at file_name: one row per (gvkey, iid, datevar) of the input, plus an
+        integer column primary_sec ∈ {0,1}.
     """
     raw_data_dfs = paths.interim_dir / "raw_data_dfs"
     data = Path(data_path).as_posix()
@@ -2100,10 +2102,12 @@ def add_primary_sec(paths: DataPaths, data_path, datevar, file_name):
                     ON a.gvkey = e.gvkey
                 GROUP BY a.gvkey, a.iid, a.{datevar}
             )
-            SELECT data.*, flags.primary_sec
+            -- of rows sharing a key, keep the first in the order of all columns, so the
+            -- choice does not depend on the input's row order
+            SELECT DISTINCT ON (gvkey, iid, {datevar}) data.*, flags.primary_sec
             FROM read_parquet('{data}') AS data
             JOIN flags USING (gvkey, iid, {datevar})
-            ORDER BY gvkey, iid, {datevar}
+            ORDER BY gvkey, iid, {datevar}, COLUMNS(* EXCLUDE (gvkey, iid, {datevar}))
         ) TO '{Path(file_name).as_posix()}' (FORMAT PARQUET)
         """)
 
