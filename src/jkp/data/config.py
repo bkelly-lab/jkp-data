@@ -236,10 +236,6 @@ FF_MIN_STOCKS_BP = 10
 # Min firms per (excntry, date, bucket) for ROW VW; US bypassed.
 FF_MIN_STOCKS_PF = 3
 
-# ROW formation ME tolerance (months): a stock with no June (or December) row,
-# e.g. halted, takes its last ME up to this many months earlier. US unaffected.
-FF_ROW_FORMATION_ME_LOOKBACK = 2
-
 # CRSP -99.0 missing-return sentinel: treat as 0 return when compounding the
 # UMD prior-(2-12) signal, per FF convention.
 FF_MISSING_RET_CODE = -99.0

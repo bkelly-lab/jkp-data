@@ -5,7 +5,7 @@ Covers:
   - _ff_bm_eligible / _ff_op_eligible / _ff_inv_eligible / _ff_mom_eligible
   - ff_country_breakpoints, _ff_bm_breaks / _ff_op_breaks / _ff_inv_breaks,
     _ff_size_breaks
-  - _ff_row_june, ff_annual_characteristics, ff_load_crsp_panel (monthly ME)
+  - ff_annual_characteristics, ff_load_crsp_panel (monthly ME)
   - ff_assign_portfolios
   - ff_assign_to_panel
   - _ff_vw_leg
@@ -34,8 +34,6 @@ from jkp.data.aux_functions import (
     _ff_mom_source_us,
     _ff_op_breaks,
     _ff_op_eligible,
-    _ff_row_june,
-    _ff_row_rets_weights_lazy,
     _ff_size_breaks,
     _ff_vw_leg,
     ff_annual_characteristics,
@@ -64,13 +62,15 @@ def _apply_eligible(df: pl.DataFrame, expr: pl.Expr) -> pl.Series:
 
     Frames without an excntry column get a ROW default ("GBR") so the
     bm/op count gate (US-exempt) keeps its count >= 2 semantics; frames
-    without dec_me get a positive Dec(t-1) ME so the OP/INV gates test
-    their other conditions.
+    without dec_me / dec_universe get a positive Dec(t-1) ME in the December
+    universe so the gates test their other conditions.
     """
     if "excntry" not in df.columns:
         df = df.with_columns(excntry=pl.lit("GBR"))
     if "dec_me" not in df.columns:
         df = df.with_columns(dec_me=pl.lit(1.0))
+    if "dec_universe" not in df.columns:
+        df = df.with_columns(dec_universe=pl.lit(True))
     return df.select(expr.alias("elig"))["elig"]
 
 
@@ -154,6 +154,12 @@ class TestFFBmEligible:
         assert result[2] is False
         assert result[3] is not True  # null propagation from null beme
 
+    def test_outside_december_universe_fails(self):
+        """Ex US: a stock outside the universe in December t-1 (e.g. a secondary
+        line then) stays out of the B/M sort even with a valid beme."""
+        df = pl.DataFrame({"beme": [1.0], "me": [1.0], "count": [3], "dec_universe": [False]})
+        assert _apply_eligible(df, _ff_bm_eligible())[0] is False
+
 
 # =============================================================================
 # TestFFOpEligible
@@ -226,6 +232,12 @@ class TestFFOpEligible:
         ).with_columns(excntry=pl.lit(excntry))
         assert _apply_eligible(df, _ff_op_eligible())[0] is False
 
+    def test_outside_december_universe_fails(self):
+        df = pl.DataFrame(
+            {"me": [1.0], "be": [1.0], "count": [2], "op": [0.5], "dec_universe": [False]}
+        )
+        assert _apply_eligible(df, _ff_op_eligible())[0] is False
+
 
 # =============================================================================
 # TestFFInvEligible
@@ -275,6 +287,10 @@ class TestFFInvEligible:
             {"me": [1.0], "dec_me": [dec_me], "inv": [0.1]},
             schema_overrides={"dec_me": pl.Float64},
         ).with_columns(excntry=pl.lit(excntry))
+        assert _apply_eligible(df, _ff_inv_eligible())[0] is False
+
+    def test_outside_december_universe_fails(self):
+        df = pl.DataFrame({"me": [1.0], "inv": [0.1], "dec_universe": [False]})
         assert _apply_eligible(df, _ff_inv_eligible())[0] is False
 
 
@@ -357,6 +373,7 @@ def _make_june_us(n: int, vals: list[float], with_exchcd: bool = True) -> pl.Dat
             "count": [5] * n,
             "exchcd_us": [1] * n if with_exchcd else [2] * n,
             "size_grp": ["large"] * n,
+            "dec_universe": [True] * n,
         }
     )
 
@@ -396,6 +413,7 @@ class TestFFCountryBreakpoints:
                 "count": [5] * n,
                 "exchcd_us": [1] * n,
                 "size_grp": ["large"] * n,
+                "dec_universe": [True] * n,
             }
         )
         specs = [("beme", 0.30, "beme30"), ("beme", 0.70, "beme70")]
@@ -417,6 +435,7 @@ class TestFFCountryBreakpoints:
                 "count": [5] * n,
                 "exchcd_us": [1] * n,
                 "size_grp": ["large"] * n,
+                "dec_universe": [True] * n,
             }
         )
         specs = [("beme", 0.30, "beme30"), ("beme", 0.70, "beme70")]
@@ -437,6 +456,7 @@ class TestFFCountryBreakpoints:
                 "count": [5] * n,
                 "exchcd_us": [1] * n,
                 "size_grp": ["micro"] * n,  # all micro → excluded from pool
+                "dec_universe": [True] * n,
             }
         )
         specs = [("beme", 0.30, "beme30"), ("beme", 0.70, "beme70")]
@@ -456,6 +476,7 @@ class TestFFCountryBreakpoints:
                 "count": pl.Series([], dtype=pl.Int64),
                 "exchcd_us": pl.Series([], dtype=pl.Int64),
                 "size_grp": pl.Series([], dtype=pl.Utf8),
+                "dec_universe": pl.Series([], dtype=pl.Boolean),
             }
         )
         specs = [("beme", 0.30, "beme30"), ("beme", 0.70, "beme70")]
@@ -521,6 +542,7 @@ class TestFFSpecBreaks:
                 "count": [3] * 20,
                 "exchcd_us": [1] * 20,
                 "size_grp": ["large"] * 20,
+                "dec_universe": [True] * 20,
             }
         )
         bp = _ff_op_breaks(june)
@@ -540,6 +562,7 @@ class TestFFSpecBreaks:
                 "count": [3] * 20,
                 "exchcd_us": [1] * 20,
                 "size_grp": ["large"] * 20,
+                "dec_universe": [True] * 20,
             }
         )
         bp = _ff_inv_breaks(june)
@@ -565,6 +588,7 @@ class TestFFSpecBreaks:
                 "count": [5, 5, 5, None, None, None, None, 5],
                 "exchcd_us": [1, 1, 1, 1, 1, 1, 1, 2],
                 "size_grp": ["large"] * 8,
+                "dec_universe": [True] * 8,
             }
         )
 
@@ -603,52 +627,13 @@ class TestFFSpecBreaks:
                 "count": [5] * (n - 2) + [None, None],
                 "exchcd_us": [None] * n,
                 "size_grp": ["large"] * n,
+                "dec_universe": [True] * n,
             },
             schema_overrides={"exchcd_us": pl.Int64},
         )
         strict = ff_country_breakpoints(june, [("me", 0.50, "sizemedn")], _ff_bm_eligible())
         lenient = _ff_size_breaks(june, _ff_bm_eligible())
         assert strict.equals(lenient)
-
-
-# =============================================================================
-# TestFFRowJune
-# =============================================================================
-
-
-class TestFFRowJune:
-    """_ff_row_june: a stock with no June row forms on its last row up to
-    FF_ROW_FORMATION_ME_LOOKBACK (2) months earlier, if it trades again later
-    that year."""
-
-    @staticmethod
-    def _run() -> pl.DataFrame:
-        rows = {
-            1: [(date(2020, 5, 31), 100.0), (date(2020, 6, 30), 110.0)],  # no halt
-            2: [(date(2020, 5, 31), 210.0), (date(2020, 8, 31), 220.0)],  # halted, resumes
-            3: [(date(2020, 5, 31), 310.0)],  # delisted in May
-            4: [(date(2020, 3, 31), 410.0), (date(2020, 7, 31), 420.0)],  # outside window
-        }
-        recs = [(i, d, me) for i, obs in rows.items() for d, me in obs]
-        panel = pl.DataFrame(
-            {
-                "excntry": ["GBR"] * len(recs),
-                "id": [r[0] for r in recs],
-                "date": [r[1] for r in recs],
-                "ret": [0.01] * len(recs),
-                "me": [r[2] for r in recs],
-                "size_grp": ["large"] * len(recs),
-            }
-        )
-        return _ff_row_june(_ff_row_rets_weights_lazy(panel.lazy(), "monthly").collect()).sort("id")
-
-    def test_formation_rows(self):
-        june = self._run()
-        assert june["id"].to_list() == [1, 2]
-        assert june["date"].unique().to_list() == [date(2020, 6, 30)]
-
-    def test_formation_me(self):
-        assert self._run()["me"].to_list() == [110.0, 210.0]
 
 
 # =============================================================================
@@ -659,24 +644,26 @@ class TestFFRowJune:
 def _write_annual_world_msf(tmp_path) -> None:
     """world_msf rows for ff_annual_characteristics (all fiscal 2019 -> port_year 2020).
 
-    GBR (Compustat): 10 Dec ME 50; 11 Dec ME 0; 13 halted, last row in Nov;
-    14 last row in Sep (outside the window). US: 20 Compustat-only (me 55,
-    me_company 60); 21 Compustat-only with a Nov row only; 30 CRSP (me 40,
+    GBR (Compustat): 10 Dec ME 50; 11 Dec ME 0; 12 Dec ME 30 as a secondary
+    line (primary_sec 0); 13 halted, last row in Nov. US: 20 Compustat-only
+    (me 55, me_company 60); 21 Compustat-only with a Nov row only; 30 CRSP (me 40,
     me_company 60, world_msf gvkey g20); 31 CRSP with no accounting.
     """
     rows = [
-        # id, excntry, gvkey, eom, me, me_company, source_crsp
-        (10, "GBR", "g10", date(2019, 12, 31), 50.0, 50.0, 0),
-        (11, "GBR", "g11", date(2019, 12, 31), 0.0, 0.0, 0),
-        (13, "GBR", "g13", date(2019, 11, 30), 200.0, 200.0, 0),
-        (14, "GBR", "g14", date(2019, 9, 30), 400.0, 400.0, 0),
-        (20, US_EXCNTRY, "g20", date(2019, 12, 31), 55.0, 60.0, 0),
-        (21, US_EXCNTRY, "g21", date(2019, 11, 30), 80.0, 80.0, 0),
-        (30, US_EXCNTRY, "g20", date(2019, 12, 31), 40.0, 60.0, 1),
-        (31, US_EXCNTRY, None, date(2019, 12, 31), 70.0, 70.0, 1),
+        # id, excntry, gvkey, eom, me, me_company, source_crsp, primary_sec
+        (10, "GBR", "g10", date(2019, 12, 31), 50.0, 50.0, 0, 1),
+        (11, "GBR", "g11", date(2019, 12, 31), 0.0, 0.0, 0, 1),
+        (12, "GBR", "g12", date(2019, 12, 31), 30.0, 30.0, 0, 0),
+        (13, "GBR", "g13", date(2019, 11, 30), 200.0, 200.0, 0, 1),
+        (20, US_EXCNTRY, "g20", date(2019, 12, 31), 55.0, 60.0, 0, 1),
+        (21, US_EXCNTRY, "g21", date(2019, 11, 30), 80.0, 80.0, 0, 1),
+        (30, US_EXCNTRY, "g20", date(2019, 12, 31), 40.0, 60.0, 1, 1),
+        (31, US_EXCNTRY, None, date(2019, 12, 31), 70.0, 70.0, 1, 1),
     ]
-    cols = ["id", "excntry", "gvkey", "eom", "me", "me_company", "source_crsp"]
-    pl.DataFrame(rows, schema=cols, orient="row").write_parquet(tmp_path / "world_msf.parquet")
+    cols = ["id", "excntry", "gvkey", "eom", "me", "me_company", "source_crsp", "primary_sec"]
+    pl.DataFrame(rows, schema=cols, orient="row").with_columns(
+        common=pl.lit(1), obs_main=pl.lit(1), exch_main=pl.lit(1)
+    ).write_parquet(tmp_path / "world_msf.parquet")
 
 
 def _acc(gvkeys: list[str], be: float, op: float, inv: float | None, count: int) -> pl.DataFrame:
@@ -703,7 +690,7 @@ class TestFFAnnualCharacteristics:
     def _run(tmp_path) -> dict[int, dict]:
         _write_annual_world_msf(tmp_path)
         acc_us = _acc(["g20", "g21"], be=30.0, op=0.2, inv=None, count=1)
-        comp_world = _acc(["g10", "g11", "g13", "g14"], be=25.0, op=0.1, inv=0.05, count=1)
+        comp_world = _acc(["g10", "g11", "g12", "g13"], be=25.0, op=0.1, inv=0.05, count=1)
         ccm2a = _acc(["g30"], be=40.0, op=0.3, inv=0.02, count=3).with_columns(permno=pl.lit(30))
         out = ff_annual_characteristics(tmp_path, acc_us, ccm2a, comp_world)
         assert out.select("id", "port_year").is_duplicated().sum() == 0
@@ -722,11 +709,18 @@ class TestFFAnnualCharacteristics:
         assert r["op"] == pytest.approx(0.1)
         assert r["inv"] == pytest.approx(0.05)
 
-    def test_row_dec_me_lookback(self, tmp_path):
+    def test_row_dec_me_needs_december(self, tmp_path):
+        """No December row (halted): Dec ME and beme are null; op is unaffected."""
+        r = self._run(tmp_path)[13]
+        assert r["dec_me"] is None and r["beme"] is None
+        assert r["op"] == pytest.approx(0.1)
+
+    def test_dec_universe_is_a_screen_not_an_input(self, tmp_path):
+        """A secondary line in December keeps its published beme but is flagged
+        out of the December universe; US rows are always in it."""
         out = self._run(tmp_path)
-        assert out[13]["dec_me"] == 200.0  # November row inside the window
-        assert out[14]["dec_me"] is None  # September row outside it
-        assert out[14]["op"] == pytest.approx(0.1)
+        assert out[12]["beme"] == pytest.approx(25.0 / 30.0)
+        assert [out[i]["dec_universe"] for i in (10, 12, 20, 30)] == [True, False, True, True]
 
     def test_us_compustat_only_uses_me_company_and_acc_us(self, tmp_path):
         r = self._run(tmp_path)[20]
@@ -879,6 +873,7 @@ def _make_june_with_bp(
             "count": [3] * n,
             "exchcd_us": [1] * n,
             "size_grp": ["large"] * n,
+            "dec_universe": [True] * n,
             # be/op/inv/dec_me referenced by the OP/INV eligibility exprs; null
             # here since op/inv breaks are trivial (no OP/INV assignment exercised).
             "dec_me": [None] * n,
@@ -966,6 +961,7 @@ class TestFFAssignPortfolios:
                 "count": [3],
                 "exchcd_us": [1],
                 "size_grp": ["large"],
+                "dec_universe": [True],
                 "dec_me": [1.0],
                 "be": [None],
                 "op": [None],
