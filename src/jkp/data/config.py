@@ -240,6 +240,10 @@ FF_MIN_STOCKS_PF = 3
 # e.g. halted, takes its last ME up to this many months earlier. US unaffected.
 FF_ROW_FORMATION_ME_LOOKBACK = 2
 
+# HXZ q-factor ROW thresholds (same values as FF; separate names for clarity).
+HXZ_MIN_STOCKS_BP = 10
+HXZ_MIN_STOCKS_PF = 3
+
 # CRSP -99.0 missing-return sentinel: treat as 0 return when compounding the
 # UMD prior-(2-12) signal, per FF convention.
 FF_MISSING_RET_CODE = -99.0
