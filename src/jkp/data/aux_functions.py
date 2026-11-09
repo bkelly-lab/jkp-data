@@ -45,7 +45,6 @@ from .config import (
     FF_MIN_STOCKS_PF,
     FF_MISSING_RET_CODE,
     FF_MISSING_RET_TOL,
-    FF_ROW_FORMATION_ME_LOOKBACK,
     FF_UMD_DAILY_LOOKBACK,
     FF_UMD_DAILY_SKIP,
     FF_UMD_MONTHLY_LOOKBACK,
@@ -10064,16 +10063,24 @@ def _ff_count_gate() -> pl.Expr:
 
 
 def _ff_bm_eligible() -> pl.Expr:
-    """B/M sort eligibility: positive book-to-market and me, count gate."""
-    return (pl.col("beme") > 0) & (pl.col("me") > 0) & _ff_count_gate()
+    """B/M sort eligibility: positive book-to-market and me, count gate, in the FF
+    universe in December t-1 (dec_universe)."""
+    return (
+        (pl.col("beme") > 0)
+        & (pl.col("me") > 0)
+        & _ff_count_gate()
+        & pl.col("dec_universe").fill_null(False)
+    )
 
 
 def _ff_op_eligible() -> pl.Expr:
-    """OP sort eligibility: positive June and Dec(t-1) me, positive BE, count gate,
-    op present. French requires Dec(t-1) and June ME for all four FF5 sorts."""
+    """OP sort eligibility: positive June and Dec(t-1) me, in the FF universe in
+    December t-1, positive BE, count gate, op present. French requires Dec(t-1) and
+    June ME for all four FF5 sorts."""
     return (
         (pl.col("me") > 0)
         & (pl.col("dec_me") > 0).fill_null(False)
+        & pl.col("dec_universe").fill_null(False)
         & (pl.col("be") > 0)
         & _ff_count_gate()
         & pl.col("op").is_not_null()
@@ -10081,9 +10088,13 @@ def _ff_op_eligible() -> pl.Expr:
 
 
 def _ff_inv_eligible() -> pl.Expr:
-    """INV sort eligibility: positive June and Dec(t-1) me, inv present (no count gate)."""
+    """INV sort eligibility: positive June and Dec(t-1) me, in the FF universe in
+    December t-1, inv present (no count gate)."""
     return (
-        (pl.col("me") > 0) & (pl.col("dec_me") > 0).fill_null(False) & pl.col("inv").is_not_null()
+        (pl.col("me") > 0)
+        & (pl.col("dec_me") > 0).fill_null(False)
+        & pl.col("dec_universe").fill_null(False)
+        & pl.col("inv").is_not_null()
     )
 
 
@@ -10497,38 +10508,6 @@ def _ff_row_rets_weights_lazy(raw_panel: pl.LazyFrame, freq: str) -> pl.LazyFram
     )
 
 
-def _ff_row_june(panel: pl.DataFrame) -> pl.DataFrame:
-    """
-    Description:
-        Ex-US June formation rows. A stock with no June row (a trading halt) forms
-        on its last row up to FF_ROW_FORMATION_ME_LOOKBACK months earlier, but only
-        if it trades again after June that year, so delisted stocks stay out of the
-        breakpoint pool.
-    Steps:
-        1) Last row per (excntry, id, year) in months 6 - LOOKBACK through 6.
-        2) Keep June rows, and earlier rows of stocks with a row after June.
-        3) Date the row June 30.
-    Output:
-        The panel's columns, one row per (excntry, id, June).
-    """
-    year = pl.col("date").dt.year()
-    resumed = (
-        panel.filter(pl.col("date").dt.month() > 6)
-        .select("excntry", "id", _y=year, _resumed=pl.lit(True))
-        .unique()
-    )
-    return (
-        panel.filter(pl.col("date").dt.month().is_between(6 - FF_ROW_FORMATION_ME_LOOKBACK, 6))
-        .with_columns(_y=year)
-        .sort("excntry", "id", "date")
-        .unique(["excntry", "id", "_y"], keep="last", maintain_order=True)
-        .join(resumed, on=["excntry", "id", "_y"], how="left")
-        .filter((pl.col("date").dt.month() == 6) | pl.col("_resumed").is_not_null())
-        .with_columns(date=pl.date(pl.col("_y"), 6, 30))
-        .drop("_y", "_resumed")
-    )
-
-
 def _ff_bucket(val: str, breaks: list[str], labels: list[str]) -> pl.Expr:
     """Ladder label: `val <= breaks[i]` -> `labels[i]`, else `labels[-1]`.
     Requires `len(labels) == len(breaks) + 1`."""
@@ -10852,12 +10831,13 @@ def ff_annual_characteristics(
         1) Fiscal year y-1 accounting. CRSP securities: ccm2a by permno (CCM link,
            DFF BE). Compustat securities: by gvkey, acc_us in the US and comp_world
            elsewhere.
-        2) December y-1 ME, kept when > 0. US: December me_company (all share
-           classes of the company). Elsewhere: the security's last me in December
-           or up to FF_ROW_FORMATION_ME_LOOKBACK months earlier.
+        2) December y-1 ME, kept when > 0: me_company in the US (all share classes
+           of the company), the security's me elsewhere; no December row, no
+           December ME. dec_universe flags a December row in the FF universe
+           (always in the US); like count, it is a sort screen, not a formula input.
         3) Full join on (id, port_year); beme = be / dec_me.
     Output:
-        Eager [id, port_year, be, op, inv, count, dec_me, beme].
+        Eager [id, port_year, be, op, inv, count, dec_me, dec_universe, beme].
     """
     acc_cols = ["be", "op", "inv", "count"]
     by_gvkey = pl.concat(
@@ -10877,21 +10857,16 @@ def ff_annual_characteristics(
         how="vertical_relaxed",
     ).select("id", *acc_cols, port_year=pl.col("year") + 1)
     us = pl.col("excntry") == US_EXCNTRY
-    month = pl.col("eom").dt.month()
     dec_me = (
         pl.scan_parquet(interim_dir / "world_msf.parquet")
-        .filter(pl.when(us).then(month == 12).otherwise(month >= 12 - FF_ROW_FORMATION_ME_LOOKBACK))
+        .filter(pl.col("eom").dt.month() == 12)
         .select(
             pl.col("id").cast(pl.Int64),
-            "eom",
             port_year=pl.col("eom").dt.year() + 1,
             dec_me=pl.when(us).then(pl.col("me_company")).otherwise(pl.col("me")),
+            dec_universe=(us | _ff_world_universe()).fill_null(False),
         )
-        .drop_nulls("dec_me")
-        .sort("id", "eom")
-        .unique(["id", "port_year"], keep="last", maintain_order=True)
         .filter(pl.col("dec_me") > 0)
-        .drop("eom")
     )
     return (
         accounting.join(dec_me, on=["id", "port_year"], how="full", coalesce=True)
@@ -11599,6 +11574,10 @@ def gen_ff_data(
           breakpoints. Daily weights use the CIZ permco sum.
         - Elsewhere: JKP's main sample with ME, per-country breakpoints, and the
           FF_MIN_STOCKS_BP / FF_MIN_STOCKS_PF minimums.
+        - Formation, every country: June ME from the June row and Dec ME from the
+          December t-1 row, with no fallback to earlier months, so a stock halted
+          over June or December leaves that year's sorts. The B/M, OP and INV
+          sorts also need the stock in the universe in December t-1.
         - Timing: a characteristic at eom t is the value that sorted the portfolio
           held in month t, so the annual ones are constant from July to June.
         - Daily FF3/FF5 hold the monthly June portfolios; only returns and weights
@@ -11610,8 +11589,8 @@ def gen_ff_data(
            Compustat for other countries; build the annual characteristics table.
         2) Write the characteristics: every world_msf security-month joined to the
            annual table on its July-June year.
-        3) Collect the monthly US and ex-US panels; June formation rows joined to
-           the annual table; breakpoints and portfolio assignments.
+        3) Collect the monthly US and ex-US panels; their June rows joined to the
+           annual table; breakpoints and portfolio assignments.
         4) Monthly factors: FF3/FF5 from the June assignments, UMD from the
            monthly momentum signal.
         5) Daily factors: the same June assignments on the daily panel, UMD from
@@ -11642,20 +11621,22 @@ def gen_ff_data(
         .sink_parquet(chars_path)
     )
 
-    us_m, row_m = pl.collect_all(
-        [
-            ff_load_crsp_panel(raw_dir, interim_dir, "monthly").pipe(
-                _ff_us_rets_weights_lazy, "monthly"
-            ),
-            ff_load_world_panel(interim_dir, "monthly").pipe(_ff_row_rets_weights_lazy, "monthly"),
-        ]
+    panel_m = pl.concat(
+        pl.collect_all(
+            [
+                ff_load_crsp_panel(raw_dir, interim_dir, "monthly").pipe(
+                    _ff_us_rets_weights_lazy, "monthly"
+                ),
+                ff_load_world_panel(interim_dir, "monthly").pipe(
+                    _ff_row_rets_weights_lazy, "monthly"
+                ),
+            ]
+        ),
+        how="vertical_relaxed",
     )
     # Left join: stocks without accounting stay in the size-breakpoint pools.
     june = (
-        pl.concat(
-            [us_m.filter(pl.col("date").dt.month() == 6), _ff_row_june(row_m)],
-            how="vertical_relaxed",
-        )
+        panel_m.filter(pl.col("date").dt.month() == 6)
         .with_columns(port_year=pl.col("date").dt.year())
         .join(annual, on=["id", "port_year"], how="left")
     )
@@ -11665,8 +11646,7 @@ def gen_ff_data(
         _ff_op_breaks(june, min_stocks_bp),
         _ff_inv_breaks(june, min_stocks_bp),
     )
-    panel_m = pl.concat([us_m, row_m], how="vertical_relaxed")
-    del us_m, row_m, june
+    del june
     if "monthly" in freqs:
         mom_m = ff_build_mom_signal(panel_m, "monthly", interim_dir)
         _ff_factor_returns(panel_m, ports, mom_m, min_stocks_bp, min_stocks_pf).rename(

@@ -236,10 +236,6 @@ FF_MIN_STOCKS_BP = 10
 # Min firms per (excntry, date, bucket) for ROW VW; US bypassed.
 FF_MIN_STOCKS_PF = 3
 
-# ROW formation ME tolerance (months): a stock with no June (or December) row,
-# e.g. halted, takes its last ME up to this many months earlier. US unaffected.
-FF_ROW_FORMATION_ME_LOOKBACK = 2
-
 # HXZ q-factor ROW thresholds (same values as FF; separate names for clarity).
 HXZ_MIN_STOCKS_BP = 10
 HXZ_MIN_STOCKS_PF = 3
