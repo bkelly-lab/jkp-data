@@ -20,11 +20,9 @@ from pathlib import Path
 from typing import TypeVar
 
 import duckdb
-import ibis
 import polars as pl
 import polars_ds as pds
 import polars_ols  # noqa: F401 - required for least_squares method on polars expressions
-from ibis import _
 from polars import col
 
 # isort: split
@@ -151,6 +149,33 @@ def collect_and_write(df, filename, collect_streaming=False):
     df.collect(engine=engine).write_parquet(filename)
 
 
+def _duckdb_connect(paths: DataPaths, database: Path | None = None) -> duckdb.DuckDBPyConnection:
+    """
+    Description:
+        Open a DuckDB connection for a pipeline step.
+
+    Steps:
+        1) Connect to `database`, or in memory when None.
+        2) Use as many threads as CPUs this process may run on (the Slurm allocation, not the
+           node; os.cpu_count() reports the node).
+        3) Spill to interim/__duckdb_tmp, never the working directory.
+
+    Output:
+        DuckDB connection; use it as a context manager so it closes on every exit path.
+    """
+    if hasattr(os, "sched_getaffinity"):
+        threads = len(os.sched_getaffinity(0))
+    else:  # macOS has no CPU affinity
+        threads = os.cpu_count()
+    return duckdb.connect(
+        str(database) if database else ":memory:",
+        config={
+            "threads": threads,
+            "temp_directory": (paths.interim_dir / "__duckdb_tmp").as_posix(),
+        },
+    )
+
+
 def sic_naics_aux(filename):
     """
     Description:
@@ -234,25 +259,37 @@ def ex_country_aux(filename):
     return df
 
 
-def header_aux(comp_path, gcomp_path, output_path):
+def header_aux(paths: DataPaths) -> None:
     """
     Description:
         Build a unified Compustat header table combining NA and Global sources (one row per gvkey).
 
     Steps:
-        1) Read NA and Global header parquets into Ibis.
+        1) Read the NA and Global company headers in place with DuckDB.
         2) Select gvkey, prirow, priusa, prican from each.
-        3) Union tables and take the first occurrence per gvkey.
-        4) Write to `output_path` and close connection.
+        3) Keep one row per gvkey: the Global header's row when the gvkey is in both, as
+           prefer_global does for accounting data. (The SAS code kept the NA header's row; the
+           two headers agree on these codes for every shared gvkey in current data.)
+        4) Write to raw_data_dfs/__header.parquet.
 
     Output:
         Parquet header file with unique gvkey rows.
     """
-    con = ibis.duckdb.connect(threads=os.cpu_count())
-    comp = con.read_parquet(comp_path).select(["gvkey", "prirow", "priusa", "prican"])
-    g_comp = con.read_parquet(gcomp_path).select(["gvkey", "prirow", "priusa", "prican"])
-    comp.union(g_comp).distinct(on="gvkey", keep="first").to_parquet(output_path)
-    con.disconnect()
+    company = (paths.raw_tables_dir / "comp_company.parquet").as_posix()
+    g_company = (paths.raw_tables_dir / "comp_g_company.parquet").as_posix()
+    out = (paths.interim_dir / "raw_data_dfs" / "__header.parquet").as_posix()
+    with _duckdb_connect(paths) as con:
+        con.execute(f"""
+        COPY (
+            SELECT DISTINCT ON (gvkey) gvkey, prirow, priusa, prican
+            FROM (
+                SELECT gvkey, prirow, priusa, prican, 0 AS src FROM read_parquet('{g_company}')
+                UNION ALL
+                SELECT gvkey, prirow, priusa, prican, 1 AS src FROM read_parquet('{company}')
+            )
+            ORDER BY gvkey, src
+        ) TO '{out}' (FORMAT PARQUET)
+        """)
 
 
 def gen_firmshares(paths: DataPaths):
@@ -262,7 +299,7 @@ def gen_firmshares(paths: DataPaths):
         from quarterly (FUNDQ) and annual (FUNDA) NA files.
 
     Steps:
-        1) Load FUNDQ and FUNDA into DuckDB (rename FUNDA at_→at to avoid conflicts).
+        1) Read FUNDQ and FUNDA in place with DuckDB.
         2) Filter to INDL/STD/D/C rows with non-null shares & adj. factors.
         3) SELECT {gvkey, datadate, cshoq→csho_fund, ajexq→ajex_fund} from FUNDQ.
         4) UNION ALL with FUNDA {csho→csho_fund, ajex→ajex_fund}.
@@ -275,32 +312,27 @@ def gen_firmshares(paths: DataPaths):
         Parquet: raw_data_dfs/__firm_shares1.parquet (gvkey, datadate, csho_fund, ajex_fund),
         unique on (gvkey, datadate).
     """
-    con = ibis.duckdb.connect(threads=os.cpu_count())
-    con.create_table("comp_fundq", con.read_parquet(paths.raw_tables_dir / "comp_fundq.parquet"))
-    con.create_table(
-        "comp_funda",
-        con.read_parquet(paths.raw_tables_dir / "comp_funda.parquet").rename({"at_": "at"}),
-    )
-    con.raw_sql("""
-    CREATE TABLE __firm_shares1 AS
-    SELECT DISTINCT ON (gvkey, datadate) gvkey, datadate, csho_fund, ajex_fund
-    FROM (
-        SELECT gvkey, datadate, cshoq AS csho_fund, ajexq AS ajex_fund, 0 AS source_rank, fqtr, fyr
-        FROM comp_fundq
-        WHERE indfmt = 'INDL' AND datafmt = 'STD' AND popsrc = 'D' AND consol = 'C' AND cshoq IS NOT NULL AND ajexq IS NOT NULL
+    fundq = (paths.raw_tables_dir / "comp_fundq.parquet").as_posix()
+    funda = (paths.raw_tables_dir / "comp_funda.parquet").as_posix()
+    out = (paths.interim_dir / "raw_data_dfs" / "__firm_shares1.parquet").as_posix()
+    with _duckdb_connect(paths) as con:
+        con.execute(f"""
+        COPY (
+            SELECT DISTINCT ON (gvkey, datadate) gvkey, datadate, csho_fund, ajex_fund
+            FROM (
+                SELECT gvkey, datadate, cshoq AS csho_fund, ajexq AS ajex_fund, 0 AS source_rank, fqtr, fyr
+                FROM read_parquet('{fundq}')
+                WHERE indfmt = 'INDL' AND datafmt = 'STD' AND popsrc = 'D' AND consol = 'C' AND cshoq IS NOT NULL AND ajexq IS NOT NULL
 
-        UNION ALL
+                UNION ALL
 
-        SELECT gvkey, datadate, csho AS csho_fund, ajex AS ajex_fund, 1 AS source_rank, NULL AS fqtr, fyr
-        FROM comp_funda
-        WHERE indfmt = 'INDL' AND datafmt = 'STD' AND popsrc = 'D' AND consol = 'C' AND csho IS NOT NULL AND ajex IS NOT NULL
-    )
-    ORDER BY gvkey, datadate, source_rank, fqtr IS NULL, fyr DESC;
-    """)
-    con.table("__firm_shares1").to_parquet(
-        paths.interim_dir / "raw_data_dfs" / "__firm_shares1.parquet"
-    )
-    con.disconnect()
+                SELECT gvkey, datadate, csho AS csho_fund, ajex AS ajex_fund, 1 AS source_rank, NULL AS fqtr, fyr
+                FROM read_parquet('{funda}')
+                WHERE indfmt = 'INDL' AND datafmt = 'STD' AND popsrc = 'D' AND consol = 'C' AND csho IS NOT NULL AND ajex IS NOT NULL
+            )
+            ORDER BY gvkey, datadate, source_rank, fqtr IS NULL, fyr DESC
+        ) TO '{out}' (FORMAT PARQUET)
+        """)
 
 
 def gen_prihist_files(paths: DataPaths):
@@ -310,59 +342,30 @@ def gen_prihist_files(paths: DataPaths):
         intervals from NA and Global history tables.
 
     Steps:
-        1) Load comp_sec_history and comp_g_sec_history into DuckDB.
-        2) Create three tables by item code: PRIHISTROW (global), PRIHISTUSA (NA), PRIHISTCAN (NA).
+        1) Read comp_sec_history and comp_g_sec_history in place with DuckDB.
+        2) Select three item codes: PRIHISTROW (global), PRIHISTUSA (NA), PRIHISTCAN (NA).
         3) Keep gvkey, itemvalue→flag, effdate, thrudate.
         4) Write each to raw_data_dfs as separate Parquet files.
 
     Output:
         Parquets: __prihistrow.parquet, __prihistusa.parquet, __prihistcan.parquet.
     """
-    con = ibis.duckdb.connect(threads=os.cpu_count())
-    con.create_table(
-        "comp_sec_history",
-        con.read_parquet(paths.raw_tables_dir / "comp_sec_history.parquet"),
-    )
-    con.create_table(
-        "comp_g_sec_history",
-        con.read_parquet(paths.raw_tables_dir / "comp_g_sec_history.parquet"),
-    )
-    con.raw_sql("""
-    CREATE TABLE __prihistrow AS
-    SELECT gvkey,
-        itemvalue AS prihistrow,
-        effdate,
-        thrudate
-    FROM comp_g_sec_history
-    WHERE item = 'PRIHISTROW';
-
-    CREATE TABLE __prihistusa AS
-    SELECT gvkey,
-        itemvalue AS prihistusa,
-        effdate,
-        thrudate
-    FROM comp_sec_history
-    WHERE item = 'PRIHISTUSA';
-
-    CREATE TABLE __prihistcan AS
-    SELECT gvkey,
-        itemvalue AS prihistcan,
-        effdate,
-        thrudate
-    FROM comp_sec_history
-    WHERE item = 'PRIHISTCAN';
-    """)
-
-    con.table("__prihistrow").to_parquet(
-        paths.interim_dir / "raw_data_dfs" / "__prihistrow.parquet"
-    )
-    con.table("__prihistusa").to_parquet(
-        paths.interim_dir / "raw_data_dfs" / "__prihistusa.parquet"
-    )
-    con.table("__prihistcan").to_parquet(
-        paths.interim_dir / "raw_data_dfs" / "__prihistcan.parquet"
-    )
-    con.disconnect()
+    sec_history = (paths.raw_tables_dir / "comp_sec_history.parquet").as_posix()
+    g_sec_history = (paths.raw_tables_dir / "comp_g_sec_history.parquet").as_posix()
+    with _duckdb_connect(paths) as con:
+        for item, source in [
+            ("prihistrow", g_sec_history),
+            ("prihistusa", sec_history),
+            ("prihistcan", sec_history),
+        ]:
+            out = (paths.interim_dir / "raw_data_dfs" / f"__{item}.parquet").as_posix()
+            con.execute(f"""
+            COPY (
+                SELECT gvkey, itemvalue AS {item}, effdate, thrudate
+                FROM read_parquet('{source}')
+                WHERE item = '{item.upper()}'
+            ) TO '{out}' (FORMAT PARQUET)
+            """)
 
 
 def gen_fx1(paths: DataPaths):
@@ -371,33 +374,31 @@ def gen_fx1(paths: DataPaths):
         Build daily FX (to USD) series per currency using Compustat daily exchange rates.
 
     Steps:
-        1) Load comp_exrt_dly into DuckDB.
-        2) Join table to itself on (fromcurd, datadate) with fromcurd='GBP' and b.tocurd='USD'.
+        1) Read comp_exrt_dly in place with DuckDB.
+        2) Join it to itself on (fromcurd, datadate) with fromcurd='GBP' and b.tocurd='USD'.
         3) Compute fx = b.exratd / a.exratd, label a.tocurd as curcdd.
         4) DISTINCT rows and write out.
 
     Output:
         Parquet: raw_data_dfs/__fx1.parquet (curcdd, datadate, fx to USD).
     """
-    con = ibis.duckdb.connect(threads=os.cpu_count())
-    con.create_table(
-        "comp_exrt_dly", con.read_parquet(paths.raw_tables_dir / "comp_exrt_dly.parquet")
-    )
-    con.raw_sql("""
-    CREATE TABLE __fx1 AS
-    SELECT DISTINCT
-    a.tocurd AS curcdd,
-    a.datadate,
-    b.exratd / a.exratd AS fx
-    FROM comp_exrt_dly AS a
-    JOIN comp_exrt_dly AS b
-    ON a.fromcurd = b.fromcurd
-    AND a.datadate = b.datadate
-    WHERE a.fromcurd = 'GBP'
-    AND b.tocurd  = 'USD';
-    """)
-    con.table("__fx1").to_parquet(paths.interim_dir / "raw_data_dfs" / "__fx1.parquet")
-    con.disconnect()
+    exrt = (paths.raw_tables_dir / "comp_exrt_dly.parquet").as_posix()
+    out = (paths.interim_dir / "raw_data_dfs" / "__fx1.parquet").as_posix()
+    with _duckdb_connect(paths) as con:
+        con.execute(f"""
+        COPY (
+            SELECT DISTINCT
+            a.tocurd AS curcdd,
+            a.datadate,
+            b.exratd / a.exratd AS fx
+            FROM read_parquet('{exrt}') AS a
+            JOIN read_parquet('{exrt}') AS b
+            ON a.fromcurd = b.fromcurd
+            AND a.datadate = b.datadate
+            WHERE a.fromcurd = 'GBP'
+            AND b.tocurd  = 'USD'
+        ) TO '{out}' (FORMAT PARQUET)
+        """)
 
 
 @measure_time
@@ -501,16 +502,12 @@ def gen_raw_data_dfs(paths: DataPaths):
         ]
     )
     collect_and_write(__ex_country1, paths.interim_dir / "raw_data_dfs" / "__ex_country1.parquet")
-    header_aux(
-        paths.raw_tables_dir / "comp_company.parquet",
-        paths.raw_tables_dir / "comp_g_company.parquet",
-        paths.interim_dir / "raw_data_dfs" / "__header.parquet",
-    )
+    header_aux(paths)
     gen_prihist_files(paths)
     gen_fx1(paths)
     aug_msf_v2(paths)
-    gen_crsp_sf(paths, "m").to_parquet(paths.interim_dir / "raw_data_dfs" / "__crsp_sf_m.parquet")
-    gen_crsp_sf(paths, "d").to_parquet(paths.interim_dir / "raw_data_dfs" / "__crsp_sf_d.parquet")
+    gen_crsp_sf(paths, "m")
+    gen_crsp_sf(paths, "d")
 
 
 def gen_crsp_sf(paths: DataPaths, freq):
@@ -519,168 +516,84 @@ def gen_crsp_sf(paths: DataPaths, freq):
         Build CRSP security file enriched with names and CCM link history (monthly or daily).
 
     Steps:
-        1) Load crsp_{freq}sf, crsp_{freq}senames, and ccmxpf_lnkhist into Ibis.
+        1) Read crsp_{freq}sf, crsp_stksecurityinfohist, and ccmxpf_lnkhist in place with DuckDB.
         2) Join SF to SENAMES on permno with date in [secinfostartdt, secinfoenddt].
         3) Join to CCM link history on permno and link date window, linktype in {LC, LU, LS}.
         4) Compute fields: bidask flag, abs(prc), shrout (thousands), ME, prc_high/low (valid only if prc>0),
         main exchange flag, and carry identifiers.
-        5) Select standardized columns and return the Ibis table.
+        5) Select standardized columns and write them.
 
     Output:
-        Ibis table (not written) with standardized CRSP {m|d} security fields.
+        Writes raw_data_dfs/__crsp_sf_{freq}.parquet with standardized CRSP {m|d} security fields.
     """
-    con = ibis.duckdb.connect(threads=os.cpu_count())
+    # CIZ name mapping by frequency: column prefix, high/low price columns, open/close prices
     if freq == "m":
-        sf = con.read_parquet(paths.interim_dir / "raw_data_dfs" / "crsp_msf_v2_aug.parquet")
+        sf = paths.interim_dir / "raw_data_dfs" / "crsp_msf_v2_aug.parquet"
+        p, high, low = "mth", "mthaskhi", "mthbidlo"
+        prc_open = prc_close = "NULL"
     elif freq == "d":
-        sf = con.read_parquet(paths.raw_tables_dir / "crsp_dsf_v2.parquet")
+        sf = paths.raw_tables_dir / "crsp_dsf_v2.parquet"
+        p, high, low = "dly", "dlyhigh", "dlylow"
+        prc_open = "CASE WHEN s.dlyprc > 0 AND s.dlyopen > 0 THEN s.dlyopen END"
+        prc_close = "CASE WHEN s.dlyprc > 0 AND s.dlyclose > 0 THEN s.dlyclose END"
     else:
         raise ValueError(f"Unknown freq: {freq}")
-    senames = con.read_parquet(paths.raw_tables_dir / "crsp_stksecurityinfohist.parquet")
-    ccmxpf_lnkhist = con.read_parquet(paths.raw_tables_dir / "crsp_ccmxpf_lnkhist.parquet")
-
-    # ---------- CIZ name mapping by frequency ----------
-    if freq == "m":
-        date_expr = sf.mthcaldt.cast("date")
-        prc_expr = sf.mthprc
-        prcflg_expr = sf.mthprcflg
-        ret_expr = sf.mthret
-        retx_expr = sf.mthretx
-        vol_expr = sf.mthvol
-        prcflg_expr = sf.mthprcflg
-        cfacshr_expr = sf.mthcumfacshr
-        askhi_expr = sf.mthaskhi
-        bidlo_expr = sf.mthbidlo
-        del_flag_expr = sf.mthdelflg
-        open_expr = None
-        close_expr = None
-    else:  # freq == "d", validated above
-        date_expr = sf.dlycaldt.cast("date")
-        prc_expr = sf.dlyprc
-        prcflg_expr = sf.dlyprcflg
-        ret_expr = sf.dlyret
-        retx_expr = sf.dlyretx
-        vol_expr = sf.dlyvol
-        cfacshr_expr = sf.dlycumfacshr
-        askhi_expr = sf.dlyhigh
-        bidlo_expr = sf.dlylow
-        open_expr = sf.dlyopen
-        close_expr = sf.dlyclose
-        del_flag_expr = sf.dlydelflg
-
-    sf_senames_join = sf.join(
-        senames,
-        how="left",
-        predicates=[
-            (sf.permno == senames.permno),
-            (date_expr >= senames.secinfostartdt.cast("date")),
-            (date_expr <= senames.secinfoenddt.cast("date")),
-        ],
-    )
-
-    full_join = sf_senames_join.join(
-        ccmxpf_lnkhist,
-        how="left",
-        predicates=[
-            (sf.permno == ccmxpf_lnkhist.lpermno),
-            ((date_expr >= ccmxpf_lnkhist.linkdt.cast("date")) | ccmxpf_lnkhist.linkdt.isnull()),
-            (
-                (date_expr <= ccmxpf_lnkhist.linkenddt.cast("date"))
-                | ccmxpf_lnkhist.linkenddt.isnull()
-            ),
-            ccmxpf_lnkhist.linktype.isin(["LC", "LU", "LS"]),
-        ],
-    )
-
-    bidask_expr = ibis.cases(
-        (prcflg_expr == "BA", 1),
-        (prcflg_expr == "TR", 0),
-        else_=ibis.null(),
-    ).cast("int32")
-
-    securitytype_expr = sf.securitytype
-    securitysubtype_expr = sf.securitysubtype
-    sharetype_expr = sf.sharetype
-    issuertype_expr = sf.issuertype
-
-    is_common_expr = (
-        (securitytype_expr == "EQTY")
-        & (securitysubtype_expr == "COM")
-        & (sharetype_expr == "NS")
-        & (issuertype_expr.isin(["ACOR", "CORP"]))
-    )
-
-    primaryexch_expr = sf.primaryexch
-    conditionaltype_expr = sf.conditionaltype
-
-    exch_main_expr = (primaryexch_expr.isin(["A", "N", "Q"]) & (conditionaltype_expr == "RW")).cast(
-        "int32"
-    )
-    crsp_nyse_expr = ((primaryexch_expr == "N") & (conditionaltype_expr == "RW")).cast("int32")
-
-    prc_open_mutate = (
-        ibis.cases(((prc_expr > 0) & (open_expr > 0), open_expr), else_=ibis.null())
-        if open_expr is not None
-        else ibis.null()
-    )
-    prc_close_mutate = (
-        ibis.cases(((prc_expr > 0) & (close_expr > 0), close_expr), else_=ibis.null())
-        if close_expr is not None
-        else ibis.null()
-    )
-
-    result = full_join.mutate(
-        date=date_expr,
-        bidask=bidask_expr,
-        prc=prc_expr,
-        shrout=(sf.shrout / 1000),
-        me=(prc_expr * (sf.shrout / 1000)),
-        prc_high=ibis.cases(((prc_expr > 0) & (askhi_expr > 0), askhi_expr), else_=ibis.null()),
-        prc_low=ibis.cases(((prc_expr > 0) & (bidlo_expr > 0), bidlo_expr), else_=ibis.null()),
-        prc_open=prc_open_mutate,
-        prc_close=prc_close_mutate,
-        iid=ccmxpf_lnkhist.liid,
-        ret=ret_expr,
-        retx=retx_expr,
-        cfacshr=cfacshr_expr,
-        vol=vol_expr,
-        # MthDelFlg/DlyDelFlg; gates the delisting-return adjustment in prepare_crsp_sf
-        del_flag=del_flag_expr,
-        common=is_common_expr.cast("int32"),
-        primaryexch=primaryexch_expr,
-        conditionaltype=conditionaltype_expr,
-        exch_main=exch_main_expr,
-        crsp_nyse=crsp_nyse_expr,
-        gvkey=ccmxpf_lnkhist.gvkey,
-    ).select(
-        [
-            "permno",
-            "permco",
-            "date",
-            "bidask",
-            "prc",
-            "prc_open",
-            "prc_close",
-            "shrout",
-            "ret",
-            "retx",
-            "cfacshr",
-            "vol",
-            "prc_high",
-            "prc_low",
-            "del_flag",
-            "common",
-            "primaryexch",
-            "conditionaltype",
-            "crsp_nyse",
-            "gvkey",
-            "iid",
-            "exch_main",
-            "me",
-            "ticker",
-        ]
-    )
-    return result
+    senames = (paths.raw_tables_dir / "crsp_stksecurityinfohist.parquet").as_posix()
+    lnkhist = (paths.raw_tables_dir / "crsp_ccmxpf_lnkhist.parquet").as_posix()
+    out = (paths.interim_dir / "raw_data_dfs" / f"__crsp_sf_{freq}.parquet").as_posix()
+    with _duckdb_connect(paths) as con:
+        con.execute(f"""
+        COPY (
+            SELECT
+                s.permno,
+                s.permco,
+                s.{p}caldt AS date,
+                CAST(CASE WHEN s.{p}prcflg = 'BA' THEN 1 WHEN s.{p}prcflg = 'TR' THEN 0 END AS INTEGER)
+                    AS bidask,
+                s.{p}prc AS prc,
+                {prc_open} AS prc_open,
+                {prc_close} AS prc_close,
+                s.shrout / 1000 AS shrout,
+                s.{p}ret AS ret,
+                s.{p}retx AS retx,
+                s.{p}cumfacshr AS cfacshr,
+                s.{p}vol AS vol,
+                CASE WHEN s.{p}prc > 0 AND s.{high} > 0 THEN s.{high} END AS prc_high,
+                CASE WHEN s.{p}prc > 0 AND s.{low} > 0 THEN s.{low} END AS prc_low,
+                -- MthDelFlg/DlyDelFlg; gates the delisting-return adjustment in prepare_crsp_sf
+                s.{p}delflg AS del_flag,
+                CAST(
+                    s.securitytype = 'EQTY'
+                    AND s.securitysubtype = 'COM'
+                    AND s.sharetype = 'NS'
+                    AND s.issuertype IN ('ACOR', 'CORP')
+                    AS INTEGER
+                ) AS common,
+                s.primaryexch,
+                s.conditionaltype,
+                CAST(s.primaryexch = 'N' AND s.conditionaltype = 'RW' AS INTEGER) AS crsp_nyse,
+                l.gvkey,
+                l.liid AS iid,
+                CAST(s.primaryexch IN ('A', 'N', 'Q') AND s.conditionaltype = 'RW' AS INTEGER)
+                    AS exch_main,
+                s.{p}prc * (s.shrout / 1000) AS me,
+                s.ticker
+            FROM read_parquet('{sf.as_posix()}') AS s
+            -- kept from the SAS code (msenames supplied shrcd/exchcd there); adds no
+            -- columns, and CRSP name records don't overlap, so it adds no rows
+            LEFT JOIN read_parquet('{senames}') AS n
+                ON s.permno = n.permno
+                AND s.{p}caldt >= n.secinfostartdt
+                AND s.{p}caldt <= n.secinfoenddt
+            -- a null link date is open-ended; COALESCE (not OR ... IS NULL) keeps every
+            -- condition a comparison, so DuckDB hash-joins instead of a nested loop
+            LEFT JOIN read_parquet('{lnkhist}') AS l
+                ON s.permno = l.lpermno
+                AND s.{p}caldt >= COALESCE(l.linkdt, DATE '-infinity')
+                AND s.{p}caldt <= COALESCE(l.linkenddt, DATE 'infinity')
+                AND l.linktype IN ('LC', 'LU', 'LS')
+        ) TO '{out}' (FORMAT PARQUET)
+        """)
 
 
 def get_columns(conn, conninfo, lib, table):
@@ -1378,7 +1291,7 @@ def aug_msf_v2(paths: DataPaths):
         missing for non-TR monthly rows (e.g., BA). Called from gen_raw_data_dfs().
 
     Steps:
-        1) Read msf_v2 (monthly) and dsf_v2 (daily) from raw_tables parquet.
+        1) Read msf_v2 (monthly) and dsf_v2 (daily) in place with DuckDB.
         2) Filter dsf_v2 to dlyprcflg == "TR", construct yyyymm from dlycaldt, and keep (permno, yyyymm, dlyprc).
         3) For each (permno, yyyymm), compute:
            - mthaskhi = max(dlyprc)
@@ -1391,44 +1304,30 @@ def aug_msf_v2(paths: DataPaths):
         Writes raw_data_dfs/crsp_msf_v2_aug.parquet with all original columns
         plus mthaskhi and mthbidlo.
     """
-    con = ibis.duckdb.connect(threads=os.cpu_count())
-    msf = con.read_parquet(paths.raw_tables_dir / "crsp_msf_v2.parquet")
-    dsf = con.read_parquet(paths.raw_tables_dir / "crsp_dsf_v2.parquet")
-
-    dt = dsf.dlycaldt.cast("date")
-
-    d = (
-        dsf.filter(dsf.dlyprcflg == "TR")
-        .mutate(
-            yyyymm=(dt.year() * 100 + dt.month()).cast("int32"),
-            dlyprc=dsf.dlyprc.cast("double"),
-        )
-        .select(["permno", "yyyymm", "dlyprc"])
-    )
-
-    m = d.group_by(["permno", "yyyymm"]).aggregate(
-        mthaskhi=d.dlyprc.max(),
-        mthbidlo=d.dlyprc.min(),
-    )
-
-    msf_joined = msf.join(
-        m,
-        how="left",
-        predicates=[msf.permno == m.permno, msf.yyyymm == m.yyyymm],
-    ).select([msf] + [m.mthaskhi, m.mthbidlo])
-
-    msf_aug = msf_joined.mutate(
-        mthaskhi=ibis.cases(
-            (msf_joined.mthprcflg == "TR", msf_joined.mthaskhi),
-            else_=ibis.null(),
-        ),
-        mthbidlo=ibis.cases(
-            (msf_joined.mthprcflg == "TR", msf_joined.mthbidlo),
-            else_=ibis.null(),
-        ),
-    )
-
-    msf_aug.to_parquet(paths.interim_dir / "raw_data_dfs" / "crsp_msf_v2_aug.parquet")
+    msf = (paths.raw_tables_dir / "crsp_msf_v2.parquet").as_posix()
+    dsf = (paths.raw_tables_dir / "crsp_dsf_v2.parquet").as_posix()
+    out = (paths.interim_dir / "raw_data_dfs" / "crsp_msf_v2_aug.parquet").as_posix()
+    with _duckdb_connect(paths) as con:
+        con.execute(f"""
+        COPY (
+            WITH d AS (
+                SELECT
+                    permno,
+                    CAST(year(dlycaldt) * 100 + month(dlycaldt) AS INTEGER) AS yyyymm,
+                    MAX(CAST(dlyprc AS DOUBLE)) AS mthaskhi,
+                    MIN(CAST(dlyprc AS DOUBLE)) AS mthbidlo
+                FROM read_parquet('{dsf}')
+                WHERE dlyprcflg = 'TR'
+                GROUP BY ALL
+            )
+            SELECT
+                m.*,
+                CASE WHEN m.mthprcflg = 'TR' THEN d.mthaskhi END AS mthaskhi,
+                CASE WHEN m.mthprcflg = 'TR' THEN d.mthbidlo END AS mthbidlo
+            FROM read_parquet('{msf}') AS m
+            LEFT JOIN d ON m.permno = d.permno AND m.yyyymm = d.yyyymm
+        ) TO '{out}' (FORMAT PARQUET)
+        """)
 
 
 def build_mcti(paths: DataPaths):
@@ -1626,7 +1525,7 @@ def gen_comp_dsf(
         prices/returns/volumes/dividends; store as __comp_dsf.parquet.
 
     Steps:
-        1) Materialize daily FX to fx_data.parquet.
+        1) Build daily FX in Polars; DuckDB reads the frame directly.
         2) If apply_correction, repair decimal-shift errors in the raw data.
         3) Register SECD, G_SECD, firm-shares, and FX in DuckDB.
         4) Create __comp_dsf_global from G_SECD: local prices, highs/lows (if prcstd≠5),
@@ -1638,6 +1537,7 @@ def gen_comp_dsf(
         7) FULL OUTER JOIN NA and Global records; LEFT JOIN daily FX for trading and dividend currencies.
         8) Compute USD variables: prc, prc_high, prc_low, market cap (me), USD turnover (dolvol),
         USD return index (ri), dividends (split into total/cash/special); derive month-end eom.
+        Keep one row per security-date (drop_duplicate_security_dates).
         9) If apply_correction, drop unreliable observations from the USD data.
         10) Drop intermediates and write __comp_dsf.parquet.
 
@@ -1651,11 +1551,6 @@ def gen_comp_dsf(
     Output:
         Parquet: __comp_dsf.parquet (daily Compustat security observations in USD).
     """
-    (paths.interim_dir / "aux_comp_dsf.ddb").unlink(missing_ok=True)
-
-    # Prepare FX data
-    compustat_fx(paths).write_parquet(paths.interim_dir / "fx_data.parquet")
-
     # Repair decimal-shift errors in the raw data (local currency)
     if apply_correction:
         # Load and correct Global data (no ADRRC). spill_dir selects the
@@ -1704,19 +1599,19 @@ def gen_comp_dsf(
     # Original SQL processing
     # Views, not tables: the whole merge/FX/USD pipeline streams in a single
     # pass at the final COPY instead of materializing five intermediate
-    # tables to the .ddb file. The NASDAQ cshtrd UPDATE is folded into the
+    # tables. The NASDAQ cshtrd UPDATE is folded into the
     # __comp_dsf_na view as an equivalent CASE expression.
-    con = ibis.duckdb.connect(str(paths.interim_dir / "aux_comp_dsf.ddb"), threads=os.cpu_count())
-
-    con.raw_sql(f"""
+    fx_daily = compustat_fx(paths)
+    with _duckdb_connect(paths) as con:
+        con.register("fx", fx_daily)
+        con.execute(f"""
     CREATE VIEW comp_g_secd AS SELECT * FROM read_parquet('{g_secd_path.as_posix()}');
     CREATE VIEW comp_secd AS SELECT * FROM read_parquet('{secd_path.as_posix()}');
     CREATE VIEW __firm_shares2 AS
         SELECT * FROM read_parquet('{(paths.interim_dir / "__firm_shares2.parquet").as_posix()}');
-    CREATE VIEW fx AS SELECT * FROM read_parquet('{(paths.interim_dir / "fx_data.parquet").as_posix()}');
-    """)
+        """)
 
-    con.raw_sql("""
+        con.execute("""
     CREATE VIEW __comp_dsf_global AS
     SELECT
         gvkey, iid, datadate, tpci, exchg, prcstd, curcdd, prccd / qunit AS prc_local, ajexdi, cshoc / 1e6 AS cshoc,
@@ -1813,45 +1708,41 @@ def gen_comp_dsf(
 
     FROM __comp_dsf2;
 
-    """)
-
-    # Drop unreliable observations from the USD-converted data
-    if apply_correction:
-        # One streaming pass: DuckDB executes the whole view pipeline, joins
-        # the exchange-country mapping (needed for country-specific filters),
-        # external-sorts by the filter group/sort keys, and writes the spill
-        # file directly — no pre-filter round-trip, and the slim path skips its
-        # own sort (presorted=True).
-        comp_exchanges(paths).select(["exchg", "excntry"]).write_parquet(
-            paths.interim_dir / "__corr_exchanges.parquet"
-        )
-        sorted_path = paths.interim_dir / "__corr_filter_sorted.parquet"
-        # insertion-order preservation is irrelevant under an explicit ORDER BY
-        # and only inflates the external sort's memory; temp_directory
-        # guarantees the sort can spill (the slim path verifies the resulting
-        # order before trusting it)
-        con.raw_sql(f"""
-        SET preserve_insertion_order = false;
-        SET temp_directory = '{(paths.interim_dir / "__duckdb_tmp").as_posix()}';
         """)
-        con.raw_sql(f"""
+
+        # row order is not needed: the filter step sorts the columns it uses, and every
+        # other reader of __comp_dsf sorts or groups by key itself (gen_secd_data's float
+        # sums then vary at about 1e-15, within the 1e-10 tolerance)
+        con.execute("SET preserve_insertion_order = false")
+        if apply_correction:
+            # the exchange country feeds the filters' country-specific price thresholds
+            con.register("exchanges", comp_exchanges(paths).select(["exchg", "excntry"]))
+            unfiltered_path = paths.interim_dir / "__corr_filter_input.parquet"
+            con.execute(f"""
         COPY (
             SELECT t.*, e.excntry
             FROM __comp_dsf3 AS t
-            LEFT JOIN read_parquet('{(paths.interim_dir / "__corr_exchanges.parquet").as_posix()}') AS e
+            LEFT JOIN exchanges AS e
                 USING (exchg)
-            ORDER BY gvkey NULLS FIRST, iid NULLS FIRST, datadate NULLS FIRST
-        ) TO '{sorted_path.as_posix()}' (FORMAT PARQUET);
-        """)
-        con.disconnect()
+        ) TO '{unfiltered_path.as_posix()}' (FORMAT PARQUET);
+            """)
+            merged_path = unfiltered_path
+        else:
+            merged_path = paths.interim_dir / "__comp_dsf.parquet"
+            con.execute(f"""
+        COPY (SELECT * FROM __comp_dsf3) TO '{merged_path.as_posix()}' (FORMAT PARQUET);
+            """)
 
+    drop_duplicate_security_dates(paths, merged_path)
+
+    # Drop unreliable observations from the USD-converted data
+    if apply_correction:
         df = drop_unreliable_observations(
-            pl.scan_parquet(sorted_path),
+            pl.scan_parquet(unfiltered_path),
             group_cols=["gvkey", "iid"],
             sort_col="datadate",
             country_col="excntry",
             spill_dir=paths.interim_dir,
-            presorted_path=sorted_path,
         )
 
         df.sink_parquet(paths.interim_dir / "__comp_dsf.parquet")
@@ -1860,17 +1751,77 @@ def gen_comp_dsf(
         for f in paths.interim_dir.glob("__corr_*.parquet"):
             f.unlink()
 
-    else:
-        con.raw_sql(f"""
-        COPY (SELECT * FROM __comp_dsf3)
-        TO '{(paths.interim_dir / "__comp_dsf.parquet").as_posix()}' (FORMAT PARQUET);
-        """)
-        con.disconnect()
-
     # Clean up corrected temp files if they exist
     if apply_correction:
         for f in ["__comp_g_secd_corrected.parquet", "__comp_secd_corrected.parquet"]:
             (paths.interim_dir / f).unlink(missing_ok=True)
+
+
+def drop_duplicate_security_dates(paths: DataPaths, file_path: Path) -> None:
+    """
+    Description:
+        Keep one row per (gvkey, iid, datadate) in the merged daily Compustat file. A
+        security-date repeats when it is in both the North America and the Global file with
+        different values (the merge joins on every column) or when a join fans out.
+
+    Steps:
+        1) Find keys held by more than one row; if there are none, leave the file as is.
+        2) Otherwise rewrite file_path. Rows with a unique key stay as they are. Of rows
+           sharing a key, keep the one with a valid price (prc_local and curcdd present,
+           prcstd in {3, 4, 10}), then the highest prcstd, then a main exchange (exch_main),
+           then the highest dolvol, then the first in the order of all columns, so the choice
+           never depends on the input order.
+
+    Output:
+        file_path with one row per (gvkey, iid, datadate).
+    """
+    data = file_path.as_posix()
+    # IS NOT DISTINCT FROM: NULL keys form one group, as in GROUP BY
+    same_key = """t.gvkey IS NOT DISTINCT FROM k.gvkey
+                    AND t.iid IS NOT DISTINCT FROM k.iid
+                    AND t.datadate IS NOT DISTINCT FROM k.datadate"""
+    with _duckdb_connect(paths) as con:
+        con.execute(f"""
+        CREATE TABLE dup_keys AS
+        SELECT gvkey, iid, datadate
+        FROM read_parquet('{data}')
+        GROUP BY gvkey, iid, datadate
+        HAVING count(*) > 1
+        """)
+        if con.execute("SELECT count(*) FROM dup_keys").fetchone()[0] == 0:
+            return
+        con.register("exchanges", comp_exchanges(paths).select(["exchg", "exch_main"]))
+        # row order is not needed (see gen_comp_dsf)
+        con.execute("SET preserve_insertion_order = false")
+        deduped = file_path.with_name(f"{file_path.stem}_deduped.parquet")
+        con.execute(f"""
+        COPY (
+            WITH kept AS (
+                SELECT DISTINCT ON (gvkey, iid, datadate) *
+                FROM (
+                    SELECT t.*, e.exch_main AS _exch_main
+                    FROM read_parquet('{data}') AS t
+                    SEMI JOIN dup_keys AS k ON {same_key}
+                    LEFT JOIN exchanges AS e USING (exchg)
+                )
+                ORDER BY gvkey, iid, datadate,
+                    -- a row gen_secd_data keeps
+                    COALESCE(prc_local IS NOT NULL AND curcdd IS NOT NULL
+                             AND prcstd IN (3, 4, 10), FALSE) DESC,
+                    -- gen_returns_df's rule, so prices and the return come from one row
+                    prcstd DESC NULLS LAST,
+                    _exch_main DESC NULLS LAST,
+                    dolvol DESC NULLS LAST,
+                    COLUMNS(* EXCLUDE (gvkey, iid, datadate))
+            )
+            SELECT t.*
+            FROM read_parquet('{data}') AS t
+            ANTI JOIN dup_keys AS k ON {same_key}
+            UNION ALL
+            SELECT * EXCLUDE (_exch_main) FROM kept
+        ) TO '{deduped.as_posix()}' (FORMAT PARQUET)
+        """)
+    deduped.replace(file_path)
 
 
 def gen_secd_data(paths: DataPaths):
@@ -1880,72 +1831,62 @@ def gen_secd_data(paths: DataPaths):
         resolving multiple daily rows and computing monthly highs/lows/divs/volume.
 
     Steps:
-        1) Read __comp_dsf.parquet into DuckDB.
-        2) Define window over {gvkey, iid, eom}.
-        3) Compute monthly aggregates at adjusted units:
+        1) Read __comp_dsf.parquet in place with DuckDB.
+        2) Compute monthly aggregates per {gvkey, iid, eom} over all daily rows, at adjusted units:
         - prc_highm/prc_lowm: month max/min using pre-adjusted local price with ajexdi.
         - div_*m: sum of monthly dividends (by type) adjusted.
         - cshtrm: sum of adjusted share turnover; dolvolm: sum of USD dollar volume.
+        3) Keep valid rows (local price/currency present, prcstd in {3,4,10}) on the last valid
+        datadate in the month; scale the aggregates by each row's ajexdi.
         - source=1 to mark SECD pipeline.
-        4) Keep valid rows (local price/currency present, prcstd in {3,4,10});
-        pick the last datadate in the month.
-        5) Write to secd_data.parquet.
+        4) Write to secd_data.parquet, sorted by gvkey, iid, eom.
 
     Output:
         Parquet: secd_data.parquet (monthly aggregates from daily Compustat pipeline).
     """
-    (paths.interim_dir / "aux_msf.ddb").unlink(missing_ok=True)
-    con = ibis.duckdb.connect(str(paths.interim_dir / "aux_msf.ddb"), threads=os.cpu_count())
-    table = con.read_parquet(paths.interim_dir / "__comp_dsf.parquet")
-    window = ibis.window(group_by=["gvkey", "iid", "eom"])
-    new_table = (
-        table.mutate(
-            prc_highm=ibis.greatest(
-                (_.prc / _.ajexdi).max().over(window),
-                (_.prc_high / _.ajexdi).max().over(window),
+    dsf = (paths.interim_dir / "__comp_dsf.parquet").as_posix()
+    out = (paths.interim_dir / "secd_data.parquet").as_posix()
+    valid = "prc_local IS NOT NULL AND curcdd IS NOT NULL AND prcstd IN (3, 4, 10)"
+    with _duckdb_connect(paths) as con:
+        con.execute(f"""
+        COPY (
+            WITH monthly AS (
+                SELECT
+                    gvkey,
+                    iid,
+                    eom,
+                    GREATEST(MAX(prc / ajexdi), MAX(prc_high / ajexdi)) AS prc_high_adj,
+                    LEAST(MIN(prc / ajexdi), MIN(prc_low / ajexdi)) AS prc_low_adj,
+                    SUM(div_tot / ajexdi) AS div_tot_adj,
+                    SUM(div_cash / ajexdi) AS div_cash_adj,
+                    SUM(div_spc / ajexdi) AS div_spc_adj,
+                    SUM(cshtrd / ajexdi) AS cshtr_adj,
+                    SUM(dolvol) AS dolvol,
+                    MAX(datadate) FILTER (WHERE {valid}) AS max_date
+                FROM read_parquet('{dsf}')
+                GROUP BY gvkey, iid, eom
             )
-            * _.ajexdi,
-            prc_lowm=ibis.least(
-                (_.prc / _.ajexdi).min().over(window),
-                (_.prc_low / _.ajexdi).min().over(window),
-            )
-            * _.ajexdi,
-            div_totm=(_.div_tot / _.ajexdi).sum().over(window) * _.ajexdi,
-            div_cashm=(_.div_cash / _.ajexdi).sum().over(window) * _.ajexdi,
-            div_spcm=(_.div_spc / _.ajexdi).sum().over(window) * _.ajexdi,
-            cshtrm=(_.cshtrd / _.ajexdi).sum().over(window) * _.ajexdi,
-            dolvolm=_.dolvol.sum().over(window),
-            source=1,
-        )
-        .filter((_.prc_local.notnull()) & (_.curcdd.notnull()) & (_.prcstd.isin([3, 4, 10])))
-        .mutate(max_date=_.datadate.max().over(window))
-        .filter(_.max_date == _.datadate)
-        .drop(
-            [
-                "cshtrd",
-                "div_tot",
-                "div_cash",
-                "div_spc",
-                "dolvol",
-                "prc_high",
-                "prc_low",
-                "max_date",
-            ]
-        )
-        .rename(
-            {
-                "div_tot": "div_totm",
-                "div_cash": "div_cashm",
-                "div_spc": "div_spcm",
-                "dolvol": "dolvolm",
-                "prc_high": "prc_highm",
-                "prc_low": "prc_lowm",
-            }
-        )
-        .order_by(["gvkey", "iid", "eom"])
-    )
-    new_table.to_parquet(paths.interim_dir / "secd_data.parquet")
-    con.disconnect()
+            SELECT
+                d.* EXCLUDE (cshtrd, div_tot, div_cash, div_spc, dolvol, prc_high, prc_low),
+                m.prc_high_adj * d.ajexdi AS prc_high,
+                m.prc_low_adj * d.ajexdi AS prc_low,
+                m.div_tot_adj * d.ajexdi AS div_tot,
+                m.div_cash_adj * d.ajexdi AS div_cash,
+                m.div_spc_adj * d.ajexdi AS div_spc,
+                m.cshtr_adj * d.ajexdi AS cshtrm,
+                m.dolvol,
+                1 AS source
+            FROM read_parquet('{dsf}') AS d
+            -- IS NOT DISTINCT FROM: NULL keys form one group, as in GROUP BY
+            JOIN monthly AS m
+                ON d.gvkey IS NOT DISTINCT FROM m.gvkey
+                AND d.iid IS NOT DISTINCT FROM m.iid
+                AND d.eom IS NOT DISTINCT FROM m.eom
+                AND d.datadate = m.max_date
+            WHERE {valid}
+            ORDER BY d.gvkey, d.iid, d.eom
+        ) TO '{out}' (FORMAT PARQUET)
+        """)
 
 
 def gen_secm_data(paths: DataPaths):
@@ -1955,7 +1896,8 @@ def gen_secm_data(paths: DataPaths):
         harmonize units, convert to USD, and output month-end rows.
 
     Steps:
-        1) Materialize daily FX as fx_data.parquet; register SECM, firm-shares, and FX in DuckDB.
+        1) Build daily FX in Polars (DuckDB reads the frame directly); read SECM and firm-shares
+        in place with DuckDB.
         2) In CTE:
         - Map SECM fields to local price/hi/low/ajex, compute cshoc fallback from firm-shares,
             adjust NASDAQ cshtrm by historical factors.
@@ -1967,28 +1909,13 @@ def gen_secm_data(paths: DataPaths):
     Output:
         Parquet: secm_data.parquet (monthly Compustat SECM-based observations in USD).
     """
-    (paths.interim_dir / "aux_comp_secm.ddb").unlink(missing_ok=True)
-    con = ibis.duckdb.connect(str(paths.interim_dir / "aux_comp_secm.ddb"), threads=os.cpu_count())
-
-    compustat_fx(paths).rename({"datadate": "date"}).write_parquet(
-        paths.interim_dir / "fx_data.parquet"
-    )
-    con.create_table(
-        "comp_secm",
-        con.read_parquet(paths.raw_tables_dir / "comp_secm.parquet"),
-        overwrite=True,
-    )
-    con.create_table(
-        "__firm_shares2",
-        con.read_parquet(paths.interim_dir / "__firm_shares2.parquet"),
-        overwrite=True,
-    )
-    con.create_table("fx", con.read_parquet(paths.interim_dir / "fx_data.parquet"), overwrite=True)
-
-    con.raw_sql("""
-        DROP TABLE IF EXISTS __comp_secm2;
-
-        CREATE TABLE __comp_secm2 AS
+    secm = (paths.raw_tables_dir / "comp_secm.parquet").as_posix()
+    firm_shares2 = (paths.interim_dir / "__firm_shares2.parquet").as_posix()
+    out = (paths.interim_dir / "secm_data.parquet").as_posix()
+    with _duckdb_connect(paths) as con:
+        con.register("fx", compustat_fx(paths).rename({"datadate": "date"}))
+        con.execute(f"""
+        COPY (
         WITH base AS (
         SELECT
             a.gvkey, a.iid, a.datadate, last_day(a.datadate) AS eom, a.tpci, a.exchg, a.dvpsxm,
@@ -2007,8 +1934,8 @@ def gen_secm_data(paths: DataPaths):
             CASE WHEN a.curcdm    = 'USD' THEN 1 ELSE c.fx END AS fx,
             CASE WHEN a.curcddvm  = 'USD' THEN 1 ELSE d.fx END AS fx_div,
             a.prccm / a.ajexm * a.trfm AS ri_local
-        FROM comp_secm AS a
-        LEFT JOIN __firm_shares2 AS b
+        FROM read_parquet('{secm}') AS a
+        LEFT JOIN read_parquet('{firm_shares2}') AS b
             ON a.gvkey    = b.gvkey  AND a.datadate = b.ddate
         LEFT JOIN fx AS c
             ON a.curcdm   = c.curcdd AND a.datadate = c.date
@@ -2029,9 +1956,9 @@ def gen_secm_data(paths: DataPaths):
         dvpsxm         * fx_div            AS div_tot,
         NULL::DOUBLE                       AS div_cash,
         NULL::DOUBLE                       AS div_spc
-        FROM base;
-    """)
-    con.table("__comp_secm2").to_parquet(paths.interim_dir / "secm_data.parquet")
+        FROM base
+        ) TO '{out}' (FORMAT PARQUET)
+        """)
 
 
 def gen_comp_msf(paths: DataPaths):
@@ -2042,11 +1969,11 @@ def gen_comp_msf(paths: DataPaths):
 
     Steps:
         1) Ensure secd_data.parquet and secm_data.parquet exist (run gen_secd_data/gen_secm_data).
-        2) Load both; select a common column set and cast types consistently.
+        2) Read both in place; select a common column set and cast types consistently.
         3) UNION the two sources; for each {gvkey,iid,eom} window count n rows.
         4) Keep either the single row (n=1) or, if n=2, prefer source=1 (SECD).
         5) Drop helper columns and deduplicate on {gvkey, iid, eom}, keeping the
-           row with the latest datadate (closest to month-end).
+           row with the latest datadate (closest to month-end), then the highest prcstd.
         6) Write to __comp_msf.parquet.
 
     Output:
@@ -2080,38 +2007,33 @@ def gen_comp_msf(paths: DataPaths):
         "prcstd",
         "source",
     ]
-    (paths.interim_dir / "aux_msf.ddb").unlink(missing_ok=True)
-    con = ibis.duckdb.connect(str(paths.interim_dir / "aux_msf.ddb"), threads=os.cpu_count())
-    secd = (
-        con.read_parquet(paths.interim_dir / "secd_data.parquet")
-        .select(common_vars)
-        .cast({"ajexdi": "float", "prc_local": "float"})
+    cols = ", ".join(
+        f"CAST({c} AS DOUBLE) AS {c}" if c in ("ajexdi", "prc_local") else c for c in common_vars
     )
-    secm = (
-        con.read_parquet(paths.interim_dir / "secm_data.parquet")
-        .select(common_vars)
-        .cast({"ajexdi": "float", "prc_local": "float"})
-    )
-    window = ibis.window(group_by=["gvkey", "iid", "eom"], order_by="datadate")
-    # Deterministic dedup: keep latest datadate per {gvkey, iid, eom}.
-    # Investigation (issue #69) found 0 duplicates in current data, but the
-    # original .distinct() was non-deterministic — different runs/engines could
-    # pick different rows if duplicates appear in a future data vintage.
-    dedup_window = ibis.window(
-        group_by=["gvkey", "iid", "eom"],
-        order_by=ibis.desc("datadate"),
-    )
-    __comp_msf = (
-        secd.union(secm)
-        .mutate(n=_.gvkey.count().over(window))
-        .filter([(_.n == 1) | ((_.n == 2) & (_.source == 1))])
-        .drop(["n", "source"])
-        .mutate(_rn=ibis.row_number().over(dedup_window))
-        .filter(_._rn == 0)
-        .drop("_rn")
-    )
-    __comp_msf.to_parquet(paths.interim_dir / "__comp_msf.parquet")
-    con.disconnect()
+    secd = (paths.interim_dir / "secd_data.parquet").as_posix()
+    secm = (paths.interim_dir / "secm_data.parquet").as_posix()
+    out = (paths.interim_dir / "__comp_msf.parquet").as_posix()
+    # Deterministic dedup (issue #69): keep the latest datadate per {gvkey, iid, eom},
+    # then the highest prcstd, the prepare_comp_sf rule.
+    with _duckdb_connect(paths) as con:
+        con.execute(f"""
+        COPY (
+            WITH counted AS (
+                SELECT *, COUNT(gvkey) OVER (PARTITION BY gvkey, iid, eom) AS n
+                FROM (
+                    SELECT {cols} FROM read_parquet('{secd}')
+                    UNION ALL
+                    SELECT {cols} FROM read_parquet('{secm}')
+                )
+            )
+            SELECT * EXCLUDE (n, source)
+            FROM counted
+            WHERE n = 1 OR (n = 2 AND source = 1)
+            QUALIFY ROW_NUMBER() OVER (
+                PARTITION BY gvkey, iid, eom ORDER BY datadate DESC, prcstd DESC
+            ) = 1
+        ) TO '{out}' (FORMAT PARQUET)
+        """)
 
 
 def comp_exchanges(paths: DataPaths):
@@ -2204,100 +2126,104 @@ def comp_exchanges(paths: DataPaths):
 def add_primary_sec(paths: DataPaths, data_path, datevar, file_name):
     """
     Description:
-        Flag primary securities by joining Compustat primary-history tables (ROW/USA/CAN)
-        onto a security-level dataset and comparing iid to recorded primary identifiers
-        over valid date ranges. Falls back to company header when history is missing.
+        Flag primary securities: iid equals the primary iid that Compustat's primary-issue
+        history (ROW/USA/CAN) records for the date, or the company header's when no history
+        record covers the date.
 
     Steps:
-        1) Open DuckDB; read: data_path, __prihistrow/usa/can, and __header (prirow/priusa/prican).
-        2) Range-join each PRI table on {gvkey} where datevar ∈ [effdate, thrudate]; drop join keys.
-        3) Left-join header; coalesce prihist* with pri* when historical value is null.
-        4) Compute primary_sec = 1 if iid matches any of {prihistrow, prihistusa, prihistcan}; else 0.
-        5) Deduplicate on (gvkey, iid, datadate), preferring primary_sec=1 when
-           range-join fan-out produces conflicting classifications; sort and write file_name.
+        1) Per (gvkey, iid, datevar), range-join the three histories and the header on the
+           key columns only; primary_sec = 1 if iid matches any region.
+        2) Join primary_sec back onto the full rows, keep one row per (gvkey, iid, datevar)
+           and write file_name sorted by (gvkey, iid, datevar). The daily input is already
+           unique (drop_duplicate_security_dates); this catches a key repeated by a later
+           join or on the monthly path. Of rows sharing a key, keep the one with a valid
+           price (prc_local and curcdd present, prcstd in {3, 4, 10}), then the highest
+           prcstd, then a main exchange (exch_main), then the highest dolvol; any remaining
+           tie goes to the first row in the order of all columns, as in
+           drop_duplicate_security_dates.
 
     Output:
-        Parquet at file_name with a new integer column primary_sec ∈ {0,1}.
+        Parquet at file_name: one row per (gvkey, iid, datevar) of the input, plus an
+        integer column primary_sec ∈ {0,1}.
     """
-    (paths.interim_dir / "aux_prim_sec.ddb").unlink(missing_ok=True)
-    con = duckdb.connect(str(paths.interim_dir / "aux_prim_sec.ddb"))
     raw_data_dfs = paths.interim_dir / "raw_data_dfs"
-    data_path_posix = Path(data_path).as_posix()
-    prihistrow_path = (raw_data_dfs / "__prihistrow.parquet").as_posix()
-    prihistusa_path = (raw_data_dfs / "__prihistusa.parquet").as_posix()
-    prihistcan_path = (raw_data_dfs / "__prihistcan.parquet").as_posix()
-    header_path = (raw_data_dfs / "__header.parquet").as_posix()
-    file_name_posix = Path(file_name).as_posix()
-    con.execute(f"""
-        CREATE OR REPLACE TABLE __data2 AS
-        WITH data AS (
-            SELECT * FROM read_parquet('{data_path_posix}')
-            ORDER BY gvkey, iid, datadate
-        ),
-        prihistrow AS (
-            SELECT * FROM read_parquet('{prihistrow_path}')
-            ORDER BY gvkey, effdate
-        ),
-        prihistusa AS (
-            SELECT * FROM read_parquet('{prihistusa_path}')
-            ORDER BY gvkey, effdate
-        ),
-        prihistcan AS (
-            SELECT * FROM read_parquet('{prihistcan_path}')
-            ORDER BY gvkey, effdate
-        ),
-        header AS (
-            SELECT * FROM read_parquet('{header_path}')
-            ORDER BY gvkey
-        ),
-        __data1 AS (
-            SELECT DISTINCT
-                a.*,
-                COALESCE(b.prihistrow, e.prirow)  AS prihistrow,
-                COALESCE(c.prihistusa, e.priusa)  AS prihistusa,
-                COALESCE(d.prihistcan, e.prican)  AS prihistcan
-            FROM data AS a
-            LEFT JOIN prihistrow AS b
-                ON a.gvkey = b.gvkey
-                AND a.{datevar} BETWEEN b.effdate AND COALESCE(b.thrudate, DATE '2262-04-11')
-            LEFT JOIN prihistusa AS c
-                ON a.gvkey = c.gvkey
-                AND a.{datevar} BETWEEN c.effdate AND COALESCE(c.thrudate, DATE '2262-04-11')
-            LEFT JOIN prihistcan AS d
-                ON a.gvkey = d.gvkey
-                AND a.{datevar} BETWEEN d.effdate AND COALESCE(d.thrudate, DATE '2262-04-11')
-            LEFT JOIN header AS e
-                ON a.gvkey = e.gvkey
-        )
-        SELECT
-            * EXCLUDE (prihistrow, prihistusa, prihistcan),
-            CASE
-                WHEN iid IS NOT NULL
-                    AND COALESCE(
-                        (iid = prihistrow) OR (iid = prihistusa) OR (iid = prihistcan),
-                        FALSE
-                        )
-                THEN 1
-                ELSE 0
-            END AS primary_sec
-        FROM __data1
-        ORDER BY gvkey, iid, datadate;
-
-        -- Deterministic dedup: prefer primary_sec=1 when range-join fan-out
-        -- produces conflicting classifications for the same (gvkey, iid, datadate).
-        -- Investigation (issue #69) found 40 affected groups in current data,
-        -- all for gvkey 327360 (iids 02W, 38W) where overlapping prihist records
-        -- yield both primary_sec=0 and primary_sec=1 for the same observation.
-        -- Preferring primary_sec=1 avoids wrongly excluding primary securities.
+    data = Path(data_path).as_posix()
+    prihistrow, prihistusa, prihistcan, header = (
+        (raw_data_dfs / f"{name}.parquet").as_posix()
+        for name in ("__prihistrow", "__prihistusa", "__prihistcan", "__header")
+    )
+    with _duckdb_connect(paths) as con:
+        # insertion-order preservation is irrelevant under an explicit ORDER BY and only
+        # inflates the sort's memory
+        con.execute("SET preserve_insertion_order = false")
+        con.execute(f"""
         COPY (
-            SELECT DISTINCT ON (gvkey, iid, {datevar}) *
-            FROM __data2
-            ORDER BY gvkey, iid, {datevar}, primary_sec DESC
-        ) TO '{file_name_posix}' (FORMAT parquet);
-    """)
-
-    con.close()
-    (paths.interim_dir / "aux_prim_sec.ddb").unlink(missing_ok=True)
+            WITH flags AS (
+                -- overlapping history records can match a security-date more than once
+                -- with conflicting answers; primary wins (issue #69)
+                SELECT
+                    a.gvkey, a.iid, a.{datevar},
+                    MAX(CASE WHEN a.iid IN (
+                            COALESCE(b.prihistrow, e.prirow),
+                            COALESCE(c.prihistusa, e.priusa),
+                            COALESCE(d.prihistcan, e.prican))
+                        THEN 1 ELSE 0 END) AS primary_sec
+                FROM read_parquet('{data}') AS a
+                LEFT JOIN read_parquet('{prihistrow}') AS b
+                    ON a.gvkey = b.gvkey
+                    AND a.{datevar} BETWEEN b.effdate AND COALESCE(b.thrudate, DATE '2262-04-11')
+                LEFT JOIN read_parquet('{prihistusa}') AS c
+                    ON a.gvkey = c.gvkey
+                    AND a.{datevar} BETWEEN c.effdate AND COALESCE(c.thrudate, DATE '2262-04-11')
+                LEFT JOIN read_parquet('{prihistcan}') AS d
+                    ON a.gvkey = d.gvkey
+                    AND a.{datevar} BETWEEN d.effdate AND COALESCE(d.thrudate, DATE '2262-04-11')
+                LEFT JOIN read_parquet('{header}') AS e
+                    ON a.gvkey = e.gvkey
+                GROUP BY a.gvkey, a.iid, a.{datevar}
+            ),
+            dup_keys AS (
+                SELECT gvkey, iid, {datevar}
+                FROM read_parquet('{data}')
+                GROUP BY gvkey, iid, {datevar}
+                HAVING count(*) > 1
+            ),
+            -- of rows sharing a key, keep one by the rule in the docstring; ordering every
+            -- column is costly, so only the rows of duplicated keys go through it
+            deduped AS (
+                SELECT t.*
+                FROM read_parquet('{data}') AS t
+                -- IS NOT DISTINCT FROM: NULL keys form one group, as in GROUP BY
+                ANTI JOIN dup_keys AS k
+                    ON t.gvkey IS NOT DISTINCT FROM k.gvkey
+                    AND t.iid IS NOT DISTINCT FROM k.iid
+                    AND t.{datevar} IS NOT DISTINCT FROM k.{datevar}
+                UNION ALL
+                (SELECT DISTINCT ON (t.gvkey, t.iid, t.{datevar}) t.*
+                 FROM read_parquet('{data}') AS t
+                 SEMI JOIN dup_keys AS k
+                     ON t.gvkey IS NOT DISTINCT FROM k.gvkey
+                     AND t.iid IS NOT DISTINCT FROM k.iid
+                     AND t.{datevar} IS NOT DISTINCT FROM k.{datevar}
+                 ORDER BY gvkey, iid, {datevar},
+                     -- a row gen_secd_data keeps
+                     COALESCE(prc_local IS NOT NULL AND curcdd IS NOT NULL
+                              AND prcstd IN (3, 4, 10), FALSE) DESC,
+                     -- gen_returns_df's rule, so prices and the return come from one row
+                     prcstd DESC NULLS LAST,
+                     exch_main DESC NULLS LAST,
+                     dolvol DESC NULLS LAST,
+                     COLUMNS(* EXCLUDE (gvkey, iid, {datevar})))
+            )
+            SELECT deduped.*, flags.primary_sec
+            FROM deduped
+            JOIN flags
+                ON deduped.gvkey IS NOT DISTINCT FROM flags.gvkey
+                AND deduped.iid IS NOT DISTINCT FROM flags.iid
+                AND deduped.{datevar} IS NOT DISTINCT FROM flags.{datevar}
+            ORDER BY deduped.gvkey, deduped.iid, deduped.{datevar}
+        ) TO '{Path(file_name).as_posix()}' (FORMAT PARQUET)
+        """)
 
 
 def load_rf_and_exchange_data(paths: DataPaths):
@@ -2314,12 +2240,12 @@ def load_rf_and_exchange_data(paths: DataPaths):
         Tuple of (crsp_mcti LazyFrame, ff_factors_monthly LazyFrame, exchanges DataFrame).
     """
     crsp_mcti = (
-        pl.read_parquet(paths.interim_dir / "raw_data_dfs" / "crsp_mcti_t30ret.parquet")
+        pl.scan_parquet(paths.interim_dir / "raw_data_dfs" / "crsp_mcti_t30ret.parquet")
         .with_columns(merge_aux=gen_MMYY_column("caldt"))
         .drop("caldt")
     )
     ff_factors_monthly = (
-        pl.read_parquet(paths.interim_dir / "raw_data_dfs" / "ff_factors_monthly.parquet")
+        pl.scan_parquet(paths.interim_dir / "raw_data_dfs" / "ff_factors_monthly.parquet")
         .with_columns(merge_aux=gen_MMYY_column("date"))
         .drop("date")
     )
@@ -2444,10 +2370,10 @@ def gen_temporary_sf(paths: DataPaths, freq, __returns, __delist):
     Output:
         Polars LazyFrame with returns adjusted for delisting.
     """
-    base = pl.read_parquet(paths.interim_dir / f"__comp_{freq}sf.parquet")
+    base = pl.scan_parquet(paths.interim_dir / f"__comp_{freq}sf.parquet")
     temp_sf = (
-        base.join(__returns, how="left", on=["gvkey", "iid", "datadate"])
-        .join(__delist, how="left", on=["gvkey", "iid"])
+        base.join(__returns.lazy(), how="left", on=["gvkey", "iid", "datadate"])
+        .join(__delist.lazy(), how="left", on=["gvkey", "iid"])
         .filter((col("datadate") <= col("date_delist")) | (col("date_delist").is_null()))
         .with_columns(
             ret=pl.when(col("datadate") == col("date_delist"))
@@ -2484,7 +2410,7 @@ def add_rf_and_exchange_data_to_temporary_sf(paths: DataPaths, freq, temp_sf):
         .with_columns(ret_exc=col("ret") - pl.coalesce(["t30ret", "rf"]) / scale)
         .drop(["merge_aux", "rf", "t30ret"])
         .with_columns(col("exchg").cast(pl.Int64))
-        .join(__exchanges, how="left", on=["exchg"])
+        .join(__exchanges.lazy(), how="left", on=["exchg"])
     )
     return temp_sf
 
@@ -2518,7 +2444,6 @@ def process_comp_sf1(paths: DataPaths, freq):
         primary_sec, and for daily: ret_intraday, ret_overnight,
         ret_intraday_local, ret_overnight_local).
     """
-    # Eager mode is faster here
     if freq == "m":
         gen_comp_msf(paths)
     __returns = gen_returns_df(paths, freq)
@@ -2526,7 +2451,7 @@ def process_comp_sf1(paths: DataPaths, freq):
     __comp_sf2 = gen_temporary_sf(paths, freq, __returns, __delist)
     __comp_sf2 = add_rf_and_exchange_data_to_temporary_sf(paths, freq, __comp_sf2)
 
-    if freq == "d" and "prc_open" in __comp_sf2.columns:
+    if freq == "d" and "prc_open" in __comp_sf2.collect_schema().names():
         __comp_sf2 = (
             __comp_sf2.with_columns(
                 ret_intraday=pl.when((col("prc_open") > 0) & (col("prc") > 0))
@@ -2548,8 +2473,7 @@ def process_comp_sf1(paths: DataPaths, freq):
             )
         )
 
-    __comp_sf2.write_parquet(paths.interim_dir / "__comp_sf2.parquet")
-    del __comp_sf2
+    __comp_sf2.sink_parquet(paths.interim_dir / "__comp_sf2.parquet")
     add_primary_sec(
         paths,
         paths.interim_dir / "__comp_sf2.parquet",
@@ -3322,30 +3246,21 @@ def comp_sic_naics(paths: DataPaths):
     Output:
         Parquet comp_other.parquet with daily SIC/NAICS per gvkey.
     """
-    con = ibis.duckdb.connect(threads=os.cpu_count())
-    con.create_table(
-        "sic_naics_na",
-        con.read_parquet(paths.interim_dir / "raw_data_dfs" / "sic_naics_na.parquet"),
-    )
-    con.create_table(
-        "sic_naics_gl",
-        con.read_parquet(paths.interim_dir / "raw_data_dfs" / "sic_naics_gl.parquet"),
-    )
-    con.raw_sql("""
-                CREATE TABLE comp2 AS
+    na = (paths.interim_dir / "raw_data_dfs" / "sic_naics_na.parquet").as_posix()
+    gl = (paths.interim_dir / "raw_data_dfs" / "sic_naics_gl.parquet").as_posix()
+    with _duckdb_connect(paths) as con:
+        comp5 = con.sql(f"""
+                WITH comp2 AS (
                 SELECT *
-                FROM sic_naics_na
+                FROM read_parquet('{na}')
                 WHERE NOT (
                     gvkey   = '175650'
                     AND datadate = DATE '2005-12-31'
                     AND naics IS NULL
-                );
+                )
+                ),
 
-                CREATE TABLE comp3 AS
-                SELECT *
-                FROM sic_naics_gl;
-
-                CREATE TABLE comp4 AS
+                comp4 AS (
                 SELECT
                     a.gvkey    AS gvkeya,
                     a.datadate AS datea,
@@ -3356,12 +3271,12 @@ def comp_sic_naics(paths: DataPaths):
                     b.sic      AS sicb,
                     b.naics    AS naicsb
                 FROM comp2 AS a
-                FULL OUTER JOIN comp3 AS b
+                FULL OUTER JOIN read_parquet('{gl}') AS b
                 ON a.gvkey    = b.gvkey
-                AND a.datadate = b.datadate;
+                AND a.datadate = b.datadate
+                ),
 
-                CREATE TABLE comp5 AS
-                WITH t AS (
+                t AS (
                 SELECT
                     LPAD(COALESCE(gvkeya, gvkeyb), 6, '0') AS gvkey,
                     COALESCE(datea, dateb)            AS date,
@@ -3384,12 +3299,9 @@ def comp_sic_naics(paths: DataPaths):
                 t.date,
                 t.sic,
                 t.naics NULLS LAST
-                ;
-    """)
+        """).pl()
     comp = (
-        con.table("comp5")
-        .to_polars()
-        .lazy()
+        comp5.lazy()
         .sort(["gvkey", "datadate"])
         .with_columns(end_date=col("datadate").shift(-1).over("gvkey"))
         .with_columns(
@@ -3410,7 +3322,6 @@ def comp_sic_naics(paths: DataPaths):
         .sort(["gvkey", "date"])
     )
     comp.sink_parquet(paths.interim_dir / "comp_other.parquet")
-    con.disconnect()
 
 
 @measure_time
@@ -4749,7 +4660,8 @@ def add_helper_vars(paths: DataPaths, data):
         Generate monthly-complete accounting panels per (gvkey,curcd), join originals, and compute a rich set of helper *_x variables.
 
     Steps:
-        1) Create a temp DuckDB; load data; build monthly grid from min/max datadate; left-join raw rows; deduplicate per date.
+        1) Register data with DuckDB; build monthly grid from min/max datadate; left-join raw rows;
+           deduplicate per date, keeping Global over NA, then the lowest row index n.
         2) Bring grid to Polars; sanitize key vars; construct building blocks (sale_x, debt_x, pstk_x, opex_x, etc.).
         3) Derive financial aggregates (seq_x, nwc_x, be_x/bev_x, ebitda_x/ebit_x/op_x/ope_x, oa_x/ol_x/noa_x, etc.).
         4) Compute flows/changes (cowc_x, nncoa_x, oacc_x, tacc_x, netis_x, dbnetis_x) with 12-month diffs where available; guard with early-count rules.
@@ -4758,13 +4670,10 @@ def add_helper_vars(paths: DataPaths, data):
     Output:
         LazyFrame with monthly-complete panel and standardized helper variables (…_x) for downstream ratios/factors.
     """
-    (paths.interim_dir / "aux_add_helpers.ddb").unlink(missing_ok=True)
-    con = ibis.duckdb.connect(
-        str(paths.interim_dir / "aux_add_helpers.ddb"), threads=os.cpu_count()
-    )
-    con.create_table("data", data.rename({"at": "at_var"}).collect(), overwrite=True)
-    con.raw_sql("""
-        CREATE OR REPLACE TABLE comp_dates1 AS
+    with _duckdb_connect(paths) as con:
+        con.register("data", data.rename({"at": "at_var"}).collect())
+        helpers2 = con.sql("""
+        WITH comp_dates1 AS (
         SELECT
             gvkey,
             curcd,
@@ -4772,9 +4681,9 @@ def add_helper_vars(paths: DataPaths, data):
             MAX(datadate) AS end_date
         FROM data
         GROUP BY gvkey, curcd
-        ;
+        ),
 
-        CREATE OR REPLACE TABLE comp_dates2 AS
+        comp_dates2 AS (
         SELECT
         c.gvkey,
         c.curcd,
@@ -4789,38 +4698,30 @@ def add_helper_vars(paths: DataPaths, data):
             date_trunc('month', c.end_date),
             INTERVAL '1 month'
         ) AS gs(month_start)
-        ORDER BY c.gvkey, c.curcd, datadate
-        ;
+        ),
 
-        CREATE OR REPLACE TABLE helpers1_base AS
+        helpers1_base AS (
         SELECT
         a.gvkey,
         a.curcd,
         a.datadate,
-        b.*,
+        b.* EXCLUDE (gvkey, curcd, datadate),
         (b.gvkey IS NOT NULL)::INTEGER AS data_available
         FROM comp_dates2 AS a
         LEFT JOIN data AS b
         USING (gvkey, curcd, datadate)
-        ;
+        ),
 
-        CREATE OR REPLACE TABLE helpers1 AS
+        helpers1 AS (
         SELECT
         *
-        FROM (
-        SELECT
-            *,
-            ROW_NUMBER() OVER (
-            PARTITION BY gvkey, curcd, datadate
-            ORDER   BY datadate
-            ) AS rn
         FROM helpers1_base
-        ) t
-        WHERE rn = 1
-        ORDER BY gvkey, curcd, datadate
-        ;
+        QUALIFY ROW_NUMBER() OVER (
+            PARTITION BY gvkey, curcd, datadate
+            ORDER BY datadate, source <> 'GLOBAL', n
+            ) = 1
+        )
 
-        CREATE OR REPLACE TABLE helpers2 AS
         SELECT
         *,
         ROW_NUMBER() OVER (
@@ -4829,13 +4730,7 @@ def add_helper_vars(paths: DataPaths, data):
         ) AS count
         FROM helpers1
         ORDER BY gvkey, curcd, datadate
-        ;
-
-        ALTER TABLE helpers2 DROP COLUMN gvkey_1;
-        ALTER TABLE helpers2 DROP COLUMN curcd_1;
-        ALTER TABLE helpers2 DROP COLUMN datadate_1;
-        ALTER TABLE helpers2 DROP COLUMN rn;
-    """)
+        """).pl()
 
     c1 = (
         (col("dltis").is_null())
@@ -4846,7 +4741,7 @@ def add_helper_vars(paths: DataPaths, data):
     c2 = (col("dlcch").is_null()) & (col("count") <= 12)
     sort_vars = ["gvkey", "curcd", "datadate"]
 
-    base = con.table("helpers2").to_polars().rename({"at_var": "at"}).lazy()
+    base = helpers2.rename({"at_var": "at"}).lazy()
     base = base.sort(sort_vars).with_columns(
         [
             pl.when(col(var) >= 0).then(col(var)).otherwise(fl_none()).alias(var)
@@ -5715,16 +5610,16 @@ def chg_var1_to_var2(df, name, var1, var2, horizon):
     return df
 
 
-def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min):
+def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min) -> pl.DataFrame:
     """
     Description:
         Earnings persistence: AR(1) of NI/AT (annual steps) with rolling cohorts.
 
     Steps:
-        1) Load gvkey,curcd,datadate,ni_x,at_x; create __ni_at=ni_x/at_x (at_x>0).
+        1) Read gvkey,curcd,datadate,ni_x,at_x in place; create __ni_at=ni_x/at_x (at_x>0).
         2) Keep obs with __ni_at and its 12-month lag; build calendar cohorts by month for N years.
         3) For each (gvkey,curcd,calc_date,grp) with ≥ __min obs, run OLS __ni_at on lag.
-        4) Aggregate to slope (ni_ar1) and residual std (ni_ivol); save. ni_ar1 is null when
+        4) Aggregate to slope (ni_ar1) and residual std (ni_ivol). ni_ar1 is null when
            the lagged NI/AT does not vary in the window (regr_slope returns NaN). The
            regressions and the std read their rows in datadate order: unordered, the float
            sums follow DuckDB's thread scheduling and the low bits change between runs. The
@@ -5732,22 +5627,18 @@ def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min):
            acc_std_ann/acc_std_qtr (deduplicated on gvkey, datadate).
 
     Output:
-        Writes 'ni_ar_res.parquet' with [gvkey, curcd, datadate, ni_ar1, ni_ivol].
+        DataFrame with [gvkey, curcd, datadate, ni_ar1, ni_ivol].
     """
 
     months = 12 * __n
-    con = ibis.duckdb.connect(
-        str(paths.interim_dir / "aux_earnings_pers.ddb"), threads=os.cpu_count()
-    )
-    con.create_table(
-        "raw_table",
-        pl.scan_parquet(data_path).select(["gvkey", "curcd", "datadate", "ni_x", "at_x"]).collect(),
-        overwrite=True,
-    )
-
-    con.raw_sql(f"""
-    CREATE OR REPLACE TABLE base_data AS
-    WITH base AS (
+    data = Path(data_path).as_posix()
+    with _duckdb_connect(paths) as con:
+        result = con.sql(f"""
+    WITH raw_table AS (
+      SELECT gvkey, curcd, datadate, ni_x, at_x
+      FROM read_parquet('{data}')
+    ),
+    base AS (
       SELECT
         gvkey,
         curcd,
@@ -5755,7 +5646,8 @@ def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min):
         CASE WHEN at_x > 0 THEN ni_x / at_x END AS __ni_at,
         ROW_NUMBER() OVER (PARTITION BY gvkey, curcd ORDER BY datadate) AS rn
       FROM raw_table
-    )
+    ),
+    base_data AS (
     SELECT
       gvkey,
       curcd,
@@ -5766,15 +5658,17 @@ def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min):
       END AS __ni_at_l1
     FROM base
     QUALIFY __ni_at IS NOT NULL AND __ni_at_l1 IS NOT NULL
-    ORDER BY gvkey, curcd, datadate;
+    ORDER BY gvkey, curcd, datadate
+    ),
 
-    CREATE OR REPLACE TABLE dates_apply AS
+    dates_apply AS (
     SELECT
       datadate,
       (ROW_NUMBER() OVER (ORDER BY datadate) % {months}) AS grp
-    FROM (SELECT DISTINCT datadate FROM base_data);
+    FROM (SELECT DISTINCT datadate FROM base_data)
+    ),
 
-    CREATE OR REPLACE TABLE calc_dates AS
+    calc_dates AS (
     SELECT
       a.datadate,
       b.datadate AS calc_date,
@@ -5783,9 +5677,10 @@ def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min):
     JOIN dates_apply b
       ON a.datadate > make_date(EXTRACT(YEAR FROM b.datadate) - {__n}, 12, 31)
      AND a.datadate <= b.datadate
-     AND EXTRACT(MONTH FROM a.datadate) = EXTRACT(MONTH FROM b.datadate);
+     AND EXTRACT(MONTH FROM a.datadate) = EXTRACT(MONTH FROM b.datadate)
+    ),
 
-    CREATE OR REPLACE TABLE calc_data AS
+    calc_data AS (
     SELECT
       a.*,
       c.calc_date,
@@ -5796,10 +5691,10 @@ def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min):
     QUALIFY COUNT(*) OVER (
       PARTITION BY a.gvkey, a.curcd, c.calc_date
     ) >= {__min}
-    ORDER BY a.gvkey, c.calc_date;
+    ORDER BY a.gvkey, c.calc_date
+    ),
 
-    CREATE OR REPLACE TABLE reg_results AS
-    WITH fit AS (
+    fit AS (
       SELECT
         gvkey,
         curcd,
@@ -5837,11 +5732,9 @@ def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min):
     FROM resids
     GROUP BY gvkey, curcd, calc_grp, calc_date, slope
     HAVING COUNT(*) >= {__min}
-    ORDER BY gvkey, curcd, calc_date;
-    """)
-    con.table("reg_results").to_parquet(paths.interim_dir / "ni_ar_res.parquet")
-    con.disconnect()
-    (paths.interim_dir / "aux_earnings_pers.ddb").unlink(missing_ok=True)
+    ORDER BY gvkey, curcd, calc_date
+    """).pl()
+    return result
 
 
 def scale_me(var):
@@ -6476,7 +6369,7 @@ def add_earnings_persistence_and_expand(paths: DataPaths, df, data_path, lag_to_
         Attach AR(1) earnings persistence (ni_ar1, ni_ivol) and expand to public dates.
 
     Steps:
-        1) Run persistence job over input parquet (N=5 yrs, min=5) → 'ni_ar_res.parquet'.
+        1) Run persistence job over input parquet (N=5 yrs, min=5).
         2) Join on (gvkey,curcd,datadate); keep rows with data_available=1.
         3) Set start_date = datadate + lag_to_pub months; end_date = min(next_start−1mo, datadate+max_lag).
         4) Expand monthly between start/end to 'public_date'.
@@ -6484,8 +6377,7 @@ def add_earnings_persistence_and_expand(paths: DataPaths, df, data_path, lag_to_
     Output:
         Expanded DataFrame keyed by (gvkey, public_date) with persistence fields.
     """
-    compute_earnings_persistence(paths, data_path, 5, 5)
-    earnings_pers = pl.scan_parquet(paths.interim_dir / "ni_ar_res.parquet")
+    earnings_pers = compute_earnings_persistence(paths, data_path, 5, 5).lazy()
     df = (
         df.join(earnings_pers, on=["gvkey", "curcd", "datadate"], how="left")
         .filter(col("data_available") == 1)
@@ -7220,84 +7112,68 @@ def firm_age(paths: DataPaths, data_path):
         Compute firm age in months using earliest of CRSP, Compustat accounting, or Compustat returns dates.
 
     Steps:
-        1) Load identifiers/dates from inputs; get earliest dates per gvkey/permco.
+        1) Read identifiers/dates in place with DuckDB; get earliest dates per gvkey/permco.
         2) Join earliest sources to each (id, eom); also get first observed eom per id.
         3) Age = months between eom and min(first_obs, first_alt). Write result.
 
     Output:
         'firm_age.parquet' with [id, eom, age].
     """
-    con = ibis.duckdb.connect(threads=os.cpu_count())
-    data = con.read_parquet(data_path).select(["gvkey", "permco", "id", "eom"])
-    comp_secm = con.read_parquet(paths.raw_tables_dir / "comp_secm.parquet").select(
-        ["gvkey", "datadate"]
-    )
-    comp_gsecm = (
-        con.read_parquet(paths.raw_tables_dir / "comp_g_secd.parquet")
-        .filter(_.monthend == 1)
-        .select(["gvkey", "datadate"])
-    )
-    comp_ret_age = (
-        comp_secm.union(comp_gsecm)
-        .group_by("gvkey")
-        .agg(comp_ret_first=_.datadate.min())
-        .mutate(
-            comp_ret_first=(
-                (_.comp_ret_first - ibis.interval(years=1)).year().cast("string") + "-12-31"
-            ).cast("date")
-        )
-    )
-    comp_funda = con.read_parquet(paths.raw_tables_dir / "comp_funda.parquet").select(
-        ["gvkey", "datadate"]
-    )
-    comp_gfunda = con.read_parquet(paths.raw_tables_dir / "comp_g_funda.parquet").select(
-        ["gvkey", "datadate"]
-    )
-    comp_acc_age = (
-        comp_funda.union(comp_gfunda)
-        .group_by("gvkey")
-        .agg(comp_acc_first=_.datadate.min())
-        .mutate(
-            comp_acc_first=(
-                (_.comp_acc_first - ibis.interval(years=1)).year().cast("string") + "-12-31"
-            ).cast("date")
-        )
-    )
-    crsp_age = (
-        con.read_parquet(paths.interim_dir / "raw_data_dfs" / "crsp_msf_v2_aug.parquet")
-        .group_by("permco")
-        .agg(crsp_first=_.mthcaldt.min())
-    )
-    con.create_table("data", data.to_polars())
-    con.create_table("comp_ret_age", comp_ret_age.to_polars())
-    con.create_table("comp_acc_age", comp_acc_age.to_polars())
-    con.create_table("crsp_age", crsp_age.to_polars())
-    sql_query = """
-                    CREATE TABLE age1 AS
-                    SELECT
-                        a.id,
-                        a.eom,
-                        LEAST(b.crsp_first, c.comp_acc_first, d.comp_ret_first) AS first_obs
-                    FROM data AS a
-                    LEFT JOIN crsp_age AS b ON a.permco = b.permco
-                    LEFT JOIN comp_acc_age AS c ON a.gvkey = c.gvkey
-                    LEFT JOIN comp_ret_age AS d ON a.gvkey = d.gvkey;
-
-                    CREATE TABLE age2 AS
-                    SELECT  *, MIN(eom) OVER (PARTITION BY id) AS first_alt
-                    FROM age1;
-
-                    CREATE TABLE age3 AS
-                    SELECT
-                        id, eom,
-                        (DATE_PART('year', eom) - DATE_PART('year', LEAST(first_obs, first_alt))) * 12 +
-                        (DATE_PART('month', eom) - DATE_PART('month', LEAST(first_obs, first_alt))) AS age
-                    FROM age2
-                    ORDER BY id, eom;
-    """
-    con.raw_sql(sql_query)
-    con.table("age3").to_parquet(paths.interim_dir / "firm_age.parquet")
-    con.disconnect()
+    data = Path(data_path).as_posix()
+    secm = (paths.raw_tables_dir / "comp_secm.parquet").as_posix()
+    g_secd = (paths.raw_tables_dir / "comp_g_secd.parquet").as_posix()
+    funda = (paths.raw_tables_dir / "comp_funda.parquet").as_posix()
+    g_funda = (paths.raw_tables_dir / "comp_g_funda.parquet").as_posix()
+    crsp_msf = (paths.interim_dir / "raw_data_dfs" / "crsp_msf_v2_aug.parquet").as_posix()
+    out = (paths.interim_dir / "firm_age.parquet").as_posix()
+    with _duckdb_connect(paths) as con:
+        con.execute(f"""
+        COPY (
+            WITH comp_ret_age AS (
+                SELECT gvkey, make_date(year(MIN(datadate)) - 1, 12, 31) AS comp_ret_first
+                FROM (
+                    SELECT gvkey, datadate FROM read_parquet('{secm}')
+                    UNION ALL
+                    SELECT gvkey, datadate FROM read_parquet('{g_secd}') WHERE monthend = 1
+                )
+                GROUP BY gvkey
+            ),
+            comp_acc_age AS (
+                SELECT gvkey, make_date(year(MIN(datadate)) - 1, 12, 31) AS comp_acc_first
+                FROM (
+                    SELECT gvkey, datadate FROM read_parquet('{funda}')
+                    UNION ALL
+                    SELECT gvkey, datadate FROM read_parquet('{g_funda}')
+                )
+                GROUP BY gvkey
+            ),
+            crsp_age AS (
+                SELECT permco, MIN(mthcaldt) AS crsp_first
+                FROM read_parquet('{crsp_msf}')
+                GROUP BY permco
+            ),
+            age1 AS (
+                SELECT
+                    a.id,
+                    a.eom,
+                    LEAST(b.crsp_first, c.comp_acc_first, d.comp_ret_first) AS first_obs
+                FROM read_parquet('{data}') AS a
+                LEFT JOIN crsp_age AS b ON a.permco = b.permco
+                LEFT JOIN comp_acc_age AS c ON a.gvkey = c.gvkey
+                LEFT JOIN comp_ret_age AS d ON a.gvkey = d.gvkey
+            ),
+            age2 AS (
+                SELECT *, MIN(eom) OVER (PARTITION BY id) AS first_alt
+                FROM age1
+            )
+            SELECT
+                id, eom,
+                (DATE_PART('year', eom) - DATE_PART('year', LEAST(first_obs, first_alt))) * 12 +
+                (DATE_PART('month', eom) - DATE_PART('month', LEAST(first_obs, first_alt))) AS age
+            FROM age2
+            ORDER BY id, eom
+        ) TO '{out}' (FORMAT PARQUET)
+        """)
 
 
 def char_pf_rets():
@@ -7557,13 +7433,11 @@ def prep_data_factor_regs(
     """
 
     (paths.interim_dir / "aux_factor_regs.ddb").unlink(missing_ok=True)
-    con = ibis.duckdb.connect(
-        str(paths.interim_dir / "aux_factor_regs.ddb"), threads=os.cpu_count()
-    )
+    con = _duckdb_connect(paths, paths.interim_dir / "aux_factor_regs.ddb")
 
     data_path_posix = Path(data_path).as_posix()
     fcts_path_posix = Path(fcts_path).as_posix()
-    con.raw_sql(f"""
+    con.execute(f"""
     CREATE OR REPLACE VIEW data_msf AS
     SELECT *
     FROM read_parquet('{data_path_posix}');
@@ -7629,19 +7503,17 @@ def market_beta(paths: DataPaths, output_path, data_path, fcts_path, __n, __min)
     Output:
         Parquet at output_path with [id, eom, beta_{__n}m, ivol_capm_{__n}m].
     """
-    con = prep_data_factor_regs(paths, data_path, fcts_path)
-    base_data = con.table("__msf2").to_polars().lazy()
-    df = pl.concat(
-        [process_window(base_data, w, "capm", __n, __min) for w in gen_aux_windows(__n)]
-    ).collect()
-    ids = con.table("__msf2").select(["id", "id_int"]).distinct().to_polars()
-    dates = (
-        con.table("__msf2")
-        .select(["aux_date", "eom"])
-        .distinct()
-        .to_polars()
-        .with_columns(col("aux_date").cast(pl.Int32))
-    )
+    with prep_data_factor_regs(paths, data_path, fcts_path) as con:
+        base_data = con.table("__msf2").pl().lazy()
+        df = pl.concat(
+            [process_window(base_data, w, "capm", __n, __min) for w in gen_aux_windows(__n)]
+        ).collect()
+        ids = con.sql("SELECT DISTINCT id, id_int FROM __msf2").pl()
+        dates = (
+            con.sql("SELECT DISTINCT aux_date, eom FROM __msf2")
+            .pl()
+            .with_columns(col("aux_date").cast(pl.Int32))
+        )
     res = (
         df.with_columns(col("aux_date").cast(pl.Int32))
         .join(ids, how="inner", on="id_int")
@@ -7657,7 +7529,6 @@ def market_beta(paths: DataPaths, output_path, data_path, fcts_path, __n, __min)
         .sort(["id", "eom"])
     )
     res.write_parquet(output_path)
-    con.disconnect()
 
 
 @measure_time
@@ -7676,22 +7547,20 @@ def residual_momentum(paths: DataPaths, output_path, data_path, fcts_path, __n, 
         as a *stem*, not a full path — the parameter name is a holdover from
         the pre-refactor signature.
     """
-    con = prep_data_factor_regs(paths, data_path, fcts_path)
-    base_data = con.table("__msf2").to_polars().lazy()
-    df = pl.concat(
-        [
-            process_window(base_data, w, "res_mom", __n, __min, incl, skip)
-            for w in gen_aux_windows(__n)
-        ]
-    ).collect()
-    ids = con.table("__msf2").select(["id", "id_int"]).distinct().to_polars()
-    dates = (
-        con.table("__msf2")
-        .select(["aux_date", "eom"])
-        .distinct()
-        .to_polars()
-        .with_columns(col("aux_date").cast(pl.Int32))
-    )
+    with prep_data_factor_regs(paths, data_path, fcts_path) as con:
+        base_data = con.table("__msf2").pl().lazy()
+        df = pl.concat(
+            [
+                process_window(base_data, w, "res_mom", __n, __min, incl, skip)
+                for w in gen_aux_windows(__n)
+            ]
+        ).collect()
+        ids = con.sql("SELECT DISTINCT id, id_int FROM __msf2").pl()
+        dates = (
+            con.sql("SELECT DISTINCT aux_date, eom FROM __msf2")
+            .pl()
+            .with_columns(col("aux_date").cast(pl.Int32))
+        )
     res = (
         df.with_columns(col("aux_date").cast(pl.Int32))
         .join(ids, how="inner", on="id_int")
@@ -7700,7 +7569,6 @@ def residual_momentum(paths: DataPaths, output_path, data_path, fcts_path, __n, 
         .sort(["id", "eom"])
     )
     res.write_parquet(paths.interim_dir / f"{output_path}_{incl}_{skip}.parquet")
-    con.disconnect()
 
 
 def zero_obs_gate_ok() -> pl.Expr:

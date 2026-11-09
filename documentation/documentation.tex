@@ -1199,9 +1199,9 @@ This section covers all of the variables that give firm/date level identifiers a
 		
 		gvkey & Permanent six-digit unique firm identifier from Compustat\\[1ex]
 		
-		iid & Permanent two-digit addition to 'gvkey' that identifies specific security of a firm from Compustat\\[1ex]
+		iid & Permanent two-digit addition to 'gvkey' that identifies specific security of a firm from Compustat. A Compustat security has one observation per date. If a security-date appears more than once, for example in both the North America and the Global file with different values, the observation kept is the one with a valid price (\textit{prc\_local} and \textit{curcd} present, \texttt{prcstd} in \{3, 4, 10\}), then the highest \texttt{prcstd}, then a main exchange, then the highest \textit{dolvol}; any remaining tie is broken by a fixed order of the other columns. The SAS code also kept one observation, but the first in its processing order (\texttt{proc sort nodupkey}), and summed monthly volume and dividends before removing duplicates. On current data no security-date appears twice, so no value changes.\\[1ex]
 		
-		primary\_sec &  Primary security as identified by Compustat. A 'gvkey' can have up to three different primary securities ('iid)' at a given time (US, CA, and international). All observations from CRSP has \texttt{primary\_sec=1}.  \\[1ex]
+		primary\_sec &  Primary security as identified by Compustat. A 'gvkey' can have up to three different primary securities ('iid)' at a given time (US, CA, and international). All observations from CRSP has \texttt{primary\_sec=1}. When a 'gvkey' appears in both the North America and the Global company header, the Global header's primary-security codes are used, as for accounting data. The SAS code used the North America header. On current data the two headers agree for every such 'gvkey' (2,960), so no value changes.  \\[1ex]
 		
 		permco & Permanent unique firm identifier from CRSP\\[1ex]
 		

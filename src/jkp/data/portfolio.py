@@ -21,7 +21,7 @@ from .paths import DataPaths
 
 # portfolios / regional_data and the private build/write helpers
 # are resolved lazily from `aux_functions` via `__getattr__` below so that
-# `import jkp.data.portfolio` doesn't pull duckdb/ibis at import time.
+# `import jkp.data.portfolio` doesn't pull duckdb at import time.
 __all__ = [  # noqa: F822 — lazy via __getattr__
     "_build_industry_daily_returns",
     "_build_industry_monthly_returns",

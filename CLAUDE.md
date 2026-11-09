@@ -107,7 +107,7 @@ Output:
 - Use `safe_div()` for any division — never raw `/`
 - **Exception: the Numba kernels in portfolio construction** (`_rank_rows_kernel`, `_sum_rows_kernel`, `_portfolio_rows_kernel` in `aux_functions.py`) are Numba, not Polars, and divide with raw `/`: a zero denominator must give NaN or infinity as before, and `safe_div` is a Polars expression that cannot run in a kernel. Keep their output the same at any thread count.
 - **Do not use `sum_sas` or `sub_sas` in new code.** These are legacy functions that replicate SAS null semantics (treat null as 0 when any input is non-null). They exist for backward compatibility in existing characteristic calculations. New code should use standard Polars null propagation, or explicit `pl.coalesce()` when null-as-zero behavior is needed.
-- Prefer Polars over DuckDB/Ibis for new code. Existing code uses DuckDB via Ibis for some complex SQL aggregations, but new work should use Polars expressions and lazy evaluation where possible.
+- Prefer Polars over DuckDB for new code. Existing code uses DuckDB SQL for some complex aggregations, but new work should use Polars expressions and lazy evaluation where possible.
 
 **Type hints:**
 - Add type annotations to new functions (parameters and return types), even though older code in `aux_functions.py` lacks them
