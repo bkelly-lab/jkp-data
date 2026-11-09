@@ -469,10 +469,6 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
                 )
     oi_columns = list(dict.fromkeys(ret_col for _, ret_col in oi_components))
 
-    # Polars 2 runs a bare collect() on the streaming engine, whose parallel reductions
-    # are not bit-reproducible; keep the in-memory default of Polars 1.x.
-    pl.Config.set_engine_affinity("in-memory")
-
     # Creating portfolios by using the portfolios function
     portfolio_data = {}
     for ex in countries:

@@ -130,10 +130,10 @@ def setup_folder_structure(paths: DataPaths) -> None:
     shutil.copy2(get_data_readme_path(), paths.base_dir / "README.md")
 
 
-def collect_and_write(df, filename, collect_streaming=False):
+def collect_and_write(df, filename):
     """
     Description:
-        Collect a Polars LazyFrame (optionally streaming) and write to Parquet.
+        Collect a Polars LazyFrame and write to Parquet.
         Used for interim files during pipeline execution in main.py.
 
         Note: For final output files (in portfolio.py), use write_dataframe() from
@@ -141,14 +141,13 @@ def collect_and_write(df, filename, collect_streaming=False):
         integrates with CSV conversion at pipeline end.
 
     Steps:
-        1) df.collect() on the streaming engine if collect_streaming, else in-memory.
+        1) df.collect().
         2) write_parquet(filename).
 
     Output:
         Parquet file at `filename`.
     """
-    engine = "streaming" if collect_streaming else "in-memory"
-    df.collect(engine=engine).write_parquet(filename)
+    df.collect().write_parquet(filename)
 
 
 def _duckdb_connect(paths: DataPaths, database: Path | None = None) -> duckdb.DuckDBPyConnection:
@@ -3663,7 +3662,9 @@ def add_ret_exc_wins(
         )
         .drop(drop_cols)
     )
-    result.collect(engine="streaming" if freq == "d" else "in-memory").write_parquet(data_path)
+    tmp_path = data_path.with_name(f"{data_path.stem}_tmp.parquet")
+    result.sink_parquet(tmp_path)
+    tmp_path.replace(data_path)
 
 
 def load_mkt_returns_params(freq):
