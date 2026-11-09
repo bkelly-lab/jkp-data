@@ -1,7 +1,8 @@
 # Golden-fixture tests
 
-Two-layer protection for the factor-model builders (currently `gen_ff_data`;
-the other factor models add their own golden tests as they land):
+Two-layer protection for the factor-model builders (currently `gen_ff_data`
+and `gen_hxz_data`; the other factor models add their own golden tests as
+they land):
 
 - **Unit tests** (`tests/unit/test_gen_*.py`) pin stage-helper contracts on
   synthetic Polars frames so the internals can be refactored freely.
@@ -30,8 +31,8 @@ reverse-engineered to the underlying source."
 
 - `fixtures/synthetic_wrds/` — 17 deterministically generated parquets
   (~117 MB, compressed with zstd-22) used as the builder inputs.
-- `fixtures/ff/` — golden output parquets produced by `gen_ff_data` against
-  the synthetic inputs.
+- `fixtures/ff/`, `fixtures/hxz/` — golden output parquets produced by
+  `gen_ff_data` and `gen_hxz_data` against the synthetic inputs.
 
 ## Test framing
 
@@ -58,6 +59,7 @@ The generator is deterministic (seed = 42). Re-running overwrites
 
 ```bash
 uv run python -m tests.golden.generate_ff_golden
+uv run python -m tests.golden.generate_hxz_golden
 ```
 
 Commit the updated golden parquets in the same change that touches the
@@ -67,7 +69,8 @@ shifts.
 ### Run the golden tests
 
 ```bash
-uv run pytest tests/golden/test_gen_ff_data_golden.py -v
+uv run pytest tests/golden/test_gen_ff_data_golden.py \
+              tests/golden/test_gen_hxz_data_golden.py -v
 ```
 
 The `--regen-golden` flag swaps the golden parquets with the freshly-built
