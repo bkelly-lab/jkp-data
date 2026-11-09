@@ -56,6 +56,9 @@ PERSONA_RULES = {
     "900112": ("cross", "na_global_overlap", "annual"),
     "900114": ("cross", "fx_before_first_rate", "comp_g_funda"),
     "900115": ("cross", "annual_only_firms", "annual"),
+    "900125": ("cross", "two_calendars_one_date", "quarterly"),
+    "900126": ("soft", "two_calendars_one_date", "comp_g_fundq"),
+    "900127": ("soft", "fyr_change_firms", "comp_fundq"),
 }
 
 

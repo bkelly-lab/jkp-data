@@ -9,8 +9,11 @@ first and must pass.
 
 Run on Yale from the repository root (every mutation runs the stage several times):
     srun --cpus-per-task=8 --mem=32G .venv/bin/python scripts/mutation_check_acc_chars.py
-Options: -k NAME runs the mutations whose name contains NAME; --check only checks that every
-snippet occurs exactly once.
+or split across a Slurm array, each task checking the baseline and every tenth mutation:
+    sbatch --array=0-9 --cpus-per-task=8 --mem=16G --wrap \
+        '.venv/bin/python scripts/mutation_check_acc_chars.py --shard $SLURM_ARRAY_TASK_ID/10'
+Options: -k NAME runs the mutations whose name contains NAME; --shard K/N runs every Nth mutation
+from the Kth; --check only checks that every snippet occurs exactly once.
 """
 
 import argparse
@@ -151,10 +154,13 @@ MUTATIONS: list[tuple[str, str, str]] = [
         'c2 = col("count") > 36',
         'c2 = col("count") >= 36',
     ),
+    # ni_inc8q's count >= 33 gate is not mutated: eight increases need four-quarter NI sums at
+    # twelve dates three months apart, and a firm has those 39 months after its first report at
+    # the earliest, so no gate up to 40 months changes the output.
     (
-        "ni_inc8q gate count >= 33 -> >= 32",
-        '(col("count") >= 33)',
-        '(col("count") >= 32)',
+        "ni_inc8q needs 8 non-null increases -> 7",
+        '(col("n_ni_inc") == 8)',
+        '(col("n_ni_inc") >= 7)',
     ),
     (
         "standardized surprise gate count > 36 -> >= 36",
@@ -350,7 +356,9 @@ def main() -> None:
     parser.add_argument("-k", default="", help="run the mutations whose name contains this")
     parser.add_argument("--check", action="store_true", help="only check the snippets")
     parser.add_argument("--workers", type=int, default=4, help="pytest-xdist workers")
+    parser.add_argument("--shard", default="0/1", help="K/N: run every Nth mutation from the Kth")
     args = parser.parse_args()
+    shard, shards = map(int, args.shard.split("/"))
     if bad := check_snippets():
         sys.exit(f"snippets that do not occur exactly once: {bad}")
     if args.check:
@@ -361,8 +369,8 @@ def main() -> None:
     if code != 0:
         sys.exit("the unmutated tests fail")
     survivors = []
-    for name, old, new in MUTATIONS:
-        if args.k not in name:
+    for i, (name, old, new) in enumerate(MUTATIONS):
+        if args.k not in name or i % shards != shard:
             continue
         code, summary, seconds = run(old, new, args.workers)
         status = _status(code, summary)

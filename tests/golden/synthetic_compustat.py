@@ -53,6 +53,12 @@ Persona firms (900101 up), one case each:
     900122  no reports for three years in the middle of its life
     900123  NA rows the read filters drop (SUMM_STD, FS, consol P, popsrc I)
     900124  Global rows the read filters drop (STD, popsrc D, consol P)
+    900125  NA on a December year-end; Global (quarterly only) on a June year-end for 2002-2008,
+            on the same dates; the older NA calendar is kept
+    900126  Global FS on a December year-end; INDL (quarterly only) on a June year-end for
+            2002-2008, on the same dates; the older FS calendar is kept
+    900127  fiscal year-end moves from December to November after the first report, so its
+            reports fall 12, 24 and 36 months after it
 """
 
 import json
@@ -508,8 +514,7 @@ def firm_frames(
         )
         if seg.get("quarterly", True) and spec.get("quarterly", "full") != "none":
             quarterly.append(quarterly_rows(rows, spec.get("quarterly", "full")))
-        if seg.get("annual", True):
-            annual.append(annual_rows(rows))
+        annual.append(annual_rows(rows if seg.get("annual", True) else rows.clear()))
     ids = {"gvkey": spec["gvkey"], "indfmt": spec["indfmt"], **READ_FILTERS[spec["source"]]}
     annual_df = (
         pl.concat(annual)
@@ -697,6 +702,19 @@ def _constant_earnings(v: Items, d: np.ndarray) -> None:
         v[item] = np.zeros(len(d))
 
 
+def _year_end_to_november(a: pl.DataFrame, q: pl.DataFrame) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Row edit: every report after December 1995 moves a month earlier onto a November year-end,
+    keeping its fiscal year and quarter."""
+    later = pl.col("datadate") > date(1995, 12, 31)
+    moved = {
+        "datadate": pl.when(later)
+        .then(pl.col("datadate").dt.offset_by("-1mo").dt.month_end())
+        .otherwise(pl.col("datadate")),
+        "fyr": pl.when(later).then(pl.lit(11, pl.Int32)).otherwise(pl.col("fyr")),
+    }
+    return a.with_columns(**moved), q.with_columns(**moved)
+
+
 def persona_specs() -> list[Spec]:
     """The persona firms listed in the module docstring, in gvkey order."""
 
@@ -821,6 +839,22 @@ def persona_specs() -> list[Spec]:
             last_fy=2005,
             rows=_filtered_copies([{"datafmt": "STD"}, {"popsrc": "D"}, {"consol": "P"}]),
         ),
+        firm(24),
+        firm(
+            24,
+            source="GLOBAL",
+            segments=[seg(6, d(2002, 9, 30), d(2008, 6, 30), annual=False)],
+            listed=None,
+        ),
+        firm(25, source="GLOBAL", currency="EUR", indfmt="FS", first_fy=1996),
+        firm(
+            25,
+            source="GLOBAL",
+            currency="EUR",
+            segments=[seg(6, d(2002, 9, 30), d(2008, 6, 30), annual=False)],
+            listed=None,
+        ),
+        firm(26, last_fy=2005, quarterly_first=d(1995, 12, 31), rows=_year_end_to_november),
     ]
 
 
