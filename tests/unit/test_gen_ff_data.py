@@ -692,7 +692,9 @@ class TestFFAnnualCharacteristics:
         acc_us = _acc(["g20", "g21"], be=30.0, op=0.2, inv=None, count=1)
         comp_world = _acc(["g10", "g11", "g12", "g13"], be=25.0, op=0.1, inv=0.05, count=1)
         ccm2a = _acc(["g30"], be=40.0, op=0.3, inv=0.02, count=3).with_columns(permno=pl.lit(30))
-        out = ff_annual_characteristics(tmp_path, acc_us, ccm2a, comp_world)
+        # FF's CRSP sample in December 2019: permno 30 only (31 is outside it).
+        crsp_m = pl.LazyFrame({"permno": [30], "date": [date(2019, 12, 31)]})
+        out = ff_annual_characteristics(tmp_path, acc_us, ccm2a, comp_world, crsp_m)
         assert out.select("id", "port_year").is_duplicated().sum() == 0
         assert out["port_year"].unique().to_list() == [2020]
         return {r["id"]: r for r in out.iter_rows(named=True)}
@@ -717,10 +719,17 @@ class TestFFAnnualCharacteristics:
 
     def test_dec_universe_is_a_screen_not_an_input(self, tmp_path):
         """A secondary line in December keeps its published beme but is flagged
-        out of the December universe; US rows are always in it."""
+        out of the December universe."""
         out = self._run(tmp_path)
         assert out[12]["beme"] == pytest.approx(25.0 / 30.0)
-        assert [out[i]["dec_universe"] for i in (10, 12, 20, 30)] == [True, False, True, True]
+        assert [out[i]["dec_universe"] for i in (10, 12)] == [True, False]
+
+    def test_us_dec_universe_is_ff_crsp_sample(self, tmp_path):
+        """US: in the December universe only if the permno is in FF's CRSP sample
+        that December; Compustat-only securities never are. Dec ME is unaffected."""
+        out = self._run(tmp_path)
+        assert [out[i]["dec_universe"] for i in (20, 30, 31)] == [False, True, False]
+        assert out[31]["dec_me"] == 70.0
 
     def test_us_compustat_only_uses_me_company_and_acc_us(self, tmp_path):
         r = self._run(tmp_path)[20]
