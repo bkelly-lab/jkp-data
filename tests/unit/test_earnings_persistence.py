@@ -71,8 +71,7 @@ def test_ni_ar1_and_ni_ivol_null_when_lagged_ni_at_nearly_constant(
     data_path = tmp_path / "acc.parquet"
     raw.write_parquet(data_path)
 
-    compute_earnings_persistence(test_paths, data_path, 5, 5)
-    out = pl.read_parquet(test_paths.interim_dir / "ni_ar_res.parquet")
+    out = compute_earnings_persistence(test_paths, data_path, 5, 5)
 
     for gvkey in ("B", "C"):
         firm = out.filter(pl.col("gvkey") == gvkey)
@@ -97,8 +96,7 @@ def test_ni_ar1_is_never_nan_with_a_nan_input(test_paths: DataPaths, tmp_path) -
     data_path = tmp_path / "acc.parquet"
     raw.write_parquet(data_path)
 
-    compute_earnings_persistence(test_paths, data_path, 5, 5)
-    out = pl.read_parquet(test_paths.interim_dir / "ni_ar_res.parquet")
+    out = compute_earnings_persistence(test_paths, data_path, 5, 5)
 
     last = out.filter(pl.col("datadate") == date(2007, 12, 31))
     assert last.height == 1
