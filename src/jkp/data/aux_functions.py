@@ -1532,6 +1532,7 @@ def gen_comp_dsf(
         7) FULL OUTER JOIN NA and Global records; LEFT JOIN daily FX for trading and dividend currencies.
         8) Compute USD variables: prc, prc_high, prc_low, market cap (me), USD turnover (dolvol),
         USD return index (ri), dividends (split into total/cash/special); derive month-end eom.
+        Keep one row per security-date (drop_duplicate_security_dates).
         9) If apply_correction, drop unreliable observations from the USD data.
         10) Drop intermediates and write __comp_dsf.parquet.
 
@@ -1704,43 +1705,39 @@ def gen_comp_dsf(
 
         """)
 
+        # row order is not needed: the filter step sorts the columns it uses, and every
+        # other reader of __comp_dsf sorts or groups by key itself (gen_secd_data's float
+        # sums then vary at about 1e-15, within the 1e-10 tolerance)
+        con.execute("SET preserve_insertion_order = false")
         if apply_correction:
-            # One streaming pass: DuckDB executes the whole view pipeline, joins
-            # the exchange-country mapping (needed for country-specific filters),
-            # external-sorts by the filter group/sort keys, and writes the spill
-            # file directly — no pre-filter round-trip, and the slim path skips its
-            # own sort (presorted=True).
+            # the exchange country feeds the filters' country-specific price thresholds
             con.register("exchanges", comp_exchanges(paths).select(["exchg", "excntry"]))
-            sorted_path = paths.interim_dir / "__corr_filter_sorted.parquet"
-            # insertion-order preservation is irrelevant under an explicit ORDER BY
-            # and only inflates the external sort's memory; the connection's
-            # temp_directory lets the sort spill (the slim path verifies the
-            # resulting order before trusting it)
-            con.execute("SET preserve_insertion_order = false")
+            unfiltered_path = paths.interim_dir / "__corr_filter_input.parquet"
             con.execute(f"""
         COPY (
             SELECT t.*, e.excntry
             FROM __comp_dsf3 AS t
             LEFT JOIN exchanges AS e
                 USING (exchg)
-            ORDER BY gvkey NULLS FIRST, iid NULLS FIRST, datadate NULLS FIRST
-        ) TO '{sorted_path.as_posix()}' (FORMAT PARQUET);
+        ) TO '{unfiltered_path.as_posix()}' (FORMAT PARQUET);
             """)
+            merged_path = unfiltered_path
         else:
+            merged_path = paths.interim_dir / "__comp_dsf.parquet"
             con.execute(f"""
-        COPY (SELECT * FROM __comp_dsf3)
-        TO '{(paths.interim_dir / "__comp_dsf.parquet").as_posix()}' (FORMAT PARQUET);
+        COPY (SELECT * FROM __comp_dsf3) TO '{merged_path.as_posix()}' (FORMAT PARQUET);
             """)
+
+    drop_duplicate_security_dates(paths, merged_path)
 
     # Drop unreliable observations from the USD-converted data
     if apply_correction:
         df = drop_unreliable_observations(
-            pl.scan_parquet(sorted_path),
+            pl.scan_parquet(unfiltered_path),
             group_cols=["gvkey", "iid"],
             sort_col="datadate",
             country_col="excntry",
             spill_dir=paths.interim_dir,
-            presorted_path=sorted_path,
         )
 
         df.sink_parquet(paths.interim_dir / "__comp_dsf.parquet")
@@ -1753,6 +1750,73 @@ def gen_comp_dsf(
     if apply_correction:
         for f in ["__comp_g_secd_corrected.parquet", "__comp_secd_corrected.parquet"]:
             (paths.interim_dir / f).unlink(missing_ok=True)
+
+
+def drop_duplicate_security_dates(paths: DataPaths, file_path: Path) -> None:
+    """
+    Description:
+        Keep one row per (gvkey, iid, datadate) in the merged daily Compustat file. A
+        security-date repeats when it is in both the North America and the Global file with
+        different values (the merge joins on every column) or when a join fans out.
+
+    Steps:
+        1) Find keys held by more than one row; if there are none, leave the file as is.
+        2) Otherwise rewrite file_path. Rows with a unique key stay as they are. Of rows
+           sharing a key, keep the one with a valid price (prc_local and curcdd present,
+           prcstd in {3, 4, 10}), then the highest prcstd, then a main exchange (exch_main),
+           then the highest dolvol, then the first in the order of all columns, so the choice
+           never depends on the input order.
+
+    Output:
+        file_path with one row per (gvkey, iid, datadate).
+    """
+    data = file_path.as_posix()
+    # IS NOT DISTINCT FROM: NULL keys form one group, as in GROUP BY
+    same_key = """t.gvkey IS NOT DISTINCT FROM k.gvkey
+                    AND t.iid IS NOT DISTINCT FROM k.iid
+                    AND t.datadate IS NOT DISTINCT FROM k.datadate"""
+    with _duckdb_connect(paths) as con:
+        con.execute(f"""
+        CREATE TABLE dup_keys AS
+        SELECT gvkey, iid, datadate
+        FROM read_parquet('{data}')
+        GROUP BY gvkey, iid, datadate
+        HAVING count(*) > 1
+        """)
+        if con.execute("SELECT count(*) FROM dup_keys").fetchone()[0] == 0:
+            return
+        con.register("exchanges", comp_exchanges(paths).select(["exchg", "exch_main"]))
+        # row order is not needed (see gen_comp_dsf)
+        con.execute("SET preserve_insertion_order = false")
+        deduped = file_path.with_name(f"{file_path.stem}_deduped.parquet")
+        con.execute(f"""
+        COPY (
+            WITH kept AS (
+                SELECT DISTINCT ON (gvkey, iid, datadate) *
+                FROM (
+                    SELECT t.*, e.exch_main AS _exch_main
+                    FROM read_parquet('{data}') AS t
+                    SEMI JOIN dup_keys AS k ON {same_key}
+                    LEFT JOIN exchanges AS e USING (exchg)
+                )
+                ORDER BY gvkey, iid, datadate,
+                    -- a row gen_secd_data keeps
+                    COALESCE(prc_local IS NOT NULL AND curcdd IS NOT NULL
+                             AND prcstd IN (3, 4, 10), FALSE) DESC,
+                    -- gen_returns_df's rule, so prices and the return come from one row
+                    prcstd DESC NULLS LAST,
+                    _exch_main DESC NULLS LAST,
+                    dolvol DESC NULLS LAST,
+                    COLUMNS(* EXCLUDE (gvkey, iid, datadate))
+            )
+            SELECT t.*
+            FROM read_parquet('{data}') AS t
+            ANTI JOIN dup_keys AS k ON {same_key}
+            UNION ALL
+            SELECT * EXCLUDE (_exch_main) FROM kept
+        ) TO '{deduped.as_posix()}' (FORMAT PARQUET)
+        """)
+    deduped.replace(file_path)
 
 
 def gen_secd_data(paths: DataPaths):
@@ -1768,7 +1832,7 @@ def gen_secd_data(paths: DataPaths):
         - div_*m: sum of monthly dividends (by type) adjusted.
         - cshtrm: sum of adjusted share turnover; dolvolm: sum of USD dollar volume.
         3) Keep valid rows (local price/currency present, prcstd in {3,4,10}) on the last valid
-        datadate in the month (ties kept); scale the aggregates by each row's ajexdi.
+        datadate in the month; scale the aggregates by each row's ajexdi.
         - source=1 to mark SECD pipeline.
         4) Write to secd_data.parquet, sorted by gvkey, iid, eom.
 
@@ -2057,100 +2121,104 @@ def comp_exchanges(paths: DataPaths):
 def add_primary_sec(paths: DataPaths, data_path, datevar, file_name):
     """
     Description:
-        Flag primary securities by joining Compustat primary-history tables (ROW/USA/CAN)
-        onto a security-level dataset and comparing iid to recorded primary identifiers
-        over valid date ranges. Falls back to company header when history is missing.
+        Flag primary securities: iid equals the primary iid that Compustat's primary-issue
+        history (ROW/USA/CAN) records for the date, or the company header's when no history
+        record covers the date.
 
     Steps:
-        1) Open DuckDB; read: data_path, __prihistrow/usa/can, and __header (prirow/priusa/prican).
-        2) Range-join each PRI table on {gvkey} where datevar ∈ [effdate, thrudate]; drop join keys.
-        3) Left-join header; coalesce prihist* with pri* when historical value is null.
-        4) Compute primary_sec = 1 if iid matches any of {prihistrow, prihistusa, prihistcan}; else 0.
-        5) Deduplicate on (gvkey, iid, datadate), preferring primary_sec=1 when
-           range-join fan-out produces conflicting classifications; sort and write file_name.
+        1) Per (gvkey, iid, datevar), range-join the three histories and the header on the
+           key columns only; primary_sec = 1 if iid matches any region.
+        2) Join primary_sec back onto the full rows, keep one row per (gvkey, iid, datevar)
+           and write file_name sorted by (gvkey, iid, datevar). The daily input is already
+           unique (drop_duplicate_security_dates); this catches a key repeated by a later
+           join or on the monthly path. Of rows sharing a key, keep the one with a valid
+           price (prc_local and curcdd present, prcstd in {3, 4, 10}), then the highest
+           prcstd, then a main exchange (exch_main), then the highest dolvol; any remaining
+           tie goes to the first row in the order of all columns, as in
+           drop_duplicate_security_dates.
 
     Output:
-        Parquet at file_name with a new integer column primary_sec ∈ {0,1}.
+        Parquet at file_name: one row per (gvkey, iid, datevar) of the input, plus an
+        integer column primary_sec ∈ {0,1}.
     """
-    (paths.interim_dir / "aux_prim_sec.ddb").unlink(missing_ok=True)
-    con = duckdb.connect(str(paths.interim_dir / "aux_prim_sec.ddb"))
     raw_data_dfs = paths.interim_dir / "raw_data_dfs"
-    data_path_posix = Path(data_path).as_posix()
-    prihistrow_path = (raw_data_dfs / "__prihistrow.parquet").as_posix()
-    prihistusa_path = (raw_data_dfs / "__prihistusa.parquet").as_posix()
-    prihistcan_path = (raw_data_dfs / "__prihistcan.parquet").as_posix()
-    header_path = (raw_data_dfs / "__header.parquet").as_posix()
-    file_name_posix = Path(file_name).as_posix()
-    con.execute(f"""
-        CREATE OR REPLACE TABLE __data2 AS
-        WITH data AS (
-            SELECT * FROM read_parquet('{data_path_posix}')
-            ORDER BY gvkey, iid, datadate
-        ),
-        prihistrow AS (
-            SELECT * FROM read_parquet('{prihistrow_path}')
-            ORDER BY gvkey, effdate
-        ),
-        prihistusa AS (
-            SELECT * FROM read_parquet('{prihistusa_path}')
-            ORDER BY gvkey, effdate
-        ),
-        prihistcan AS (
-            SELECT * FROM read_parquet('{prihistcan_path}')
-            ORDER BY gvkey, effdate
-        ),
-        header AS (
-            SELECT * FROM read_parquet('{header_path}')
-            ORDER BY gvkey
-        ),
-        __data1 AS (
-            SELECT DISTINCT
-                a.*,
-                COALESCE(b.prihistrow, e.prirow)  AS prihistrow,
-                COALESCE(c.prihistusa, e.priusa)  AS prihistusa,
-                COALESCE(d.prihistcan, e.prican)  AS prihistcan
-            FROM data AS a
-            LEFT JOIN prihistrow AS b
-                ON a.gvkey = b.gvkey
-                AND a.{datevar} BETWEEN b.effdate AND COALESCE(b.thrudate, DATE '2262-04-11')
-            LEFT JOIN prihistusa AS c
-                ON a.gvkey = c.gvkey
-                AND a.{datevar} BETWEEN c.effdate AND COALESCE(c.thrudate, DATE '2262-04-11')
-            LEFT JOIN prihistcan AS d
-                ON a.gvkey = d.gvkey
-                AND a.{datevar} BETWEEN d.effdate AND COALESCE(d.thrudate, DATE '2262-04-11')
-            LEFT JOIN header AS e
-                ON a.gvkey = e.gvkey
-        )
-        SELECT
-            * EXCLUDE (prihistrow, prihistusa, prihistcan),
-            CASE
-                WHEN iid IS NOT NULL
-                    AND COALESCE(
-                        (iid = prihistrow) OR (iid = prihistusa) OR (iid = prihistcan),
-                        FALSE
-                        )
-                THEN 1
-                ELSE 0
-            END AS primary_sec
-        FROM __data1
-        ORDER BY gvkey, iid, datadate;
-
-        -- Deterministic dedup: prefer primary_sec=1 when range-join fan-out
-        -- produces conflicting classifications for the same (gvkey, iid, datadate).
-        -- Investigation (issue #69) found 40 affected groups in current data,
-        -- all for gvkey 327360 (iids 02W, 38W) where overlapping prihist records
-        -- yield both primary_sec=0 and primary_sec=1 for the same observation.
-        -- Preferring primary_sec=1 avoids wrongly excluding primary securities.
+    data = Path(data_path).as_posix()
+    prihistrow, prihistusa, prihistcan, header = (
+        (raw_data_dfs / f"{name}.parquet").as_posix()
+        for name in ("__prihistrow", "__prihistusa", "__prihistcan", "__header")
+    )
+    with _duckdb_connect(paths) as con:
+        # insertion-order preservation is irrelevant under an explicit ORDER BY and only
+        # inflates the sort's memory
+        con.execute("SET preserve_insertion_order = false")
+        con.execute(f"""
         COPY (
-            SELECT DISTINCT ON (gvkey, iid, {datevar}) *
-            FROM __data2
-            ORDER BY gvkey, iid, {datevar}, primary_sec DESC
-        ) TO '{file_name_posix}' (FORMAT parquet);
-    """)
-
-    con.close()
-    (paths.interim_dir / "aux_prim_sec.ddb").unlink(missing_ok=True)
+            WITH flags AS (
+                -- overlapping history records can match a security-date more than once
+                -- with conflicting answers; primary wins (issue #69)
+                SELECT
+                    a.gvkey, a.iid, a.{datevar},
+                    MAX(CASE WHEN a.iid IN (
+                            COALESCE(b.prihistrow, e.prirow),
+                            COALESCE(c.prihistusa, e.priusa),
+                            COALESCE(d.prihistcan, e.prican))
+                        THEN 1 ELSE 0 END) AS primary_sec
+                FROM read_parquet('{data}') AS a
+                LEFT JOIN read_parquet('{prihistrow}') AS b
+                    ON a.gvkey = b.gvkey
+                    AND a.{datevar} BETWEEN b.effdate AND COALESCE(b.thrudate, DATE '2262-04-11')
+                LEFT JOIN read_parquet('{prihistusa}') AS c
+                    ON a.gvkey = c.gvkey
+                    AND a.{datevar} BETWEEN c.effdate AND COALESCE(c.thrudate, DATE '2262-04-11')
+                LEFT JOIN read_parquet('{prihistcan}') AS d
+                    ON a.gvkey = d.gvkey
+                    AND a.{datevar} BETWEEN d.effdate AND COALESCE(d.thrudate, DATE '2262-04-11')
+                LEFT JOIN read_parquet('{header}') AS e
+                    ON a.gvkey = e.gvkey
+                GROUP BY a.gvkey, a.iid, a.{datevar}
+            ),
+            dup_keys AS (
+                SELECT gvkey, iid, {datevar}
+                FROM read_parquet('{data}')
+                GROUP BY gvkey, iid, {datevar}
+                HAVING count(*) > 1
+            ),
+            -- of rows sharing a key, keep one by the rule in the docstring; ordering every
+            -- column is costly, so only the rows of duplicated keys go through it
+            deduped AS (
+                SELECT t.*
+                FROM read_parquet('{data}') AS t
+                -- IS NOT DISTINCT FROM: NULL keys form one group, as in GROUP BY
+                ANTI JOIN dup_keys AS k
+                    ON t.gvkey IS NOT DISTINCT FROM k.gvkey
+                    AND t.iid IS NOT DISTINCT FROM k.iid
+                    AND t.{datevar} IS NOT DISTINCT FROM k.{datevar}
+                UNION ALL
+                (SELECT DISTINCT ON (t.gvkey, t.iid, t.{datevar}) t.*
+                 FROM read_parquet('{data}') AS t
+                 SEMI JOIN dup_keys AS k
+                     ON t.gvkey IS NOT DISTINCT FROM k.gvkey
+                     AND t.iid IS NOT DISTINCT FROM k.iid
+                     AND t.{datevar} IS NOT DISTINCT FROM k.{datevar}
+                 ORDER BY gvkey, iid, {datevar},
+                     -- a row gen_secd_data keeps
+                     COALESCE(prc_local IS NOT NULL AND curcdd IS NOT NULL
+                              AND prcstd IN (3, 4, 10), FALSE) DESC,
+                     -- gen_returns_df's rule, so prices and the return come from one row
+                     prcstd DESC NULLS LAST,
+                     exch_main DESC NULLS LAST,
+                     dolvol DESC NULLS LAST,
+                     COLUMNS(* EXCLUDE (gvkey, iid, {datevar})))
+            )
+            SELECT deduped.*, flags.primary_sec
+            FROM deduped
+            JOIN flags
+                ON deduped.gvkey IS NOT DISTINCT FROM flags.gvkey
+                AND deduped.iid IS NOT DISTINCT FROM flags.iid
+                AND deduped.{datevar} IS NOT DISTINCT FROM flags.{datevar}
+            ORDER BY deduped.gvkey, deduped.iid, deduped.{datevar}
+        ) TO '{Path(file_name).as_posix()}' (FORMAT PARQUET)
+        """)
 
 
 def load_rf_and_exchange_data(paths: DataPaths):
@@ -2167,12 +2235,12 @@ def load_rf_and_exchange_data(paths: DataPaths):
         Tuple of (crsp_mcti LazyFrame, ff_factors_monthly LazyFrame, exchanges DataFrame).
     """
     crsp_mcti = (
-        pl.read_parquet(paths.interim_dir / "raw_data_dfs" / "crsp_mcti_t30ret.parquet")
+        pl.scan_parquet(paths.interim_dir / "raw_data_dfs" / "crsp_mcti_t30ret.parquet")
         .with_columns(merge_aux=gen_MMYY_column("caldt"))
         .drop("caldt")
     )
     ff_factors_monthly = (
-        pl.read_parquet(paths.interim_dir / "raw_data_dfs" / "ff_factors_monthly.parquet")
+        pl.scan_parquet(paths.interim_dir / "raw_data_dfs" / "ff_factors_monthly.parquet")
         .with_columns(merge_aux=gen_MMYY_column("date"))
         .drop("date")
     )
@@ -2297,10 +2365,10 @@ def gen_temporary_sf(paths: DataPaths, freq, __returns, __delist):
     Output:
         Polars LazyFrame with returns adjusted for delisting.
     """
-    base = pl.read_parquet(paths.interim_dir / f"__comp_{freq}sf.parquet")
+    base = pl.scan_parquet(paths.interim_dir / f"__comp_{freq}sf.parquet")
     temp_sf = (
-        base.join(__returns, how="left", on=["gvkey", "iid", "datadate"])
-        .join(__delist, how="left", on=["gvkey", "iid"])
+        base.join(__returns.lazy(), how="left", on=["gvkey", "iid", "datadate"])
+        .join(__delist.lazy(), how="left", on=["gvkey", "iid"])
         .filter((col("datadate") <= col("date_delist")) | (col("date_delist").is_null()))
         .with_columns(
             ret=pl.when(col("datadate") == col("date_delist"))
@@ -2337,7 +2405,7 @@ def add_rf_and_exchange_data_to_temporary_sf(paths: DataPaths, freq, temp_sf):
         .with_columns(ret_exc=col("ret") - pl.coalesce(["t30ret", "rf"]) / scale)
         .drop(["merge_aux", "rf", "t30ret"])
         .with_columns(col("exchg").cast(pl.Int64))
-        .join(__exchanges, how="left", on=["exchg"])
+        .join(__exchanges.lazy(), how="left", on=["exchg"])
     )
     return temp_sf
 
@@ -2371,7 +2439,6 @@ def process_comp_sf1(paths: DataPaths, freq):
         primary_sec, and for daily: ret_intraday, ret_overnight,
         ret_intraday_local, ret_overnight_local).
     """
-    # Eager mode is faster here
     if freq == "m":
         gen_comp_msf(paths)
     __returns = gen_returns_df(paths, freq)
@@ -2379,7 +2446,7 @@ def process_comp_sf1(paths: DataPaths, freq):
     __comp_sf2 = gen_temporary_sf(paths, freq, __returns, __delist)
     __comp_sf2 = add_rf_and_exchange_data_to_temporary_sf(paths, freq, __comp_sf2)
 
-    if freq == "d" and "prc_open" in __comp_sf2.columns:
+    if freq == "d" and "prc_open" in __comp_sf2.collect_schema().names():
         __comp_sf2 = (
             __comp_sf2.with_columns(
                 ret_intraday=pl.when((col("prc_open") > 0) & (col("prc") > 0))
@@ -2401,8 +2468,7 @@ def process_comp_sf1(paths: DataPaths, freq):
             )
         )
 
-    __comp_sf2.write_parquet(paths.interim_dir / "__comp_sf2.parquet")
-    del __comp_sf2
+    __comp_sf2.sink_parquet(paths.interim_dir / "__comp_sf2.parquet")
     add_primary_sec(
         paths,
         paths.interim_dir / "__comp_sf2.parquet",
