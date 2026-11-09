@@ -21,13 +21,15 @@ from typing import TypeVar
 
 import duckdb
 import ibis
-import numpy as np
 import polars as pl
 import polars_ds as pds
 import polars_ols  # noqa: F401 - required for least_squares method on polars expressions
 from ibis import _
-from numba import get_num_threads, njit, prange
 from polars import col
+
+# isort: split
+import numpy as np
+from numba import get_num_threads, njit, prange
 
 from .compustat_correction import (
     correct_decimal_errors,
