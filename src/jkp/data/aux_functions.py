@@ -2101,13 +2101,30 @@ def add_primary_sec(paths: DataPaths, data_path, datevar, file_name):
                 LEFT JOIN read_parquet('{header}') AS e
                     ON a.gvkey = e.gvkey
                 GROUP BY a.gvkey, a.iid, a.{datevar}
-            )
+            ),
+            dup_keys AS (
+                SELECT gvkey, iid, {datevar}
+                FROM read_parquet('{data}')
+                GROUP BY gvkey, iid, {datevar}
+                HAVING count(*) > 1
+            ),
             -- of rows sharing a key, keep the first in the order of all columns, so the
-            -- choice does not depend on the input's row order
-            SELECT DISTINCT ON (gvkey, iid, {datevar}) data.*, flags.primary_sec
-            FROM read_parquet('{data}') AS data
+            -- choice does not depend on the input's row order; ordering every column is
+            -- costly, so only the rows of duplicated keys go through it
+            deduped AS (
+                SELECT *
+                FROM read_parquet('{data}')
+                ANTI JOIN dup_keys USING (gvkey, iid, {datevar})
+                UNION ALL
+                (SELECT DISTINCT ON (gvkey, iid, {datevar}) *
+                 FROM read_parquet('{data}')
+                 SEMI JOIN dup_keys USING (gvkey, iid, {datevar})
+                 ORDER BY gvkey, iid, {datevar}, COLUMNS(* EXCLUDE (gvkey, iid, {datevar})))
+            )
+            SELECT deduped.*, flags.primary_sec
+            FROM deduped
             JOIN flags USING (gvkey, iid, {datevar})
-            ORDER BY gvkey, iid, {datevar}, COLUMNS(* EXCLUDE (gvkey, iid, {datevar}))
+            ORDER BY gvkey, iid, {datevar}
         ) TO '{Path(file_name).as_posix()}' (FORMAT PARQUET)
         """)
 
