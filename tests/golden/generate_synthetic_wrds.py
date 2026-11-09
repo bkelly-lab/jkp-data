@@ -14,8 +14,10 @@ Usage
 -----
     uv run python -m tests.golden.generate_synthetic_wrds
 
-Deterministic (seed = 42). Re-running overwrites
-``tests/golden/fixtures/synthetic_wrds/``.
+Deterministic (seed = 42) on a given CPU. numpy's vectorized exp/log can
+differ in the last bit across CPU types, so regenerate on the machine type
+that built the committed files to avoid ulp-only diffs.
+Re-running overwrites ``tests/golden/fixtures/synthetic_wrds/``.
 """
 
 from __future__ import annotations
@@ -1033,7 +1035,8 @@ def gen_fx1(rng: np.random.Generator) -> pl.DataFrame:
     del rng
     month_ends = _month_ends(DATE_START, DATE_END)
     rows: list[dict] = []
-    for ccy in set(CURRENCY.values()):
+    # sorted: set order follows the per-process string hash seed
+    for ccy in sorted(set(CURRENCY.values())):
         for d in month_ends:
             rows.append({"curcdd": ccy, "datadate": d, "fx": 1.0})
     return pl.DataFrame(rows).with_columns(pl.col("datadate").cast(pl.Date))
