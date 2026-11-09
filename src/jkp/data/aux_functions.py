@@ -1704,14 +1704,14 @@ def gen_comp_dsf(
 
         """)
 
+        # both branches write __comp_dsf in key order: gen_secd_data's float sums depend on
+        # row order. Insertion-order preservation is irrelevant under an explicit ORDER BY
+        # and only inflates the sort's memory
+        con.execute("SET preserve_insertion_order = false")
         if apply_correction:
             # the exchange country feeds the filters' country-specific price thresholds
             con.register("exchanges", comp_exchanges(paths).select(["exchg", "excntry"]))
             unfiltered_path = paths.interim_dir / "__corr_filter_input.parquet"
-            # sorted so __comp_dsf is written in key order: gen_secd_data's float sums
-            # depend on row order. Insertion-order preservation is irrelevant under an
-            # explicit ORDER BY and only inflates the sort's memory
-            con.execute("SET preserve_insertion_order = false")
             con.execute(f"""
         COPY (
             SELECT t.*, e.excntry
@@ -1723,8 +1723,10 @@ def gen_comp_dsf(
             """)
         else:
             con.execute(f"""
-        COPY (SELECT * FROM __comp_dsf3)
-        TO '{(paths.interim_dir / "__comp_dsf.parquet").as_posix()}' (FORMAT PARQUET);
+        COPY (
+            SELECT * FROM __comp_dsf3
+            ORDER BY gvkey NULLS FIRST, iid NULLS FIRST, datadate NULLS FIRST
+        ) TO '{(paths.interim_dir / "__comp_dsf.parquet").as_posix()}' (FORMAT PARQUET);
             """)
 
     # Drop unreliable observations from the USD-converted data
@@ -2114,13 +2116,20 @@ def add_primary_sec(paths: DataPaths, data_path, datevar, file_name):
             -- of rows sharing a key, keep one by the rule in the docstring; ordering every
             -- column is costly, so only the rows of duplicated keys go through it
             deduped AS (
-                SELECT *
-                FROM read_parquet('{data}')
-                ANTI JOIN dup_keys USING (gvkey, iid, {datevar})
+                SELECT t.*
+                FROM read_parquet('{data}') AS t
+                -- IS NOT DISTINCT FROM: NULL keys form one group, as in GROUP BY
+                ANTI JOIN dup_keys AS k
+                    ON t.gvkey IS NOT DISTINCT FROM k.gvkey
+                    AND t.iid IS NOT DISTINCT FROM k.iid
+                    AND t.{datevar} IS NOT DISTINCT FROM k.{datevar}
                 UNION ALL
-                (SELECT DISTINCT ON (gvkey, iid, {datevar}) *
-                 FROM read_parquet('{data}')
-                 SEMI JOIN dup_keys USING (gvkey, iid, {datevar})
+                (SELECT DISTINCT ON (t.gvkey, t.iid, t.{datevar}) t.*
+                 FROM read_parquet('{data}') AS t
+                 SEMI JOIN dup_keys AS k
+                     ON t.gvkey IS NOT DISTINCT FROM k.gvkey
+                     AND t.iid IS NOT DISTINCT FROM k.iid
+                     AND t.{datevar} IS NOT DISTINCT FROM k.{datevar}
                  ORDER BY gvkey, iid, {datevar},
                      -- a row gen_secd_data keeps
                      COALESCE(prc_local IS NOT NULL AND curcdd IS NOT NULL
@@ -2133,8 +2142,11 @@ def add_primary_sec(paths: DataPaths, data_path, datevar, file_name):
             )
             SELECT deduped.*, flags.primary_sec
             FROM deduped
-            JOIN flags USING (gvkey, iid, {datevar})
-            ORDER BY gvkey, iid, {datevar}
+            JOIN flags
+                ON deduped.gvkey IS NOT DISTINCT FROM flags.gvkey
+                AND deduped.iid IS NOT DISTINCT FROM flags.iid
+                AND deduped.{datevar} IS NOT DISTINCT FROM flags.{datevar}
+            ORDER BY deduped.gvkey, deduped.iid, deduped.{datevar}
         ) TO '{Path(file_name).as_posix()}' (FORMAT PARQUET)
         """)
 
@@ -2387,7 +2399,6 @@ def process_comp_sf1(paths: DataPaths, freq):
         )
 
     __comp_sf2.sink_parquet(paths.interim_dir / "__comp_sf2.parquet")
-    del __comp_sf2
     add_primary_sec(
         paths,
         paths.interim_dir / "__comp_sf2.parquet",
