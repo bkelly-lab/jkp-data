@@ -7111,7 +7111,8 @@ def market_chars_monthly(paths: DataPaths, data_path, market_ret_path, local_cur
         .sort(["id", "eom"])
     )
 
-    data.collect().write_parquet(paths.interim_dir / "market_chars_m.parquet")
+    # The streaming engine returns this frame in ~115k chunks; writing them unmerged takes ~20x longer.
+    data.collect().rechunk().write_parquet(paths.interim_dir / "market_chars_m.parquet")
 
 
 @measure_time
