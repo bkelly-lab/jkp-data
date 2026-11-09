@@ -1,6 +1,6 @@
 """Pairwise matrix smoke tests for ``portfolios()``.
 
-Covers the cartesian of ``(bps, source, signals, cmp_key, wins_ret,
+Covers the cartesian of ``(bps, source, cmp_key, wins_ret,
 daily_pf, ind_pf, excntry)`` via a handwritten pairwise table sized to
 exercise every axis level at least twice while staying under 20 cases.
 
@@ -72,7 +72,6 @@ CMP_COLS = {
 # Axes covered (each level appears in >= 2 cases):
 #   bps:      non_mc, nyse
 #   source:   ["CRSP"], ["COMPUSTAT"], ["CRSP", "COMPUSTAT"]
-#   signals:  True (1-char only — multi-char hits a duplicate-w bug), False
 #   cmp_key:  True (USA only), False
 #   wins_ret: True, False
 #   daily_pf: True, False
@@ -84,10 +83,9 @@ CMP_COLS = {
 
 _MATRIX_CASES: list[dict] = [
     {
-        "id": "non_mc-both-noSig-noCmp-winsT-dailyF-indT-USA",
+        "id": "non_mc-both-noCmp-winsT-dailyF-indT-USA",
         "bps": "non_mc",
         "source": ["CRSP", "COMPUSTAT"],
-        "signals": False,
         "cmp_key": False,
         "wins_ret": True,
         "daily_pf": False,
@@ -96,10 +94,9 @@ _MATRIX_CASES: list[dict] = [
         "n_chars": 2,
     },
     {
-        "id": "nyse-both-noSig-noCmp-winsT-dailyF-indT-USA",
+        "id": "nyse-both-noCmp-winsT-dailyF-indT-USA",
         "bps": "nyse",
         "source": ["CRSP", "COMPUSTAT"],
-        "signals": False,
         "cmp_key": False,
         "wins_ret": True,
         "daily_pf": False,
@@ -108,10 +105,9 @@ _MATRIX_CASES: list[dict] = [
         "n_chars": 2,
     },
     {
-        "id": "non_mc-CRSP-noSig-noCmp-winsT-dailyF-indF-FRA",
+        "id": "non_mc-CRSP-noCmp-winsT-dailyF-indF-FRA",
         "bps": "non_mc",
         "source": ["CRSP"],
-        "signals": False,
         "cmp_key": False,
         "wins_ret": True,
         "daily_pf": False,
@@ -120,10 +116,9 @@ _MATRIX_CASES: list[dict] = [
         "n_chars": 2,
     },
     {
-        "id": "non_mc-COMP-noSig-noCmp-winsT-dailyF-indT-USA",
+        "id": "non_mc-COMP-noCmp-winsT-dailyF-indT-USA",
         "bps": "non_mc",
         "source": ["COMPUSTAT"],
-        "signals": False,
         "cmp_key": False,
         "wins_ret": True,
         "daily_pf": False,
@@ -132,10 +127,9 @@ _MATRIX_CASES: list[dict] = [
         "n_chars": 2,
     },
     {
-        "id": "non_mc-both-Sig-noCmp-winsT-dailyF-indF-USA",
+        "id": "non_mc-both-noCmp-winsT-dailyF-indF-USA",
         "bps": "non_mc",
         "source": ["CRSP", "COMPUSTAT"],
-        "signals": True,
         "cmp_key": False,
         "wins_ret": True,
         "daily_pf": False,
@@ -144,10 +138,9 @@ _MATRIX_CASES: list[dict] = [
         "n_chars": 2,
     },
     {
-        "id": "non_mc-both-noSig-Cmp-winsT-dailyT-indT-USA",
+        "id": "non_mc-both-Cmp-winsT-dailyT-indT-USA",
         "bps": "non_mc",
         "source": ["CRSP", "COMPUSTAT"],
-        "signals": False,
         "cmp_key": True,
         "wins_ret": True,
         "daily_pf": True,
@@ -156,10 +149,9 @@ _MATRIX_CASES: list[dict] = [
         "n_chars": 2,
     },
     {
-        "id": "non_mc-both-noSig-noCmp-winsF-dailyF-indT-USA",
+        "id": "non_mc-both-noCmp-winsF-dailyF-indT-USA",
         "bps": "non_mc",
         "source": ["CRSP", "COMPUSTAT"],
-        "signals": False,
         "cmp_key": False,
         "wins_ret": False,
         "daily_pf": False,
@@ -168,10 +160,9 @@ _MATRIX_CASES: list[dict] = [
         "n_chars": 2,
     },
     {
-        "id": "non_mc-both-noSig-noCmp-winsT-dailyT-indF-USA",
+        "id": "non_mc-both-noCmp-winsT-dailyT-indF-USA",
         "bps": "non_mc",
         "source": ["CRSP", "COMPUSTAT"],
-        "signals": False,
         "cmp_key": False,
         "wins_ret": True,
         "daily_pf": True,
@@ -180,10 +171,9 @@ _MATRIX_CASES: list[dict] = [
         "n_chars": 2,
     },
     {
-        "id": "nyse-CRSP-noSig-noCmp-winsF-dailyT-indT-USA",
+        "id": "nyse-CRSP-noCmp-winsF-dailyT-indT-USA",
         "bps": "nyse",
         "source": ["CRSP"],
-        "signals": False,
         "cmp_key": False,
         "wins_ret": False,
         "daily_pf": True,
@@ -192,10 +182,9 @@ _MATRIX_CASES: list[dict] = [
         "n_chars": 2,
     },
     {
-        "id": "nyse-COMP-noSig-noCmp-winsT-dailyT-indF-FRA",
+        "id": "nyse-COMP-noCmp-winsT-dailyT-indF-FRA",
         "bps": "nyse",
         "source": ["COMPUSTAT"],
-        "signals": False,
         "cmp_key": False,
         "wins_ret": True,
         "daily_pf": True,
@@ -204,10 +193,9 @@ _MATRIX_CASES: list[dict] = [
         "n_chars": 2,
     },
     {
-        "id": "non_mc-CRSP-Sig-noCmp-winsF-dailyT-indT-USA",
+        "id": "non_mc-CRSP-noCmp-winsF-dailyT-indT-USA",
         "bps": "non_mc",
         "source": ["CRSP"],
-        "signals": True,
         "cmp_key": False,
         "wins_ret": False,
         "daily_pf": True,
@@ -216,10 +204,9 @@ _MATRIX_CASES: list[dict] = [
         "n_chars": 1,
     },
     {
-        "id": "nyse-both-noSig-Cmp-winsF-dailyF-indF-USA",
+        "id": "nyse-both-Cmp-winsF-dailyF-indF-USA",
         "bps": "nyse",
         "source": ["CRSP", "COMPUSTAT"],
-        "signals": False,
         "cmp_key": True,
         "wins_ret": False,
         "daily_pf": False,
@@ -228,10 +215,9 @@ _MATRIX_CASES: list[dict] = [
         "n_chars": 2,
     },
     {
-        "id": "nyse-COMP-noSig-noCmp-winsF-dailyF-indT-FRA",
+        "id": "nyse-COMP-noCmp-winsF-dailyF-indT-FRA",
         "bps": "nyse",
         "source": ["COMPUSTAT"],
-        "signals": False,
         "cmp_key": False,
         "wins_ret": False,
         "daily_pf": False,
@@ -240,10 +226,9 @@ _MATRIX_CASES: list[dict] = [
         "n_chars": 2,
     },
     {
-        "id": "non_mc-both-noSig-Cmp-winsT-dailyF-indF-USA",
+        "id": "non_mc-both-Cmp-winsT-dailyF-indF-USA",
         "bps": "non_mc",
         "source": ["CRSP", "COMPUSTAT"],
-        "signals": False,
         "cmp_key": True,
         "wins_ret": True,
         "daily_pf": False,
@@ -273,9 +258,7 @@ def _expected_keys(config: dict) -> set[str]:
             if config["excntry"].lower() == "usa":
                 keys.add("ff49_daily")
     if config["cmp_key"]:
-        keys.add("cmp")
-    if config["signals"]:
-        keys.add("signals")
+        keys.update({"cmp_1", "cmp_2", "cmp_5"})
     return keys
 
 
@@ -337,9 +320,6 @@ class TestPortfoliosMatrix:
             source=config["source"],
             wins_ret=config["wins_ret"],
             cmp_key=config["cmp_key"],
-            signals=config["signals"],
-            signals_standardize=False,
-            signals_w="vw_cap",
             daily_pf=config["daily_pf"],
             ind_pf=config["ind_pf"],
             ret_cutoffs=ret_cutoffs,
@@ -370,5 +350,6 @@ class TestPortfoliosMatrix:
                     assert set(out["ff49_daily"].columns) == FF49_DAILY_COLS
 
         if config["cmp_key"]:
-            assert set(out["cmp"].columns) == CMP_COLS
-            assert out["cmp"].height > 0
+            for key in ("cmp_1", "cmp_2", "cmp_5"):
+                assert set(out[key].columns) == CMP_COLS
+                assert out[key].height > 0

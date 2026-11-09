@@ -37,7 +37,7 @@ uv run pytest
 # Run the full pipeline (requires WRDS credentials and ~450 GB RAM)
 jkp build data/                     # stock returns and firm characteristics
 jkp portfolio data/                 # factor returns (run after jkp build)
-jkp themes data/                    # rebuild the current themes version (v1.0) from saved hml and hml_cmp_5
+jkp themes data/                    # rebuild the current themes version (v1.0) from saved hml and hml_cmp_{1,2,5}
 jkp themes data/ --version v0       # build another released version, here v0
 jkp themes data/ --file my_themes.csv   # build an edited themes file
 
@@ -59,7 +59,7 @@ The pipeline has two entry points that run sequentially:
 5. Calculate rolling daily metrics (volatility, beta, skewness) across 21d/126d/252d/1260d windows
 6. Save outputs as parquet files to `data/processed/`
 
-**`src/jkp/data/portfolio.py`** constructs factor portfolios from the characteristics output by `main.py`, using ECDF ranking and value-weighting by market cap. It sorts every characteristic in a released themes version (`resources/themes/`), writes the unsigned `pfs`/`hml`/`hml_cmp_5`/`industry` files to `portfolios/`, then the signed factors and theme portfolios of the current version (`themes.csv`, now v1.0) to `portfolios/themes/<version>/`. `jkp themes` (`run_themes`) runs that last step from saved `hml` and `hml_cmp_5` files: the current version by default, any other released version such as v0 only when named with `--version`, or an edited file with `--file`.
+**`src/jkp/data/portfolio.py`** constructs factor portfolios from the characteristics output by `main.py`, using ECDF ranking and value-weighting by market cap. It sorts every characteristic in a released themes version (`resources/themes/`), writes the unsigned `pfs`/`hml`/`hml_cmp_{1,2,5}`/`industry` files to `portfolios/`, then the signed factors and theme portfolios of the current version (`themes.csv`, now v1.0) to `portfolios/themes/<version>/`. `jkp themes` (`run_themes`) runs that last step from saved `hml` and `hml_cmp_{1,2,5}` files: the current version by default, any other released version such as v0 only when named with `--version`, or an edited file with `--file`.
 
 ### Key source files
 
@@ -105,6 +105,7 @@ Output:
 - Use `pl.scan_parquet()` (lazy) for reading, not `pl.read_parquet()` unless full data is needed eagerly
 - Return Polars expressions from helper functions (like `safe_div`)
 - Use `safe_div()` for any division — never raw `/`
+- **Exception: the Numba kernels in portfolio construction** (`_rank_rows_kernel`, `_sum_rows_kernel`, `_portfolio_rows_kernel` in `aux_functions.py`) are Numba, not Polars, and divide with raw `/`: a zero denominator must give NaN or infinity as before, and `safe_div` is a Polars expression that cannot run in a kernel. Keep their output the same at any thread count.
 - **Do not use `sum_sas` or `sub_sas` in new code.** These are legacy functions that replicate SAS null semantics (treat null as 0 when any input is non-null). They exist for backward compatibility in existing characteristic calculations. New code should use standard Polars null propagation, or explicit `pl.coalesce()` when null-as-zero behavior is needed.
 - Prefer Polars over DuckDB/Ibis for new code. Existing code uses DuckDB via Ibis for some complex SQL aggregations, but new work should use Polars expressions and lazy evaluation where possible.
 

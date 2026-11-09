@@ -14,6 +14,7 @@ import shutil
 from datetime import date
 from pathlib import Path
 
+import polars as pl
 import pytest
 
 from tests.unit.portfolio.conftest import (
@@ -31,7 +32,6 @@ PROFILES: dict[str, dict] = {
     "default_monthly": {
         "bps": "non_mc",
         "source": ["CRSP", "COMPUSTAT"],
-        "signals_us": False,
         "cmp_us": False,
         "daily_pf": False,
         "ind_pf": True,
@@ -39,7 +39,6 @@ PROFILES: dict[str, dict] = {
     "nyse_breakpoints": {
         "bps": "nyse",
         "source": ["CRSP", "COMPUSTAT"],
-        "signals_us": False,
         "cmp_us": False,
         "daily_pf": False,
         "ind_pf": True,
@@ -47,15 +46,6 @@ PROFILES: dict[str, dict] = {
     "crsp_only": {
         "bps": "non_mc",
         "source": ["CRSP"],
-        "signals_us": False,
-        "cmp_us": False,
-        "daily_pf": False,
-        "ind_pf": False,
-    },
-    "signals_on": {
-        "bps": "non_mc",
-        "source": ["CRSP", "COMPUSTAT"],
-        "signals_us": True,
         "cmp_us": False,
         "daily_pf": False,
         "ind_pf": False,
@@ -63,7 +53,6 @@ PROFILES: dict[str, dict] = {
     "cmp_on": {
         "bps": "non_mc",
         "source": ["CRSP", "COMPUSTAT"],
-        "signals_us": False,
         "cmp_us": True,
         "daily_pf": False,
         "ind_pf": True,
@@ -71,7 +60,6 @@ PROFILES: dict[str, dict] = {
     "full_daily": {
         "bps": "non_mc",
         "source": ["CRSP", "COMPUSTAT"],
-        "signals_us": False,
         "cmp_us": False,
         "daily_pf": True,
         "ind_pf": True,
@@ -92,13 +80,7 @@ def _build_settings(cfg: dict) -> dict:
         "wins_ret": True,
         "bps": cfg["bps"],
         "bp_min_n": 5,
-        "cmp": {"us": cfg["cmp_us"], "int": False},
-        "signals": {
-            "us": cfg["signals_us"],
-            "int": False,
-            "standardize": True,
-            "weight": "vw_cap",
-        },
+        "cmp": {"us": cfg["cmp_us"], "int": cfg["cmp_us"]},
         "regional_pfs": {
             "country_excl": ["ZWE", "VEN"],
             "country_weights": "market_cap",
@@ -165,5 +147,13 @@ def test_run_portfolio_golden(
     extra = sorted(str(r) for r in actual_rels - fixture_rels)
     if extra:
         failures.append(f"unexpected extra outputs: {extra}")
+
+    # The pf stacks are not sorted after the country loop, so check they come in key order.
+    # compare_parquets sorts both sides and would not see an order error.
+    for path in sorted(output_root.glob("pfs*.parquet")):
+        pfs = pl.read_parquet(path)
+        keys = ["excntry", "characteristic", "pf", "eom" if "eom" in pfs.columns else "date"]
+        if not pfs.equals(pfs.sort(keys)):
+            failures.append(f"{path.name} is not sorted by {keys}")
 
     assert not failures, "\n".join(failures)

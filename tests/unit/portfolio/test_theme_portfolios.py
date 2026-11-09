@@ -264,12 +264,6 @@ class TestClusterPortfolios:
             "bps": "non_mc",
             "bp_min_n": 3,
             "cmp": {"us": False, "int": False},
-            "signals": {
-                "us": False,
-                "int": False,
-                "standardize": True,
-                "weight": "vw_cap",
-            },
             "regional_pfs": {
                 "country_excl": ["ZWE", "VEN"],
                 "country_weights": "market_cap",
@@ -476,7 +470,7 @@ class TestWriteThemeVersions:
                     ("", pl.DataFrame({"characteristic": ["a", "b"]}), "eom"),
                     ("_daily", pl.DataFrame({"characteristic": ["a"]}), "date"),
                 ],
-                cmp=None,
+                cmp={},
                 market=pl.DataFrame(),
                 market_daily=None,
                 regions=pl.DataFrame(),
@@ -485,7 +479,7 @@ class TestWriteThemeVersions:
         assert [p.name for p in old.parent.iterdir()] == ["themes.parquet"]
 
     @staticmethod
-    def _write_cmp(tmp_path: Path, cmp: pl.DataFrame | None) -> None:
+    def _write_cmp(tmp_path: Path, cmp: dict[int, pl.DataFrame]) -> None:
         # "b" has sign -1 in both versions; "c" is in no version.
         themes = pl.DataFrame(
             {"characteristic": ["a", "b"], "theme": "T", "subtheme": "S", "direction": [1, -1]},
@@ -514,7 +508,7 @@ class TestWriteThemeVersions:
                 "excntry": "USA",
             }
         )
-        self._write_cmp(tmp_path, cmp)
+        self._write_cmp(tmp_path, {5: cmp})
 
         v0 = pl.read_parquet(tmp_path / "themes" / "v0" / "cmp.parquet")
         assert v0.equals(cmp.filter(pl.col("characteristic") != "c"))
@@ -539,12 +533,50 @@ class TestWriteThemeVersions:
                 "excntry": "USA",
             }
         )
-        self._write_cmp(tmp_path, cmp)
+        self._write_cmp(tmp_path, {5: cmp})
 
-        assert "No cmp rows for themes v1.0: ['b']" in capsys.readouterr().out
+        assert "No lms_cmp_5 rows for themes v1.0: ['b']" in capsys.readouterr().out
         v1 = pl.read_parquet(tmp_path / "themes" / "v1.0" / "lms_cmp_5.parquet")
         assert v1["characteristic"].to_list() == ["a"]
 
     def test_no_cmp_file_without_cmp(self, tmp_path: Path) -> None:
-        self._write_cmp(tmp_path, None)
+        self._write_cmp(tmp_path, {})
         assert not list(tmp_path.rglob("*cmp*"))
+
+    @staticmethod
+    def _cmp_two_countries() -> pl.DataFrame:
+        return pl.DataFrame(
+            {
+                "characteristic": ["a", "b", "a"],
+                "size_grp": "x",
+                "eom": date(2020, 1, 31),
+                "n_stocks": [10, 20, 30],
+                "ret_weighted": [0.1, 0.2, 0.3],
+                "signal_weighted": [1.0, 2.0, 3.0],
+                "excntry": ["USA", "USA", "FRA"],
+            }
+        )
+
+    def test_v0_stays_us_with_five_size_groups(self, tmp_path: Path) -> None:
+        cmp = self._cmp_two_countries()
+        self._write_cmp(tmp_path, {1: cmp, 2: cmp, 5: cmp})
+
+        v0 = tmp_path / "themes" / "v0"
+        assert [p.name for p in v0.glob("*cmp*")] == ["cmp.parquet"]
+        assert pl.read_parquet(v0 / "cmp.parquet").equals(cmp.filter(pl.col("excntry") == "USA"))
+
+    def test_later_versions_sign_every_grouping_and_country(self, tmp_path: Path) -> None:
+        cmp = self._cmp_two_countries()
+        self._write_cmp(tmp_path, {1: cmp, 2: cmp, 5: cmp})
+
+        for n_groups in (1, 2, 5):
+            signed = pl.read_parquet(tmp_path / "themes" / "v1.0" / f"lms_cmp_{n_groups}.parquet")
+            assert signed["excntry"].to_list() == ["USA", "USA", "FRA"]
+            assert signed["ret_weighted"].to_list() == [0.1, -0.2, 0.3]
+
+    def test_v0_has_no_file_without_us_rows(self, tmp_path: Path) -> None:
+        cmp = self._cmp_two_countries().filter(pl.col("excntry") == "FRA")
+        self._write_cmp(tmp_path, {5: cmp})
+
+        assert not (tmp_path / "themes" / "v0" / "cmp.parquet").exists()
+        assert (tmp_path / "themes" / "v1.0" / "lms_cmp_5.parquet").exists()

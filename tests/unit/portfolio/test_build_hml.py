@@ -76,6 +76,22 @@ class TestBuildHmlAndSignFactors:
         # Other cohorts retained.
         assert hml.height == 2 * 3 - 1
 
+    def test_one_portfolio_gives_no_rows(self):
+        pf_df = _make_pf_df().filter(pl.col("pf") == 1)
+        hml = _build_hml(pf_df, n_pfs=1, date_col="eom", include_signal=True)
+        assert hml.height == 0
+        assert "ret_vw_cap" in hml.columns
+
+    def test_duplicate_extreme_portfolio_row_raises(self):
+        pf_df = _make_pf_df()
+        with pytest.raises(pl.exceptions.ComputeError):
+            _build_hml(
+                pl.concat([pf_df, pf_df.filter(pl.col("pf") == 3).head(1)]),
+                n_pfs=3,
+                date_col="eom",
+                include_signal=True,
+            )
+
     def test_n_stocks_is_sum_of_extremes(self):
         pf_df = _make_pf_df()
         hml = _build_hml(pf_df, n_pfs=3, date_col="eom", include_signal=True)

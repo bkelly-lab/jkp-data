@@ -58,13 +58,7 @@ def _setup(
         "wins_ret": True,
         "bps": "non_mc",
         "bp_min_n": 5,
-        "cmp": {"us": True, "int": False},
-        "signals": {
-            "us": False,
-            "int": False,
-            "standardize": True,
-            "weight": "vw_cap",
-        },
+        "cmp": {"us": True, "int": True},
         "regional_pfs": {
             "country_excl": ["ZWE", "VEN"],
             "country_weights": "market_cap",
@@ -245,7 +239,7 @@ def _files(root: Path, suffix: str = "parquet") -> set[str]:
 
 def _assert_cmp_signed(signed: pl.DataFrame, unsigned: pl.DataFrame) -> None:
     """Each signed cmp row is the unsigned row times its direction, in the same order."""
-    keys = ["characteristic", "size_grp", "eom"]
+    keys = ["excntry", "characteristic", "size_grp", "eom"]
     assert signed.select(keys).equals(unsigned.select(keys))
     joined = signed.join(unsigned, on=keys, suffix="_unsigned", validate="1:1")
     for col in ("ret_weighted", "signal_weighted"):
@@ -294,13 +288,14 @@ class TestRunThemes:
         run_themes(output_dir=tmp_path, version="v0")
         portfolios = _portfolios_dir(tmp_path)
         unsigned = pl.read_parquet(portfolios / "hml_cmp_5.parquet")
-        assert unsigned.height > 0
+        assert set(unsigned["excntry"]) == {"USA", "FRA"}
         keys = ["characteristic", "size_grp", "eom"]
 
         assert unsigned.equals(unsigned.sort("excntry", *keys))
-        v0 = pl.read_parquet(portfolios / "themes" / "v0" / "cmp.parquet")
-        assert v0.equals(unsigned)
-        assert not (portfolios / "themes" / "v0" / "lms_cmp_5.parquet").exists()
+        v0_dir = portfolios / "themes" / "v0"
+        assert [p.name for p in v0_dir.glob("*cmp*")] == ["cmp.parquet"]
+        v0 = pl.read_parquet(v0_dir / "cmp.parquet")
+        assert v0.equals(unsigned.filter(pl.col("excntry") == "USA"))
 
         signed = pl.read_parquet(portfolios / "themes" / "v1.0" / "lms_cmp_5.parquet")
         directions = pl.read_parquet(portfolios / "themes" / "v1.0" / "lms.parquet").select(
@@ -315,6 +310,26 @@ class TestRunThemes:
         )
         _assert_cmp_signed(signed, unsigned)
 
+        for n_groups, names in ((1, {"all"}), (2, {"big", "small"})):
+            grouped = pl.read_parquet(portfolios / f"hml_cmp_{n_groups}.parquet")
+            assert set(grouped["size_grp"]) == names
+            assert set(grouped["excntry"]) == {"USA", "FRA"}
+            _assert_cmp_signed(
+                pl.read_parquet(portfolios / "themes" / "v1.0" / f"lms_cmp_{n_groups}.parquet"),
+                grouped,
+            )
+
+    def test_cmp_international_off_writes_only_us(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _setup(tmp_path, monkeypatch)
+        monkeypatch.setitem(portfolio_module.PORTFOLIO_SETTINGS, "cmp", {"us": True, "int": False})
+        run_portfolio(output_format="parquet", output_dir=tmp_path)
+        portfolios = _portfolios_dir(tmp_path)
+        for n_groups in (1, 2, 5):
+            cmp = pl.read_parquet(portfolios / f"hml_cmp_{n_groups}.parquet")
+            assert set(cmp["excntry"]) == {"USA"}
+
     def test_cmp_per_version_from_saved_csv(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -327,8 +342,12 @@ class TestRunThemes:
         assert unsigned.height > 0
         v0 = pl.read_csv(portfolios / "themes" / "v0" / "cmp.csv")
         assert "direction" not in v0.columns
-        assert v0.equals(unsigned)
-        _assert_cmp_signed(pl.read_csv(portfolios / "themes" / "v1.0" / "lms_cmp_5.csv"), unsigned)
+        assert v0.equals(unsigned.filter(pl.col("excntry") == "USA"))
+        for n_groups in (1, 2, 5):
+            _assert_cmp_signed(
+                pl.read_csv(portfolios / "themes" / "v1.0" / f"lms_cmp_{n_groups}.csv"),
+                pl.read_csv(portfolios / f"hml_cmp_{n_groups}.csv"),
+            )
 
     def test_cmp_off_removes_an_earlier_cmp(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -336,15 +355,15 @@ class TestRunThemes:
         _setup(tmp_path, monkeypatch)
         run_portfolio(output_format="parquet", output_dir=tmp_path)
         portfolios = _portfolios_dir(tmp_path)
-        _read_saved(portfolios / "hml_cmp_5").write_csv(portfolios / "hml_cmp_5.csv")
+        for n_groups in (1, 2, 5):
+            cmp = _read_saved(portfolios / f"hml_cmp_{n_groups}")
+            cmp.write_csv(portfolios / f"hml_cmp_{n_groups}.csv")
 
         monkeypatch.setitem(portfolio_module.PORTFOLIO_SETTINGS, "cmp", {"us": False, "int": False})
         run_portfolio(output_format="parquet", output_dir=tmp_path)
         run_themes(output_dir=tmp_path)
 
-        assert not (portfolios / "hml_cmp_5.parquet").exists()
-        assert not (portfolios / "hml_cmp_5.csv").exists()
-        assert not (portfolios / "themes" / "v1.0" / "lms_cmp_5.parquet").exists()
+        assert not list(portfolios.rglob("*cmp*"))
 
     @pytest.mark.parametrize("output_format", ["parquet", "csv"])
     def test_cmp_is_found_in_the_other_format(
@@ -374,7 +393,9 @@ class TestRunThemes:
 
         out = _portfolios_dir(tmp_path) / "themes" / "v1.0"
         assert not list(out.glob("themes_cmp*"))
-        assert "ret_weighted" in pl.read_parquet(out / "lms_cmp_5.parquet").columns
+        for n_groups in (1, 2, 5):
+            cmp = pl.read_parquet(out / f"lms_cmp_{n_groups}.parquet")
+            assert "ret_weighted" in cmp.columns
 
     def test_edited_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _setup(tmp_path, monkeypatch)
