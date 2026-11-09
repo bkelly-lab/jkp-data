@@ -88,8 +88,8 @@ def test_ni_ar1_and_ni_ivol_null_when_lagged_ni_at_nearly_constant(
 
 @pytest.mark.unit
 def test_ni_ar1_is_never_nan_with_a_nan_input(test_paths: DataPaths, tmp_path) -> None:
-    """A NaN NI passes the std floor in DuckDB (NaN sorts above every number); the
-    slope it produces is still written as null, not NaN."""
+    """A NaN NI/AT as the dependent variable leaves the lagged NI/AT finite, so the window
+    passes the std floor, but its slope is NaN; ni_ar1 is still written as null, not NaN."""
     eoms = pl.date_range(date(2000, 1, 1), date(2007, 12, 1), "1mo", eager=True).dt.month_end()
     n = len(eoms)
     ni = np.random.default_rng(2).normal(5.0, 2.0, n)

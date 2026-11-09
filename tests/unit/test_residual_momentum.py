@@ -387,7 +387,9 @@ def test_near_constant_ret_gives_no_score(test_paths) -> None:
     k = pl.int_range(pl.len()) % 5 - 2
     world = world.with_columns(ret=0.01 + 1e-9 * k).with_columns(ret_exc=pl.col("ret") - 0.001)
     out = _run_frames(test_paths, 12, 1, world, fcts)
-    assert out.filter(pl.col("id") == 1000)["resff3_12_1"].drop_nulls().len() == 0
+    stock = out.filter(pl.col("id") == 1000)
+    assert stock.height == 1  # the window is still scored, as a null
+    assert stock["resff3_12_1"].null_count() == 1
 
 
 @pytest.mark.unit
