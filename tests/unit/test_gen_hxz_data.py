@@ -3,10 +3,10 @@ Unit tests for HXZ q-factor builder helpers in aux_functions.py.
 
 Covers Stage 1 (_hxz_add_me_lag1_ym, hxz_attach_siccd), Stage 2
 (hxz_impute_be_clean_surplus, hxz_supplement_q4_shares, hxz_merge_be_chain,
-hxz_link_compustat), Stage 3 (_hxz_us_roe_monthly), Stage 4 (_hxz_nyse_breaks,
-_hxz_country_breaks, _hxz_classify_size_ia, _hxz_classify_roe,
-hxz_classify_portfolios), Stage 5 (hxz_compute_factors), and Stage 6
-(hxz_build_characteristics).
+hxz_link_compustat), the characteristic tables (hxz_annual_characteristics,
+hxz_roe_by_month), Stage 4 (_hxz_nyse_breaks, _hxz_country_breaks,
+_hxz_classify_size_ia, _hxz_classify_roe, hxz_classify_portfolios), and Stage 5
+(hxz_compute_factors).
 
 Does NOT call gen_hxz_data (covered by golden test) and does NOT require
 WRDS I/O for helpers that only need in-memory DataFrames.
@@ -25,15 +25,14 @@ from jkp.data.aux_functions import (
     _hxz_add_me_lag1_ym,
     _hxz_classify_roe,
     _hxz_classify_size_ia,
-    _hxz_fill_characteristics,
     country_breakpoints,
+    hxz_annual_characteristics,
     hxz_attach_siccd,
-    hxz_build_characteristics,
-    hxz_characteristics_extra,
     hxz_classify_portfolios,
     hxz_compute_factors,
     hxz_impute_be_clean_surplus,
     hxz_merge_be_chain,
+    hxz_roe_by_month,
 )
 from jkp.data.config import (
     HXZ_MIN_STOCKS_BP,
@@ -1517,493 +1516,80 @@ class TestHxzComputeFactors:
 
 
 # ---------------------------------------------------------------------------
-# Stage 6 — hxz_build_characteristics
-# ---------------------------------------------------------------------------
-
-
-class TestHxzBuildCharacteristics:
-    """Tests for hxz_build_characteristics: schema, dtypes, eom derivation."""
-
-    def _make_panel(self, rows):
-        return pl.DataFrame(rows).with_columns(
-            pl.col("date").cast(pl.Date),
-            pl.col("me", "inv", "roe").cast(pl.Float64),
-            pl.col("id").cast(pl.Int64),
-        )
-
-    def test_output_schema(self):
-        """Output has exactly eom, excntry, id, me_hxz, ia_hxz, roe_hxz."""
-        df = self._make_panel(
-            [
-                {
-                    "excntry": "USA",
-                    "id": 1,
-                    "date": date(2020, 1, 31),
-                    "me": 100.0,
-                    "inv": 0.1,
-                    "roe": 0.05,
-                }
-            ]
-        )
-        result = hxz_build_characteristics(df)
-        assert set(result.columns) == {"eom", "excntry", "id", "me_hxz", "ia_hxz", "roe_hxz"}
-
-    def test_eom_is_month_end(self):
-        """eom = month_end of the input date column."""
-        df = self._make_panel(
-            [
-                {
-                    "excntry": "USA",
-                    "id": 1,
-                    "date": date(2020, 1, 15),
-                    "me": 100.0,
-                    "inv": 0.1,
-                    "roe": 0.05,
-                }
-            ]
-        )
-        result = hxz_build_characteristics(df)
-        assert result["eom"][0] == date(2020, 1, 31)
-
-    def test_id_is_int64(self):
-        """id column dtype must be Int64."""
-        df = self._make_panel(
-            [
-                {
-                    "excntry": "USA",
-                    "id": 12345,
-                    "date": date(2020, 1, 31),
-                    "me": 100.0,
-                    "inv": 0.1,
-                    "roe": 0.05,
-                }
-            ]
-        )
-        result = hxz_build_characteristics(df)
-        assert result["id"].dtype == pl.Int64
-
-    def test_null_me_passes_through(self):
-        """Null me propagates to me_hxz without error."""
-        df = self._make_panel(
-            [
-                {
-                    "excntry": "USA",
-                    "id": 1,
-                    "date": date(2020, 1, 31),
-                    "me": None,
-                    "inv": 0.1,
-                    "roe": 0.05,
-                }
-            ]
-        )
-        result = hxz_build_characteristics(df)
-        assert result["me_hxz"][0] is None
-
-    def test_null_inv_passes_through(self):
-        """Null inv propagates to ia_hxz without error."""
-        df = self._make_panel(
-            [
-                {
-                    "excntry": "USA",
-                    "id": 1,
-                    "date": date(2020, 1, 31),
-                    "me": 100.0,
-                    "inv": None,
-                    "roe": 0.05,
-                }
-            ]
-        )
-        result = hxz_build_characteristics(df)
-        assert result["ia_hxz"][0] is None
-
-    def test_null_roe_passes_through(self):
-        """Null roe propagates to roe_hxz without error."""
-        df = self._make_panel(
-            [
-                {
-                    "excntry": "USA",
-                    "id": 1,
-                    "date": date(2020, 1, 31),
-                    "me": 100.0,
-                    "inv": 0.1,
-                    "roe": None,
-                }
-            ]
-        )
-        result = hxz_build_characteristics(df)
-        assert result["roe_hxz"][0] is None
-
-    def test_sorted_by_eom_excntry_id(self):
-        """Output is sorted by (eom, excntry, id)."""
-        rows = [
-            {
-                "excntry": "USA",
-                "id": 2,
-                "date": date(2020, 2, 28),
-                "me": 10.0,
-                "inv": 0.1,
-                "roe": 0.01,
-            },
-            {
-                "excntry": "USA",
-                "id": 1,
-                "date": date(2020, 1, 31),
-                "me": 10.0,
-                "inv": 0.1,
-                "roe": 0.01,
-            },
-            {
-                "excntry": "DEU",
-                "id": 1,
-                "date": date(2020, 1, 31),
-                "me": 10.0,
-                "inv": 0.1,
-                "roe": 0.01,
-            },
-        ]
-        df = self._make_panel(rows)
-        result = hxz_build_characteristics(df)
-        eoms = result["eom"].to_list()
-        assert eoms == sorted(eoms)
-
-    def test_values_mapped_correctly(self, tolerance):
-        """me→me_hxz, inv→ia_hxz, roe→roe_hxz."""
-        df = self._make_panel(
-            [
-                {
-                    "excntry": "USA",
-                    "id": 1,
-                    "date": date(2020, 1, 31),
-                    "me": 123.4,
-                    "inv": 0.07,
-                    "roe": 0.13,
-                }
-            ]
-        )
-        result = hxz_build_characteristics(df)
-        np.testing.assert_allclose(result["me_hxz"][0], 123.4, **tolerance.TIGHT)
-        np.testing.assert_allclose(result["ia_hxz"][0], 0.07, **tolerance.TIGHT)
-        np.testing.assert_allclose(result["roe_hxz"][0], 0.13, **tolerance.TIGHT)
-
-
-# ---------------------------------------------------------------------------
 # Stage 4 combined — hxz_classify_portfolios
 # ---------------------------------------------------------------------------
 
 
 class TestHxzClassifyPortfolios:
-    """Tests for hxz_classify_portfolios: combined classify + broadcast."""
+    """hxz_classify_portfolios: June size and I/A sorts from the annual table,
+    monthly Roe sorts from the Roe table, both attached to the monthly panel."""
 
-    def _make_us_panel(self, dates, permno=1):
-        # gvkey required: hxz_classify_portfolios splits by excntry; the empty
-        # ROW slice (.filter(excntry != USA)) still joins on gvkey.
+    DATES = [date(2020, 6, 30), date(2020, 7, 31), date(2020, 12, 31), date(2021, 6, 30)]
+
+    def _panel(self, is_fin: bool = False) -> pl.DataFrame:
+        n = len(self.DATES)
         return pl.DataFrame(
             {
-                "excntry": ["USA"] * len(dates),
-                "id": [permno] * len(dates),
-                "permno": [permno] * len(dates),
-                "gvkey": [None] * len(dates),
-                "date": dates,
-                "ret": [0.01] * len(dates),
-                "me": [100.0] * len(dates),
-                "me_lag1": [90.0] * len(dates),
-                "is_fin": [False] * len(dates),
-                "exchcd": [1] * len(dates),
-            }
-        ).with_columns(
-            pl.col("date").cast(pl.Date),
-            pl.col("gvkey").cast(pl.Utf8),
+                "excntry": ["USA"] * n,
+                "id": [1] * n,
+                "date": self.DATES,
+                "ret": [0.01] * n,
+                "me": [100.0] * n,
+                "me_lag1": [90.0] * n,
+                "is_fin": [is_fin] * n,
+                "exchcd": [1] * n,
+                "size_grp": [None] * n,
+            },
+            schema_overrides={"size_grp": pl.Utf8},
         )
 
-    def test_broadcast_june_classification_to_all_months(self):
-        """June classification is broadcast to Jul(y)..Jun(y+1) months."""
-        # Build a minimal size_ia_form and roe_m with one US stock in June
-        dates = [
-            date(2020, 6, 30),  # June formation
-            date(2020, 7, 31),  # Jul — should carry June classification
-            date(2020, 12, 31),  # Dec — should carry June classification
-            date(2021, 6, 30),  # Next June — new formation year
-        ]
-        panel = self._make_us_panel(dates, permno=1)
-
-        # size_ia_form: one row in June 2020 with sizeport=1, invport=2
-        size_ia_form = pl.DataFrame(
-            {
-                "excntry": ["USA"],
-                "id": [1],
-                "permno": [1],
-                "gvkey": [None],  # required by ROW cls select
-                "date": [date(2020, 6, 30)],
-                "me": [100.0],
-                "inv": [0.1],
-                "be_a": [200.0],
-                "is_fin": [False],
-                "exchcd": [1],
-                "elig": [True],
-                "size_grp": [None],  # required by ROW path schema
-            }
-        ).with_columns(
-            pl.col("date").cast(pl.Date),
-            pl.col("me", "inv", "be_a").cast(pl.Float64),
-            pl.col("size_grp", "gvkey").cast(pl.Utf8),
+    def _annual(self) -> pl.DataFrame:
+        return pl.DataFrame(
+            {"id": [1, 1], "port_year": [2020, 2021], "inv": [0.1, 0.2], "be_a": [200.0, 210.0]},
+            schema_overrides={"port_year": pl.Int32},
         )
 
-        # roe_m: one row per month per stock
-        roe_m = pl.DataFrame(
-            {
-                "excntry": ["USA"] * 4,
-                "id": [1] * 4,
-                "permno": [1] * 4,
-                "date": dates,
-                "is_fin": [False] * 4,
-                "exchcd": [1] * 4,
-                "roe": [0.05] * 4,
-                "size_grp": [None] * 4,  # required by ROW path schema
-            }
-        ).with_columns(
-            pl.col("date").cast(pl.Date),
-            pl.col("roe").cast(pl.Float64),
-            pl.col("size_grp").cast(pl.Utf8),
+    def _roe(self) -> pl.DataFrame:
+        yms = [2020 * 12 + 6, 2020 * 12 + 7, 2020 * 12 + 12, 2021 * 12 + 6]
+        return pl.DataFrame({"id": [1] * 4, "ym": yms, "roe": [0.05, 0.06, 0.07, 0.08]})
+
+    def _classify(self, is_fin: bool = False) -> pl.DataFrame:
+        return hxz_classify_portfolios(self._panel(is_fin), self._annual(), self._roe()).sort(
+            "date"
         )
 
-        result = hxz_classify_portfolios(panel, size_ia_form, roe_m)
-        result_sorted = result.sort("date")
-        # All months in Jul..Dec 2020 should have non-null sizeport and invport
-        jul_row = result_sorted.filter(pl.col("date") == date(2020, 7, 31))
-        dec_row = result_sorted.filter(pl.col("date") == date(2020, 12, 31))
-        # June formation year 2020 → port_year=2020; Jul..Dec 2020 port_year=2020 (month<7 → year-1; month>=7 → year)
-        # Jul: month=7 ≥ 7 → port_year=2020; Dec: month=12 ≥ 7 → port_year=2020
-        # This is correct; Jun formation year = 2020
-        assert jul_row["sizeport"][0] is not None
-        assert dec_row["sizeport"][0] is not None
+    def test_june_sort_held_july_to_june(self):
+        """The June 2020 sort is held from July 2020 to June 2021."""
+        out = self._classify()
+        assert out["sizeport"].to_list() == [None, 1, 1, 1]
+        assert out["inv"].to_list() == [None, 0.1, 0.1, 0.1]
 
-    def test_roe_attached_monthly(self):
-        """ROE port from roe_m is joined on (excntry, id, date)."""
-        dates = [date(2020, 6, 30), date(2020, 7, 31)]
-        panel = self._make_us_panel(dates, permno=1)
+    def test_roe_attached_by_month(self):
+        out = self._classify()
+        assert out["roe"].to_list() == [0.05, 0.06, 0.07, 0.08]
+        assert out["roeport"].to_list() == [1, 1, 1, 1]
 
-        size_ia_form = pl.DataFrame(
-            {
-                "excntry": ["USA"],
-                "id": [1],
-                "permno": [1],
-                "gvkey": [None],
-                "date": [date(2020, 6, 30)],
-                "me": [100.0],
-                "inv": [0.1],
-                "be_a": [200.0],
-                "is_fin": [False],
-                "exchcd": [1],
-                "elig": [True],
-                "size_grp": [None],
-            }
-        ).with_columns(
-            pl.col("date").cast(pl.Date),
-            pl.col("me", "inv", "be_a").cast(pl.Float64),
-            pl.col("size_grp", "gvkey").cast(pl.Utf8),
-        )
-
-        roe_m = pl.DataFrame(
-            {
-                "excntry": ["USA", "USA"],
-                "id": [1, 1],
-                "permno": [1, 1],
-                "date": dates,
-                "is_fin": [False, False],
-                "exchcd": [1, 1],
-                "roe": [0.07, 0.08],
-                "size_grp": [None, None],
-            }
-        ).with_columns(
-            pl.col("date").cast(pl.Date),
-            pl.col("roe").cast(pl.Float64),
-            pl.col("size_grp").cast(pl.Utf8),
-        )
-
-        result = hxz_classify_portfolios(panel, size_ia_form, roe_m).sort("date")
-        assert result["roe"][0] == pytest.approx(0.07)
-        assert result["roe"][1] == pytest.approx(0.08)
-
-    def test_output_has_sizeport_invport_roeport(self):
-        """Output contains sizeport, invport, roeport columns."""
-        dates = [date(2020, 6, 30)]
-        panel = self._make_us_panel(dates)
-
-        size_ia_form = pl.DataFrame(
-            {
-                "excntry": ["USA"],
-                "id": [1],
-                "permno": [1],
-                "gvkey": [None],
-                "date": [date(2020, 6, 30)],
-                "me": [100.0],
-                "inv": [0.1],
-                "be_a": [200.0],
-                "is_fin": [False],
-                "exchcd": [1],
-                "elig": [True],
-                "size_grp": [None],
-            }
-        ).with_columns(
-            pl.col("date").cast(pl.Date),
-            pl.col("me", "inv", "be_a").cast(pl.Float64),
-            pl.col("size_grp", "gvkey").cast(pl.Utf8),
-        )
-
-        roe_m = pl.DataFrame(
-            {
-                "excntry": ["USA"],
-                "id": [1],
-                "permno": [1],
-                "date": [date(2020, 6, 30)],
-                "is_fin": [False],
-                "exchcd": [1],
-                "roe": [0.05],
-                "size_grp": [None],
-            }
-        ).with_columns(
-            pl.col("date").cast(pl.Date),
-            pl.col("roe").cast(pl.Float64),
-            pl.col("size_grp").cast(pl.Utf8),
-        )
-
-        result = hxz_classify_portfolios(panel, size_ia_form, roe_m)
+    def test_screen_changes_membership_not_values(self):
+        """A financial firm enters no sort; its I/A and Roe are still the table values."""
+        out = self._classify(is_fin=True)
         for col in ("sizeport", "invport", "roeport"):
-            assert col in result.columns
+            assert out[col].null_count() == out.height
+        assert out["inv"].to_list() == [None, 0.1, 0.1, 0.1]
+        assert out["roe"].to_list() == [0.05, 0.06, 0.07, 0.08]
 
 
 # ---------------------------------------------------------------------------
-# Skipped helpers (require real WRDS I/O)
+# Characteristic tables — hxz_annual_characteristics, hxz_roe_by_month
 # ---------------------------------------------------------------------------
 
 
-class TestHxzUsRoeMonthly:
-    """Tests for _hxz_us_roe_monthly: pre/post-1972 RDQ-gating and 6mo cap."""
+class TestHxzCharacteristicTables:
+    """The I/A and Roe tables cover every security: a GBR Compustat security
+    (id 10), a US Compustat security without a CCM link (id 200001), a US CRSP
+    permno whose world_msf gvkey differs from its CCM link (id 30), and a CRSP
+    permno with 1960s quarters (id 40)."""
 
-    def _write_lnkhist(self, tmp_path, permno, gvkey):
-        lnk = pl.DataFrame(
-            {
-                "gvkey": [gvkey],
-                "lpermno": [permno],
-                "linkprim": ["P"],
-                "linktype": ["LC"],
-                "linkdt": [date(1960, 1, 1)],
-                "linkenddt": [None],
-            }
-        ).with_columns(
-            pl.col("linkdt", "linkenddt").cast(pl.Date), pl.col("lpermno").cast(pl.Int64)
-        )
-        lnk.write_parquet(tmp_path / "crsp_ccmxpf_lnkhist.parquet")
-
-    def test_null_rdq_excluded(self, tmp_path):
-        """No RDQ → earnings never assigned (RDQ gate applies full sample)."""
-        self._write_lnkhist(tmp_path, 10001, "G01")
-        fundq = pl.DataFrame(
-            {
-                "gvkey": ["G01"],
-                "datadate": [date(1965, 12, 31)],
-                "rdq": [None],
-                "beq_lag1": [100.0],
-                "ibq": [10.0],
-            }
-        ).with_columns(
-            pl.col("datadate", "rdq").cast(pl.Date), pl.col("beq_lag1", "ibq").cast(pl.Float64)
-        )
-        formation_dates = pl.DataFrame(
-            {"date": [date(1966, 4, 30), date(1966, 6, 30)]}
-        ).with_columns(pl.col("date").cast(pl.Date))
-        from jkp.data.aux_functions import _hxz_us_roe_monthly, safe_div
-
-        fq_with_roe = fundq.with_columns(safe_div("ibq", "beq_lag1", "roe", mode=3))
-        result = _hxz_us_roe_monthly(fq_with_roe, tmp_path, formation_dates)
-        assert len(result) == 0
-
-    def test_pre_1972_rdq_gated(self, tmp_path):
-        """Pre-1972 row with RDQ follows the same gate as post-1972."""
-        self._write_lnkhist(tmp_path, 10001, "G01")
-        fundq = pl.DataFrame(
-            {
-                "gvkey": ["G01"],
-                "datadate": [date(1965, 12, 31)],
-                "rdq": [date(1966, 2, 15)],
-                "beq_lag1": [100.0],
-                "ibq": [10.0],
-            }
-        ).with_columns(
-            pl.col("datadate", "rdq").cast(pl.Date), pl.col("beq_lag1", "ibq").cast(pl.Float64)
-        )
-        # formation_min = 1966-02-28 + 1mo = 1966-03-28 → first eom 1966-03-31
-        # formation_max = 1965-12-31 + 6mo month_end = 1966-06-30
-        formation_dates = pl.DataFrame(
-            {"date": [date(1966, 2, 28), date(1966, 3, 31), date(1966, 6, 30)]}
-        ).with_columns(pl.col("date").cast(pl.Date))
-        from jkp.data.aux_functions import _hxz_us_roe_monthly, safe_div
-
-        fq_with_roe = fundq.with_columns(safe_div("ibq", "beq_lag1", "roe", mode=3))
-        result = _hxz_us_roe_monthly(fq_with_roe, tmp_path, formation_dates).sort("date")
-        assert result["date"].to_list() == [date(1966, 3, 31), date(1966, 6, 30)]
-        assert result["roe"][0] == pytest.approx(0.1)
-
-    def test_post_1972_rdq_gated(self, tmp_path):
-        """Post-1972: formation_date ≥ rdq.month_end + 1mo."""
-        self._write_lnkhist(tmp_path, 10001, "G01")
-        fundq = pl.DataFrame(
-            {
-                "gvkey": ["G01"],
-                "datadate": [date(1990, 3, 31)],
-                "rdq": [date(1990, 4, 15)],
-                "beq_lag1": [200.0],
-                "ibq": [20.0],
-            }
-        ).with_columns(
-            pl.col("datadate", "rdq").cast(pl.Date), pl.col("beq_lag1", "ibq").cast(pl.Float64)
-        )
-        # formation_min_post = 1990-04-30.month_end + 1mo = 1990-05-31
-        # formation_max = 1990-03-31 + 6mo month_end = 1990-09-30
-        # date 1990-04-30 < 1990-05-31 → excluded
-        # date 1990-05-31 == 1990-05-31 → included
-        formation_dates = pl.DataFrame(
-            {"date": [date(1990, 4, 30), date(1990, 5, 31)]}
-        ).with_columns(pl.col("date").cast(pl.Date))
-        from jkp.data.aux_functions import _hxz_us_roe_monthly, safe_div
-
-        fq_with_roe = fundq.with_columns(safe_div("ibq", "beq_lag1", "roe", mode=3))
-        result = _hxz_us_roe_monthly(fq_with_roe, tmp_path, formation_dates)
-        assert len(result) == 1
-        assert result["date"][0] == date(1990, 5, 31)
-
-    def test_staleness_cap_6mo(self, tmp_path):
-        """formation_date > datadate + 6mo month_end → excluded (stale)."""
-        self._write_lnkhist(tmp_path, 10001, "G01")
-        fundq = pl.DataFrame(
-            {
-                "gvkey": ["G01"],
-                "datadate": [date(1990, 3, 31)],
-                "rdq": [date(1990, 4, 15)],
-                "beq_lag1": [200.0],
-                "ibq": [20.0],
-            }
-        ).with_columns(
-            pl.col("datadate", "rdq").cast(pl.Date), pl.col("beq_lag1", "ibq").cast(pl.Float64)
-        )
-        # formation_max = 1990-03-31 + 6mo month_end = 1990-09-30
-        # 1990-10-31 > 1990-09-30 → excluded (stale)
-        formation_dates = pl.DataFrame({"date": [date(1990, 10, 31)]}).with_columns(
-            pl.col("date").cast(pl.Date)
-        )
-        from jkp.data.aux_functions import _hxz_us_roe_monthly, safe_div
-
-        fq_with_roe = fundq.with_columns(safe_div("ibq", "beq_lag1", "roe", mode=3))
-        result = _hxz_us_roe_monthly(fq_with_roe, tmp_path, formation_dates)
-        assert len(result) == 0
-
-
-class TestHxzCharacteristicsExtra:
-    """Characteristics for security-months outside the HXZ sample (here a GBR
-    non-universe security, a US Compustat-sourced row with no CCM link, and a US
-    CRSP permno whose world_msf gvkey differs from its CCM link)."""
-
-    def _extra(self, tmp_path) -> pl.DataFrame:
+    def _inputs(self, tmp_path) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
         eoms = pl.date_range(date(2019, 6, 1), date(2020, 6, 1), "1mo", eager=True).dt.month_end()
         n = len(eoms)
         pl.DataFrame(
@@ -2013,17 +1599,16 @@ class TestHxzCharacteristicsExtra:
                 "gvkey": ["g10"] * n + ["g20"] * 2 * n,
                 "source_crsp": [0] * 2 * n + [1] * n,
                 "eom": pl.concat([eoms, eoms, eoms]),
-                "me_company": [50.0] * n + [0.0] * n + [70.0] * n,
             }
         ).write_parquet(tmp_path / "world_msf.parquet")
         pl.DataFrame(
             {
-                "gvkey": ["g30"],
-                "lpermno": [30],
-                "linkprim": ["P"],
-                "linktype": ["LC"],
-                "linkdt": [date(2000, 1, 1)],
-                "linkenddt": [None],
+                "gvkey": ["g30", "g40"],
+                "lpermno": [30, 40],
+                "linkprim": ["P", "P"],
+                "linktype": ["LC", "LC"],
+                "linkdt": [date(2000, 1, 1), date(1960, 1, 1)],
+                "linkenddt": [None, None],
             },
             schema_overrides={"linkenddt": pl.Date},
         ).write_parquet(tmp_path / "crsp_ccmxpf_lnkhist.parquet")
@@ -2037,12 +1622,23 @@ class TestHxzCharacteristicsExtra:
         )
         fundq_us = pl.DataFrame(
             {
-                "gvkey": ["g20", "g20", "g30"],
-                "datadate": [date(2019, 9, 30), date(2019, 12, 31), date(2019, 9, 30)],
-                # 2nd: rdq <= datadate
-                "rdq": [date(2019, 10, 25), date(2019, 12, 31), date(2019, 10, 25)],
-                "ibq": [1.0, 5.0, 2.0],
-                "beq_lag1": [10.0, 10.0, 10.0],
+                "gvkey": ["g20", "g20", "g30", "g40", "g40"],
+                "datadate": [
+                    date(2019, 9, 30),
+                    date(2019, 12, 31),  # rdq <= datadate: dropped
+                    date(2019, 9, 30),
+                    date(1965, 12, 31),
+                    date(1966, 3, 31),  # no rdq: never usable
+                ],
+                "rdq": [
+                    date(2019, 10, 25),
+                    date(2019, 12, 31),
+                    date(2019, 10, 25),
+                    date(1966, 2, 15),
+                    None,
+                ],
+                "ibq": [1.0, 5.0, 2.0, 10.0, 50.0],
+                "beq_lag1": [10.0, 10.0, 10.0, 100.0, 100.0],
             }
         )
         funda_row = pl.DataFrame(
@@ -2055,57 +1651,34 @@ class TestHxzCharacteristicsExtra:
                 "roe_a": [0.2, 0.3],
             }
         )
-        return hxz_characteristics_extra(
-            tmp_path, tmp_path, funda_us, fundq_us, funda_row, pl.col("date") >= date(2019, 1, 1)
-        )
+        return funda_us, fundq_us, funda_row
 
-    def _at(self, out: pl.DataFrame, i: int, d: date) -> dict:
-        return out.filter((pl.col("id") == i) & (pl.col("eom") == d)).row(0, named=True)
+    def test_annual_table(self, tmp_path):
+        """Fiscal year y-1 applies to port_year y; CRSP permnos use their CCM link."""
+        funda_us, _, funda_row = self._inputs(tmp_path)
+        out = hxz_annual_characteristics(tmp_path, tmp_path, funda_us, funda_row)
+        assert out.columns == ["id", "port_year", "inv", "be_a"]
+        assert out.rows() == [
+            (10, 2019, 0.1, 1.0),
+            (10, 2020, 0.4, 1.0),
+            (30, 2019, 0.07, 1.0),
+            (200001, 2019, 0.05, 1.0),
+        ]
 
-    def test_row_security_gets_me_ia_roe(self, tmp_path):
-        out = self._extra(tmp_path)
-        jun19, jul19, jun20 = date(2019, 6, 30), date(2019, 7, 31), date(2020, 6, 30)
-        assert self._at(out, 10, jul19)["me_hxz"] == 50.0
-        assert self._at(out, 10, jul19)["ia_hxz"] == 0.1  # fiscal 2018 for Jul 2019..Jun 2020
-        assert self._at(out, 10, jun19)["ia_hxz"] is None
-        assert self._at(out, 10, jun19)["roe_hxz"] == 0.2  # datadate + 6 months
-        assert self._at(out, 10, jun20)["roe_hxz"] == 0.3  # latest fiscal year wins
+    def test_roe_table(self, tmp_path):
+        funda_us, fundq_us, funda_row = self._inputs(tmp_path)
+        roe = hxz_roe_by_month(tmp_path, tmp_path, fundq_us, funda_row)
+        assert roe.columns == ["id", "ym", "roe"]
 
-    def test_us_unlinked_row_gets_rdq_gated_roe(self, tmp_path):
-        out = self._extra(tmp_path)
-        roe = {
-            d: self._at(out, 200001, d)["roe_hxz"]
-            for d in (date(2019, 10, 31), date(2019, 11, 30), date(2020, 3, 31), date(2020, 4, 30))
-        }
-        # month after rdq .. datadate + 6 months; the rdq <= datadate quarter is dropped
-        assert list(roe.values()) == [None, 0.1, 0.1, None]
-        assert self._at(out, 200001, date(2019, 7, 31))["ia_hxz"] == 0.05
+        def at(i: int, y: int, m: int) -> list[float]:
+            return roe.filter((pl.col("id") == i) & (pl.col("ym") == y * 12 + m))["roe"].to_list()
 
-    def test_us_crsp_row_uses_ccm_link(self, tmp_path):
-        """A CRSP permno takes its CCM-linked gvkey's accounting, not world_msf's."""
-        out = self._extra(tmp_path)
-        assert self._at(out, 30, date(2019, 7, 31))["ia_hxz"] == 0.07
-        assert self._at(out, 30, date(2019, 11, 30))["roe_hxz"] == 0.2
-        assert self._at(out, 30, date(2019, 7, 31))["me_hxz"] == 70.0
-
-    def test_non_positive_me_company_stays_null(self, tmp_path):
-        out = self._extra(tmp_path)
-        assert out.filter(pl.col("id") == 200001)["me_hxz"].null_count() == 13
-
-    def test_fill_keeps_screened_cells(self, tmp_path):
-        extra = self._extra(tmp_path)
-        chars = pl.DataFrame(
-            {
-                "eom": [date(2019, 7, 31)],
-                "excntry": ["GBR"],
-                "id": [10],
-                "me_hxz": [99.0],
-                "ia_hxz": [None],
-                "roe_hxz": [0.7],
-            },
-            schema_overrides={"ia_hxz": pl.Float64},
-        )
-        out = _hxz_fill_characteristics(chars, extra)
-        assert out.height == extra.height
-        row = self._at(out, 10, date(2019, 7, 31))
-        assert (row["me_hxz"], row["ia_hxz"], row["roe_hxz"]) == (99.0, 0.1, 0.7)
+        # GBR: annual roe_a from 6 to 18 months after the fiscal year-end; latest year wins
+        assert [at(10, 2019, 5), at(10, 2019, 6), at(10, 2020, 6)] == [[], [0.2], [0.3]]
+        # US Compustat: month after rdq to six months after the quarter end
+        assert [at(200001, 2019, m) for m in (10, 11)] == [[], [0.1]]
+        assert [at(200001, 2020, m) for m in (3, 4)] == [[0.1], []]
+        # US CRSP: the CCM-linked gvkey (g30), not the world_msf gvkey
+        assert at(30, 2019, 11) == [0.2]
+        # No sample start: a 1966 Roe exists; a quarter without rdq is never used
+        assert [at(40, 1966, m) for m in (2, 3, 6, 7)] == [[], [0.1], [0.1], []]
