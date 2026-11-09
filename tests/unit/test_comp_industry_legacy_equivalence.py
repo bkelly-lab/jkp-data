@@ -20,7 +20,7 @@ from jkp.data.aux_functions import comp_industry
 from jkp.data.paths import DataPaths
 
 # Verbatim SQL from the pre-rewrite comp_industry (only table creation moved to
-# plain duckdb from ibis).
+# plain duckdb).
 LEGACY_SQL = """
             DROP TABLE IF EXISTS join_table;
             CREATE TABLE join_table AS

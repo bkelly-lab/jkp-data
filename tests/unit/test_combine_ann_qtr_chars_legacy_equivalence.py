@@ -1,19 +1,18 @@
-"""Equivalence tests: the DuckDB combine_ann_qtr_chars must reproduce the legacy Ibis output.
+"""Equivalence tests: the DuckDB combine_ann_qtr_chars must reproduce the legacy output.
 
 combine_ann_qtr_chars changed in two ways. A full outer join replaced the left join on the
 annual panel, so firm-months with only quarterly characteristics are now kept, and one DuckDB
-COPY replaced the Ibis query. These tests run the legacy Ibis code (verbatim) on the same random
-inputs and assert that every month the legacy code wrote is unchanged, and that every added
-month equals its quarterly input row.
+COPY replaced the old query. These tests run the legacy SQL on the same random inputs and assert
+that every month the legacy code wrote is unchanged, and that every added month equals its
+quarterly input row.
 """
 
 from __future__ import annotations
 
-import os
 from datetime import date
 from pathlib import Path
 
-import ibis
+import duckdb
 import numpy as np
 import polars as pl
 import pytest
@@ -27,53 +26,77 @@ Q_SUFFIX = "_qitem"
 KEY = ["gvkey", "public_date"]
 
 
-def _legacy_combine(
-    interim_dir: Path, ann_df_path: Path, qtr_df_path: Path, char_vars: list[str], q_suffix: str
-) -> None:
-    """Pre-rewrite combine_ann_qtr_chars, verbatim except that paths.interim_dir is interim_dir."""
+def _legacy_combine(interim_dir: Path, ann_df_path: Path, qtr_df_path: Path) -> None:
+    """Pre-rewrite combine_ann_qtr_chars: the legacy SQL for CHAR_VARS and Q_SUFFIX.
+
+    Only the view names became read_parquet() calls and the table names ann/qtr.
+    """
+    ann_path, qtr_path = ann_df_path.as_posix(), qtr_df_path.as_posix()
+    out = (interim_dir / "acc_chars_world.parquet").as_posix()
     (interim_dir / "aux_aqtr_chars.ddb").unlink(missing_ok=True)
-    con = ibis.duckdb.connect(str(interim_dir / "aux_aqtr_chars.ddb"), threads=os.cpu_count())
-    con.create_table(
-        "ann",
-        con.read_parquet(ann_df_path).mutate(n1=ibis.row_number()),
-        overwrite=True,
-    )
-    con.create_table(
-        "qtr",
-        con.read_parquet(qtr_df_path)
-        .mutate(n2=ibis.row_number())
-        .rename({"datadate_qitem": "datadate", "source_qitem": "source"}),
-        overwrite=True,
-    )
-    ann = con.table("ann")
-    qtr = con.table("qtr")
-    combined = ann.left_join(qtr, [ann.gvkey == qtr.gvkey, ann.public_date == qtr.public_date])
-    drop_columns = [
-        "datadate",
-        f"datadate{q_suffix}",
-        "gvkey_right",
-        "public_date_right",
-        "source_qitem",
-    ] + [f"{ann_var}{q_suffix}" for ann_var in char_vars]
-    subs = {}
-    for ann_var in char_vars:
-        qtr_var = f"{ann_var}{q_suffix}"
-        subs[ann_var] = ibis.ifelse(
-            combined[ann_var].isnull()
-            | (combined[qtr_var].notnull() & (combined[f"datadate{q_suffix}"] > combined.datadate)),
-            combined[qtr_var],
-            combined[ann_var],
-        )
-    combined = (
-        combined.mutate(subs)
-        .drop(drop_columns)
-        .order_by(["gvkey", "public_date", "n1", "n2"])
-        .distinct(on=["gvkey", "public_date"], keep="first")
-        .drop(["n1", "n2"])
-        .order_by(["gvkey", "public_date"])
-    )
-    combined.to_parquet(interim_dir / "acc_chars_world.parquet")
-    con.disconnect()
+    with duckdb.connect(str(interim_dir / "aux_aqtr_chars.ddb")) as con:
+        con.execute(f"""
+        CREATE TABLE ann AS
+        SELECT "t0"."source", "t0"."gvkey", "t0"."public_date", "t0"."datadate",
+          "t0"."c1", "t0"."c2", "t0"."c3",
+          ROW_NUMBER() OVER (ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) - 1 AS "n1"
+        FROM read_parquet('{ann_path}') AS "t0";
+
+        CREATE TABLE qtr AS
+        SELECT "t1"."source" AS "source_qitem", "t1"."gvkey", "t1"."public_date",
+          "t1"."datadate" AS "datadate_qitem", "t1"."c1_qitem", "t1"."c2_qitem", "t1"."c3_qitem",
+          "t1"."n2"
+        FROM (
+          SELECT "t0"."source", "t0"."gvkey", "t0"."public_date", "t0"."datadate",
+            "t0"."c1_qitem", "t0"."c2_qitem", "t0"."c3_qitem",
+            ROW_NUMBER() OVER (ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) - 1 AS "n2"
+          FROM read_parquet('{qtr_path}') AS "t0"
+        ) AS "t1";
+
+        COPY (
+        SELECT * FROM (
+          SELECT "t7".* EXCLUDE ("n1", "n2") FROM (
+            SELECT "t6"."source", "t6"."gvkey", "t6"."public_date", "t6"."c1", "t6"."c2",
+              "t6"."c3", "t6"."n1", "t6"."n2"
+            FROM (
+              SELECT "t5"."gvkey", "t5"."public_date",
+                FIRST("t5"."source") FILTER(WHERE "t5"."source" IS NOT NULL) AS "source",
+                FIRST("t5"."c1") FILTER(WHERE "t5"."c1" IS NOT NULL) AS "c1",
+                FIRST("t5"."c2") FILTER(WHERE "t5"."c2" IS NOT NULL) AS "c2",
+                FIRST("t5"."c3") FILTER(WHERE "t5"."c3" IS NOT NULL) AS "c3",
+                FIRST("t5"."n1") FILTER(WHERE "t5"."n1" IS NOT NULL) AS "n1",
+                FIRST("t5"."n2") FILTER(WHERE "t5"."n2" IS NOT NULL) AS "n2"
+              FROM (
+                SELECT "t4"."source", "t4"."gvkey", "t4"."public_date",
+                  CASE WHEN ("t4"."c1" IS NULL) OR (("t4"."c1_qitem" IS NOT NULL)
+                    AND ("t4"."datadate_qitem" > "t4"."datadate"))
+                    THEN "t4"."c1_qitem" ELSE "t4"."c1" END AS "c1",
+                  CASE WHEN ("t4"."c2" IS NULL) OR (("t4"."c2_qitem" IS NOT NULL)
+                    AND ("t4"."datadate_qitem" > "t4"."datadate"))
+                    THEN "t4"."c2_qitem" ELSE "t4"."c2" END AS "c2",
+                  CASE WHEN ("t4"."c3" IS NULL) OR (("t4"."c3_qitem" IS NOT NULL)
+                    AND ("t4"."datadate_qitem" > "t4"."datadate"))
+                    THEN "t4"."c3_qitem" ELSE "t4"."c3" END AS "c3",
+                  "t4"."n1", "t4"."n2"
+                FROM (
+                  SELECT "t2"."source", "t2"."gvkey", "t2"."public_date", "t2"."datadate",
+                    "t2"."c1", "t2"."c2", "t2"."c3", "t2"."n1", "t3"."source_qitem",
+                    "t3"."gvkey" AS "gvkey_right", "t3"."public_date" AS "public_date_right",
+                    "t3"."datadate_qitem", "t3"."c1_qitem", "t3"."c2_qitem", "t3"."c3_qitem",
+                    "t3"."n2"
+                  FROM "ann" AS "t2"
+                  LEFT OUTER JOIN "qtr" AS "t3"
+                    ON "t2"."gvkey" = "t3"."gvkey" AND "t2"."public_date" = "t3"."public_date"
+                ) AS "t4"
+                ORDER BY "t4"."gvkey" ASC, "t4"."public_date" ASC, "t4"."n1" ASC, "t4"."n2" ASC
+              ) AS "t5"
+              GROUP BY 1, 2
+            ) AS "t6"
+          ) AS "t7"
+        ) AS "t8"
+        ORDER BY "t8"."gvkey" ASC, "t8"."public_date" ASC
+        ) TO '{out}' (FORMAT 'parquet')
+        """)
     (interim_dir / "aux_aqtr_chars.ddb").unlink(missing_ok=True)
 
 
@@ -127,7 +150,7 @@ def outputs(tmp_path_factory: pytest.TempPathFactory) -> tuple[pl.DataFrame, ...
     combine_ann_qtr_chars(test_paths, ann_path, qtr_path, CHAR_VARS, Q_SUFFIX)
     legacy_dir = tmp_path / "legacy"
     legacy_dir.mkdir()
-    _legacy_combine(legacy_dir, ann_path, qtr_path, CHAR_VARS, Q_SUFFIX)
+    _legacy_combine(legacy_dir, ann_path, qtr_path)
     return (
         ann,
         qtr,
@@ -138,7 +161,7 @@ def outputs(tmp_path_factory: pytest.TempPathFactory) -> tuple[pl.DataFrame, ...
 
 @pytest.mark.unit
 class TestCombineAnnQtrCharsEquivalence:
-    """combine_ann_qtr_chars must match the legacy Ibis code on every month it wrote."""
+    """combine_ann_qtr_chars must match the legacy SQL on every month it wrote."""
 
     def test_annual_months_match_legacy(self, outputs: tuple[pl.DataFrame, ...]) -> None:
         ann, _, new, legacy = outputs

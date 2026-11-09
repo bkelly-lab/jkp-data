@@ -1,11 +1,16 @@
-"""Tests for the NA/Global stacking, quarterization and one-row-per-date steps of ``standardized_accounting_data``."""
+"""Tests for the INDFMT filter, NA/Global stacking, quarterization and one-row-per-date steps of ``standardized_accounting_data``."""
 
 from datetime import date, timedelta
 
 import polars as pl
 import pytest
 
-from jkp.data.aux_functions import one_row_per_date, prefer_global, quarterize
+from jkp.data.aux_functions import (
+    apply_indfmt_filter,
+    one_row_per_date,
+    prefer_global,
+    quarterize,
+)
 from jkp.data.config import CALENDAR_RUN_MAX_GAP_DAYS
 
 QK = ["gvkey", "fyr", "fyearq", "fqtr"]
@@ -282,3 +287,52 @@ class TestOneRowPerDate:
         )
         out = one_row_per_date(df).collect()
         assert out.select("source", "atq").rows() == [("GLOBAL", 10.0)]
+
+
+@pytest.mark.unit
+class TestApplyIndfmtFilter:
+    QUARTERLY = ["gvkey", "datadate", "fyr"]
+    ANNUAL = ["gvkey", "datadate"]
+
+    @staticmethod
+    def _rows(rows: list[tuple[int, str]]) -> pl.LazyFrame:
+        """(fyr, indfmt) rows of firm 001 on 2010-03-31, plus two FS rows that every case keeps:
+        the same firm on another date and another firm on the same date. fmt copies indfmt so
+        the test can see which format survived."""
+        records = [("001", date(2010, 3, 31), fyr, fmt) for fyr, fmt in rows] + [
+            ("001", date(2010, 6, 30), 12, "FS"),
+            ("002", date(2010, 3, 31), 12, "FS"),
+        ]
+        return pl.LazyFrame(
+            records,
+            schema={"gvkey": pl.String, "datadate": pl.Date, "fyr": pl.Int16, "indfmt": pl.String},
+            orient="row",
+        ).with_columns(fmt=pl.col("indfmt"))
+
+    @pytest.mark.parametrize(
+        ("rows", "quarterly", "annual"),
+        [
+            ([(12, "INDL")], [(12, "INDL")], [(12, "INDL")]),
+            ([(12, "FS")], [(12, "FS")], [(12, "FS")]),
+            ([(12, "INDL"), (12, "FS")], [(12, "INDL")], [(12, "INDL")]),
+            ([(3, "INDL"), (12, "INDL")], [(3, "INDL"), (12, "INDL")], [(3, "INDL"), (12, "INDL")]),
+            ([(3, "FS"), (12, "FS")], [(3, "FS"), (12, "FS")], [(3, "FS"), (12, "FS")]),
+            ([(3, "FS"), (12, "INDL"), (12, "FS")], [(3, "FS"), (12, "INDL")], [(12, "INDL")]),
+            # Deliberate: quarterly keeps both calendars, and one_row_per_date may keep the FS row.
+            ([(3, "INDL"), (12, "FS")], [(3, "INDL"), (12, "FS")], [(3, "INDL")]),
+        ],
+    )
+    def test_keeps_indl_rows_else_all(
+        self,
+        rows: list[tuple[int, str]],
+        quarterly: list[tuple[int, str]],
+        annual: list[tuple[int, str]],
+    ) -> None:
+        """INDL rows win within each key, and a key without one keeps every row. Quarterly keys
+        include fyr, so each fiscal calendar keeps its own rows for one_row_per_date."""
+        for keys, kept in [(self.QUARTERLY, quarterly), (self.ANNUAL, annual)]:
+            out = apply_indfmt_filter(self._rows(rows), keys).collect()
+            case = out.filter(pl.col("gvkey") == "001", pl.col("datadate") == date(2010, 3, 31))
+            assert "indfmt" not in out.columns
+            assert sorted(case.select("fyr", "fmt").rows()) == kept
+            assert out.height == case.height + 2

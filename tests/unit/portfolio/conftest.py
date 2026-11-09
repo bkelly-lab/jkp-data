@@ -62,13 +62,41 @@ NUMERIC_COLS_BY_FILE: dict[str, dict[str, dict]] = {
         "ret_vw": STANDARD,
         "ret_vw_cap": STANDARD,
     },
-    "clusters": {
+    "themes": {
+        "n_subthemes": TIGHT,
         "n_factors": TIGHT,
         "ret_ew": TIGHT,
         "ret_vw": STANDARD,
         "ret_vw_cap": STANDARD,
     },
-    "cmp": {"n_stocks": TIGHT, "ret_weighted": STANDARD, "signal_weighted": STANDARD},
+    "subthemes": {
+        "n_factors": TIGHT,
+        "ret_ew": TIGHT,
+        "ret_vw": STANDARD,
+        "ret_vw_cap": STANDARD,
+    },
+    "cmp": {
+        "n_stocks": TIGHT,
+        "ret_weighted": STANDARD,
+        "signal_weighted": STANDARD,
+    },
+    **{
+        f"hml_cmp_{n_groups}": {
+            "n_stocks": TIGHT,
+            "ret_weighted": STANDARD,
+            "signal_weighted": STANDARD,
+        }
+        for n_groups in (1, 2, 5)
+    },
+    **{
+        f"lms_cmp_{n_groups}": {
+            "direction": TIGHT,
+            "n_stocks": TIGHT,
+            "ret_weighted": STANDARD,
+            "signal_weighted": STANDARD,
+        }
+        for n_groups in (1, 2, 5)
+    },
     "industry_gics": {
         "n": TIGHT,
         "ret_ew": TIGHT,
@@ -96,7 +124,8 @@ NUMERIC_COLS_BY_FILE: dict[str, dict[str, dict]] = {
         "ret_vw": STANDARD,
         "ret_vw_cap": STANDARD,
     },
-    "clusters_daily": {
+    "themes_daily": {
+        "n_subthemes": TIGHT,
         "n_factors": TIGHT,
         "ret_ew": TIGHT,
         "ret_vw": STANDARD,
@@ -579,20 +608,6 @@ def make_breakpoint_divergent_dataset(seed: int = 42) -> pl.DataFrame:
     )
 
 
-def make_signals_dataset(seed: int = 42, null_rate: float = 0.10) -> pl.DataFrame:
-    """Like ``make_known_monotone_dataset`` but with intentionally null cells."""
-    df = make_known_monotone_dataset(seed=seed, n_chars=3, n_eoms=6, n_ids=60)
-    rng = np.random.default_rng(seed + 1)
-    char_cols = [c for c in df.columns if c.startswith("char_")]
-    n = df.height
-    for col in char_cols:
-        mask = rng.random(n) < null_rate
-        vals = df[col].to_numpy().copy()
-        vals[mask] = np.nan
-        df = df.with_columns(pl.Series(col, vals, dtype=pl.Float64))
-    return df
-
-
 def make_cmp_dataset(seed: int = 42) -> pl.DataFrame:
     """Includes a ``(size_grp, eom)`` cohort with ``sd_var == 0``."""
     df = make_known_monotone_dataset(seed=seed, n_chars=2, n_eoms=4, n_ids=40)
@@ -627,7 +642,7 @@ def make_market_returns(countries: list[str], dates: list[date]) -> pl.DataFrame
 
 
 # ---------------------------------------------------------------------------
-# Stub resource writers (factor_details, country_classification, cluster_labels)
+# Stub resource writers (country_classification, themes)
 # ---------------------------------------------------------------------------
 
 
@@ -685,65 +700,44 @@ def make_multi_region_classification(tmp_path: Path) -> Path:
     return out
 
 
-def make_factor_details(
+def make_themes_dir(
     tmp_path: Path,
-    characteristics: list[str],
+    characteristic_to_cluster: dict[str, str],
     directions: list[int] | None = None,
 ) -> Path:
-    """Write a stub ``factor_details.xlsx`` (sheet ``details``).
+    """Write a stub themes folder with a v0 and a v1.0 version.
 
-    Production reads xlsx; the test stub matches the production format.
-    Requires ``xlsxwriter`` (test-only dependency).
+    v0 (``superseded_themes/v0/``) groups the characteristics by
+    ``characteristic_to_cluster`` with ``directions`` (default all 1). The
+    v1.0-format ``themes.csv`` puts the first half of the characteristics in
+    subtheme "Sub A" and the rest in "Sub B" (subtheme sign -1), both under
+    theme "Theme X". Patch ``jkp.data.paths.get_themes_dir`` to return it.
     """
+    chars = list(characteristic_to_cluster)
     if directions is None:
-        directions = [1] * len(characteristics)
-    if len(directions) != len(characteristics):
-        raise ValueError("directions length must match characteristics length")
-    out = tmp_path / "factor_details.xlsx"
+        directions = [1] * len(chars)
+    themes_dir = tmp_path / "themes"
+    v0 = themes_dir / "superseded_themes" / "v0"
+    v0.mkdir(parents=True)
+    pl.DataFrame(
+        {"characteristic": chars, "cluster": list(characteristic_to_cluster.values())}
+    ).write_csv(v0 / "cluster_labels.csv")
+    pl.DataFrame({"characteristic": chars, "direction": directions}).write_csv(
+        v0 / "factor_directions.csv"
+    )
+    half = (len(chars) + 1) // 2
     pl.DataFrame(
         {
-            "abr_jkp": pl.Series("abr_jkp", characteristics, dtype=pl.Utf8),
-            "direction": pl.Series("direction", directions, dtype=pl.Int64),
+            "characteristic": chars,
+            "theme": "Theme X",
+            "subtheme": ["Sub A"] * half + ["Sub B"] * (len(chars) - half),
+            "subtheme_sign": [1] * half + [-1] * (len(chars) - half),
+            "theme_sign": 1,
+            "factor_sign": 1,
+            "version": "v1.0",
         }
-    ).write_excel(workbook=out, worksheet="details")
-    return out
-
-
-def make_cluster_labels(tmp_path: Path, characteristic_to_cluster: dict[str, str]) -> Path:
-    """Write a stub cluster labels as **parquet** (production uses csv)."""
-    out = tmp_path / "cluster_labels.parquet"
-    pl.DataFrame(
-        {
-            "characteristic": pl.Series(
-                "characteristic", list(characteristic_to_cluster.keys()), dtype=pl.Utf8
-            ),
-            "cluster": pl.Series(
-                "cluster", list(characteristic_to_cluster.values()), dtype=pl.Utf8
-            ),
-        }
-    ).write_parquet(out)
-    return out
-
-
-def patch_resource_readers(monkeypatch) -> None:
-    """Reroute ``pl.read_csv`` / ``pl.scan_csv`` inside ``jkp.data.portfolio``
-    to parquet readers so tests can ship the cluster-labels stub as parquet
-    rather than csv. xlsx-format stubs (``factor_details``,
-    ``country_classification``) match production and need no patch.
-    """
-    import jkp.data.portfolio as _pmod
-
-    _real_read_parquet = _pmod.pl.read_parquet
-    _real_scan_parquet = _pmod.pl.scan_parquet
-
-    def _fake_read_csv(path, **_kw):
-        return _real_read_parquet(path)
-
-    def _fake_scan_csv(path, **_kw):
-        return _real_scan_parquet(path)
-
-    monkeypatch.setattr(_pmod.pl, "read_csv", _fake_read_csv)
-    monkeypatch.setattr(_pmod.pl, "scan_csv", _fake_scan_csv)
+    ).write_csv(themes_dir / "themes.csv")
+    return themes_dir
 
 
 # ---------------------------------------------------------------------------
@@ -829,8 +823,6 @@ def get_numeric_spec(stem: str, parent: str | None = None) -> dict[str, dict]:
             return NUMERIC_COLS_BY_FILE["country"]
         if parent in ("regional_factors", "regional_factors_daily"):
             return NUMERIC_COLS_BY_FILE["regional"]
-        if parent in ("regional_clusters", "regional_clusters_daily"):
-            return NUMERIC_COLS_BY_FILE["clusters"]
     if stem in NUMERIC_COLS_BY_FILE:
         return NUMERIC_COLS_BY_FILE[stem]
     for prefix, spec in NUMERIC_COLS_BY_FILE.items():
@@ -848,7 +840,8 @@ def sort_key_cols(df: pl.DataFrame) -> list[str]:
             "excntry",
             "region",
             "characteristic",
-            "cluster",
+            "theme",
+            "subtheme",
             "gics",
             "ff49",
             "pf",

@@ -4,8 +4,13 @@ Tests for deterministic deduplication in the Compustat stock file pipeline.
 Verifies that the dedup locations covered in this file resolve duplicates
 using economically meaningful tie-breaking rules (issue #69):
 
-1. add_primary_sec(): prefer primary_sec=1 over primary_sec=0
+1. add_primary_sec(): prefer primary_sec=1 over primary_sec=0; of rows sharing a key,
+   keep a valid price, then the highest prcstd, a main exchange, the highest dolvol,
+   and finally the first in the order of all columns
 2. gen_returns_df(): keep highest prcstd per {gvkey, iid, datadate}
+3. drop_duplicate_security_dates(): of rows sharing {gvkey, iid, datadate}, keep a valid
+   price, then the highest prcstd, a main exchange, the highest dolvol, and finally the
+   first in the order of all columns
 """
 
 from __future__ import annotations
@@ -39,6 +44,12 @@ class TestAddPrimarySecDedup:
                     date(2024, 2, 29),
                 ],
                 "prc": [10.0, 11.0, 20.0, 21.0],
+                # columns the duplicate-key rule reads
+                "prc_local": [10.0, 11.0, 20.0, 21.0],
+                "curcdd": ["USD"] * 4,
+                "prcstd": [10] * 4,
+                "exch_main": [1] * 4,
+                "dolvol": [1.0] * 4,
             }
         )
         input_path = test_paths.interim_dir / "input.parquet"
@@ -113,6 +124,118 @@ class TestAddPrimarySecDedup:
         assert iid02["primary_sec"].to_list() == [1, 1], (
             "iid='02' matches prihistrow='02' from range 2, so primary_sec=1 should win"
         )
+
+    def test_duplicate_keys_keep_one_row_by_rule(self, setup_paths) -> None:
+        """Rows sharing (gvkey, iid, datadate) collapse to one: a valid price, then the
+        highest prcstd, a main exchange, the highest dolvol, then the first in the order
+        of all columns, whatever the input order. In each gvkey the kept row (prc_local 2)
+        loses on every later step and on column order, so only the named step picks it."""
+        from jkp.data.aux_functions import add_primary_sec
+
+        paths, _, _ = setup_paths
+        # gvkey, prc_local, curcdd, prcstd, exch_main, dolvol
+        rows = [
+            ("valid", 2.0, "USD", 3, 0, 1.0),
+            ("valid", 1.0, "USD", 5, 1, 9.0),
+            ("prcstd", 2.0, "USD", 10, 0, 1.0),
+            ("prcstd", 1.0, "USD", 3, 1, 9.0),
+            ("exch_main", 2.0, "USD", 4, 1, 1.0),
+            ("exch_main", 1.0, "USD", 4, 0, 9.0),
+            ("dolvol", 2.0, "USD", 4, 1, 9.0),
+            ("dolvol", 1.0, "USD", 4, 1, 1.0),
+            ("columns", 2.0, "USD", 4, 1, 1.0),
+            ("columns", 2.0, "USD", 4, 1, 1.0),
+            ("columns", 3.0, "USD", 4, 1, 1.0),
+        ]
+        df = pl.DataFrame(
+            rows,
+            schema=["gvkey", "prc_local", "curcdd", "prcstd", "exch_main", "dolvol"],
+            orient="row",
+        ).with_columns(iid=pl.lit("01"), datadate=pl.lit(date(2024, 1, 31)))
+        results = []
+        for i, data in enumerate([df, df.reverse()]):
+            input_path = paths.interim_dir / f"dup_input_{i}.parquet"
+            output_path = paths.interim_dir / f"dup_output_{i}.parquet"
+            data.write_parquet(input_path)
+            add_primary_sec(paths, input_path, "datadate", output_path)
+            results.append(pl.read_parquet(output_path))
+
+        assert results[0].equals(results[1]), "Output should not depend on input order"
+        assert results[0].height == 5
+        assert set(results[0]["prc_local"]) == {2.0}
+
+
+class TestDropDuplicateSecurityDates:
+    """Test that drop_duplicate_security_dates() keeps one row per security-date by its
+    rule and leaves a file without duplicates untouched."""
+
+    @pytest.fixture()
+    def exchanges(self, monkeypatch) -> None:
+        """exchg 1 is a main exchange, exchg 2 is not."""
+        import jkp.data.aux_functions as af
+
+        monkeypatch.setattr(
+            af,
+            "comp_exchanges",
+            lambda paths: pl.DataFrame({"exchg": [1, 2], "exch_main": [1, 0]}),
+        )
+
+    def test_keeps_one_row_by_rule(self, test_paths, exchanges) -> None:
+        """Rows sharing (gvkey, iid, datadate) collapse to one: a valid price, then the
+        highest prcstd, a main exchange, the highest dolvol, then the first in the order
+        of all columns, whatever the input order. In each gvkey the kept row (prc_local 2)
+        loses on every later step and on column order, so only the named step picks it."""
+        from jkp.data.aux_functions import drop_duplicate_security_dates
+
+        # gvkey, prc_local, curcdd, prcstd, exchg, dolvol
+        rows = [
+            ("valid", 2.0, "USD", 3, 2, 1.0),
+            ("valid", 1.0, "USD", 5, 1, 9.0),
+            ("prcstd", 2.0, "USD", 10, 2, 1.0),
+            ("prcstd", 1.0, "USD", 3, 1, 9.0),
+            ("exch_main", 2.0, "USD", 4, 1, 1.0),
+            ("exch_main", 1.0, "USD", 4, 2, 9.0),
+            ("dolvol", 2.0, "USD", 4, 1, 9.0),
+            ("dolvol", 1.0, "USD", 4, 1, 1.0),
+            ("columns", 2.0, "USD", 4, 1, 1.0),
+            ("columns", 2.0, "USD", 4, 1, 1.0),
+            ("columns", 3.0, "USD", 4, 1, 1.0),
+            ("unique", 1.0, "USD", 4, 1, 1.0),
+        ]
+        df = pl.DataFrame(
+            rows,
+            schema=["gvkey", "prc_local", "curcdd", "prcstd", "exchg", "dolvol"],
+            orient="row",
+        ).with_columns(iid=pl.lit("01"), datadate=pl.lit(date(2024, 1, 31)))
+        results = []
+        for i, data in enumerate([df, df.reverse()]):
+            path = test_paths.interim_dir / f"merged_{i}.parquet"
+            data.write_parquet(path)
+            drop_duplicate_security_dates(test_paths, path)
+            # row order is not part of the contract
+            results.append(pl.read_parquet(path).sort(["gvkey", "iid", "datadate"]))
+
+        assert results[0].equals(results[1]), "Kept rows should not depend on input order"
+        assert results[0].columns == df.columns
+        assert results[0]["gvkey"].to_list() == sorted(set(df["gvkey"]))
+        assert results[0].filter(pl.col("gvkey") != "unique")["prc_local"].to_list() == [2.0] * 5
+
+    def test_no_duplicates_leaves_file_untouched(self, test_paths, exchanges) -> None:
+        """Without a repeated key the file is not rewritten."""
+        from jkp.data.aux_functions import drop_duplicate_security_dates
+
+        path = test_paths.interim_dir / "merged.parquet"
+        pl.DataFrame(
+            {
+                "gvkey": ["001", "001", "002"],
+                "iid": ["01", "01", "01"],
+                "datadate": [date(2024, 1, 31), date(2024, 2, 29), date(2024, 1, 31)],
+                "prc_local": [1.0, 2.0, 3.0],
+            }
+        ).write_parquet(path)
+        before = path.read_bytes()
+        drop_duplicate_security_dates(test_paths, path)
+        assert path.read_bytes() == before
 
 
 class TestGenReturnsDfDedup:

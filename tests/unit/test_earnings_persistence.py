@@ -30,8 +30,7 @@ def test_ni_ar1_is_null_when_lagged_ni_at_does_not_vary(test_paths: DataPaths, t
     data_path = tmp_path / "acc.parquet"
     raw.write_parquet(data_path)
 
-    compute_earnings_persistence(test_paths, data_path, 5, 5)
-    out = pl.read_parquet(test_paths.interim_dir / "ni_ar_res.parquet")
+    out = compute_earnings_persistence(test_paths, data_path, 5, 5)
 
     constant = out.filter(pl.col("gvkey") == "B")
     assert constant.height > 0
@@ -129,8 +128,11 @@ def test_output_does_not_depend_on_thread_count(
 
     outputs = []
     for threads in (1, 8):
+        # _duckdb_connect counts the CPUs in the affinity mask (Linux), else os.cpu_count()
         monkeypatch.setattr(os, "cpu_count", lambda threads=threads: threads)
-        compute_earnings_persistence(test_paths, data_path, 5, 5)
-        outputs.append(pl.read_parquet(test_paths.interim_dir / "ni_ar_res.parquet"))
+        monkeypatch.setattr(
+            os, "sched_getaffinity", lambda pid, threads=threads: set(range(threads)), raising=False
+        )
+        outputs.append(compute_earnings_persistence(test_paths, data_path, 5, 5))
     assert outputs[0].height > 0
     assert_frame_equal(outputs[0], outputs[1], check_exact=True)

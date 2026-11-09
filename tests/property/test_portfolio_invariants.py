@@ -78,7 +78,6 @@ def _run_portfolios(
         source=["CRSP", "COMPUSTAT"],
         wins_ret=True,
         cmp_key=False,
-        signals=False,
         daily_pf=False,
         ind_pf=False,
         ret_cutoffs=ret_cut,

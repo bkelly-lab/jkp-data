@@ -3,7 +3,7 @@
 These tests pin the v0.x public API: every name in ``__all__`` must resolve to
 something callable/usable, ``from jkp.data import *`` must produce exactly the
 intended set of names, and importing the package must NOT eagerly import the
-heavy modules (`polars`, `duckdb`, `ibis`) — that's the point of the
+heavy modules (`polars`, `duckdb`) — that's the point of the
 module-level ``__getattr__`` in ``__init__.py``.
 """
 
