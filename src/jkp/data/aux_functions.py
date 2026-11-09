@@ -1856,16 +1856,24 @@ def gen_secd_data(paths: DataPaths):
                     gvkey,
                     iid,
                     eom,
-                    GREATEST(MAX(prc / ajexdi), MAX(prc_high / ajexdi)) AS prc_high_adj,
-                    LEAST(MIN(prc / ajexdi), MIN(prc_low / ajexdi)) AS prc_low_adj,
-                    SUM(div_tot / ajexdi) AS div_tot_adj,
-                    SUM(div_cash / ajexdi) AS div_cash_adj,
-                    SUM(div_spc / ajexdi) AS div_spc_adj,
-                    SUM(cshtrd / ajexdi) AS cshtr_adj,
-                    SUM(dolvol) AS dolvol,
-                    MAX(datadate) FILTER (WHERE {valid}) AS max_date
+                    GREATEST(MAX(prc / ajexdi) OVER w, MAX(prc_high / ajexdi) OVER w)
+                        AS prc_high_adj,
+                    LEAST(MIN(prc / ajexdi) OVER w, MIN(prc_low / ajexdi) OVER w) AS prc_low_adj,
+                    SUM(div_tot / ajexdi) OVER w AS div_tot_adj,
+                    SUM(div_cash / ajexdi) OVER w AS div_cash_adj,
+                    SUM(div_spc / ajexdi) OVER w AS div_spc_adj,
+                    SUM(cshtrd / ajexdi) OVER w AS cshtr_adj,
+                    SUM(dolvol) OVER w AS dolvol,
+                    MAX(datadate) FILTER (WHERE {valid}) OVER w AS max_date
                 FROM read_parquet('{dsf}')
-                GROUP BY gvkey, iid, eom
+                -- one sort serves every aggregate: each month's rows in date order, so the float
+                -- sums don't depend on the input row order
+                WINDOW w AS (
+                    PARTITION BY gvkey, iid, eom
+                    ORDER BY datadate
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+                )
+                QUALIFY datadate = max_date
             )
             SELECT
                 d.* EXCLUDE (cshtrd, div_tot, div_cash, div_spc, dolvol, prc_high, prc_low),
