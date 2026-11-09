@@ -4,8 +4,9 @@ add_primary_sec used to range-join the primary-issue histories onto the full row
 the join fan-out with SELECT DISTINCT and DISTINCT ON, and stage the result in a .ddb
 table. It now computes primary_sec on the key columns and joins it back. This test runs
 the legacy SQL (verbatim) on the same inputs and asserts identical output, row order
-included. Keys (gvkey, iid, datadate) are unique and never NULL, as in the pipeline
-(census job 4187674 on the Nov-1 data).
+included. Keys (gvkey, iid, datadate) are unique in the pipeline (census job 4187674 on
+the Nov-1 data); the fixture adds rows with a NULL iid and a NULL datadate, which must
+survive as the legacy SQL kept them.
 """
 
 from __future__ import annotations
@@ -139,6 +140,7 @@ def _write_fixtures(paths: DataPaths) -> Path:
         ("000004", "01"),
     ]
     rows = [(g, i, d) for g, i in securities for d in DATES]
+    rows += [("000001", None, DATES[0]), ("000004", "01", None)]
     data = pl.DataFrame(
         rows, schema={"gvkey": pl.Utf8, "iid": pl.Utf8, "datadate": pl.Date}, orient="row"
     ).with_columns(
@@ -180,6 +182,9 @@ def test_matches_legacy_sql(test_paths: DataPaths) -> None:
 
     legacy, new = pl.read_parquet(legacy_path), pl.read_parquet(new_path)
     assert_frame_equal(new, legacy)
+    # rows with a NULL key column are kept
+    assert new["iid"].null_count() == 1
+    assert new["datadate"].null_count() == 1
     # the fixtures reach both flag values and the overlap
     assert set(new["primary_sec"]) == {0, 1}
     overlap = new.filter((pl.col("gvkey") == "000001") & (pl.col("datadate") == date(2020, 5, 29)))
