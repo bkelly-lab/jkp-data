@@ -47,7 +47,9 @@ def assert_matches_golden(actual: pl.DataFrame, tolerance: ToleranceSpec) -> Non
 def test_acc_chars_golden(
     acc_stage: DataPaths, tolerance: ToleranceSpec, request: pytest.FixtureRequest
 ) -> None:
-    """The fingerprint of the stage's output matches the committed one."""
+    """The fingerprint of the stage's output matches the committed one. It holds per-column
+    aggregates, so a value swapped between two firms leaves it unchanged; the oracle and the
+    metamorphic tests check values firm by firm."""
     actual = stage_fingerprint(acc_stage)
     if request.config.getoption("--regen-golden"):
         write_golden(actual)
@@ -69,6 +71,7 @@ def test_single_thread_run_matches_golden(tmp_path: Path, tolerance: ToleranceSp
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
+        timeout=600,  # a hang fails here instead of at CI's job limit
     )
     assert run.returncode == 0, run.stderr
     assert_matches_golden(pl.read_parquet(tmp_path / "fingerprint.parquet"), tolerance)
