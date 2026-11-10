@@ -241,8 +241,8 @@ MUTATIONS: list[tuple[str, str, str]] = [
     ),
     (
         "ni_ivol uses population std",
-        "stddev_samp(resid ORDER BY datadate) AS ni_ivol,",
-        "stddev_pop(resid ORDER BY datadate) AS ni_ivol,",
+        "stddev_samp(resid ORDER BY datadate) END AS ni_ivol,",
+        "stddev_pop(resid ORDER BY datadate) END AS ni_ivol,",
     ),
     # combine_ann_qtr_chars precedence
     (
