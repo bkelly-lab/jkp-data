@@ -2875,7 +2875,7 @@ These stock-level columns are also used as the daily return leg when constructin
     
     \hypertarget{dbeta2}{Downside Beta} & betadown\_zd & Described in detail \hyperlink{dbeta}{here} \\
     
-	Zero Trades & zero\_trades\_zd & Number of days with zero trades over period. In case of equal number of zero trading days, turnover\_zd will decide on the rank following Liu (2006) \\
+	Zero Trades & zero\_trades\_zd & Number of days with zero trades over period. In case of equal number of zero trading days, turnover\_zd will decide on the rank following Liu (2006). Daily turnover is truncated to a multiple of $2^{-64}$ and summed as an integer, which is exact, so stocks with the same daily turnovers tie and share the average rank in any row order; the SAS code averaged turnover in data order \\
     
     Turnover & turnover\_zd &$\overline{\left(\frac{TVOL\mbox{*}_t}{SHARES\mbox{*}_t*1000000}\right)}_{zD}$\\
     

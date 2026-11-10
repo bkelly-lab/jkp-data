@@ -245,6 +245,12 @@ RET_MIN_STD = 1e-6
 # slopes near 4e5; the next windows vary by 3e-6 or more.
 NI_AT_MIN_STD = 1e-6
 
+# zero_trades truncates daily turnover to a multiple of 1/2**64 and sums it as Int128, so the
+# sum is exact and the same in any row order, and stocks with the same daily turnovers tie on
+# the turnover rank. A 252-day sum overflows only above 3.6e16 per day; the largest daily
+# turnover on the 2026-11 data is 1e8.
+TURNOVER_FIXED_POINT_SCALE = 2.0**64
+
 PORTFOLIO_SETTINGS = {
     "end_date": END_DATE,
     "pfs": PORTFOLIO_PFS,
