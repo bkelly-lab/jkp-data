@@ -2544,7 +2544,7 @@ These stock-level columns are also used as the daily return leg when constructin
     
     Local Return & ret\_local\mbox{*} & Equal to RET\mbox{*} for CRSP (USD is the local currency). Delisting treatment is identical to RET\mbox{*}: monthly compounding with \href{https://wrds-www.wharton.upenn.edu/data-dictionary/crsp_m_stock/dsedelist/dlret/}{DLRET} unless \texttt{MthDelFlg} is \texttt{A}, \texttt{P}, or \texttt{V}; daily returns are compounded with \texttt{DLRET} on the last trading day.\\
      
-    Excess Return & ret\_exc\mbox{*} & We use RET\mbox{*}-\href{https://wrds-www.wharton.upenn.edu/data-dictionary/crsp_a_indexes/mcti/#row-t30ret}{T30RET}/21. If T30RET is unavailable, we use 
+    Excess Return & ret\_exc\mbox{*} & We use RET\mbox{*}-\href{https://wrds-www.wharton.upenn.edu/data-dictionary/crsp_a_indexes/indmthseriesdata_ind/#row-mthtotret}{T30RET}/21. If T30RET is unavailable, we use 
     \href{https://wrds-www.wharton.upenn.edu/data-dictionary/ff_all/factors_monthly/#row-rf}{RF}. If the return is a monthly return rather than a daily return, the T30RET is divided by 1 rather than 21. \\
     
     Excess Return t+1 & ret\_exc\_lead1m\mbox{*} &  Excess return (ret\_exc\mbox{*}) in month t+1 \\
@@ -2599,7 +2599,7 @@ These stock-level columns are also used as the daily return leg when constructin
     
     Return & RET\mbox{*} & We use RI\mbox{*}/lag(RI\mbox{*}) - 1. In case of delisting, we calculate as (RI\mbox{*}/lag(RI\mbox{*}) * (1+dlret) -1)\\
     
-    Excess Return & ret\_exc\mbox{*} & We use RET\mbox{*}-\href{https://wrds-www.wharton.upenn.edu/data-dictionary/crsp_a_indexes/mcti/#row-t30ret}{T30RET}/21. If T30RET is unavailable, we use 
+    Excess Return & ret\_exc\mbox{*} & We use RET\mbox{*}-\href{https://wrds-www.wharton.upenn.edu/data-dictionary/crsp_a_indexes/indmthseriesdata_ind/#row-mthtotret}{T30RET}/21. If T30RET is unavailable, we use 
     \href{https://wrds-www.wharton.upenn.edu/data-dictionary/ff_all/factors_monthly/#row-rf}{RF}. If the return is a monthly return rather than a daily return, the T30RET is divided by 1 rather than 21. \\
     
     Excess Return t+1 & ret\_exc\_lead1m\mbox{*} &  Excess return (ret\_exc\mbox{*}) in month t+1 \\

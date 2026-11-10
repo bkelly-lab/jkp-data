@@ -1339,8 +1339,8 @@ def build_mcti(paths: DataPaths):
     Steps:
         1) Read indmthseriesdata and indseriesinfohdr from parquet.
         2) Inner join indmthseriesdata with indseriesinfohdr on "indno".
-        4) Filter for CRSP 30-day T-bill returns (indno == 1000708).
-        5) Write parquet to raw_data_dfs/crsp_mcti.parquet
+        3) Filter for CRSP 30-day T-bill returns (indno == 1000708).
+        4) Write parquet to raw_data_dfs/crsp_mcti.parquet
 
     Output:
         Writes raw_data_dfs/crsp_mcti.parquet (no return value).
