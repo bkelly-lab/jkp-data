@@ -11,7 +11,6 @@ removes the downstream `(id, eom)` fan-out and recovers the annual `inv`.
 
 Covers:
   - _ff_load_funda_global     (ROW per-source collapse)
-  - _ff_global_be_op_inv      (ROW inv recovery)
   - ff_load_compustat_us      (US collapse + inv recovery + BE ladder)
 """
 
@@ -22,7 +21,6 @@ from datetime import date
 import polars as pl
 
 from jkp.data.aux_functions import (
-    _ff_global_be_op_inv,
     _ff_load_funda_global,
     _ff_us_accounting,
     ff_load_compustat_us,
@@ -125,18 +123,6 @@ def test_ff_load_funda_global_indfmt_rule(tmp_path):
 
     # INDL wins over FS; a date reported only in FS is kept (#329's rule).
     assert out.select("gvkey", "at").rows() == [("001", 100.0), ("002", 100.0)]
-
-
-def test_ff_global_be_op_inv_recovers_annual_inv(tmp_path):
-    _write_funda(tmp_path / "comp_g_funda.parquet", _fiscal_change_rows("001", indl=False))
-
-    lf = _ff_load_funda_global(tmp_path)
-    out = _ff_global_be_op_inv(lf).collect()
-
-    inv_2019 = out.filter(pl.col("year") == 2019)["inv"].item()
-    # at_lag is the 2018 row (100) -> fy_gap == 1 -> inv = (120-100)/100.
-    assert inv_2019 is not None
-    assert abs(inv_2019 - 0.20) < 1e-9
 
 
 # =============================================================================

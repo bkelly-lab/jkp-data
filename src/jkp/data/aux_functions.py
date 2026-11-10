@@ -10008,9 +10008,7 @@ def _ff_mom_eligible() -> pl.Expr:
 
 
 def _ciz_universe() -> pl.Expr:
-    """CRSP CIZ universe filter shared by FF (ff_load_crsp_panel) and HXZ
-    (hxz_load_crsp). Mispricing has its own `_mp_universe()` with extra
-    conditionaltype / tradingstatusflg clauses; do not collapse those."""
+    """CRSP CIZ universe filter of the FF builder (ff_load_crsp_panel)."""
     return (
         (pl.col("sharetype") == "NS")
         & (pl.col("securitytype") == "EQTY")
@@ -10388,7 +10386,7 @@ def _ff_row_rets_weights_lazy(raw_panel: pl.LazyFrame, freq: str) -> pl.LazyFram
     """Lazy ROW returns/weights panel: w = me.shift(1) over (excntry, id), with a
     continuity guard — a listing gap (prev row > 1 month back for monthly, > 5
     days for daily) nulls w so a re-entrant stock doesn't carry a stale market
-    cap into the VW legs (mirrors _hxz_add_me_lag1_ym).
+    cap into the VW legs.
     world_dsf carries no clean retx, so cumretx intra-year compounding is skipped.
     Output: the _ff_us_rets_weights_lazy schema (exchcd_us, prc_us null)."""
     prev_date = pl.col("date").shift(1).over("excntry", "id")
@@ -10423,124 +10421,13 @@ def _ff_bucket(val: str, breaks: list[str], labels: list[str]) -> pl.Expr:
     return out.otherwise(pl.lit(labels[-1]))
 
 
-def _ff_na_be_op_inv(lf: pl.LazyFrame) -> pl.LazyFrame:
-    """NA-funda BE/OP/INV per JKP (covers Canada and other NA-coverage non-US gvkeys).
-
-    BE: seq → ceq+pstk → at-lt, plus txditc → txdb+itcb,
-    minus preferred pstkrv → pstkl → pstk; no FASB-109 gate, no BE<0 cut.
-    OP = ope_x / BE_local; ope_x = ebitda → oibdp → sale_x − opex_x, minus xint.
-    INV = 1-yr asset growth with strict 1-FY gap.
-    """
-    ps_x = pl.coalesce("pstkrv", "pstkl", "pstk")
-    txditc = pl.coalesce("txditc", pl.col("txdb") + pl.col("itcb"))
-    return (
-        lf.with_columns(
-            be_local=pl.coalesce(
-                "seq", pl.col("ceq") + pl.coalesce(ps_x, 0.0), pl.col("at") - pl.col("lt")
-            )
-            + pl.coalesce(txditc, 0.0)
-            - pl.coalesce(ps_x, 0.0),
-            ope_x=pl.coalesce(
-                "ebitda",
-                "oibdp",
-                pl.coalesce("sale", "revt") - pl.coalesce("xopr", pl.col("cogs") + pl.col("xsga")),
-            )
-            - pl.col("xint"),
-            year=pl.col("datadate").dt.year(),
-        )
-        .sort(["gvkey", "datadate"])
-        .with_columns(
-            op=pl.when(pl.col("ope_x").is_not_null() & (pl.col("be_local") > 0))
-            .then(safe_div(pl.col("ope_x"), pl.col("be_local"), "op"))
-            .otherwise(None),
-            at_lag=pl.col("at").shift(1).over("gvkey"),
-            datadate_lag=pl.col("datadate").shift(1).over("gvkey"),
-        )
-        .with_columns(
-            inv=pl.when(
-                pl.col("at").is_not_null()
-                & pl.col("at_lag").is_not_null()
-                & (pl.col("at_lag") > 0)
-                & (pl.col("datadate").dt.year() - pl.col("datadate_lag").dt.year() == 1)
-            )
-            .then(safe_div(pl.col("at") - pl.col("at_lag"), pl.col("at_lag"), "inv"))
-            .otherwise(None),
-        )
-    )
-
-
-def _ff_global_be_op_inv(lf: pl.LazyFrame) -> pl.LazyFrame:
-    """g_funda BE/OP/INV per JKP. comp.g_funda lacks pstkrv/pstkl/itcb: preferred-stock
-    term collapses to pstk; txditc fallback collapses to txdb (+null preserves null
-    semantics when txdb is null)."""
-    ps_x = pl.col("pstk")
-    txditc = pl.coalesce("txditc", pl.col("txdb") + pl.lit(None, dtype=pl.Float64))
-    return (
-        lf.with_columns(
-            be_local=pl.coalesce(
-                "seq", pl.col("ceq") + pl.coalesce(ps_x, 0.0), pl.col("at") - pl.col("lt")
-            )
-            + pl.coalesce(txditc, 0.0)
-            - pl.coalesce(ps_x, 0.0),
-            ope_x=pl.coalesce(
-                "ebitda",
-                "oibdp",
-                pl.coalesce("sale", "revt") - pl.coalesce("xopr", pl.col("cogs") + pl.col("xsga")),
-            )
-            - pl.col("xint"),
-            year=pl.col("datadate").dt.year(),
-        )
-        .sort(["gvkey", "datadate"])
-        .with_columns(
-            op=pl.when(pl.col("ope_x").is_not_null() & (pl.col("be_local") > 0))
-            .then(safe_div(pl.col("ope_x"), pl.col("be_local"), "op"))
-            .otherwise(None),
-            at_lag=pl.col("at").shift(1).over("gvkey"),
-            datadate_lag=pl.col("datadate").shift(1).over("gvkey"),
-        )
-        .with_columns(
-            inv=pl.when(
-                pl.col("at").is_not_null()
-                & pl.col("at_lag").is_not_null()
-                & (pl.col("at_lag") > 0)
-                & (pl.col("datadate").dt.year() - pl.col("datadate_lag").dt.year() == 1)
-            )
-            .then(safe_div(pl.col("at") - pl.col("at_lag"), pl.col("at_lag"), "inv"))
-            .otherwise(None),
-        )
-    )
-
-
 def _ff_load_funda_na(raw_dir: Path) -> pl.LazyFrame:
-    """Load comp_funda (NA) with the standard INDL/STD/D/C screen; floats
-    include the NA-only pstkrv/pstkl/itcb. Collapses to one row per
-    (gvkey, year) BEFORE be/op/inv are computed (_collapse_to_latest_fy)."""
-    floats = [
-        "pstk",
-        "seq",
-        "ceq",
-        "lt",
-        "txditc",
-        "txdb",
-        "revt",
-        "sale",
-        "cogs",
-        "xsga",
-        "xopr",
-        "xint",
-        "ebitda",
-        "oibdp",
-        "at",
-        "pstkrv",
-        "pstkl",
-        "itcb",
-    ]
+    """Load comp_funda (NA) with the standard INDL/STD/D/C screen, then one row per
+    (gvkey, year), the latest datadate (_collapse_to_latest_fy). Only the fiscal-record
+    keys (gvkey, datadate, year) are used downstream."""
     return (
         pl.scan_parquet(raw_dir / "comp_funda.parquet")
-        .with_columns(
-            pl.col("datadate").cast(pl.Date),
-            pl.col(*floats).cast(pl.Float64),
-        )
+        .with_columns(pl.col("datadate").cast(pl.Date))
         .filter(_compustat_na_filter())
         .with_columns(year=pl.col("datadate").dt.year())
         .pipe(_collapse_to_latest_fy, resort=False)
@@ -10550,31 +10437,12 @@ def _ff_load_funda_na(raw_dir: Path) -> pl.LazyFrame:
 def _ff_load_funda_global(raw_dir: Path) -> pl.LazyFrame:
     """Load comp_g_funda (Global): INDL-or-FS / HIST_STD / I / C screen, then per
     (gvkey, datadate) the INDL rows if there are any, else the FS rows
-    (apply_indfmt_filter, the accounting stage's rule).
-    Collapses to one row per (gvkey, year) BEFORE be/op/inv are computed."""
-    floats = [
-        "pstk",
-        "seq",
-        "ceq",
-        "lt",
-        "txditc",
-        "txdb",
-        "revt",
-        "sale",
-        "cogs",
-        "xsga",
-        "xopr",
-        "xint",
-        "ebitda",
-        "oibdp",
-        "at",
-    ]
+    (apply_indfmt_filter, the accounting stage's rule), then one row per (gvkey, year),
+    the latest datadate. Only the fiscal-record keys (gvkey, datadate, year) are used
+    downstream."""
     return (
         pl.scan_parquet(raw_dir / "comp_g_funda.parquet")
-        .with_columns(
-            pl.col("datadate").cast(pl.Date),
-            pl.col(*floats).cast(pl.Float64),
-        )
+        .with_columns(pl.col("datadate").cast(pl.Date))
         .filter(
             pl.col("indfmt").is_in(["INDL", "FS"])
             & (pl.col("datafmt") == "HIST_STD")
@@ -10646,12 +10514,8 @@ def ff_load_world_compustat(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
     All three are read/computed at the fiscal-year-end datadate, so the June(t)/Dec(t-1)
     timing in ff_annual_characteristics is unchanged. USA is unaffected (this loader feeds only ROW).
     """
-    na = _ff_na_be_op_inv(_ff_load_funda_na(raw_dir)).select(
-        "gvkey", "datadate", "year", _src=pl.lit(0)
-    )
-    gl = _ff_global_be_op_inv(_ff_load_funda_global(raw_dir)).select(
-        "gvkey", "datadate", "year", _src=pl.lit(1)
-    )
+    na = _ff_load_funda_na(raw_dir).select("gvkey", "datadate", "year", _src=pl.lit(0))
+    gl = _ff_load_funda_global(raw_dir).select("gvkey", "datadate", "year", _src=pl.lit(1))
     ff_side = (
         pl.concat([na, gl], how="vertical_relaxed")
         .sort(["gvkey", "datadate", "_src"])
@@ -10842,7 +10706,7 @@ def ff_load_world_panel(interim_dir: Path, freq: str) -> pl.LazyFrame:
             )
         )
     # world_msf can carry duplicate share-class records per security-month
-    # (see hxz_load_panel_row); dedup so the daily key join cannot fan out.
+    # dedup so the daily key join cannot fan out.
     # Deterministic tie-break prefers a linked (non-null gvkey) record.
     msf_keys = (
         pl.scan_parquet(interim_dir / "world_msf.parquet")
