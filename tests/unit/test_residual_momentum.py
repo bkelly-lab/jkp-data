@@ -394,6 +394,32 @@ def test_near_constant_ret_gives_no_score(test_paths) -> None:
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(("spread", "scored"), [(1e-9, False), (1e-3, True)])
+def test_near_equal_scored_residuals_give_no_score(test_paths, spread: float, scored: bool) -> None:
+    """When the scored residuals are almost equal (std at most RES_MOM_MIN_STD), mean / std would
+    divide by almost zero, so the score is null (#347). The scored months t-5..t-1 get the same
+    factors and the same return up to ``spread``, so their residuals differ only by ``spread``;
+    the other months vary as usual, so the RET_MIN_STD guard doesn't apply."""
+    world, fcts = _custom_frames()
+    grid = month_grid()
+    same = pl.col("eom").is_in(grid[_TERMINAL_IDX - 5 : _TERMINAL_IDX])
+    fcts = fcts.with_columns(
+        pl.when(same).then(0.01).otherwise(pl.col(c)).alias(c) for c in ["mktrf", "hml", "smb_ff"]
+    )
+    k = pl.int_range(pl.len()) % 5 - 2
+    world = world.with_columns(
+        ret_exc=pl.when(same).then(0.02 + spread * k).otherwise(pl.col("ret_exc"))
+    ).with_columns(ret=pl.col("ret_exc") + 0.001)
+    out = _run_frames(test_paths, 6, 1, world, fcts)
+    value = out.filter((pl.col("id") == 1000) & (pl.col("eom") == grid[_TERMINAL_IDX]))
+    assert value.height == 1
+    if scored:
+        assert np.isfinite(value["resff3_6_1"][0])
+    else:
+        assert value["resff3_6_1"][0] is None
+
+
+@pytest.mark.unit
 def test_output_unique_id_eom(test_paths) -> None:
     """(id, eom) is a unique key in the output — no duplicate rows per stock-month."""
     out = _run(test_paths, 12, 1)

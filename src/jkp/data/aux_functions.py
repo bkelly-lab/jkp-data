@@ -41,6 +41,7 @@ from .config import (
     END_DATE,
     MAIN_FILTERS,
     NI_AT_MIN_STD,
+    RES_MOM_MIN_STD,
     RET_MIN_STD,
 )
 from .output_writer import write_dataframe
@@ -9273,7 +9274,9 @@ def res_mom(df, sfx, __min, incl, skip):
            Residuals are null when raw ret is near-constant over the window or zero in at
            least 90% of its months (_guard_constant with RET_MIN_STD), so the score is null too.
         2) Filter to windows inside (max_date - incl, max_date - skip].
-        3) Require at least __min obs; compute mean(res)/std(res).
+        3) Require at least __min obs; compute mean(res)/std(res). The score is null when
+           std(res) is at most RES_MOM_MIN_STD: it would divide by almost zero, so it is a
+           wrong value set by how close the scored residuals happen to be.
 
     Output:
         LazyFrame with column f'resff3_{incl}_{skip}' per (id_int, group_number).
@@ -9304,7 +9307,12 @@ def res_mom(df, sfx, __min, incl, skip):
             & (col("n") >= __min)
         )
         .group_by(["id_int", "group_number"])
-        .agg((col("res").mean() / col("res").std()).fill_nan(None).alias(f"resff3_{incl}_{skip}"))
+        .agg(
+            pl.when(col("res").std() > RES_MOM_MIN_STD)
+            .then(col("res").mean() / col("res").std())
+            .fill_nan(None)
+            .alias(f"resff3_{incl}_{skip}")
+        )
     )
     return df
 
