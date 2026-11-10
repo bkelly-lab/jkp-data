@@ -40,29 +40,31 @@ def _write_dff(path, rows):
     return path
 
 
-def _compustat_inputs(tmp_path, *, gvkey="001", permno=10001, years=(2018, 2019)):
+def _compustat_inputs(test_paths, *, gvkey="001", permno=10001, years=(2018, 2019)):
     rows = [_funda_row(gvkey, date(y, 12, 31), 100.0 + i, indl=True) for i, y in enumerate(years)]
-    _write_funda(tmp_path / "comp_funda.parquet", rows)
-    _write_lnkhist(tmp_path / "crsp_ccmxpf_lnkhist.parquet", gvkey, permno)
+    _write_funda(test_paths.raw_tables_dir / "comp_funda.parquet", rows)
+    _write_lnkhist(test_paths.raw_tables_dir / "crsp_ccmxpf_lnkhist.parquet", gvkey, permno)
 
 
 class TestDffSplice:
-    def test_use_dff_false_is_noop(self, tmp_path):
-        _compustat_inputs(tmp_path)
+    def test_use_dff_false_is_noop(self, test_paths):
+        _compustat_inputs(test_paths)
         base = ff_load_compustat_us(
-            _ff_us_accounting(tmp_path, True).collect(), tmp_path, ff5=True
+            test_paths, _ff_us_accounting(test_paths, True).collect(), ff5=True
         ).sort(["permno", "year"])
         off = ff_load_compustat_us(
-            _ff_us_accounting(tmp_path, True).collect(), tmp_path, ff5=True, use_dff=False
+            test_paths, _ff_us_accounting(test_paths, True).collect(), ff5=True, use_dff=False
         ).sort(["permno", "year"])
         assert off.equals(base)
 
-    def test_dff_fills_missing_permno_year(self, tmp_path):
-        _compustat_inputs(tmp_path, permno=10001)
-        dff = _write_dff(tmp_path / "dff.txt", [(20002, 1930, 1932, {1930: 5.0, 1931: 6.0})])
+    def test_dff_fills_missing_permno_year(self, test_paths):
+        _compustat_inputs(test_paths, permno=10001)
+        dff = _write_dff(
+            test_paths.raw_tables_dir / "dff.txt", [(20002, 1930, 1932, {1930: 5.0, 1931: 6.0})]
+        )
         out = ff_load_compustat_us(
-            _ff_us_accounting(tmp_path, True).collect(),
-            tmp_path,
+            test_paths,
+            _ff_us_accounting(test_paths, True).collect(),
             ff5=True,
             use_dff=True,
             dff_path=dff,
@@ -76,14 +78,14 @@ class TestDffSplice:
         assert row["inv"][0] is None
         assert row["count"][0] is None  # no Compustat history
 
-    def test_year_offset_alignment(self, tmp_path):
+    def test_year_offset_alignment(self, test_paths):
         # DFF be(t=1930) must land as unioned year=1929 so cyp1 = 1930 = june_year,
         # pairing with Dec(1929) ME downstream.
-        _compustat_inputs(tmp_path)
-        dff = _write_dff(tmp_path / "dff.txt", [(20002, 1930, 1930, {1930: 5.0})])
+        _compustat_inputs(test_paths)
+        dff = _write_dff(test_paths.raw_tables_dir / "dff.txt", [(20002, 1930, 1930, {1930: 5.0})])
         out = ff_load_compustat_us(
-            _ff_us_accounting(tmp_path, True).collect(),
-            tmp_path,
+            test_paths,
+            _ff_us_accounting(test_paths, True).collect(),
             ff5=True,
             use_dff=True,
             dff_path=dff,
@@ -94,14 +96,16 @@ class TestDffSplice:
         # Synthetic datadate stamps the formation June (of DFF year t), not t-1.
         assert dff_rows["datadate"].to_list() == [date(1930, 6, 30)]
 
-    def test_collision_coalesces_dff_be_keeps_compustat_fields(self, tmp_path):
+    def test_collision_coalesces_dff_be_keeps_compustat_fields(self, test_paths):
         # Compustat fiscal 2019 row (year=2019) vs DFF be(2020) (-> year=2019),
         # same permno: ONE merged row — DFF be, Compustat identity/accounting.
-        _compustat_inputs(tmp_path, permno=10001, years=(2018, 2019))
-        dff = _write_dff(tmp_path / "dff.txt", [(10001, 2020, 2020, {2020: 999.0})])
+        _compustat_inputs(test_paths, permno=10001, years=(2018, 2019))
+        dff = _write_dff(
+            test_paths.raw_tables_dir / "dff.txt", [(10001, 2020, 2020, {2020: 999.0})]
+        )
         out = ff_load_compustat_us(
-            _ff_us_accounting(tmp_path, True).collect(),
-            tmp_path,
+            test_paths,
+            _ff_us_accounting(test_paths, True).collect(),
             ff5=True,
             use_dff=True,
             dff_path=dff,
@@ -114,19 +118,19 @@ class TestDffSplice:
         assert rows["inv"][0] is not None  # Compustat accounting fields survive
         assert rows["count"][0] == 2  # Compustat history count, not synthetic
 
-    def test_collision_fills_null_compustat_be(self, tmp_path):
+    def test_collision_fills_null_compustat_be(self, test_paths):
         # Compustat row exists (CCM link) but its BE is null (seq missing, the
         # dominant 1950s collision case): coalesce fills BE from DFF.
         rows = [
             _funda_row("001", date(2018, 12, 31), 100.0, indl=True),
             _funda_row("001", date(2019, 12, 31), 120.0, indl=True, seq=None),
         ]
-        _write_funda(tmp_path / "comp_funda.parquet", rows)
-        _write_lnkhist(tmp_path / "crsp_ccmxpf_lnkhist.parquet", "001", 10001)
-        dff = _write_dff(tmp_path / "dff.txt", [(10001, 2020, 2020, {2020: 55.0})])
+        _write_funda(test_paths.raw_tables_dir / "comp_funda.parquet", rows)
+        _write_lnkhist(test_paths.raw_tables_dir / "crsp_ccmxpf_lnkhist.parquet", "001", 10001)
+        dff = _write_dff(test_paths.raw_tables_dir / "dff.txt", [(10001, 2020, 2020, {2020: 55.0})])
         out = ff_load_compustat_us(
-            _ff_us_accounting(tmp_path, True).collect(),
-            tmp_path,
+            test_paths,
+            _ff_us_accounting(test_paths, True).collect(),
             ff5=True,
             use_dff=True,
             dff_path=dff,
@@ -137,16 +141,18 @@ class TestDffSplice:
         assert row["be"][0] == 55.0
         assert row["gvkey"][0] == "001"
 
-    def test_disjoint_union_row_count(self, tmp_path):
-        _compustat_inputs(tmp_path, permno=10001, years=(2018, 2019))
+    def test_disjoint_union_row_count(self, test_paths):
+        _compustat_inputs(test_paths, permno=10001, years=(2018, 2019))
         dff = _write_dff(
-            tmp_path / "dff.txt",
+            test_paths.raw_tables_dir / "dff.txt",
             [(20002, 1930, 1932, {1930: 5.0, 1931: 6.0, 1932: 7.0})],
         )
-        base = ff_load_compustat_us(_ff_us_accounting(tmp_path, True).collect(), tmp_path, ff5=True)
+        base = ff_load_compustat_us(
+            test_paths, _ff_us_accounting(test_paths, True).collect(), ff5=True
+        )
         out = ff_load_compustat_us(
-            _ff_us_accounting(tmp_path, True).collect(),
-            tmp_path,
+            test_paths,
+            _ff_us_accounting(test_paths, True).collect(),
             ff5=True,
             use_dff=True,
             dff_path=dff,
@@ -156,12 +162,14 @@ class TestDffSplice:
         keyed = out.select("permno", "year")
         assert keyed.height == keyed.unique().height
 
-    def test_negative_dff_be_dropped(self, tmp_path):
-        _compustat_inputs(tmp_path)
-        dff = _write_dff(tmp_path / "dff.txt", [(20002, 1930, 1931, {1930: -5.0, 1931: 6.0})])
+    def test_negative_dff_be_dropped(self, test_paths):
+        _compustat_inputs(test_paths)
+        dff = _write_dff(
+            test_paths.raw_tables_dir / "dff.txt", [(20002, 1930, 1931, {1930: -5.0, 1931: 6.0})]
+        )
         out = ff_load_compustat_us(
-            _ff_us_accounting(tmp_path, True).collect(),
-            tmp_path,
+            test_paths,
+            _ff_us_accounting(test_paths, True).collect(),
             ff5=True,
             use_dff=True,
             dff_path=dff,
@@ -169,14 +177,16 @@ class TestDffSplice:
 
         assert out.filter(pl.col("permno") == 20002)["year"].to_list() == [1930]
 
-    def test_units_no_double_scaling(self, tmp_path):
+    def test_units_no_double_scaling(self, test_paths):
         # be flows through unchanged ($ millions, like Compustat); the 1000x
         # beme scale is applied downstream, not in the loader.
-        _compustat_inputs(tmp_path)
-        dff = _write_dff(tmp_path / "dff.txt", [(20002, 1930, 1930, {1930: 67.743})])
+        _compustat_inputs(test_paths)
+        dff = _write_dff(
+            test_paths.raw_tables_dir / "dff.txt", [(20002, 1930, 1930, {1930: 67.743})]
+        )
         out = ff_load_compustat_us(
-            _ff_us_accounting(tmp_path, True).collect(),
-            tmp_path,
+            test_paths,
+            _ff_us_accounting(test_paths, True).collect(),
             ff5=True,
             use_dff=True,
             dff_path=dff,
@@ -184,14 +194,14 @@ class TestDffSplice:
 
         assert out.filter(pl.col("permno") == 20002)["be"][0] == pytest.approx(67.743)
 
-    def test_gate_pre1954_constant(self, tmp_path, monkeypatch):
+    def test_gate_pre1954_constant(self, test_paths, monkeypatch):
         monkeypatch.setattr("jkp.data.aux_functions.FF_DFF_GATE_COMPUSTAT_PRE1954", True)
         # Compustat fiscal years 1950/1951 -> formations June 1951/1952 < 1954: dropped.
-        _compustat_inputs(tmp_path, permno=10001, years=(1950, 1951))
-        dff = _write_dff(tmp_path / "dff.txt", [(20002, 1930, 1930, {1930: 5.0})])
+        _compustat_inputs(test_paths, permno=10001, years=(1950, 1951))
+        dff = _write_dff(test_paths.raw_tables_dir / "dff.txt", [(20002, 1930, 1930, {1930: 5.0})])
         out = ff_load_compustat_us(
-            _ff_us_accounting(tmp_path, True).collect(),
-            tmp_path,
+            test_paths,
+            _ff_us_accounting(test_paths, True).collect(),
             ff5=True,
             use_dff=True,
             dff_path=dff,
@@ -200,18 +210,18 @@ class TestDffSplice:
         assert out.filter(pl.col("permno") == 10001).height == 0
         assert out.filter(pl.col("permno") == 20002).height == 1
 
-    def test_no_fanout_on_overlapping_inputs(self, tmp_path):
-        _compustat_inputs(tmp_path, permno=10001, years=(2018, 2019))
+    def test_no_fanout_on_overlapping_inputs(self, test_paths):
+        _compustat_inputs(test_paths, permno=10001, years=(2018, 2019))
         dff = _write_dff(
-            tmp_path / "dff.txt",
+            test_paths.raw_tables_dir / "dff.txt",
             [
                 (10001, 2019, 2020, {2019: 1.0, 2020: 2.0}),  # both collide
                 (20002, 1930, 1930, {1930: 5.0}),
             ],
         )
         out = ff_load_compustat_us(
-            _ff_us_accounting(tmp_path, True).collect(),
-            tmp_path,
+            test_paths,
+            _ff_us_accounting(test_paths, True).collect(),
             ff5=True,
             use_dff=True,
             dff_path=dff,

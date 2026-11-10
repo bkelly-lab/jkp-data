@@ -46,8 +46,8 @@ from jkp.data.aux_functions import (
     ff_load_world_panel,
 )
 from jkp.data.config import (
-    FF_MIN_STOCKS_BP,
-    FF_MIN_STOCKS_PF,
+    FACTOR_MIN_STOCKS_BP,
+    FACTOR_MIN_STOCKS_PF,
     FF_MISSING_RET_CODE,
     US_EXCNTRY,
 )
@@ -394,15 +394,15 @@ class TestFFCountryBreakpoints:
         assert row["beme70"] == 7.0
 
     def test_us_always_emits_breakpoints_regardless_of_count(self):
-        """US bypasses the FF_MIN_STOCKS_BP gate even with 1 stock."""
+        """US bypasses the FACTOR_MIN_STOCKS_BP gate even with 1 stock."""
         june = _make_june_us(1, [5.0])
         specs = [("beme", 0.50, "beme50")]
         bp = ff_country_breakpoints(june, specs, _ff_bm_eligible())
         assert len(bp) == 1
 
     def test_row_below_min_stocks_suppressed(self):
-        """ROW country with count < FF_MIN_STOCKS_BP yields no breakpoints."""
-        n = FF_MIN_STOCKS_BP - 1
+        """ROW country with count < FACTOR_MIN_STOCKS_BP yields no breakpoints."""
+        n = FACTOR_MIN_STOCKS_BP - 1
         june = pl.DataFrame(
             {
                 "excntry": ["GBR"] * n,
@@ -423,8 +423,8 @@ class TestFFCountryBreakpoints:
         assert len(gbr) == 0
 
     def test_row_at_min_stocks_emits_breakpoints(self):
-        """ROW country with count == FF_MIN_STOCKS_BP gets breakpoints."""
-        n = FF_MIN_STOCKS_BP
+        """ROW country with count == FACTOR_MIN_STOCKS_BP gets breakpoints."""
+        n = FACTOR_MIN_STOCKS_BP
         june = pl.DataFrame(
             {
                 "excntry": ["GBR"] * n,
@@ -445,7 +445,7 @@ class TestFFCountryBreakpoints:
 
     def test_row_uses_size_grp_filter(self):
         """ROW pool requires size_grp in {small, large, mega}; micro excluded."""
-        n = FF_MIN_STOCKS_BP + 5
+        n = FACTOR_MIN_STOCKS_BP + 5
         june = pl.DataFrame(
             {
                 "excntry": ["DEU"] * n,
@@ -616,7 +616,7 @@ class TestFFSpecBreaks:
     def test_row_unaffected_by_us_size_all_nyse(self):
         """ROW keeps the sort-eligible sizemedn pool: the all-NYSE helper and
         the plain sort-eligible breakpoints agree for a ROW country."""
-        n = FF_MIN_STOCKS_BP + 5
+        n = FACTOR_MIN_STOCKS_BP + 5
         june = pl.DataFrame(
             {
                 "excntry": ["GBR"] * n,
@@ -641,7 +641,7 @@ class TestFFSpecBreaks:
 # =============================================================================
 
 
-def _write_annual_world_msf(tmp_path) -> None:
+def _write_annual_world_msf(test_paths) -> None:
     """world_msf rows for ff_annual_characteristics (all fiscal 2019 -> port_year 2020).
 
     GBR (Compustat): 10 Dec ME 50; 11 Dec ME 0; 12 Dec ME 30 as a secondary
@@ -663,7 +663,7 @@ def _write_annual_world_msf(tmp_path) -> None:
     cols = ["id", "excntry", "gvkey", "eom", "me", "me_company", "source_crsp", "primary_sec"]
     pl.DataFrame(rows, schema=cols, orient="row").with_columns(
         common=pl.lit(1), obs_main=pl.lit(1), exch_main=pl.lit(1)
-    ).write_parquet(tmp_path / "world_msf.parquet")
+    ).write_parquet(test_paths.interim_dir / "world_msf.parquet")
 
 
 def _acc(gvkeys: list[str], be: float, op: float, inv: float | None, count: int) -> pl.DataFrame:
@@ -687,68 +687,68 @@ class TestFFAnnualCharacteristics:
     the June sorts; it reads no sample screens."""
 
     @staticmethod
-    def _run(tmp_path) -> dict[int, dict]:
-        _write_annual_world_msf(tmp_path)
+    def _run(test_paths) -> dict[int, dict]:
+        _write_annual_world_msf(test_paths)
         acc_us = _acc(["g20", "g21"], be=30.0, op=0.2, inv=None, count=1)
         comp_world = _acc(["g10", "g11", "g12", "g13"], be=25.0, op=0.1, inv=0.05, count=1)
         ccm2a = _acc(["g30"], be=40.0, op=0.3, inv=0.02, count=3).with_columns(permno=pl.lit(30))
         # FF's CRSP sample in December 2019: permno 30 only (31 is outside it).
         crsp_m = pl.LazyFrame({"permno": [30], "date": [date(2019, 12, 31)]})
-        out = ff_annual_characteristics(tmp_path, acc_us, ccm2a, comp_world, crsp_m)
+        out = ff_annual_characteristics(test_paths, acc_us, ccm2a, comp_world, crsp_m)
         assert out.select("id", "port_year").is_duplicated().sum() == 0
         assert out["port_year"].unique().to_list() == [2020]
         return {r["id"]: r for r in out.iter_rows(named=True)}
 
-    def test_row_dec_me_and_beme(self, tmp_path):
+    def test_row_dec_me_and_beme(self, test_paths):
         """count = 1 is a sort screen, not a formula input: beme is defined."""
-        r = self._run(tmp_path)[10]
+        r = self._run(test_paths)[10]
         assert (r["dec_me"], r["count"]) == (50.0, 1)
         assert r["beme"] == pytest.approx(25.0 / 50.0)
 
-    def test_zero_dec_me_nulls_beme_only(self, tmp_path):
-        r = self._run(tmp_path)[11]
+    def test_zero_dec_me_nulls_beme_only(self, test_paths):
+        r = self._run(test_paths)[11]
         assert r["dec_me"] is None and r["beme"] is None
         assert r["op"] == pytest.approx(0.1)
         assert r["inv"] == pytest.approx(0.05)
 
-    def test_row_dec_me_needs_december(self, tmp_path):
+    def test_row_dec_me_needs_december(self, test_paths):
         """No December row (halted): Dec ME and beme are null; op is unaffected."""
-        r = self._run(tmp_path)[13]
+        r = self._run(test_paths)[13]
         assert r["dec_me"] is None and r["beme"] is None
         assert r["op"] == pytest.approx(0.1)
 
-    def test_dec_universe_is_a_screen_not_an_input(self, tmp_path):
+    def test_dec_universe_is_a_screen_not_an_input(self, test_paths):
         """A secondary line in December keeps its published beme but is flagged
         out of the December universe."""
-        out = self._run(tmp_path)
+        out = self._run(test_paths)
         assert out[12]["beme"] == pytest.approx(25.0 / 30.0)
         assert [out[i]["dec_universe"] for i in (10, 12)] == [True, False]
 
-    def test_us_dec_universe_is_ff_crsp_sample(self, tmp_path):
+    def test_us_dec_universe_is_ff_crsp_sample(self, test_paths):
         """US: in the December universe only if the permno is in FF's CRSP sample
         that December; Compustat-only securities never are. Dec ME is unaffected."""
-        out = self._run(tmp_path)
+        out = self._run(test_paths)
         assert [out[i]["dec_universe"] for i in (20, 30, 31)] == [False, True, False]
         assert out[31]["dec_me"] == 70.0
 
-    def test_us_compustat_only_uses_me_company_and_acc_us(self, tmp_path):
-        r = self._run(tmp_path)[20]
+    def test_us_compustat_only_uses_me_company_and_acc_us(self, test_paths):
+        r = self._run(test_paths)[20]
         assert r["dec_me"] == 60.0
         assert r["beme"] == pytest.approx(30.0 / 60.0)
         assert r["op"] == pytest.approx(0.2)
 
-    def test_us_dec_me_needs_december(self, tmp_path):
-        r = self._run(tmp_path)[21]
+    def test_us_dec_me_needs_december(self, test_paths):
+        r = self._run(test_paths)[21]
         assert r["dec_me"] is None and r["beme"] is None
         assert r["be"] == 30.0
 
-    def test_us_crsp_uses_ccm2a_not_world_msf_gvkey(self, tmp_path):
-        r = self._run(tmp_path)[30]
+    def test_us_crsp_uses_ccm2a_not_world_msf_gvkey(self, test_paths):
+        r = self._run(test_paths)[30]
         assert (r["be"], r["count"], r["dec_me"]) == (40.0, 3, 60.0)
         assert r["beme"] == pytest.approx(40.0 / 60.0)
 
-    def test_dec_me_without_accounting_kept(self, tmp_path):
-        r = self._run(tmp_path)[31]
+    def test_dec_me_without_accounting_kept(self, test_paths):
+        r = self._run(test_paths)[31]
         assert r["dec_me"] == 70.0
         assert r["be"] is None and r["beme"] is None
 
@@ -761,7 +761,7 @@ class TestFFAnnualCharacteristics:
 class TestFFLoadCrspPanel:
     """ff_load_crsp_panel: one permno per permco; monthly ME is JKP's me_company."""
 
-    def test_monthly_me_is_me_company(self, tmp_path):
+    def test_monthly_me_is_me_company(self, test_paths):
         n = 3
         pl.DataFrame(
             {
@@ -779,7 +779,7 @@ class TestFFLoadCrspPanel:
                 "issuertype": ["CORP"] * n,
                 "primaryexch": ["N"] * n,
             }
-        ).write_parquet(tmp_path / "crsp_msf_v2.parquet")
+        ).write_parquet(test_paths.raw_tables_dir / "crsp_msf_v2.parquet")
         pl.DataFrame(
             {
                 "id": [1, 2],
@@ -787,8 +787,8 @@ class TestFFLoadCrspPanel:
                 "source_crsp": [1, 1],
                 "me_company": [25.0, 25.0],
             }
-        ).write_parquet(tmp_path / "world_msf.parquet")
-        out = ff_load_crsp_panel(tmp_path, tmp_path, "monthly").collect().sort("permno")
+        ).write_parquet(test_paths.interim_dir / "world_msf.parquet")
+        out = ff_load_crsp_panel(test_paths, "monthly").collect().sort("permno")
         # permno 1 has the larger CIZ ME (10 vs 5); its me is me_company (25), not
         # the CIZ permco sum (15). permno 3 has no world_msf row.
         assert out["permno"].to_list() == [1, 3]
@@ -803,7 +803,7 @@ class TestFFLoadCrspPanel:
 class TestFFLoadWorldPanel:
     """Universe filter of the ROW panel loader."""
 
-    def test_gvkey_null_stock_stays_in_monthly_panel(self, tmp_path):
+    def test_gvkey_null_stock_stays_in_monthly_panel(self, test_paths):
         """A stock without a Compustat link (null gvkey) passes the universe
         filter (US parity: it stays in size pools, VW legs and momentum)."""
         pl.DataFrame(
@@ -821,8 +821,8 @@ class TestFFLoadWorldPanel:
                 "primary_sec": [1, 1],
                 "exch_main": [1, 1],
             }
-        ).write_parquet(tmp_path / "world_msf.parquet")
-        panel = ff_load_world_panel(tmp_path, "monthly").collect()
+        ).write_parquet(test_paths.interim_dir / "world_msf.parquet")
+        panel = ff_load_world_panel(test_paths, "monthly").collect()
         assert sorted(panel["id"].to_list()) == [1, 2]
         assert panel.filter(pl.col("id") == 2)["gvkey"][0] is None
 
@@ -1247,7 +1247,7 @@ class TestFFVwLeg:
             assert col in result.columns
 
     def test_us_bypasses_min_stocks_gate(self):
-        """US bucket with only 1 stock passes (no FF_MIN_STOCKS_PF gate for US)."""
+        """US bucket with only 1 stock passes (no FACTOR_MIN_STOCKS_PF gate for US)."""
         panel = _make_panel_bm(
             [
                 {
@@ -1268,8 +1268,8 @@ class TestFFVwLeg:
         assert result["SH"][0] is not None
 
     def test_row_below_min_stocks_nulled(self):
-        """ROW bucket with n < FF_MIN_STOCKS_PF gets null."""
-        n = FF_MIN_STOCKS_PF - 1
+        """ROW bucket with n < FACTOR_MIN_STOCKS_PF gets null."""
+        n = FACTOR_MIN_STOCKS_PF - 1
         rows = [
             {
                 "excntry": "GBR",
@@ -1291,8 +1291,8 @@ class TestFFVwLeg:
         assert gbr_rows["SH"][0] is None
 
     def test_row_at_min_stocks_not_nulled(self):
-        """ROW bucket with n == FF_MIN_STOCKS_PF passes through."""
-        n = FF_MIN_STOCKS_PF
+        """ROW bucket with n == FACTOR_MIN_STOCKS_PF passes through."""
+        n = FACTOR_MIN_STOCKS_PF
         rows = [
             {
                 "excntry": "GBR",
