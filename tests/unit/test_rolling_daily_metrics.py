@@ -1129,14 +1129,16 @@ class TestZeroTrades:
 
     def test_zero_trades_shares_zero_skipped_in_mean(self, tolerance):
         """Rows with shares==0 produce null turnover_d; mean skips nulls."""
-        # id=1: shares [1,0,1], tvol [6,999,12]; turnover_d = [6e-6, null, 12e-6] → mean=9e-6
-        # id=2: shares [1,1,1], tvol [9,9,9]; mean=9e-6 → same turnover → tied rank
+        # id=1: shares [1,0,1], tvol [6,999,12]; turnover_d = [6e-6, null, 12e-6]
+        # id=2: shares [1,1], tvol [12,6]; turnover_d = [12e-6, 6e-6], the same daily
+        # turnovers → tied rank. Equal means from different daily turnovers (e.g. [9e-6] * 3)
+        # need not tie: they are equal in decimal but not in binary.
         df = pl.DataFrame(
             {
-                "id_int": [1, 1, 1, 2, 2, 2],
-                "group_number": [10, 10, 10, 10, 10, 10],
-                "tvol": [6.0, 999.0, 12.0, 9.0, 9.0, 9.0],
-                "shares": [1.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+                "id_int": [1, 1, 1, 2, 2],
+                "group_number": [10, 10, 10, 10, 10],
+                "tvol": [6.0, 999.0, 12.0, 12.0, 6.0],
+                "shares": [1.0, 0.0, 1.0, 1.0, 1.0],
             }
         )
         result = zero_trades(df, "_21d", __min=1).sort(["id_int"])
