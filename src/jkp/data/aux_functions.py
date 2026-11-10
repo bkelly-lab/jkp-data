@@ -12028,7 +12028,9 @@ def _hxz_global_be_inv(lf: pl.LazyFrame) -> pl.LazyFrame:
 def hxz_load_compustat_row(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
     """Annual Compustat for ROW HXZ: unions comp_funda (NA) and comp_g_funda (Global).
 
-    Dedup by (gvkey, datadate) preferring NA. Book equity (be_a), operating I/A (inv), and
+    Global keeps, per (gvkey, datadate), the INDL records if there are any, else the FS
+    records (apply_indfmt_filter, the accounting stage's rule). Dedup by (gvkey, datadate)
+    preferring NA. Book equity (be_a), operating I/A (inv), and
     ROE (numerator and denominator) all come from jkp's standardized panel: be_a = be_x,
     inv = at_gr1, roe_a = ni_x / be_x_lag1 (prior-year be_x via shift(1); ratio unitless, no
     FX). Values sit at the fiscal-year-end datadate, preserving the formation-year stamp.
@@ -12074,11 +12076,7 @@ def hxz_load_compustat_row(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
             pl.col("datadate").cast(pl.Date),
             pl.col(*base_floats).cast(pl.Float64),
         )
-    )
-    gl_lf = (
-        gl_lf.with_columns(_n=pl.len().over(["gvkey", "datadate"]))
-        .filter((pl.col("_n") == 1) | ((pl.col("_n") == 2) & (pl.col("indfmt") == "INDL")))
-        .drop("_n")
+        .pipe(apply_indfmt_filter, ["gvkey", "datadate"])
     )
 
     na = _hxz_na_be_inv(na_lf).with_columns(_src=pl.lit(0))

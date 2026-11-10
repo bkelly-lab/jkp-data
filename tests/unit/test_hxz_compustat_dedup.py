@@ -11,6 +11,7 @@ to one row per `(gvkey, year)` (latest datadate) BEFORE the lag.
 Covers:
   - _hxz_global_be_inv      (ROW annual inv)
   - hxz_load_funda          (US annual inv)
+  - hxz_load_compustat_row  (ROW INDL/FS rule)
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ from datetime import date
 
 import polars as pl
 
-from jkp.data.aux_functions import _hxz_global_be_inv, hxz_load_funda
+from jkp.data.aux_functions import _hxz_global_be_inv, hxz_load_compustat_row, hxz_load_funda
 
 # Columns _hxz_global_be_inv / hxz_load_funda reference, defaulted to None.
 _FLOAT_COLS = [
@@ -97,3 +98,47 @@ def test_hxz_load_funda_collapses_and_recovers_inv(tmp_path):
     r2019 = out.filter(pl.col("datadate") == date(2019, 12, 31))
     assert r2019["inv"].item() is not None
     assert abs(r2019["inv"].item() - 0.20) < 1e-9
+
+
+def _write_compustat(path, rows, *, na):
+    pl.DataFrame(rows).with_columns(
+        pl.col("datadate").cast(pl.Date),
+        *[pl.col(c).cast(pl.Float64) for c in _FLOAT_COLS],
+        datafmt=pl.lit("STD" if na else "HIST_STD"),
+        popsrc=pl.lit("D" if na else "I"),
+        consol=pl.lit("C"),
+    ).write_parquet(path)
+
+
+def test_hxz_load_compustat_row_indfmt_rule(tmp_path):
+    d = date(2019, 12, 31)
+    _write_compustat(
+        tmp_path / "comp_funda.parquet", [_row("999", d, 100.0, indfmt="INDL")], na=True
+    )
+    _write_compustat(
+        tmp_path / "comp_g_funda.parquet",
+        [
+            _row("001", d, 100.0, indfmt="INDL"),
+            _row("001", d, 999.0, indfmt="FS"),
+            _row("002", d, 100.0, indfmt="FS"),
+            _row("002", d, 100.0, indfmt="FS"),
+        ],
+        na=False,
+    )
+    pl.DataFrame(
+        {
+            "gvkey": ["001", "002"],
+            "curcd": ["USD", "USD"],
+            "datadate": [d, d],
+            "source": ["GLOBAL", "GLOBAL"],
+            "at_x": [100.0, 100.0],
+            "ni_x": [1.0, 1.0],
+        }
+    ).with_columns(
+        pl.lit(10.0).alias(c) for c in ("be_x", "ebitda_x", "xint", "mib", "mibt", "mibn")
+    ).write_parquet(tmp_path / "acc_std_ann.parquet")
+
+    out = hxz_load_compustat_row(tmp_path, tmp_path)
+
+    # One record per date; a date reported only in FS (002) is kept (#329's rule).
+    assert out.select("gvkey", "datadate").rows() == [("001", d), ("002", d), ("999", d)]
