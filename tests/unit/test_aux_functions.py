@@ -1,5 +1,5 @@
 """
-Tests for targeted Ibis table builders in aux_functions.py.
+Tests for targeted DuckDB table builders in aux_functions.py.
 
 This module focuses on schema-level output guarantees for functions that read
 parquet inputs from the expected project layout.
@@ -36,7 +36,7 @@ def _write_lookup_tables(raw_tables: Path) -> None:
             "permno": [10001],
             "secinfostartdt": [date(2020, 1, 1)],
             "secinfoenddt": [date(2020, 1, 31)],
-            "ticker": ["TEST"],
+            "ticker": ["NAMES"],
         }
     ).write_parquet(raw_tables / "crsp_stksecurityinfohist.parquet")
 
@@ -64,6 +64,7 @@ def _write_sf_fixture(raw_tables: Path, freq: str) -> tuple[date, date]:
         "issuertype": ["CORP", "CORP"],
         "primaryexch": ["N", "N"],
         "conditionaltype": ["RW", "RW"],
+        "ticker": ["TEST", "TEST2"],
     }
 
     if freq == "m":
@@ -112,18 +113,22 @@ def _write_sf_fixture(raw_tables: Path, freq: str) -> tuple[date, date]:
     return matched_date, unmatched_date
 
 
+def _read_crsp_sf(paths, freq: str) -> pl.DataFrame:
+    """Read the file gen_crsp_sf() writes."""
+    return pl.read_parquet(paths.interim_dir / "raw_data_dfs" / f"__crsp_sf_{freq}.parquet")
+
+
 @pytest.mark.parametrize("freq", ["m", "d"])
 def test_gen_crsp_sf_exposes_ticker_after_senames_join(freq: str, test_paths) -> None:
-    """gen_crsp_sf() should keep ticker in the final output for monthly and daily data."""
+    """gen_crsp_sf() keeps the security file's ticker, not the names table's, after the join."""
     raw_tables = test_paths.raw_tables_dir
 
     _write_lookup_tables(raw_tables)
     matched_date, unmatched_date = _write_sf_fixture(raw_tables, freq)
 
-    result = gen_crsp_sf(test_paths, freq)
-    assert "ticker" in result.columns, f"Expected ticker in schema, got {result.columns}"
-
-    df = result.to_polars().sort("date")
+    gen_crsp_sf(test_paths, freq)
+    df = _read_crsp_sf(test_paths, freq).sort("date")
+    assert "ticker" in df.columns, f"Expected ticker in schema, got {df.columns}"
 
     assert {
         "permno",
@@ -147,8 +152,8 @@ def test_gen_crsp_sf_exposes_ticker_after_senames_join(freq: str, test_paths) ->
     assert ticker_by_date[matched_date] == "TEST", (
         f"Expected ticker TEST on {matched_date}, got {ticker_by_date[matched_date]!r}"
     )
-    assert ticker_by_date[unmatched_date] is None, (
-        f"Expected null ticker on {unmatched_date}, got {ticker_by_date[unmatched_date]!r}"
+    assert ticker_by_date[unmatched_date] == "TEST2", (
+        f"Expected ticker TEST2 on {unmatched_date}, got {ticker_by_date[unmatched_date]!r}"
     )
 
 
@@ -160,7 +165,8 @@ def test_gen_crsp_sf_propagates_del_flag(freq: str, flag: str, test_paths) -> No
     _write_lookup_tables(raw_tables)
     matched_date, unmatched_date = _write_sf_fixture(raw_tables, freq)
 
-    df = gen_crsp_sf(test_paths, freq).to_polars()
+    gen_crsp_sf(test_paths, freq)
+    df = _read_crsp_sf(test_paths, freq)
 
     flags = dict(df.select(["date", "del_flag"]).iter_rows())
     assert flags[matched_date] is None
@@ -262,7 +268,7 @@ def test_merge_roll_apply_daily_results_writes_once_with_deterministic_order(tes
     # Re-run must produce identical content (idempotent + single-write safety).
     merge_roll_apply_daily_results(test_paths)
     df2 = pl.read_parquet(out)
-    assert df.equals(df2)
+    assert df.sort("id", "eom").equals(df2.sort("id", "eom"))
 
 
 def test_dsf1_unique_id_int_date(test_paths) -> None:

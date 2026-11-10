@@ -123,6 +123,19 @@ Jensen is at Yale School of Management; \url{www.tijensen.com}. Kelly is at AQR 
 \textbf{Date} & \textbf{Changes} \\
 \hline
 \endhead
+11-09-2026 & \textbullet~Rolling regressions and return statistics share one guard against near-constant windows. The return-based characteristics guarded since 10-15-2026, including the monthly \texttt{beta\_60m} and \texttt{ivol\_capm\_60m}, and now also \texttt{resff3\_12\_1} and \texttt{resff3\_6\_1}, are null when the standard deviation of raw USD \texttt{ret} over the window is at most $10^{-6}$, or \texttt{ret} is zero in at least 90\% of it. Before, only an exactly constant \texttt{ret} counted, and residual momentum had no guard. \texttt{ni\_ar1} and \texttt{ni\_ivol} are null when the standard deviation of lagged NI/AT over the regression window is at most $10^{-6}$. On the current data this changes 5 published stock-months of one security (\texttt{ni\_ar1} about $3.8\times10^{5}$). \\
+& \textbullet~Affected output files: \texttt{characteristics/world\_data.parquet}, the per-country files under \texttt{characteristics/}, and downstream factor portfolios. \\
+\hline
+11-06-2026 & \textbullet~A size group in the characteristics-managed portfolios now has a row only if the sample standard deviation of its characteristic that month is above $10^{-10}$, instead of above zero. Groups that differ only by rounding error got long and short positions set by that error. The cutoff is our choice, is absolute, and applies to every characteristic. It removes 2,096 rows from \texttt{hml\_cmp\_1}, 2,793 from \texttt{hml\_cmp\_2} and 5,929 from \texttt{hml\_cmp\_5} (0.014\% to 0.018\%). \\
+& \textbullet~Affected output files: \texttt{hml\_cmp\_\{1,2,5\}}, \texttt{themes/\{version\}/lms\_cmp\_\{1,2,5\}} and \texttt{themes/v0/cmp}. \\
+\hline
+11-04-2026 & \textbullet~Characteristics-managed portfolios with 1, 2 and 5 size groups, for all countries: \texttt{hml\_cmp\_1} (\texttt{size\_grp} is \texttt{all}) and \texttt{hml\_cmp\_2} (\texttt{big}, \texttt{small}) join \texttt{hml\_cmp\_5}, and the \texttt{cmp} setting is now on for non-U.S. countries. Folders from v1.0 on have the signed \texttt{lms\_cmp\_1}, \texttt{lms\_cmp\_2} and \texttt{lms\_cmp\_5}. \texttt{themes/v0/} stays as it was: only \texttt{cmp}, U.S. rows, unsigned. \\
+& \textbullet~Affected output files: \texttt{hml\_cmp\_5} and \texttt{themes/\{version\}/lms\_cmp\_5} from v1.0 on gain non-U.S. rows; the other files are new. \\
+\hline
+11-03-2026 & \textbullet~Factor portfolios for every characteristic in a released themes version, and signed factors and theme portfolios for each themes version. \texttt{pfs}, \texttt{hml} and \texttt{hml\_cmp\_5} (before: \texttt{cmp}) now cover the 402 characteristics of themes v1.0 (before: the 153 factors of \cite{JensenKellyPedersen2023}); their existing rows are unchanged. The signed outputs moved to \texttt{portfolios/themes/\{version\}/}: \texttt{lms}, \texttt{country\_factors/}, \texttt{regional\_factors/}, \texttt{themes} (before: \texttt{clusters}) and \texttt{regional\_themes/} (before: \texttt{regional\_clusters/}), and for v1.0 also \texttt{subthemes} and \texttt{regional\_subthemes/}. \texttt{jkp portfolio} writes the current version, v1.0, and \texttt{jkp themes data/ --version v0} writes v0. The column \texttt{cluster} is now \texttt{theme}, and theme files have a new \texttt{n\_subthemes} column. Apart from these renames, which break code that reads the old paths, all v0 values are the same as before up to float noise. A v1.0 theme return is the mean of its subtheme returns. See Section \ref{sec:theme-portfolios}. \\
+ & \textbullet~Characteristics-managed portfolios renamed, and signed by each themes version from v1.0 on. The top-level \texttt{cmp} is now \texttt{hml\_cmp\_5}, unsigned as before; the 5 is the number of size groups. When it is built (by default monthly and for U.S. data only), each \texttt{themes/\{version\}/} folder from v1.0 on now has a \texttt{lms\_cmp\_5} file, with \texttt{ret\_weighted} and \texttt{signal\_weighted} multiplied by the version's sign and a new \texttt{direction} column that records it. \texttt{themes/v0/} instead has \texttt{cmp}, the old file: \texttt{hml\_cmp\_5} for its 153 characteristics, unsigned. See Section \ref{sec:cmp}. \\
+& \textbullet~Affected output files: all files under \texttt{portfolios/} except the industry portfolios. \\
+\hline
 10-15-2026 & \textbullet~Nulled rolling daily characteristics over constant or near-dead windows. Return-based characteristics (\texttt{rvol\_*}, \texttt{ivol\_capm\_*}, \texttt{ivol\_ff3\_*}, \texttt{ivol\_hxz4\_*}, \texttt{beta\_*}, \texttt{betadown\_*}, \texttt{beta\_dimson\_*}, \texttt{rmax*}, \texttt{rskew\_*}, \texttt{iskew\_*}, \texttt{coskew\_*}, \texttt{corr\_*}, \texttt{ami\_*}) are nulled when raw \texttt{ret} is constant over the window or zero on at least 90\% of its days. The check uses raw \texttt{ret} rather than \texttt{ret\_exc}, whose monthly risk-free steps would otherwise hide constant returns over multi-month windows (\texttt{\_252d}, \texttt{\_1260d}). \texttt{prc\_highprc\_*}, \texttt{dolvol\_var\_*} and \texttt{turnover\_var\_*} are nulled only when the adjusted price, dollar volume or turnover is exactly constant over the window. The derived \texttt{betabab\_1260d} and \texttt{rmax5\_rvol\_21d} become null with their inputs. Residual NaN/inf values are scrubbed in \texttt{finish\_daily\_chars}. \\
 & \textbullet~Affected output files: \texttt{characteristics/world\_data.parquet}, the per-country files under \texttt{characteristics/}, and downstream factor portfolios. \\
 \hline
@@ -204,7 +217,7 @@ Jensen is at Yale School of Management; \url{www.tijensen.com}. Kelly is at AQR 
 	\item The factor is then defined as the high-tercile return minus the low-tercile  return, corresponding to the excess return of a long-short zero-net-investment strategy.  The factor is long (short) the tercile identified by the original paper to have the highest (lowest) expected return.  
 	\item For a factor return to be non-missing, we require that it has at least 5 stocks in each of the long and short legs. We also require a minimum of 60 valid monthly observations for each country-specific factor for inclusion in our sample.  
 	\item We update characteristics with the most recent accounting data (which could be either annual or quarterly) starting four months after the end of the fiscal period.
-	\item To compute a cluster (theme) return, we first sign factors according to the original reference, then we equal-weight the returns of factors within a specific cluster. The signing convention and cluster allocation follows  \cite{JensenKellyPedersen2023} and we show it in table \ref{tbl:factor:details}.
+	\item To compute theme returns, we first sign each factor so that it is long the side the literature finds earns more. A themes version groups characteristics into subthemes and subthemes into themes. A subtheme return is the equal-weighted average of its signed factors, and a theme return is the equal-weighted average of its subtheme returns. In v0, the 13 themes of \cite{JensenKellyPedersen2023}, each theme is its own subtheme, so a theme return is the average of its factors; we show its signs and themes in table \ref{tbl:factor:details}. The themes files and their versions are in \texttt{src/jkp/data/resources/themes/} of the repository. See Section \ref{sec:theme-portfolios} for the output files.
 	\item In addition to standard excess-return factors, we construct daily overnight and intraday factor portfolios in both USD and local currency, following Lou, Polk, and Skouras (2019). Characteristic sorts and breakpoints are identical to the standard daily factors; only the contemporaneous daily return leg aggregated into portfolio weights differs (\texttt{ret\_overnight}, \texttt{ret\_intraday}, \texttt{ret\_overnight\_local}, or \texttt{ret\_intraday\_local}). See \hyperref[sec:oi-portfolios]{Overnight and Intraday Factor Portfolios} for output files.
 \end{itemize}
 
@@ -299,11 +312,38 @@ We share long/short factor returns on \url{jkpfactors.com/factor-returns}, but w
 \end{longtable}}
 
 
+\subsection{Signed Factors and Theme Portfolios (\texttt{themes/\{version\}/})}\label{sec:theme-portfolios}
+
+\begin{itemize}
+  \item \texttt{hml.csv} / \texttt{hml\_daily.csv} report the unsigned high-minus-low tercile spread for every characteristic in a released themes version. The outputs that depend on a themes version are written to \texttt{portfolios/themes/\{version\}/}. \texttt{jkp portfolio} writes the current version, \texttt{v1.0} (16 themes, 59 subthemes, 402 factors). Other released versions are written only when named: run \texttt{jkp themes data/ --version v0} after \texttt{jkp portfolio} to write \texttt{v0} (the 13 themes of \cite{JensenKellyPedersen2023}, 153 factors).
+  \item Each folder holds the files below. Daily files add the suffix \texttt{\_daily} and have \texttt{date} in place of \texttt{eom}.
+  \item A country's factor enters a regional factor if it has at least 5 stocks in each of the long and short legs. A country's theme or subtheme enters a regional theme or subtheme if it has at least one factor, as the v0 regional clusters did.
+
+  \begin{center}
+  \begin{tabular}{|l|p{10cm}|}
+  \hline
+  \textbf{Path} & \textbf{Description} \\
+  \hline
+  \texttt{lms} & Signed factors: \texttt{hml} times \texttt{direction} ($+1$ or $-1$), per country \\
+  \texttt{country\_factors/} & \texttt{lms} with one file per country \\
+  \texttt{regional\_factors/} & Regional signed factors (one file per region) \\
+  \texttt{subthemes} & Subtheme returns per country: the mean of the subtheme's signed factors (\texttt{n\_factors}). Not written for v0, where each theme is its own subtheme \\
+  \texttt{themes} & Theme returns per country: the mean of the theme's subtheme returns (\texttt{n\_subthemes}, \texttt{n\_factors}) \\
+  \texttt{regional\_subthemes/} & Regional subtheme returns (one file per region; not for v0) \\
+  \texttt{regional\_themes/} & Regional theme returns (one file per region) \\
+  \texttt{lms\_cmp\_\{1,2,5\}} & Characteristics-managed portfolios, monthly: \texttt{ret\_weighted} and \texttt{signal\_weighted} times \texttt{direction}. v0 instead has only \texttt{cmp}: U.S. rows, five size groups, unsigned with no \texttt{direction} column. Written only when \texttt{hml\_cmp\_\{1,2,5\}} are built, by default for all countries (Section \ref{sec:cmp}) \\
+  \hline
+  \end{tabular}
+  \end{center}
+
+  \item The command \texttt{jkp themes} builds these folders from the saved \texttt{hml} and \texttt{hml\_cmp\_\{1,2,5\}} files, without sorting again: the current version by default, another released version (\texttt{--version v0}), or an edited themes file (\texttt{--file my\_themes.csv}, written to \texttt{themes/my\_themes/}). An edited file may only use characteristics in a released version. Each build replaces the version's folder, and builds nothing if a characteristic has no \texttt{hml} factor. Rerunning \texttt{jkp portfolio} replaces only the current version's folder, so rerun \texttt{jkp themes data/ --version v0} afterwards or \texttt{themes/v0/} stays on the old data.
+\end{itemize}
+
 \subsection{Overnight and Intraday Factor Portfolios}\label{sec:oi-portfolios}
 
 \begin{itemize}
-  \item Alongside the standard excess-return daily factors (\texttt{pfs\_daily}, \texttt{hml\_daily}, \texttt{lms\_daily}, \ldots), we write parallel daily factor portfolios that use overnight or intraday stock returns as the return leg, in both USD and local currency.
-  \item Characteristic sorts, breakpoints, EW/VW/VW-cap weighting, and HML/LMS/cluster/regional aggregation reuse the standard portfolio machinery. Only the daily return column aggregated into portfolio weights changes.
+  \item Alongside the standard excess-return daily factors (\texttt{pfs\_daily}, \texttt{hml\_daily}, \ldots), we write parallel daily factor portfolios that use overnight or intraday stock returns as the return leg, in both USD and local currency.
+  \item Characteristic sorts, breakpoints, EW/VW/VW-cap weighting, and the signed-factor, theme and regional aggregation reuse the standard portfolio machinery. Only the daily return column aggregated into portfolio weights changes.
   \item The four components and their return columns are:
 
   \begin{center}
@@ -319,7 +359,7 @@ We share long/short factor returns on \url{jkpfactors.com/factor-returns}, but w
   \end{tabular}
   \end{center}
 
-  \item For each component \texttt{\{component\}}, the following outputs are written under \texttt{portfolios/}:
+  \item For each component \texttt{\{component\}}, the following outputs are written under \texttt{portfolios/}, the signed ones in \texttt{themes/\{version\}/} for each themes version built (Section \ref{sec:theme-portfolios}):
 
   \begin{center}
   \begin{tabular}{|l|p{8.5cm}|}
@@ -328,19 +368,21 @@ We share long/short factor returns on \url{jkpfactors.com/factor-returns}, but w
   \hline
   \texttt{pfs\_\{component\}.parquet} & Daily tercile portfolio returns \\
   \texttt{hml\_\{component\}.parquet} & Daily high-minus-low spreads \\
-  \texttt{lms\_\{component\}.parquet} & Daily long-minus-short factors \\
-  \texttt{clusters\_\{component\}.parquet} & Daily cluster (theme) factors \\
-  \texttt{regional\_factors\_\{component\}/} & Daily regional factors (one file per region) \\
-  \texttt{regional\_clusters\_\{component\}/} & Daily regional cluster factors \\
-  \texttt{country\_factors\_\{component\}/} & Daily per-country factors (one file per country) \\
+  \texttt{themes/\{version\}/lms\_\{component\}.parquet} & Daily signed factors \\
+  \texttt{themes/\{version\}/subthemes\_\{component\}.parquet} & Daily subtheme returns (not for v0) \\
+  \texttt{themes/\{version\}/themes\_\{component\}.parquet} & Daily theme returns \\
+  \texttt{themes/\{version\}/regional\_factors\_\{component\}/} & Daily regional factors (one file per region) \\
+  \texttt{themes/\{version\}/regional\_subthemes\_\{component\}/} & Daily regional subtheme returns (not for v0) \\
+  \texttt{themes/\{version\}/regional\_themes\_\{component\}/} & Daily regional theme returns \\
+  \texttt{themes/\{version\}/country\_factors\_\{component\}/} & Daily per-country factors (one file per country) \\
   \hline
   \end{tabular}
   \end{center}
 
-  \item Column schemas match the corresponding standard daily files (e.g.\ \texttt{pfs\_daily}, \texttt{lms\_daily}): \texttt{date}, \texttt{characteristic}, \texttt{excntry}, \texttt{ret\_ew}, \texttt{ret\_vw}, \texttt{ret\_vw\_cap}, and related fields.
+  \item Column schemas match the corresponding standard daily files (e.g.\ \texttt{pfs\_daily}, and \texttt{themes/\{version\}/lms\_daily} for the signed file): \texttt{date}, \texttt{characteristic}, \texttt{excntry}, \texttt{ret\_ew}, \texttt{ret\_vw}, \texttt{ret\_vw\_cap}, and related fields.
   \item Daily-return winsorization applies only to the standard \texttt{ret\_exc} path; O/I legs are aggregated as-is.
   \item For US/CRSP stocks, local and USD O/I components coincide. Local variants matter for international Compustat securities, where FX would otherwise enter the USD overnight residual. Because FX cancels in the open/close ratio, \texttt{ret\_intraday\_local} equals \texttt{ret\_intraday}, so the \texttt{intraday} and \texttt{intraday\_local} portfolio suites are identical.
-  \item Industry portfolios and characteristics-managed portfolios (\texttt{cmp}) are not rebuilt for O/I components. Monthly overnight/intraday factor portfolios are not produced.
+  \item Industry portfolios and characteristics-managed portfolios (\texttt{hml\_cmp\_\{1,2,5\}}) are not rebuilt for O/I components. Monthly overnight/intraday factor portfolios are not produced.
 \end{itemize}
 
 
@@ -434,12 +476,14 @@ We share long/short factor returns on \url{jkpfactors.com/factor-returns}, but w
 
 \end{longtable}}
 
-\subsection{Characteristics-Managed Portfolio Returns (\texttt{cmp.csv})}
+\subsection{Characteristics-Managed Portfolio Returns (\texttt{hml\_cmp\_\{n\}.csv}, \texttt{lms\_cmp\_\{n\}.csv})}\label{sec:cmp}
 \begin{itemize}
-    \item \texttt{cmp.csv} reports for each country, characteristic, and month the size-neutral long-short excess returns with the corresponding weighted characteristic.
-    \item For each characteristic, country, and month, we form characteristics-managed portfolios (CMP) within predefined size groups based on \hyperref[app:nyse-breakpoints]{NYSE size breakpoints}. Only observations with non-missing characteristic values and returns are included.
-    \item Within each size group and month, we compute each stock's percentile rank on the characteristic, demean the rank within the group, and scale the deviation so long and short weights offset and the gross weight is normalized. These weights create a within-size long-short portfolio that isolates the characteristic from size.
+    \item \texttt{hml\_cmp\_\{n\}.csv} reports for each country, characteristic, and month the long-short excess returns with the corresponding weighted characteristic, where n is the number of size groups. In \texttt{hml\_cmp\_1.csv}, \texttt{size\_grp} is \texttt{all}, the full universe. In \texttt{hml\_cmp\_2.csv}, \texttt{big} is mega and large stocks and \texttt{small} is small, micro and nano stocks. \texttt{hml\_cmp\_5.csv} has the five NYSE size groups. By default they are built for all countries (the \texttt{cmp} entry of \texttt{PORTFOLIO\_SETTINGS} in \texttt{config.py}). With that setting off, none is written.
+    \item For each characteristic, country, and month, we form characteristics-managed portfolios (CMP) within predefined size groups based on \hyperref[app:nyse-breakpoints]{NYSE size breakpoints}. Only observations with non-missing characteristic values and returns are included. The breakpoints are the same in every country, so \texttt{big} can hold few stocks outside the U.S. Each row reports \texttt{n\_stocks}, and no minimum is applied, except that a group whose characteristic doesn't vary that month has no row. This includes a group with one stock, and a group whose characteristic has a sample standard deviation of at most $10^{-10}$ that month, the same cutoff for every characteristic.
+    \item Within each size group and month, we compute each stock's percentile rank on the characteristic, demean the rank within the group, and scale the deviation so long and short weights offset and the gross weight is normalized. With several size groups, these weights create a within-size long-short portfolio that isolates the characteristic from size.
+    \item The weights come from ranks, not market capitalization, so every stock counts by its rank whatever its size. With one size group, micro and nano stocks make up most of the portfolio.
     \item Using the within-group weights, we compute the group's next-month excess return and the weighted signal level.
+    \item \texttt{hml\_cmp\_\{n\}.csv} is unsigned: it always buys high values of the characteristic. When it is built, each \texttt{themes/\{version\}/} folder from v1.0 on also has a \texttt{lms\_cmp\_\{n\}.csv}, with \texttt{ret\_weighted} and \texttt{signal\_weighted} multiplied by the version's sign and a \texttt{direction} column that records it, so the portfolio buys the side the version expects to earn more. \texttt{themes/v0/} instead has only \texttt{cmp.csv}, the old file: the U.S. rows of \texttt{hml\_cmp\_5.csv} for the 153 v0 characteristics, unsigned, with no \texttt{direction} column.
 \end{itemize}
 
 {\scriptsize
@@ -478,7 +522,7 @@ Nano  & Below 1st percentile. \\
 
 {\scriptsize
 	\begin{longtable}{@{\extracolsep{\fill}}|l|m{14.2cm}|@{}}
-	\caption{\texttt{cmp.csv} Data Columns \label{cmp}}\\
+	\caption{\texttt{hml\_cmp\_\{n\}.csv} and \texttt{lms\_cmp\_\{n\}.csv} Data Columns \label{cmp}}\\
 	
 	\hline
 	Name & Description \\
@@ -501,13 +545,17 @@ Nano  & Below 1st percentile. \\
 	
 	characteristic & Characteristic name used for the sort. \\[1ex]
 
-	size\_grp & NYSE size group.\\[1ex]
+	size\_grp & Size group: \texttt{all} with one group, \texttt{big} or \texttt{small} with two, the NYSE size group with five.\\[1ex]
     
     eom & The last day of the month in which the observation is made. \\[1ex]
 
-    n\_stocks & Number of stocks in the size group that month. \\[1ex]
+    n\_stocks & Number of stocks in the size group that month. No minimum is applied. \\[1ex]
 
     ret\_weighted & Characteristics-managed excess return using CMP weights. \\[1ex]
+
+    signal\_weighted & Characteristic level using CMP weights. \\[1ex]
+
+    direction & $+1$ or $-1$, the sign applied to \texttt{ret\_weighted} and \texttt{signal\_weighted}. Only in the signed files, \texttt{themes/\{version\}/lms\_cmp\_\{n\}.csv} from v1.0 on. \\[1ex]
 
 \end{longtable}}
 
@@ -1154,9 +1202,9 @@ This section covers all of the variables that give firm/date level identifiers a
 		
 		gvkey & Permanent six-digit unique firm identifier from Compustat\\[1ex]
 		
-		iid & Permanent two-digit addition to 'gvkey' that identifies specific security of a firm from Compustat\\[1ex]
+		iid & Permanent two-digit addition to 'gvkey' that identifies specific security of a firm from Compustat. A Compustat security has one observation per date. If a security-date appears more than once, for example in both the North America and the Global file with different values, the observation kept is the one with a valid price (\textit{prc\_local} and \textit{curcd} present, \texttt{prcstd} in \{3, 4, 10\}), then the highest \texttt{prcstd}, then a main exchange, then the highest \textit{dolvol}; any remaining tie is broken by a fixed order of the other columns. The SAS code also kept one observation, but the first in its processing order (\texttt{proc sort nodupkey}), and summed monthly volume and dividends before removing duplicates. On current data no security-date appears twice, so no value changes.\\[1ex]
 		
-		primary\_sec &  Primary security as identified by Compustat. A 'gvkey' can have up to three different primary securities ('iid)' at a given time (US, CA, and international). All observations from CRSP has \texttt{primary\_sec=1}.  \\[1ex]
+		primary\_sec &  Primary security as identified by Compustat. A 'gvkey' can have up to three different primary securities ('iid)' at a given time (US, CA, and international). All observations from CRSP has \texttt{primary\_sec=1}. When a 'gvkey' appears in both the North America and the Global company header, the Global header's primary-security codes are used, as for accounting data. The SAS code used the North America header. On current data the two headers agree for every such 'gvkey' (2,960), so no value changes.  \\[1ex]
 		
 		permco & Permanent unique firm identifier from CRSP\\[1ex]
 		

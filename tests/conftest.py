@@ -30,8 +30,7 @@ if TYPE_CHECKING:
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    """Register custom markers and match the pipeline's Polars engine (see run_pipeline)."""
-    pl.Config.set_engine_affinity("in-memory")
+    """Register custom markers."""
     config.addinivalue_line("markers", "unit: Unit tests (fast, isolated)")
     config.addinivalue_line("markers", "integration: Integration tests (module interactions)")
     config.addinivalue_line("markers", "methodology: Paper methodology validation tests")

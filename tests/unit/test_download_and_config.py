@@ -21,7 +21,6 @@ import pytest
 
 from jkp.data.config import (
     ACCOUNTING_START_DATE,
-    COLLECT_CHUNK_SIZE,
     END_DATE,
     MAIN_FILTERS,
     PORTFOLIO_BP_MIN_N,
@@ -84,12 +83,6 @@ class TestConfig:
         evaluated = pl.select(ACCOUNTING_START_DATE).item()
         assert evaluated.date() == date(1949, 12, 31), (
             f"ACCOUNTING_START_DATE should be 1949-12-31, got {evaluated}"
-        )
-
-    def test_collect_chunk_size_is_positive_int(self):
-        """COLLECT_CHUNK_SIZE must be a positive int (used as a slice step)."""
-        assert isinstance(COLLECT_CHUNK_SIZE, int) and COLLECT_CHUNK_SIZE > 0, (
-            f"COLLECT_CHUNK_SIZE should be a positive int, got {COLLECT_CHUNK_SIZE!r}"
         )
 
     def test_portfolio_pfs_value(self):
@@ -159,7 +152,6 @@ class TestConfig:
             "bps",
             "bp_min_n",
             "cmp",
-            "signals",
             "regional_pfs",
             "daily_pf",
             "ind_pf",
@@ -169,9 +161,8 @@ class TestConfig:
         assert not missing, f"PORTFOLIO_SETTINGS missing keys: {sorted(missing)}"
 
     def test_portfolio_settings_nested_keys(self):
-        """Nested `cmp`/`signals`/`regional_pfs` blocks must keep their schema."""
+        """Nested `cmp`/`regional_pfs` blocks must keep their schema."""
         assert set(PORTFOLIO_SETTINGS["cmp"]) == {"us", "int"}
-        assert set(PORTFOLIO_SETTINGS["signals"]) == {"us", "int", "standardize", "weight"}
         assert set(PORTFOLIO_SETTINGS["regional_pfs"]) == {
             "country_excl",
             "country_weights",

@@ -79,35 +79,24 @@ def get_output_format() -> OutputFormat:
     return _output_format
 
 
-def _collect_dataframe(
-    df: pl.DataFrame | pl.LazyFrame,
-    *,
-    streaming: bool = False,
-) -> pl.DataFrame:
+def _collect_dataframe(df: pl.DataFrame | pl.LazyFrame) -> pl.DataFrame:
     """
     Description:
         Collect a LazyFrame to a DataFrame; a DataFrame is returned unchanged.
 
     Steps:
-        1) Collect using streaming engine if requested, otherwise standard collect.
+        1) Collect a LazyFrame with collect().
         2) Return the resulting DataFrame.
 
     Output:
         Collected pl.DataFrame.
     """
     if isinstance(df, pl.LazyFrame):
-        if streaming:
-            return df.collect(engine="streaming")
         return df.collect()
     return df
 
 
-def write_dataframe(
-    df: pl.DataFrame | pl.LazyFrame,
-    path: str | Path,
-    *,
-    streaming: bool = False,
-) -> None:
+def write_dataframe(df: pl.DataFrame | pl.LazyFrame, path: str | Path) -> None:
     """
     Description:
         Write a DataFrame to Parquet format. Always writes parquet internally;
@@ -125,7 +114,7 @@ def write_dataframe(
         Parquet file written to disk at the specified path.
     """
     path = Path(path)
-    collected_df = _collect_dataframe(df, streaming=streaming)
+    collected_df = _collect_dataframe(df)
 
     # Always write parquet (ensure extension)
     if path.suffix != ".parquet":
