@@ -310,21 +310,24 @@ def test_zero_me_gives_null_me_ratios() -> None:
 @pytest.mark.unit
 def test_nonpositive_mev_and_mat_are_null() -> None:
     """me 10, netdebt -20, fx 1, at 5, be 10: mev = 10 - 20 = -10 -> null; mat = 5 - 10 + 10 = 5 stays.
-    A second firm with me 10, at 5, be 30 has mat = 5 - 30 + 10 = -15 -> null (aliq_mat uses lagged mat).
+    A second firm with me 10, at 5, be 30 has mat = 5 - 30 + 10 = -15 -> null. mat shows only in
+    aliq_mat = aliq_x*fx / mat 12 months earlier: 1/5 for A, and null for B, where it would be 1/-15
+    without the guard. Both firms have the same values for 13 months.
     """
-    df = _me_input(
-        [
-            {"gvkey": "A", "netdebt_x": -20.0, "at_x": 5.0, "be_x": 10.0},
-            {"gvkey": "B", "netdebt_x": 0.0, "at_x": 5.0, "be_x": 30.0},
-        ]
-    )
-    me = _me_table([("A", date(2000, 1, 31), 10.0), ("B", date(2000, 1, 31), 10.0)])
-    out = _run_me(df, me)
-    a, b = out.row(0, named=True), out.row(1, named=True)
-    assert a["enterprise_value"] is None and a["at_mev"] is None
-    assert a["at_me"] == pytest.approx(0.5)
-    assert b["enterprise_value"] == pytest.approx(10.0)
-    assert b["at_mev"] == pytest.approx(0.5)
+    months = pl.date_range(date(2000, 1, 1), date(2001, 1, 1), "1mo", eager=True).dt.month_end()
+    firms = {
+        "A": {"netdebt_x": -20.0, "at_x": 5.0, "be_x": 10.0},
+        "B": {"netdebt_x": 0.0, "at_x": 5.0, "be_x": 30.0},
+    }
+    df = _me_input([{"gvkey": g, "public_date": m, **v} for g, v in firms.items() for m in months])
+    out = _run_me(df, _me_table([(g, m, 10.0) for g in firms for m in months]))
+    a, b = out.filter(pl.col("gvkey") == "A"), out.filter(pl.col("gvkey") == "B")
+    assert a["enterprise_value"][0] is None and a["at_mev"][0] is None
+    assert a["at_me"][0] == pytest.approx(0.5)
+    assert b["enterprise_value"][0] == pytest.approx(10.0)
+    assert b["at_mev"][0] == pytest.approx(0.5)
+    assert a["aliq_mat"][12] == pytest.approx(1.0 / 5.0)
+    assert b["aliq_mat"][12] is None
 
 
 @pytest.mark.unit

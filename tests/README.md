@@ -509,10 +509,10 @@ WRDS rows can't be committed, so the accounting stage (`standardized_accounting_
 
 Refresh only on a new WRDS vintage, or when the stage starts to read something the generator doesn't model. Work in a fresh clone on Yale:
 
-1. `sbatch tests/golden/calibration/profile_compustat.slurm` rewrites the profile.
+1. `DATA_DIR=<build>/data CHARS=<build>/data/interim/acc_chars_world.parquet VINTAGE=<WRDS download date> sbatch tests/golden/calibration/profile_compustat.slurm` rewrites the profile. `<build>` is a full build on the new vintage.
 2. `PYTHONPATH=src uv run --no-sync python -m tests.golden.synthetic_compustat` regenerates the inputs.
 3. `PYTHONPATH=src:. uv run --no-sync python -m pytest tests/golden/test_acc_chars_golden.py --regen-golden` regenerates the goldens.
-4. `sbatch tests/golden/calibration/check_no_leak.slurm` must print only zeros: no synthetic gvkey or (datadate, assets, sales) row occurs in the real data.
+4. `DATA_DIR=<build>/data sbatch tests/golden/calibration/check_no_leak.slurm` must print only zeros: no synthetic gvkey or (datadate, assets, sales) row occurs in the real data.
 
 ### What to review on regeneration
 

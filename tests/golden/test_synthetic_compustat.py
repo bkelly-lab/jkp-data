@@ -15,6 +15,7 @@ from pathlib import Path
 
 import polars as pl
 import pytest
+from polars.testing import assert_frame_equal
 
 from jkp.data import aux_functions as af
 from jkp.data.paths import DataPaths
@@ -22,7 +23,12 @@ from tests.golden.calibration.profile_compustat import output_stats
 from tests.golden.compustat_invariants import check_invariants, hard_violations
 from tests.golden.generate_acc_chars_golden import run_stage
 from tests.golden.synthetic_compustat import OUT_DIR as INPUT_DIR
-from tests.golden.synthetic_compustat import PERSONA_GVKEY, PROFILE_PATH
+from tests.golden.synthetic_compustat import (
+    PERSONA_GVKEY,
+    PROFILE_PATH,
+    generate,
+    persona_specs,
+)
 
 pytestmark = pytest.mark.regression
 
@@ -60,6 +66,11 @@ PERSONA_RULES = {
     "900126": ("soft", "two_calendars_one_date", "comp_g_fundq"),
     "900127": ("soft", "fyr_change_firms", "comp_fundq"),
 }
+# The personas whose case no validator rule names; each has its own test below.
+PERSONA_TESTS = {
+    "900107", "900109", "900113", "900116", "900117", "900118", "900119", "900120", "900121",
+    "900122", "900123", "900124",
+}  # fmt: skip
 
 
 @pytest.fixture(scope="module")
@@ -99,6 +110,33 @@ def _invariants_without(paths: DataPaths, gvkey: str) -> pl.DataFrame:
     return check_invariants(paths)
 
 
+def _input(table: str, gvkey: str) -> pl.DataFrame:
+    """One firm's rows of a committed input table."""
+    folder = INPUT_DIR / "interim" if table == "world_msf" else INPUT_DIR / "raw" / "raw_tables"
+    return pl.read_parquet(folder / f"{table}.parquet").filter(pl.col("gvkey") == gvkey)
+
+
+def _gaps(df: pl.DataFrame) -> pl.Series:
+    """Days between consecutive report dates."""
+    return df["datadate"].unique().sort().diff().dt.total_days()
+
+
+def test_committed_inputs_match_the_generator(tmp_path: Path) -> None:
+    """The committed inputs are what the generator writes, so a generator change can't go in
+    without regenerating them."""
+    generate(tmp_path)
+    committed = sorted(p.relative_to(INPUT_DIR) for p in INPUT_DIR.rglob("*.parquet"))
+    assert committed == sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*.parquet"))
+    for path in committed:
+        assert_frame_equal(
+            pl.read_parquet(INPUT_DIR / path), pl.read_parquet(tmp_path / path), check_exact=True
+        )
+
+
+def test_every_persona_is_checked() -> None:
+    assert {spec["gvkey"] for spec in persona_specs()} == set(PERSONA_RULES) | PERSONA_TESTS
+
+
 def test_hard_rules_hold(invariants: pl.DataFrame) -> None:
     assert hard_violations(invariants).height == 0
 
@@ -136,6 +174,79 @@ def test_cad_persona_reports_before_first_cad_rate(chars: pl.DataFrame) -> None:
     """900107 reports in CAD from 1976; the OECD backfill gives those reports a rate."""
     early = chars.filter(gvkey="900107").filter(pl.col("public_date").dt.year() < 1982)
     assert early.height > 0 and early["assets"].count() > 0
+
+
+def test_resumed_calendar_persona() -> None:
+    """900109's December calendar stops for more than 200 days and resumes, while its newer June
+    calendar reports in the gap."""
+    quarterly = _input("comp_fundq", "900109")
+    december = quarterly.filter(pl.col("fyr") == 12)["datadate"].sort()
+    gaps = december.diff().dt.total_days()
+    i = gaps.arg_max()
+    assert gaps[i] > 200
+    in_gap = pl.col("datadate").is_between(december[i - 1], december[i], closed="none")
+    assert quarterly.filter((pl.col("fyr") == 6) & in_gap).height > 0
+
+
+def test_jpy_persona_has_a_march_year_end_and_a_second_security() -> None:
+    """900113 reports in JPY on a March year-end, and world_msf has a non-primary security in the
+    months of its primary one."""
+    annual = _input("comp_g_funda", "900113")
+    assert annual.height > 0
+    assert set(annual["curcd"]) == {"JPY"} and set(annual["fyr"]) == {3}
+    msf = _input("world_msf", "900113")
+    primary = msf.filter(pl.col("primary_sec") == 1)
+    assert msf.filter(pl.col("primary_sec") == 0).join(primary, on="eom").height > 0
+
+
+def test_late_quarterly_persona() -> None:
+    """900116's quarterly reports run three years past its last annual report."""
+    last_annual = _input("comp_funda", "900116")["datadate"].max()
+    last_quarter = _input("comp_fundq", "900116")["datadate"].max()
+    assert last_quarter.year - last_annual.year >= 3
+
+
+def test_zero_sales_negative_equity_persona() -> None:
+    """900117 has years with zero sales, with negative book equity, and with zero and with
+    negative total assets."""
+    annual = _input("comp_funda", "900117").select(pl.col("sale", "seq", "at").cast(pl.Float64))
+    assert (annual["sale"] == 0).any() and (annual["seq"] < 0).any()
+    assert (annual["at"] == 0).any() and (annual["at"] < 0).any()
+
+
+@pytest.mark.parametrize(("gvkey", "years"), [("900118", 3), ("900119", 6), ("900120", 12)])
+def test_short_history_personas(gvkey: str, years: int) -> None:
+    """900118, 900119 and 900120 have 3, 6 and 12 fiscal years of annual reports."""
+    assert _input("comp_funda", gvkey)["fyear"].n_unique() == years
+
+
+def test_reporting_gap_persona() -> None:
+    """900122 has no annual or quarterly report for three years in the middle of its life."""
+    for table in ["comp_funda", "comp_fundq"]:
+        assert _gaps(_input(table, "900122")).max() > 3 * 365, table
+
+
+@pytest.mark.parametrize(
+    ("gvkey", "tables", "dropped"),
+    [
+        (
+            "900123",
+            ["comp_funda", "comp_fundq"],
+            {"datafmt": "SUMM_STD", "indfmt": "FS", "consol": "P", "popsrc": "I"},
+        ),
+        (
+            "900124",
+            ["comp_g_funda", "comp_g_fundq"],
+            {"datafmt": "STD", "consol": "P", "popsrc": "D"},
+        ),
+    ],
+)
+def test_filtered_row_personas(gvkey: str, tables: list[str], dropped: dict[str, str]) -> None:
+    """900123 (NA) and 900124 (Global) have rows with each value the read filters drop."""
+    for table in tables:
+        df = _input(table, gvkey)
+        for column, value in dropped.items():
+            assert (df[column] == value).any(), (table, column, value)
 
 
 def test_output_is_non_degenerate(chars: pl.DataFrame) -> None:

@@ -10,14 +10,15 @@
 
 # Read-only check that the synthetic Compustat inputs copy no real gvkey or row (issue #303, step 6).
 # Submit from the root of a fresh clone of the branch, after `uv sync --group test`:
-#     sbatch tests/golden/calibration/check_no_leak.slurm
-# Override the real data with DATA_DIR in the environment. Prints counts only; exits 1 on a match.
+#     DATA_DIR=<build>/data sbatch tests/golden/calibration/check_no_leak.slurm
+# Set DATA_DIR (a build's data/ folder) in the environment; there is no default.
+# Prints counts only; exits 1 on a match.
 # The limits come from the profile job 4187475 (3:22 wall, 18 GB peak), which read every column
 # of the same tables; this job reads four columns of each.
 
 set -euo pipefail
 
-DATA_DIR=${DATA_DIR:-$HOME/jkp_factors_rep_10142026/data}
+: "${DATA_DIR:?set DATA_DIR}"
 
 export PYTHONPATH=src:.
 export POLARS_MAX_THREADS=${SLURM_CPUS_PER_TASK}

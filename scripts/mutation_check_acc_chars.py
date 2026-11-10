@@ -4,8 +4,9 @@ Mutation check of the accounting-stage tests (issue #303, step 6). Not part of C
 Each mutation replaces one snippet of src/jkp/data/aux_functions.py with a plausible bug. For each
 one the script copies src/, tests/ and pyproject.toml to a temporary folder, applies the mutation
 there and runs the accounting-stage tests on the copy. A mutation is killed when a test fails,
-crashed when only an exception stops a test, and survived when no test notices it. The working tree is never changed. The unmutated copy runs
-first and must pass.
+crashed when only an exception stops a test, and survived when no test notices it. A crash counts
+as caught, since CI fails on it too, but is reported apart. The working tree is never changed. The
+unmutated copy runs first and must pass.
 
 Run on Yale from the repository root (every mutation runs the stage several times):
     srun --cpus-per-task=8 --mem=32G .venv/bin/python scripts/mutation_check_acc_chars.py
@@ -13,7 +14,8 @@ or split across a Slurm array, each task checking the baseline and every tenth m
     sbatch --array=0-9 --cpus-per-task=8 --mem=16G --wrap \
         '.venv/bin/python scripts/mutation_check_acc_chars.py --shard $SLURM_ARRAY_TASK_ID/10'
 Options: -k NAME runs the mutations whose name contains NAME; --shard K/N runs every Nth mutation
-from the Kth; --check only checks that every snippet occurs exactly once.
+from the Kth; --check only checks that every snippet occurs exactly once and that every mutated
+file still compiles.
 """
 
 import argparse
@@ -193,6 +195,11 @@ MUTATIONS: list[tuple[str, str, str]] = [
         'pl.when(col("mat").shift(12) != 0)',
     ),
     (
+        "nonpositive mat kept",
+        'mat=pl.when(col("mat") > 0).then(col("mat")).otherwise(fl_none()),',
+        'mat=col("mat"),',
+    ),
+    (
         "emp_gr1 computed on the quarterly file instead of the annual",
         'if Path(path).name == "acc_std_qtr.parquet":',
         'if Path(path).name == "acc_std_ann.parquet":',
@@ -346,9 +353,19 @@ def run(old: str, new: str, workers: int) -> tuple[int, str, float]:
 
 
 def check_snippets() -> list[str]:
-    """Names of the mutations whose snippet does not occur exactly once, or does not change it."""
+    """Names of the mutations whose snippet does not occur exactly once, does not change it, or
+    leaves a file that doesn't compile (a syntax error would crash every test)."""
     text = (REPO / TARGET).read_text()
-    return [name for name, old, new in MUTATIONS if text.count(old) != 1 or old == new]
+    bad = []
+    for name, old, new in MUTATIONS:
+        if text.count(old) != 1 or old == new:
+            bad.append(name)
+            continue
+        try:
+            compile(text.replace(old, new, 1), str(TARGET), "exec")
+        except SyntaxError:
+            bad.append(name)
+    return bad
 
 
 def main() -> None:
@@ -360,23 +377,28 @@ def main() -> None:
     args = parser.parse_args()
     shard, shards = map(int, args.shard.split("/"))
     if bad := check_snippets():
-        sys.exit(f"snippets that do not occur exactly once: {bad}")
+        sys.exit(f"mutations with a missing, repeated or non-compiling snippet: {bad}")
     if args.check:
-        print(f"{len(MUTATIONS)} snippets each occur once")
+        print(f"{len(MUTATIONS)} snippets each occur once and compile")
         return
     code, summary, seconds = run("", "", args.workers)
     print(f"baseline  {seconds:4.0f}s  {summary}", flush=True)
     if code != 0:
         sys.exit("the unmutated tests fail")
-    survivors = []
+    survivors, crashed, killed = [], [], 0
     for i, (name, old, new) in enumerate(MUTATIONS):
         if args.k not in name or i % shards != shard:
             continue
         code, summary, seconds = run(old, new, args.workers)
         status = _status(code, summary)
         print(f"{status:8}  {seconds:4.0f}s  {name}  [{summary}]", flush=True)
-        if status not in ("killed", "crashed"):
+        if status == "killed":
+            killed += 1
+        elif status == "crashed":
+            crashed.append(name)
+        else:
             survivors.append(name)
+    print(f"{killed} killed by a failed test, {len(crashed)} crashed: {crashed}")
     print(f"{len(survivors)} not killed: {survivors}")
     sys.exit(1 if survivors else 0)
 

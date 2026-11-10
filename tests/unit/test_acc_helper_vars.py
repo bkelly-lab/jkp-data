@@ -582,9 +582,8 @@ class TestTwelveMonthDifferences:
         _check(row, {"eqnetis_x": 6.0, "dbnetis_x": 36.0, "netis_x": 42.0})
 
     def test_missing_month_breaks_the_difference(self, test_paths: DataPaths) -> None:
-        # t = 1 is absent, so the grid starts at t = 2 and t = 14 is only count 13;
-        # its t - 12 = 2 partner has no data (grid-only row of nulls is not the case here:
-        # the partner row exists with data), so we remove t = 2 instead.
+        # t = 2 is missing, so the monthly grid fills it with a row of nulls: t = 13's 12-month
+        # partner (t = 1) has data, t = 14's (t = 2) is that null row.
         rows = [r for r in _series("A", 14, _accrual_inputs) if r["datadate"] != _month_end(1)]
         out = _run(test_paths, rows)
         assert out.height == 14

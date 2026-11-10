@@ -10,16 +10,15 @@
 
 # Read-only profile of the accounting stage's real inputs and outputs (issue #303, step 1).
 # Submit from the root of a fresh clone of the branch, after `uv sync --group test`:
-#     sbatch tests/golden/calibration/profile_compustat.slurm
-# Override the inputs with DATA_DIR, CHARS and VINTAGE in the environment.
+#     DATA_DIR=... CHARS=... VINTAGE=... sbatch tests/golden/calibration/profile_compustat.slurm
+# Set DATA_DIR (a build's data/ folder), CHARS (that build's interim/acc_chars_world.parquet) and
+# VINTAGE (the WRDS download date, YYYY-MM-DD) in the environment; there are no defaults.
 # Writes tests/golden/compustat_profile.json in the clone; `time -v` in the .err file gives the
 # measured wall time and peak memory for the next run's limits.
 
 set -euo pipefail
 
-DATA_DIR=${DATA_DIR:-$HOME/jkp_factors_rep_10142026/data}
-CHARS=${CHARS:-$HOME/acc_ab/det/data_main1107_t32/interim/acc_chars_world.parquet}
-VINTAGE=${VINTAGE:-2026-10-15}
+: "${DATA_DIR:?set DATA_DIR}" "${CHARS:?set CHARS}" "${VINTAGE:?set VINTAGE}"
 
 export PYTHONPATH=src:.
 export POLARS_MAX_THREADS=${SLURM_CPUS_PER_TASK}

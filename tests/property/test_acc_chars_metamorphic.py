@@ -33,6 +33,10 @@ FILES = {"achars_world": "", "qchars_world": "_qitem", "acc_chars_world": ""}
 COMPUSTAT = ["comp_funda", "comp_fundq", "comp_g_funda", "comp_g_fundq"]
 # The persistence regression runs in DuckDB, so allow last-digit differences.
 REL_TOL, ABS_TOL = 1e-9, 1e-12
+# The compared rows must have a value in at least this share of the characteristics, so a firm
+# whose outputs are all null can't pass a comparison. The least-filled comparison (the twin's
+# quarterly rows) has 257 of 315.
+MIN_FILLED = 0.75
 
 SCALE = 2  # a power of two, so the scaled inputs and every product and ratio of them are exact
 NOT_MONEY = ["emp"]  # employees, in thousands
@@ -87,21 +91,25 @@ def _differences(want: pl.DataFrame, got: pl.DataFrame) -> dict[str, int]:
     Description:
         Count, per column, the rows where two outputs of the stage differ.
     Steps:
-        1) Require the same columns, dtypes and keys.
-        2) Match rows on the keys. A characteristic differs if exactly one side is null or the
-           two differ by more than ABS_TOL + REL_TOL x |want|; source, and datadate where the
-           file has it, must be equal.
+        1) Require the same columns, dtypes and keys, and values in at least MIN_FILLED of the
+           characteristics.
+        2) Match rows on the keys. Two finite values differ by more than
+           ABS_TOL + REL_TOL x |want|; otherwise null, NaN and each infinity equal only
+           themselves. Source, and datadate where the file has it, must be equal.
     Output:
         Column -> number of differing rows, for the columns with any.
     """
     assert want.schema == got.schema
     assert want.height > 0
     assert want.select(KEYS).sort(KEYS).equals(got.select(KEYS).sort(KEYS))
+    filled = want.select(pl.col(CHARS).is_not_null().any()).row(0)
+    assert sum(filled) >= MIN_FILLED * len(CHARS)
     exact = [c for c in ["source", "datadate"] if c in want.columns]
 
     def differs(c: str) -> pl.Expr:
         a, b = pl.col(c).cast(pl.Float64), pl.col(f"{c}_got").cast(pl.Float64)
-        return (a.is_null() != b.is_null()) | ((a - b).abs() > ABS_TOL + REL_TOL * a.abs())
+        far = (a - b).abs() > ABS_TOL + REL_TOL * a.abs()
+        return pl.when(a.is_finite() & b.is_finite()).then(far).otherwise(a.ne_missing(b))
 
     counts = (
         want.join(got, on=KEYS, suffix="_got")
@@ -151,6 +159,8 @@ def _with_twin(tables: Tables, fx: pl.DataFrame) -> Tables:
     for name in COMPUSTAT:
         df = tables[name].with_columns(pl.col(_money(tables[name])).cast(pl.Float64))
         currency = "curcd" if "curcd" in df.columns else "curcdq"
+        source_currencies = df.filter(pl.col("gvkey") == TWIN_SOURCE)[currency].unique()
+        assert TWIN_CURRENCY not in source_currencies.to_list(), "the twin must change currency"
         rate = fx.select("datadate", pl.col("curcdd").alias(currency), "fx")
         twin_rate = rate.filter(pl.col(currency) == TWIN_CURRENCY).select("datadate", to="fx")
         twin = (
