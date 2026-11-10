@@ -20,12 +20,14 @@ from pathlib import Path
 from typing import Literal, TypeVar
 
 import duckdb
-import ibis
 import polars as pl
 import polars_ds as pds
 import polars_ols  # noqa: F401 - required for least_squares method on polars expressions
-from ibis import _
 from polars import col
+
+# isort: split
+import numpy as np
+from numba import get_num_threads, njit, prange
 
 from .compustat_correction import (
     correct_decimal_errors,
@@ -33,7 +35,8 @@ from .compustat_correction import (
 )
 from .config import (
     CALENDAR_RUN_MAX_GAP_DAYS,
-    COLLECT_CHUNK_SIZE,
+    CMP_MIN_STD,
+    CMP_SIZE_GROUPS,
     CORRECTION_SPILL_COMPRESSION,
     END_DATE,
     FF_CCM_BACKDATE_FROM,
@@ -53,6 +56,8 @@ from .config import (
     FF_UMD_ROW_MIN_MONTHS,
     FF_USE_DFF_BE,
     MAIN_FILTERS,
+    NI_AT_MIN_STD,
+    RET_MIN_STD,
     US_EXCNTRY,
 )
 from .output_writer import write_dataframe
@@ -163,6 +168,33 @@ def collect_and_write(df, filename, collect_streaming=False):
     df.collect(engine=engine).write_parquet(filename)
 
 
+def _duckdb_connect(paths: DataPaths, database: Path | None = None) -> duckdb.DuckDBPyConnection:
+    """
+    Description:
+        Open a DuckDB connection for a pipeline step.
+
+    Steps:
+        1) Connect to `database`, or in memory when None.
+        2) Use as many threads as CPUs this process may run on (the Slurm allocation, not the
+           node; os.cpu_count() reports the node).
+        3) Spill to interim/__duckdb_tmp, never the working directory.
+
+    Output:
+        DuckDB connection; use it as a context manager so it closes on every exit path.
+    """
+    if hasattr(os, "sched_getaffinity"):
+        threads = len(os.sched_getaffinity(0))
+    else:  # macOS has no CPU affinity
+        threads = os.cpu_count()
+    return duckdb.connect(
+        str(database) if database else ":memory:",
+        config={
+            "threads": threads,
+            "temp_directory": (paths.interim_dir / "__duckdb_tmp").as_posix(),
+        },
+    )
+
+
 def sic_naics_aux(filename):
     """
     Description:
@@ -246,25 +278,37 @@ def ex_country_aux(filename):
     return df
 
 
-def header_aux(comp_path, gcomp_path, output_path):
+def header_aux(paths: DataPaths) -> None:
     """
     Description:
         Build a unified Compustat header table combining NA and Global sources (one row per gvkey).
 
     Steps:
-        1) Read NA and Global header parquets into Ibis.
+        1) Read the NA and Global company headers in place with DuckDB.
         2) Select gvkey, prirow, priusa, prican from each.
-        3) Union tables and take the first occurrence per gvkey.
-        4) Write to `output_path` and close connection.
+        3) Keep one row per gvkey: the Global header's row when the gvkey is in both, as
+           prefer_global does for accounting data. (The SAS code kept the NA header's row; the
+           two headers agree on these codes for every shared gvkey in current data.)
+        4) Write to raw_data_dfs/__header.parquet.
 
     Output:
         Parquet header file with unique gvkey rows.
     """
-    con = ibis.duckdb.connect(threads=os.cpu_count())
-    comp = con.read_parquet(comp_path).select(["gvkey", "prirow", "priusa", "prican"])
-    g_comp = con.read_parquet(gcomp_path).select(["gvkey", "prirow", "priusa", "prican"])
-    comp.union(g_comp).distinct(on="gvkey", keep="first").to_parquet(output_path)
-    con.disconnect()
+    company = (paths.raw_tables_dir / "comp_company.parquet").as_posix()
+    g_company = (paths.raw_tables_dir / "comp_g_company.parquet").as_posix()
+    out = (paths.interim_dir / "raw_data_dfs" / "__header.parquet").as_posix()
+    with _duckdb_connect(paths) as con:
+        con.execute(f"""
+        COPY (
+            SELECT DISTINCT ON (gvkey) gvkey, prirow, priusa, prican
+            FROM (
+                SELECT gvkey, prirow, priusa, prican, 0 AS src FROM read_parquet('{g_company}')
+                UNION ALL
+                SELECT gvkey, prirow, priusa, prican, 1 AS src FROM read_parquet('{company}')
+            )
+            ORDER BY gvkey, src
+        ) TO '{out}' (FORMAT PARQUET)
+        """)
 
 
 def gen_firmshares(paths: DataPaths):
@@ -274,7 +318,7 @@ def gen_firmshares(paths: DataPaths):
         from quarterly (FUNDQ) and annual (FUNDA) NA files.
 
     Steps:
-        1) Load FUNDQ and FUNDA into DuckDB (rename FUNDA at_→at to avoid conflicts).
+        1) Read FUNDQ and FUNDA in place with DuckDB.
         2) Filter to INDL/STD/D/C rows with non-null shares & adj. factors.
         3) SELECT {gvkey, datadate, cshoq→csho_fund, ajexq→ajex_fund} from FUNDQ.
         4) UNION ALL with FUNDA {csho→csho_fund, ajex→ajex_fund}.
@@ -287,32 +331,27 @@ def gen_firmshares(paths: DataPaths):
         Parquet: raw_data_dfs/__firm_shares1.parquet (gvkey, datadate, csho_fund, ajex_fund),
         unique on (gvkey, datadate).
     """
-    con = ibis.duckdb.connect(threads=os.cpu_count())
-    con.create_table("comp_fundq", con.read_parquet(paths.raw_tables_dir / "comp_fundq.parquet"))
-    con.create_table(
-        "comp_funda",
-        con.read_parquet(paths.raw_tables_dir / "comp_funda.parquet").rename({"at_": "at"}),
-    )
-    con.raw_sql("""
-    CREATE TABLE __firm_shares1 AS
-    SELECT DISTINCT ON (gvkey, datadate) gvkey, datadate, csho_fund, ajex_fund
-    FROM (
-        SELECT gvkey, datadate, cshoq AS csho_fund, ajexq AS ajex_fund, 0 AS source_rank, fqtr, fyr
-        FROM comp_fundq
-        WHERE indfmt = 'INDL' AND datafmt = 'STD' AND popsrc = 'D' AND consol = 'C' AND cshoq IS NOT NULL AND ajexq IS NOT NULL
+    fundq = (paths.raw_tables_dir / "comp_fundq.parquet").as_posix()
+    funda = (paths.raw_tables_dir / "comp_funda.parquet").as_posix()
+    out = (paths.interim_dir / "raw_data_dfs" / "__firm_shares1.parquet").as_posix()
+    with _duckdb_connect(paths) as con:
+        con.execute(f"""
+        COPY (
+            SELECT DISTINCT ON (gvkey, datadate) gvkey, datadate, csho_fund, ajex_fund
+            FROM (
+                SELECT gvkey, datadate, cshoq AS csho_fund, ajexq AS ajex_fund, 0 AS source_rank, fqtr, fyr
+                FROM read_parquet('{fundq}')
+                WHERE indfmt = 'INDL' AND datafmt = 'STD' AND popsrc = 'D' AND consol = 'C' AND cshoq IS NOT NULL AND ajexq IS NOT NULL
 
-        UNION ALL
+                UNION ALL
 
-        SELECT gvkey, datadate, csho AS csho_fund, ajex AS ajex_fund, 1 AS source_rank, NULL AS fqtr, fyr
-        FROM comp_funda
-        WHERE indfmt = 'INDL' AND datafmt = 'STD' AND popsrc = 'D' AND consol = 'C' AND csho IS NOT NULL AND ajex IS NOT NULL
-    )
-    ORDER BY gvkey, datadate, source_rank, fqtr IS NULL, fyr DESC;
-    """)
-    con.table("__firm_shares1").to_parquet(
-        paths.interim_dir / "raw_data_dfs" / "__firm_shares1.parquet"
-    )
-    con.disconnect()
+                SELECT gvkey, datadate, csho AS csho_fund, ajex AS ajex_fund, 1 AS source_rank, NULL AS fqtr, fyr
+                FROM read_parquet('{funda}')
+                WHERE indfmt = 'INDL' AND datafmt = 'STD' AND popsrc = 'D' AND consol = 'C' AND csho IS NOT NULL AND ajex IS NOT NULL
+            )
+            ORDER BY gvkey, datadate, source_rank, fqtr IS NULL, fyr DESC
+        ) TO '{out}' (FORMAT PARQUET)
+        """)
 
 
 def gen_prihist_files(paths: DataPaths):
@@ -322,59 +361,30 @@ def gen_prihist_files(paths: DataPaths):
         intervals from NA and Global history tables.
 
     Steps:
-        1) Load comp_sec_history and comp_g_sec_history into DuckDB.
-        2) Create three tables by item code: PRIHISTROW (global), PRIHISTUSA (NA), PRIHISTCAN (NA).
+        1) Read comp_sec_history and comp_g_sec_history in place with DuckDB.
+        2) Select three item codes: PRIHISTROW (global), PRIHISTUSA (NA), PRIHISTCAN (NA).
         3) Keep gvkey, itemvalue→flag, effdate, thrudate.
         4) Write each to raw_data_dfs as separate Parquet files.
 
     Output:
         Parquets: __prihistrow.parquet, __prihistusa.parquet, __prihistcan.parquet.
     """
-    con = ibis.duckdb.connect(threads=os.cpu_count())
-    con.create_table(
-        "comp_sec_history",
-        con.read_parquet(paths.raw_tables_dir / "comp_sec_history.parquet"),
-    )
-    con.create_table(
-        "comp_g_sec_history",
-        con.read_parquet(paths.raw_tables_dir / "comp_g_sec_history.parquet"),
-    )
-    con.raw_sql("""
-    CREATE TABLE __prihistrow AS
-    SELECT gvkey,
-        itemvalue AS prihistrow,
-        effdate,
-        thrudate
-    FROM comp_g_sec_history
-    WHERE item = 'PRIHISTROW';
-
-    CREATE TABLE __prihistusa AS
-    SELECT gvkey,
-        itemvalue AS prihistusa,
-        effdate,
-        thrudate
-    FROM comp_sec_history
-    WHERE item = 'PRIHISTUSA';
-
-    CREATE TABLE __prihistcan AS
-    SELECT gvkey,
-        itemvalue AS prihistcan,
-        effdate,
-        thrudate
-    FROM comp_sec_history
-    WHERE item = 'PRIHISTCAN';
-    """)
-
-    con.table("__prihistrow").to_parquet(
-        paths.interim_dir / "raw_data_dfs" / "__prihistrow.parquet"
-    )
-    con.table("__prihistusa").to_parquet(
-        paths.interim_dir / "raw_data_dfs" / "__prihistusa.parquet"
-    )
-    con.table("__prihistcan").to_parquet(
-        paths.interim_dir / "raw_data_dfs" / "__prihistcan.parquet"
-    )
-    con.disconnect()
+    sec_history = (paths.raw_tables_dir / "comp_sec_history.parquet").as_posix()
+    g_sec_history = (paths.raw_tables_dir / "comp_g_sec_history.parquet").as_posix()
+    with _duckdb_connect(paths) as con:
+        for item, source in [
+            ("prihistrow", g_sec_history),
+            ("prihistusa", sec_history),
+            ("prihistcan", sec_history),
+        ]:
+            out = (paths.interim_dir / "raw_data_dfs" / f"__{item}.parquet").as_posix()
+            con.execute(f"""
+            COPY (
+                SELECT gvkey, itemvalue AS {item}, effdate, thrudate
+                FROM read_parquet('{source}')
+                WHERE item = '{item.upper()}'
+            ) TO '{out}' (FORMAT PARQUET)
+            """)
 
 
 def gen_fx1(paths: DataPaths):
@@ -383,33 +393,31 @@ def gen_fx1(paths: DataPaths):
         Build daily FX (to USD) series per currency using Compustat daily exchange rates.
 
     Steps:
-        1) Load comp_exrt_dly into DuckDB.
-        2) Join table to itself on (fromcurd, datadate) with fromcurd='GBP' and b.tocurd='USD'.
+        1) Read comp_exrt_dly in place with DuckDB.
+        2) Join it to itself on (fromcurd, datadate) with fromcurd='GBP' and b.tocurd='USD'.
         3) Compute fx = b.exratd / a.exratd, label a.tocurd as curcdd.
         4) DISTINCT rows and write out.
 
     Output:
         Parquet: raw_data_dfs/__fx1.parquet (curcdd, datadate, fx to USD).
     """
-    con = ibis.duckdb.connect(threads=os.cpu_count())
-    con.create_table(
-        "comp_exrt_dly", con.read_parquet(paths.raw_tables_dir / "comp_exrt_dly.parquet")
-    )
-    con.raw_sql("""
-    CREATE TABLE __fx1 AS
-    SELECT DISTINCT
-    a.tocurd AS curcdd,
-    a.datadate,
-    b.exratd / a.exratd AS fx
-    FROM comp_exrt_dly AS a
-    JOIN comp_exrt_dly AS b
-    ON a.fromcurd = b.fromcurd
-    AND a.datadate = b.datadate
-    WHERE a.fromcurd = 'GBP'
-    AND b.tocurd  = 'USD';
-    """)
-    con.table("__fx1").to_parquet(paths.interim_dir / "raw_data_dfs" / "__fx1.parquet")
-    con.disconnect()
+    exrt = (paths.raw_tables_dir / "comp_exrt_dly.parquet").as_posix()
+    out = (paths.interim_dir / "raw_data_dfs" / "__fx1.parquet").as_posix()
+    with _duckdb_connect(paths) as con:
+        con.execute(f"""
+        COPY (
+            SELECT DISTINCT
+            a.tocurd AS curcdd,
+            a.datadate,
+            b.exratd / a.exratd AS fx
+            FROM read_parquet('{exrt}') AS a
+            JOIN read_parquet('{exrt}') AS b
+            ON a.fromcurd = b.fromcurd
+            AND a.datadate = b.datadate
+            WHERE a.fromcurd = 'GBP'
+            AND b.tocurd  = 'USD'
+        ) TO '{out}' (FORMAT PARQUET)
+        """)
 
 
 @measure_time
@@ -513,16 +521,12 @@ def gen_raw_data_dfs(paths: DataPaths):
         ]
     )
     collect_and_write(__ex_country1, paths.interim_dir / "raw_data_dfs" / "__ex_country1.parquet")
-    header_aux(
-        paths.raw_tables_dir / "comp_company.parquet",
-        paths.raw_tables_dir / "comp_g_company.parquet",
-        paths.interim_dir / "raw_data_dfs" / "__header.parquet",
-    )
+    header_aux(paths)
     gen_prihist_files(paths)
     gen_fx1(paths)
     aug_msf_v2(paths)
-    gen_crsp_sf(paths, "m").to_parquet(paths.interim_dir / "raw_data_dfs" / "__crsp_sf_m.parquet")
-    gen_crsp_sf(paths, "d").to_parquet(paths.interim_dir / "raw_data_dfs" / "__crsp_sf_d.parquet")
+    gen_crsp_sf(paths, "m")
+    gen_crsp_sf(paths, "d")
 
 
 def gen_crsp_sf(paths: DataPaths, freq):
@@ -531,168 +535,84 @@ def gen_crsp_sf(paths: DataPaths, freq):
         Build CRSP security file enriched with names and CCM link history (monthly or daily).
 
     Steps:
-        1) Load crsp_{freq}sf, crsp_{freq}senames, and ccmxpf_lnkhist into Ibis.
+        1) Read crsp_{freq}sf, crsp_stksecurityinfohist, and ccmxpf_lnkhist in place with DuckDB.
         2) Join SF to SENAMES on permno with date in [secinfostartdt, secinfoenddt].
         3) Join to CCM link history on permno and link date window, linktype in {LC, LU, LS}.
         4) Compute fields: bidask flag, abs(prc), shrout (thousands), ME, prc_high/low (valid only if prc>0),
         main exchange flag, and carry identifiers.
-        5) Select standardized columns and return the Ibis table.
+        5) Select standardized columns and write them.
 
     Output:
-        Ibis table (not written) with standardized CRSP {m|d} security fields.
+        Writes raw_data_dfs/__crsp_sf_{freq}.parquet with standardized CRSP {m|d} security fields.
     """
-    con = ibis.duckdb.connect(threads=os.cpu_count())
+    # CIZ name mapping by frequency: column prefix, high/low price columns, open/close prices
     if freq == "m":
-        sf = con.read_parquet(paths.interim_dir / "raw_data_dfs" / "crsp_msf_v2_aug.parquet")
+        sf = paths.interim_dir / "raw_data_dfs" / "crsp_msf_v2_aug.parquet"
+        p, high, low = "mth", "mthaskhi", "mthbidlo"
+        prc_open = prc_close = "NULL"
     elif freq == "d":
-        sf = con.read_parquet(paths.raw_tables_dir / "crsp_dsf_v2.parquet")
+        sf = paths.raw_tables_dir / "crsp_dsf_v2.parquet"
+        p, high, low = "dly", "dlyhigh", "dlylow"
+        prc_open = "CASE WHEN s.dlyprc > 0 AND s.dlyopen > 0 THEN s.dlyopen END"
+        prc_close = "CASE WHEN s.dlyprc > 0 AND s.dlyclose > 0 THEN s.dlyclose END"
     else:
         raise ValueError(f"Unknown freq: {freq}")
-    senames = con.read_parquet(paths.raw_tables_dir / "crsp_stksecurityinfohist.parquet")
-    ccmxpf_lnkhist = con.read_parquet(paths.raw_tables_dir / "crsp_ccmxpf_lnkhist.parquet")
-
-    # ---------- CIZ name mapping by frequency ----------
-    if freq == "m":
-        date_expr = sf.mthcaldt.cast("date")
-        prc_expr = sf.mthprc
-        prcflg_expr = sf.mthprcflg
-        ret_expr = sf.mthret
-        retx_expr = sf.mthretx
-        vol_expr = sf.mthvol
-        prcflg_expr = sf.mthprcflg
-        cfacshr_expr = sf.mthcumfacshr
-        askhi_expr = sf.mthaskhi
-        bidlo_expr = sf.mthbidlo
-        del_flag_expr = sf.mthdelflg
-        open_expr = None
-        close_expr = None
-    else:  # freq == "d", validated above
-        date_expr = sf.dlycaldt.cast("date")
-        prc_expr = sf.dlyprc
-        prcflg_expr = sf.dlyprcflg
-        ret_expr = sf.dlyret
-        retx_expr = sf.dlyretx
-        vol_expr = sf.dlyvol
-        cfacshr_expr = sf.dlycumfacshr
-        askhi_expr = sf.dlyhigh
-        bidlo_expr = sf.dlylow
-        open_expr = sf.dlyopen
-        close_expr = sf.dlyclose
-        del_flag_expr = sf.dlydelflg
-
-    sf_senames_join = sf.join(
-        senames,
-        how="left",
-        predicates=[
-            (sf.permno == senames.permno),
-            (date_expr >= senames.secinfostartdt.cast("date")),
-            (date_expr <= senames.secinfoenddt.cast("date")),
-        ],
-    )
-
-    full_join = sf_senames_join.join(
-        ccmxpf_lnkhist,
-        how="left",
-        predicates=[
-            (sf.permno == ccmxpf_lnkhist.lpermno),
-            ((date_expr >= ccmxpf_lnkhist.linkdt.cast("date")) | ccmxpf_lnkhist.linkdt.isnull()),
-            (
-                (date_expr <= ccmxpf_lnkhist.linkenddt.cast("date"))
-                | ccmxpf_lnkhist.linkenddt.isnull()
-            ),
-            ccmxpf_lnkhist.linktype.isin(["LC", "LU", "LS"]),
-        ],
-    )
-
-    bidask_expr = ibis.cases(
-        (prcflg_expr == "BA", 1),
-        (prcflg_expr == "TR", 0),
-        else_=ibis.null(),
-    ).cast("int32")
-
-    securitytype_expr = sf.securitytype
-    securitysubtype_expr = sf.securitysubtype
-    sharetype_expr = sf.sharetype
-    issuertype_expr = sf.issuertype
-
-    is_common_expr = (
-        (securitytype_expr == "EQTY")
-        & (securitysubtype_expr == "COM")
-        & (sharetype_expr == "NS")
-        & (issuertype_expr.isin(["ACOR", "CORP"]))
-    )
-
-    primaryexch_expr = sf.primaryexch
-    conditionaltype_expr = sf.conditionaltype
-
-    exch_main_expr = (primaryexch_expr.isin(["A", "N", "Q"]) & (conditionaltype_expr == "RW")).cast(
-        "int32"
-    )
-    crsp_nyse_expr = ((primaryexch_expr == "N") & (conditionaltype_expr == "RW")).cast("int32")
-
-    prc_open_mutate = (
-        ibis.cases(((prc_expr > 0) & (open_expr > 0), open_expr), else_=ibis.null())
-        if open_expr is not None
-        else ibis.null()
-    )
-    prc_close_mutate = (
-        ibis.cases(((prc_expr > 0) & (close_expr > 0), close_expr), else_=ibis.null())
-        if close_expr is not None
-        else ibis.null()
-    )
-
-    result = full_join.mutate(
-        date=date_expr,
-        bidask=bidask_expr,
-        prc=prc_expr,
-        shrout=(sf.shrout / 1000),
-        me=(prc_expr * (sf.shrout / 1000)),
-        prc_high=ibis.cases(((prc_expr > 0) & (askhi_expr > 0), askhi_expr), else_=ibis.null()),
-        prc_low=ibis.cases(((prc_expr > 0) & (bidlo_expr > 0), bidlo_expr), else_=ibis.null()),
-        prc_open=prc_open_mutate,
-        prc_close=prc_close_mutate,
-        iid=ccmxpf_lnkhist.liid,
-        ret=ret_expr,
-        retx=retx_expr,
-        cfacshr=cfacshr_expr,
-        vol=vol_expr,
-        # MthDelFlg/DlyDelFlg; gates the delisting-return adjustment in prepare_crsp_sf
-        del_flag=del_flag_expr,
-        common=is_common_expr.cast("int32"),
-        primaryexch=primaryexch_expr,
-        conditionaltype=conditionaltype_expr,
-        exch_main=exch_main_expr,
-        crsp_nyse=crsp_nyse_expr,
-        gvkey=ccmxpf_lnkhist.gvkey,
-    ).select(
-        [
-            "permno",
-            "permco",
-            "date",
-            "bidask",
-            "prc",
-            "prc_open",
-            "prc_close",
-            "shrout",
-            "ret",
-            "retx",
-            "cfacshr",
-            "vol",
-            "prc_high",
-            "prc_low",
-            "del_flag",
-            "common",
-            "primaryexch",
-            "conditionaltype",
-            "crsp_nyse",
-            "gvkey",
-            "iid",
-            "exch_main",
-            "me",
-            "ticker",
-        ]
-    )
-    return result
+    senames = (paths.raw_tables_dir / "crsp_stksecurityinfohist.parquet").as_posix()
+    lnkhist = (paths.raw_tables_dir / "crsp_ccmxpf_lnkhist.parquet").as_posix()
+    out = (paths.interim_dir / "raw_data_dfs" / f"__crsp_sf_{freq}.parquet").as_posix()
+    with _duckdb_connect(paths) as con:
+        con.execute(f"""
+        COPY (
+            SELECT
+                s.permno,
+                s.permco,
+                s.{p}caldt AS date,
+                CAST(CASE WHEN s.{p}prcflg = 'BA' THEN 1 WHEN s.{p}prcflg = 'TR' THEN 0 END AS INTEGER)
+                    AS bidask,
+                s.{p}prc AS prc,
+                {prc_open} AS prc_open,
+                {prc_close} AS prc_close,
+                s.shrout / 1000 AS shrout,
+                s.{p}ret AS ret,
+                s.{p}retx AS retx,
+                s.{p}cumfacshr AS cfacshr,
+                s.{p}vol AS vol,
+                CASE WHEN s.{p}prc > 0 AND s.{high} > 0 THEN s.{high} END AS prc_high,
+                CASE WHEN s.{p}prc > 0 AND s.{low} > 0 THEN s.{low} END AS prc_low,
+                -- MthDelFlg/DlyDelFlg; gates the delisting-return adjustment in prepare_crsp_sf
+                s.{p}delflg AS del_flag,
+                CAST(
+                    s.securitytype = 'EQTY'
+                    AND s.securitysubtype = 'COM'
+                    AND s.sharetype = 'NS'
+                    AND s.issuertype IN ('ACOR', 'CORP')
+                    AS INTEGER
+                ) AS common,
+                s.primaryexch,
+                s.conditionaltype,
+                CAST(s.primaryexch = 'N' AND s.conditionaltype = 'RW' AS INTEGER) AS crsp_nyse,
+                l.gvkey,
+                l.liid AS iid,
+                CAST(s.primaryexch IN ('A', 'N', 'Q') AND s.conditionaltype = 'RW' AS INTEGER)
+                    AS exch_main,
+                s.{p}prc * (s.shrout / 1000) AS me,
+                s.ticker
+            FROM read_parquet('{sf.as_posix()}') AS s
+            -- kept from the SAS code (msenames supplied shrcd/exchcd there); adds no
+            -- columns, and CRSP name records don't overlap, so it adds no rows
+            LEFT JOIN read_parquet('{senames}') AS n
+                ON s.permno = n.permno
+                AND s.{p}caldt >= n.secinfostartdt
+                AND s.{p}caldt <= n.secinfoenddt
+            -- a null link date is open-ended; COALESCE (not OR ... IS NULL) keeps every
+            -- condition a comparison, so DuckDB hash-joins instead of a nested loop
+            LEFT JOIN read_parquet('{lnkhist}') AS l
+                ON s.permno = l.lpermno
+                AND s.{p}caldt >= COALESCE(l.linkdt, DATE '-infinity')
+                AND s.{p}caldt <= COALESCE(l.linkenddt, DATE 'infinity')
+                AND l.linktype IN ('LC', 'LU', 'LS')
+        ) TO '{out}' (FORMAT PARQUET)
+        """)
 
 
 def get_columns(conn, conninfo, lib, table):
@@ -1390,7 +1310,7 @@ def aug_msf_v2(paths: DataPaths):
         missing for non-TR monthly rows (e.g., BA). Called from gen_raw_data_dfs().
 
     Steps:
-        1) Read msf_v2 (monthly) and dsf_v2 (daily) from raw_tables parquet.
+        1) Read msf_v2 (monthly) and dsf_v2 (daily) in place with DuckDB.
         2) Filter dsf_v2 to dlyprcflg == "TR", construct yyyymm from dlycaldt, and keep (permno, yyyymm, dlyprc).
         3) For each (permno, yyyymm), compute:
            - mthaskhi = max(dlyprc)
@@ -1403,44 +1323,30 @@ def aug_msf_v2(paths: DataPaths):
         Writes raw_data_dfs/crsp_msf_v2_aug.parquet with all original columns
         plus mthaskhi and mthbidlo.
     """
-    con = ibis.duckdb.connect(threads=os.cpu_count())
-    msf = con.read_parquet(paths.raw_tables_dir / "crsp_msf_v2.parquet")
-    dsf = con.read_parquet(paths.raw_tables_dir / "crsp_dsf_v2.parquet")
-
-    dt = dsf.dlycaldt.cast("date")
-
-    d = (
-        dsf.filter(dsf.dlyprcflg == "TR")
-        .mutate(
-            yyyymm=(dt.year() * 100 + dt.month()).cast("int32"),
-            dlyprc=dsf.dlyprc.cast("double"),
-        )
-        .select(["permno", "yyyymm", "dlyprc"])
-    )
-
-    m = d.group_by(["permno", "yyyymm"]).aggregate(
-        mthaskhi=d.dlyprc.max(),
-        mthbidlo=d.dlyprc.min(),
-    )
-
-    msf_joined = msf.join(
-        m,
-        how="left",
-        predicates=[msf.permno == m.permno, msf.yyyymm == m.yyyymm],
-    ).select([msf] + [m.mthaskhi, m.mthbidlo])
-
-    msf_aug = msf_joined.mutate(
-        mthaskhi=ibis.cases(
-            (msf_joined.mthprcflg == "TR", msf_joined.mthaskhi),
-            else_=ibis.null(),
-        ),
-        mthbidlo=ibis.cases(
-            (msf_joined.mthprcflg == "TR", msf_joined.mthbidlo),
-            else_=ibis.null(),
-        ),
-    )
-
-    msf_aug.to_parquet(paths.interim_dir / "raw_data_dfs" / "crsp_msf_v2_aug.parquet")
+    msf = (paths.raw_tables_dir / "crsp_msf_v2.parquet").as_posix()
+    dsf = (paths.raw_tables_dir / "crsp_dsf_v2.parquet").as_posix()
+    out = (paths.interim_dir / "raw_data_dfs" / "crsp_msf_v2_aug.parquet").as_posix()
+    with _duckdb_connect(paths) as con:
+        con.execute(f"""
+        COPY (
+            WITH d AS (
+                SELECT
+                    permno,
+                    CAST(year(dlycaldt) * 100 + month(dlycaldt) AS INTEGER) AS yyyymm,
+                    MAX(CAST(dlyprc AS DOUBLE)) AS mthaskhi,
+                    MIN(CAST(dlyprc AS DOUBLE)) AS mthbidlo
+                FROM read_parquet('{dsf}')
+                WHERE dlyprcflg = 'TR'
+                GROUP BY ALL
+            )
+            SELECT
+                m.*,
+                CASE WHEN m.mthprcflg = 'TR' THEN d.mthaskhi END AS mthaskhi,
+                CASE WHEN m.mthprcflg = 'TR' THEN d.mthbidlo END AS mthbidlo
+            FROM read_parquet('{msf}') AS m
+            LEFT JOIN d ON m.permno = d.permno AND m.yyyymm = d.yyyymm
+        ) TO '{out}' (FORMAT PARQUET)
+        """)
 
 
 def build_mcti(paths: DataPaths):
@@ -1638,7 +1544,7 @@ def gen_comp_dsf(
         prices/returns/volumes/dividends; store as __comp_dsf.parquet.
 
     Steps:
-        1) Materialize daily FX to fx_data.parquet.
+        1) Build daily FX in Polars; DuckDB reads the frame directly.
         2) If apply_correction, repair decimal-shift errors in the raw data.
         3) Register SECD, G_SECD, firm-shares, and FX in DuckDB.
         4) Create __comp_dsf_global from G_SECD: local prices, highs/lows (if prcstd≠5),
@@ -1650,6 +1556,7 @@ def gen_comp_dsf(
         7) FULL OUTER JOIN NA and Global records; LEFT JOIN daily FX for trading and dividend currencies.
         8) Compute USD variables: prc, prc_high, prc_low, market cap (me), USD turnover (dolvol),
         USD return index (ri), dividends (split into total/cash/special); derive month-end eom.
+        Keep one row per security-date (drop_duplicate_security_dates).
         9) If apply_correction, drop unreliable observations from the USD data.
         10) Drop intermediates and write __comp_dsf.parquet.
 
@@ -1663,11 +1570,6 @@ def gen_comp_dsf(
     Output:
         Parquet: __comp_dsf.parquet (daily Compustat security observations in USD).
     """
-    (paths.interim_dir / "aux_comp_dsf.ddb").unlink(missing_ok=True)
-
-    # Prepare FX data
-    compustat_fx(paths).write_parquet(paths.interim_dir / "fx_data.parquet")
-
     # Repair decimal-shift errors in the raw data (local currency)
     if apply_correction:
         # Load and correct Global data (no ADRRC). spill_dir selects the
@@ -1716,19 +1618,19 @@ def gen_comp_dsf(
     # Original SQL processing
     # Views, not tables: the whole merge/FX/USD pipeline streams in a single
     # pass at the final COPY instead of materializing five intermediate
-    # tables to the .ddb file. The NASDAQ cshtrd UPDATE is folded into the
+    # tables. The NASDAQ cshtrd UPDATE is folded into the
     # __comp_dsf_na view as an equivalent CASE expression.
-    con = ibis.duckdb.connect(str(paths.interim_dir / "aux_comp_dsf.ddb"), threads=os.cpu_count())
-
-    con.raw_sql(f"""
+    fx_daily = compustat_fx(paths)
+    with _duckdb_connect(paths) as con:
+        con.register("fx", fx_daily)
+        con.execute(f"""
     CREATE VIEW comp_g_secd AS SELECT * FROM read_parquet('{g_secd_path.as_posix()}');
     CREATE VIEW comp_secd AS SELECT * FROM read_parquet('{secd_path.as_posix()}');
     CREATE VIEW __firm_shares2 AS
         SELECT * FROM read_parquet('{(paths.interim_dir / "__firm_shares2.parquet").as_posix()}');
-    CREATE VIEW fx AS SELECT * FROM read_parquet('{(paths.interim_dir / "fx_data.parquet").as_posix()}');
-    """)
+        """)
 
-    con.raw_sql("""
+        con.execute("""
     CREATE VIEW __comp_dsf_global AS
     SELECT
         gvkey, iid, datadate, tpci, exchg, prcstd, curcdd, prccd / qunit AS prc_local, ajexdi, cshoc / 1e6 AS cshoc,
@@ -1825,45 +1727,41 @@ def gen_comp_dsf(
 
     FROM __comp_dsf2;
 
-    """)
-
-    # Drop unreliable observations from the USD-converted data
-    if apply_correction:
-        # One streaming pass: DuckDB executes the whole view pipeline, joins
-        # the exchange-country mapping (needed for country-specific filters),
-        # external-sorts by the filter group/sort keys, and writes the spill
-        # file directly — no pre-filter round-trip, and the slim path skips its
-        # own sort (presorted=True).
-        comp_exchanges(paths).select(["exchg", "excntry"]).write_parquet(
-            paths.interim_dir / "__corr_exchanges.parquet"
-        )
-        sorted_path = paths.interim_dir / "__corr_filter_sorted.parquet"
-        # insertion-order preservation is irrelevant under an explicit ORDER BY
-        # and only inflates the external sort's memory; temp_directory
-        # guarantees the sort can spill (the slim path verifies the resulting
-        # order before trusting it)
-        con.raw_sql(f"""
-        SET preserve_insertion_order = false;
-        SET temp_directory = '{(paths.interim_dir / "__duckdb_tmp").as_posix()}';
         """)
-        con.raw_sql(f"""
+
+        # row order is not needed: the filter step sorts the columns it uses, and every
+        # other reader of __comp_dsf sorts or groups by key itself (gen_secd_data's float
+        # sums then vary at about 1e-15, within the 1e-10 tolerance)
+        con.execute("SET preserve_insertion_order = false")
+        if apply_correction:
+            # the exchange country feeds the filters' country-specific price thresholds
+            con.register("exchanges", comp_exchanges(paths).select(["exchg", "excntry"]))
+            unfiltered_path = paths.interim_dir / "__corr_filter_input.parquet"
+            con.execute(f"""
         COPY (
             SELECT t.*, e.excntry
             FROM __comp_dsf3 AS t
-            LEFT JOIN read_parquet('{(paths.interim_dir / "__corr_exchanges.parquet").as_posix()}') AS e
+            LEFT JOIN exchanges AS e
                 USING (exchg)
-            ORDER BY gvkey NULLS FIRST, iid NULLS FIRST, datadate NULLS FIRST
-        ) TO '{sorted_path.as_posix()}' (FORMAT PARQUET);
-        """)
-        con.disconnect()
+        ) TO '{unfiltered_path.as_posix()}' (FORMAT PARQUET);
+            """)
+            merged_path = unfiltered_path
+        else:
+            merged_path = paths.interim_dir / "__comp_dsf.parquet"
+            con.execute(f"""
+        COPY (SELECT * FROM __comp_dsf3) TO '{merged_path.as_posix()}' (FORMAT PARQUET);
+            """)
 
+    drop_duplicate_security_dates(paths, merged_path)
+
+    # Drop unreliable observations from the USD-converted data
+    if apply_correction:
         df = drop_unreliable_observations(
-            pl.scan_parquet(sorted_path),
+            pl.scan_parquet(unfiltered_path),
             group_cols=["gvkey", "iid"],
             sort_col="datadate",
             country_col="excntry",
             spill_dir=paths.interim_dir,
-            presorted_path=sorted_path,
         )
 
         df.sink_parquet(paths.interim_dir / "__comp_dsf.parquet")
@@ -1872,17 +1770,77 @@ def gen_comp_dsf(
         for f in paths.interim_dir.glob("__corr_*.parquet"):
             f.unlink()
 
-    else:
-        con.raw_sql(f"""
-        COPY (SELECT * FROM __comp_dsf3)
-        TO '{(paths.interim_dir / "__comp_dsf.parquet").as_posix()}' (FORMAT PARQUET);
-        """)
-        con.disconnect()
-
     # Clean up corrected temp files if they exist
     if apply_correction:
         for f in ["__comp_g_secd_corrected.parquet", "__comp_secd_corrected.parquet"]:
             (paths.interim_dir / f).unlink(missing_ok=True)
+
+
+def drop_duplicate_security_dates(paths: DataPaths, file_path: Path) -> None:
+    """
+    Description:
+        Keep one row per (gvkey, iid, datadate) in the merged daily Compustat file. A
+        security-date repeats when it is in both the North America and the Global file with
+        different values (the merge joins on every column) or when a join fans out.
+
+    Steps:
+        1) Find keys held by more than one row; if there are none, leave the file as is.
+        2) Otherwise rewrite file_path. Rows with a unique key stay as they are. Of rows
+           sharing a key, keep the one with a valid price (prc_local and curcdd present,
+           prcstd in {3, 4, 10}), then the highest prcstd, then a main exchange (exch_main),
+           then the highest dolvol, then the first in the order of all columns, so the choice
+           never depends on the input order.
+
+    Output:
+        file_path with one row per (gvkey, iid, datadate).
+    """
+    data = file_path.as_posix()
+    # IS NOT DISTINCT FROM: NULL keys form one group, as in GROUP BY
+    same_key = """t.gvkey IS NOT DISTINCT FROM k.gvkey
+                    AND t.iid IS NOT DISTINCT FROM k.iid
+                    AND t.datadate IS NOT DISTINCT FROM k.datadate"""
+    with _duckdb_connect(paths) as con:
+        con.execute(f"""
+        CREATE TABLE dup_keys AS
+        SELECT gvkey, iid, datadate
+        FROM read_parquet('{data}')
+        GROUP BY gvkey, iid, datadate
+        HAVING count(*) > 1
+        """)
+        if con.execute("SELECT count(*) FROM dup_keys").fetchone()[0] == 0:
+            return
+        con.register("exchanges", comp_exchanges(paths).select(["exchg", "exch_main"]))
+        # row order is not needed (see gen_comp_dsf)
+        con.execute("SET preserve_insertion_order = false")
+        deduped = file_path.with_name(f"{file_path.stem}_deduped.parquet")
+        con.execute(f"""
+        COPY (
+            WITH kept AS (
+                SELECT DISTINCT ON (gvkey, iid, datadate) *
+                FROM (
+                    SELECT t.*, e.exch_main AS _exch_main
+                    FROM read_parquet('{data}') AS t
+                    SEMI JOIN dup_keys AS k ON {same_key}
+                    LEFT JOIN exchanges AS e USING (exchg)
+                )
+                ORDER BY gvkey, iid, datadate,
+                    -- a row gen_secd_data keeps
+                    COALESCE(prc_local IS NOT NULL AND curcdd IS NOT NULL
+                             AND prcstd IN (3, 4, 10), FALSE) DESC,
+                    -- gen_returns_df's rule, so prices and the return come from one row
+                    prcstd DESC NULLS LAST,
+                    _exch_main DESC NULLS LAST,
+                    dolvol DESC NULLS LAST,
+                    COLUMNS(* EXCLUDE (gvkey, iid, datadate))
+            )
+            SELECT t.*
+            FROM read_parquet('{data}') AS t
+            ANTI JOIN dup_keys AS k ON {same_key}
+            UNION ALL
+            SELECT * EXCLUDE (_exch_main) FROM kept
+        ) TO '{deduped.as_posix()}' (FORMAT PARQUET)
+        """)
+    deduped.replace(file_path)
 
 
 def gen_secd_data(paths: DataPaths):
@@ -1892,72 +1850,62 @@ def gen_secd_data(paths: DataPaths):
         resolving multiple daily rows and computing monthly highs/lows/divs/volume.
 
     Steps:
-        1) Read __comp_dsf.parquet into DuckDB.
-        2) Define window over {gvkey, iid, eom}.
-        3) Compute monthly aggregates at adjusted units:
+        1) Read __comp_dsf.parquet in place with DuckDB.
+        2) Compute monthly aggregates per {gvkey, iid, eom} over all daily rows, at adjusted units:
         - prc_highm/prc_lowm: month max/min using pre-adjusted local price with ajexdi.
         - div_*m: sum of monthly dividends (by type) adjusted.
         - cshtrm: sum of adjusted share turnover; dolvolm: sum of USD dollar volume.
+        3) Keep valid rows (local price/currency present, prcstd in {3,4,10}) on the last valid
+        datadate in the month; scale the aggregates by each row's ajexdi.
         - source=1 to mark SECD pipeline.
-        4) Keep valid rows (local price/currency present, prcstd in {3,4,10});
-        pick the last datadate in the month.
-        5) Write to secd_data.parquet.
+        4) Write to secd_data.parquet, sorted by gvkey, iid, eom.
 
     Output:
         Parquet: secd_data.parquet (monthly aggregates from daily Compustat pipeline).
     """
-    (paths.interim_dir / "aux_msf.ddb").unlink(missing_ok=True)
-    con = ibis.duckdb.connect(str(paths.interim_dir / "aux_msf.ddb"), threads=os.cpu_count())
-    table = con.read_parquet(paths.interim_dir / "__comp_dsf.parquet")
-    window = ibis.window(group_by=["gvkey", "iid", "eom"])
-    new_table = (
-        table.mutate(
-            prc_highm=ibis.greatest(
-                (_.prc / _.ajexdi).max().over(window),
-                (_.prc_high / _.ajexdi).max().over(window),
+    dsf = (paths.interim_dir / "__comp_dsf.parquet").as_posix()
+    out = (paths.interim_dir / "secd_data.parquet").as_posix()
+    valid = "prc_local IS NOT NULL AND curcdd IS NOT NULL AND prcstd IN (3, 4, 10)"
+    with _duckdb_connect(paths) as con:
+        con.execute(f"""
+        COPY (
+            WITH monthly AS (
+                SELECT
+                    gvkey,
+                    iid,
+                    eom,
+                    GREATEST(MAX(prc / ajexdi), MAX(prc_high / ajexdi)) AS prc_high_adj,
+                    LEAST(MIN(prc / ajexdi), MIN(prc_low / ajexdi)) AS prc_low_adj,
+                    SUM(div_tot / ajexdi) AS div_tot_adj,
+                    SUM(div_cash / ajexdi) AS div_cash_adj,
+                    SUM(div_spc / ajexdi) AS div_spc_adj,
+                    SUM(cshtrd / ajexdi) AS cshtr_adj,
+                    SUM(dolvol) AS dolvol,
+                    MAX(datadate) FILTER (WHERE {valid}) AS max_date
+                FROM read_parquet('{dsf}')
+                GROUP BY gvkey, iid, eom
             )
-            * _.ajexdi,
-            prc_lowm=ibis.least(
-                (_.prc / _.ajexdi).min().over(window),
-                (_.prc_low / _.ajexdi).min().over(window),
-            )
-            * _.ajexdi,
-            div_totm=(_.div_tot / _.ajexdi).sum().over(window) * _.ajexdi,
-            div_cashm=(_.div_cash / _.ajexdi).sum().over(window) * _.ajexdi,
-            div_spcm=(_.div_spc / _.ajexdi).sum().over(window) * _.ajexdi,
-            cshtrm=(_.cshtrd / _.ajexdi).sum().over(window) * _.ajexdi,
-            dolvolm=_.dolvol.sum().over(window),
-            source=1,
-        )
-        .filter((_.prc_local.notnull()) & (_.curcdd.notnull()) & (_.prcstd.isin([3, 4, 10])))
-        .mutate(max_date=_.datadate.max().over(window))
-        .filter(_.max_date == _.datadate)
-        .drop(
-            [
-                "cshtrd",
-                "div_tot",
-                "div_cash",
-                "div_spc",
-                "dolvol",
-                "prc_high",
-                "prc_low",
-                "max_date",
-            ]
-        )
-        .rename(
-            {
-                "div_tot": "div_totm",
-                "div_cash": "div_cashm",
-                "div_spc": "div_spcm",
-                "dolvol": "dolvolm",
-                "prc_high": "prc_highm",
-                "prc_low": "prc_lowm",
-            }
-        )
-        .order_by(["gvkey", "iid", "eom"])
-    )
-    new_table.to_parquet(paths.interim_dir / "secd_data.parquet")
-    con.disconnect()
+            SELECT
+                d.* EXCLUDE (cshtrd, div_tot, div_cash, div_spc, dolvol, prc_high, prc_low),
+                m.prc_high_adj * d.ajexdi AS prc_high,
+                m.prc_low_adj * d.ajexdi AS prc_low,
+                m.div_tot_adj * d.ajexdi AS div_tot,
+                m.div_cash_adj * d.ajexdi AS div_cash,
+                m.div_spc_adj * d.ajexdi AS div_spc,
+                m.cshtr_adj * d.ajexdi AS cshtrm,
+                m.dolvol,
+                1 AS source
+            FROM read_parquet('{dsf}') AS d
+            -- IS NOT DISTINCT FROM: NULL keys form one group, as in GROUP BY
+            JOIN monthly AS m
+                ON d.gvkey IS NOT DISTINCT FROM m.gvkey
+                AND d.iid IS NOT DISTINCT FROM m.iid
+                AND d.eom IS NOT DISTINCT FROM m.eom
+                AND d.datadate = m.max_date
+            WHERE {valid}
+            ORDER BY d.gvkey, d.iid, d.eom
+        ) TO '{out}' (FORMAT PARQUET)
+        """)
 
 
 def gen_secm_data(paths: DataPaths):
@@ -1967,7 +1915,8 @@ def gen_secm_data(paths: DataPaths):
         harmonize units, convert to USD, and output month-end rows.
 
     Steps:
-        1) Materialize daily FX as fx_data.parquet; register SECM, firm-shares, and FX in DuckDB.
+        1) Build daily FX in Polars (DuckDB reads the frame directly); read SECM and firm-shares
+        in place with DuckDB.
         2) In CTE:
         - Map SECM fields to local price/hi/low/ajex, compute cshoc fallback from firm-shares,
             adjust NASDAQ cshtrm by historical factors.
@@ -1979,28 +1928,13 @@ def gen_secm_data(paths: DataPaths):
     Output:
         Parquet: secm_data.parquet (monthly Compustat SECM-based observations in USD).
     """
-    (paths.interim_dir / "aux_comp_secm.ddb").unlink(missing_ok=True)
-    con = ibis.duckdb.connect(str(paths.interim_dir / "aux_comp_secm.ddb"), threads=os.cpu_count())
-
-    compustat_fx(paths).rename({"datadate": "date"}).write_parquet(
-        paths.interim_dir / "fx_data.parquet"
-    )
-    con.create_table(
-        "comp_secm",
-        con.read_parquet(paths.raw_tables_dir / "comp_secm.parquet"),
-        overwrite=True,
-    )
-    con.create_table(
-        "__firm_shares2",
-        con.read_parquet(paths.interim_dir / "__firm_shares2.parquet"),
-        overwrite=True,
-    )
-    con.create_table("fx", con.read_parquet(paths.interim_dir / "fx_data.parquet"), overwrite=True)
-
-    con.raw_sql("""
-        DROP TABLE IF EXISTS __comp_secm2;
-
-        CREATE TABLE __comp_secm2 AS
+    secm = (paths.raw_tables_dir / "comp_secm.parquet").as_posix()
+    firm_shares2 = (paths.interim_dir / "__firm_shares2.parquet").as_posix()
+    out = (paths.interim_dir / "secm_data.parquet").as_posix()
+    with _duckdb_connect(paths) as con:
+        con.register("fx", compustat_fx(paths).rename({"datadate": "date"}))
+        con.execute(f"""
+        COPY (
         WITH base AS (
         SELECT
             a.gvkey, a.iid, a.datadate, last_day(a.datadate) AS eom, a.tpci, a.exchg, a.dvpsxm,
@@ -2019,8 +1953,8 @@ def gen_secm_data(paths: DataPaths):
             CASE WHEN a.curcdm    = 'USD' THEN 1 ELSE c.fx END AS fx,
             CASE WHEN a.curcddvm  = 'USD' THEN 1 ELSE d.fx END AS fx_div,
             a.prccm / a.ajexm * a.trfm AS ri_local
-        FROM comp_secm AS a
-        LEFT JOIN __firm_shares2 AS b
+        FROM read_parquet('{secm}') AS a
+        LEFT JOIN read_parquet('{firm_shares2}') AS b
             ON a.gvkey    = b.gvkey  AND a.datadate = b.ddate
         LEFT JOIN fx AS c
             ON a.curcdm   = c.curcdd AND a.datadate = c.date
@@ -2041,9 +1975,9 @@ def gen_secm_data(paths: DataPaths):
         dvpsxm         * fx_div            AS div_tot,
         NULL::DOUBLE                       AS div_cash,
         NULL::DOUBLE                       AS div_spc
-        FROM base;
-    """)
-    con.table("__comp_secm2").to_parquet(paths.interim_dir / "secm_data.parquet")
+        FROM base
+        ) TO '{out}' (FORMAT PARQUET)
+        """)
 
 
 def gen_comp_msf(paths: DataPaths):
@@ -2054,11 +1988,11 @@ def gen_comp_msf(paths: DataPaths):
 
     Steps:
         1) Ensure secd_data.parquet and secm_data.parquet exist (run gen_secd_data/gen_secm_data).
-        2) Load both; select a common column set and cast types consistently.
+        2) Read both in place; select a common column set and cast types consistently.
         3) UNION the two sources; for each {gvkey,iid,eom} window count n rows.
         4) Keep either the single row (n=1) or, if n=2, prefer source=1 (SECD).
         5) Drop helper columns and deduplicate on {gvkey, iid, eom}, keeping the
-           row with the latest datadate (closest to month-end).
+           row with the latest datadate (closest to month-end), then the highest prcstd.
         6) Write to __comp_msf.parquet.
 
     Output:
@@ -2092,38 +2026,33 @@ def gen_comp_msf(paths: DataPaths):
         "prcstd",
         "source",
     ]
-    (paths.interim_dir / "aux_msf.ddb").unlink(missing_ok=True)
-    con = ibis.duckdb.connect(str(paths.interim_dir / "aux_msf.ddb"), threads=os.cpu_count())
-    secd = (
-        con.read_parquet(paths.interim_dir / "secd_data.parquet")
-        .select(common_vars)
-        .cast({"ajexdi": "float", "prc_local": "float"})
+    cols = ", ".join(
+        f"CAST({c} AS DOUBLE) AS {c}" if c in ("ajexdi", "prc_local") else c for c in common_vars
     )
-    secm = (
-        con.read_parquet(paths.interim_dir / "secm_data.parquet")
-        .select(common_vars)
-        .cast({"ajexdi": "float", "prc_local": "float"})
-    )
-    window = ibis.window(group_by=["gvkey", "iid", "eom"], order_by="datadate")
-    # Deterministic dedup: keep latest datadate per {gvkey, iid, eom}.
-    # Investigation (issue #69) found 0 duplicates in current data, but the
-    # original .distinct() was non-deterministic — different runs/engines could
-    # pick different rows if duplicates appear in a future data vintage.
-    dedup_window = ibis.window(
-        group_by=["gvkey", "iid", "eom"],
-        order_by=ibis.desc("datadate"),
-    )
-    __comp_msf = (
-        secd.union(secm)
-        .mutate(n=_.gvkey.count().over(window))
-        .filter([(_.n == 1) | ((_.n == 2) & (_.source == 1))])
-        .drop(["n", "source"])
-        .mutate(_rn=ibis.row_number().over(dedup_window))
-        .filter(_._rn == 0)
-        .drop("_rn")
-    )
-    __comp_msf.to_parquet(paths.interim_dir / "__comp_msf.parquet")
-    con.disconnect()
+    secd = (paths.interim_dir / "secd_data.parquet").as_posix()
+    secm = (paths.interim_dir / "secm_data.parquet").as_posix()
+    out = (paths.interim_dir / "__comp_msf.parquet").as_posix()
+    # Deterministic dedup (issue #69): keep the latest datadate per {gvkey, iid, eom},
+    # then the highest prcstd, the prepare_comp_sf rule.
+    with _duckdb_connect(paths) as con:
+        con.execute(f"""
+        COPY (
+            WITH counted AS (
+                SELECT *, COUNT(gvkey) OVER (PARTITION BY gvkey, iid, eom) AS n
+                FROM (
+                    SELECT {cols} FROM read_parquet('{secd}')
+                    UNION ALL
+                    SELECT {cols} FROM read_parquet('{secm}')
+                )
+            )
+            SELECT * EXCLUDE (n, source)
+            FROM counted
+            WHERE n = 1 OR (n = 2 AND source = 1)
+            QUALIFY ROW_NUMBER() OVER (
+                PARTITION BY gvkey, iid, eom ORDER BY datadate DESC, prcstd DESC
+            ) = 1
+        ) TO '{out}' (FORMAT PARQUET)
+        """)
 
 
 def comp_exchanges(paths: DataPaths):
@@ -2216,100 +2145,104 @@ def comp_exchanges(paths: DataPaths):
 def add_primary_sec(paths: DataPaths, data_path, datevar, file_name):
     """
     Description:
-        Flag primary securities by joining Compustat primary-history tables (ROW/USA/CAN)
-        onto a security-level dataset and comparing iid to recorded primary identifiers
-        over valid date ranges. Falls back to company header when history is missing.
+        Flag primary securities: iid equals the primary iid that Compustat's primary-issue
+        history (ROW/USA/CAN) records for the date, or the company header's when no history
+        record covers the date.
 
     Steps:
-        1) Open DuckDB; read: data_path, __prihistrow/usa/can, and __header (prirow/priusa/prican).
-        2) Range-join each PRI table on {gvkey} where datevar ∈ [effdate, thrudate]; drop join keys.
-        3) Left-join header; coalesce prihist* with pri* when historical value is null.
-        4) Compute primary_sec = 1 if iid matches any of {prihistrow, prihistusa, prihistcan}; else 0.
-        5) Deduplicate on (gvkey, iid, datadate), preferring primary_sec=1 when
-           range-join fan-out produces conflicting classifications; sort and write file_name.
+        1) Per (gvkey, iid, datevar), range-join the three histories and the header on the
+           key columns only; primary_sec = 1 if iid matches any region.
+        2) Join primary_sec back onto the full rows, keep one row per (gvkey, iid, datevar)
+           and write file_name sorted by (gvkey, iid, datevar). The daily input is already
+           unique (drop_duplicate_security_dates); this catches a key repeated by a later
+           join or on the monthly path. Of rows sharing a key, keep the one with a valid
+           price (prc_local and curcdd present, prcstd in {3, 4, 10}), then the highest
+           prcstd, then a main exchange (exch_main), then the highest dolvol; any remaining
+           tie goes to the first row in the order of all columns, as in
+           drop_duplicate_security_dates.
 
     Output:
-        Parquet at file_name with a new integer column primary_sec ∈ {0,1}.
+        Parquet at file_name: one row per (gvkey, iid, datevar) of the input, plus an
+        integer column primary_sec ∈ {0,1}.
     """
-    (paths.interim_dir / "aux_prim_sec.ddb").unlink(missing_ok=True)
-    con = duckdb.connect(str(paths.interim_dir / "aux_prim_sec.ddb"))
     raw_data_dfs = paths.interim_dir / "raw_data_dfs"
-    data_path_posix = Path(data_path).as_posix()
-    prihistrow_path = (raw_data_dfs / "__prihistrow.parquet").as_posix()
-    prihistusa_path = (raw_data_dfs / "__prihistusa.parquet").as_posix()
-    prihistcan_path = (raw_data_dfs / "__prihistcan.parquet").as_posix()
-    header_path = (raw_data_dfs / "__header.parquet").as_posix()
-    file_name_posix = Path(file_name).as_posix()
-    con.execute(f"""
-        CREATE OR REPLACE TABLE __data2 AS
-        WITH data AS (
-            SELECT * FROM read_parquet('{data_path_posix}')
-            ORDER BY gvkey, iid, datadate
-        ),
-        prihistrow AS (
-            SELECT * FROM read_parquet('{prihistrow_path}')
-            ORDER BY gvkey, effdate
-        ),
-        prihistusa AS (
-            SELECT * FROM read_parquet('{prihistusa_path}')
-            ORDER BY gvkey, effdate
-        ),
-        prihistcan AS (
-            SELECT * FROM read_parquet('{prihistcan_path}')
-            ORDER BY gvkey, effdate
-        ),
-        header AS (
-            SELECT * FROM read_parquet('{header_path}')
-            ORDER BY gvkey
-        ),
-        __data1 AS (
-            SELECT DISTINCT
-                a.*,
-                COALESCE(b.prihistrow, e.prirow)  AS prihistrow,
-                COALESCE(c.prihistusa, e.priusa)  AS prihistusa,
-                COALESCE(d.prihistcan, e.prican)  AS prihistcan
-            FROM data AS a
-            LEFT JOIN prihistrow AS b
-                ON a.gvkey = b.gvkey
-                AND a.{datevar} BETWEEN b.effdate AND COALESCE(b.thrudate, DATE '2262-04-11')
-            LEFT JOIN prihistusa AS c
-                ON a.gvkey = c.gvkey
-                AND a.{datevar} BETWEEN c.effdate AND COALESCE(c.thrudate, DATE '2262-04-11')
-            LEFT JOIN prihistcan AS d
-                ON a.gvkey = d.gvkey
-                AND a.{datevar} BETWEEN d.effdate AND COALESCE(d.thrudate, DATE '2262-04-11')
-            LEFT JOIN header AS e
-                ON a.gvkey = e.gvkey
-        )
-        SELECT
-            * EXCLUDE (prihistrow, prihistusa, prihistcan),
-            CASE
-                WHEN iid IS NOT NULL
-                    AND COALESCE(
-                        (iid = prihistrow) OR (iid = prihistusa) OR (iid = prihistcan),
-                        FALSE
-                        )
-                THEN 1
-                ELSE 0
-            END AS primary_sec
-        FROM __data1
-        ORDER BY gvkey, iid, datadate;
-
-        -- Deterministic dedup: prefer primary_sec=1 when range-join fan-out
-        -- produces conflicting classifications for the same (gvkey, iid, datadate).
-        -- Investigation (issue #69) found 40 affected groups in current data,
-        -- all for gvkey 327360 (iids 02W, 38W) where overlapping prihist records
-        -- yield both primary_sec=0 and primary_sec=1 for the same observation.
-        -- Preferring primary_sec=1 avoids wrongly excluding primary securities.
+    data = Path(data_path).as_posix()
+    prihistrow, prihistusa, prihistcan, header = (
+        (raw_data_dfs / f"{name}.parquet").as_posix()
+        for name in ("__prihistrow", "__prihistusa", "__prihistcan", "__header")
+    )
+    with _duckdb_connect(paths) as con:
+        # insertion-order preservation is irrelevant under an explicit ORDER BY and only
+        # inflates the sort's memory
+        con.execute("SET preserve_insertion_order = false")
+        con.execute(f"""
         COPY (
-            SELECT DISTINCT ON (gvkey, iid, {datevar}) *
-            FROM __data2
-            ORDER BY gvkey, iid, {datevar}, primary_sec DESC
-        ) TO '{file_name_posix}' (FORMAT parquet);
-    """)
-
-    con.close()
-    (paths.interim_dir / "aux_prim_sec.ddb").unlink(missing_ok=True)
+            WITH flags AS (
+                -- overlapping history records can match a security-date more than once
+                -- with conflicting answers; primary wins (issue #69)
+                SELECT
+                    a.gvkey, a.iid, a.{datevar},
+                    MAX(CASE WHEN a.iid IN (
+                            COALESCE(b.prihistrow, e.prirow),
+                            COALESCE(c.prihistusa, e.priusa),
+                            COALESCE(d.prihistcan, e.prican))
+                        THEN 1 ELSE 0 END) AS primary_sec
+                FROM read_parquet('{data}') AS a
+                LEFT JOIN read_parquet('{prihistrow}') AS b
+                    ON a.gvkey = b.gvkey
+                    AND a.{datevar} BETWEEN b.effdate AND COALESCE(b.thrudate, DATE '2262-04-11')
+                LEFT JOIN read_parquet('{prihistusa}') AS c
+                    ON a.gvkey = c.gvkey
+                    AND a.{datevar} BETWEEN c.effdate AND COALESCE(c.thrudate, DATE '2262-04-11')
+                LEFT JOIN read_parquet('{prihistcan}') AS d
+                    ON a.gvkey = d.gvkey
+                    AND a.{datevar} BETWEEN d.effdate AND COALESCE(d.thrudate, DATE '2262-04-11')
+                LEFT JOIN read_parquet('{header}') AS e
+                    ON a.gvkey = e.gvkey
+                GROUP BY a.gvkey, a.iid, a.{datevar}
+            ),
+            dup_keys AS (
+                SELECT gvkey, iid, {datevar}
+                FROM read_parquet('{data}')
+                GROUP BY gvkey, iid, {datevar}
+                HAVING count(*) > 1
+            ),
+            -- of rows sharing a key, keep one by the rule in the docstring; ordering every
+            -- column is costly, so only the rows of duplicated keys go through it
+            deduped AS (
+                SELECT t.*
+                FROM read_parquet('{data}') AS t
+                -- IS NOT DISTINCT FROM: NULL keys form one group, as in GROUP BY
+                ANTI JOIN dup_keys AS k
+                    ON t.gvkey IS NOT DISTINCT FROM k.gvkey
+                    AND t.iid IS NOT DISTINCT FROM k.iid
+                    AND t.{datevar} IS NOT DISTINCT FROM k.{datevar}
+                UNION ALL
+                (SELECT DISTINCT ON (t.gvkey, t.iid, t.{datevar}) t.*
+                 FROM read_parquet('{data}') AS t
+                 SEMI JOIN dup_keys AS k
+                     ON t.gvkey IS NOT DISTINCT FROM k.gvkey
+                     AND t.iid IS NOT DISTINCT FROM k.iid
+                     AND t.{datevar} IS NOT DISTINCT FROM k.{datevar}
+                 ORDER BY gvkey, iid, {datevar},
+                     -- a row gen_secd_data keeps
+                     COALESCE(prc_local IS NOT NULL AND curcdd IS NOT NULL
+                              AND prcstd IN (3, 4, 10), FALSE) DESC,
+                     -- gen_returns_df's rule, so prices and the return come from one row
+                     prcstd DESC NULLS LAST,
+                     exch_main DESC NULLS LAST,
+                     dolvol DESC NULLS LAST,
+                     COLUMNS(* EXCLUDE (gvkey, iid, {datevar})))
+            )
+            SELECT deduped.*, flags.primary_sec
+            FROM deduped
+            JOIN flags
+                ON deduped.gvkey IS NOT DISTINCT FROM flags.gvkey
+                AND deduped.iid IS NOT DISTINCT FROM flags.iid
+                AND deduped.{datevar} IS NOT DISTINCT FROM flags.{datevar}
+            ORDER BY deduped.gvkey, deduped.iid, deduped.{datevar}
+        ) TO '{Path(file_name).as_posix()}' (FORMAT PARQUET)
+        """)
 
 
 def load_rf_and_exchange_data(paths: DataPaths):
@@ -2326,12 +2259,12 @@ def load_rf_and_exchange_data(paths: DataPaths):
         Tuple of (crsp_mcti LazyFrame, ff_factors_monthly LazyFrame, exchanges DataFrame).
     """
     crsp_mcti = (
-        pl.read_parquet(paths.interim_dir / "raw_data_dfs" / "crsp_mcti_t30ret.parquet")
+        pl.scan_parquet(paths.interim_dir / "raw_data_dfs" / "crsp_mcti_t30ret.parquet")
         .with_columns(merge_aux=gen_MMYY_column("caldt"))
         .drop("caldt")
     )
     ff_factors_monthly = (
-        pl.read_parquet(paths.interim_dir / "raw_data_dfs" / "ff_factors_monthly.parquet")
+        pl.scan_parquet(paths.interim_dir / "raw_data_dfs" / "ff_factors_monthly.parquet")
         .with_columns(merge_aux=gen_MMYY_column("date"))
         .drop("date")
     )
@@ -2456,10 +2389,10 @@ def gen_temporary_sf(paths: DataPaths, freq, __returns, __delist):
     Output:
         Polars LazyFrame with returns adjusted for delisting.
     """
-    base = pl.read_parquet(paths.interim_dir / f"__comp_{freq}sf.parquet")
+    base = pl.scan_parquet(paths.interim_dir / f"__comp_{freq}sf.parquet")
     temp_sf = (
-        base.join(__returns, how="left", on=["gvkey", "iid", "datadate"])
-        .join(__delist, how="left", on=["gvkey", "iid"])
+        base.join(__returns.lazy(), how="left", on=["gvkey", "iid", "datadate"])
+        .join(__delist.lazy(), how="left", on=["gvkey", "iid"])
         .filter((col("datadate") <= col("date_delist")) | (col("date_delist").is_null()))
         .with_columns(
             ret=pl.when(col("datadate") == col("date_delist"))
@@ -2496,7 +2429,7 @@ def add_rf_and_exchange_data_to_temporary_sf(paths: DataPaths, freq, temp_sf):
         .with_columns(ret_exc=col("ret") - pl.coalesce(["t30ret", "rf"]) / scale)
         .drop(["merge_aux", "rf", "t30ret"])
         .with_columns(col("exchg").cast(pl.Int64))
-        .join(__exchanges, how="left", on=["exchg"])
+        .join(__exchanges.lazy(), how="left", on=["exchg"])
     )
     return temp_sf
 
@@ -2530,7 +2463,6 @@ def process_comp_sf1(paths: DataPaths, freq):
         primary_sec, and for daily: ret_intraday, ret_overnight,
         ret_intraday_local, ret_overnight_local).
     """
-    # Eager mode is faster here
     if freq == "m":
         gen_comp_msf(paths)
     __returns = gen_returns_df(paths, freq)
@@ -2538,7 +2470,7 @@ def process_comp_sf1(paths: DataPaths, freq):
     __comp_sf2 = gen_temporary_sf(paths, freq, __returns, __delist)
     __comp_sf2 = add_rf_and_exchange_data_to_temporary_sf(paths, freq, __comp_sf2)
 
-    if freq == "d" and "prc_open" in __comp_sf2.columns:
+    if freq == "d" and "prc_open" in __comp_sf2.collect_schema().names():
         __comp_sf2 = (
             __comp_sf2.with_columns(
                 ret_intraday=pl.when((col("prc_open") > 0) & (col("prc") > 0))
@@ -2560,8 +2492,7 @@ def process_comp_sf1(paths: DataPaths, freq):
             )
         )
 
-    __comp_sf2.write_parquet(paths.interim_dir / "__comp_sf2.parquet")
-    del __comp_sf2
+    __comp_sf2.sink_parquet(paths.interim_dir / "__comp_sf2.parquet")
     add_primary_sec(
         paths,
         paths.interim_dir / "__comp_sf2.parquet",
@@ -3334,30 +3265,21 @@ def comp_sic_naics(paths: DataPaths):
     Output:
         Parquet comp_other.parquet with daily SIC/NAICS per gvkey.
     """
-    con = ibis.duckdb.connect(threads=os.cpu_count())
-    con.create_table(
-        "sic_naics_na",
-        con.read_parquet(paths.interim_dir / "raw_data_dfs" / "sic_naics_na.parquet"),
-    )
-    con.create_table(
-        "sic_naics_gl",
-        con.read_parquet(paths.interim_dir / "raw_data_dfs" / "sic_naics_gl.parquet"),
-    )
-    con.raw_sql("""
-                CREATE TABLE comp2 AS
+    na = (paths.interim_dir / "raw_data_dfs" / "sic_naics_na.parquet").as_posix()
+    gl = (paths.interim_dir / "raw_data_dfs" / "sic_naics_gl.parquet").as_posix()
+    with _duckdb_connect(paths) as con:
+        comp5 = con.sql(f"""
+                WITH comp2 AS (
                 SELECT *
-                FROM sic_naics_na
+                FROM read_parquet('{na}')
                 WHERE NOT (
                     gvkey   = '175650'
                     AND datadate = DATE '2005-12-31'
                     AND naics IS NULL
-                );
+                )
+                ),
 
-                CREATE TABLE comp3 AS
-                SELECT *
-                FROM sic_naics_gl;
-
-                CREATE TABLE comp4 AS
+                comp4 AS (
                 SELECT
                     a.gvkey    AS gvkeya,
                     a.datadate AS datea,
@@ -3368,12 +3290,12 @@ def comp_sic_naics(paths: DataPaths):
                     b.sic      AS sicb,
                     b.naics    AS naicsb
                 FROM comp2 AS a
-                FULL OUTER JOIN comp3 AS b
+                FULL OUTER JOIN read_parquet('{gl}') AS b
                 ON a.gvkey    = b.gvkey
-                AND a.datadate = b.datadate;
+                AND a.datadate = b.datadate
+                ),
 
-                CREATE TABLE comp5 AS
-                WITH t AS (
+                t AS (
                 SELECT
                     LPAD(COALESCE(gvkeya, gvkeyb), 6, '0') AS gvkey,
                     COALESCE(datea, dateb)            AS date,
@@ -3396,12 +3318,9 @@ def comp_sic_naics(paths: DataPaths):
                 t.date,
                 t.sic,
                 t.naics NULLS LAST
-                ;
-    """)
+        """).pl()
     comp = (
-        con.table("comp5")
-        .to_polars()
-        .lazy()
+        comp5.lazy()
         .sort(["gvkey", "datadate"])
         .with_columns(end_date=col("datadate").shift(-1).over("gvkey"))
         .with_columns(
@@ -3422,7 +3341,6 @@ def comp_sic_naics(paths: DataPaths):
         .sort(["gvkey", "date"])
     )
     comp.sink_parquet(paths.interim_dir / "comp_other.parquet")
-    con.disconnect()
 
 
 @measure_time
@@ -4163,27 +4081,23 @@ def load_raw_fund_table_and_filter(filename, start_date, source_str, mode):
     return df
 
 
-def apply_indfmt_filter(df):
+def apply_indfmt_filter(df: pl.LazyFrame, keys: list[str]) -> pl.LazyFrame:
     """
     Description:
-        Resolve dual-format rows per (gvkey, datadate), preferring INDL when both exist.
+        Keep one report format per key: the INDL rows if the key has any, else all its rows (FS).
+        Quarterly data are keyed by (gvkey, datadate, fyr), so the format is chosen within each
+        fiscal calendar and only one_row_per_date picks between calendars. The annual frame has
+        no fyr column and is keyed by (gvkey, datadate).
 
     Steps:
-        1) Count rows over [gvkey, datadate].
-        2) Keep singletons or pairs where indfmt == 'INDL'.
-        3) Drop helper columns.
+        1) Keep rows with indfmt == 'INDL', and every row of a key without an INDL row.
+        2) Drop indfmt.
 
     Output:
-        Frame with one format per (gvkey, datadate).
+        Frame with one format per key.
     """
-    df = (
-        df.with_columns(count_indfmt=pl.len().over(["gvkey", "datadate"]))
-        .filter(
-            (col("count_indfmt") == 1) | ((col("count_indfmt") == 2) & (col("indfmt") == "INDL"))
-        )
-        .drop(["indfmt", "count_indfmt"])
-    )
-    return df
+    is_indl = pl.col("indfmt") == "INDL"
+    return df.filter(is_indl | ~is_indl.any().over(keys)).drop("indfmt")
 
 
 def add_fx_and_convert_vars(df, fx_df, vars, freq):
@@ -4408,7 +4322,7 @@ def standardized_accounting_data(
                 + [fl_none().alias(i) for i in ["gp", "pstkrv", "pstkl", "itcb", "xad", "txbcof"]]
                 + query_vars
             )
-            .pipe(apply_indfmt_filter)
+            .pipe(apply_indfmt_filter, ["gvkey", "datadate"])
         )
         # Quarterly global data:
         vars_not_in_query = [
@@ -4465,7 +4379,7 @@ def standardized_accounting_data(
                 ]
                 + query_vars
             )
-            .pipe(apply_indfmt_filter)
+            .pipe(apply_indfmt_filter, ["gvkey", "datadate", "fyr"])
         )
     if coverage in ["na", "world"]:
         # Annual north american data:
@@ -4771,7 +4685,8 @@ def add_helper_vars(paths: DataPaths, data):
         Generate monthly-complete accounting panels per (gvkey,curcd), join originals, and compute a rich set of helper *_x variables.
 
     Steps:
-        1) Create a temp DuckDB; load data; build monthly grid from min/max datadate; left-join raw rows; deduplicate per date.
+        1) Register data with DuckDB; build monthly grid from min/max datadate; left-join raw rows;
+           deduplicate per date, keeping Global over NA, then the lowest row index n.
         2) Bring grid to Polars; sanitize key vars; construct building blocks (sale_x, debt_x, pstk_x, opex_x, etc.).
         3) Derive financial aggregates (seq_x, nwc_x, be_x/bev_x, ebitda_x/ebit_x/op_x/ope_x, oa_x/ol_x/noa_x, etc.).
         4) Compute flows/changes (cowc_x, nncoa_x, oacc_x, tacc_x, netis_x, dbnetis_x) with 12-month diffs where available; guard with early-count rules.
@@ -4780,13 +4695,10 @@ def add_helper_vars(paths: DataPaths, data):
     Output:
         LazyFrame with monthly-complete panel and standardized helper variables (…_x) for downstream ratios/factors.
     """
-    (paths.interim_dir / "aux_add_helpers.ddb").unlink(missing_ok=True)
-    con = ibis.duckdb.connect(
-        str(paths.interim_dir / "aux_add_helpers.ddb"), threads=os.cpu_count()
-    )
-    con.create_table("data", data.rename({"at": "at_var"}).collect(), overwrite=True)
-    con.raw_sql("""
-        CREATE OR REPLACE TABLE comp_dates1 AS
+    with _duckdb_connect(paths) as con:
+        con.register("data", data.rename({"at": "at_var"}).collect())
+        helpers2 = con.sql("""
+        WITH comp_dates1 AS (
         SELECT
             gvkey,
             curcd,
@@ -4794,9 +4706,9 @@ def add_helper_vars(paths: DataPaths, data):
             MAX(datadate) AS end_date
         FROM data
         GROUP BY gvkey, curcd
-        ;
+        ),
 
-        CREATE OR REPLACE TABLE comp_dates2 AS
+        comp_dates2 AS (
         SELECT
         c.gvkey,
         c.curcd,
@@ -4811,38 +4723,30 @@ def add_helper_vars(paths: DataPaths, data):
             date_trunc('month', c.end_date),
             INTERVAL '1 month'
         ) AS gs(month_start)
-        ORDER BY c.gvkey, c.curcd, datadate
-        ;
+        ),
 
-        CREATE OR REPLACE TABLE helpers1_base AS
+        helpers1_base AS (
         SELECT
         a.gvkey,
         a.curcd,
         a.datadate,
-        b.*,
+        b.* EXCLUDE (gvkey, curcd, datadate),
         (b.gvkey IS NOT NULL)::INTEGER AS data_available
         FROM comp_dates2 AS a
         LEFT JOIN data AS b
         USING (gvkey, curcd, datadate)
-        ;
+        ),
 
-        CREATE OR REPLACE TABLE helpers1 AS
+        helpers1 AS (
         SELECT
         *
-        FROM (
-        SELECT
-            *,
-            ROW_NUMBER() OVER (
-            PARTITION BY gvkey, curcd, datadate
-            ORDER   BY datadate
-            ) AS rn
         FROM helpers1_base
-        ) t
-        WHERE rn = 1
-        ORDER BY gvkey, curcd, datadate
-        ;
+        QUALIFY ROW_NUMBER() OVER (
+            PARTITION BY gvkey, curcd, datadate
+            ORDER BY datadate, source <> 'GLOBAL', n
+            ) = 1
+        )
 
-        CREATE OR REPLACE TABLE helpers2 AS
         SELECT
         *,
         ROW_NUMBER() OVER (
@@ -4851,13 +4755,7 @@ def add_helper_vars(paths: DataPaths, data):
         ) AS count
         FROM helpers1
         ORDER BY gvkey, curcd, datadate
-        ;
-
-        ALTER TABLE helpers2 DROP COLUMN gvkey_1;
-        ALTER TABLE helpers2 DROP COLUMN curcd_1;
-        ALTER TABLE helpers2 DROP COLUMN datadate_1;
-        ALTER TABLE helpers2 DROP COLUMN rn;
-    """)
+        """).pl()
 
     c1 = (
         (col("dltis").is_null())
@@ -4868,7 +4766,7 @@ def add_helper_vars(paths: DataPaths, data):
     c2 = (col("dlcch").is_null()) & (col("count") <= 12)
     sort_vars = ["gvkey", "curcd", "datadate"]
 
-    base = con.table("helpers2").to_polars().rename({"at_var": "at"}).lazy()
+    base = helpers2.rename({"at_var": "at"}).lazy()
     base = base.sort(sort_vars).with_columns(
         [
             pl.when(col(var) >= 0).then(col(var)).otherwise(fl_none()).alias(var)
@@ -5737,39 +5635,37 @@ def chg_var1_to_var2(df, name, var1, var2, horizon):
     return df
 
 
-def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min):
+def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min) -> pl.DataFrame:
     """
     Description:
         Earnings persistence: AR(1) of NI/AT (annual steps) with rolling cohorts.
 
     Steps:
-        1) Load gvkey,curcd,datadate,ni_x,at_x; create __ni_at=ni_x/at_x (at_x>0).
+        1) Read gvkey,curcd,datadate,ni_x,at_x in place; create __ni_at=ni_x/at_x (at_x>0).
         2) Keep obs with __ni_at and its 12-month lag; build calendar cohorts by month for N years.
         3) For each (gvkey,curcd,calc_date,grp) with ≥ __min obs, run OLS __ni_at on lag.
-        4) Aggregate to slope (ni_ar1) and residual std (ni_ivol); save. ni_ar1 is null when
+        4) Aggregate to slope (ni_ar1) and residual std (ni_ivol). ni_ar1 is null when
            the lagged NI/AT does not vary in the window (regr_slope returns NaN). The
            regressions and the std read their rows in datadate order: unordered, the float
            sums follow DuckDB's thread scheduling and the low bits change between runs. The
            order is total only if datadate is unique per (gvkey, curcd), which holds for
-           acc_std_ann/acc_std_qtr (deduplicated on gvkey, datadate).
+           acc_std_ann/acc_std_qtr (deduplicated on gvkey, datadate). Both ni_ar1 and
+           ni_ivol are null when the std of lagged NI/AT in the window is at or below
+           NI_AT_MIN_STD, and ni_ar1 also when the slope is NaN (a NaN input).
 
     Output:
-        Writes 'ni_ar_res.parquet' with [gvkey, curcd, datadate, ni_ar1, ni_ivol].
+        DataFrame with [gvkey, curcd, datadate, ni_ar1, ni_ivol].
     """
 
     months = 12 * __n
-    con = ibis.duckdb.connect(
-        str(paths.interim_dir / "aux_earnings_pers.ddb"), threads=os.cpu_count()
-    )
-    con.create_table(
-        "raw_table",
-        pl.scan_parquet(data_path).select(["gvkey", "curcd", "datadate", "ni_x", "at_x"]).collect(),
-        overwrite=True,
-    )
-
-    con.raw_sql(f"""
-    CREATE OR REPLACE TABLE base_data AS
-    WITH base AS (
+    data = Path(data_path).as_posix()
+    with _duckdb_connect(paths) as con:
+        result = con.sql(f"""
+    WITH raw_table AS (
+      SELECT gvkey, curcd, datadate, ni_x, at_x
+      FROM read_parquet('{data}')
+    ),
+    base AS (
       SELECT
         gvkey,
         curcd,
@@ -5777,7 +5673,8 @@ def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min):
         CASE WHEN at_x > 0 THEN ni_x / at_x END AS __ni_at,
         ROW_NUMBER() OVER (PARTITION BY gvkey, curcd ORDER BY datadate) AS rn
       FROM raw_table
-    )
+    ),
+    base_data AS (
     SELECT
       gvkey,
       curcd,
@@ -5788,15 +5685,17 @@ def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min):
       END AS __ni_at_l1
     FROM base
     QUALIFY __ni_at IS NOT NULL AND __ni_at_l1 IS NOT NULL
-    ORDER BY gvkey, curcd, datadate;
+    ORDER BY gvkey, curcd, datadate
+    ),
 
-    CREATE OR REPLACE TABLE dates_apply AS
+    dates_apply AS (
     SELECT
       datadate,
       (ROW_NUMBER() OVER (ORDER BY datadate) % {months}) AS grp
-    FROM (SELECT DISTINCT datadate FROM base_data);
+    FROM (SELECT DISTINCT datadate FROM base_data)
+    ),
 
-    CREATE OR REPLACE TABLE calc_dates AS
+    calc_dates AS (
     SELECT
       a.datadate,
       b.datadate AS calc_date,
@@ -5805,9 +5704,10 @@ def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min):
     JOIN dates_apply b
       ON a.datadate > make_date(EXTRACT(YEAR FROM b.datadate) - {__n}, 12, 31)
      AND a.datadate <= b.datadate
-     AND EXTRACT(MONTH FROM a.datadate) = EXTRACT(MONTH FROM b.datadate);
+     AND EXTRACT(MONTH FROM a.datadate) = EXTRACT(MONTH FROM b.datadate)
+    ),
 
-    CREATE OR REPLACE TABLE calc_data AS
+    calc_data AS (
     SELECT
       a.*,
       c.calc_date,
@@ -5818,10 +5718,10 @@ def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min):
     QUALIFY COUNT(*) OVER (
       PARTITION BY a.gvkey, a.curcd, c.calc_date
     ) >= {__min}
-    ORDER BY a.gvkey, c.calc_date;
+    ORDER BY a.gvkey, c.calc_date
+    ),
 
-    CREATE OR REPLACE TABLE reg_results AS
-    WITH fit AS (
+    fit AS (
       SELECT
         gvkey,
         curcd,
@@ -5835,7 +5735,10 @@ def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min):
         ) AS slope,
         regr_intercept(__ni_at, __ni_at_l1 ORDER BY datadate) OVER (
           PARTITION BY gvkey, curcd, calc_grp, calc_date
-        ) AS intercept
+        ) AS intercept,
+        stddev_samp(__ni_at_l1 ORDER BY datadate) OVER (
+          PARTITION BY gvkey, curcd, calc_grp, calc_date
+        ) AS x_sd
       FROM calc_data
       WHERE __ni_at IS NOT NULL AND __ni_at_l1 IS NOT NULL
     ),
@@ -5847,6 +5750,7 @@ def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min):
         calc_date,
         datadate,
         slope,
+        x_sd,
         (__ni_at - (intercept + slope * __ni_at_l1)) AS resid
       FROM fit
     )
@@ -5854,16 +5758,14 @@ def compute_earnings_persistence(paths: DataPaths, data_path, __n, __min):
       gvkey,
       curcd,
       calc_date as datadate,
-      CASE WHEN NOT isnan(slope) THEN slope END AS ni_ar1,
-      stddev_samp(resid ORDER BY datadate) AS ni_ivol,
+      CASE WHEN x_sd > {NI_AT_MIN_STD} AND NOT isnan(slope) THEN slope END AS ni_ar1,
+      CASE WHEN x_sd > {NI_AT_MIN_STD} THEN stddev_samp(resid ORDER BY datadate) END AS ni_ivol,
     FROM resids
-    GROUP BY gvkey, curcd, calc_grp, calc_date, slope
+    GROUP BY gvkey, curcd, calc_grp, calc_date, slope, x_sd
     HAVING COUNT(*) >= {__min}
-    ORDER BY gvkey, curcd, calc_date;
-    """)
-    con.table("reg_results").to_parquet(paths.interim_dir / "ni_ar_res.parquet")
-    con.disconnect()
-    (paths.interim_dir / "aux_earnings_pers.ddb").unlink(missing_ok=True)
+    ORDER BY gvkey, curcd, calc_date
+    """).pl()
+    return result
 
 
 def scale_me(var):
@@ -6503,7 +6405,7 @@ def add_earnings_persistence_and_expand(paths: DataPaths, df, data_path, lag_to_
         Attach AR(1) earnings persistence (ni_ar1, ni_ivol) and expand to public dates.
 
     Steps:
-        1) Run persistence job over input parquet (N=5 yrs, min=5) → 'ni_ar_res.parquet'.
+        1) Run persistence job over input parquet (N=5 yrs, min=5).
         2) Join on (gvkey,curcd,datadate); keep rows with data_available=1.
         3) Set start_date = datadate + lag_to_pub months; end_date = min(next_start−1mo, datadate+max_lag).
         4) Expand monthly between start/end to 'public_date'.
@@ -6511,8 +6413,7 @@ def add_earnings_persistence_and_expand(paths: DataPaths, df, data_path, lag_to_
     Output:
         Expanded DataFrame keyed by (gvkey, public_date) with persistence fields.
     """
-    compute_earnings_persistence(paths, data_path, 5, 5)
-    earnings_pers = pl.scan_parquet(paths.interim_dir / "ni_ar_res.parquet")
+    earnings_pers = compute_earnings_persistence(paths, data_path, 5, 5).lazy()
     df = (
         df.join(earnings_pers, on=["gvkey", "curcd", "datadate"], how="left")
         .filter(col("data_available") == 1)
@@ -7247,84 +7148,68 @@ def firm_age(paths: DataPaths, data_path):
         Compute firm age in months using earliest of CRSP, Compustat accounting, or Compustat returns dates.
 
     Steps:
-        1) Load identifiers/dates from inputs; get earliest dates per gvkey/permco.
+        1) Read identifiers/dates in place with DuckDB; get earliest dates per gvkey/permco.
         2) Join earliest sources to each (id, eom); also get first observed eom per id.
         3) Age = months between eom and min(first_obs, first_alt). Write result.
 
     Output:
         'firm_age.parquet' with [id, eom, age].
     """
-    con = ibis.duckdb.connect(threads=os.cpu_count())
-    data = con.read_parquet(data_path).select(["gvkey", "permco", "id", "eom"])
-    comp_secm = con.read_parquet(paths.raw_tables_dir / "comp_secm.parquet").select(
-        ["gvkey", "datadate"]
-    )
-    comp_gsecm = (
-        con.read_parquet(paths.raw_tables_dir / "comp_g_secd.parquet")
-        .filter(_.monthend == 1)
-        .select(["gvkey", "datadate"])
-    )
-    comp_ret_age = (
-        comp_secm.union(comp_gsecm)
-        .group_by("gvkey")
-        .agg(comp_ret_first=_.datadate.min())
-        .mutate(
-            comp_ret_first=(
-                (_.comp_ret_first - ibis.interval(years=1)).year().cast("string") + "-12-31"
-            ).cast("date")
-        )
-    )
-    comp_funda = con.read_parquet(paths.raw_tables_dir / "comp_funda.parquet").select(
-        ["gvkey", "datadate"]
-    )
-    comp_gfunda = con.read_parquet(paths.raw_tables_dir / "comp_g_funda.parquet").select(
-        ["gvkey", "datadate"]
-    )
-    comp_acc_age = (
-        comp_funda.union(comp_gfunda)
-        .group_by("gvkey")
-        .agg(comp_acc_first=_.datadate.min())
-        .mutate(
-            comp_acc_first=(
-                (_.comp_acc_first - ibis.interval(years=1)).year().cast("string") + "-12-31"
-            ).cast("date")
-        )
-    )
-    crsp_age = (
-        con.read_parquet(paths.interim_dir / "raw_data_dfs" / "crsp_msf_v2_aug.parquet")
-        .group_by("permco")
-        .agg(crsp_first=_.mthcaldt.min())
-    )
-    con.create_table("data", data.to_polars())
-    con.create_table("comp_ret_age", comp_ret_age.to_polars())
-    con.create_table("comp_acc_age", comp_acc_age.to_polars())
-    con.create_table("crsp_age", crsp_age.to_polars())
-    sql_query = """
-                    CREATE TABLE age1 AS
-                    SELECT
-                        a.id,
-                        a.eom,
-                        LEAST(b.crsp_first, c.comp_acc_first, d.comp_ret_first) AS first_obs
-                    FROM data AS a
-                    LEFT JOIN crsp_age AS b ON a.permco = b.permco
-                    LEFT JOIN comp_acc_age AS c ON a.gvkey = c.gvkey
-                    LEFT JOIN comp_ret_age AS d ON a.gvkey = d.gvkey;
-
-                    CREATE TABLE age2 AS
-                    SELECT  *, MIN(eom) OVER (PARTITION BY id) AS first_alt
-                    FROM age1;
-
-                    CREATE TABLE age3 AS
-                    SELECT
-                        id, eom,
-                        (DATE_PART('year', eom) - DATE_PART('year', LEAST(first_obs, first_alt))) * 12 +
-                        (DATE_PART('month', eom) - DATE_PART('month', LEAST(first_obs, first_alt))) AS age
-                    FROM age2
-                    ORDER BY id, eom;
-    """
-    con.raw_sql(sql_query)
-    con.table("age3").to_parquet(paths.interim_dir / "firm_age.parquet")
-    con.disconnect()
+    data = Path(data_path).as_posix()
+    secm = (paths.raw_tables_dir / "comp_secm.parquet").as_posix()
+    g_secd = (paths.raw_tables_dir / "comp_g_secd.parquet").as_posix()
+    funda = (paths.raw_tables_dir / "comp_funda.parquet").as_posix()
+    g_funda = (paths.raw_tables_dir / "comp_g_funda.parquet").as_posix()
+    crsp_msf = (paths.interim_dir / "raw_data_dfs" / "crsp_msf_v2_aug.parquet").as_posix()
+    out = (paths.interim_dir / "firm_age.parquet").as_posix()
+    with _duckdb_connect(paths) as con:
+        con.execute(f"""
+        COPY (
+            WITH comp_ret_age AS (
+                SELECT gvkey, make_date(year(MIN(datadate)) - 1, 12, 31) AS comp_ret_first
+                FROM (
+                    SELECT gvkey, datadate FROM read_parquet('{secm}')
+                    UNION ALL
+                    SELECT gvkey, datadate FROM read_parquet('{g_secd}') WHERE monthend = 1
+                )
+                GROUP BY gvkey
+            ),
+            comp_acc_age AS (
+                SELECT gvkey, make_date(year(MIN(datadate)) - 1, 12, 31) AS comp_acc_first
+                FROM (
+                    SELECT gvkey, datadate FROM read_parquet('{funda}')
+                    UNION ALL
+                    SELECT gvkey, datadate FROM read_parquet('{g_funda}')
+                )
+                GROUP BY gvkey
+            ),
+            crsp_age AS (
+                SELECT permco, MIN(mthcaldt) AS crsp_first
+                FROM read_parquet('{crsp_msf}')
+                GROUP BY permco
+            ),
+            age1 AS (
+                SELECT
+                    a.id,
+                    a.eom,
+                    LEAST(b.crsp_first, c.comp_acc_first, d.comp_ret_first) AS first_obs
+                FROM read_parquet('{data}') AS a
+                LEFT JOIN crsp_age AS b ON a.permco = b.permco
+                LEFT JOIN comp_acc_age AS c ON a.gvkey = c.gvkey
+                LEFT JOIN comp_ret_age AS d ON a.gvkey = d.gvkey
+            ),
+            age2 AS (
+                SELECT *, MIN(eom) OVER (PARTITION BY id) AS first_alt
+                FROM age1
+            )
+            SELECT
+                id, eom,
+                (DATE_PART('year', eom) - DATE_PART('year', LEAST(first_obs, first_alt))) * 12 +
+                (DATE_PART('month', eom) - DATE_PART('month', LEAST(first_obs, first_alt))) AS age
+            FROM age2
+            ORDER BY id, eom
+        ) TO '{out}' (FORMAT PARQUET)
+        """)
 
 
 def char_pf_rets():
@@ -7584,13 +7469,11 @@ def prep_data_factor_regs(
     """
 
     (paths.interim_dir / "aux_factor_regs.ddb").unlink(missing_ok=True)
-    con = ibis.duckdb.connect(
-        str(paths.interim_dir / "aux_factor_regs.ddb"), threads=os.cpu_count()
-    )
+    con = _duckdb_connect(paths, paths.interim_dir / "aux_factor_regs.ddb")
 
     data_path_posix = Path(data_path).as_posix()
     fcts_path_posix = Path(fcts_path).as_posix()
-    con.raw_sql(f"""
+    con.execute(f"""
     CREATE OR REPLACE VIEW data_msf AS
     SELECT *
     FROM read_parquet('{data_path_posix}');
@@ -7656,19 +7539,17 @@ def market_beta(paths: DataPaths, output_path, data_path, fcts_path, __n, __min)
     Output:
         Parquet at output_path with [id, eom, beta_{__n}m, ivol_capm_{__n}m].
     """
-    con = prep_data_factor_regs(paths, data_path, fcts_path)
-    base_data = con.table("__msf2").to_polars().lazy()
-    df = pl.concat(
-        [process_window(base_data, w, "capm", __n, __min) for w in gen_aux_windows(__n)]
-    ).collect()
-    ids = con.table("__msf2").select(["id", "id_int"]).distinct().to_polars()
-    dates = (
-        con.table("__msf2")
-        .select(["aux_date", "eom"])
-        .distinct()
-        .to_polars()
-        .with_columns(col("aux_date").cast(pl.Int32))
-    )
+    with prep_data_factor_regs(paths, data_path, fcts_path) as con:
+        base_data = con.table("__msf2").pl().lazy()
+        df = pl.concat(
+            [process_window(base_data, w, "capm", __n, __min) for w in gen_aux_windows(__n)]
+        ).collect()
+        ids = con.sql("SELECT DISTINCT id, id_int FROM __msf2").pl()
+        dates = (
+            con.sql("SELECT DISTINCT aux_date, eom FROM __msf2")
+            .pl()
+            .with_columns(col("aux_date").cast(pl.Int32))
+        )
     res = (
         df.with_columns(col("aux_date").cast(pl.Int32))
         .join(ids, how="inner", on="id_int")
@@ -7684,7 +7565,6 @@ def market_beta(paths: DataPaths, output_path, data_path, fcts_path, __n, __min)
         .sort(["id", "eom"])
     )
     res.write_parquet(output_path)
-    con.disconnect()
 
 
 @measure_time
@@ -7703,22 +7583,20 @@ def residual_momentum(paths: DataPaths, output_path, data_path, fcts_path, __n, 
         as a *stem*, not a full path — the parameter name is a holdover from
         the pre-refactor signature.
     """
-    con = prep_data_factor_regs(paths, data_path, fcts_path)
-    base_data = con.table("__msf2").to_polars().lazy()
-    df = pl.concat(
-        [
-            process_window(base_data, w, "res_mom", __n, __min, incl, skip)
-            for w in gen_aux_windows(__n)
-        ]
-    ).collect()
-    ids = con.table("__msf2").select(["id", "id_int"]).distinct().to_polars()
-    dates = (
-        con.table("__msf2")
-        .select(["aux_date", "eom"])
-        .distinct()
-        .to_polars()
-        .with_columns(col("aux_date").cast(pl.Int32))
-    )
+    with prep_data_factor_regs(paths, data_path, fcts_path) as con:
+        base_data = con.table("__msf2").pl().lazy()
+        df = pl.concat(
+            [
+                process_window(base_data, w, "res_mom", __n, __min, incl, skip)
+                for w in gen_aux_windows(__n)
+            ]
+        ).collect()
+        ids = con.sql("SELECT DISTINCT id, id_int FROM __msf2").pl()
+        dates = (
+            con.sql("SELECT DISTINCT aux_date, eom FROM __msf2")
+            .pl()
+            .with_columns(col("aux_date").cast(pl.Int32))
+        )
     res = (
         df.with_columns(col("aux_date").cast(pl.Int32))
         .join(ids, how="inner", on="id_int")
@@ -7727,7 +7605,6 @@ def residual_momentum(paths: DataPaths, output_path, data_path, fcts_path, __n, 
         .sort(["id", "eom"])
     )
     res.write_parquet(paths.interim_dir / f"{output_path}_{incl}_{skip}.parquet")
-    con.disconnect()
 
 
 def zero_obs_gate_ok() -> pl.Expr:
@@ -9418,6 +9295,8 @@ def res_mom(df, sfx, __min, incl, skip):
 
     Steps:
         1) OLS: ret_exc ~ mktrf + hml + smb_ff (with intercept) → residuals per (id_int,group_number).
+           Residuals are null when raw ret is near-constant over the window or zero in at
+           least 90% of its months (_guard_constant with RET_MIN_STD), so the score is null too.
         2) Filter to windows inside (max_date - incl, max_date - skip].
         3) Require at least __min obs; compute mean(res)/std(res).
 
@@ -9425,11 +9304,13 @@ def res_mom(df, sfx, __min, incl, skip):
         LazyFrame with column f'resff3_{incl}_{skip}' per (id_int, group_number).
     """
 
-    res_exp = (
-        pl.col("ret_exc")
-        .least_squares.ols("mktrf", "hml", "smb_ff", add_intercept=True, mode="residuals")
-        .over(["id_int", "group_number"])
-    )
+    res_exp = _guard_constant(
+        "ret",
+        pl.col("ret_exc").least_squares.ols(
+            "mktrf", "hml", "smb_ff", add_intercept=True, mode="residuals"
+        ),
+        min_std=RET_MIN_STD,
+    ).over(["id_int", "group_number"])
     df = (
         # Fix within-group row order before the OLS: base_data comes from a
         # multithreaded DuckDB scan whose row order is nondeterministic, and the
@@ -9455,7 +9336,7 @@ def res_mom(df, sfx, __min, incl, skip):
 
 # Maximum fraction of exact-zero observations allowed in a rolling window before
 # a return-based statistic is nulled. Catches near-dead stocks (e.g. one trade
-# in 21 days ≈ 0.95 zeros) that bit-exact min!=max would miss.
+# in 21 days ≈ 0.95 zeros) that the std floor (RET_MIN_STD) would miss.
 CONSTANT_MAX_ZERO_FRAC = 0.9
 
 
@@ -9463,23 +9344,30 @@ def _guard_constant(
     input_col: str,
     stat_expr: pl.Expr,
     *,
+    min_std: float | None = None,
     max_zero_frac: float | None = CONSTANT_MAX_ZERO_FRAC,
 ) -> pl.Expr:
     """
     Description:
-        Null ``stat_expr`` when ``input_col`` is degenerate within a group_by group.
+        Null ``stat_expr`` when ``input_col`` is degenerate within a group_by group
+        or window.
 
     Steps:
-        1) Require min(input_col) != max(input_col) (perfectly constant → null).
+        1) If min_std is set, require std(input_col) > min_std (near-constant → null),
+           ignoring NaN as min/max do; return statistics pass RET_MIN_STD. Otherwise require
+           min(input_col) != max(input_col) (perfectly constant → null).
         2) If max_zero_frac is set, also require mean(input_col == 0) < max_zero_frac
            so near-dead windows are nulled (window-level analogue of zero_obs /
            zero_trades). Pass max_zero_frac=None for non-return columns (prices,
            volumes) where a zero-fraction screen is not meaningful.
 
     Output:
-        Polars expression usable inside .agg().
+        Polars expression usable inside .agg() or with .over().
     """
-    varying = pl.col(input_col).min() != pl.col(input_col).max()
+    if min_std is None:
+        varying = pl.col(input_col).min() != pl.col(input_col).max()
+    else:
+        varying = pl.col(input_col).fill_nan(None).std() > min_std
     if max_zero_frac is None:
         ok = varying
     else:
@@ -9494,13 +9382,15 @@ def rvol(df, sfx, __min):
 
     Steps:
         1) Group by (id_int, group_number).
-        2) Compute std(ret_exc); null when raw ``ret`` is constant / near-dead.
+        2) Compute std(ret_exc); null when raw ``ret`` is near-constant / near-dead.
 
     Output:
         LazyFrame with f'rvol{sfx}'.
     """
     df = df.group_by(["id_int", "group_number"]).agg(
-        _guard_constant("ret", col("ret_exc").cast(pl.Float64).std()).alias(f"rvol{sfx}")
+        _guard_constant("ret", col("ret_exc").cast(pl.Float64).std(), min_std=RET_MIN_STD).alias(
+            f"rvol{sfx}"
+        )
     )
     return df
 
@@ -9513,15 +9403,17 @@ def rmax(df, sfx, __min):
     Steps:
         1) Group by (id_int,group_number).
         2) Compute mean of top 5 returns and max return; null when ``ret`` is
-           constant / near-dead.
+           near-constant / near-dead.
 
     Output:
         LazyFrame with f'rmax5{sfx}' and f'rmax1{sfx}'.
     """
     df = df.group_by(["id_int", "group_number"]).agg(
         [
-            _guard_constant("ret", col("ret").top_k(5).mean()).alias(f"rmax5{sfx}"),
-            _guard_constant("ret", col("ret").max()).alias(f"rmax1{sfx}"),
+            _guard_constant("ret", col("ret").top_k(5).mean(), min_std=RET_MIN_STD).alias(
+                f"rmax5{sfx}"
+            ),
+            _guard_constant("ret", col("ret").max(), min_std=RET_MIN_STD).alias(f"rmax1{sfx}"),
         ]
     )
     return df
@@ -9534,14 +9426,16 @@ def skew(df, sfx, __min):
 
     Steps:
         1) Group by (id_int,group_number).
-        2) Compute unbiased skew(ret_exc); null when raw ``ret`` is constant /
+        2) Compute unbiased skew(ret_exc); null when raw ``ret`` is near-constant /
            near-dead (does not rely on Polars emitting NaN).
 
     Output:
         LazyFrame with f'rskew{sfx}'.
     """
     df = df.group_by(["id_int", "group_number"]).agg(
-        _guard_constant("ret", col("ret_exc").skew(bias=False)).alias(f"rskew{sfx}")
+        _guard_constant("ret", col("ret_exc").skew(bias=False), min_std=RET_MIN_STD).alias(
+            f"rskew{sfx}"
+        )
     )
     return df
 
@@ -9590,7 +9484,7 @@ def capm(df, sfx, __min):
     Steps:
         1) For each (id_int,group_number), compute beta = cov(ret_exc,mktrf)/var(mktrf).
         2) Compute residuals and their std as ivol_capm.
-        3) Null beta and ivol when raw ``ret`` is constant / near-dead.
+        3) Null beta and ivol when raw ``ret`` is near-constant / near-dead.
 
     Output:
         LazyFrame with f'beta{sfx}' and f'ivol_capm{sfx}'.
@@ -9606,8 +9500,8 @@ def capm(df, sfx, __min):
         .group_by(["id_int", "group_number"])
         .agg(
             [
-                _guard_constant("ret", beta_expr).alias(f"beta{sfx}"),
-                _guard_constant("ret", ivol_expr).alias(f"ivol_capm{sfx}"),
+                _guard_constant("ret", beta_expr, min_std=RET_MIN_STD).alias(f"beta{sfx}"),
+                _guard_constant("ret", ivol_expr, min_std=RET_MIN_STD).alias(f"ivol_capm{sfx}"),
             ]
         )
     )
@@ -9622,7 +9516,7 @@ def ami(df, sfx, __min):
     Steps:
         1) Define dolvol guard (None if zero).
         2) Group by (id_int,group_number); compute mean(|ret|/dolvol * 1e6) and count;
-           null when raw ``ret`` is constant / near-dead (avoids ami=0 for dead stocks).
+           null when raw ``ret`` is near-constant / near-dead (avoids ami=0 for dead stocks).
         3) Keep groups with n ≥ __min.
 
     Output:
@@ -9633,7 +9527,9 @@ def ami(df, sfx, __min):
         df.group_by(["id_int", "group_number"])
         .agg(
             [
-                _guard_constant("ret", (col("ret").abs() / aux_1 * 1e6).mean()).alias(f"ami{sfx}"),
+                _guard_constant(
+                    "ret", (col("ret").abs() / aux_1 * 1e6).mean(), min_std=RET_MIN_STD
+                ).alias(f"ami{sfx}"),
                 pl.count("dolvol_d").alias("n"),
             ]
         )
@@ -9651,7 +9547,7 @@ def downbeta(df, sfx, __min):
     Steps:
         1) Filter mktrf < 0.
         2) Group by (id_int,group_number); compute beta as cov/var; require n ≥ __min/2;
-           null when raw ``ret`` is constant / near-dead.
+           null when raw ``ret`` is near-constant / near-dead.
 
     Output:
         LazyFrame with f'betadown{sfx}'.
@@ -9661,9 +9557,9 @@ def downbeta(df, sfx, __min):
         .group_by(["id_int", "group_number"])
         .agg(
             [
-                _guard_constant("ret", pl.cov("ret_exc", "mktrf") / pl.var("mktrf")).alias(
-                    f"betadown{sfx}"
-                ),
+                _guard_constant(
+                    "ret", pl.cov("ret_exc", "mktrf") / pl.var("mktrf"), min_std=RET_MIN_STD
+                ).alias(f"betadown{sfx}"),
                 pl.count("ret_exc").alias("n"),
             ]
         )
@@ -9699,7 +9595,7 @@ def capm_ext(df, sfx, __min):
     Steps:
         1) Compute beta and alpha; residuals = ret_exc − (alpha + beta*mktrf).
         2) Aggregate per (id_int,group_number): std(res), skew(res), coskew = E[res*(mktrf−E mktrf)^2]/(sqrt(E[res^2])*sqrt(E[(mktrf−E)^2])).
-        3) Null all columns when raw ``ret`` is constant / near-dead.
+        3) Null all columns when raw ``ret`` is near-constant / near-dead.
 
     Output:
         LazyFrame with [f'beta_{sfx}', f'ivol_capm{sfx}', f'iskew_capm{sfx}', f'coskew{sfx}'].
@@ -9713,10 +9609,18 @@ def capm_ext(df, sfx, __min):
 
     df = df.group_by(["id_int", "group_number"]).agg(
         [
-            _guard_constant("ret", beta_col.cast(pl.Float64)).alias(f"beta{sfx}"),
-            _guard_constant("ret", residual_col.std()).alias(f"ivol_capm{sfx}"),
-            _guard_constant("ret", residual_col.skew(bias=False)).alias(f"iskew_capm{sfx}"),
-            _guard_constant("ret", exp_coskew1 / exp_coskew2).alias(f"coskew{sfx}"),
+            _guard_constant("ret", beta_col.cast(pl.Float64), min_std=RET_MIN_STD).alias(
+                f"beta{sfx}"
+            ),
+            _guard_constant("ret", residual_col.std(), min_std=RET_MIN_STD).alias(
+                f"ivol_capm{sfx}"
+            ),
+            _guard_constant("ret", residual_col.skew(bias=False), min_std=RET_MIN_STD).alias(
+                f"iskew_capm{sfx}"
+            ),
+            _guard_constant("ret", exp_coskew1 / exp_coskew2, min_std=RET_MIN_STD).alias(
+                f"coskew{sfx}"
+            ),
         ]
     )
     return df
@@ -9730,7 +9634,7 @@ def ff3(df, sfx, __min):
     Steps:
         1) OLS: ret_exc ~ mktrf + smb_ff + hml; require factors present.
         2) Aggregate per (id_int,group_number): std(residuals, ddof=3), skew(residuals);
-           null when raw ``ret`` is constant / near-dead.
+           null when raw ``ret`` is near-constant / near-dead.
 
     Output:
         LazyFrame with [f'ivol_ff3{sfx}', f'iskew_ff3{sfx}'].
@@ -9742,8 +9646,12 @@ def ff3(df, sfx, __min):
         df.filter(col("smb_ff").is_not_null() & col("hml").is_not_null())
         .group_by(["id_int", "group_number"])
         .agg(
-            _guard_constant("ret", res_exp.std(ddof=3)).alias(f"ivol_ff3{sfx}"),
-            _guard_constant("ret", res_exp.skew(bias=False)).alias(f"iskew_ff3{sfx}"),
+            _guard_constant("ret", res_exp.std(ddof=3), min_std=RET_MIN_STD).alias(
+                f"ivol_ff3{sfx}"
+            ),
+            _guard_constant("ret", res_exp.skew(bias=False), min_std=RET_MIN_STD).alias(
+                f"iskew_ff3{sfx}"
+            ),
         )
     )
     return df
@@ -9757,7 +9665,7 @@ def hxz4(df, sfx, __min):
     Steps:
         1) OLS: ret_exc ~ mktrf + smb_hxz + roe + inv; require all factors.
         2) Aggregate per (id_int,group_number): std(residuals, ddof=4), skew(residuals);
-           null when raw ``ret`` is constant / near-dead.
+           null when raw ``ret`` is near-constant / near-dead.
 
     Output:
         LazyFrame with [f'ivol_hxz4{sfx}', f'iskew_hxz4{sfx}'].
@@ -9771,8 +9679,12 @@ def hxz4(df, sfx, __min):
         )
         .group_by(["id_int", "group_number"])
         .agg(
-            _guard_constant("ret", res_exp.std(ddof=4)).alias(f"ivol_hxz4{sfx}"),
-            _guard_constant("ret", res_exp.skew(bias=False)).alias(f"iskew_hxz4{sfx}"),
+            _guard_constant("ret", res_exp.std(ddof=4), min_std=RET_MIN_STD).alias(
+                f"ivol_hxz4{sfx}"
+            ),
+            _guard_constant("ret", res_exp.skew(bias=False), min_std=RET_MIN_STD).alias(
+                f"iskew_hxz4{sfx}"
+            ),
         )
     )
     return df
@@ -9896,7 +9808,7 @@ def mktcorr(df, sfx, __min):
     Steps:
         1) Group by (id_int, group_number); count rows.
         2) Require count >= __min; compute Pearson corr; null when raw ``ret`` is
-           constant / near-dead (RF-immune; avoids finite junk corr at _1260d).
+           near-constant / near-dead (RF-immune; avoids finite junk corr at _1260d).
 
     Output:
         LazyFrame with f'corr{sfx}'.
@@ -9905,7 +9817,9 @@ def mktcorr(df, sfx, __min):
         df.group_by(["id_int", "group_number"])
         .agg(
             pl.len().alias("n"),
-            _guard_constant("ret", pl.corr("ret_exc_3l", "mkt_exc_3l")).alias(f"corr{sfx}"),
+            _guard_constant("ret", pl.corr("ret_exc_3l", "mkt_exc_3l"), min_std=RET_MIN_STD).alias(
+                f"corr{sfx}"
+            ),
         )
         .filter(col("n") >= __min)
         .drop("n")
@@ -9919,31 +9833,23 @@ def dimsonbeta(
     Description:
         Dimson β = sum of slopes from OLS ret_exc ~ mktrf_{-1,0,+1} per
         (id_int, group_number) via polars-ds `pds.lin_reg`. Null when raw ``ret``
-        is constant / near-dead.
+        is near-constant / near-dead (_guard_constant with RET_MIN_STD).
     Output:
         LazyFrame with f'beta_dimson{sfx}'.
     """
     name = f"beta_dimson{sfx}"
-    beta_expr = pl.col("coeffs").list.head(3).list.sum()
-    varying = pl.col("ret").min() != pl.col("ret").max()
-    not_near_dead = (pl.col("ret") == 0).mean() < CONSTANT_MAX_ZERO_FRAC
+    coeffs = pds.lin_reg(
+        "mktrf_lg1",
+        "mktrf",
+        "mktrf_ld1",
+        target="ret_exc",
+        add_bias=True,
+        solver="cholesky",
+    )
     return (
         df.group_by(["id_int", "group_number"])
         .agg(
-            coeffs=pds.lin_reg(
-                "mktrf_lg1",
-                "mktrf",
-                "mktrf_ld1",
-                target="ret_exc",
-                add_bias=True,
-                solver="cholesky",
-            ),
-            ret_ok=(varying & not_near_dead),
-        )
-        .select(
-            "id_int",
-            "group_number",
-            pl.when(pl.col("ret_ok")).then(beta_expr).otherwise(None).alias(name),
+            _guard_constant("ret", coeffs.list.head(3).list.sum(), min_std=RET_MIN_STD).alias(name)
         )
         .filter(pl.col(name).is_not_null() & pl.col(name).is_not_nan())
     )
@@ -11690,56 +11596,6 @@ def gen_ff_data(
         )
 
 
-def add_ecdf(
-    df: pl.DataFrame | pl.LazyFrame,
-    group_cols: list[str] | None = None,
-) -> pl.DataFrame | pl.LazyFrame:
-    """Attach an empirical-CDF ``cdf`` column per group.
-
-    Build the ECDF of ``var`` over the rows where ``bp_stock`` is true (the
-    breakpoint sample), then asof-join the CDF values back onto every row of
-    ``df`` within each group defined by ``group_cols``. Non-breakpoint rows
-    receive the CDF of the nearest breakpoint ``var`` ≤ their own; rows
-    below any breakpoint value receive ``0.0``.
-
-    Args:
-        df: Frame containing ``var`` and boolean ``bp_stock`` columns.
-        group_cols: Columns defining the ECDF groups. Defaults to ``["eom"]``.
-
-    Returns:
-        Same container type as ``df`` (eager → eager, lazy → lazy) with a
-        ``cdf`` column appended; original columns are preserved and rows
-        are sorted by ``group_cols + ["var"]``.
-    """
-    group_cols = ["eom"] if group_cols is None else list(group_cols)
-    sort_cols = group_cols + ["var"]
-
-    # ECDF on the breakpoint sample: cumulative share of distinct var values
-    # within each group, sorted by var so cum_sum runs in ascending order.
-    bp_ecdf = (
-        df.filter(pl.col("bp_stock"))
-        .group_by(sort_cols)
-        .agg(pl.len().alias("n_ref"))
-        .sort(sort_cols)
-        .select(
-            *group_cols,
-            "var",
-            (pl.col("n_ref").cum_sum() / pl.col("n_ref").sum()).over(group_cols).alias("cdf"),
-        )
-    )
-
-    # asof-join the ECDF onto every row; rows below any bp value get null,
-    # filled with 0.0 to match the convention expected downstream.
-    # Both sides are sorted within each `by` group; skip the sortedness check
-    # (Polars can't verify it with `by` and would warn at collect time,
-    # outside any catch_warnings context).
-    return (
-        df.sort(sort_cols)
-        .join_asof(bp_ecdf, on="var", by=group_cols, strategy="backward", check_sortedness=False)
-        .with_columns(pl.col("cdf").fill_null(0.0))
-    )
-
-
 def _build_industry_daily_returns(
     data: pl.DataFrame,
     daily: pl.DataFrame,
@@ -11841,139 +11697,781 @@ def _build_industry_monthly_returns(
     )
 
 
-def _build_hml_lms(
+def _build_hml(
     pf_df: pl.DataFrame,
-    char_info: pl.DataFrame,
     n_pfs: int,
     date_col: str,
     include_signal: bool,
-) -> tuple[pl.DataFrame, pl.DataFrame]:
-    """Build HML (top minus bottom pf) and signed LMS factor returns.
+) -> pl.DataFrame:
+    """Build HML (top minus bottom pf) factor returns.
 
     Description:
-        Group `pf_df` by ``["excntry", "characteristic", date_col]``, compute
-        top-minus-bottom-portfolio diffs for return columns (and optionally
-        ``signal``), keep only groups containing both extreme portfolios, then
-        join `char_info` and re-sign each factor by ``direction``.
+        Join the top and bottom portfolios on
+        ``["excntry", "characteristic", date_col]`` and take top-minus-bottom diffs
+        for return columns (and optionally ``signal``). The inner join keeps only
+        groups containing both extreme portfolios, and one portfolio has no top minus
+        bottom, so it gives no rows.
     Output:
-        ``(hml, lms)`` tuple of DataFrames.
+        DataFrame sorted by ``["excntry", "characteristic", date_col]``. Raises if a group
+        has more than one row for an extreme portfolio.
     """
-    diff = lambda c: (  # noqa: E731
-        pl.col(c).filter(pl.col("pf") == n_pfs).first()
-        - pl.col(c).filter(pl.col("pf") == 1).first()
-    )
-    is_extreme_pf = (pl.col("pf") == n_pfs) | (pl.col("pf") == 1)
-    agg_exprs = [is_extreme_pf.sum().alias("pfs")]
-    if include_signal:
-        agg_exprs.append(diff("signal").alias("signal"))
-    agg_exprs.extend(
-        [
-            (
-                pl.col("n").filter(pl.col("pf") == n_pfs).first()
-                + pl.col("n").filter(pl.col("pf") == 1).first()
-            ).alias("n_stocks"),
-            pl.col("n").filter(is_extreme_pf).min().alias("n_stocks_min"),
-            diff("ret_ew").alias("ret_ew"),
-            diff("ret_vw").alias("ret_vw"),
-            diff("ret_vw_cap").alias("ret_vw_cap"),
-        ]
-    )
+    keys = ["excntry", "characteristic", date_col]
+    ret_cols = ["ret_ew", "ret_vw", "ret_vw_cap"]
+    signal_cols = ["signal"] if include_signal else []
+    extreme_pfs = pf_df.lazy().select(*keys, "pf", "n", *signal_cols, *ret_cols)
+    diff = lambda c: (pl.col(c) - pl.col(f"{c}_bottom")).alias(c)  # noqa: E731
 
-    hml = (
-        pf_df.group_by(["excntry", "characteristic", date_col])
-        .agg(agg_exprs)
-        .filter(pl.col("pfs") == 2)
-        .drop("pfs")
-        .sort(["excntry", "characteristic", date_col])
-    )
-
-    resign_cols = (
-        ["signal", "ret_ew", "ret_vw", "ret_vw_cap"]
-        if include_signal
-        else ["ret_ew", "ret_vw", "ret_vw_cap"]
-    )
-    lms = char_info.join(hml, on="characteristic", how="left").with_columns(
-        [(pl.col(c) * pl.col("direction")).alias(c) for c in resign_cols]
-    )
-    return hml, lms
-
-
-def _pf_daily_lazy(
-    sub: pl.LazyFrame, daily: pl.DataFrame, x: str, ret_cols: list[str]
-) -> pl.LazyFrame:
-    """Aggregate daily portfolio returns for every return column in one pass.
-
-    Description:
-        Weight each stock by its formation-month EW/VW/VW-cap weight within
-        ``(eom, pf)`` and apply the weights to the following month's daily
-        returns. All ``ret_cols`` share the sort, the weights and the join;
-        each column gets its own count and weighted sums.
-    Steps:
-        1) Build per-stock weights within ``(eom, pf)``.
-        2) Join to daily returns on the formation month; keep rows with a
-           portfolio and at least one non-null return column.
-        3) Aggregate by ``(pf, date)``: per column ``c``, ``n_{c}`` counts its
-           non-null returns and ``ret_{ew,vw,vw_cap}_{c}`` are weighted sums.
-    Output:
-        Wide LazyFrame keyed by ``(pf, date)`` with ``characteristic`` = ``x``.
-        A column whose returns are all null on a row has ``n_{c} == 0``; split
-        it out with ``_split_daily_leg``.
-    """
-    weights = (
-        sub.group_by(["eom", "pf"])
-        .agg(
-            [
-                pl.col("id"),
-                (1 / pl.len()).alias("w_ew"),
-                (pl.col("me") / pl.col("me").sum()).alias("w_vw"),
-                (pl.col("me_cap") / pl.col("me_cap").sum()).alias("w_vw_cap"),
-            ]
-        )
-        .explode("id", "w_vw", "w_vw_cap")
-    )
     return (
-        weights.join(
-            daily.lazy(),
-            left_on=["id", "eom"],
-            right_on=["id", "eom_lag1"],
-            how="left",
+        extreme_pfs.filter(pl.col("pf") == n_pfs)
+        .join(
+            extreme_pfs.filter(pl.col("pf") == 1, pl.lit(n_pfs > 1)),
+            on=keys,
+            how="inner",
+            suffix="_bottom",
+            nulls_equal=True,
+            validate="1:1",
         )
-        .filter(pl.col("pf").is_not_null() & pl.any_horizontal(pl.col(ret_cols).is_not_null()))
-        .group_by(["pf", "date"])
-        .agg(
-            [pl.lit(x).alias("characteristic")]
-            + [
+        .select(
+            *keys,
+            *[diff(c) for c in signal_cols],
+            (pl.col("n") + pl.col("n_bottom")).alias("n_stocks"),
+            pl.min_horizontal("n", "n_bottom").alias("n_stocks_min"),
+            *[diff(c) for c in ret_cols],
+        )
+        .sort(keys)
+        .collect()
+    )
+
+
+def load_themes(path: Path) -> pl.DataFrame:
+    """Read one themes version.
+
+    Description:
+        ``path`` is a v0 folder (``cluster_labels.csv`` and ``factor_directions.csv``),
+        a folder holding ``themes.csv``, or a themes file in the v1.0 format. In v0
+        each theme is its only subtheme and ``direction`` is the v0 direction. From
+        v1.0 on, ``direction`` is ``subtheme_sign * theme_sign * factor_sign``.
+    Steps:
+        1) Read the v0 files or the v1.0-format file.
+        2) Check that no name is blank, that every direction is -1 or 1, that each characteristic appears
+           once and that each subtheme belongs to one theme.
+    Output:
+        DataFrame with ``characteristic``, ``theme``, ``subtheme`` and ``direction``
+        (Int32). Raises ``ValueError`` naming the rows that fail a check.
+    """
+    if (path / "cluster_labels.csv").exists():
+        themes = (
+            pl.read_csv(path / "cluster_labels.csv")
+            .join(pl.read_csv(path / "factor_directions.csv"), on="characteristic", how="left")
+            .select("characteristic", theme="cluster", subtheme="cluster", direction="direction")
+        )
+    else:
+        file = path / "themes.csv" if path.is_dir() else path
+        themes = pl.read_csv(file)
+        signs = ["subtheme_sign", "theme_sign", "factor_sign"]
+        missing = sorted({"characteristic", "theme", "subtheme", *signs} - set(themes.columns))
+        if missing:
+            raise ValueError(f"{file}: missing columns {missing}")
+        themes = themes.select(
+            "characteristic",
+            "theme",
+            "subtheme",
+            direction=pl.col("subtheme_sign") * pl.col("theme_sign") * pl.col("factor_sign"),
+        )
+
+    names = ["characteristic", "theme", "subtheme"]
+    blank = (
+        themes.with_row_index("_row")
+        .filter(
+            pl.any_horizontal(pl.col(names).cast(pl.String).str.strip_chars().fill_null("") == "")
+        )["_row"]
+        .to_list()
+    )
+    if blank:
+        raise ValueError(f"{path}: blank names in rows {[i + 2 for i in blank]}")
+
+    bad_sign = themes.filter(~pl.col("direction").is_in([-1, 1]).fill_null(False))
+    repeated = themes.filter(pl.col("characteristic").is_duplicated())
+    split = themes.group_by("subtheme").agg(pl.col("theme").n_unique()).filter(pl.col("theme") > 1)
+    errors = [
+        f"{label}: {sorted(set(names))}"
+        for label, names in [
+            ("signs other than -1 and 1", bad_sign["characteristic"]),
+            ("characteristics listed more than once", repeated["characteristic"]),
+            ("subthemes under more than one theme", split["subtheme"]),
+        ]
+        if len(names)
+    ]
+    if errors:
+        raise ValueError(f"{path}: " + "; ".join(errors))
+    return themes.with_columns(pl.col("direction").cast(pl.Int32))
+
+
+def theme_versions(themes_dir: Path) -> dict[str, Path]:
+    """Map each released themes version to its source.
+
+    Description:
+        The released versions are the current ``themes.csv``, named by its
+        ``version`` column, and each folder in ``superseded_themes/``, named by
+        the folder. A new version therefore needs no code change.
+    Output:
+        Dict from version name to a path that ``load_themes`` reads, with the
+        current version first. Raises
+        ``ValueError`` when a superseded folder has the current version's name.
+    """
+    current = themes_dir / "themes.csv"
+    versions = {
+        pl.read_csv(current, columns=["version"], schema_overrides={"version": pl.String})[
+            "version"
+        ][0]: current
+    }
+    for folder in sorted((themes_dir / "superseded_themes").iterdir()):
+        if folder.is_dir():
+            if folder.name in versions:
+                raise ValueError(
+                    f"superseded_themes/{folder.name} has the version name of themes.csv"
+                )
+            versions[folder.name] = folder
+    return versions
+
+
+def _sign_factors(factors: pl.DataFrame, themes: pl.DataFrame) -> pl.DataFrame:
+    """Sign the factors of a themes version: HML into LMS, or the unsigned CMP.
+
+    Description:
+        Keep the factors of the characteristics in ``themes`` and multiply their
+        return and signal columns (``ret_*`` and ``signal*``) by ``direction``, so
+        each factor buys the side its theme favours. For HML factors, the caller
+        checks that every characteristic has a factor (``_write_theme_versions`` in
+        ``portfolio.py``).
+    Steps:
+        1) Join ``direction`` to ``factors`` by characteristic, in ``factors``' row order.
+        2) Multiply the return and signal columns by ``direction``.
+    Output:
+        DataFrame with ``characteristic``, ``direction`` and the ``factors`` columns,
+        in ``factors``' row order.
+    """
+    resign = [c for c in factors.columns if c.startswith(("ret_", "signal"))]
+    return (
+        themes.select("characteristic", "direction")
+        .join(factors, on="characteristic", how="inner", maintain_order="right")
+        .with_columns(pl.col(resign) * pl.col("direction"))
+    )
+
+
+def _theme_returns(
+    lms: pl.DataFrame, themes: pl.DataFrame, date_col: str
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Average signed factors within subthemes, and subthemes within themes.
+
+    Description:
+        A subtheme's return is the mean return of its characteristics' factors in
+        a country and period. A theme's return is the mean of its subtheme
+        returns, so each subtheme counts equally however many characteristics it
+        has. Null returns are skipped by the means but counted in ``n_factors``.
+    Steps:
+        1) Join each factor to its theme and subtheme, and average by country,
+           subtheme and period.
+        2) Average the subtheme returns by country, theme and period.
+    Output:
+        ``(subthemes, themes)``: returns by ``excntry``, ``theme``, ``subtheme``
+        and ``date_col`` with ``n_factors``, and by ``excntry``, ``theme`` and
+        ``date_col`` with ``n_subthemes`` and ``n_factors``.
+    """
+    rets = ["ret_ew", "ret_vw", "ret_vw_cap"]
+    subthemes = (
+        lms.join(
+            themes.select("characteristic", "theme", "subtheme"),
+            on="characteristic",
+            maintain_order="left",
+        )
+        .group_by("excntry", "theme", "subtheme", date_col)
+        .agg(pl.len().alias("n_factors"), pl.col(rets).mean())
+        .sort("excntry", "theme", "subtheme", date_col)
+    )
+    theme_returns = (
+        subthemes.group_by("excntry", "theme", date_col)
+        .agg(pl.len().alias("n_subthemes"), pl.col("n_factors").sum(), pl.col(rets).mean())
+        .sort("excntry", "theme", date_col)
+    )
+    return subthemes, theme_returns
+
+
+def _period_tasks(periods: pl.Series) -> tuple[pl.Series, np.ndarray, np.ndarray]:
+    """Split a sorted period column into runs of periods for the threads of a kernel.
+
+    Description:
+        Each thread gets periods with a similar row count, since the number of stocks in
+        a period varies widely.
+    Output:
+        The distinct periods; each period's first row, then the row count; and each
+        task's first period, then the period count.
+    """
+    runs = periods.rle().struct.unnest()
+    period_starts = np.concatenate(([0], np.cumsum(runs["len"].to_numpy(), dtype=np.int64)))
+    task_starts = np.unique(
+        np.searchsorted(period_starts, np.linspace(0, periods.len(), get_num_threads() + 1))
+    )
+    return runs["value"].alias(periods.name), period_starts, task_starts.astype(np.int64)
+
+
+# Values per row in ``_sum_rows_kernel``. A fixed count lets the compiler vectorize the
+# innermost loop.
+_SUM_VALUES = 16
+
+
+@njit(parallel=True, cache=True, error_model="numpy")
+def _sum_rows_kernel(
+    task_starts: np.ndarray,
+    period_starts: np.ndarray,
+    stock_months: np.ndarray,
+    values: np.ndarray,
+    pf_by_row: np.ndarray,
+    n_chars: int,
+    n_bins: int,
+    out: np.ndarray,
+) -> None:
+    """Add each row's values to the totals of its period, characteristic and portfolio.
+
+    Description:
+        Threads take runs of periods, and rows within a period are added in the given
+        order, so the sums are the same for any number of threads. Bin 0 of each
+        characteristic collects its unassigned stocks, which spares the loop a branch.
+    Output:
+        Fills ``out``, flattened by period, characteristic, bin and value.
+    """
+    per_period = n_chars * n_bins * _SUM_VALUES
+    for task in prange(task_starts.size - 1):
+        for period in range(task_starts[task], task_starts[task + 1]):
+            totals = np.zeros(per_period)
+            for row in range(period_starts[period], period_starts[period + 1]):
+                pf_row = stock_months[row] * n_chars
+                value_row = row * _SUM_VALUES
+                for char in range(n_chars):
+                    at = (char * n_bins + pf_by_row[pf_row + char]) * _SUM_VALUES
+                    for k in range(_SUM_VALUES):
+                        totals[at + k] += values[value_row + k]
+            out[period * per_period : (period + 1) * per_period] = totals
+
+
+def _sum_by_portfolio(
+    rows: pl.DataFrame,
+    period: str,
+    value_cols: list[str],
+    pf_by_row: np.ndarray,
+    n_pfs: int,
+) -> tuple[pl.Series, np.ndarray]:
+    """Sum row values by period, characteristic and portfolio, for all characteristics at once.
+
+    Description:
+        Every characteristic sums the same values and differs only in which portfolio
+        holds each stock-month, so one pass over ``rows`` does the work of a filter and
+        group-by per characteristic. NaN stays in its own portfolio's sum.
+    Steps:
+        1) Split the periods among the threads. ``rows`` must be sorted by ``period``,
+           hold the stock-month number ``sm``, and have no nulls in ``value_cols``.
+        2) Pad to ``_SUM_VALUES`` columns, run the kernel and drop the unassigned bin.
+    Output:
+        The periods, and an array indexed by ``(period, characteristic, pf - 1, value)``
+        with values in the order of ``value_cols``.
+    """
+    if len(value_cols) > _SUM_VALUES:
+        raise ValueError(f"{len(value_cols)} value columns, at most {_SUM_VALUES} fit")
+    periods, period_starts, task_starts = _period_tasks(rows[period])
+    padding = [pl.lit(0.0).alias(f"_pad_{i}") for i in range(_SUM_VALUES - len(value_cols))]
+    n_chars = pf_by_row.shape[1]
+    out = np.zeros(periods.len() * n_chars * (n_pfs + 1) * _SUM_VALUES)
+    _sum_rows_kernel(
+        task_starts,
+        period_starts,
+        rows["sm"].to_numpy().astype(np.int64),
+        rows.select(*value_cols, *padding).to_numpy(order="c").ravel(),
+        pf_by_row.ravel(),
+        n_chars,
+        n_pfs + 1,
+        out,
+    )
+    totals = out.reshape(periods.len(), n_chars, n_pfs + 1, _SUM_VALUES)
+    return periods, totals[:, :, 1:, : len(value_cols)]
+
+
+def _month_totals(
+    data: pl.DataFrame, pf_by_row: np.ndarray, n_pfs: int
+) -> tuple[pl.Series, np.ndarray]:
+    """Sum each month's portfolios for all characteristics.
+
+    Description:
+        These totals give the monthly returns, and their stock counts and market caps
+        are the denominators of the following month's daily returns.
+    Output:
+        The months, and an array indexed by ``(month, characteristic, pf - 1, value)``
+        with values ``n``, return, return times ``me``, return times ``me_cap``, ``me``
+        and ``me_cap``.
+    """
+    value_cols = ["n", "ret", "ret_me", "ret_me_cap", "me", "me_cap"]
+    return _sum_by_portfolio(
+        data.select(
+            "sm",
+            "eom",
+            pl.lit(1.0).alias("n"),
+            pl.col("ret_exc_lead1m").alias("ret"),
+            (pl.col("ret_exc_lead1m") * pl.col("me")).alias("ret_me"),
+            (pl.col("ret_exc_lead1m") * pl.col("me_cap")).alias("ret_me_cap"),
+            "me",
+            "me_cap",
+        ),
+        "eom",
+        value_cols,
+        pf_by_row,
+        n_pfs,
+    )
+
+
+@njit(parallel=True, cache=True, error_model="numpy")
+def _portfolio_rows_kernel(
+    numerators: np.ndarray,
+    denominators: np.ndarray,
+    formation: np.ndarray,
+    char_order: np.ndarray,
+    n_tasks: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Pick the portfolios with stocks and divide their sums, in parallel over characteristics.
+
+    Description:
+        ``numerators`` is indexed by ``(period, characteristic, pf - 1, value)`` with the
+        count and the three sums; ``denominators`` by ``(month, characteristic, pf - 1,
+        value)``, and ``formation`` gives each period's month. Rows come out by
+        characteristic in ``char_order``, then portfolio, then period. Each of ``n_tasks``
+        threads takes a block of adjacent characteristics and walks the periods in order,
+        so it reads neighbouring memory; each cell's rows go to that cell's own place in the
+        output, so the rows are the same for any number of threads.
+    Steps:
+        1) Count each characteristic's and portfolio's periods with a positive count.
+        2) Give each cell its first row, in ``char_order`` and portfolio order.
+        3) Write each period's indexes, count and the three sums divided by the
+           denominators at its cell's next row.
+    Output:
+        Per row: period, characteristic and ``pf - 1`` indexes, the count, and an array of
+        the three returns indexed by ``(return, row)``.
+    """
+    n_periods, n_chars, n_pfs = numerators.shape[0], numerators.shape[1], numerators.shape[2]
+    block = -(-n_chars // n_tasks)
+    counts = np.zeros((n_chars, n_pfs), dtype=np.int64)
+    for task in prange(n_tasks):
+        for period in range(n_periods):
+            for char in range(task * block, min(n_chars, (task + 1) * block)):
+                for pf in range(n_pfs):
+                    if numerators[period, char, pf, 0] > 0:
+                        counts[char, pf] += 1
+    next_row = np.empty((n_chars, n_pfs), dtype=np.int64)
+    n_rows = 0
+    for rank in range(n_chars):
+        for pf in range(n_pfs):
+            next_row[char_order[rank], pf] = n_rows
+            n_rows += counts[char_order[rank], pf]
+    period_i = np.empty(n_rows, dtype=np.int64)
+    char_i = np.empty(n_rows, dtype=np.int64)
+    pf_i = np.empty(n_rows, dtype=np.int64)
+    n = np.empty(n_rows, dtype=np.uint32)
+    returns = np.empty((3, n_rows))
+    for task in prange(n_tasks):
+        for period in range(n_periods):
+            month = formation[period]
+            for char in range(task * block, min(n_chars, (task + 1) * block)):
+                for pf in range(n_pfs):
+                    n_stocks = numerators[period, char, pf, 0]
+                    if n_stocks > 0:
+                        at = next_row[char, pf]
+                        period_i[at] = period
+                        char_i[at] = char
+                        pf_i[at] = pf
+                        n[at] = np.uint32(n_stocks)
+                        for k in range(3):
+                            returns[k, at] = (
+                                numerators[period, char, pf, k + 1]
+                                / denominators[month, char, pf, k]
+                            )
+                        next_row[char, pf] = at + 1
+    return period_i, char_i, pf_i, n, returns
+
+
+def _portfolio_rows(
+    periods: pl.Series,
+    numerators: np.ndarray,
+    denominators: np.ndarray,
+    formation: np.ndarray,
+    chars: list[str],
+    signals: np.ndarray | None = None,
+) -> pl.DataFrame:
+    """Turn portfolio sums into returns, one row per period, characteristic and portfolio.
+
+    Description:
+        ``numerators`` holds the count and the EW, VW and VW-cap sums by period,
+        characteristic and portfolio; ``denominators`` holds each month's stock count,
+        ``me`` and ``me_cap`` in the same layout, and ``formation`` gives the month that
+        weights each period. A portfolio with a count of zero has no row. Rows are sorted
+        by characteristic name, portfolio and period, so stacking countries in sorted
+        order needs no sort. The division is raw rather than ``safe_div``, since a zero
+        denominator gives NaN or infinity in the published series.
+    Output:
+        DataFrame with columns ``[pf, <period>, characteristic, n, ret_ew, ret_vw,
+        ret_vw_cap]``, and ``signal`` from ``signals`` (indexed like the sums) when given.
+    """
+    # The kernel does not check bounds, so check its indexes here.
+    if numerators.shape[1:3] != denominators.shape[1:3] or len(formation) != len(numerators):
+        raise ValueError("numerators, denominators and formation do not line up")
+    if len(formation) and not 0 <= formation.min() <= formation.max() < len(denominators):
+        raise ValueError("formation holds a month outside denominators")
+    char_order = np.argsort(np.array(chars), kind="stable")
+    period_i, char_i, pf_i, n, returns = _portfolio_rows_kernel(
+        numerators, denominators, formation, char_order, get_num_threads()
+    )
+    rows = pl.DataFrame(
+        {
+            "pf": pf_i + 1.0,
+            periods.name: periods.gather(period_i),
+            "characteristic": pl.Series(chars).gather(char_i),
+            "n": n,
+            "ret_ew": returns[0],
+            "ret_vw": returns[1],
+            "ret_vw_cap": returns[2],
+        }
+    )
+    if signals is not None:
+        rows = rows.with_columns(pl.Series("signal", signals[period_i, char_i, pf_i]))
+    return rows
+
+
+def _pf_returns(
+    months: pl.Series, month_totals: np.ndarray, medians: np.ndarray, chars: list[str]
+) -> pl.DataFrame:
+    """Build the monthly portfolio returns of all characteristics.
+
+    Output:
+        DataFrame with columns ``[pf, eom, characteristic, n, signal, ret_ew, ret_vw,
+        ret_vw_cap]``, with ``eom`` moved to the return month.
+    """
+    return (
+        _portfolio_rows(
+            months,
+            month_totals[:, :, :, :4],
+            month_totals[:, :, :, [0, 4, 5]],
+            np.arange(months.len()),
+            chars,
+            signals=medians,
+        )
+        .with_columns(pl.col("eom").dt.offset_by("1mo").dt.month_end().alias("eom"))
+        .select("pf", "eom", "characteristic", "n", "signal", "ret_ew", "ret_vw", "ret_vw_cap")
+    )
+
+
+# Size groups of the characteristics-managed portfolios: the first slot of each grouping in
+# ``_rank_rows_kernel`` and its labels. Every stock is in one group per grouping.
+_CMP_GROUPS = {
+    1: (0, ["all"]),
+    2: (1, ["big", "small"]),
+    5: (3, ["mega", "large", "small", "micro", "nano"]),
+}
+
+
+@njit(cache=True, error_model="numpy")
+def _sorted_median(vals: np.ndarray, order: np.ndarray, start: int, stop: int) -> float:
+    """Median of ``vals[order[start:stop]]``, which is sorted, using the arithmetic of Polars."""
+    middle = start + (stop - start) // 2
+    if (stop - start) % 2 == 1:
+        return vals[order[middle]]
+    low = vals[order[middle - 1]]
+    high = vals[order[middle]]
+    return low if low == high else 0.5 * (high - low) + low
+
+
+@njit(parallel=True, cache=True, error_model="numpy")
+def _rank_rows_kernel(
+    task_starts: np.ndarray,
+    month_starts: np.ndarray,
+    values: np.ndarray,
+    bp_stock: np.ndarray,
+    size_code: np.ndarray,
+    ret: np.ndarray,
+    n_chars: int,
+    n_pfs: int,
+    bp_min_n: int,
+    min_std: float,
+    pf_by_row: np.ndarray,
+    medians: np.ndarray,
+    cmp_totals: np.ndarray,
+) -> None:
+    """Sort each characteristic within each month and read the results off the sorted order.
+
+    Description:
+        Threads take runs of months. Each characteristic's stocks are walked from the
+        lowest value to the highest, one group of tied values at a time, which gives:
+
+        Portfolios: a stock's ECDF value is the share of the month's breakpoint stocks
+        at or below its value. Stocks at the month's lowest ECDF value get 1e-8, so they
+        are in portfolio 1. A month with under ``bp_min_n`` breakpoint stocks has none.
+
+        Medians: a portfolio's stocks sit next to each other in the sorted order.
+
+        Characteristics-managed portfolios: within a size group, tied stocks share their
+        average rank. The centered rank is the whole number ``2 * rank - (n + 1)``, which
+        is ``rank / (n + 1) - 0.5`` times ``2 * (n + 1)``. That factor cancels in the ratios
+        of ``_cmp_returns``, and whole numbers add without rounding error. A group needs
+        two stocks and a sample standard deviation above ``min_std``, or it would rank
+        rounding noise. It is built up over the sorted values, so it doesn't depend on row
+        order. Infinite values count as varying.
+    Output:
+        Fills ``pf_by_row``, flattened by row and characteristic; ``medians``, indexed by
+        ``(month, characteristic, pf - 1)``; and ``cmp_totals``, indexed by ``(month,
+        characteristic, group, value)``, with values stock count, sum of return times
+        centered rank, sum of characteristic times centered rank, and sum of absolute
+        centered ranks. Groups are all, big, small, then the five of ``size_grp``.
+    """
+    two_groups = np.array([1, 1, 2, 2, 2])
+    for task in prange(task_starts.size - 1):
+        first_month, stop_month = task_starts[task], task_starts[task + 1]
+        most_rows = np.diff(month_starts[first_month : stop_month + 1]).max()
+        vals = np.empty(most_rows)
+        rows = np.empty(most_rows, dtype=np.int64)
+        group_n = np.zeros(8, dtype=np.int64)
+        group_seen = np.zeros(8, dtype=np.int64)
+        tie_n = np.zeros(8, dtype=np.int64)
+        group_mean = np.zeros(8)
+        group_ss = np.zeros(8)
+        sums = np.zeros((8, 3))
+        for month in range(first_month, stop_month):
+            for char in range(n_chars):
+                n = 0
+                n_bp = 0
+                group_n[:] = 0
+                for row in range(month_starts[month], month_starts[month + 1]):
+                    value = values[row * n_chars + char]
+                    if value == value:
+                        vals[n] = value
+                        rows[n] = row
+                        n += 1
+                        n_bp += bp_stock[row]
+                        size = size_code[row]
+                        group_n[0] += 1
+                        group_n[two_groups[size]] += 1
+                        group_n[3 + size] += 1
+                if n == 0:
+                    continue
+                order = np.argsort(vals[:n])
+                seen_bp = 0
+                lowest_bp = -1
+                pf = 0
+                pf_start = 0
+                group_seen[:] = 0
+                group_mean[:] = 0.0
+                group_ss[:] = 0.0
+                sums[:] = 0.0
+                tie = 0
+                while tie < n:
+                    value = vals[order[tie]]
+                    tie_stop = tie + 1
+                    while tie_stop < n and vals[order[tie_stop]] == value:
+                        tie_stop += 1
+                    tie_n[:] = 0
+                    for i in range(tie, tie_stop):
+                        row = rows[order[i]]
+                        seen_bp += bp_stock[row]
+                        size = size_code[row]
+                        tie_n[0] += 1
+                        tie_n[two_groups[size]] += 1
+                        tie_n[3 + size] += 1
+                    tie_pf = 0
+                    if n_bp >= bp_min_n:
+                        if lowest_bp < 0:
+                            lowest_bp = seen_bp
+                        cdf = 0.00000001 if seen_bp == lowest_bp else seen_bp / n_bp
+                        tie_pf = int(min(max(np.ceil(cdf * n_pfs), 1.0), n_pfs))
+                        if tie_pf != pf:
+                            if pf > 0:
+                                medians[month, char, pf - 1] = _sorted_median(
+                                    vals, order, pf_start, tie
+                                )
+                            pf = tie_pf
+                            pf_start = tie
+                    for i in range(tie, tie_stop):
+                        row = rows[order[i]]
+                        size = size_code[row]
+                        pf_by_row[row * n_chars + char] = tie_pf
+                        for group in (0, two_groups[size], 3 + size):
+                            centered = 2 * group_seen[group] + tie_n[group] - group_n[group]
+                            sums[group, 0] += ret[row] * centered
+                            sums[group, 1] += value * centered
+                            sums[group, 2] += abs(centered)
+                    for group in range(8):
+                        if tie_n[group] > 0:
+                            group_seen[group] += tie_n[group]
+                            delta = value - group_mean[group]
+                            group_mean[group] += delta * (tie_n[group] / group_seen[group])
+                            group_ss[group] += tie_n[group] * delta * (value - group_mean[group])
+                    tie = tie_stop
+                if pf > 0:
+                    medians[month, char, pf - 1] = _sorted_median(vals, order, pf_start, n)
+                for group in range(8):
+                    if group_n[group] < 2:
+                        continue
+                    # An infinite value makes this NaN, which isn't <= min_std, so the group stays.
+                    if not np.sqrt(group_ss[group] / (group_n[group] - 1)) <= min_std:
+                        cmp_totals[month, char, group, 0] = group_n[group]
+                        cmp_totals[month, char, group, 1:] = sums[group]
+
+
+def _rank_by_month(
+    data: pl.DataFrame, chars: list[str], n_pfs: int, bp_min_n: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Form the portfolios, their medians and the CMP sums of all characteristics.
+
+    Description:
+        Portfolio assignment, medians and CMP ranks all follow from one sort of a
+        characteristic within a month, so they are computed together in ``_rank_rows_kernel``.
+        ``data`` must be sorted by ``eom``.
+    Output:
+        ``pf_by_row``, indexed by ``(row, characteristic)`` with 0 for no portfolio;
+        ``medians``, indexed by ``(month, characteristic, pf - 1)``; and ``cmp_totals``,
+        laid out as in ``_rank_rows_kernel``.
+    """
+    if n_pfs > np.iinfo(np.uint8).max:
+        raise ValueError(f"{n_pfs} portfolios, at most {np.iinfo(np.uint8).max} fit")
+    months, month_starts, task_starts = _period_tasks(data["eom"])
+    size_codes = {label: code for code, label in enumerate(_CMP_GROUPS[5][1])}
+    n_chars = len(chars)
+    pf_by_row = np.zeros(data.height * n_chars, dtype=np.uint8)
+    medians = np.full((months.len(), n_chars, n_pfs), np.nan)
+    cmp_totals = np.zeros((months.len(), n_chars, 8, 4))
+    _rank_rows_kernel(
+        task_starts,
+        month_starts,
+        data.select(pl.col(chars).cast(pl.Float64)).to_numpy(order="c").ravel(),
+        data["bp_stock"].fill_null(False).cast(pl.UInt8).to_numpy(),
+        data["size_grp"].replace_strict(size_codes, return_dtype=pl.UInt8).to_numpy(),
+        data["ret_exc_lead1m"].to_numpy(),
+        n_chars,
+        n_pfs,
+        bp_min_n,
+        CMP_MIN_STD,
+        pf_by_row,
+        medians,
+        cmp_totals,
+    )
+    return pf_by_row.reshape(data.height, n_chars), medians, cmp_totals
+
+
+def _stock_days(data: pl.DataFrame, daily: pl.DataFrame, ret_cols: list[str]) -> pl.DataFrame:
+    """Join daily returns to their formation month and prepare the values to sum.
+
+    Steps:
+        1) Keep daily rows with at least one non-null return column.
+        2) Join to the stock-months of the preceding month, which carry the number ``sm``.
+        3) Sort by ``(date, sm)``, so sums add up in the same order on every run.
+        4) Per return column ``c``, compute the non-null flag ``n_{c}`` and the values
+           ``c``, ``vw_{c}`` = ``c * me`` and ``cap_{c}`` = ``c * me_cap``, with nulls as
+           0 so they add nothing to the sums.
+    Output:
+        DataFrame with ``sm``, ``date`` and the four columns per return column.
+    """
+    return (
+        daily.lazy()
+        .filter(pl.any_horizontal(pl.col(ret_cols).is_not_null()))
+        .join(
+            data.lazy().select("id", "eom", "sm", "me", "me_cap"),
+            left_on=["id", "eom_lag1"],
+            right_on=["id", "eom"],
+            how="inner",
+        )
+        .sort("date", "sm")
+        .select(
+            "sm",
+            "date",
+            *[
                 expr
                 for c in ret_cols
                 for expr in (
-                    pl.col(c).count().alias(f"n_{c}"),
-                    (pl.col("w_ew") * pl.col(c)).sum().alias(f"ret_ew_{c}"),
-                    (pl.col("w_vw") * pl.col(c)).sum().alias(f"ret_vw_{c}"),
-                    (pl.col("w_vw_cap") * pl.col(c)).sum().alias(f"ret_vw_cap_{c}"),
+                    pl.col(c).is_not_null().cast(pl.Float64).alias(f"n_{c}"),
+                    pl.col(c).fill_null(0.0),
+                    (pl.col(c) * pl.col("me")).fill_null(0.0).alias(f"vw_{c}"),
+                    (pl.col(c) * pl.col("me_cap")).fill_null(0.0).alias(f"cap_{c}"),
                 )
-            ]
+            ],
         )
+        .collect()
     )
 
 
-def _split_daily_leg(wide: pl.DataFrame, c: str) -> pl.DataFrame:
-    """Extract one return column's daily portfolio returns from a wide frame.
+def _pf_daily_returns(
+    stock_days: pl.DataFrame,
+    pf_by_row: np.ndarray,
+    months: pl.Series,
+    month_totals: np.ndarray,
+    chars: list[str],
+    ret_cols: list[str],
+    n_pfs: int,
+) -> dict[str, pl.DataFrame]:
+    """Build the daily portfolio returns of all characteristics, per return column.
 
     Description:
-        Rows where column ``c`` had no non-null returns are dropped, since
-        their sums are 0 rather than null.
+        Apply each stock's formation-month EW/VW/VW-cap weight within its portfolio to
+        the following month's daily returns. Weights are not renormalised when a stock
+        has no return on a date. A date where a return column has no values has no row
+        for that column.
     Output:
-        DataFrame with columns ``[pf, date, characteristic, n, ret_ew,
-        ret_vw, ret_vw_cap]``.
+        One DataFrame per return column, with the columns of ``_portfolio_rows``.
     """
-    return wide.filter(pl.col(f"n_{c}") > 0).select(
-        "pf",
+    dates, day_totals = _sum_by_portfolio(
+        stock_days,
         "date",
-        "characteristic",
-        pl.col(f"n_{c}").alias("n"),
-        pl.col(f"ret_ew_{c}").alias("ret_ew"),
-        pl.col(f"ret_vw_{c}").alias("ret_vw"),
-        pl.col(f"ret_vw_cap_{c}").alias("ret_vw_cap"),
+        [f"{prefix}{c}" for c in ret_cols for prefix in ("n_", "", "vw_", "cap_")],
+        pf_by_row,
+        n_pfs,
+    )
+    formation_month = np.searchsorted(
+        months.to_numpy(), dates.dt.month_start().dt.offset_by("-1d").to_numpy()
+    )
+    denominators = month_totals[:, :, :, [0, 4, 5]]
+    return {
+        c: _portfolio_rows(
+            dates, day_totals[:, :, :, 4 * i : 4 * i + 4], denominators, formation_month, chars
+        )
+        for i, c in enumerate(ret_cols)
+    }
+
+
+def _cmp_returns(
+    months: pl.Series, cmp_totals: np.ndarray, chars: list[str], n_groups: int, excntry: str
+) -> pl.DataFrame:
+    """Build a country's characteristics-managed portfolios for one size grouping.
+
+    Description:
+        Scale the return and characteristic sums of ``_rank_by_month`` by half the sum of
+        absolute centered ranks, so each side's weights sum to one. The division is raw
+        rather than ``safe_div``, since a group of infinite values gives NaN in the
+        published series.
+    Output:
+        DataFrame with columns ``[characteristic, size_grp, eom, n_stocks, ret_weighted,
+        signal_weighted, excntry]``, with ``eom`` moved to the return month.
+    """
+    first_slot, labels = _CMP_GROUPS[n_groups]
+    totals = cmp_totals[:, :, first_slot : first_slot + len(labels)]
+    month_i, char_i, group_i = np.nonzero(totals[:, :, :, 0] > 0)
+    sums = totals[month_i, char_i, group_i]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ret_weighted = sums[:, 1] / (sums[:, 3] / 2)
+        signal_weighted = sums[:, 2] / (sums[:, 3] / 2)
+    return pl.DataFrame(
+        {
+            "characteristic": pl.Series(chars).gather(char_i),
+            "size_grp": pl.Series(labels).gather(group_i),
+            "eom": months.gather(month_i),
+            "n_stocks": sums[:, 0].astype(np.uint32),
+            "ret_weighted": ret_weighted,
+            "signal_weighted": signal_weighted,
+        }
+    ).with_columns(
+        pl.col("eom").dt.offset_by("1mo").dt.month_end().alias("eom"),
+        pl.lit(excntry.upper()).alias("excntry"),
     )
 
 
@@ -11989,18 +12487,21 @@ def portfolios(
     source=None,  # Use data from "CRSP", "Compustat" or both: ["CRSP", "COMPUSTAT"]. Default: both.
     wins_ret=True,  # Should Compustat returns be winsorized at the 0.1% and 99.9% of CRSP returns?
     cmp_key=False,  # Create characteristics managed size portfolios?
-    signals=False,  # Create portfolio signals?
-    signals_standardize=False,  # Map chars to [-0.5, +0.5]?,
-    signals_w="vw_cap",  # Weighting for signals: in c("ew", "vw", "vw_cap")
     daily_pf=False,  # Should daily return be estimated
     ind_pf=True,  # Should industry portfolio returns be estimated
     ret_cutoffs=None,  # Data frame for monthly winsorization. Neccesary when wins_ret=T
     ret_cutoffs_daily=None,  # Data frame for daily winsorization. Neccesary when wins_ret=T and daily_pf=T
     daily_oi_cols: list[str]
-    | None = None,  # Extra daily return columns aggregated alongside ret_exc (not winsorized)
+    | None = None,  # Extra daily return columns aggregated alongside ret_exc (not winsorized), at most 3
 ):
     if source is None:
         source = ["CRSP", "COMPUSTAT"]
+    daily_ret_cols = ["ret_exc", *(daily_oi_cols or [])]
+    # Each daily return column sums four values.
+    if daily_pf and 4 * len(daily_ret_cols) > _SUM_VALUES:
+        raise ValueError(
+            f"{len(daily_ret_cols)} daily return columns, at most {_SUM_VALUES // 4} fit"
+        )
     # characerteristics data
     file_path = paths.processed_dir / "characteristics" / f"{excntry}.parquet"
 
@@ -12074,7 +12575,6 @@ def portfolios(
     daily_file_path = (
         paths.processed_dir / "return_data" / "daily_rets_by_country" / f"{excntry}.parquet"
     )
-    daily_ret_cols = ["ret_exc", *(daily_oi_cols or [])]
     if daily_pf:
         daily_lazy = (
             pl.scan_parquet(daily_file_path)
@@ -12129,31 +12629,13 @@ def portfolios(
                 .drop(["p001", "p999", "eom"])
             )
 
-    # Collect the lazy chain once — the single fused read + preprocess pass.
-    data = data_lazy.collect()
+    # Collect the lazy chain once — the single fused read + preprocess pass. Stock-months are
+    # numbered in (month, id) order: the kernels read each month's rows side by side, and the
+    # numbering does not depend on the scan's row order, so sums add up the same way every run.
+    data = data_lazy.collect().sort("eom", "id").with_row_index("sm")
 
     # Collect daily lazy frame if present (needed for industry returns and per-char daily).
     daily = daily_lazy.collect() if daily_lazy is not None else None
-
-    # standardizing signals
-    if signals_standardize and signals:
-        data = (
-            data
-            # Ranking within groups defined by 'eom'
-            .with_columns(
-                [
-                    (pl.col(char).rank(method="min").over("eom").cast(pl.Int64)).alias(char)
-                    for char in chars
-                ]
-            )
-            # normalizing ranks
-            .with_columns(
-                [
-                    (((pl.col(char) / pl.col(char).max()) - pl.lit(0.5)).over("eom")).alias(char)
-                    for char in chars
-                ]
-            )
-        )
 
     if ind_pf:
         ind_gics = _build_industry_monthly_returns(
@@ -12193,175 +12675,28 @@ def portfolios(
                     excntry,
                 )
 
-    # Creating portfolios for all the characteristics.
-    #
-    # Each characteristic builds a per-char lazy pipeline (ECDF -> pf
-    # assignment -> monthly/daily aggregation).  The pipelines accumulate in
-    # ``pf_returns_lazys`` / ``pf_daily_lazys`` and are batch-collected via
-    # ``pl.collect_all`` so polars can execute them concurrently on its thread
-    # pool.  The signals=True branch is the exception: it needs the
-    # intermediate ``sub`` frame alive after each collect to compute
-    # pf_signals, so it collects eagerly per-char.
-    pf_returns_lazys: list[pl.LazyFrame] = []
-    pf_daily_lazys: list[pl.LazyFrame] = []
-    char_pfs: list[dict] = []  # populated only when signals=True
-
-    # Single shared LazyFrame node for the preprocessed data. All per-char
-    # pipelines branch off this node, enabling polars' common-subplan
-    # elimination (CSE) in collect_all to avoid redundant scans.
-    data_lazy = data.lazy()
-
-    for x in chars:
-        # Alias current char into a 'var' column on the per-char subset.
-        # Operate on `sub` only -- `data` is not mutated.
-        if not signals:
-            sub = (
-                data_lazy.with_columns(pl.col(x).cast(pl.Float64).alias("var"))
-                .filter(pl.col("var").is_not_null())
-                .select(
-                    [
-                        "id",
-                        "eom",
-                        "var",
-                        "size_grp",
-                        "ret_exc_lead1m",
-                        "me",
-                        "me_cap",
-                        "bp_stock",
-                    ]
-                )
-            )
-        else:
-            sub = data_lazy.with_columns(pl.col(x).cast(pl.Float64).alias("var")).filter(
-                pl.col("var").is_not_null()
-            )
-
-        sub = sub.with_columns(bp_n=pl.sum("bp_stock").over("eom")).filter(
-            pl.col("bp_n") >= bp_min_n
-        )
-
-        # Skip chars with no data after the bp_n filter.  For the
-        # collect_all path we cannot cheaply check emptiness without an
-        # eager collect, so we optimistically build the lazy pipeline and
-        # drop empty results after the batch collect.  For signals=True
-        # we still need the eager gate because the pf_signals block
-        # requires intermediate access to ``sub``.
-        if signals and sub.limit(1).collect().height == 0:
-            continue
-
-        sub = (
-            add_ecdf(sub)
-            .with_columns(
-                pl.when(pl.col("cdf") == pl.col("cdf").min().over("eom"))
-                .then(0.00000001)
-                .otherwise(pl.col("cdf"))
-                .alias("cdf")
-            )
-            .with_columns(
-                (pl.col("cdf") * pfs).ceil().clip(lower_bound=1, upper_bound=pfs).alias("pf")
-            )
-        )
-
-        # Monthly pf_returns lazy frame for this char.
-        pf_returns_x = (
-            sub.group_by(["pf", "eom"])
-            .agg(
-                [
-                    pl.lit(x).alias("characteristic"),
-                    pl.len().alias("n"),
-                    pl.median("var").alias("signal"),
-                    pl.mean("ret_exc_lead1m").alias("ret_ew"),
-                    ((pl.col("ret_exc_lead1m") * pl.col("me")).sum() / pl.col("me").sum()).alias(
-                        "ret_vw"
-                    ),
-                    (
-                        (pl.col("ret_exc_lead1m") * pl.col("me_cap")).sum() / pl.col("me_cap").sum()
-                    ).alias("ret_vw_cap"),
-                ]
-            )
-            .with_columns(pl.col("eom").dt.offset_by("1mo").dt.month_end().alias("eom"))
-        )
-
-        if signals:
-            # Eager path: collect immediately, then compute pf_signals.
-            op: dict = {}
-            op["pf_returns"] = pf_returns_x.collect()
-
-            if signals_w == "ew":
-                w_expr = (1 / pl.col("eom").len()).over(["pf", "eom"])
-            elif signals_w == "vw":
-                w_expr = (pl.col("me") / pl.col("me").sum()).over(["pf", "eom"])
-            elif signals_w == "vw_cap":
-                w_expr = (pl.col("me_cap") / pl.col("me_cap").sum()).over(["pf", "eom"])
-
-            sub = sub.with_columns(w_expr.alias("w"))
-
-            # Aggregate to one row per (pf, eom): weighted sum of the current
-            # characteristic ``x`` (treating null var values as 0).
-            pf_signals = (
-                sub.group_by(["pf", "eom"])
-                .agg(
-                    (pl.col("w") * pl.col("var").fill_null(0)).sum().alias("signal"),
-                )
-                .with_columns(
-                    pl.lit(x).alias("characteristic"),
-                    pl.col("eom").dt.offset_by("1mo").dt.month_end().alias("eom"),
-                )
-            )
-            op["signals"] = pf_signals.collect()
-
-            if daily_pf:
-                op["pf_daily"] = _pf_daily_lazy(sub, daily, x, daily_ret_cols).collect()
-
-            char_pfs.append(op)
-        else:
-            # Lazy path: accumulate LazyFrames for batch collect_all.
-            pf_returns_lazys.append(pf_returns_x)
-
-            if daily_pf:
-                pf_daily_lazys.append(_pf_daily_lazy(sub, daily, x, daily_ret_cols))
-
-    # Batch-collect per-char lazy pipelines in chunks to bound peak memory
-    # (see COLLECT_CHUNK_SIZE in config.py).
-    pf_returns_df: pl.DataFrame | None = None
-    pf_daily_df: pl.DataFrame | None = None
-
-    if signals and char_pfs:
-        pf_returns_df = pl.concat([op["pf_returns"] for op in char_pfs])
-        if daily_pf:
-            pf_daily_df = pl.concat([op["pf_daily"] for op in char_pfs])
-    elif pf_returns_lazys:
-        ret_dfs: list[pl.DataFrame] = []
-        daily_dfs: list[pl.DataFrame] = []
-        n_chars = len(pf_returns_lazys)
-        n_chunks = (n_chars + COLLECT_CHUNK_SIZE - 1) // COLLECT_CHUNK_SIZE
-        for chunk_idx, start in enumerate(range(0, n_chars, COLLECT_CHUNK_SIZE)):
-            end = min(start + COLLECT_CHUNK_SIZE, n_chars)
-            print(
-                f"   Chars {start + 1}-{end} of {n_chars} (chunk {chunk_idx + 1}/{n_chunks})",
-                flush=True,
-            )
-            chunk_ret = pf_returns_lazys[start:end]
-            chunk_daily = pf_daily_lazys[start:end] if daily_pf else []
-            collected = pl.collect_all(chunk_ret + chunk_daily)
-            n_ret_chunk = len(chunk_ret)
-            ret_dfs.extend(df for df in collected[:n_ret_chunk] if df.height > 0)
-            if daily_pf:
-                daily_dfs.extend(df for df in collected[n_ret_chunk:] if df.height > 0)
-        pf_returns_df = pl.concat(ret_dfs) if ret_dfs else None
-        if daily_pf:
-            pf_daily_df = pl.concat(daily_dfs) if daily_dfs else None
-
+    # One sort per month and characteristic forms the portfolios of all characteristics. Their
+    # monthly and daily returns then come from one pass over the rows.
+    pf_by_row, medians, cmp_totals = _rank_by_month(data, chars, pfs, bp_min_n)
+    data = data.drop(chars)
     output = {}
-    if pf_returns_df is not None:
-        output["pf_returns"] = pf_returns_df
-    if daily_pf and pf_daily_df is not None:
+    months, month_totals = _month_totals(data, pf_by_row, pfs)
+    pf_returns = _pf_returns(months, month_totals, medians, chars)
+    if pf_returns.height > 0:
+        output["pf_returns"] = pf_returns
+    if daily_pf:
         # One long frame per return column: ret_exc -> "pf_daily", each
         # O/I column c -> "pf_daily_{c}". Empty legs are left out.
-        for c in daily_ret_cols:
-            leg = _split_daily_leg(pf_daily_df, c)
+        stock_days = _stock_days(data, daily, daily_ret_cols)
+        del data, daily
+        legs = _pf_daily_returns(
+            stock_days, pf_by_row, months, month_totals, chars, daily_ret_cols, pfs
+        )
+        for c, leg in legs.items():
             if leg.height > 0:
                 output["pf_daily" if c == "ret_exc" else f"pf_daily_{c}"] = leg
+        del stock_days
+
     # Handle industry portfolio returns if ind_pf is true
     if ind_pf:
         output["gics_returns"] = ind_gics
@@ -12372,55 +12707,13 @@ def portfolios(
             if excntry.lower() == "usa":
                 output["ff49_daily"] = ind_ff49_daily
 
-    # Add excntry to pf_returns and pf_daily, and aggregate signals
-    if len(output) > 0:
-        if "pf_returns" in output and output["pf_returns"].height > 0:
-            output["pf_returns"] = output["pf_returns"].with_columns(
-                pl.lit(excntry).str.to_uppercase().alias("excntry")
-            )
-            for key in [k for k in output if k.startswith("pf_daily")]:
-                output[key] = output[key].with_columns(
-                    pl.lit(excntry).str.to_uppercase().alias("excntry")
-                )
-            if signals and char_pfs:
-                output["signals"] = pl.concat([op["signals"] for op in char_pfs]).with_columns(
-                    pl.lit(excntry).str.to_uppercase().alias("excntry")
-                )
+    # Add excntry to pf_returns and pf_daily
+    for key in [k for k in output if k == "pf_returns" or k.startswith("pf_daily")]:
+        output[key] = output[key].with_columns(pl.lit(excntry).str.to_uppercase().alias("excntry"))
 
     if cmp_key:
-        # Vectorized over all characteristics: unpivot to long form, then compute
-        # ranks/weights/aggregates in a single lazy pipeline.
-        grp = ["characteristic", "size_grp", "eom"]
-        n_grp = pl.len().over(grp)
-        p_rank = pl.col("var").rank("average").over(grp) / (n_grp + 1)
-        p_rank_dev = p_rank - p_rank.mean().over(grp)
-        weight = p_rank_dev / (p_rank_dev.abs().sum().over(grp) / 2)
-
-        output["cmp"] = (
-            data.lazy()
-            .unpivot(
-                on=chars,
-                index=["eom", "size_grp", "ret_exc_lead1m"],
-                variable_name="characteristic",
-                value_name="var",
-            )
-            .filter(pl.col("var").is_not_null())
-            .with_columns(weight.alias("weight"))
-            .group_by(grp)
-            .agg(
-                pl.len().alias("n_stocks"),
-                (pl.col("ret_exc_lead1m") * pl.col("weight")).sum().alias("ret_weighted"),
-                (pl.col("var") * pl.col("weight")).sum().alias("signal_weighted"),
-                pl.col("var").std().alias("sd_var"),
-            )
-            .filter(pl.col("sd_var") != 0)
-            .drop("sd_var")
-            .with_columns(
-                pl.col("eom").dt.offset_by("1mo").dt.month_end().alias("eom"),
-                pl.lit(excntry.upper()).alias("excntry"),
-            )
-            .collect()
-        )
+        for n_groups in CMP_SIZE_GROUPS:
+            output[f"cmp_{n_groups}"] = _cmp_returns(months, cmp_totals, chars, n_groups, excntry)
 
     return output
 
@@ -12540,12 +12833,13 @@ def _build_regional_loop(
 def _stack_outputs(
     portfolio_data: dict,
     key: str,
-    sort_cols: list[str],
+    sort_cols: list[str] | None,
     select_cols: list[str] | None = None,
 ) -> pl.DataFrame | None:
     """Concatenate per-country sub-results under `key`, sort, optionally project.
 
-    Returns None when no country produced this key.
+    ``sort_cols=None`` keeps the concatenation order, for pieces that already come sorted
+    from countries in sorted order. Returns None when no country produced this key.
     """
     pieces = [d[key] for d in portfolio_data.values() if d and key in d]
     if not pieces:
@@ -12553,7 +12847,7 @@ def _stack_outputs(
     out = pl.concat(pieces)
     if select_cols is not None:
         out = out.select(select_cols)
-    return out.sort(sort_cols)
+    return out if sort_cols is None else out.sort(sort_cols)
 
 
 def _write_filtered(
@@ -12579,11 +12873,18 @@ def _write_split_by_key(
         Apply the `date_col <= end_date` filter, then for each unique key value
         that is neither None nor the empty string, write the matching rows to
         ``{folder_path}/{key}.parquet``. Numeric/boolean keys (including 0 and
-        False) are kept; only None and "" are skipped.
+        False) are kept; only None and "" are skipped. A key with no rows up to
+        ``end_date`` gets an empty file. The files are written together, in one
+        ``collect_all`` of lazy sinks.
     """
     folder_path.mkdir(parents=True, exist_ok=True)
-    for key in df[key_col].unique():
-        if key is None or key == "":
-            continue
-        filtered = df.filter((pl.col(date_col) <= end_date) & (pl.col(key_col) == key))
-        write_dataframe(filtered, folder_path / f"{key}.parquet")
+    rows = df.lazy().filter(pl.col(date_col) <= end_date)
+    pl.collect_all(
+        [
+            rows.filter(pl.col(key_col) == key).sink_parquet(
+                folder_path / f"{key}.parquet", lazy=True
+            )
+            for key in df[key_col].unique()
+            if key is not None and key != ""
+        ]
+    )

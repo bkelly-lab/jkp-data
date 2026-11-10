@@ -1,7 +1,5 @@
 from pathlib import Path
 
-import polars as pl
-
 from .aux_functions import (
     acc_chars_list,
     add_ret_exc_wins,
@@ -58,9 +56,6 @@ def run_pipeline(
     *, persistent_connection: bool = False, max_workers: int = 1, output_dir: Path
 ) -> None:
     """Run the full JKP data generation pipeline."""
-    # Polars 2 runs a bare collect() on the streaming engine, whose parallel reductions
-    # are not bit-reproducible; keep the in-memory default of Polars 1.x.
-    pl.Config.set_engine_affinity("in-memory")
     paths = DataPaths(base_dir=output_dir.resolve())
     creds = get_wrds_credentials()
 

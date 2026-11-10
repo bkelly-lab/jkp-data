@@ -23,12 +23,6 @@ MAIN_FILTERS = {
     "exch_main": 1,
 }
 
-# Number of per-characteristic lazy pipelines collected concurrently per
-# chunk in `portfolios()`' chunked `collect_all` logic (bounds peak memory
-# of sort buffers / join hash tables when running over hundreds of
-# characteristics).
-COLLECT_CHUNK_SIZE = 16
-
 # Number of portfolios characteristics are sorted into (e.g. 3 -> tertiles).
 PORTFOLIO_PFS = 3
 
@@ -52,8 +46,24 @@ REGIONAL_COUNTRIES_MIN = 3
 # inflation / hyperinflation regimes that distort returns).
 REGIONAL_COUNTRY_EXCL = ("ZWE", "VEN")
 
-# Canonical list of stock characteristics that `portfolios()` constructs
-# breakpoints / portfolio sorts / HML-LMS factors for. Production default;
+# Themes version that keeps the old `cmp` file: the unsigned characteristics-managed
+# portfolios (#297). Every other version writes `lms_cmp_{n}`, signed as `lms` signs `hml`.
+UNSIGNED_CMP_VERSION = "v0"
+# That version's file keeps its layout from before #323: US rows, five size groups.
+UNSIGNED_CMP_SIZE_GROUPS = 5
+
+# Size groupings of the characteristics-managed portfolios (#323), one file each:
+# everything (`all`), `big` and `small`, or the five groups of `size_grp`.
+CMP_SIZE_GROUPS = (1, 2, 5)
+
+# A characteristics-managed group has a row only if the sample standard deviation of its
+# characteristic is above this. Below it, the ranks would mostly order rounding noise. The value
+# is our choice (#324), it is absolute, and it applies to every characteristic.
+CMP_MIN_STD = 1e-10
+
+# The 153 characteristics of JKP (2023) (themes v0), sorted first. `jkp portfolio`
+# also sorts every other characteristic in a released themes version, and the
+# themes files decide which factors are signed. Production default;
 # tests override via `monkeypatch.setattr(..., PORTFOLIO_CHARS, ...)`.
 PORTFOLIO_CHARS = [
     "age",
@@ -292,6 +302,20 @@ FF_CCM_BACKDATE_FROM = 1963
 FF_CCM_BACKDATE_THROUGH = 1966
 FF_CCM_BACKDATE_MAX_YEARS = 5
 
+# Floor on the standard deviation of raw USD `ret` over a rolling window. At or
+# below it the window counts as constant and the return-based statistics
+# (betas, residual vols and skews, correlations, residual momentum) are null.
+# Our choice (#338): on the 2026-11 data, 1e-6 nulls no daily window beyond the
+# exact-constant / 90%-zero rule and only the 11 residual-momentum windows per
+# horizon whose returns vary by about 1e-9.
+RET_MIN_STD = 1e-6
+
+# Floor on the standard deviation of lagged NI/AT, the regressor of earnings
+# persistence. At or below it `ni_ar1` and `ni_ivol` are null. Our choice (#338):
+# on the 2026-11 data the windows below it vary by at most 3e-8 and give
+# slopes near 4e5; the next windows vary by 3e-6 or more.
+NI_AT_MIN_STD = 1e-6
+
 PORTFOLIO_SETTINGS = {
     "end_date": END_DATE,
     "pfs": PORTFOLIO_PFS,
@@ -299,8 +323,7 @@ PORTFOLIO_SETTINGS = {
     "wins_ret": True,
     "bps": "non_mc",
     "bp_min_n": PORTFOLIO_BP_MIN_N,
-    "cmp": {"us": True, "int": False},
-    "signals": {"us": False, "int": False, "standardize": True, "weight": "vw_cap"},
+    "cmp": {"us": True, "int": True},
     "regional_pfs": {
         "country_excl": list(REGIONAL_COUNTRY_EXCL),
         "country_weights": "market_cap",

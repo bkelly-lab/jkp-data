@@ -73,11 +73,6 @@ def _group_starts(df: pl.DataFrame, group_cols: list[str]) -> np.ndarray:
     return np.concatenate(([0], changes, [n])).astype(np.int64)
 
 
-def _sort_to_spill(df: pl.LazyFrame, sort_keys: list[str], path: Path) -> None:
-    """Streaming-sort the input by sort_keys to a spill parquet."""
-    df.sort(sort_keys).sink_parquet(path, compression=CORRECTION_SPILL_COMPRESSION)
-
-
 # Decimal-error corrections
 def _correct_variable_arrays(
     values: np.ndarray,
@@ -149,17 +144,22 @@ def _correct_variable_arrays(
 
 
 def _load_correction_inputs(
-    sorted_path: Path, group_cols: list[str], sort_col: str
+    df: pl.LazyFrame, group_cols: list[str], sort_col: str
 ) -> tuple[pl.DataFrame, np.ndarray]:
-    """Collect the correction value columns as f64; return (data, starts)."""
-    lf = pl.scan_parquet(sorted_path)
-    schema_names = lf.collect_schema().names()
+    """Collect the keys and correction value columns (as f64), sorted by security and
+    date; _row is each row's position in df. Return (data, starts)."""
+    schema_names = df.collect_schema().names()
     value_cols = [
         v for v in ("trfd", "qunit", "adrrc", "ajexdi", "prccd", "cshoc") if v in schema_names
     ]
-    data = lf.select(
-        group_cols + [sort_col] + [pl.col(c).cast(pl.Float64) for c in value_cols]
-    ).collect()
+    data = (
+        df.with_row_index("_row")
+        .select(
+            ["_row"] + group_cols + [sort_col] + [pl.col(c).cast(pl.Float64) for c in value_cols]
+        )
+        .sort(group_cols + [sort_col])
+        .collect()
+    )
     return data, _group_starts(data, group_cols)
 
 
@@ -211,17 +211,18 @@ def _run_decimal_correction(
 
 
 def _reattach_corrected(
-    sorted_path: Path, corrected: dict[str, np.ndarray], spill_dir: Path
+    df: pl.LazyFrame, row: pl.Series, corrected: dict[str, np.ndarray], spill_dir: Path
 ) -> pl.LazyFrame:
-    """Splice corrected columns over the originals (which move to the end)."""
+    """Splice corrected columns over the originals (which move to the end), in df's row order."""
     corr_path = spill_dir / "__corr_corrected_cols.parquet"
-    pl.DataFrame(corrected).with_columns(
-        [pl.col(name).fill_nan(None) for name in corrected]
-    ).write_parquet(corr_path, compression=CORRECTION_SPILL_COMPRESSION)
-    return pl.concat(
-        [pl.scan_parquet(sorted_path).drop(list(corrected)), pl.scan_parquet(corr_path)],
-        how="horizontal",
+    (
+        pl.DataFrame(corrected)
+        .with_columns([pl.col(name).fill_nan(None) for name in corrected], _row=row)
+        .sort("_row")
+        .drop("_row")
+        .write_parquet(corr_path, compression=CORRECTION_SPILL_COMPRESSION)
     )
+    return pl.concat([df.drop(list(corrected)), pl.scan_parquet(corr_path)], how="horizontal")
 
 
 def correct_decimal_errors(
@@ -240,8 +241,12 @@ def correct_decimal_errors(
         implementing the decimal-error corrections of Section 6 of Bessembinder
         et al. (2023) Data Appendix. Correct TRFD, QUNIT and (NA only) ADRRC
         independently, then adjPRC = PRCCD/AJEXDI and adjCSHO = CSHOC*AJEXDI,
-        and reconstruct PRCCD/CSHOC. Memory-bounded array path using spill
-        files in spill_dir (required).
+        and reconstruct PRCCD/CSHOC. Only the keys and value columns are
+        sorted and collected; spill files go to spill_dir (required).
+        df is read twice, once to collect the kernel columns and once inside
+        the returned plan to splice the results back by row position, so it
+        must yield the same rows in the same order both times (e.g. a scan of
+        a file that is not overwritten before the result is collected or sunk).
     Args:
         correction_method: 'multiplier' (fixed 10x/100x/1000x multipliers),
             'interpolation' (endpoint geometric mean), 'floor' (multipliers,
@@ -249,7 +254,8 @@ def correct_decimal_errors(
         has_adrrc: correct the ADRRC column (NA data only).
         variation_threshold: multi-period interior-variation bound.
     Output:
-        Corrected LazyFrame (corrected columns move to the end; NaN -> null).
+        Corrected LazyFrame in df's row order (corrected columns move to the
+        end; NaN -> null).
     """
     if correction_method not in DECIMAL_CORRECTION_METHODS:
         raise ValueError(
@@ -260,25 +266,25 @@ def correct_decimal_errors(
     group_cols = group_cols or ["gvkey", "iid"]
     window_sizes = window_sizes if window_sizes is not None else DECIMAL_DETECTION_WINDOWS
 
-    sorted_path = spill_dir / "__corr_sorted.parquet"
-    _sort_to_spill(df, group_cols + [sort_col], sorted_path)
-    data, starts = _load_correction_inputs(sorted_path, group_cols, sort_col)
+    data, starts = _load_correction_inputs(df, group_cols, sort_col)
     corrected = _run_decimal_correction(
         data, starts, window_sizes, has_adrrc, correction_method, variation_threshold
     )
-    return _reattach_corrected(sorted_path, corrected, spill_dir)
+    return _reattach_corrected(df, data["_row"], corrected, spill_dir)
 
 
 # Observation filters
 def _load_filter_inputs(
-    sorted_path: Path, group_cols: list[str], sort_col: str, country_col: str
+    df: pl.LazyFrame, group_cols: list[str], sort_col: str, country_col: str
 ) -> pl.DataFrame:
-    """Collect kernel inputs in one pass: f64 values, int32 date, country flags."""
+    """Collect kernel inputs in one pass, sorted by security and date: f64 values, int32
+    date, country flags; _row is each row's position in df."""
     value_cols = ["ajexdi", "prc", "me", "ri", "cshoc", "dolvol"]
     return (
-        pl.scan_parquet(sorted_path)
+        df.with_row_index("_row")
         .select(
-            group_cols
+            ["_row"]
+            + group_cols
             + [sort_col]
             + [pl.col(c).cast(pl.Float64) for c in value_cols]
             + [
@@ -288,6 +294,7 @@ def _load_filter_inputs(
                 (pl.col(country_col) == "CHN").fill_null(False).alias("chn"),
             ]
         )
+        .sort(group_cols + [sort_col])
         .collect()
     )
 
@@ -331,30 +338,19 @@ def _build_filter_inputs(data: pl.DataFrame, group_cols: list[str]) -> FilterInp
     )
 
 
-def _verify_presorted_order(
-    data: pl.DataFrame, group_cols: list[str], inp: FilterInputs, sorted_path: Path
-) -> None:
-    """Trusting an externally sorted spill: a stale or misordered file would
-    silently corrupt the panel, so check groups are contiguous and dates rise."""
-    n_groups = data.select(pl.struct(group_cols).n_unique()).item()
-    if len(inp.starts) - 1 != n_groups:
-        raise ValueError(f"presorted file {sorted_path}: groups are not contiguous")
-    d = inp.dates
-    interior = np.ones(len(d), dtype=np.bool_)
-    interior[inp.starts[:-1]] = False  # group starts are exempt from the diff check
-    idx = np.flatnonzero(interior)
-    if not np.all(d[idx] >= d[idx - 1]):
-        raise ValueError(f"presorted file {sorted_path}: dates not sorted within a group")
-
-
-def _reattach_reason(sorted_path: Path, reason: np.ndarray, spill_dir: Path) -> pl.LazyFrame:
-    """Attach the kernel's keep/remove decision and filter to the kept rows."""
+def _reattach_reason(
+    df: pl.LazyFrame, row: pl.Series, reason: np.ndarray, spill_dir: Path
+) -> pl.LazyFrame:
+    """Attach the kernel's keep/remove decision in df's row order and keep the kept rows."""
     reason_path = spill_dir / "__corr_filter_reason.parquet"
-    pl.DataFrame({"_reason": reason}).write_parquet(
-        reason_path, compression=CORRECTION_SPILL_COMPRESSION
+    (
+        pl.DataFrame({"_reason": reason, "_row": row})
+        .sort("_row")
+        .drop("_row")
+        .write_parquet(reason_path, compression=CORRECTION_SPILL_COMPRESSION)
     )
     return (
-        pl.concat([pl.scan_parquet(sorted_path), pl.scan_parquet(reason_path)], how="horizontal")
+        pl.concat([df, pl.scan_parquet(reason_path)], how="horizontal")
         .filter(pl.col("_reason") == 0)
         .drop("_reason")
     )
@@ -366,7 +362,6 @@ def drop_unreliable_observations(
     sort_col: str = "datadate",
     country_col: str = "excntry",
     spill_dir: Path | None = None,
-    presorted_path: Path | None = None,
 ) -> pl.LazyFrame:
     """
     Description:
@@ -374,32 +369,23 @@ def drop_unreliable_observations(
         of Section 8 of Bessembinder et al. (2023) Data Appendix. Runs the full
         filter chain as one numba pass per security, preserving
         sequential-survivor semantics. Memory-bounded array path.
+        df is read twice, once to collect the kernel columns and once inside
+        the returned plan to filter by row position, so it must yield the same
+        rows in the same order both times (e.g. a scan of a file that is not
+        overwritten before the result is collected or sunk).
     Steps:
-        1) Streaming-sort input to a spill file (or verify presorted_path).
+        1) Collect the kernel columns, sorted by security and date.
         2) Build typed NumPy inputs (kernel arrays + low-volume decision).
-        3) Run run_all_filters -> per-row keep/remove; filter lazily.
-    Note:
-        With presorted_path, the panel is read from that file and df is NOT
-        re-read — the caller must have written df's data there, sorted by
-        group_cols + sort_col.
+        3) Run run_all_filters -> per-row keep/remove; filter df lazily, in its row order.
     Output:
-        Filtered LazyFrame.
+        Filtered LazyFrame in df's row order.
     """
     group_cols = group_cols or ["gvkey", "iid"]
     if spill_dir is None:
         raise ValueError("drop_unreliable_observations requires spill_dir")
-    if presorted_path is not None and not presorted_path.exists():
-        raise FileNotFoundError(f"presorted_path does not exist: {presorted_path}")
 
-    sorted_path = presorted_path or (spill_dir / "__corr_filter_sorted.parquet")
-    if presorted_path is None:
-        _sort_to_spill(df, group_cols + [sort_col], sorted_path)
-
-    data = _load_filter_inputs(sorted_path, group_cols, sort_col, country_col)
+    data = _load_filter_inputs(df, group_cols, sort_col, country_col)
     inp = _build_filter_inputs(data, group_cols)
-    if presorted_path is not None:
-        _verify_presorted_order(data, group_cols, inp, sorted_path)
-
     reason = np.zeros(data.height, dtype=np.int8)
     run_all_filters(
         inp.starts,
@@ -415,7 +401,7 @@ def drop_unreliable_observations(
         inp.chn,
         inp.gap_days,
     )
-    return _reattach_reason(sorted_path, reason, spill_dir)
+    return _reattach_reason(df, data["_row"], reason, spill_dir)
 
 
 # Numba kernels: per-security loops over date-sorted array slices, parallelized
