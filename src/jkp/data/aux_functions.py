@@ -35,6 +35,7 @@ from .compustat_correction import (
 )
 from .config import (
     CALENDAR_RUN_MAX_GAP_DAYS,
+    CCM_LINKTYPES,
     CMP_MIN_STD,
     CMP_SIZE_GROUPS,
     CORRECTION_SPILL_COMPRESSION,
@@ -9965,41 +9966,28 @@ def _ff_port_year() -> pl.Expr:
     )
 
 
-def _ff_count_gate() -> pl.Expr:
-    """Two-years-on-Compustat gate for the B/M and OP sorts: not applied to
-    the US (French's modern portfolio descriptions never state it); ROW
-    keeps the JKP convention (count >= 2)."""
-    return (pl.col("excntry") == US_EXCNTRY) | (pl.col("count") >= 2)
-
-
 def _ff_bm_eligible() -> pl.Expr:
-    """B/M sort eligibility: positive book-to-market and me, count gate, in the FF
-    universe in December t-1 (dec_universe)."""
-    return (
-        (pl.col("beme") > 0)
-        & (pl.col("me") > 0)
-        & _ff_count_gate()
-        & pl.col("dec_universe").fill_null(False)
-    )
+    """B/M sort eligibility: positive book-to-market and me, in the FF universe in
+    December t-1 (dec_universe)."""
+    return (pl.col("beme") > 0) & (pl.col("me") > 0) & pl.col("dec_universe").fill_null(False)
 
 
 def _ff_op_eligible() -> pl.Expr:
     """OP sort eligibility: positive June and Dec(t-1) me, in the FF universe in
-    December t-1, positive BE, count gate, op present. French requires Dec(t-1) and
-    June ME for all four FF5 sorts."""
+    December t-1, positive BE, op present. French requires Dec(t-1) and June ME
+    for all four FF5 sorts."""
     return (
         (pl.col("me") > 0)
         & (pl.col("dec_me") > 0).fill_null(False)
         & pl.col("dec_universe").fill_null(False)
         & (pl.col("be") > 0)
-        & _ff_count_gate()
         & pl.col("op").is_not_null()
     )
 
 
 def _ff_inv_eligible() -> pl.Expr:
     """INV sort eligibility: positive June and Dec(t-1) me, in the FF universe in
-    December t-1, inv present (no count gate)."""
+    December t-1, inv present."""
     return (
         (pl.col("me") > 0)
         & (pl.col("dec_me") > 0).fill_null(False)
@@ -10049,7 +10037,7 @@ def _ff_us_accounting(paths: DataPaths, ff5: bool) -> pl.LazyFrame:
     before 2009 mib is the total.
     INV = Δat / at_lag with strict 1-year FY gap.
 
-    Output: Lazy [gvkey, datadate, year, be, (op, inv,) count].
+    Output: Lazy [gvkey, datadate, year, be, (op, inv)].
     """
     base = ["pstkrv", "pstkl", "pstk", "seq", "ceq", "lt", "at", "txditc"]
     extra = ["revt", "cogs", "xsga", "xint", "mib", "mibt", "mibn"]
@@ -10119,22 +10107,21 @@ def _ff_us_accounting(paths: DataPaths, ff5: bool) -> pl.LazyFrame:
         )
 
     keep = ["op", "inv"] if ff5 else []
-    return lf.with_columns(count=pl.int_range(pl.len()).over("gvkey") + 1).select(
-        ["gvkey", "datadate", "year", "be", *keep, "count"]
-    )
+    return lf.select(["gvkey", "datadate", "year", "be", *keep])
 
 
 def _ff_ccm_link(paths: DataPaths, comp: pl.LazyFrame) -> pl.DataFrame:
     """Link Compustat gvkey→permno via CCM; dedup to one row per (permno, year).
 
+    Links: CCM_LINKTYPES (LC/LU/LS, as the accounting stage), primary P or C.
     Dedup ladder: in-window > backdated (FF_CCM_BACKDATE_*), then P > C on
     (datadate, permno), then last entry per (permno, year).
 
-    Output: Eager [gvkey, permno, year, datadate, be, (op, inv,) count, ...].
+    Output: Eager [gvkey, permno, year, datadate, be, (op, inv,) ...].
     """
     lnk = (
         pl.scan_parquet(paths.raw_tables_dir / "crsp_ccmxpf_lnkhist.parquet")
-        .filter(pl.col("linktype").str.starts_with("L") & pl.col("linkprim").is_in(["P", "C"]))
+        .filter(pl.col("linktype").is_in(CCM_LINKTYPES) & pl.col("linkprim").is_in(["P", "C"]))
         .select("gvkey", "lpermno", "linkprim", "linkdt", "linkenddt")
         .with_columns(
             pl.col("lpermno").cast(pl.Int64),
@@ -10185,16 +10172,16 @@ def _ff_merge_dff_be(
 
     DFF be(t) is aligned to year t−1 so the June join pairs it with Dec(t−1) ME.
     Value-level merge: be = coalesce(dff.be, comp.be); Compustat row keeps its
-    op/inv/count. Anti-join appends pure-DFF rows.
+    op/inv. Anti-join appends pure-DFF rows.
 
-    Output: Eager [gvkey, permno, year, datadate, be, (op, inv,) count, ...].
+    Output: Eager [gvkey, permno, year, datadate, be, (op, inv,) ...].
     """
     if not use_dff:
         return comp_ccm
 
     # DFF hand-collected BE union (see ff_load_compustat_us docstring step 6)
     keep = ["op", "inv"] if ff5 else []
-    select_cols = ["gvkey", "permno", "year", "datadate", "be", *keep, "count"]
+    select_cols = ["gvkey", "permno", "year", "datadate", "be", *keep]
     dff = (
         load_dff_be(dff_path)
         # Match the US Compustat path: BE < 0 → null → dropped. BE == 0 flows
@@ -10209,8 +10196,6 @@ def _ff_merge_dff_be(
             # join (cyp1 = year + 1 = t = june_year) pairs it with Dec(t−1) ME.
             year=pl.col("year") - 1,
             gvkey=pl.lit(None, dtype=pl.Utf8),
-            # No Compustat history; the US sorts apply no count gate.
-            count=pl.lit(None, dtype=pl.Int64),
             **{c: pl.lit(None, dtype=pl.Float64) for c in keep},
         )
         .select(select_cols)
@@ -10233,7 +10218,7 @@ def _ff_merge_dff_be(
         )
     # be = coalesce(dff.be, comp.be) on (permno, year); sources agree where both are
     # non-null (median |log ratio| ~ 0). Typical collision: the CCM-linked Compustat
-    # row has BE NULL, so DFF fills BE while that row keeps op/inv/count for FF5.
+    # row has BE NULL, so DFF fills BE while that row keeps op/inv for FF5.
     keys = ["permno", "year"]
     comp_pool = (
         comp_pool.select(select_cols)
@@ -10262,7 +10247,7 @@ def ff_load_compustat_us(
     $M, identical to Compustat and to the panel's me. Modern Compustat backfill
     creates collisions resolved by be = coalesce(dff.be, comp.be).
 
-    Output: Eager [gvkey, permno, year, datadate, be, (op, inv,) count, ...].
+    Output: Eager [gvkey, permno, year, datadate, be, (op, inv,) ...].
     """
     comp_ccm = _ff_ccm_link(paths, acc_us.lazy())
     return _ff_merge_dff_be(comp_ccm, ff5, use_dff, dff_path)
@@ -10505,7 +10490,7 @@ def ff_load_world_compustat(paths: DataPaths) -> pl.DataFrame:
         2) Full-join jkp acc_std_ann; dedup by (gvkey, year) preferring funda-sourced
            rows then latest datadate.
     Output:
-        Eager [gvkey, datadate, year, be, op, inv, count] (BE in USD, OP/INV unitless).
+        Eager [gvkey, datadate, year, be, op, inv] (BE in USD, OP/INV unitless).
 
     Book equity, operating profitability, and investment are all sourced from jkp's
     standardized panel rather than the raw-funda formulas: be = be_x (nulled when BE<=0),
@@ -10559,8 +10544,7 @@ def ff_load_world_compustat(paths: DataPaths) -> pl.DataFrame:
             pl.col("be").is_not_null() | pl.col("op").is_not_null() | pl.col("inv").is_not_null()
         )
         .sort(["gvkey", "datadate"])
-        .with_columns(count=pl.int_range(pl.len()).over("gvkey") + 1)
-        .select("gvkey", "datadate", "year", "be", "op", "inv", "count")
+        .select("gvkey", "datadate", "year", "be", "op", "inv")
     )
 
 
@@ -10597,8 +10581,8 @@ def ff_annual_characteristics(
 ) -> pl.DataFrame:
     """
     Description:
-        FF book equity, operating profitability, investment, Compustat count and
-        December ME for every security, keyed by the July-June year they apply to:
+        FF book equity, operating profitability, investment and December ME for
+        every security, keyed by the July-June year they apply to:
         port_year y uses fiscal year y-1 accounting and December y-1 ME. The
         published characteristics and the June sorts both read this table, so a
         sort value always equals the published value.
@@ -10610,13 +10594,13 @@ def ff_annual_characteristics(
            of the company), the security's me elsewhere; no December row, no
            December ME. dec_universe flags a December row in the FF universe: in
            the US, the permno is in FF's CRSP sample that month (crsp_m, from
-           ff_load_crsp_panel); elsewhere, JKP's main sample. Like count, it is a
-           sort screen, not a formula input.
+           ff_load_crsp_panel); elsewhere, JKP's main sample. It is a sort
+           screen, not a formula input.
         3) Full join on (id, port_year); beme = be / dec_me.
     Output:
-        Eager [id, port_year, be, op, inv, count, dec_me, dec_universe, beme].
+        Eager [id, port_year, be, op, inv, dec_me, dec_universe, beme].
     """
-    acc_cols = ["be", "op", "inv", "count"]
+    acc_cols = ["be", "op", "inv"]
     by_gvkey = pl.concat(
         [
             acc_us.lazy().select("gvkey", "year", *acc_cols, us=pl.lit(True)),
@@ -11372,6 +11356,10 @@ def gen_ff_data(
           December t-1 row, with no fallback to earlier months, so a stock halted
           over June or December leaves that year's sorts. The B/M, OP and INV
           sorts also need the stock in the universe in December t-1.
+        - No minimum number of years on Compustat, in any country. Fama and
+          French (1993) required two, against the backfill bias of firms Compustat
+          adds with past years of data; their later descriptions of the factors
+          and French's data library state no such rule.
         - Timing: a characteristic at eom t is the value that sorted the portfolio
           held in month t, so the annual ones are constant from July to June.
         - Daily FF3/FF5 hold the monthly June portfolios; only returns and weights

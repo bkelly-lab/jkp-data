@@ -60,13 +60,9 @@ from jkp.data.config import (
 def _apply_eligible(df: pl.DataFrame, expr: pl.Expr) -> pl.Series:
     """Evaluate an eligibility Expr on df, returning the boolean Series.
 
-    Frames without an excntry column get a ROW default ("GBR") so the
-    bm/op count gate (US-exempt) keeps its count >= 2 semantics; frames
-    without dec_me / dec_universe get a positive Dec(t-1) ME in the December
-    universe so the gates test their other conditions.
+    Frames without dec_me / dec_universe get a positive Dec(t-1) ME in the
+    December universe so the gates test their other conditions.
     """
-    if "excntry" not in df.columns:
-        df = df.with_columns(excntry=pl.lit("GBR"))
     if "dec_me" not in df.columns:
         df = df.with_columns(dec_me=pl.lit(1.0))
     if "dec_universe" not in df.columns:
@@ -83,61 +79,43 @@ class TestFFBmEligible:
     """Tests for _ff_bm_eligible()."""
 
     def test_all_conditions_met(self):
-        """Returns True when beme>0, me>0, count>=2."""
-        df = pl.DataFrame({"beme": [1.0], "me": [1.0], "count": [2]})
+        """Returns True when beme>0, me>0, in the December universe."""
+        df = pl.DataFrame({"beme": [1.0], "me": [1.0]})
         result = _apply_eligible(df, _ff_bm_eligible())
         assert result[0] is True
 
     def test_beme_zero_fails(self):
         """Returns False when beme == 0."""
-        df = pl.DataFrame({"beme": [0.0], "me": [1.0], "count": [2]})
+        df = pl.DataFrame({"beme": [0.0], "me": [1.0]})
         result = _apply_eligible(df, _ff_bm_eligible())
         assert result[0] is False
 
     def test_beme_negative_fails(self):
         """Returns False when beme < 0."""
-        df = pl.DataFrame({"beme": [-1.0], "me": [1.0], "count": [2]})
+        df = pl.DataFrame({"beme": [-1.0], "me": [1.0]})
         result = _apply_eligible(df, _ff_bm_eligible())
         assert result[0] is False
 
     def test_beme_null_fails(self):
         """Returns null (not True) when beme is null — Polars null propagation."""
         df = pl.DataFrame(
-            {"beme": [None], "me": [1.0], "count": [2]},
-            schema={"beme": pl.Float64, "me": pl.Float64, "count": pl.Int64},
+            {"beme": [None], "me": [1.0]},
+            schema={"beme": pl.Float64, "me": pl.Float64},
         )
         result = _apply_eligible(df, _ff_bm_eligible())
         assert result[0] is not True
 
     def test_me_zero_fails(self):
         """Returns False when me == 0."""
-        df = pl.DataFrame({"beme": [1.0], "me": [0.0], "count": [2]})
+        df = pl.DataFrame({"beme": [1.0], "me": [0.0]})
         result = _apply_eligible(df, _ff_bm_eligible())
         assert result[0] is False
 
     def test_me_negative_fails(self):
         """Returns False when me < 0."""
-        df = pl.DataFrame({"beme": [1.0], "me": [-1.0], "count": [2]})
+        df = pl.DataFrame({"beme": [1.0], "me": [-1.0]})
         result = _apply_eligible(df, _ff_bm_eligible())
         assert result[0] is False
-
-    def test_count_one_fails(self):
-        """ROW: returns False when count < 2 (count == 1)."""
-        df = pl.DataFrame({"beme": [1.0], "me": [1.0], "count": [1]})
-        result = _apply_eligible(df, _ff_bm_eligible())
-        assert result[0] is False
-
-    def test_count_two_passes(self):
-        """ROW: returns True when count == 2 (boundary)."""
-        df = pl.DataFrame({"beme": [1.0], "me": [1.0], "count": [2]})
-        result = _apply_eligible(df, _ff_bm_eligible())
-        assert result[0] is True
-
-    def test_us_count_one_passes(self):
-        """US is exempt from the FF (1993) two-year count gate."""
-        df = pl.DataFrame({"beme": [1.0], "me": [1.0], "count": [1], "excntry": [US_EXCNTRY]})
-        result = _apply_eligible(df, _ff_bm_eligible())
-        assert result[0] is True
 
     def test_vectorised_mixed(self):
         """Null beme propagates as null; False inputs produce False."""
@@ -145,7 +123,6 @@ class TestFFBmEligible:
             {
                 "beme": [1.0, -1.0, 1.0, None],
                 "me": [1.0, 1.0, 0.0, 1.0],
-                "count": [3, 3, 3, 3],
             }
         )
         result = _apply_eligible(df, _ff_bm_eligible())
@@ -157,7 +134,7 @@ class TestFFBmEligible:
     def test_outside_december_universe_fails(self):
         """Ex US: a stock outside the universe in December t-1 (e.g. a secondary
         line then) stays out of the B/M sort even with a valid beme."""
-        df = pl.DataFrame({"beme": [1.0], "me": [1.0], "count": [3], "dec_universe": [False]})
+        df = pl.DataFrame({"beme": [1.0], "me": [1.0], "dec_universe": [False]})
         assert _apply_eligible(df, _ff_bm_eligible())[0] is False
 
 
@@ -170,44 +147,32 @@ class TestFFOpEligible:
     """Tests for _ff_op_eligible()."""
 
     def test_all_conditions_met(self):
-        """Returns True when me>0, be>0, count>=2, op not null."""
-        df = pl.DataFrame({"me": [1.0], "be": [1.0], "count": [2], "op": [0.5]})
+        """Returns True when me>0, be>0, op not null."""
+        df = pl.DataFrame({"me": [1.0], "be": [1.0], "op": [0.5]})
         assert _apply_eligible(df, _ff_op_eligible())[0] is True
 
     def test_op_null_fails(self):
         """Returns False when op is null."""
         df = pl.DataFrame(
-            {"me": [1.0], "be": [1.0], "count": [2], "op": [None]},
-            schema={"me": pl.Float64, "be": pl.Float64, "count": pl.Int64, "op": pl.Float64},
+            {"me": [1.0], "be": [1.0], "op": [None]},
+            schema={"me": pl.Float64, "be": pl.Float64, "op": pl.Float64},
         )
         assert _apply_eligible(df, _ff_op_eligible())[0] is False
 
     def test_be_zero_fails(self):
         """Returns False when be == 0."""
-        df = pl.DataFrame({"me": [1.0], "be": [0.0], "count": [2], "op": [0.5]})
+        df = pl.DataFrame({"me": [1.0], "be": [0.0], "op": [0.5]})
         assert _apply_eligible(df, _ff_op_eligible())[0] is False
 
     def test_be_negative_fails(self):
         """Returns False when be < 0."""
-        df = pl.DataFrame({"me": [1.0], "be": [-1.0], "count": [2], "op": [0.5]})
+        df = pl.DataFrame({"me": [1.0], "be": [-1.0], "op": [0.5]})
         assert _apply_eligible(df, _ff_op_eligible())[0] is False
 
     def test_me_zero_fails(self):
         """Returns False when me == 0."""
-        df = pl.DataFrame({"me": [0.0], "be": [1.0], "count": [2], "op": [0.5]})
+        df = pl.DataFrame({"me": [0.0], "be": [1.0], "op": [0.5]})
         assert _apply_eligible(df, _ff_op_eligible())[0] is False
-
-    def test_count_one_fails(self):
-        """ROW: returns False when count == 1."""
-        df = pl.DataFrame({"me": [1.0], "be": [1.0], "count": [1], "op": [0.5]})
-        assert _apply_eligible(df, _ff_op_eligible())[0] is False
-
-    def test_us_count_one_passes(self):
-        """US is exempt from the FF (1993) two-year count gate."""
-        df = pl.DataFrame(
-            {"me": [1.0], "be": [1.0], "count": [1], "op": [0.5], "excntry": [US_EXCNTRY]}
-        )
-        assert _apply_eligible(df, _ff_op_eligible())[0] is True
 
     def test_vectorised_mixed(self):
         """Batch with two valid and two invalid rows."""
@@ -215,7 +180,6 @@ class TestFFOpEligible:
             {
                 "me": [1.0, 1.0, 0.0, 1.0],
                 "be": [1.0, -1.0, 1.0, 1.0],
-                "count": [2, 2, 2, 2],
                 "op": [0.5, 0.5, 0.5, None],
             }
         )
@@ -227,15 +191,13 @@ class TestFFOpEligible:
     def test_no_dec_me_fails(self, excntry, dec_me):
         """French: RMW needs Dec(t-1) ME as well as June ME, in every country."""
         df = pl.DataFrame(
-            {"me": [1.0], "dec_me": [dec_me], "be": [1.0], "count": [2], "op": [0.5]},
+            {"me": [1.0], "dec_me": [dec_me], "be": [1.0], "op": [0.5]},
             schema_overrides={"dec_me": pl.Float64},
         ).with_columns(excntry=pl.lit(excntry))
         assert _apply_eligible(df, _ff_op_eligible())[0] is False
 
     def test_outside_december_universe_fails(self):
-        df = pl.DataFrame(
-            {"me": [1.0], "be": [1.0], "count": [2], "op": [0.5], "dec_universe": [False]}
-        )
+        df = pl.DataFrame({"me": [1.0], "be": [1.0], "op": [0.5], "dec_universe": [False]})
         assert _apply_eligible(df, _ff_op_eligible())[0] is False
 
 
@@ -370,7 +332,6 @@ def _make_june_us(n: int, vals: list[float], with_exchcd: bool = True) -> pl.Dat
             "id": list(range(n)),
             "beme": vals,
             "me": [1.0] * n,
-            "count": [5] * n,
             "exchcd_us": [1] * n if with_exchcd else [2] * n,
             "size_grp": ["large"] * n,
             "dec_universe": [True] * n,
@@ -410,7 +371,6 @@ class TestFFCountryBreakpoints:
                 "id": list(range(n)),
                 "beme": [float(i) for i in range(1, n + 1)],
                 "me": [1.0] * n,
-                "count": [5] * n,
                 "exchcd_us": [1] * n,
                 "size_grp": ["large"] * n,
                 "dec_universe": [True] * n,
@@ -432,7 +392,6 @@ class TestFFCountryBreakpoints:
                 "id": list(range(n)),
                 "beme": [float(i) for i in range(1, n + 1)],
                 "me": [1.0] * n,
-                "count": [5] * n,
                 "exchcd_us": [1] * n,
                 "size_grp": ["large"] * n,
                 "dec_universe": [True] * n,
@@ -453,7 +412,6 @@ class TestFFCountryBreakpoints:
                 "id": list(range(n)),
                 "beme": [float(i) for i in range(1, n + 1)],
                 "me": [1.0] * n,
-                "count": [5] * n,
                 "exchcd_us": [1] * n,
                 "size_grp": ["micro"] * n,  # all micro → excluded from pool
                 "dec_universe": [True] * n,
@@ -473,7 +431,6 @@ class TestFFCountryBreakpoints:
                 "id": pl.Series([], dtype=pl.Int64),
                 "beme": pl.Series([], dtype=pl.Float64),
                 "me": pl.Series([], dtype=pl.Float64),
-                "count": pl.Series([], dtype=pl.Int64),
                 "exchcd_us": pl.Series([], dtype=pl.Int64),
                 "size_grp": pl.Series([], dtype=pl.Utf8),
                 "dec_universe": pl.Series([], dtype=pl.Boolean),
@@ -539,7 +496,6 @@ class TestFFSpecBreaks:
                 "me": [1.0] * 20,
                 "dec_me": [1.0] * 20,
                 "be": [1.0] * 20,
-                "count": [3] * 20,
                 "exchcd_us": [1] * 20,
                 "size_grp": ["large"] * 20,
                 "dec_universe": [True] * 20,
@@ -559,7 +515,6 @@ class TestFFSpecBreaks:
                 "inv": [float(i) * 0.05 for i in range(1, 21)],
                 "me": [1.0] * 20,
                 "dec_me": [1.0] * 20,
-                "count": [3] * 20,
                 "exchcd_us": [1] * 20,
                 "size_grp": ["large"] * 20,
                 "dec_universe": [True] * 20,
@@ -575,7 +530,7 @@ class TestFFSpecBreaks:
         have different ME medians.
 
         NYSE me 10/20/30 bm-eligible (strict median 20); NYSE me 40/50 with
-        null beme/count (bm-ineligible); two NYSE me=0 and one AMEX me=1000
+        null beme (bm-ineligible); two NYSE me=0 and one AMEX me=1000
         that must stay out of the lenient pool.
         """
         return pl.DataFrame(
@@ -585,7 +540,6 @@ class TestFFSpecBreaks:
                 "id": list(range(8)),
                 "beme": [1.0, 2.0, 3.0, None, None, None, None, 4.0],
                 "me": [10.0, 20.0, 30.0, 40.0, 50.0, 0.0, 0.0, 1000.0],
-                "count": [5, 5, 5, None, None, None, None, 5],
                 "exchcd_us": [1, 1, 1, 1, 1, 1, 1, 2],
                 "size_grp": ["large"] * 8,
                 "dec_universe": [True] * 8,
@@ -624,7 +578,6 @@ class TestFFSpecBreaks:
                 "id": list(range(n)),
                 "beme": [float(i) for i in range(1, n - 1)] + [None, None],
                 "me": [float(i) for i in range(1, n + 1)],
-                "count": [5] * (n - 2) + [None, None],
                 "exchcd_us": [None] * n,
                 "size_grp": ["large"] * n,
                 "dec_universe": [True] * n,
@@ -666,7 +619,7 @@ def _write_annual_world_msf(test_paths) -> None:
     ).write_parquet(test_paths.interim_dir / "world_msf.parquet")
 
 
-def _acc(gvkeys: list[str], be: float, op: float, inv: float | None, count: int) -> pl.DataFrame:
+def _acc(gvkeys: list[str], be: float, op: float, inv: float | None) -> pl.DataFrame:
     n = len(gvkeys)
     return pl.DataFrame(
         {
@@ -676,7 +629,6 @@ def _acc(gvkeys: list[str], be: float, op: float, inv: float | None, count: int)
             "be": [be] * n,
             "op": [op] * n,
             "inv": [inv] * n,
-            "count": [count] * n,
         },
         schema_overrides={"inv": pl.Float64},
     )
@@ -689,9 +641,9 @@ class TestFFAnnualCharacteristics:
     @staticmethod
     def _run(test_paths) -> dict[int, dict]:
         _write_annual_world_msf(test_paths)
-        acc_us = _acc(["g20", "g21"], be=30.0, op=0.2, inv=None, count=1)
-        comp_world = _acc(["g10", "g11", "g12", "g13"], be=25.0, op=0.1, inv=0.05, count=1)
-        ccm2a = _acc(["g30"], be=40.0, op=0.3, inv=0.02, count=3).with_columns(permno=pl.lit(30))
+        acc_us = _acc(["g20", "g21"], be=30.0, op=0.2, inv=None)
+        comp_world = _acc(["g10", "g11", "g12", "g13"], be=25.0, op=0.1, inv=0.05)
+        ccm2a = _acc(["g30"], be=40.0, op=0.3, inv=0.02).with_columns(permno=pl.lit(30))
         # FF's CRSP sample in December 2019: permno 30 only (31 is outside it).
         crsp_m = pl.LazyFrame({"permno": [30], "date": [date(2019, 12, 31)]})
         out = ff_annual_characteristics(test_paths, acc_us, ccm2a, comp_world, crsp_m)
@@ -700,9 +652,8 @@ class TestFFAnnualCharacteristics:
         return {r["id"]: r for r in out.iter_rows(named=True)}
 
     def test_row_dec_me_and_beme(self, test_paths):
-        """count = 1 is a sort screen, not a formula input: beme is defined."""
         r = self._run(test_paths)[10]
-        assert (r["dec_me"], r["count"]) == (50.0, 1)
+        assert r["dec_me"] == 50.0
         assert r["beme"] == pytest.approx(25.0 / 50.0)
 
     def test_zero_dec_me_nulls_beme_only(self, test_paths):
@@ -744,7 +695,7 @@ class TestFFAnnualCharacteristics:
 
     def test_us_crsp_uses_ccm2a_not_world_msf_gvkey(self, test_paths):
         r = self._run(test_paths)[30]
-        assert (r["be"], r["count"], r["dec_me"]) == (40.0, 3, 60.0)
+        assert (r["be"], r["dec_me"]) == (40.0, 60.0)
         assert r["beme"] == pytest.approx(40.0 / 60.0)
 
     def test_dec_me_without_accounting_kept(self, test_paths):
@@ -879,7 +830,6 @@ def _make_june_with_bp(
             "id": list(range(n)),
             "beme": beme_vals,
             "me": me_vals,
-            "count": [3] * n,
             "exchcd_us": [1] * n,
             "size_grp": ["large"] * n,
             "dec_universe": [True] * n,
@@ -967,7 +917,6 @@ class TestFFAssignPortfolios:
                 "id": [0],
                 "beme": [2.0],
                 "me": [1.0],
-                "count": [3],
                 "exchcd_us": [1],
                 "size_grp": ["large"],
                 "dec_universe": [True],
