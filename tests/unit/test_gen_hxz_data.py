@@ -302,6 +302,37 @@ class TestHxzAttachSiccd:
         # 2015-06-01 > 2000-01-01, so siccd=6200 should win
         assert result["siccd"][0] == 6200
 
+    def test_after_last_window_uses_last_known_siccd(self, test_paths):
+        """No window covers the date (e.g. the delisting month): the SIC of the
+        latest window that started by then is used; later windows are ignored."""
+        self._write_sec_hist(
+            test_paths,
+            [
+                {
+                    "permno": 1,
+                    "secinfostartdt": date(2000, 1, 1),
+                    "secinfoenddt": date(2009, 12, 31),
+                    "siccd": 6200,
+                },
+                {
+                    "permno": 1,
+                    "secinfostartdt": date(2010, 1, 1),
+                    "secinfoenddt": date(2020, 5, 31),
+                    "siccd": 3310,
+                },
+                {
+                    "permno": 1,
+                    "secinfostartdt": date(2021, 1, 1),
+                    "secinfoenddt": None,
+                    "siccd": 6000,
+                },
+            ],
+        )
+        df = pl.DataFrame({"permno": [1], "obs_date": [date(2020, 6, 30)]}).lazy()
+        result = hxz_attach_siccd(test_paths, df, "obs_date").collect()
+        assert result["siccd"][0] == 3310
+        assert result["is_fin"][0] is False
+
     def test_drops_secinfostartdt_secinfoenddt_columns(self, test_paths):
         """Output should not contain secinfostartdt or secinfoenddt."""
         self._write_sec_hist(
@@ -534,6 +565,7 @@ class TestHxzLoadPanelRow:
         "ret_lag_dif": pl.Int64,
         "naics": pl.Utf8,
         "sic": pl.Int64,
+        "gics": pl.Utf8,
     }
 
     @classmethod
@@ -554,6 +586,7 @@ class TestHxzLoadPanelRow:
             "ret_lag_dif": 1,
             "naics": None,
             "sic": None,
+            "gics": None,
         }
         pl.DataFrame([base | r for r in rows], schema=cls._SCHEMA).write_parquet(
             test_paths.interim_dir / "world_msf.parquet"
@@ -569,16 +602,21 @@ class TestHxzLoadPanelRow:
                 {"id": 4, "gvkey": "g4"},  # no industry at all
                 {"id": 5, "gvkey": "g5", "naics": "331110", "sic": 6500},  # NAICS wins
                 {"id": 6, "gvkey": None, "naics": "522110"},
+                {"id": 7, "gvkey": "g7", "gics": "40101010"},  # GICS fallback: Financials
+                {"id": 8, "gvkey": "g8", "gics": "60101010"},  # GICS fallback: Real Estate
+                {"id": 9, "gvkey": "g9", "gics": "45102010"},  # GICS fallback: IT
+                {"id": 10, "gvkey": "g10", "sic": 3310, "gics": "40101010"},  # SIC wins
             ],
         )
 
         out = hxz_load_panel_row(test_paths, "monthly").sort("id")
 
         assert out.columns == [
-            "excntry", "id", "gvkey", "date", "ret", "me", "size_grp", "naics", "sic", "is_fin",
+            "excntry", "id", "gvkey", "date", "ret", "me", "size_grp", "naics", "sic", "gics",
+            "is_fin",
         ]  # fmt: skip
-        assert out["id"].to_list() == [1, 2, 3, 4, 5]
-        assert out["is_fin"].to_list() == [True, True, True, False, False]
+        assert out["id"].to_list() == [1, 2, 3, 4, 5, 7, 8, 9, 10]
+        assert out["is_fin"].to_list() == [True, True, True, False, False, True, True, False, False]
 
     def test_monthly_duplicate_industry_rows_do_not_multiply_panel_rows(self, test_paths):
         # Each id has a kept row plus a twin outside the universe (obs_main 0) that carries

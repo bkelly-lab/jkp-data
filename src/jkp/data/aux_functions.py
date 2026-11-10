@@ -11451,33 +11451,35 @@ def gen_ff_data(
 def hxz_attach_siccd(paths: DataPaths, lf: pl.LazyFrame, date_col: str) -> pl.LazyFrame:
     """Event-time join with stksecurityinfohist on permno where
     secinfostartdt ≤ `date_col` ≤ secinfoenddt (null enddt = open-ended);
-    adds siccd + is_fin. A permno whose windows don't cover `date_col`
-    keeps its panel row with null siccd/is_fin — the row must not vanish
-    from the return universe just because industry history has a gap."""
+    adds siccd + is_fin. When no window covers `date_col` (e.g. the delisting
+    month), the last SIC known by then is used; a permno with no window starting
+    by `date_col` keeps its panel row with null siccd/is_fin."""
     sec = (
         pl.scan_parquet(paths.raw_tables_dir / "crsp_stksecurityinfohist.parquet")
         .select("permno", "secinfostartdt", "secinfoenddt", "siccd")
         .unique()
     )
-    in_window = (
-        pl.col("secinfostartdt").is_not_null()
-        & (pl.col("secinfostartdt") <= pl.col(date_col))
-        & (pl.col("secinfoenddt").is_null() | (pl.col("secinfoenddt") >= pl.col(date_col)))
+    started = pl.col("secinfostartdt").is_not_null() & (
+        pl.col("secinfostartdt") <= pl.col(date_col)
     )
-    # Tie-break: in-window rows first, then newest secinfostartdt (latest
-    # re-classification = current industry), then siccd ASC for determinism.
+    in_window = started & (
+        pl.col("secinfoenddt").is_null() | (pl.col("secinfoenddt") >= pl.col(date_col))
+    )
+    # Tie-break: in-window rows first, then windows that started by date_col (the
+    # last known SIC), then newest secinfostartdt (latest re-classification), then
+    # siccd ASC for determinism.
     return (
         lf.join(sec, on="permno", how="left")
-        .with_columns(_in_win=in_window)
+        .with_columns(_in_win=in_window, _started=started)
         .sort(
-            ["permno", date_col, "_in_win", "secinfostartdt", "siccd"],
-            descending=[False, False, True, True, False],
+            ["permno", date_col, "_in_win", "_started", "secinfostartdt", "siccd"],
+            descending=[False, False, True, True, True, False],
             nulls_last=True,
         )
         .unique(subset=["permno", date_col], keep="first", maintain_order=True)
-        .with_columns(siccd=pl.when(pl.col("_in_win")).then(pl.col("siccd")).otherwise(None))
+        .with_columns(siccd=pl.when(pl.col("_started")).then(pl.col("siccd")).otherwise(None))
         .with_columns(is_fin=pl.col("siccd").is_between(6000, 6999))
-        .drop("secinfostartdt", "secinfoenddt", "_in_win")
+        .drop("secinfostartdt", "secinfoenddt", "_in_win", "_started")
     )
 
 
@@ -11766,12 +11768,12 @@ def _hxz_best_link(
 
 
 def _hxz_ccm_links(paths: DataPaths, comp: pl.DataFrame | pl.LazyFrame) -> pl.LazyFrame:
-    """Every CCM link (linktype L*, linkprim P or C) of each comp row's gvkey that is
-    active at its datadate, with permno and the link length _link_days that
-    _hxz_best_link ranks on."""
+    """Every CCM link (linktype in CCM_LINKTYPES, linkprim P or C) of each comp row's
+    gvkey that is active at its datadate, with permno and the link length _link_days
+    that _hxz_best_link ranks on."""
     lnk = (
         pl.scan_parquet(paths.raw_tables_dir / "crsp_ccmxpf_lnkhist.parquet")
-        .filter(pl.col("linktype").str.starts_with("L") & pl.col("linkprim").is_in(["P", "C"]))
+        .filter(pl.col("linktype").is_in(CCM_LINKTYPES) & pl.col("linkprim").is_in(["P", "C"]))
         .select("gvkey", "lpermno", "linkprim", "linktype", "linkdt", "linkenddt")
         .with_columns(
             pl.col("lpermno").cast(pl.Int64),
@@ -11842,14 +11844,16 @@ def hxz_load_compustat_row(paths: DataPaths) -> pl.DataFrame:
 
 
 def hxz_load_panel_row(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl.DataFrame:
-    """ROW panel from ff_load_world_panel; the monthly panel gets (naics, sic) from
+    """ROW panel from ff_load_world_panel; the monthly panel gets (naics, sic, gics) from
     world_msf to derive is_fin. Daily skips it: industry decides sort eligibility, and the
     daily factors take their portfolios from the monthly sorts.
 
-    is_fin: NAICS sector 52 or 53 when present; SIC 6000-6999 fallback when naics is null.
+    is_fin uses the first classification present: NAICS sector 52 or 53, else SIC
+    6000-6999, else GICS sector 40 (Financials) or 60 (Real Estate). A security with
+    none of the three counts as non-financial.
 
-    Output: Eager [excntry, id, gvkey, date, ret, me, size_grp], plus [naics, sic, is_fin]
-    for monthly.
+    Output: Eager [excntry, id, gvkey, date, ret, me, size_grp], plus
+    [naics, sic, gics, is_fin] for monthly.
     """
     # HXZ keeps the gvkey-linked universe (JKP convention); the FF path drops
     # the screen for US parity, so re-apply it here.
@@ -11858,14 +11862,15 @@ def hxz_load_panel_row(paths: DataPaths, freq: Literal["monthly", "daily"]) -> p
         return panel
     # Dedup (id, eom): world_msf can carry duplicate share-class records per
     # security-month; without unique() the join multiplies rows non-deterministically
-    # under the parallel scan. Tie-break: non-null naics, then larger (more specific) sic.
+    # under the parallel scan. Tie-break: non-null naics, then larger (more specific)
+    # naics, sic and gics.
     ind = (
         pl.scan_parquet(paths.interim_dir / "world_msf.parquet")
-        .select("id", "eom", "naics", "sic")
+        .select("id", "eom", "naics", "sic", "gics")
         .with_columns(_naics_null=pl.col("naics").is_null())
         .sort(
-            ["id", "eom", "_naics_null", "naics", "sic"],
-            descending=[False, False, False, True, True],
+            ["id", "eom", "_naics_null", "naics", "sic", "gics"],
+            descending=[False, False, False, True, True, True],
             nulls_last=True,
         )
         .unique(subset=["id", "eom"], keep="first", maintain_order=True)
@@ -11873,9 +11878,13 @@ def hxz_load_panel_row(paths: DataPaths, freq: Literal["monthly", "daily"]) -> p
         .collect()
     )
     is_fin = (
-        pl.col("naics").cast(pl.Utf8).str.slice(0, 2).is_in(["52", "53"])
-        | (pl.col("naics").is_null() & pl.col("sic").is_between(6000, 6999))
-    ).fill_null(False)
+        pl.when(pl.col("naics").is_not_null())
+        .then(pl.col("naics").cast(pl.Utf8).str.slice(0, 2).is_in(["52", "53"]))
+        .when(pl.col("sic").is_not_null())
+        .then(pl.col("sic").is_between(6000, 6999))
+        .otherwise(pl.col("gics").cast(pl.Utf8).str.slice(0, 2).is_in(["40", "60"]))
+        .fill_null(False)
+    )
     return panel.join(ind, left_on=["id", "date"], right_on=["id", "eom"], how="left").with_columns(
         is_fin=is_fin
     )
@@ -12357,11 +12366,14 @@ def gen_hxz_data(
         - Timing: a characteristic at eom t is the value that sorted the
           portfolio held in month t. ia_hxz is constant from July to June;
           roe_hxz is the latest quarter announced before month t.
-        - Roe needs an announcement date (rdq) over the whole sample; the
-          pre-1972 proxy of Hou, Xue and Zhang (2019) is not used. The factors
-          start at HXZ_US_START in the US (rdq coverage, January 1972) and
-          HXZ_ROW_START elsewhere (January 1967); the characteristics cover every
-          world_msf month.
+        - The US factors start in January 1972 (HXZ_US_START), as in Hou, Xue
+          and Zhang (2015), whose start is set by the coverage of quarterly
+          announcement dates (rdq) and book equity. Our data start earlier, but we
+          keep their method: Roe needs rdq over the whole sample, and we don't use
+          the pre-1972 Roe rule Hou, Xue and Zhang (2019) add to extend their
+          series back to January 1967. Elsewhere the factors start at
+          HXZ_ROW_START (January 1967). The characteristics cover every world_msf
+          month.
         - Two fiscal calendars can report the same quarter end; after the BEQ
           chain, which uses both, one_row_per_date keeps the established one, as
           the accounting stage does.

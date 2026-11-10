@@ -310,8 +310,9 @@ FF_CCM_BACKDATE_MAX_YEARS = 5
 # HXZ q-factor pipeline (gen_hxz_data)
 # ============================================================================
 
-# First month of the HXZ factors. US: rdq coverage starts in 1972 (the pre-1972
-# Roe proxy of Hou, Xue and Zhang 2019 is not used). Ex US: 1967.
+# First month of the HXZ factors. US: January 1972, the start of Hou, Xue and
+# Zhang (2015), set by rdq coverage; their 2019 pre-1972 Roe rule is not used.
+# Ex US: 1967.
 HXZ_US_START = date(1972, 1, 1)
 HXZ_ROW_START = date(1967, 1, 1)
 

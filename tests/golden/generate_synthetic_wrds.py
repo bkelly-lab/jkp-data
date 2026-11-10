@@ -959,6 +959,11 @@ def gen_world_msf(
             ).cast(pl.Int64),
             # one security per company in the synthetic panel
             me_company=pl.col("me"),
+            # GICS sub-industry (String, as in world_msf) consistent with the drawn SIC; it
+            # stays set where the null patterns hit naics and sic, so the GICS fallback runs.
+            gics=pl.when(pl.col("sic").is_between(6000, 6999))
+            .then(pl.lit("40101010"))
+            .otherwise(pl.lit("20101010")),
         )
     )
     us_rows = (world["source_crsp"] == 1).to_numpy()
