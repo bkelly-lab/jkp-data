@@ -413,7 +413,7 @@ def gen_raw_data_dfs(paths: DataPaths):
         2) Derive SIC/NAICS (NA & Global), GICS (NA & Global), delist files (CRSP m/d),
         security info (NA & Global), T-bill return, FF monthly factors, exchange code map,
         exchange→country map, company headers (NA+Global), and CRSP security files (m & d).
-        3) Call build_mcti() to derive the CRSP 30-Year Treasury index table.
+        3) Call build_mcti() to derive the CRSP 30-day T-bill return table.
         4) Call aug_msf_v2() to augment the monthly CRSP file with daily high/low prices.
         5) Standardize types/columns, sort/deduplicate where needed.
         6) Write all to raw_data_dfs/*.parquet.
@@ -1339,7 +1339,7 @@ def build_mcti(paths: DataPaths):
     Steps:
         1) Read indmthseriesdata and indseriesinfohdr from parquet.
         2) Inner join indmthseriesdata with indseriesinfohdr on "indno".
-        4) Filter for CRSP 30-Year Treasury Returns (indno == 1000708).
+        4) Filter for CRSP 30-day T-bill returns (indno == 1000708).
         5) Write parquet to raw_data_dfs/crsp_mcti.parquet
 
     Output:
