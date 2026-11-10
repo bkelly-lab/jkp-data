@@ -240,11 +240,11 @@ ROLLING_DAILY_SPECS: list[tuple[str, int, list[str]]] = [
 # min-stocks gates).
 US_EXCNTRY = "USA"
 
-# Min firms per (excntry, June(y)) for ROW breakpoints; US bypassed.
-FF_MIN_STOCKS_BP = 10
-
-# Min firms per (excntry, date, bucket) for ROW VW; US bypassed.
-FF_MIN_STOCKS_PF = 3
+# Ex-US minimums of the factor builders (FF here, later HXZ): min firms per
+# (excntry, formation date) for breakpoints, and per (excntry, date, bucket) for
+# the VW legs. US bypassed.
+FACTOR_MIN_STOCKS_BP = 10
+FACTOR_MIN_STOCKS_PF = 3
 
 # CRSP -99.0 missing-return sentinel: treat as 0 return when compounding the
 # UMD prior-(2-12) signal, per FF convention.

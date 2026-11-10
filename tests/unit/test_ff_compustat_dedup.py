@@ -98,10 +98,12 @@ def _fiscal_change_rows(gvkey, *, indl):
 # =============================================================================
 
 
-def test_ff_load_funda_global_collapses_fiscal_change(tmp_path):
-    _write_funda(tmp_path / "comp_g_funda.parquet", _fiscal_change_rows("001", indl=False))
+def test_ff_load_funda_global_collapses_fiscal_change(test_paths):
+    _write_funda(
+        test_paths.raw_tables_dir / "comp_g_funda.parquet", _fiscal_change_rows("001", indl=False)
+    )
 
-    out = _ff_load_funda_global(tmp_path).collect()
+    out = _ff_load_funda_global(test_paths).collect()
 
     # One row per (gvkey, year); the 2019 stub (06-30) is dropped for 12-31.
     assert out.height == 2
@@ -110,16 +112,16 @@ def test_ff_load_funda_global_collapses_fiscal_change(tmp_path):
     assert rows_2019["datadate"].item() == date(2019, 12, 31)
 
 
-def test_ff_load_funda_global_indfmt_rule(tmp_path):
+def test_ff_load_funda_global_indfmt_rule(test_paths):
     rows = [
         _funda_row("001", date(2018, 12, 31), 100.0, indl=False),
         _funda_row("001", date(2018, 12, 31), 999.0, indl=False, indfmt="FS"),
         _funda_row("002", date(2018, 12, 31), 100.0, indl=False, indfmt="FS"),
         _funda_row("002", date(2018, 12, 31), 100.0, indl=False, indfmt="FS"),
     ]
-    _write_funda(tmp_path / "comp_g_funda.parquet", rows)
+    _write_funda(test_paths.raw_tables_dir / "comp_g_funda.parquet", rows)
 
-    out = _ff_load_funda_global(tmp_path).collect().sort("gvkey")
+    out = _ff_load_funda_global(test_paths).collect().sort("gvkey")
 
     # INDL wins over FS; a date reported only in FS is kept (#329's rule).
     assert out.select("gvkey", "at").rows() == [("001", 100.0), ("002", 100.0)]
@@ -146,11 +148,13 @@ def _write_lnkhist(path, gvkey, permno):
     ).write_parquet(path)
 
 
-def test_ff_load_compustat_us_collapses_and_recovers_inv(tmp_path):
-    _write_funda(tmp_path / "comp_funda.parquet", _fiscal_change_rows("001", indl=True))
-    _write_lnkhist(tmp_path / "crsp_ccmxpf_lnkhist.parquet", "001", 10001)
+def test_ff_load_compustat_us_collapses_and_recovers_inv(test_paths):
+    _write_funda(
+        test_paths.raw_tables_dir / "comp_funda.parquet", _fiscal_change_rows("001", indl=True)
+    )
+    _write_lnkhist(test_paths.raw_tables_dir / "crsp_ccmxpf_lnkhist.parquet", "001", 10001)
 
-    out = ff_load_compustat_us(_ff_us_accounting(tmp_path, True).collect(), tmp_path, ff5=True)
+    out = ff_load_compustat_us(test_paths, _ff_us_accounting(test_paths, True).collect(), ff5=True)
 
     # Unique per (permno, year) — no fiscal-change fan-out.
     keyed = out.select("permno", "year")
@@ -172,7 +176,7 @@ def test_ff_load_compustat_us_collapses_and_recovers_inv(tmp_path):
 
 class TestUsBeLadder:
     @staticmethod
-    def _be(tmp_path, **over):
+    def _be(test_paths, **over):
         """BE from a single 2019 funda row with the given overrides.
 
         _funda_row defaults: seq = at/2, pstk = 0, txditc = 0 (and the
@@ -180,53 +184,55 @@ class TestUsBeLadder:
         ps = coalesce(pstkrv, pstkl, pstk, 0) = pstk.
         """
         row = _funda_row("001", date(2019, 12, 31), 100.0, indl=True, **over)
-        _write_funda(tmp_path / "comp_funda.parquet", [row])
-        _write_lnkhist(tmp_path / "crsp_ccmxpf_lnkhist.parquet", "001", 10001)
-        out = ff_load_compustat_us(_ff_us_accounting(tmp_path, True).collect(), tmp_path, ff5=True)
+        _write_funda(test_paths.raw_tables_dir / "comp_funda.parquet", [row])
+        _write_lnkhist(test_paths.raw_tables_dir / "crsp_ccmxpf_lnkhist.parquet", "001", 10001)
+        out = ff_load_compustat_us(
+            test_paths, _ff_us_accounting(test_paths, True).collect(), ff5=True
+        )
         assert out.height == 1
         return out
 
-    def test_ceq_pstk_rung(self, tmp_path):
+    def test_ceq_pstk_rung(self, test_paths):
         # she = ceq + pstk = 45; be = she - ps = she - pstk = ceq = 40.
-        out = self._be(tmp_path, seq=None, ceq=40.0, pstk=5.0, lt=30.0)
+        out = self._be(test_paths, seq=None, ceq=40.0, pstk=5.0, lt=30.0)
         assert abs(out["be"][0] - 40.0) < 1e-12
 
-    def test_at_lt_rung(self, tmp_path):
-        out = self._be(tmp_path, seq=None, ceq=None, pstk=None, lt=30.0)
+    def test_at_lt_rung(self, test_paths):
+        out = self._be(test_paths, seq=None, ceq=None, pstk=None, lt=30.0)
         assert abs(out["be"][0] - 70.0) < 1e-12  # at(100) - lt(30)
 
-    def test_null_pstk_falls_to_at_lt(self, tmp_path):
+    def test_null_pstk_falls_to_at_lt(self, test_paths):
         # SAS sum semantics: ceq + null pstk -> null rung -> at - lt, not ceq.
-        out = self._be(tmp_path, seq=None, ceq=40.0, pstk=None, lt=30.0)
+        out = self._be(test_paths, seq=None, ceq=40.0, pstk=None, lt=30.0)
         assert abs(out["be"][0] - 70.0) < 1e-12
 
-    def test_all_rungs_null_be_null(self, tmp_path):
-        out = self._be(tmp_path, seq=None, ceq=None, pstk=None, at=None, lt=None)
+    def test_all_rungs_null_be_null(self, test_paths):
+        out = self._be(test_paths, seq=None, ceq=None, pstk=None, at=None, lt=None)
         assert out["be"][0] is None
 
-    def test_negative_ladder_be_nulled(self, tmp_path):
-        out = self._be(tmp_path, seq=None, ceq=None, pstk=None, lt=170.0)
+    def test_negative_ladder_be_nulled(self, test_paths):
+        out = self._be(test_paths, seq=None, ceq=None, pstk=None, lt=170.0)
         assert out["be"][0] is None  # at(100) - lt(170) < 0
 
-    def test_seq_dominates(self, tmp_path):
-        out = self._be(tmp_path, seq=50.0, ceq=40.0, lt=30.0)
+    def test_seq_dominates(self, test_paths):
+        out = self._be(test_paths, seq=50.0, ceq=40.0, lt=30.0)
         assert abs(out["be"][0] - 50.0) < 1e-12
 
-    def test_op_computed_on_ladder_be(self, tmp_path):
+    def test_op_computed_on_ladder_be(self, test_paths):
         # be = at - lt = 70; op = (revt - cogs) / be = 15 / 70.
-        out = self._be(tmp_path, seq=None, ceq=None, pstk=None, lt=30.0, revt=20.0, cogs=5.0)
+        out = self._be(test_paths, seq=None, ceq=None, pstk=None, lt=30.0, revt=20.0, cogs=5.0)
         assert abs(out["op"][0] - 15.0 / 70.0) < 1e-12
 
-    def test_op_denominator_uses_total_minority_interest(self, tmp_path):
+    def test_op_denominator_uses_total_minority_interest(self, test_paths):
         # be = seq = 50; mibt (total) wins over mib (redeemable only)
-        out = self._be(tmp_path, revt=20.0, cogs=5.0, mib=2.0, mibn=8.0, mibt=10.0)
+        out = self._be(test_paths, revt=20.0, cogs=5.0, mib=2.0, mibn=8.0, mibt=10.0)
         assert abs(out["op"][0] - 15.0 / 60.0) < 1e-12
 
-    def test_op_denominator_sums_parts_when_mibt_missing(self, tmp_path):
-        out = self._be(tmp_path, revt=20.0, cogs=5.0, mib=2.0, mibn=8.0)
+    def test_op_denominator_sums_parts_when_mibt_missing(self, test_paths):
+        out = self._be(test_paths, revt=20.0, cogs=5.0, mib=2.0, mibn=8.0)
         assert abs(out["op"][0] - 15.0 / 60.0) < 1e-12
         # no minority-interest fields at all -> denominator is BE alone
-        out = self._be(tmp_path, revt=20.0, cogs=5.0)
+        out = self._be(test_paths, revt=20.0, cogs=5.0)
         assert abs(out["op"][0] - 15.0 / 50.0) < 1e-12
 
 
@@ -258,65 +264,67 @@ def _write_lnkhist_rows(path, rows):
 
 class TestCcmBackdateRescue:
     @staticmethod
-    def _run(tmp_path, funda_rows, lnk_rows):
-        _write_funda(tmp_path / "comp_funda.parquet", funda_rows)
-        _write_lnkhist_rows(tmp_path / "crsp_ccmxpf_lnkhist.parquet", lnk_rows)
-        return ff_load_compustat_us(_ff_us_accounting(tmp_path, True).collect(), tmp_path, ff5=True)
+    def _run(test_paths, funda_rows, lnk_rows):
+        _write_funda(test_paths.raw_tables_dir / "comp_funda.parquet", funda_rows)
+        _write_lnkhist_rows(test_paths.raw_tables_dir / "crsp_ccmxpf_lnkhist.parquet", lnk_rows)
+        return ff_load_compustat_us(
+            test_paths, _ff_us_accounting(test_paths, True).collect(), ff5=True
+        )
 
-    def test_backfilled_year_rescued(self, tmp_path):
+    def test_backfilled_year_rescued(self, test_paths):
         # fy1962 -> jun_end 1963-06-30, inside [1963, 1966]; link starts
         # 1965-01-01 (permno's first, within 5y of the formation).
         out = self._run(
-            tmp_path,
+            test_paths,
             [_funda_row("001", date(1962, 12, 31), 100.0, indl=True)],
             [("001", 10001, date(1965, 1, 1))],
         )
         assert out.filter((pl.col("permno") == 10001) & (pl.col("year") == 1962)).height == 1
 
-    def test_no_rescue_after_gate(self, tmp_path):
+    def test_no_rescue_after_gate(self, test_paths):
         # fy1970 -> jun_end 1971-06-30 > THROUGH: standard window only.
         out = self._run(
-            tmp_path,
+            test_paths,
             [_funda_row("001", date(1970, 12, 31), 100.0, indl=True)],
             [("001", 10001, date(1973, 1, 1))],
         )
         assert out.height == 0
 
-    def test_no_rescue_before_gate(self, tmp_path):
+    def test_no_rescue_before_gate(self, test_paths):
         # fy1960 -> jun_end 1961-06-30 < FROM.
         out = self._run(
-            tmp_path,
+            test_paths,
             [_funda_row("001", date(1960, 12, 31), 100.0, indl=True)],
             [("001", 10001, date(1963, 1, 1))],
         )
         assert out.height == 0
 
-    def test_distance_cap(self, tmp_path):
+    def test_distance_cap(self, test_paths):
         # Link 1990 claiming fy1962: > MAX_YEARS after the formation.
         out = self._run(
-            tmp_path,
+            test_paths,
             [_funda_row("001", date(1962, 12, 31), 100.0, indl=True)],
             [("001", 10001, date(1990, 1, 1))],
         )
         assert out.height == 0
 
-    def test_first_link_guard(self, tmp_path):
+    def test_first_link_guard(self, test_paths):
         # permno's first link belongs to another gvkey (1955): the 1965 link
         # is not first -> no rescue (recycled-permno protection).
         out = self._run(
-            tmp_path,
+            test_paths,
             [_funda_row("002", date(1962, 12, 31), 100.0, indl=True)],
             [("001", 10001, date(1955, 1, 1)), ("002", 10001, date(1965, 1, 1))],
         )
         assert out.height == 0
 
-    def test_in_window_beats_backdated(self, tmp_path):
+    def test_in_window_beats_backdated(self, test_paths):
         # Two gvkeys with fy1962 rows for one permno: gvkey 001 in-window
         # (first link, 1955), gvkey 002 backdated. Dedup keeps the in-window
         # match. (002 also fails the first-link guard; the sort-priority is
         # belt-and-braces.)
         out = self._run(
-            tmp_path,
+            test_paths,
             [
                 _funda_row("001", date(1962, 12, 31), 100.0, indl=True),
                 _funda_row("002", date(1962, 12, 31), 200.0, indl=True),
@@ -357,17 +365,18 @@ def _write_acc_std_ann(path, rows):
     ).write_parquet(path)
 
 
-def test_ff_load_world_compustat_op_definition(tmp_path):
+def test_ff_load_world_compustat_op_definition(test_paths):
     gvkeys = ["101", "102", "103", "104", "105"]
     _write_funda(
-        tmp_path / "comp_g_funda.parquet",
+        test_paths.raw_tables_dir / "comp_g_funda.parquet",
         [_funda_row(g, date(2019, 12, 31), 100.0, indl=False) for g in gvkeys],
     )
     _write_funda(
-        tmp_path / "comp_funda.parquet", [_funda_row("999", date(2019, 12, 31), 100.0, indl=True)]
+        test_paths.raw_tables_dir / "comp_funda.parquet",
+        [_funda_row("999", date(2019, 12, 31), 100.0, indl=True)],
     )
     _write_acc_std_ann(
-        tmp_path / "acc_std_ann.parquet",
+        test_paths.interim_dir / "acc_std_ann.parquet",
         [
             ("101", 50.0, 15.0, None, None, None, None),  # xint missing -> 0
             ("102", 50.0, 15.0, 5.0, 2.0, 10.0, 8.0),  # mibt wins
@@ -376,7 +385,7 @@ def test_ff_load_world_compustat_op_definition(tmp_path):
             ("105", -5.0, 15.0, 5.0, None, None, None),  # non-positive BE -> null
         ],
     )
-    op = dict(ff_load_world_compustat(tmp_path, tmp_path).select("gvkey", "op").iter_rows())
+    op = dict(ff_load_world_compustat(test_paths).select("gvkey", "op").iter_rows())
     assert abs(op["101"] - 15.0 / 50.0) < 1e-12
     assert abs(op["102"] - 10.0 / 60.0) < 1e-12
     assert abs(op["103"] - 10.0 / 60.0) < 1e-12
