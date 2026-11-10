@@ -9,9 +9,8 @@ sub-annual stub and nulled `inv` on the surviving row. The loaders now collapse
 to one row per `(gvkey, year)` (latest datadate) BEFORE the lag.
 
 Covers:
-  - _hxz_global_be_inv      (ROW annual inv)
   - hxz_load_funda          (US annual inv)
-  - hxz_load_compustat_row  (ROW INDL/FS rule)
+  - hxz_load_compustat_row  (ROW INDL/FS rule, NA record preferred, annual roe_a)
 """
 
 from __future__ import annotations
@@ -19,10 +18,11 @@ from __future__ import annotations
 from datetime import date
 
 import polars as pl
+import pytest
 
-from jkp.data.aux_functions import _hxz_global_be_inv, hxz_load_compustat_row, hxz_load_funda
+from jkp.data.aux_functions import hxz_load_compustat_row, hxz_load_funda
 
-# Columns _hxz_global_be_inv / hxz_load_funda reference, defaulted to None.
+# Columns hxz_load_funda references, defaulted to None.
 _FLOAT_COLS = [
     "pstk",
     "pstkrv",
@@ -57,31 +57,7 @@ def _fiscal_change_rows(gvkey):
     ]
 
 
-def _lazy(rows):
-    return (
-        pl.DataFrame(rows)
-        .with_columns(
-            pl.col("datadate").cast(pl.Date),
-            *[pl.col(c).cast(pl.Float64) for c in _FLOAT_COLS],
-        )
-        .lazy()
-    )
-
-
-def test_hxz_global_be_inv_collapses_and_recovers_inv():
-    out = _hxz_global_be_inv(_lazy(_fiscal_change_rows("001"))).collect()
-
-    # One row per (gvkey, year); the 2019 stub (06-30) dropped for 12-31.
-    assert out.height == 2
-    r2019 = out.filter(pl.col("year") == 2019)
-    assert r2019.height == 1
-    assert r2019["datadate"].item() == date(2019, 12, 31)
-    # at_lag is the 2018 row (100) -> fy_gap == 1 -> inv = (120-100)/100.
-    assert r2019["inv"].item() is not None
-    assert abs(r2019["inv"].item() - 0.20) < 1e-9
-
-
-def test_hxz_load_funda_collapses_and_recovers_inv(tmp_path):
+def test_hxz_load_funda_collapses_and_recovers_inv(test_paths):
     pl.DataFrame(_fiscal_change_rows("001")).with_columns(
         pl.col("datadate").cast(pl.Date),
         *[pl.col(c).cast(pl.Float64) for c in _FLOAT_COLS],
@@ -89,9 +65,9 @@ def test_hxz_load_funda_collapses_and_recovers_inv(tmp_path):
         datafmt=pl.lit("STD"),
         popsrc=pl.lit("D"),
         consol=pl.lit("C"),
-    ).write_parquet(tmp_path / "comp_funda.parquet")
+    ).write_parquet(test_paths.raw_tables_dir / "comp_funda.parquet")
 
-    out = hxz_load_funda(tmp_path)
+    out = hxz_load_funda(test_paths)
 
     keyed = out.with_columns(year=pl.col("datadate").dt.year()).select("gvkey", "year")
     assert keyed.height == keyed.unique().height  # one row per (gvkey, year)
@@ -110,13 +86,15 @@ def _write_compustat(path, rows, *, na):
     ).write_parquet(path)
 
 
-def test_hxz_load_compustat_row_indfmt_rule(tmp_path):
+def test_hxz_load_compustat_row_indfmt_rule(test_paths):
     d = date(2019, 12, 31)
     _write_compustat(
-        tmp_path / "comp_funda.parquet", [_row("999", d, 100.0, indfmt="INDL")], na=True
+        test_paths.raw_tables_dir / "comp_funda.parquet",
+        [_row("999", d, 100.0, indfmt="INDL")],
+        na=True,
     )
     _write_compustat(
-        tmp_path / "comp_g_funda.parquet",
+        test_paths.raw_tables_dir / "comp_g_funda.parquet",
         [
             _row("001", d, 100.0, indfmt="INDL"),
             _row("001", d, 999.0, indfmt="FS"),
@@ -136,9 +114,86 @@ def test_hxz_load_compustat_row_indfmt_rule(tmp_path):
         }
     ).with_columns(
         pl.lit(10.0).alias(c) for c in ("be_x", "ebitda_x", "xint", "mib", "mibt", "mibn")
-    ).write_parquet(tmp_path / "acc_std_ann.parquet")
+    ).write_parquet(test_paths.interim_dir / "acc_std_ann.parquet")
 
-    out = hxz_load_compustat_row(tmp_path, tmp_path)
+    out = hxz_load_compustat_row(test_paths)
 
     # One record per date; a date reported only in FS (002) is kept (#329's rule).
     assert out.select("gvkey", "datadate").rows() == [("001", d), ("002", d), ("999", d)]
+
+
+def _write_keys(path, rows, *, na):
+    """Fiscal-record keys only; the loaders keep (gvkey, datadate, year)."""
+    pl.DataFrame(
+        {"gvkey": [r[0] for r in rows], "datadate": [r[1] for r in rows]},
+        schema={"gvkey": pl.Utf8, "datadate": pl.Date},
+    ).with_columns(
+        indfmt=pl.lit("INDL"),
+        datafmt=pl.lit("STD" if na else "HIST_STD"),
+        popsrc=pl.lit("D" if na else "I"),
+        consol=pl.lit("C"),
+    ).write_parquet(path)
+
+
+def _write_acc(path, rows):
+    """acc_std_ann rows as (gvkey, datadate, be_x, ni_x)."""
+    pl.DataFrame(
+        {
+            "gvkey": [r[0] for r in rows],
+            "datadate": [r[1] for r in rows],
+            "be_x": [r[2] for r in rows],
+            "ni_x": [r[3] for r in rows],
+        },
+        schema={"gvkey": pl.Utf8, "datadate": pl.Date, "be_x": pl.Float64, "ni_x": pl.Float64},
+    ).with_columns(
+        curcd=pl.lit("USD"),
+        source=pl.lit("GLOBAL"),
+        at_x=pl.lit(100.0),
+        **{c: pl.lit(0.0) for c in ("ebitda_x", "xint", "mib", "mibt", "mibn")},
+    ).write_parquet(path)
+
+
+def test_hxz_load_compustat_row_na_record_preferred_over_global(test_paths):
+    # gvkey 001 is in both NA and Global for 2019, with different datadate.
+    _write_keys(
+        test_paths.raw_tables_dir / "comp_funda.parquet", [("001", date(2019, 12, 31))], na=True
+    )
+    _write_keys(
+        test_paths.raw_tables_dir / "comp_g_funda.parquet", [("001", date(2019, 11, 30))], na=False
+    )
+    _write_acc(
+        test_paths.interim_dir / "acc_std_ann.parquet",
+        [("001", date(2019, 12, 31), 10.0, 1.0), ("001", date(2019, 11, 30), 99.0, 1.0)],
+    )
+
+    out = hxz_load_compustat_row(test_paths)
+
+    # One record for 2019: the NA one, valued from its own acc_std_ann row.
+    assert out.select("gvkey", "datadate", "year", "be_a").rows() == [
+        ("001", date(2019, 12, 31), 2019, 10.0)
+    ]
+
+
+def test_hxz_load_compustat_row_roe_a_uses_previous_be(test_paths):
+    dates = [date(y, 12, 31) for y in range(2018, 2025)]
+    _write_keys(
+        test_paths.raw_tables_dir / "comp_funda.parquet", [("002", d) for d in dates], na=True
+    )
+    _write_keys(test_paths.raw_tables_dir / "comp_g_funda.parquet", [("999", dates[0])], na=False)
+    be = [50.0, 100.0, None, 80.0, 40.0, -10.0, 60.0]
+    ni = [5.0, 20.0, 30.0, 8.0, 4.0, 1.0, 6.0]
+    _write_acc(
+        test_paths.interim_dir / "acc_std_ann.parquet",
+        [("002", d, b, n) for d, b, n in zip(dates, be, ni, strict=True)],
+    )
+
+    out = hxz_load_compustat_row(test_paths).filter(pl.col("gvkey") == "002").sort("datadate")
+
+    got = out["roe_a"].to_list()
+    # roe_a = ni_x / previous record's be_x: null for the first record, a missing previous
+    # be_x (2021) and a previous be_x <= 0 (2024).
+    assert [g is None for g in got] == [True, False, False, True, False, False, True]
+    assert got[1] == pytest.approx(20.0 / 50.0)
+    assert got[2] == pytest.approx(30.0 / 100.0)
+    assert got[4] == pytest.approx(4.0 / 80.0)
+    assert got[5] == pytest.approx(1.0 / 40.0)

@@ -15,12 +15,12 @@ WRDS I/O for helpers that only need in-memory DataFrames.
 from __future__ import annotations
 
 from datetime import date
-from pathlib import Path
 
 import numpy as np
 import polars as pl
 import pytest
 
+from jkp.data import aux_functions as af
 from jkp.data.aux_functions import (
     _hxz_add_me_lag1_ym,
     _hxz_classify_roe,
@@ -32,12 +32,15 @@ from jkp.data.aux_functions import (
     hxz_compute_factors,
     hxz_impute_be_clean_surplus,
     hxz_load_crsp,
+    hxz_load_fundq,
+    hxz_load_panel_row,
+    hxz_load_returns,
     hxz_merge_be_chain,
     hxz_roe_by_month,
     one_row_per_date,
 )
 from jkp.data.config import (
-    HXZ_MIN_STOCKS_BP,
+    FACTOR_MIN_STOCKS_BP,
 )
 
 
@@ -55,7 +58,7 @@ def _hxz_country_breaks(df, specs):
         specs,
         group_keys=["excntry", "date"],
         pool=pl.col("elig") & pl.col("size_grp").is_in(["small", "large", "mega"]),
-        min_stocks=HXZ_MIN_STOCKS_BP,
+        min_stocks=FACTOR_MIN_STOCKS_BP,
     )
 
 
@@ -179,18 +182,17 @@ class TestHxzAddMeLag1Ym:
 class TestHxzAttachSiccd:
     """Tests for hxz_attach_siccd: event-time SIC join and is_fin flag."""
 
-    def _write_sec_hist(self, tmp_path: Path, rows: list[dict]) -> Path:
+    def _write_sec_hist(self, test_paths, rows: list[dict]) -> None:
         sec = pl.DataFrame(rows).with_columns(
             pl.col("secinfostartdt", "secinfoenddt").cast(pl.Date)
         )
-        p = tmp_path / "crsp_stksecurityinfohist.parquet"
+        p = test_paths.raw_tables_dir / "crsp_stksecurityinfohist.parquet"
         sec.write_parquet(p)
-        return tmp_path
 
-    def test_basic_join(self, tmp_path):
+    def test_basic_join(self, test_paths):
         """SIC is attached for matching date range."""
-        raw_dir = self._write_sec_hist(
-            tmp_path,
+        self._write_sec_hist(
+            test_paths,
             [
                 {
                     "permno": 1,
@@ -201,14 +203,14 @@ class TestHxzAttachSiccd:
             ],
         )
         df = pl.DataFrame({"permno": [1], "obs_date": [date(2020, 6, 30)]}).lazy()
-        result = hxz_attach_siccd(df, raw_dir, "obs_date").collect()
+        result = hxz_attach_siccd(test_paths, df, "obs_date").collect()
         assert result["siccd"][0] == 3310
         assert result["is_fin"][0] is False
 
-    def test_is_fin_flagged_for_sic_6000_to_6999(self, tmp_path):
+    def test_is_fin_flagged_for_sic_6000_to_6999(self, test_paths):
         """is_fin=True for siccd in [6000, 6999]."""
-        raw_dir = self._write_sec_hist(
-            tmp_path,
+        self._write_sec_hist(
+            test_paths,
             [
                 {
                     "permno": 1,
@@ -219,13 +221,13 @@ class TestHxzAttachSiccd:
             ],
         )
         df = pl.DataFrame({"permno": [1], "obs_date": [date(2020, 6, 30)]}).lazy()
-        result = hxz_attach_siccd(df, raw_dir, "obs_date").collect()
+        result = hxz_attach_siccd(test_paths, df, "obs_date").collect()
         assert result["is_fin"][0] is True
 
-    def test_is_fin_boundary_6000(self, tmp_path):
+    def test_is_fin_boundary_6000(self, test_paths):
         """is_fin=True at the lower boundary siccd=6000."""
-        raw_dir = self._write_sec_hist(
-            tmp_path,
+        self._write_sec_hist(
+            test_paths,
             [
                 {
                     "permno": 1,
@@ -236,13 +238,13 @@ class TestHxzAttachSiccd:
             ],
         )
         df = pl.DataFrame({"permno": [1], "obs_date": [date(2020, 6, 30)]}).lazy()
-        result = hxz_attach_siccd(df, raw_dir, "obs_date").collect()
+        result = hxz_attach_siccd(test_paths, df, "obs_date").collect()
         assert result["is_fin"][0] is True
 
-    def test_is_fin_boundary_6999(self, tmp_path):
+    def test_is_fin_boundary_6999(self, test_paths):
         """is_fin=True at the upper boundary siccd=6999."""
-        raw_dir = self._write_sec_hist(
-            tmp_path,
+        self._write_sec_hist(
+            test_paths,
             [
                 {
                     "permno": 1,
@@ -253,14 +255,14 @@ class TestHxzAttachSiccd:
             ],
         )
         df = pl.DataFrame({"permno": [1], "obs_date": [date(2020, 6, 30)]}).lazy()
-        result = hxz_attach_siccd(df, raw_dir, "obs_date").collect()
+        result = hxz_attach_siccd(test_paths, df, "obs_date").collect()
         assert result["is_fin"][0] is True
 
-    def test_date_outside_window_keeps_row_with_null_siccd(self, tmp_path):
+    def test_date_outside_window_keeps_row_with_null_siccd(self, test_paths):
         """When obs_date is before secinfostartdt (no covering window), the
         panel row is kept with null siccd/is_fin rather than being dropped."""
-        raw_dir = self._write_sec_hist(
-            tmp_path,
+        self._write_sec_hist(
+            test_paths,
             [
                 {
                     "permno": 1,
@@ -271,15 +273,15 @@ class TestHxzAttachSiccd:
             ],
         )
         df = pl.DataFrame({"permno": [1], "obs_date": [date(2005, 6, 30)]}).lazy()
-        result = hxz_attach_siccd(df, raw_dir, "obs_date").collect()
+        result = hxz_attach_siccd(test_paths, df, "obs_date").collect()
         assert len(result) == 1
         assert result["siccd"][0] is None
         assert result["is_fin"][0] is None
 
-    def test_overlapping_windows_picks_latest_start(self, tmp_path):
+    def test_overlapping_windows_picks_latest_start(self, test_paths):
         """Tie-break: most recent secinfostartdt wins when two windows overlap."""
-        raw_dir = self._write_sec_hist(
-            tmp_path,
+        self._write_sec_hist(
+            test_paths,
             [
                 {
                     "permno": 1,
@@ -296,14 +298,14 @@ class TestHxzAttachSiccd:
             ],
         )
         df = pl.DataFrame({"permno": [1], "obs_date": [date(2020, 6, 30)]}).lazy()
-        result = hxz_attach_siccd(df, raw_dir, "obs_date").collect()
+        result = hxz_attach_siccd(test_paths, df, "obs_date").collect()
         # 2015-06-01 > 2000-01-01, so siccd=6200 should win
         assert result["siccd"][0] == 6200
 
-    def test_drops_secinfostartdt_secinfoenddt_columns(self, tmp_path):
+    def test_drops_secinfostartdt_secinfoenddt_columns(self, test_paths):
         """Output should not contain secinfostartdt or secinfoenddt."""
-        raw_dir = self._write_sec_hist(
-            tmp_path,
+        self._write_sec_hist(
+            test_paths,
             [
                 {
                     "permno": 1,
@@ -314,7 +316,7 @@ class TestHxzAttachSiccd:
             ],
         )
         df = pl.DataFrame({"permno": [1], "obs_date": [date(2020, 6, 30)]}).lazy()
-        result = hxz_attach_siccd(df, raw_dir, "obs_date").collect()
+        result = hxz_attach_siccd(test_paths, df, "obs_date").collect()
         assert "secinfostartdt" not in result.columns
         assert "secinfoenddt" not in result.columns
 
@@ -327,7 +329,7 @@ class TestHxzAttachSiccd:
 class TestHxzLoadCrsp:
     """Tests for hxz_load_crsp: the HXZ month-end price rule."""
 
-    def test_me_missing_when_price_not_from_last_trading_day(self, tmp_path):
+    def test_me_missing_when_price_not_from_last_trading_day(self, test_paths):
         eom = date(2020, 6, 30)
         n = 2
         pl.DataFrame(
@@ -347,7 +349,7 @@ class TestHxzLoadCrsp:
                 "usincflg": ["Y"] * n,
                 "issuertype": ["CORP"] * n,
             }
-        ).write_parquet(tmp_path / "crsp_msf_v2.parquet")
+        ).write_parquet(test_paths.raw_tables_dir / "crsp_msf_v2.parquet")
         pl.DataFrame(
             {
                 "permno": [1, 2],
@@ -356,13 +358,374 @@ class TestHxzLoadCrsp:
                 "siccd": [3000, 3000],
             },
             schema_overrides={"secinfoenddt": pl.Date},
-        ).write_parquet(tmp_path / "crsp_stksecurityinfohist.parquet")
+        ).write_parquet(test_paths.raw_tables_dir / "crsp_stksecurityinfohist.parquet")
 
-        out = hxz_load_crsp(tmp_path, "monthly").sort("permno")
+        out = hxz_load_crsp(test_paths, "monthly").sort("permno")
 
         # Price from June 26 (not the last trading day): ME missing, return kept.
         assert out["me"].to_list() == [10.0, None]
         assert out["ret"].to_list() == [0.01, 0.02]
+
+
+class TestHxzLoadCrspPrices:
+    """hxz_load_crsp: D4 month-end price rule on ME, and the industry columns by frequency."""
+
+    _UNIVERSE = {
+        "sharetype": "NS",
+        "securitytype": "EQTY",
+        "securitysubtype": "COM",
+        "usincflg": "Y",
+        "issuertype": "CORP",
+        "primaryexch": "N",
+    }
+
+    def test_monthly_me_is_abs_prc_times_shrout_only_on_price_date(self, test_paths):
+        """ME = |prc| * shrout / 1000 when mthprcdt == mthcaldt; null when mthprcdt is null
+        or differs. (The mismatch case alone is in TestHxzLoadCrsp.)"""
+        eom = date(2020, 6, 30)
+        n = 4
+        pl.DataFrame(
+            {
+                "permno": [1, 2, 3, 4],
+                "permco": [1, 2, 3, 4],
+                "mthcaldt": [eom] * n,
+                "mthprcdt": [eom, None, eom, date(2020, 6, 29)],
+                "mthret": [0.01] * n,
+                "mthretx": [0.01] * n,
+                "mthprc": [10.0, 20.0, -8.0, 30.0],
+                "shrout": [1000.0, 1000.0, 500.0, 1000.0],
+                **{k: [v] * n for k, v in self._UNIVERSE.items()},
+            },
+            schema_overrides={"mthprcdt": pl.Date},
+        ).write_parquet(test_paths.raw_tables_dir / "crsp_msf_v2.parquet")
+        pl.DataFrame(
+            {
+                "permno": [1, 2, 3, 4],
+                "secinfostartdt": [date(2000, 1, 1)] * n,
+                "secinfoenddt": [None] * n,
+                "siccd": [3000] * n,
+            },
+            schema_overrides={"secinfoenddt": pl.Date},
+        ).write_parquet(test_paths.raw_tables_dir / "crsp_stksecurityinfohist.parquet")
+
+        out = hxz_load_crsp(test_paths, "monthly").sort("permno")
+
+        assert out["me"].to_list() == [10.0, None, 4.0, None]  # |-8| * 500 / 1000
+        assert {"siccd", "is_fin"} <= set(out.columns)
+
+    def test_daily_has_me_without_industry_columns(self, test_paths):
+        """Daily ME has no price-date rule, and no stksecurityinfohist is read (none written)."""
+        n = 2
+        pl.DataFrame(
+            {
+                "permno": [1, 1],
+                "permco": [1, 1],
+                "dlycaldt": [date(2020, 6, 29), date(2020, 6, 30)],
+                "dlyret": [0.01, 0.02],
+                "dlyretx": [0.01, 0.02],
+                "dlyprc": [10.0, -12.0],
+                "shrout": [1000.0, 1000.0],
+                **{k: [v] * n for k, v in self._UNIVERSE.items()},
+            }
+        ).write_parquet(test_paths.raw_tables_dir / "crsp_dsf_v2.parquet")
+
+        out = hxz_load_crsp(test_paths, "daily").sort("date")
+
+        assert out.columns == [
+            "permno", "permco", "date", "ret", "retx", "prc", "shrout", "me", "exchcd",
+        ]  # fmt: skip
+        assert out["me"].to_list() == [10.0, 12.0]
+
+
+class TestHxzLoadFundq:
+    """hxz_load_fundq: NA screen, one row per (gvkey, fyearq, fqtr), sorted output."""
+
+    _FLOATS = [
+        "ibq", "dvpsxq", "cshoq", "ajexq",
+        "seqq", "ceqq", "pstkq", "atq", "ltq", "txditcq", "pstkrq",
+    ]  # fmt: skip
+
+    @classmethod
+    def _write(cls, test_paths, rows: list[dict]) -> None:
+        base = {
+            "gvkey": "g1",
+            "fyr": 12,
+            "fyearq": 2020,
+            "fqtr": 1,
+            "datadate": date(2020, 3, 31),
+            "rdq": date(2020, 5, 1),
+            "indfmt": "INDL",
+            "datafmt": "STD",
+            "popsrc": "D",
+            "consol": "C",
+            **dict.fromkeys(cls._FLOATS),
+            "seqq": 10.0,
+            "ibq": 1.0,
+        }
+        schema = {
+            "gvkey": pl.Utf8,
+            "fyr": pl.Int64,
+            "fyearq": pl.Int64,
+            "fqtr": pl.Int64,
+            "datadate": pl.Date,
+            "rdq": pl.Date,
+            "indfmt": pl.Utf8,
+            "datafmt": pl.Utf8,
+            "popsrc": pl.Utf8,
+            "consol": pl.Utf8,
+            **dict.fromkeys(cls._FLOATS, pl.Float64),
+        }
+        pl.DataFrame([base | r for r in rows], schema=schema).write_parquet(
+            test_paths.raw_tables_dir / "comp_fundq.parquet"
+        )
+
+    def test_dedup_screens_and_sort(self, test_paths):
+        self._write(
+            test_paths,
+            [
+                # 0-1: same (gvkey, fyearq, fqtr) under two datadate: the latest datadate wins
+                # even though its rdq is earlier.
+                {"gvkey": "g1", "ibq": 1.0},
+                {"gvkey": "g1", "datadate": date(2020, 4, 30), "rdq": date(2020, 4, 1), "ibq": 2.0},
+                # 2-3: same datadate: the latest rdq wins.
+                {"gvkey": "g2", "datadate": date(2020, 6, 30), "rdq": date(2020, 8, 1), "ibq": 3.0},
+                {"gvkey": "g2", "datadate": date(2020, 6, 30), "rdq": date(2020, 9, 1), "ibq": 4.0},
+                # 4: no fiscal quarter. 5-8: fail one NA screen each.
+                {"gvkey": "g3", "fqtr": None},
+                {"gvkey": "g4", "indfmt": "FS"},
+                {"gvkey": "g5", "datafmt": "SUMM_STD"},
+                {"gvkey": "g6", "popsrc": "I"},
+                {"gvkey": "g7", "consol": "D"},
+                # 9: sorts before g1 although written last.
+                {"gvkey": "g0", "fyearq": 2019, "fqtr": 4, "ibq": 5.0},
+            ],
+        )
+
+        out = hxz_load_fundq(test_paths)
+
+        assert out.columns == [
+            "gvkey", "datadate", "fyr", "fyearq", "fqtr", "rdq",
+            "ibq", "dvpsxq", "cshoq", "ajexq", "beq", "n",
+        ]  # fmt: skip
+        assert out.select("gvkey", "fyearq", "fqtr", "ibq", "n").rows() == [
+            ("g0", 2019, 4, 5.0, 9),
+            ("g1", 2020, 1, 2.0, 1),
+            ("g2", 2020, 1, 4.0, 3),
+        ]
+        assert out["fyr"].to_list() == [12, 12, 12]
+        assert out["beq"].to_list() == [10.0, 10.0, 10.0]  # seqq
+
+
+class TestHxzLoadPanelRow:
+    """hxz_load_panel_row: gvkey screen, (id, eom) industry dedup and is_fin (monthly only)."""
+
+    _SCHEMA = {
+        "excntry": pl.Utf8,
+        "id": pl.Int64,
+        "gvkey": pl.Utf8,
+        "eom": pl.Date,
+        "ret": pl.Float64,
+        "me": pl.Float64,
+        "size_grp": pl.Utf8,
+        "common": pl.Int64,
+        "obs_main": pl.Int64,
+        "primary_sec": pl.Int64,
+        "exch_main": pl.Int64,
+        "ret_lag_dif": pl.Int64,
+        "naics": pl.Utf8,
+        "sic": pl.Int64,
+    }
+
+    @classmethod
+    def _write_msf(cls, test_paths, rows: list[dict]) -> None:
+        """world_msf rows that pass the ROW universe unless overridden."""
+        base = {
+            "excntry": "GBR",
+            "id": 1,
+            "gvkey": "g1",
+            "eom": date(2020, 6, 30),
+            "ret": 0.01,
+            "me": 10.0,
+            "size_grp": "small",
+            "common": 1,
+            "obs_main": 1,
+            "primary_sec": 1,
+            "exch_main": 1,
+            "ret_lag_dif": 1,
+            "naics": None,
+            "sic": None,
+        }
+        pl.DataFrame([base | r for r in rows], schema=cls._SCHEMA).write_parquet(
+            test_paths.interim_dir / "world_msf.parquet"
+        )
+
+    def test_monthly_is_fin_rule_and_null_gvkey_dropped(self, test_paths):
+        self._write_msf(
+            test_paths,
+            [
+                {"id": 1, "gvkey": "g1", "naics": "522110"},
+                {"id": 2, "gvkey": "g2", "naics": "531210"},
+                {"id": 3, "gvkey": "g3", "sic": 6500},  # naics null: SIC fallback
+                {"id": 4, "gvkey": "g4"},  # no industry at all
+                {"id": 5, "gvkey": "g5", "naics": "331110", "sic": 6500},  # NAICS wins
+                {"id": 6, "gvkey": None, "naics": "522110"},
+            ],
+        )
+
+        out = hxz_load_panel_row(test_paths, "monthly").sort("id")
+
+        assert out.columns == [
+            "excntry", "id", "gvkey", "date", "ret", "me", "size_grp", "naics", "sic", "is_fin",
+        ]  # fmt: skip
+        assert out["id"].to_list() == [1, 2, 3, 4, 5]
+        assert out["is_fin"].to_list() == [True, True, True, False, False]
+
+    def test_monthly_duplicate_industry_rows_do_not_multiply_panel_rows(self, test_paths):
+        # Each id has a kept row plus a twin outside the universe (obs_main 0) that carries
+        # the winning industry: non-null naics, then larger naics, then larger sic.
+        self._write_msf(
+            test_paths,
+            [
+                {"id": 11, "sic": 2000},
+                {"id": 11, "obs_main": 0, "naics": "52", "sic": 100},
+                {"id": 12, "naics": "33", "sic": 1000},
+                {"id": 12, "obs_main": 0, "naics": "52", "sic": 5},
+                {"id": 13, "sic": 2000},
+                {"id": 13, "obs_main": 0, "sic": 6500},
+            ],
+        )
+
+        out = hxz_load_panel_row(test_paths, "monthly").sort("id")
+
+        assert out["id"].to_list() == [11, 12, 13]
+        assert out["naics"].to_list() == ["52", "52", None]
+        assert out["sic"].to_list() == [100, 5, 6500]
+        assert out["is_fin"].to_list() == [True, True, True]
+
+    def test_daily_has_no_industry_columns_and_drops_null_gvkey(self, test_paths):
+        # Daily gvkey and size_grp come from the month's world_msf row.
+        self._write_msf(
+            test_paths,
+            [
+                {"id": 1, "gvkey": "g1", "naics": "52", "sic": 6000},
+                {"id": 2, "gvkey": None, "naics": "52", "sic": 6000},
+            ],
+        )
+        dates = [date(2020, 6, 29), date(2020, 6, 30)]
+        pl.DataFrame(
+            {
+                "excntry": ["GBR"] * 4,
+                "id": [1, 1, 2, 2],
+                "eom": [date(2020, 6, 30)] * 4,
+                "date": dates * 2,
+                "ret": [0.01] * 4,
+                "me": [10.0] * 4,
+                "ret_lag_dif": [1] * 4,
+                "common": [1] * 4,
+                "obs_main": [1] * 4,
+                "primary_sec": [1] * 4,
+                "exch_main": [1] * 4,
+            }
+        ).write_parquet(test_paths.interim_dir / "world_dsf.parquet")
+
+        out = hxz_load_panel_row(test_paths, "daily").sort("date")
+
+        assert out.columns == ["excntry", "id", "gvkey", "date", "ret", "me", "size_grp"]
+        assert out["id"].to_list() == [1, 1]
+        assert out["date"].to_list() == dates
+
+
+class TestHxzLoadReturns:
+    """hxz_load_returns: US + ROW concatenation, me_lag1 and date_start. The two loaders are
+    replaced by small frames."""
+
+    @staticmethod
+    def _patch(monkeypatch, us: pl.DataFrame, row: pl.DataFrame) -> None:
+        def fake_crsp(paths, freq, date_start=None):
+            return us if date_start is None else us.filter(pl.col("date") >= date_start)
+
+        monkeypatch.setattr(af, "hxz_load_crsp", fake_crsp)
+        monkeypatch.setattr(af, "hxz_load_panel_row", lambda paths, freq: row)
+
+    @staticmethod
+    def _monthly_frames() -> tuple[pl.DataFrame, pl.DataFrame]:
+        us = pl.DataFrame(
+            {
+                "permno": [1, 1, 1, 2],
+                "date": [
+                    date(2020, 1, 31),
+                    date(2020, 2, 29),
+                    date(2020, 4, 30),
+                    date(2020, 1, 31),
+                ],
+                "ret": [0.01, 0.02, 0.03, 0.04],
+                "me": [10.0, 20.0, 40.0, 7.0],
+            }
+        )
+        row = pl.DataFrame(
+            {
+                "excntry": ["GBR", "GBR"],
+                "id": [10, 10],
+                "gvkey": ["g10", "g10"],
+                "date": [date(2020, 1, 31), date(2020, 2, 29)],
+                "ret": [0.05, 0.06],
+                "me": [5.0, 6.0],
+            }
+        )
+        return us, row
+
+    def test_monthly_us_keys_and_me_lag1_by_calendar_month(self, test_paths, monkeypatch):
+        self._patch(monkeypatch, *self._monthly_frames())
+
+        out = hxz_load_returns(test_paths, "monthly").sort("excntry", "id", "date")
+
+        us = out.filter(pl.col("excntry") == "USA")
+        assert (us["id"] == us["permno"]).all()
+        assert us["id"].to_list() == [1, 1, 1, 2]
+        # Feb sees January's ME; April has no March row; first rows have no lag.
+        assert us["me_lag1"].to_list() == [None, 10.0, None, None]
+        gbr = out.filter(pl.col("excntry") == "GBR")
+        assert gbr["id"].to_list() == [10, 10]
+        assert gbr["me_lag1"].to_list() == [None, 5.0]
+
+    def test_date_start_filters_us_and_row(self, test_paths, monkeypatch):
+        self._patch(monkeypatch, *self._monthly_frames())
+
+        out = hxz_load_returns(test_paths, "monthly", date_start=date(2020, 2, 1))
+
+        assert out.sort("excntry", "id", "date").select("excntry", "id", "date").rows() == [
+            ("GBR", 10, date(2020, 2, 29)),
+            ("USA", 1, date(2020, 2, 29)),
+            ("USA", 1, date(2020, 4, 30)),
+        ]
+
+    def test_daily_me_lag1_is_previous_row(self, test_paths, monkeypatch):
+        days = [date(2020, 1, 2), date(2020, 1, 3), date(2020, 1, 6)]
+        us = pl.DataFrame(
+            {
+                "permno": [1, 1, 1, 2],
+                "date": [*days, days[0]],
+                "ret": [0.01] * 4,
+                "me": [10.0, 11.0, 12.0, 7.0],
+            }
+        )
+        row = pl.DataFrame(
+            {
+                "excntry": ["GBR"] * 2,
+                "id": [10, 10],
+                "gvkey": ["g10"] * 2,
+                "date": days[:2],
+                "ret": [0.01] * 2,
+                "me": [5.0, 6.0],
+            }
+        )
+        self._patch(monkeypatch, us, row)
+
+        out = hxz_load_returns(test_paths, "daily").sort("excntry", "id", "date")
+
+        assert out.filter(pl.col("id") == 1)["me_lag1"].to_list() == [None, 10.0, 11.0]
+        assert out.filter(pl.col("id") == 2)["me_lag1"].to_list() == [None]  # not 1's last ME
+        assert out.filter(pl.col("id") == 10)["me_lag1"].to_list() == [None, 5.0]
 
 
 class TestHxzMergeBeChain:
@@ -536,19 +899,18 @@ class TestHxzImputeBeCleanSurplus:
 class TestHxzLinkCompustat:
     """Tests for hxz_link_compustat: gvkey→permno with time-validity + dedup."""
 
-    def _write_lnkhist(self, tmp_path: Path, rows: list[dict]) -> Path:
+    def _write_lnkhist(self, test_paths, rows: list[dict]) -> None:
         df = pl.DataFrame(rows).with_columns(
             pl.col("linkdt", "linkenddt").cast(pl.Date),
             pl.col("lpermno").cast(pl.Int64),
         )
-        p = tmp_path / "crsp_ccmxpf_lnkhist.parquet"
+        p = test_paths.raw_tables_dir / "crsp_ccmxpf_lnkhist.parquet"
         df.write_parquet(p)
-        return tmp_path
 
-    def test_basic_link(self, tmp_path):
+    def test_basic_link(self, test_paths):
         """Single matching link returns permno."""
-        raw_dir = self._write_lnkhist(
-            tmp_path,
+        self._write_lnkhist(
+            test_paths,
             [
                 {
                     "gvkey": "001",
@@ -565,13 +927,13 @@ class TestHxzLinkCompustat:
         )
         from jkp.data.aux_functions import hxz_link_compustat
 
-        result = hxz_link_compustat(comp, raw_dir)
+        result = hxz_link_compustat(test_paths, comp)
         assert result["permno"][0] == 10001
 
-    def test_date_outside_link_window_excluded(self, tmp_path):
+    def test_date_outside_link_window_excluded(self, test_paths):
         """datadate before linkdt → row excluded (no match)."""
-        raw_dir = self._write_lnkhist(
-            tmp_path,
+        self._write_lnkhist(
+            test_paths,
             [
                 {
                     "gvkey": "001",
@@ -588,13 +950,13 @@ class TestHxzLinkCompustat:
         )
         from jkp.data.aux_functions import hxz_link_compustat
 
-        result = hxz_link_compustat(comp, raw_dir)
+        result = hxz_link_compustat(test_paths, comp)
         assert len(result) == 0
 
-    def test_null_linkenddt_treated_as_open_ended(self, tmp_path):
+    def test_null_linkenddt_treated_as_open_ended(self, test_paths):
         """linkenddt=null means the link is still active."""
-        raw_dir = self._write_lnkhist(
-            tmp_path,
+        self._write_lnkhist(
+            test_paths,
             [
                 {
                     "gvkey": "001",
@@ -611,14 +973,14 @@ class TestHxzLinkCompustat:
         )
         from jkp.data.aux_functions import hxz_link_compustat
 
-        result = hxz_link_compustat(comp, raw_dir)
+        result = hxz_link_compustat(test_paths, comp)
         assert len(result) == 1
         assert result["permno"][0] == 10001
 
-    def test_multi_link_primary_wins(self, tmp_path):
+    def test_multi_link_primary_wins(self, test_paths):
         """When P and C links compete for same (datadate, permno), P wins."""
-        raw_dir = self._write_lnkhist(
-            tmp_path,
+        self._write_lnkhist(
+            test_paths,
             [
                 {
                     "gvkey": "001",
@@ -644,16 +1006,16 @@ class TestHxzLinkCompustat:
         ).with_columns(pl.col("datadate").cast(pl.Date))
         from jkp.data.aux_functions import hxz_link_compustat
 
-        result = hxz_link_compustat(comp, raw_dir)
+        result = hxz_link_compustat(test_paths, comp)
         # unique(subset=["datadate","permno"]) → only 1 row per (datadate,permno)
         assert len(result) == 1
         # linkprim DESC: P > C → gvkey 002 wins
         assert result["linkprim"][0] == "P"
 
-    def test_drops_linktype_and_link_days(self, tmp_path):
+    def test_drops_linktype_and_link_days(self, test_paths):
         """Output should not contain linktype or _link_days columns."""
-        raw_dir = self._write_lnkhist(
-            tmp_path,
+        self._write_lnkhist(
+            test_paths,
             [
                 {
                     "gvkey": "001",
@@ -670,7 +1032,7 @@ class TestHxzLinkCompustat:
         )
         from jkp.data.aux_functions import hxz_link_compustat
 
-        result = hxz_link_compustat(comp, raw_dir)
+        result = hxz_link_compustat(test_paths, comp)
         assert "linktype" not in result.columns
         assert "_link_days" not in result.columns
 
@@ -678,7 +1040,7 @@ class TestHxzLinkCompustat:
 class TestHxzSupplementQ4Shares:
     """Tests for hxz_supplement_q4_shares: share fallback hierarchy."""
 
-    def test_q4_null_cshoq_filled_from_annual(self, tmp_path):
+    def test_q4_null_cshoq_filled_from_annual(self, test_paths):
         """Q4 with null cshoq/ajexq gets values from funda csho/ajex."""
         # Write a dummy ccmxpf_lnkhist and crsp_msf_v2 so the function
         # doesn't crash on scan_parquet — this path is taken only when
@@ -695,7 +1057,7 @@ class TestHxzSupplementQ4Shares:
         ).with_columns(
             pl.col("linkdt", "linkenddt").cast(pl.Date), pl.col("lpermno").cast(pl.Int64)
         )
-        lnk.write_parquet(tmp_path / "crsp_ccmxpf_lnkhist.parquet")
+        lnk.write_parquet(test_paths.raw_tables_dir / "crsp_ccmxpf_lnkhist.parquet")
 
         msf = pl.DataFrame(
             {
@@ -705,7 +1067,7 @@ class TestHxzSupplementQ4Shares:
                 "mthcumfacshr": [2.0],
             }
         ).with_columns(pl.col("mthcaldt").cast(pl.Date))
-        msf.write_parquet(tmp_path / "crsp_msf_v2.parquet")
+        msf.write_parquet(test_paths.raw_tables_dir / "crsp_msf_v2.parquet")
 
         fundq = pl.DataFrame(
             {
@@ -739,11 +1101,11 @@ class TestHxzSupplementQ4Shares:
 
         from jkp.data.aux_functions import hxz_supplement_q4_shares
 
-        result = hxz_supplement_q4_shares(fundq, funda, tmp_path)
+        result = hxz_supplement_q4_shares(test_paths, fundq, funda)
         assert result["cshoq_eff"][0] == pytest.approx(50.0)  # from funda csho
         assert result["ajexq_eff"][0] == pytest.approx(1.0)  # from funda ajex
 
-    def test_existing_cshoq_not_overwritten(self, tmp_path):
+    def test_existing_cshoq_not_overwritten(self, test_paths):
         """Non-null cshoq/ajexq should not be replaced by annual values."""
         lnk = pl.DataFrame(
             {
@@ -757,7 +1119,7 @@ class TestHxzSupplementQ4Shares:
         ).with_columns(
             pl.col("linkdt", "linkenddt").cast(pl.Date), pl.col("lpermno").cast(pl.Int64)
         )
-        lnk.write_parquet(tmp_path / "crsp_ccmxpf_lnkhist.parquet")
+        lnk.write_parquet(test_paths.raw_tables_dir / "crsp_ccmxpf_lnkhist.parquet")
 
         msf = pl.DataFrame(
             {
@@ -767,7 +1129,7 @@ class TestHxzSupplementQ4Shares:
                 "mthcumfacshr": [9.0],
             }
         ).with_columns(pl.col("mthcaldt").cast(pl.Date))
-        msf.write_parquet(tmp_path / "crsp_msf_v2.parquet")
+        msf.write_parquet(test_paths.raw_tables_dir / "crsp_msf_v2.parquet")
 
         fundq = pl.DataFrame(
             {
@@ -801,7 +1163,7 @@ class TestHxzSupplementQ4Shares:
 
         from jkp.data.aux_functions import hxz_supplement_q4_shares
 
-        result = hxz_supplement_q4_shares(fundq, funda, tmp_path)
+        result = hxz_supplement_q4_shares(test_paths, fundq, funda)
         assert result["cshoq_eff"][0] == pytest.approx(77.0)
         assert result["ajexq_eff"][0] == pytest.approx(2.0)
 
@@ -878,7 +1240,7 @@ class TestHxzNyseBreaks:
 
 
 class TestHxzCountryBreaks:
-    """Tests for _hxz_country_breaks: per-(excntry,date) with HXZ_MIN_STOCKS_BP gate."""
+    """Tests for _hxz_country_breaks: per-(excntry,date) with FACTOR_MIN_STOCKS_BP gate."""
 
     def _make_panel(self, rows):
         return pl.DataFrame(rows).with_columns(
@@ -887,8 +1249,8 @@ class TestHxzCountryBreaks:
         )
 
     def test_below_min_stocks_excluded(self):
-        """excntry/date with fewer than HXZ_MIN_STOCKS_BP eligible stocks → no row in output."""
-        # Only 5 stocks (below HXZ_MIN_STOCKS_BP=10)
+        """excntry/date with fewer than FACTOR_MIN_STOCKS_BP eligible stocks → no row in output."""
+        # Only 5 stocks (below FACTOR_MIN_STOCKS_BP=10)
         rows = [
             {
                 "excntry": "GBR",
@@ -906,7 +1268,7 @@ class TestHxzCountryBreaks:
         assert len(result) == 0
 
     def test_above_min_stocks_included(self):
-        """excntry/date with at least HXZ_MIN_STOCKS_BP eligible stocks → breakpoints computed."""
+        """excntry/date with at least FACTOR_MIN_STOCKS_BP eligible stocks → breakpoints computed."""
         rows = [
             {
                 "excntry": "GBR",
@@ -916,7 +1278,7 @@ class TestHxzCountryBreaks:
                 "me": float(i),
                 "inv": 0.1,
             }
-            for i in range(1, HXZ_MIN_STOCKS_BP + 2)  # just above threshold
+            for i in range(1, FACTOR_MIN_STOCKS_BP + 2)  # just above threshold
         ]
         df = self._make_panel(rows)
         specs = [("me", 0.5, "sizemedn")]
@@ -934,7 +1296,7 @@ class TestHxzCountryBreaks:
                 "me": float(i),
                 "inv": 0.1,
             }
-            for i in range(1, HXZ_MIN_STOCKS_BP + 1)
+            for i in range(1, FACTOR_MIN_STOCKS_BP + 1)
         ] + [
             {
                 "excntry": "GBR",
@@ -948,7 +1310,7 @@ class TestHxzCountryBreaks:
         df = self._make_panel(rows)
         specs = [("me", 0.5, "sizemedn")]
         result = _hxz_country_breaks(df, specs)
-        # exactly HXZ_MIN_STOCKS_BP eligible → included
+        # exactly FACTOR_MIN_STOCKS_BP eligible → included
         assert len(result) == 1
 
     def test_size_grp_filter(self):
@@ -1112,7 +1474,7 @@ class TestHxzClassifySizeIa:
         assert inelig_row["invport"][0] is None
 
     def test_row_below_gate_gets_null_ports(self):
-        """ROW with fewer than HXZ_MIN_STOCKS_BP stocks → sizeport/invport null."""
+        """ROW with fewer than FACTOR_MIN_STOCKS_BP stocks → sizeport/invport null."""
         rows = [
             {
                 "excntry": "GBR",
@@ -1223,7 +1585,7 @@ class TestHxzClassifyRoe:
         assert "roe" in result.columns
 
     def test_row_below_gate_gets_null_roeport(self):
-        """ROW with fewer than HXZ_MIN_STOCKS_BP eligible stocks → null roeport."""
+        """ROW with fewer than FACTOR_MIN_STOCKS_BP eligible stocks → null roeport."""
         # exchcd required: _hxz_classify_roe splits by excntry; empty US slice
         # still runs _hxz_nyse_breaks which references exchcd.
         df = pl.DataFrame(
@@ -1366,7 +1728,7 @@ class TestHxzComputeFactors:
         assert result["roe_hxz"][0] == pytest.approx(0.08 - (-0.03))
 
     def test_us_bypasses_min_stocks_pf_gate(self):
-        """US country bypasses HXZ_MIN_STOCKS_PF gate even for single-stock buckets."""
+        """US country bypasses FACTOR_MIN_STOCKS_PF gate even for single-stock buckets."""
         date_ = date(2020, 1, 31)
         # Only 1 stock per bucket across the whole 2×3×3 grid
         rows = [
@@ -1398,10 +1760,10 @@ class TestHxzComputeFactors:
         assert not np.isnan(result["me_hxz"][0])
 
     def test_row_below_min_stocks_pf_bucket_nulled(self):
-        """ROW bucket with n < HXZ_MIN_STOCKS_PF gets null vwret → null factor legs."""
+        """ROW bucket with n < FACTOR_MIN_STOCKS_PF gets null vwret → null factor legs."""
         date_ = date(2020, 1, 31)
         rows = [
-            # Only 1 stock in each small bucket → n=1 < HXZ_MIN_STOCKS_PF=3 → null
+            # Only 1 stock in each small bucket → n=1 < FACTOR_MIN_STOCKS_PF=3 → null
             {
                 "excntry": "DEU",
                 "id": 1,
@@ -1426,7 +1788,7 @@ class TestHxzComputeFactors:
         ]
         df = self._make_panel(rows)
         result = hxz_compute_factors(df)
-        # With n=1 < HXZ_MIN_STOCKS_PF, small bucket is null, me_hxz = null - something
+        # With n=1 < FACTOR_MIN_STOCKS_PF, small bucket is null, me_hxz = null - something
         # mean_horizontal skips nulls → me_hxz uses null for avg(small) → None or NaN
         row = result.filter(pl.col("excntry") == "DEU")
         # me_hxz may be null/NaN when only one small bucket and it's nulled
@@ -1632,7 +1994,7 @@ class TestHxzCharacteristicTables:
     permno whose world_msf gvkey differs from its CCM link (id 30), and a CRSP
     permno with 1960s quarters (id 40)."""
 
-    def _inputs(self, tmp_path) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+    def _inputs(self, test_paths) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
         eoms = pl.date_range(date(2019, 6, 1), date(2020, 6, 1), "1mo", eager=True).dt.month_end()
         n = len(eoms)
         pl.DataFrame(
@@ -1643,7 +2005,7 @@ class TestHxzCharacteristicTables:
                 "source_crsp": [0] * 2 * n + [1] * n,
                 "eom": pl.concat([eoms, eoms, eoms]),
             }
-        ).write_parquet(tmp_path / "world_msf.parquet")
+        ).write_parquet(test_paths.interim_dir / "world_msf.parquet")
         pl.DataFrame(
             {
                 "gvkey": ["g30", "g40"],
@@ -1654,7 +2016,7 @@ class TestHxzCharacteristicTables:
                 "linkenddt": [None, None],
             },
             schema_overrides={"linkenddt": pl.Date},
-        ).write_parquet(tmp_path / "crsp_ccmxpf_lnkhist.parquet")
+        ).write_parquet(test_paths.raw_tables_dir / "crsp_ccmxpf_lnkhist.parquet")
         funda_us = pl.DataFrame(
             {
                 "gvkey": ["g20", "g30"],
@@ -1696,10 +2058,10 @@ class TestHxzCharacteristicTables:
         )
         return funda_us, fundq_us, funda_row
 
-    def test_annual_table(self, tmp_path):
+    def test_annual_table(self, test_paths):
         """Fiscal year y-1 applies to port_year y; CRSP permnos use their CCM link."""
-        funda_us, _, funda_row = self._inputs(tmp_path)
-        out = hxz_annual_characteristics(tmp_path, tmp_path, funda_us, funda_row)
+        funda_us, _, funda_row = self._inputs(test_paths)
+        out = hxz_annual_characteristics(test_paths, funda_us, funda_row)
         assert out.columns == ["id", "port_year", "inv", "be_a"]
         assert out.rows() == [
             (10, 2019, 0.1, 1.0),
@@ -1708,9 +2070,9 @@ class TestHxzCharacteristicTables:
             (200001, 2019, 0.05, 1.0),
         ]
 
-    def test_roe_table(self, tmp_path):
-        funda_us, fundq_us, funda_row = self._inputs(tmp_path)
-        roe = hxz_roe_by_month(tmp_path, tmp_path, fundq_us, funda_row)
+    def test_roe_table(self, test_paths):
+        funda_us, fundq_us, funda_row = self._inputs(test_paths)
+        roe = hxz_roe_by_month(test_paths, fundq_us, funda_row)
         assert roe.columns == ["id", "ym", "roe"]
 
         def at(i: int, y: int, m: int) -> list[float]:
