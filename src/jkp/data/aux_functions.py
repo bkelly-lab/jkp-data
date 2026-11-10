@@ -55,8 +55,12 @@ from .config import (
     FF_UMD_ROW_MIN_DAYS,
     FF_UMD_ROW_MIN_MONTHS,
     FF_USE_DFF_BE,
-    HXZ_MIN_STOCKS_BP,
-    HXZ_MIN_STOCKS_PF,
+    HXZ_BEQ_IMPUTE_MAX_QUARTERS,
+    HXZ_ROW_ROE_MAX_LAG_MONTHS,
+    HXZ_ROW_ROE_MIN_LAG_MONTHS,
+    HXZ_ROW_START,
+    HXZ_US_ROE_MAX_LAG_MONTHS,
+    HXZ_US_START,
     MAIN_FILTERS,
     NI_AT_MIN_STD,
     RET_MIN_STD,
@@ -11456,14 +11460,14 @@ def gen_ff_data(
         )
 
 
-def hxz_attach_siccd(lf: pl.LazyFrame, raw_dir: Path, date_col: str) -> pl.LazyFrame:
+def hxz_attach_siccd(paths: DataPaths, lf: pl.LazyFrame, date_col: str) -> pl.LazyFrame:
     """Event-time join with stksecurityinfohist on permno where
     secinfostartdt ≤ `date_col` ≤ secinfoenddt (null enddt = open-ended);
     adds siccd + is_fin. A permno whose windows don't cover `date_col`
     keeps its panel row with null siccd/is_fin — the row must not vanish
     from the return universe just because industry history has a gap."""
     sec = (
-        pl.scan_parquet(raw_dir / "crsp_stksecurityinfohist.parquet")
+        pl.scan_parquet(paths.raw_tables_dir / "crsp_stksecurityinfohist.parquet")
         .select("permno", "secinfostartdt", "secinfoenddt", "siccd")
         .unique()
     )
@@ -11490,15 +11494,21 @@ def hxz_attach_siccd(lf: pl.LazyFrame, raw_dir: Path, date_col: str) -> pl.LazyF
 
 
 def hxz_load_crsp(
-    raw_dir: Path, freq: Literal["monthly", "daily"], date_start: date | None = None
+    paths: DataPaths, freq: Literal["monthly", "daily"], date_start: date | None = None
 ) -> pl.DataFrame:
     """Load CRSP CIZ (msf_v2 or dsf_v2); permno-level (no permco aggregation).
 
     Monthly ME is missing when the month's price (mthprc) is not from its last trading day
-    (mthprcdt before mthcaldt), as in HXZ. This ME only sizes and weights the HXZ sorts; the
+    (mthprcdt missing or different from mthcaldt), as in HXZ. A stock with a missing June ME
+    gets no size or I/A portfolio from July to June, and a missing ME at the end of month
+    t-1 gives it no weight in month t. This ME only sizes and weights the HXZ sorts; the
     published size variable is JKP's market_equity.
 
-    Output: Eager [permno, permco, date, ret, retx, prc, shrout, me, exchcd, siccd, is_fin].
+    Industry (siccd, is_fin) is attached to the monthly file only: it decides sort
+    eligibility, and the daily factors take their portfolios from the monthly sorts.
+
+    Output: Eager [permno, permco, date, ret, retx, prc, shrout, me, exchcd], plus
+    [siccd, is_fin] for monthly.
     """
     pq, p = ("crsp_msf_v2.parquet", "mth") if freq == "monthly" else ("crsp_dsf_v2.parquet", "dly")
     date_c, ret_c, retx_c, prc_c = f"{p}caldt", f"{p}ret", f"{p}retx", f"{p}prc"
@@ -11506,33 +11516,33 @@ def hxz_load_crsp(
     # /1000: CIZ shrout is in thousands; me in USD millions matches the
     # jkp world_msf convention so US and ex-US ME share one unit.
     me = pl.col(prc_c).abs() * pl.col("shrout") / 1000.0
-    if freq == "monthly":
-        me = pl.when(pl.col("mthprcdt") == pl.col("mthcaldt")).then(me)
-    return (
-        pl.scan_parquet(raw_dir / pq)
+    lf = (
+        pl.scan_parquet(paths.raw_tables_dir / pq)
         .filter(date_floor & _ciz_universe())
         .with_columns(pl.col(ret_c, retx_c, prc_c).cast(pl.Float64))
-        .pipe(hxz_attach_siccd, raw_dir, date_c)
-        .select(
-            "permno",
-            "permco",
-            pl.col(date_c).alias("date"),
-            pl.col(ret_c).alias("ret"),
-            pl.col(retx_c).alias("retx"),
-            pl.col(prc_c).alias("prc"),
-            "shrout",
-            me.alias("me"),
-            pl.col("primaryexch")
-            .replace_strict({"N": 1, "A": 2, "Q": 3}, default=None, return_dtype=pl.Int64)
-            .alias("exchcd"),
-            "siccd",
-            "is_fin",
-        )
-        .collect()
     )
+    industry: list[str] = []
+    if freq == "monthly":
+        me = pl.when(pl.col("mthprcdt") == pl.col("mthcaldt")).then(me)
+        lf = hxz_attach_siccd(paths, lf, date_c)
+        industry = ["siccd", "is_fin"]
+    return lf.select(
+        "permno",
+        "permco",
+        pl.col(date_c).alias("date"),
+        pl.col(ret_c).alias("ret"),
+        pl.col(retx_c).alias("retx"),
+        pl.col(prc_c).alias("prc"),
+        "shrout",
+        me.alias("me"),
+        pl.col("primaryexch")
+        .replace_strict({"N": 1, "A": 2, "Q": 3}, default=None, return_dtype=pl.Int64)
+        .alias("exchcd"),
+        *industry,
+    ).collect()
 
 
-def hxz_load_funda(raw_dir: Path) -> pl.DataFrame:
+def hxz_load_funda(paths: DataPaths) -> pl.DataFrame:
     """Annual BE and I/A per (gvkey, fiscal year).
 
     BE: SEQ → CEQ+PSTK → AT-LT, plus TXDITC unconditionally,
@@ -11544,7 +11554,7 @@ def hxz_load_funda(raw_dir: Path) -> pl.DataFrame:
     fy_gap = pl.col("datadate").dt.year() - pl.col("datadate").shift(1).over("gvkey").dt.year()
     floats = ["pstkrv", "pstkl", "pstk", "seq", "ceq", "txditc", "lt", "at", "csho", "ajex"]
     return (
-        pl.scan_parquet(raw_dir / "comp_funda.parquet")
+        pl.scan_parquet(paths.raw_tables_dir / "comp_funda.parquet")
         .filter(_compustat_na_filter())
         .with_columns(pl.col(*floats).cast(pl.Float64), pl.col("datadate").cast(pl.Date))
         .with_columns(
@@ -11557,16 +11567,14 @@ def hxz_load_funda(raw_dir: Path) -> pl.DataFrame:
         .with_columns(year=pl.col("datadate").dt.year())
         .pipe(_collapse_to_latest_fy)
         .with_columns(
-            inv=pl.when(at_lag.is_not_null() & (at_lag > 0) & (fy_gap == 1))
-            .then((pl.col("at") - at_lag) / at_lag)
-            .otherwise(None)
+            inv=pl.when(fy_gap == 1).then(safe_div(pl.col("at") - at_lag, at_lag, "inv", mode=3))
         )
         .select("gvkey", "datadate", "be_a", "inv", "csho", "ajex")
         .collect()
     )
 
 
-def hxz_load_fundq(raw_dir: Path) -> pl.DataFrame:
+def hxz_load_fundq(paths: DataPaths) -> pl.DataFrame:
     """Compustat quarterly BEQ: SEQQ → CEQQ+PSTKQ → ATQ−LTQ, plus TXDITCQ,
     minus PS_q (PSTKRQ → PSTKQ → 0). One row per (gvkey, fyearq, fqtr); rows
     without a fiscal quarter are dropped. fyr and the raw row number n are kept
@@ -11579,7 +11587,7 @@ def hxz_load_fundq(raw_dir: Path) -> pl.DataFrame:
         "seqq", "ceqq", "pstkq", "atq", "ltq", "txditcq", "pstkrq",
     ]  # fmt: skip
     return (
-        pl.scan_parquet(raw_dir / "comp_fundq.parquet")
+        pl.scan_parquet(paths.raw_tables_dir / "comp_fundq.parquet")
         .with_row_index("n")
         .filter(_compustat_na_filter() & pl.col("fqtr").is_not_null())
         .with_columns(
@@ -11624,7 +11632,7 @@ def hxz_load_fundq(raw_dir: Path) -> pl.DataFrame:
 
 
 def hxz_supplement_q4_shares(
-    fundq: pl.DataFrame, funda: pl.DataFrame, raw_dir: Path
+    paths: DataPaths, fundq: pl.DataFrame, funda: pl.DataFrame
 ) -> pl.DataFrame:
     """HXZ footnote-3 share supplementation: cshoq/ajexq → annual csho/ajex on Q4 rows
     → CRSP shrout (thousands) + mthcumfacshr at fiscal-quarter month-end.
@@ -11653,31 +11661,8 @@ def hxz_supplement_q4_shares(
         .select("gvkey", "datadate")
         .unique()
     )
-    lnk = (
-        pl.scan_parquet(raw_dir / "crsp_ccmxpf_lnkhist.parquet")
-        .filter(pl.col("linktype").str.starts_with("L") & pl.col("linkprim").is_in(["P", "C"]))
-        .select("gvkey", "lpermno", "linkprim", "linktype", "linkdt", "linkenddt")
-        .with_columns(
-            pl.col("lpermno").cast(pl.Int64),
-            pl.col("linkdt", "linkenddt").cast(pl.Date),
-        )
-    )
-    nl = (
-        needs.join(lnk, on="gvkey", how="inner")
-        .filter(
-            (pl.col("linkdt") <= pl.col("datadate"))
-            & (pl.col("linkenddt").is_null() | (pl.col("linkenddt") >= pl.col("datadate")))
-        )
-        .with_columns(
-            _link_days=(
-                pl.coalesce(pl.col("linkenddt"), pl.lit(date(9999, 12, 31))) - pl.col("linkdt")
-            ).dt.total_days()
-        )
-        .pipe(_hxz_best_link, subset=["gvkey", "datadate"], tail_key="lpermno")
-        .drop("_link_days")
-    )
     cfac = (
-        pl.scan_parquet(raw_dir / "crsp_msf_v2.parquet")
+        pl.scan_parquet(paths.raw_tables_dir / "crsp_msf_v2.parquet")
         .select(
             "permno",
             pl.col("mthcaldt").dt.month_end().alias("eom"),
@@ -11691,8 +11676,9 @@ def hxz_supplement_q4_shares(
         .unique(subset=["permno", "eom"], keep="last", maintain_order=True)
     )
     nl = (
-        nl.with_columns(eom=pl.col("datadate").dt.month_end())
-        .rename({"lpermno": "permno"})
+        _hxz_ccm_links(paths, needs)
+        .pipe(_hxz_best_link, subset=["gvkey", "datadate"], tail_key="permno")
+        .with_columns(eom=pl.col("datadate").dt.month_end())
         .join(cfac, on=["permno", "eom"], how="left")
         .select("gvkey", "datadate", "shrout", "cfacshr")
     )
@@ -11764,7 +11750,7 @@ def hxz_impute_be_clean_surplus(fq: pl.DataFrame) -> pl.DataFrame:
             + pl.col("dvq").shift(-1).over("gvkey"),
         )
     )
-    fw_cols = [f"beq_fw{j}" for j in range(1, 5)]
+    fw_cols = [f"beq_fw{j}" for j in range(1, HXZ_BEQ_IMPUTE_MAX_QUARTERS + 1)]
     df = df.with_columns(
         **{
             fw: pl.col("beq").shift(j).over("gvkey")
@@ -11791,11 +11777,12 @@ def _hxz_best_link(
     ).unique(subset=subset, keep="first", maintain_order=True)
 
 
-def hxz_link_compustat(comp: pl.DataFrame, raw_dir: Path) -> pl.DataFrame:
-    """gvkey → permno via CCM; per-row datadate gating (NOT jun_end as FF
-    uses — HXZ links at fiscal-q-end). Primary first; one (datadate, permno)."""
+def _hxz_ccm_links(paths: DataPaths, comp: pl.DataFrame | pl.LazyFrame) -> pl.LazyFrame:
+    """Every CCM link (linktype L*, linkprim P or C) of each comp row's gvkey that is
+    active at its datadate, with permno and the link length _link_days that
+    _hxz_best_link ranks on."""
     lnk = (
-        pl.scan_parquet(raw_dir / "crsp_ccmxpf_lnkhist.parquet")
+        pl.scan_parquet(paths.raw_tables_dir / "crsp_ccmxpf_lnkhist.parquet")
         .filter(pl.col("linktype").str.starts_with("L") & pl.col("linkprim").is_in(["P", "C"]))
         .select("gvkey", "lpermno", "linkprim", "linktype", "linkdt", "linkenddt")
         .with_columns(
@@ -11816,192 +11803,76 @@ def hxz_link_compustat(comp: pl.DataFrame, raw_dir: Path) -> pl.DataFrame:
                 pl.coalesce(pl.col("linkenddt"), pl.lit(date(9999, 12, 31))) - pl.col("linkdt")
             ).dt.total_days()
         )
+    )
+
+
+def hxz_link_compustat(paths: DataPaths, comp: pl.DataFrame) -> pl.DataFrame:
+    """gvkey → permno via CCM; per-row datadate gating (NOT jun_end as FF
+    uses — HXZ links at fiscal-q-end). Primary first; one (datadate, permno)."""
+    return (
+        _hxz_ccm_links(paths, comp)
         .pipe(_hxz_best_link, subset=["datadate", "permno"], tail_key="gvkey")
         .drop("linktype", "_link_days")
         .collect()
     )
 
 
-def _hxz_na_be_inv(lf: pl.LazyFrame) -> pl.LazyFrame:
-    """Compute be_a, inv, ib on a Compustat NA funda LazyFrame.
-    Full pstkrv → pstkl → pstk and txditc → txdb+itcb fallback chains."""
-    ps = pl.coalesce("pstkrv", "pstkl", "pstk")
-    txditc = pl.coalesce("txditc", pl.col("txdb") + pl.col("itcb"))
-    at_lag = pl.col("at").shift(1).over("gvkey")
-    return (
-        lf.with_columns(
-            be_a=pl.coalesce(
-                "seq", pl.col("ceq") + pl.coalesce(ps, 0.0), pl.col("at") - pl.col("lt")
-            )
-            + pl.coalesce(txditc, 0.0)
-            - pl.coalesce(ps, 0.0),
-            year=pl.col("datadate").dt.year(),
-        )
-        # BEFORE the inv lag; mirrors the FF loaders.
-        .pipe(_collapse_to_latest_fy)
-        .with_columns(
-            inv=pl.when(
-                at_lag.is_not_null()
-                & (at_lag > 0)
-                & (
-                    pl.col("datadate").dt.year()
-                    - pl.col("datadate").shift(1).over("gvkey").dt.year()
-                    == 1
-                )
-            )
-            .then((pl.col("at") - at_lag) / at_lag)
-            .otherwise(None),
-        )
-        .select("gvkey", "datadate", "year", "be_a", "inv", "ib")
-    )
+def hxz_load_compustat_row(paths: DataPaths) -> pl.DataFrame:
+    """Annual Compustat for ex-US HXZ: the fiscal records of comp_funda (NA) and
+    comp_g_funda (Global), the universe of the FF loaders (_ff_load_funda_na,
+    _ff_load_funda_global), one per (gvkey, year) with NA preferred, valued from jkp's
+    standardized panel: be_a = be_x, inv = at_gr1, and roe_a = ni_x over the be_x of the
+    gvkey's previous fiscal record (unitless, no FX). Values sit at the fiscal-year-end
+    datadate.
 
+    Roe is annual here, unlike the US quarterly Roe (hxz_roe_by_month): Compustat Global's
+    quarterly coverage is too thin to carry ex-US Roe, and a quarterly Roe is about a
+    quarter of an annual one, so the two can't share one sort.
 
-def _hxz_global_be_inv(lf: pl.LazyFrame) -> pl.LazyFrame:
-    """Compute be_a, inv, ib on a Compustat Global funda LazyFrame.
-    comp.g_funda lacks pstkrv/pstkl/itcb: preferred-stock term collapses to pstk;
-    txditc fallback collapses to txdb (+null preserves null semantics when txdb is null)."""
-    ps = pl.col("pstk")
-    txditc = pl.coalesce("txditc", pl.col("txdb") + pl.lit(None, dtype=pl.Float64))
-    at_lag = pl.col("at").shift(1).over("gvkey")
-    return (
-        lf.with_columns(
-            be_a=pl.coalesce(
-                "seq", pl.col("ceq") + pl.coalesce(ps, 0.0), pl.col("at") - pl.col("lt")
-            )
-            + pl.coalesce(txditc, 0.0)
-            - pl.coalesce(ps, 0.0),
-            year=pl.col("datadate").dt.year(),
-        )
-        # BEFORE the inv lag; mirrors the FF loaders.
-        .pipe(_collapse_to_latest_fy)
-        .with_columns(
-            inv=pl.when(
-                at_lag.is_not_null()
-                & (at_lag > 0)
-                & (
-                    pl.col("datadate").dt.year()
-                    - pl.col("datadate").shift(1).over("gvkey").dt.year()
-                    == 1
-                )
-            )
-            .then((pl.col("at") - at_lag) / at_lag)
-            .otherwise(None),
-        )
-        .select("gvkey", "datadate", "year", "be_a", "inv", "ib")
-    )
-
-
-def hxz_load_compustat_row(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
-    """Annual Compustat for ROW HXZ: unions comp_funda (NA) and comp_g_funda (Global).
-
-    Global keeps, per (gvkey, datadate), the INDL records if there are any, else the FS
-    records (apply_indfmt_filter, the accounting stage's rule). Dedup by (gvkey, datadate)
-    preferring NA. Book equity (be_a), operating I/A (inv), and
-    ROE (numerator and denominator) all come from jkp's standardized panel: be_a = be_x,
-    inv = at_gr1, roe_a = ni_x / be_x_lag1 (prior-year be_x via shift(1); ratio unitless, no
-    FX). Values sit at the fiscal-year-end datadate, preserving the formation-year stamp.
-
-    ROE is deliberately ANNUAL here (ni_x / be_x_lag1), unlike the US quarterly construction
-    (hxz_roe_by_month: IBQ / BEQ_lag1, RDQ-gated, refreshed monthly). Quarterly Compustat
-    Global coverage is too thin to carry ROW: jkp's quarterly niq_be covers only ~56% of ROW
-    firm-months vs ~77% for the annual ROE, so a pure-quarterly ROW ROE would drop ~21pp of
-    the ROE leg. A quarterly/annual fallback is also invalid on its own — a single-quarter
-    ROE is ~1/4 the magnitude of the annual one (ROW medians 0.015 vs 0.064), so coalescing
-    the two would rank annual-ROE firms ~4x too high in one cross-sectional sort. Hence ROW
-    stays annual; the US keeps its quarterly ROE.
-
-    Output: Eager [gvkey, datadate, year, be_a, roe_a, inv]. be_a (= be_x) is USD
+    Output: Eager [gvkey, datadate, year, be_a, inv, roe_a]. be_a (= be_x) is USD
     (acc_std_ann built convert_to_usd=1); it is only used for the eligibility gate
     be_a > 0 (sign, FX-invariant) and as the roe_a denominator (a same-currency ratio),
     so no FX conversion is needed.
     """
-    base_floats = ["pstk", "seq", "ceq", "lt", "txditc", "txdb", "at", "ib"]
-    na_floats = base_floats + ["pstkrv", "pstkl", "itcb"]
-    na_lf = (
-        pl.scan_parquet(raw_dir / "comp_funda.parquet")
-        .filter(
-            (pl.col("indfmt") == "INDL")
-            & (pl.col("datafmt") == "STD")
-            & (pl.col("popsrc") == "D")
-            & (pl.col("consol") == "C")
-        )
-        .with_columns(
-            pl.col("datadate").cast(pl.Date),
-            pl.col(*na_floats).cast(pl.Float64),
-        )
-    )
-    gl_lf = (
-        pl.scan_parquet(raw_dir / "comp_g_funda.parquet")
-        .filter(
-            pl.col("indfmt").is_in(["INDL", "FS"])
-            & (pl.col("datafmt") == "HIST_STD")
-            & (pl.col("popsrc") == "I")
-            & (pl.col("consol") == "C")
-        )
-        .with_columns(
-            pl.col("datadate").cast(pl.Date),
-            pl.col(*base_floats).cast(pl.Float64),
-        )
-        .pipe(apply_indfmt_filter, ["gvkey", "datadate"])
-    )
-
-    na = _hxz_na_be_inv(na_lf).with_columns(_src=pl.lit(0))
-    gl = _hxz_global_be_inv(gl_lf).with_columns(_src=pl.lit(1))
-    # Fully numeric tie-break (after _src=NA<GL) so polars' parallel sort can't surface
-    # different tied rows: within (gvkey, datadate, _src) prefer non-null then larger
-    # be_a, then larger `at` (via inv); ib/year ASC are final deterministic breakers.
-    combined = (
-        pl.concat([na, gl], how="vertical_relaxed")
-        .with_columns(_be_null=pl.col("be_a").is_null())
-        .sort(
-            ["gvkey", "datadate", "_src", "_be_null", "be_a", "inv", "ib", "year"],
-            descending=[False, False, False, False, True, True, True, False],
-            nulls_last=True,
-        )
-        .unique(subset=["gvkey", "datadate"], keep="first", maintain_order=True)
-        # A gvkey in both NA and Global yields two (gvkey, year) rows; collapse before
-        # the roe_a lag (prefer NA, then latest datadate). Mirrors ff_load_world_compustat.
-        .sort(["gvkey", "year", "_src", "datadate"], descending=[False, False, False, True])
-        .unique(subset=["gvkey", "year"], keep="first", maintain_order=True)
-        .drop("_src", "_be_null")
-        .sort(["gvkey", "datadate"])
-    )
-    # be_a (book equity), I/A, and the ROE numerator (ni_x) all come from jkp's standardized
-    # panel; the funda be_a/inv/ib are kept only for the dedup tie-break above, then dropped.
-    # ROE keeps its ni_x(t)/be(t-1) lag via shift(1) on the (gvkey, year)-deduped,
-    # datadate-sorted frame.
-    acc = _jkp_annual_acc(interim_dir).select("gvkey", "datadate", "be_x", "at_gr1", "ni_x").lazy()
+    na = _ff_load_funda_na(paths).select("gvkey", "datadate", "year", _src=pl.lit(0))
+    gl = _ff_load_funda_global(paths).select("gvkey", "datadate", "year", _src=pl.lit(1))
+    acc = _jkp_annual_acc(paths).select("gvkey", "datadate", "be_x", "at_gr1", "ni_x").lazy()
     be_x_lag1 = pl.col("be_x").shift(1).over("gvkey")
     return (
-        combined.drop("be_a", "inv", "ib")
+        pl.concat([na, gl], how="vertical_relaxed")
+        # A gvkey in both NA and Global has two records per year; keep NA's.
+        .sort("gvkey", "year", "_src")
+        .unique(subset=["gvkey", "year"], keep="first", maintain_order=True)
+        .drop("_src")
         .join(acc, on=["gvkey", "datadate"], how="left")
-        .sort(["gvkey", "datadate"])
-        .with_columns(
-            roe_a=pl.when(pl.col("ni_x").is_not_null() & (be_x_lag1 > 0))
-            .then(pl.col("ni_x") / be_x_lag1)
-            .otherwise(None),
-        )
+        .sort("gvkey", "datadate")
+        .with_columns(roe_a=safe_div("ni_x", be_x_lag1, "roe_a", mode=3))
         .drop("ni_x")
         .rename({"be_x": "be_a", "at_gr1": "inv"})
         .collect()
     )
 
 
-def hxz_load_panel_row(interim_dir: Path, freq: Literal["monthly", "daily"]) -> pl.DataFrame:
-    """ROW panel from ff_load_world_panel; attaches (naics, sic) from world_msf to derive is_fin.
+def hxz_load_panel_row(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl.DataFrame:
+    """ROW panel from ff_load_world_panel; the monthly panel gets (naics, sic) from
+    world_msf to derive is_fin. Daily skips it: industry decides sort eligibility, and the
+    daily factors take their portfolios from the monthly sorts.
 
     is_fin: NAICS sector 52 or 53 when present; SIC 6000-6999 fallback when naics is null.
 
-    Output: Eager [excntry, id, gvkey, date, ret, me, size_grp, naics, sic, is_fin].
+    Output: Eager [excntry, id, gvkey, date, ret, me, size_grp], plus [naics, sic, is_fin]
+    for monthly.
     """
     # HXZ keeps the gvkey-linked universe (JKP convention); the FF path drops
     # the screen for US parity, so re-apply it here.
-    panel = ff_load_world_panel(interim_dir, freq).filter(pl.col("gvkey").is_not_null()).collect()
+    panel = ff_load_world_panel(paths, freq).filter(pl.col("gvkey").is_not_null()).collect()
+    if freq == "daily":
+        return panel
     # Dedup (id, eom): world_msf can carry duplicate share-class records per
     # security-month; without unique() the join multiplies rows non-deterministically
     # under the parallel scan. Tie-break: non-null naics, then larger (more specific) sic.
     ind = (
-        pl.scan_parquet(interim_dir / "world_msf.parquet")
+        pl.scan_parquet(paths.interim_dir / "world_msf.parquet")
         .select("id", "eom", "naics", "sic")
         .with_columns(_naics_null=pl.col("naics").is_null())
         .sort(
@@ -12013,21 +11884,17 @@ def hxz_load_panel_row(interim_dir: Path, freq: Literal["monthly", "daily"]) -> 
         .drop("_naics_null")
         .collect()
     )
-    eom_expr = pl.col("date").dt.month_end() if freq == "daily" else pl.col("date")
     is_fin = (
         pl.col("naics").cast(pl.Utf8).str.slice(0, 2).is_in(["52", "53"])
         | (pl.col("naics").is_null() & pl.col("sic").is_between(6000, 6999))
     ).fill_null(False)
-    return (
-        panel.with_columns(_eom=eom_expr)
-        .join(ind, left_on=["id", "_eom"], right_on=["id", "eom"], how="left")
-        .with_columns(is_fin=is_fin)
-        .drop("_eom")
+    return panel.join(ind, left_on=["id", "date"], right_on=["id", "eom"], how="left").with_columns(
+        is_fin=is_fin
     )
 
 
 def hxz_compute_factors(
-    panel: pl.DataFrame, min_stocks_pf: int = HXZ_MIN_STOCKS_PF
+    panel: pl.DataFrame, min_stocks_pf: int = FACTOR_MIN_STOCKS_PF
 ) -> pl.DataFrame:
     """18-bucket VW returns per (excntry, date) → HXZ formulas 1-3
     (me_hxz, ia_hxz, roe_hxz). US bypasses the ROW min_stocks_pf gate."""
@@ -12103,8 +11970,7 @@ def _hxz_add_me_lag1_ym(
 
 
 def hxz_load_returns(
-    raw_dir: Path,
-    interim_dir: Path,
+    paths: DataPaths,
     freq: Literal["monthly", "daily"],
     date_start: date | None = None,
 ) -> pl.DataFrame:
@@ -12116,13 +11982,13 @@ def hxz_load_returns(
     Output: Eager [excntry, id, date, ret, me, me_lag1, is_fin, ...].
     """
     us = (
-        hxz_load_crsp(raw_dir, freq, date_start=date_start)
+        hxz_load_crsp(paths, freq, date_start=date_start)
         .sort(["permno", "date"])
         .with_columns(excntry=pl.lit(US_EXCNTRY), id=pl.col("permno"))
     )
     us = _hxz_add_me_lag1_ym(us, key="id", freq=freq)
 
-    row = hxz_load_panel_row(interim_dir, freq).sort(["id", "date"])
+    row = hxz_load_panel_row(paths, freq).sort(["id", "date"])
     if date_start is not None:
         row = row.filter(pl.col("date") >= date_start)
     row = _hxz_add_me_lag1_ym(row, key="id", freq=freq)
@@ -12133,7 +11999,8 @@ def hxz_load_returns(
 def _hxz_us_roe_windows(fq: pl.DataFrame) -> pl.DataFrame:
     """Availability window of each quarterly Roe as year-month ints (year*12 +
     month): from the month after the announcement (rdq) to six months after the
-    fiscal quarter end. Quarters announced on or before datadate are dropped.
+    fiscal quarter end (HXZ_US_ROE_MAX_LAG_MONTHS). Quarters announced on or
+    before datadate are dropped.
     YM ints because US panel dates are CIZ last *trading* days: an exact-date
     compare against a calendar month-end (rdq.month_end() + 1mo) would skip the
     freshest announcement whenever the month ends on a weekend/holiday."""
@@ -12141,20 +12008,22 @@ def _hxz_us_roe_windows(fq: pl.DataFrame) -> pl.DataFrame:
         formation_min_ym=pl.when(pl.col("rdq").is_not_null())
         .then(pl.col("rdq").dt.year() * 12 + pl.col("rdq").dt.month() + 1)
         .otherwise(None),
-        formation_max_ym=pl.col("datadate").dt.year() * 12 + pl.col("datadate").dt.month() + 6,
+        formation_max_ym=pl.col("datadate").dt.year() * 12
+        + pl.col("datadate").dt.month()
+        + HXZ_US_ROE_MAX_LAG_MONTHS,
     )
 
 
-def _hxz_us_inv_by_permno(funda_us: pl.DataFrame, raw_dir: Path) -> pl.DataFrame:
+def _hxz_us_inv_by_permno(paths: DataPaths, funda_us: pl.DataFrame) -> pl.DataFrame:
     """US I/A linked to permno via CCM at fiscal year end; latest fiscal record
     per (permno, year), keyed to the July-June year it applies to.
     Output: [permno, port_year, inv, be_a]."""
     return (
         hxz_link_compustat(
+            paths,
             funda_us.with_columns(year=pl.col("datadate").dt.year()).select(
                 "gvkey", "datadate", "year", "inv", "be_a"
             ),
-            raw_dir,
         )
         .sort(["permno", "year", "datadate"])
         # `unique(keep="last")` after sort: deterministic latest-datadate-per-
@@ -12200,7 +12069,7 @@ def _hxz_ym(date_col: str) -> pl.Expr:
 
 
 def hxz_annual_characteristics(
-    raw_dir: Path, interim_dir: Path, funda_us: pl.DataFrame, funda_row: pl.DataFrame
+    paths: DataPaths, funda_us: pl.DataFrame, funda_row: pl.DataFrame
 ) -> pl.DataFrame:
     """
     Description:
@@ -12225,11 +12094,11 @@ def hxz_annual_characteristics(
         ],
         how="vertical_relaxed",
     ).with_columns(pl.col("gvkey").cast(pl.Utf8))
-    crsp = _hxz_us_inv_by_permno(funda_us, raw_dir).select(
+    crsp = _hxz_us_inv_by_permno(paths, funda_us).select(
         pl.col("permno").cast(pl.Int64).alias("id"), "port_year", "inv", "be_a"
     )
     compustat = (
-        _compustat_id_gvkey(interim_dir)
+        _compustat_id_gvkey(paths)
         .join(by_gvkey.lazy(), on=["gvkey", "us"])
         .select("id", "port_year", "inv", "be_a")
     )
@@ -12241,7 +12110,7 @@ def hxz_annual_characteristics(
 
 
 def hxz_roe_by_month(
-    raw_dir: Path, interim_dir: Path, fundq_us: pl.DataFrame, funda_row: pl.DataFrame
+    paths: DataPaths, fundq_us: pl.DataFrame, funda_row: pl.DataFrame
 ) -> pl.DataFrame:
     """
     Description:
@@ -12250,12 +12119,13 @@ def hxz_roe_by_month(
         both read this table.
     Steps:
         1) US: quarterly Roe = IBQ / BEQ of the prior quarter, usable from the
-           month after the announcement (rdq) to six months after the quarter
-           end; the latest quarter wins (_hxz_us_roe_windows,
+           month after the announcement (rdq) to HXZ_US_ROE_MAX_LAG_MONTHS after
+           the quarter end; the latest quarter wins (_hxz_us_roe_windows,
            _hxz_us_roe_by_month). CRSP securities link by CCM at the quarter end,
            Compustat securities by their world_msf gvkey.
-        2) Elsewhere: annual roe_a, usable from 6 to 18 months after the fiscal
-           year-end; the latest fiscal year wins.
+        2) Elsewhere: annual roe_a, usable from HXZ_ROW_ROE_MIN_LAG_MONTHS to
+           HXZ_ROW_ROE_MAX_LAG_MONTHS after the fiscal year-end; the latest fiscal
+           year wins.
     Output:
         Eager [id, ym, roe], sorted by (id, ym).
     """
@@ -12263,7 +12133,11 @@ def hxz_roe_by_month(
     dd_ym = _hxz_ym("datadate")
     row = (
         funda_row.filter(pl.col("roe_a").is_not_null())
-        .with_columns(ym=pl.int_ranges(dd_ym + 6, dd_ym + 19))
+        .with_columns(
+            ym=pl.int_ranges(
+                dd_ym + HXZ_ROW_ROE_MIN_LAG_MONTHS, dd_ym + HXZ_ROW_ROE_MAX_LAG_MONTHS + 1
+            )
+        )
         .explode("ym")
         # datadate ASC + keep="last": the latest fiscal year; roe_a DESC only
         # breaks (gvkey, ym, datadate) ties.
@@ -12280,10 +12154,10 @@ def hxz_roe_by_month(
         how="vertical_relaxed",
     ).select(pl.col("gvkey").cast(pl.Utf8), pl.col("ym").cast(pl.Int64), "roe", "us")
     crsp = _hxz_us_roe_by_month(
-        hxz_link_compustat(fq, raw_dir).pipe(_hxz_us_roe_windows), "permno"
+        hxz_link_compustat(paths, fq).pipe(_hxz_us_roe_windows), "permno"
     ).select(pl.col("permno").cast(pl.Int64).alias("id"), "ym", "roe")
     compustat = (
-        _compustat_id_gvkey(interim_dir)
+        _compustat_id_gvkey(paths)
         .join(by_gvkey.lazy(), on=["gvkey", "us"])
         .select("id", "ym", "roe")
     )
@@ -12307,7 +12181,7 @@ def _hxz_tercile_port(value_col: str, b30: str, b70: str, gate: pl.Expr) -> pl.E
 
 
 def _hxz_classify_size_ia(
-    size_ia_form: pl.DataFrame, min_stocks_bp: int = HXZ_MIN_STOCKS_BP
+    size_ia_form: pl.DataFrame, min_stocks_bp: int = FACTOR_MIN_STOCKS_BP
 ) -> pl.DataFrame:
     """Apply country-aware breakpoints + bucket cuts to June size+inv frame.
     US: NYSE-only pool, per-date breaks. ROW: size_grp pool + min_stocks_bp
@@ -12338,7 +12212,7 @@ def _hxz_classify_size_ia(
         .select("excntry", "id", "date", "sizeport", "invport", "inv")
     )
 
-    # ROW: size_grp pool + HXZ_MIN_STOCKS_BP gate, per-(excntry, date)
+    # ROW: size_grp pool + min_stocks_bp gate, per-(excntry, date)
     # ROW joins breaks per (excntry, date) with a HAVING gate, so sizemedn can be
     # null after the left join; the size gate therefore also requires it non-null.
     row = size_ia_form.filter(pl.col("excntry") != US_EXCNTRY)
@@ -12369,7 +12243,9 @@ def _hxz_classify_size_ia(
     return pl.concat([us_cls, row_cls], how="vertical_relaxed")
 
 
-def _hxz_classify_roe(roe_m: pl.DataFrame, min_stocks_bp: int = HXZ_MIN_STOCKS_BP) -> pl.DataFrame:
+def _hxz_classify_roe(
+    roe_m: pl.DataFrame, min_stocks_bp: int = FACTOR_MIN_STOCKS_BP
+) -> pl.DataFrame:
     """Apply country-aware breakpoints + bucket cuts to monthly ROE frame.
     US: NYSE-only pool, per-date breaks. ROW: size_grp pool, per-(excntry,
     date) breaks with min_stocks_bp gate."""
@@ -12391,7 +12267,7 @@ def _hxz_classify_roe(roe_m: pl.DataFrame, min_stocks_bp: int = HXZ_MIN_STOCKS_B
         .select("excntry", "id", "date", "roeport", "roe")
     )
 
-    # ROW: size_grp pool, per-(excntry, date) breaks with HXZ_MIN_STOCKS_BP gate
+    # ROW: size_grp pool, per-(excntry, date) breaks with min_stocks_bp gate
     row = roe_m.filter(pl.col("excntry") != US_EXCNTRY).with_columns(elig=elig)
     row_breaks = country_breakpoints(
         row,
@@ -12416,7 +12292,7 @@ def hxz_classify_portfolios(
     panel_m: pl.DataFrame,
     annual: pl.DataFrame,
     roe: pl.DataFrame,
-    min_stocks_bp: int = HXZ_MIN_STOCKS_BP,
+    min_stocks_bp: int = FACTOR_MIN_STOCKS_BP,
 ) -> pl.DataFrame:
     """
     Description:
@@ -12465,8 +12341,8 @@ def gen_hxz_data(
     daily_factors_path: Path,
     chars_path: Path,
     freqs: tuple[str, ...] = ("monthly", "daily"),
-    min_stocks_bp: int = HXZ_MIN_STOCKS_BP,
-    min_stocks_pf: int = HXZ_MIN_STOCKS_PF,
+    min_stocks_bp: int = FACTOR_MIN_STOCKS_BP,
+    min_stocks_pf: int = FACTOR_MIN_STOCKS_PF,
 ) -> None:
     """
     Description:
@@ -12481,20 +12357,23 @@ def gen_hxz_data(
         - US: CRSP CIZ securities, sized by their own ME (permno level, no
           share-class aggregation); NYSE breakpoints. CIZ returns include
           delisting returns. As in HXZ, a month's ME is missing when its CIZ
-          price is not from the month's last trading day, so that stock-month
-          gets no size group and no weight.
+          price is not from the month's last trading day: a missing June ME
+          leaves the stock out of the size and I/A sorts from July to June, and
+          a missing ME at the end of month t-1 leaves it out of month t's
+          returns.
         - There is no me_hxz characteristic, as there is no me_ff: ME decides
           only membership and weights, and the published size variable is
           JKP's market_equity. (me_hxz in the factor files is the size factor.)
         - Elsewhere: JKP's main sample with a gvkey, the size_grp breakpoint
-          pool, and the HXZ_MIN_STOCKS_BP / HXZ_MIN_STOCKS_PF minimums.
+          pool, and the FACTOR_MIN_STOCKS_BP / FACTOR_MIN_STOCKS_PF minimums.
         - Timing: a characteristic at eom t is the value that sorted the
           portfolio held in month t. ia_hxz is constant from July to June;
           roe_hxz is the latest quarter announced before month t.
         - Roe needs an announcement date (rdq) over the whole sample; the
           pre-1972 proxy of Hou, Xue and Zhang (2019) is not used. The factors
-          start in January 1972 in the US (rdq coverage) and January 1967
-          elsewhere; the characteristics cover every world_msf month.
+          start at HXZ_US_START in the US (rdq coverage, January 1972) and
+          HXZ_ROW_START elsewhere (January 1967); the characteristics cover every
+          world_msf month.
         - Two fiscal calendars can report the same quarter end; after the BEQ
           chain, which uses both, one_row_per_date keeps the established one, as
           the accounting stage does.
@@ -12512,17 +12391,13 @@ def gen_hxz_data(
         - <daily_factors_path> [excntry, date, me_hxz, ia_hxz, roe_hxz]
         - <chars_path> [eom, id, ia_hxz, roe_hxz], sorted by (eom, excntry, id)
     """
-    raw_dir, interim_dir = paths.raw_tables_dir, paths.interim_dir
-    output_start = date(1967, 1, 1)
-    us_output_start = date(1972, 1, 1)
     start_filter = pl.col("date") >= pl.when(pl.col("excntry") == US_EXCNTRY).then(
-        pl.lit(us_output_start)
-    ).otherwise(pl.lit(output_start))
+        pl.lit(HXZ_US_START)
+    ).otherwise(pl.lit(HXZ_ROW_START))
 
-    funda_us = hxz_load_funda(raw_dir)
+    funda_us = hxz_load_funda(paths)
     fundq_us = (
-        hxz_load_fundq(raw_dir)
-        .pipe(hxz_supplement_q4_shares, funda_us, raw_dir)
+        hxz_supplement_q4_shares(paths, hxz_load_fundq(paths), funda_us)
         .pipe(hxz_merge_be_chain, funda_us)
         .pipe(hxz_impute_be_clean_surplus)
         .lazy()
@@ -12532,12 +12407,12 @@ def gen_hxz_data(
         .sort("gvkey", "datadate")
         .collect()
     )
-    funda_row = hxz_load_compustat_row(raw_dir, interim_dir)
-    annual = hxz_annual_characteristics(raw_dir, interim_dir, funda_us, funda_row)
-    roe = hxz_roe_by_month(raw_dir, interim_dir, fundq_us, funda_row)
+    funda_row = hxz_load_compustat_row(paths)
+    annual = hxz_annual_characteristics(paths, funda_us, funda_row)
+    roe = hxz_roe_by_month(paths, fundq_us, funda_row)
     del funda_us, fundq_us, funda_row
     (
-        pl.scan_parquet(interim_dir / "world_msf.parquet")
+        pl.scan_parquet(paths.interim_dir / "world_msf.parquet")
         .select("excntry", pl.col("id").cast(pl.Int64), date=pl.col("eom"))
         .with_columns(_ff_port_year(), ym=_hxz_ym("date"))
         .join(annual.lazy(), on=["id", "port_year"], how="left")
@@ -12548,7 +12423,7 @@ def gen_hxz_data(
     )
 
     panel_m = hxz_classify_portfolios(
-        hxz_load_returns(raw_dir, interim_dir, freq="monthly"), annual, roe, min_stocks_bp
+        hxz_load_returns(paths, freq="monthly"), annual, roe, min_stocks_bp
     ).filter(start_filter)
     port_assigns = panel_m.select(
         "excntry",
@@ -12561,18 +12436,18 @@ def gen_hxz_data(
     if "monthly" in freqs:
         (
             hxz_compute_factors(panel_m, min_stocks_pf)
-            .with_columns(eom=pl.col("date").dt.month_end())
-            .drop("date")
+            .with_columns(pl.col("date").dt.month_end())
+            .rename({"date": "eom"})
             .write_parquet(monthly_factors_path)
         )
     del panel_m, annual, roe  # free the monthly frames before the 1966+ daily scan
 
     if "daily" in freqs:
-        # Floor scan at 6mo before output_start so me_lag1 has prior-day data
+        # Floor scan at 6mo before HXZ_ROW_START so me_lag1 has prior-day data
         # on the first output day without holding the full 1925+ daily file.
-        daily_start = date(output_start.year - 1, 7, 1)
+        daily_start = date(HXZ_ROW_START.year - 1, 7, 1)
         panel_d = (
-            hxz_load_returns(raw_dir, interim_dir, freq="daily", date_start=daily_start)
+            hxz_load_returns(paths, freq="daily", date_start=daily_start)
             .filter(start_filter)
             .with_columns(eom=pl.col("date").dt.month_end())
             .join(port_assigns, on=["excntry", "id", "eom"], how="left")

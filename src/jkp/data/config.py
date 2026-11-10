@@ -240,15 +240,11 @@ ROLLING_DAILY_SPECS: list[tuple[str, int, list[str]]] = [
 # min-stocks gates).
 US_EXCNTRY = "USA"
 
-# Ex-US minimums of the factor builders (FF here, later HXZ): min firms per
+# Ex-US minimums of the factor builders (FF and HXZ): min firms per
 # (excntry, formation date) for breakpoints, and per (excntry, date, bucket) for
 # the VW legs. US bypassed.
 FACTOR_MIN_STOCKS_BP = 10
 FACTOR_MIN_STOCKS_PF = 3
-
-# HXZ q-factor ROW thresholds (same values as FF; separate names for clarity).
-HXZ_MIN_STOCKS_BP = 10
-HXZ_MIN_STOCKS_PF = 3
 
 # CRSP -99.0 missing-return sentinel: treat as 0 return when compounding the
 # UMD prior-(2-12) signal, per FF convention.
@@ -305,6 +301,26 @@ FF_DFF_MERGE_YEAR = 1954
 FF_CCM_BACKDATE_FROM = 1963
 FF_CCM_BACKDATE_THROUGH = 1966
 FF_CCM_BACKDATE_MAX_YEARS = 5
+
+# ============================================================================
+# HXZ q-factor pipeline (gen_hxz_data)
+# ============================================================================
+
+# First month of the HXZ factors. US: rdq coverage starts in 1972 (the pre-1972
+# Roe proxy of Hou, Xue and Zhang 2019 is not used). Ex US: 1967.
+HXZ_US_START = date(1972, 1, 1)
+HXZ_ROW_START = date(1967, 1, 1)
+
+# US quarterly Roe is usable from the month after its announcement (rdq) to this
+# many months after the fiscal quarter end.
+HXZ_US_ROE_MAX_LAG_MONTHS = 6
+
+# Ex-US annual Roe is usable from MIN to MAX months after the fiscal year end.
+HXZ_ROW_ROE_MIN_LAG_MONTHS = 6
+HXZ_ROW_ROE_MAX_LAG_MONTHS = 18
+
+# Clean-surplus BEQ imputation reaches back at most this many quarters (HXZ A.4).
+HXZ_BEQ_IMPUTE_MAX_QUARTERS = 4
 
 # Floor on the standard deviation of raw USD `ret` over a rolling window. At or
 # below it the window counts as constant and the return-based statistics
