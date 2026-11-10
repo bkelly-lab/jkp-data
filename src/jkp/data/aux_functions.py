@@ -3601,10 +3601,10 @@ def add_ret_exc_wins(
         1) Validate lower/upper and map them to precomputed cutoff column names.
         2) Read world_{freq}sf.parquet; drop ret_exc_wins if already present (idempotency).
         3) Left-join precomputed cutoffs from return_cutoffs{,_daily}.parquet on eom (monthly)
-           or year/month (daily).
+           or year/month (daily), keeping the file's row order.
         4) Build ret_exc_wins via pl.when: clip Compustat rows to [lower_col, upper_col],
            leave CRSP rows and nulls unchanged.
-        5) Collect and overwrite the file.
+        5) Sink to a temporary file, then replace the original with it.
 
     Output:
         Overwrites 'world_{freq}sf.parquet' with ret_exc_wins added.
@@ -3654,7 +3654,7 @@ def add_ret_exc_wins(
         drop_cols += ["year", "month"]
 
     result = (
-        data.join(cutoffs, on=group_vars, how="left")
+        data.join(cutoffs, on=group_vars, how="left", maintain_order="left")
         .with_columns(
             ret_exc_wins=pl.when((pl.col("source_crsp") == 0) & pl.col("ret_exc").is_not_null())
             .then(pl.col("ret_exc").clip(pl.col(lower_col), pl.col(upper_col)))
