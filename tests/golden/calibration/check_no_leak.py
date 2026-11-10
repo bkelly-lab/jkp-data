@@ -1,5 +1,6 @@
 """
 Check that the synthetic Compustat inputs copy nothing from the real ones (issue #303, step 6).
+Generates the inputs (synthetic_compustat.py) into a temporary folder and compares them with DATA_DIR.
 
 Runs read-only on Yale (check_no_leak.slurm) and prints only counts, all of which must be 0:
     gvkeys        synthetic gvkeys that occur in the real Compustat tables or world_msf
@@ -13,12 +14,13 @@ Usage:
 import argparse
 import json
 import sys
+import tempfile
 from pathlib import Path
 
 import polars as pl
 
 from jkp.data.paths import DataPaths
-from tests.golden.synthetic_compustat import OUT_DIR as SYNTHETIC_DIR
+from tests.golden.synthetic_compustat import generate
 
 # table -> its asset and sales items
 ITEMS = {
@@ -69,7 +71,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[1])
     parser.add_argument("data_dir", type=Path, help="real data root (raw/raw_tables, interim)")
     args = parser.parse_args()
-    counts = leaks(DataPaths(args.data_dir), DataPaths(SYNTHETIC_DIR))
+    with tempfile.TemporaryDirectory() as tmp:
+        generate(Path(tmp))
+        counts = leaks(DataPaths(args.data_dir), DataPaths(Path(tmp)))
     print(json.dumps(counts, indent=2))
     sys.exit(1 if any(counts.values()) else 0)
 

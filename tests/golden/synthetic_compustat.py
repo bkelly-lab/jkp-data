@@ -5,9 +5,10 @@ Every value is sampled from the aggregate statistics in compustat_profile.json (
 calibration/profile_compustat.py); no WRDS value is copied. gvkeys start at 900001, above the largest
 real gvkey in the profile.
 
-Usage: PYTHONPATH=src uv run --no-sync python -m tests.golden.synthetic_compustat
+Usage: PYTHONPATH=src uv run --no-sync python -m tests.golden.synthetic_compustat OUT_DIR
 
-Deterministic (seed 42). Rewrites fixtures/synthetic_compustat/ in the DataPaths layout:
+Deterministic (seed 42). Nothing is committed: the tests generate the inputs once per session
+(synthetic_inputs in tests/conftest.py). Writes OUT_DIR in the DataPaths layout:
 raw/raw_tables/ holds comp_funda, comp_fundq, comp_g_funda, comp_g_fundq and comp_exrt_dly with the
 real column sets and dtypes, and interim/world_msf.parquet holds the market equity the stage joins.
 Columns the accounting stage does not read are null.
@@ -64,6 +65,7 @@ Persona firms (900101 up), one case each:
 import json
 import math
 import re
+import sys
 from collections.abc import Callable
 from datetime import date, timedelta
 from pathlib import Path
@@ -78,8 +80,6 @@ from tests.golden.compustat_invariants import TABLES
 
 SEED = 42
 PROFILE_PATH = Path(__file__).parent / "compustat_profile.json"
-OUT_DIR = Path(__file__).parent / "fixtures" / "synthetic_compustat"
-WRITE_OPTS: dict = {"compression": "zstd", "compression_level": 22, "statistics": False}
 
 FIRST_FY, LAST_FY = 1990, 2015
 N_RANDOM = {"NA": 26, "GLOBAL": 34}
@@ -952,7 +952,7 @@ def cast_to_schema(df: pl.DataFrame, schema: list[list[str]], keys: list[str]) -
     )
 
 
-def generate(out_dir: Path = OUT_DIR, profile_path: Path = PROFILE_PATH) -> dict[str, int]:
+def generate(out_dir: Path, profile_path: Path = PROFILE_PATH) -> dict[str, int]:
     """
     Description:
         Write the synthetic Compustat tables and world_msf.
@@ -986,10 +986,10 @@ def generate(out_dir: Path = OUT_DIR, profile_path: Path = PROFILE_PATH) -> dict
         keys = keys if freq == "annual" else [*keys, "fyr"]
         df = to_local_currency(pl.concat(frames[table], how="diagonal_relaxed"), quotes, items)
         df = cast_to_schema(df, profile["schemas"][table], keys)
-        df.write_parquet(paths.raw_tables_dir / f"{table}.parquet", **WRITE_OPTS)
+        df.write_parquet(paths.raw_tables_dir / f"{table}.parquet")
         counts[table] = df.height
     exrt = cast_to_schema(exrt, profile["schemas"]["comp_exrt_dly"], ["datadate", "tocurd"])
-    exrt.write_parquet(paths.raw_tables_dir / "comp_exrt_dly.parquet", **WRITE_OPTS)
+    exrt.write_parquet(paths.raw_tables_dir / "comp_exrt_dly.parquet")
     msf = (
         pl.concat([f for f in frames["world_msf"] if f.height])
         .select(
@@ -1000,10 +1000,10 @@ def generate(out_dir: Path = OUT_DIR, profile_path: Path = PROFILE_PATH) -> dict
         )
         .sort("gvkey", "eom", "primary_sec")
     )
-    msf.write_parquet(paths.interim_dir / "world_msf.parquet", **WRITE_OPTS)
+    msf.write_parquet(paths.interim_dir / "world_msf.parquet")
     return counts | {"comp_exrt_dly": exrt.height, "world_msf": msf.height}
 
 
 if __name__ == "__main__":
-    for name, rows in generate().items():
+    for name, rows in generate(Path(sys.argv[1])).items():
         print(f"{name}: {rows:,} rows")

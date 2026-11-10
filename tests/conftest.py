@@ -312,3 +312,27 @@ def test_paths(temp_data_dir: Path) -> DataPaths:
     from jkp.data.paths import DataPaths
 
     return DataPaths(base_dir=temp_data_dir)
+
+
+@pytest.fixture(scope="session")
+def synthetic_inputs(tmp_path_factory: pytest.TempPathFactory) -> DataPaths:
+    """The synthetic Compustat inputs (``tests/golden/synthetic_compustat.py``), generated once
+    per session. Read-only: a test that changes them writes its own copy."""
+    from jkp.data.paths import DataPaths
+    from tests.golden.synthetic_compustat import generate
+
+    inputs = DataPaths(tmp_path_factory.mktemp("synthetic_compustat"))
+    generate(inputs.base_dir)
+    return inputs
+
+
+@pytest.fixture(scope="session")
+def acc_stage(tmp_path_factory: pytest.TempPathFactory, synthetic_inputs: DataPaths) -> DataPaths:
+    """The accounting stage run once per session on the synthetic inputs, shared by the golden,
+    oracle, integration, synthetic-data and metamorphic tests. Read-only."""
+    from jkp.data.paths import DataPaths
+    from tests.golden.generate_acc_chars_golden import run_stage
+
+    paths = DataPaths(tmp_path_factory.mktemp("acc_stage"))
+    run_stage(paths, synthetic_inputs)
+    return paths

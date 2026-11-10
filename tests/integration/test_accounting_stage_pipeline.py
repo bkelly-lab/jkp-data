@@ -1,8 +1,8 @@
 """Integration test for the accounting stage (issue #303, step 4).
 
-Runs the stage's calls in main.py's order on the synthetic Compustat inputs
-(tests/golden/fixtures/synthetic_compustat/) and checks the shape of what it writes. The values
-are locked by tests/golden/test_acc_chars_golden.py.
+Uses the stage run on the synthetic Compustat inputs (acc_stage in tests/conftest.py), with the
+stage's calls in main.py's order, and checks the shape of what it writes. The values are checked
+by tests/unit/test_acc_chars_oracle.py and tests/golden/test_acc_chars_golden.py.
 """
 
 from __future__ import annotations
@@ -17,8 +17,7 @@ from jkp.data import aux_functions as af
 from jkp.data.config import ACCOUNTING_START_DATE
 from jkp.data.paths import DataPaths
 from tests.conftest import assert_unique_keys
-from tests.golden.generate_acc_chars_golden import KEYS, run_stage
-from tests.golden.synthetic_compustat import OUT_DIR as INPUT_DIR
+from tests.golden.generate_acc_chars_golden import KEYS
 
 pytestmark = pytest.mark.integration
 
@@ -33,10 +32,10 @@ STAGE_FILES = {
 
 
 @pytest.fixture(scope="module")
-def outputs(tmp_path_factory: pytest.TempPathFactory) -> dict[str, pl.DataFrame]:
-    paths = DataPaths(tmp_path_factory.mktemp("acc_stage"))
-    run_stage(paths)
-    return {name: pl.read_parquet(paths.interim_dir / f"{name}.parquet") for name in STAGE_FILES}
+def outputs(acc_stage: DataPaths) -> dict[str, pl.DataFrame]:
+    return {
+        name: pl.read_parquet(acc_stage.interim_dir / f"{name}.parquet") for name in STAGE_FILES
+    }
 
 
 def _public_months(std: pl.DataFrame) -> int:
@@ -111,14 +110,19 @@ def test_no_characteristic_is_all_null_or_nan(outputs: dict[str, pl.DataFrame]) 
     [("na", 1, {"NA"}, True), ("world", 0, {"NA", "GLOBAL"}, False)],
 )
 def test_standardization_coverage_and_currency_options(
-    tmp_path: Path, coverage: str, convert_to_usd: int, sources: set[str], usd_only: bool
+    tmp_path: Path,
+    synthetic_inputs: DataPaths,
+    coverage: str,
+    convert_to_usd: int,
+    sources: set[str],
+    usd_only: bool,
 ) -> None:
     """The coverage and convert_to_usd options main.py doesn't use pick the sources and currency
     of the reports (data_available = 1; the monthly filler rows have no source)."""
     paths = DataPaths(tmp_path)
     af.setup_folder_structure(paths)
-    shutil.copytree(INPUT_DIR / "raw" / "raw_tables", paths.raw_tables_dir, dirs_exist_ok=True)
-    shutil.copy(INPUT_DIR / "interim" / "world_msf.parquet", paths.interim_dir)
+    shutil.copytree(synthetic_inputs.raw_tables_dir, paths.raw_tables_dir, dirs_exist_ok=True)
+    shutil.copy(synthetic_inputs.interim_dir / "world_msf.parquet", paths.interim_dir)
     af.gen_fx1(paths)
     msf = paths.interim_dir / "world_msf.parquet"
     af.standardized_accounting_data(paths, coverage, convert_to_usd, msf, 1, ACCOUNTING_START_DATE)

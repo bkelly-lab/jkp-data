@@ -1,9 +1,9 @@
 """Golden-fixture regression test for the accounting stage (issue #303, step 4).
 
-Run with --regen-golden to regenerate the fixtures:
+Run with --regen-golden to regenerate the fingerprint:
     PYTHONPATH=src:. uv run --no-sync python -m pytest tests/golden/test_acc_chars_golden.py --regen-golden
 
-Run without to verify against the committed fixtures:
+Run without to verify against the committed fingerprint:
     PYTHONPATH=src:. uv run --no-sync python -m pytest tests/golden/test_acc_chars_golden.py
 """
 
@@ -20,57 +20,44 @@ import pytest
 
 from jkp.data.paths import DataPaths
 from tests.conftest import ToleranceSpec
-from tests.golden.generate_acc_chars_golden import (
-    GOLDEN_DIR,
-    GOLDEN_NAMES,
-    compute_outputs,
-    write_goldens,
-)
+from tests.golden.generate_acc_chars_golden import GOLDEN_DIR, stage_fingerprint, write_golden
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-
-@pytest.fixture(scope="module")
-def outputs(tmp_path_factory: pytest.TempPathFactory) -> dict[str, pl.DataFrame]:
-    return compute_outputs(DataPaths(tmp_path_factory.mktemp("acc_stage")))
+pytestmark = pytest.mark.regression
 
 
-def assert_matches_golden(actual: pl.DataFrame, name: str, tolerance: ToleranceSpec) -> None:
+def assert_matches_golden(actual: pl.DataFrame, tolerance: ToleranceSpec) -> None:
     """
     Description:
-        Compare one golden frame with its fixture: keys, dtypes and nulls exactly, values to a
-        tolerance, since the earnings-persistence regression runs in DuckDB.
+        Compare a fingerprint with the committed one: columns, dtypes and counts exactly; sums,
+        minima and maxima to a tolerance, since the earnings-persistence regression runs in DuckDB.
     Steps:
-        1) personas and random hold Float32 values: STANDARD tolerance, above Float32 rounding.
-        2) The fingerprint is full precision: GOLDEN tolerance, plus 1e-10 absolute for column
-           sums that cancel to near zero (the acceptance rule).
+        1) GOLDEN tolerance, plus 1e-10 absolute for column sums that cancel to near zero (the
+           acceptance rule).
     Output:
         None; raises AssertionError on a mismatch.
     """
-    path = GOLDEN_DIR / f"{name}.parquet"
+    path = GOLDEN_DIR / "fingerprint.parquet"
     assert path.exists(), f"missing golden fixture: {path}"
-    tol = {**tolerance.GOLDEN, "atol": 1e-10} if name == "fingerprint" else tolerance.STANDARD
+    tol = {**tolerance.GOLDEN, "atol": 1e-10}
     polars.testing.assert_frame_equal(actual, pl.read_parquet(path), check_exact=False, **tol)
 
 
-@pytest.mark.regression
-@pytest.mark.parametrize("name", GOLDEN_NAMES)
 def test_acc_chars_golden(
-    name: str,
-    outputs: dict[str, pl.DataFrame],
-    tolerance: ToleranceSpec,
-    request: pytest.FixtureRequest,
+    acc_stage: DataPaths, tolerance: ToleranceSpec, request: pytest.FixtureRequest
 ) -> None:
-    """Each golden frame of the stage's output matches its committed fixture."""
+    """The fingerprint of the stage's output matches the committed one."""
+    actual = stage_fingerprint(acc_stage)
     if request.config.getoption("--regen-golden"):
-        write_goldens({name: outputs[name]})
+        write_golden(actual)
         pytest.skip("regenerated golden fixture")
-    assert_matches_golden(outputs[name], name, tolerance)
+    assert_matches_golden(actual, tolerance)
 
 
-@pytest.mark.regression
 def test_single_thread_run_matches_golden(tmp_path: Path, tolerance: ToleranceSpec) -> None:
-    """The stage on one Polars thread, in a fresh process, reproduces every golden frame."""
+    """The inputs and the stage on one Polars thread, in a fresh process, reproduce the
+    fingerprint."""
     env = {
         **os.environ,
         "POLARS_MAX_THREADS": "1",
@@ -84,5 +71,4 @@ def test_single_thread_run_matches_golden(tmp_path: Path, tolerance: ToleranceSp
         text=True,
     )
     assert run.returncode == 0, run.stderr
-    for name in GOLDEN_NAMES:
-        assert_matches_golden(pl.read_parquet(tmp_path / f"{name}.parquet"), name, tolerance)
+    assert_matches_golden(pl.read_parquet(tmp_path / "fingerprint.parquet"), tolerance)

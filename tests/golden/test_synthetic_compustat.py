@@ -1,7 +1,7 @@
 """Acceptance tests for the synthetic Compustat inputs (issue #303, step 4).
 
-The committed inputs in tests/golden/fixtures/synthetic_compustat/ must look like the real data
-that tests/golden/compustat_profile.json describes:
+The synthetic Compustat inputs (synthetic_compustat.py, generated once per session as
+synthetic_inputs) must look like the real data that tests/golden/compustat_profile.json describes:
     - the validator's hard rules hold, and its soft and cross-table rates are near the real ones;
     - each persona plants the case it exists for;
     - the stage's output is non-degenerate, and for the random firms each characteristic's null
@@ -15,20 +15,12 @@ from pathlib import Path
 
 import polars as pl
 import pytest
-from polars.testing import assert_frame_equal
 
 from jkp.data import aux_functions as af
 from jkp.data.paths import DataPaths
 from tests.golden.calibration.profile_compustat import output_stats
 from tests.golden.compustat_invariants import check_invariants, hard_violations
-from tests.golden.generate_acc_chars_golden import run_stage
-from tests.golden.synthetic_compustat import OUT_DIR as INPUT_DIR
-from tests.golden.synthetic_compustat import (
-    PERSONA_GVKEY,
-    PROFILE_PATH,
-    generate,
-    persona_specs,
-)
+from tests.golden.synthetic_compustat import PERSONA_GVKEY, PROFILE_PATH, persona_specs
 
 pytestmark = pytest.mark.regression
 
@@ -74,20 +66,13 @@ PERSONA_TESTS = {
 
 
 @pytest.fixture(scope="module")
-def stage(tmp_path_factory: pytest.TempPathFactory) -> DataPaths:
-    paths = DataPaths(tmp_path_factory.mktemp("acc_stage"))
-    run_stage(paths)
-    return paths
+def invariants(acc_stage: DataPaths) -> pl.DataFrame:
+    return check_invariants(acc_stage)
 
 
 @pytest.fixture(scope="module")
-def invariants(stage: DataPaths) -> pl.DataFrame:
-    return check_invariants(stage)
-
-
-@pytest.fixture(scope="module")
-def chars(stage: DataPaths) -> pl.DataFrame:
-    return pl.read_parquet(stage.interim_dir / "acc_chars_world.parquet")
+def chars(acc_stage: DataPaths) -> pl.DataFrame:
+    return pl.read_parquet(acc_stage.interim_dir / "acc_chars_world.parquet")
 
 
 def _violations(results: pl.DataFrame, rule: tuple[str, str, str]) -> int:
@@ -95,42 +80,30 @@ def _violations(results: pl.DataFrame, rule: tuple[str, str, str]) -> int:
     return results.filter(kind=kind, rule=name, table=table)["violations"].item()
 
 
-def _invariants_without(paths: DataPaths, gvkey: str) -> pl.DataFrame:
+def _invariants_without(paths: DataPaths, inputs: DataPaths, gvkey: str) -> pl.DataFrame:
     """The validator's results on the synthetic inputs with one firm removed."""
     af.setup_folder_structure(paths)
-    for src in (INPUT_DIR / "raw" / "raw_tables").glob("*.parquet"):
+    for src in inputs.raw_tables_dir.glob("*.parquet"):
         df = pl.read_parquet(src)
         if "gvkey" in df.columns:
             df = df.filter(pl.col("gvkey") != gvkey)
         df.write_parquet(paths.raw_tables_dir / src.name)
-    pl.read_parquet(INPUT_DIR / "interim" / "world_msf.parquet").filter(
+    pl.read_parquet(inputs.interim_dir / "world_msf.parquet").filter(
         pl.col("gvkey") != gvkey
     ).write_parquet(paths.interim_dir / "world_msf.parquet")
     af.gen_fx1(paths)
     return check_invariants(paths)
 
 
-def _input(table: str, gvkey: str) -> pl.DataFrame:
-    """One firm's rows of a committed input table."""
-    folder = INPUT_DIR / "interim" if table == "world_msf" else INPUT_DIR / "raw" / "raw_tables"
+def _input(inputs: DataPaths, table: str, gvkey: str) -> pl.DataFrame:
+    """One firm's rows of an input table."""
+    folder = inputs.interim_dir if table == "world_msf" else inputs.raw_tables_dir
     return pl.read_parquet(folder / f"{table}.parquet").filter(pl.col("gvkey") == gvkey)
 
 
 def _gaps(df: pl.DataFrame) -> pl.Series:
     """Days between consecutive report dates."""
     return df["datadate"].unique().sort().diff().dt.total_days()
-
-
-def test_committed_inputs_match_the_generator(tmp_path: Path) -> None:
-    """The committed inputs are what the generator writes, so a generator change can't go in
-    without regenerating them."""
-    generate(tmp_path)
-    committed = sorted(p.relative_to(INPUT_DIR) for p in INPUT_DIR.rglob("*.parquet"))
-    assert committed == sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*.parquet"))
-    for path in committed:
-        assert_frame_equal(
-            pl.read_parquet(INPUT_DIR / path), pl.read_parquet(tmp_path / path), check_exact=True
-        )
 
 
 def test_every_persona_is_checked() -> None:
@@ -155,12 +128,19 @@ def test_rule_rates_near_real(invariants: pl.DataFrame) -> None:
 
 @pytest.mark.parametrize(("gvkey", "rule"), PERSONA_RULES.items())
 def test_persona_plants_its_rule(
-    gvkey: str, rule: tuple[str, str, str], invariants: pl.DataFrame, tmp_path: Path
+    gvkey: str,
+    rule: tuple[str, str, str],
+    invariants: pl.DataFrame,
+    synthetic_inputs: DataPaths,
+    tmp_path: Path,
 ) -> None:
     """The persona's rule fires, and removing the persona lowers its count."""
     with_persona = _violations(invariants, rule)
     assert with_persona > 0
-    assert _violations(_invariants_without(DataPaths(tmp_path), gvkey), rule) < with_persona
+    assert (
+        _violations(_invariants_without(DataPaths(tmp_path), synthetic_inputs, gvkey), rule)
+        < with_persona
+    )
 
 
 def test_constant_earnings_persona_has_null_persistence(chars: pl.DataFrame) -> None:
@@ -176,10 +156,10 @@ def test_cad_persona_reports_before_first_cad_rate(chars: pl.DataFrame) -> None:
     assert early.height > 0 and early["assets"].count() > 0
 
 
-def test_resumed_calendar_persona() -> None:
+def test_resumed_calendar_persona(synthetic_inputs: DataPaths) -> None:
     """900109's December calendar stops for more than 200 days and resumes, while its newer June
     calendar reports in the gap."""
-    quarterly = _input("comp_fundq", "900109")
+    quarterly = _input(synthetic_inputs, "comp_fundq", "900109")
     december = quarterly.filter(pl.col("fyr") == 12)["datadate"].sort()
     gaps = december.diff().dt.total_days()
     i = gaps.arg_max()
@@ -188,42 +168,46 @@ def test_resumed_calendar_persona() -> None:
     assert quarterly.filter((pl.col("fyr") == 6) & in_gap).height > 0
 
 
-def test_jpy_persona_has_a_march_year_end_and_a_second_security() -> None:
+def test_jpy_persona_has_a_march_year_end_and_a_second_security(
+    synthetic_inputs: DataPaths,
+) -> None:
     """900113 reports in JPY on a March year-end, and world_msf has a non-primary security in the
     months of its primary one."""
-    annual = _input("comp_g_funda", "900113")
+    annual = _input(synthetic_inputs, "comp_g_funda", "900113")
     assert annual.height > 0
     assert set(annual["curcd"]) == {"JPY"} and set(annual["fyr"]) == {3}
-    msf = _input("world_msf", "900113")
+    msf = _input(synthetic_inputs, "world_msf", "900113")
     primary = msf.filter(pl.col("primary_sec") == 1)
     assert msf.filter(pl.col("primary_sec") == 0).join(primary, on="eom").height > 0
 
 
-def test_late_quarterly_persona() -> None:
+def test_late_quarterly_persona(synthetic_inputs: DataPaths) -> None:
     """900116's quarterly reports run three years past its last annual report."""
-    last_annual = _input("comp_funda", "900116")["datadate"].max()
-    last_quarter = _input("comp_fundq", "900116")["datadate"].max()
+    last_annual = _input(synthetic_inputs, "comp_funda", "900116")["datadate"].max()
+    last_quarter = _input(synthetic_inputs, "comp_fundq", "900116")["datadate"].max()
     assert last_quarter.year - last_annual.year >= 3
 
 
-def test_zero_sales_negative_equity_persona() -> None:
+def test_zero_sales_negative_equity_persona(synthetic_inputs: DataPaths) -> None:
     """900117 has years with zero sales, with negative book equity, and with zero and with
     negative total assets."""
-    annual = _input("comp_funda", "900117").select(pl.col("sale", "seq", "at").cast(pl.Float64))
+    annual = _input(synthetic_inputs, "comp_funda", "900117").select(
+        pl.col("sale", "seq", "at").cast(pl.Float64)
+    )
     assert (annual["sale"] == 0).any() and (annual["seq"] < 0).any()
     assert (annual["at"] == 0).any() and (annual["at"] < 0).any()
 
 
 @pytest.mark.parametrize(("gvkey", "years"), [("900118", 3), ("900119", 6), ("900120", 12)])
-def test_short_history_personas(gvkey: str, years: int) -> None:
+def test_short_history_personas(gvkey: str, years: int, synthetic_inputs: DataPaths) -> None:
     """900118, 900119 and 900120 have 3, 6 and 12 fiscal years of annual reports."""
-    assert _input("comp_funda", gvkey)["fyear"].n_unique() == years
+    assert _input(synthetic_inputs, "comp_funda", gvkey)["fyear"].n_unique() == years
 
 
-def test_reporting_gap_persona() -> None:
+def test_reporting_gap_persona(synthetic_inputs: DataPaths) -> None:
     """900122 has no annual or quarterly report for three years in the middle of its life."""
     for table in ["comp_funda", "comp_fundq"]:
-        assert _gaps(_input(table, "900122")).max() > 3 * 365, table
+        assert _gaps(_input(synthetic_inputs, table, "900122")).max() > 3 * 365, table
 
 
 @pytest.mark.parametrize(
@@ -241,10 +225,12 @@ def test_reporting_gap_persona() -> None:
         ),
     ],
 )
-def test_filtered_row_personas(gvkey: str, tables: list[str], dropped: dict[str, str]) -> None:
+def test_filtered_row_personas(
+    gvkey: str, tables: list[str], dropped: dict[str, str], synthetic_inputs: DataPaths
+) -> None:
     """900123 (NA) and 900124 (Global) have rows with each value the read filters drop."""
     for table in tables:
-        df = _input(table, gvkey)
+        df = _input(synthetic_inputs, table, gvkey)
         for column, value in dropped.items():
             assert (df[column] == value).any(), (table, column, value)
 

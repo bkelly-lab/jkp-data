@@ -1,16 +1,16 @@
 """Metamorphic tests for the accounting stage (issue #303, step 5).
 
-Each test changes the synthetic Compustat inputs (tests/golden/fixtures/synthetic_compustat/) in a
-way whose effect on the output is known, runs the stage on them and compares its annual, quarterly
-and combined outputs with the stage's outputs on the unchanged inputs:
-    scaled     every monetary item and ME doubled: the levels double, nothing else changes
-    added      copies of two firms under new gvkeys: the copies equal their sources and no other
-               firm changes, which catches a lag or window computed across firms
-    twin       a copy in EUR of an AUD firm, with the same USD values: equal to its source
-    relabeled  gvkeys in reverse order: the outputs relabeled the same way
-    shifted    every date 12 months later: the outputs 12 months later
-    shuffled   every input table's rows in another order: the same outputs, which catches a pick
-               that depends on the order of the input rows
+Each test changes the synthetic Compustat inputs (synthetic_inputs in tests/conftest.py) in a way
+whose effect on the output is known, runs the stage on them and compares its annual, quarterly and
+combined outputs with the stage's outputs on the unchanged inputs (acc_stage). Changes whose
+effects can't mask each other share a stage run, which keeps the tests fast:
+    scaled    every monetary item and ME doubled: the levels double, nothing else changes
+    extended  copies of two firms under new gvkeys, and a copy in EUR of an AUD firm with the same
+              USD values: each copy equals its source and no other firm changes, which catches a
+              lag or window computed across firms
+    moved     gvkeys in reverse order, every date 12 months later and every input table's rows in
+              another order: the outputs relabeled and 12 months later, which also catches a pick
+              that depends on the order of the input rows
 """
 
 from __future__ import annotations
@@ -23,7 +23,6 @@ import pytest
 from jkp.data import aux_functions as af
 from jkp.data.paths import DataPaths
 from tests.golden.generate_acc_chars_golden import KEYS, run_stage
-from tests.golden.synthetic_compustat import OUT_DIR as INPUT_DIR
 
 pytestmark = pytest.mark.integration
 
@@ -55,7 +54,8 @@ SCALE_DEPENDENT = {
 # random firms (900001-900060) and the personas (900101 up)
 COPIES = {"900070": "900010", "900080": "900030"}
 TWIN, TWIN_SOURCE, TWIN_CURRENCY = "900090", "900034", "EUR"  # TWIN_SOURCE reports in AUD
-# 900107's pre-1982 CAD rates come from a bundled file, whose dates the test does not shift.
+# 900107's pre-1982 CAD rates come from a bundled file, whose dates the test does not shift, so
+# the moved run is compared without it.
 SHIFT_EXCLUDED = ["900107"]
 SHUFFLE_SEED = 303
 
@@ -72,7 +72,7 @@ def _run(root: Path, tables: Tables) -> DataPaths:
         folder = inputs.interim_dir if name == "world_msf" else inputs.raw_tables_dir
         df.write_parquet(folder / f"{name}.parquet")
     paths = DataPaths(root / "run")
-    run_stage(paths, inputs.base_dir)
+    run_stage(paths, inputs)
     return paths
 
 
@@ -234,22 +234,18 @@ def _shuffled(tables: Tables) -> Tables:
 
 
 @pytest.fixture(scope="module")
-def inputs() -> Tables:
-    raw = INPUT_DIR / "raw" / "raw_tables"
+def inputs(synthetic_inputs: DataPaths) -> Tables:
+    raw = synthetic_inputs.raw_tables_dir
     tables = {
         name: pl.read_parquet(raw / f"{name}.parquet") for name in [*COMPUSTAT, "comp_exrt_dly"]
     }
-    return tables | {"world_msf": pl.read_parquet(INPUT_DIR / "interim" / "world_msf.parquet")}
+    msf = pl.read_parquet(synthetic_inputs.interim_dir / "world_msf.parquet")
+    return tables | {"world_msf": msf}
 
 
 @pytest.fixture(scope="module")
-def base_run(tmp_path_factory: pytest.TempPathFactory, inputs: Tables) -> DataPaths:
-    return _run(tmp_path_factory.mktemp("base"), inputs)
-
-
-@pytest.fixture(scope="module")
-def base(base_run: DataPaths) -> Outputs:
-    return _outputs(base_run)
+def base(acc_stage: DataPaths) -> Outputs:
+    return _outputs(acc_stage)
 
 
 @pytest.fixture(scope="module")
@@ -263,29 +259,17 @@ def scaled(tmp_path_factory: pytest.TempPathFactory, inputs: Tables) -> Outputs:
 
 
 @pytest.fixture(scope="module")
-def added(tmp_path_factory: pytest.TempPathFactory, inputs: Tables) -> Outputs:
-    return _outputs(_run(tmp_path_factory.mktemp("added"), _with_copies(inputs, COPIES)))
+def extended(
+    tmp_path_factory: pytest.TempPathFactory, inputs: Tables, acc_stage: DataPaths
+) -> Outputs:
+    tables = _with_twin(_with_copies(inputs, COPIES), af.compustat_fx(acc_stage))
+    return _outputs(_run(tmp_path_factory.mktemp("extended"), tables))
 
 
 @pytest.fixture(scope="module")
-def twin(tmp_path_factory: pytest.TempPathFactory, inputs: Tables, base_run: DataPaths) -> Outputs:
-    tables = _with_twin(inputs, af.compustat_fx(base_run))
-    return _outputs(_run(tmp_path_factory.mktemp("twin"), tables))
-
-
-@pytest.fixture(scope="module")
-def relabeled(tmp_path_factory: pytest.TempPathFactory, inputs: Tables) -> Outputs:
-    return _outputs(_run(tmp_path_factory.mktemp("relabeled"), _relabeled(inputs)))
-
-
-@pytest.fixture(scope="module")
-def shifted(tmp_path_factory: pytest.TempPathFactory, inputs: Tables) -> Outputs:
-    return _outputs(_run(tmp_path_factory.mktemp("shifted"), _shifted(inputs)))
-
-
-@pytest.fixture(scope="module")
-def shuffled(tmp_path_factory: pytest.TempPathFactory, inputs: Tables) -> Outputs:
-    return _outputs(_run(tmp_path_factory.mktemp("shuffled"), _shuffled(inputs)))
+def moved(tmp_path_factory: pytest.TempPathFactory, inputs: Tables) -> Outputs:
+    tables = _shuffled(_shifted(_relabeled(inputs)))
+    return _outputs(_run(tmp_path_factory.mktemp("moved"), tables))
 
 
 @pytest.mark.parametrize("name", FILES)
@@ -295,41 +279,31 @@ def test_scaling_money_scales_the_levels_only(name: str, base: Outputs, scaled: 
 
 
 @pytest.mark.parametrize("name", FILES)
-def test_adding_firms_changes_no_other_firm(name: str, base: Outputs, added: Outputs) -> None:
-    others = added[name].filter(~pl.col("gvkey").is_in(list(COPIES)))
+def test_adding_firms_changes_no_other_firm(name: str, base: Outputs, extended: Outputs) -> None:
+    others = extended[name].filter(~pl.col("gvkey").is_in([*COPIES, TWIN]))
     assert _differences(base[name], others) == {}
 
 
 @pytest.mark.parametrize("name", FILES)
-def test_copied_firms_equal_their_sources(name: str, base: Outputs, added: Outputs) -> None:
-    copies = added[name].filter(pl.col("gvkey").is_in(list(COPIES)))
+def test_copied_firms_equal_their_sources(name: str, base: Outputs, extended: Outputs) -> None:
+    copies = extended[name].filter(pl.col("gvkey").is_in(list(COPIES)))
     sources = base[name].filter(pl.col("gvkey").is_in(list(COPIES.values())))
     assert _differences(sources, copies.with_columns(pl.col("gvkey").replace(COPIES))) == {}
 
 
 @pytest.mark.parametrize("name", FILES)
-def test_twin_in_another_currency_equals_its_source(name: str, twin: Outputs) -> None:
-    source = twin[name].filter(pl.col("gvkey") == TWIN_SOURCE)
-    copy = twin[name].filter(pl.col("gvkey") == TWIN).with_columns(gvkey=pl.lit(TWIN_SOURCE))
+def test_twin_in_another_currency_equals_its_source(name: str, extended: Outputs) -> None:
+    source = extended[name].filter(pl.col("gvkey") == TWIN_SOURCE)
+    copy = extended[name].filter(pl.col("gvkey") == TWIN).with_columns(gvkey=pl.lit(TWIN_SOURCE))
     assert _differences(source, copy) == {}
 
 
 @pytest.mark.parametrize("name", FILES)
-def test_relabeling_gvkeys_relabels_the_outputs(
-    name: str, inputs: Tables, base: Outputs, relabeled: Outputs
+def test_moving_firms_and_dates_moves_the_outputs(
+    name: str, inputs: Tables, base: Outputs, moved: Outputs
 ) -> None:
-    back = relabeled[name].with_columns(pl.col("gvkey").replace(_reversed_gvkeys(inputs)))
-    assert _differences(base[name], back) == {}
-
-
-@pytest.mark.parametrize("name", FILES)
-def test_shifting_dates_shifts_the_outputs(name: str, base: Outputs, shifted: Outputs) -> None:
+    back = moved[name].with_columns(pl.col("gvkey").replace(_reversed_gvkeys(inputs)))
     kept = ~pl.col("gvkey").is_in(SHIFT_EXCLUDED)
     dates = [c for c in ["public_date", "datadate"] if c in base[name].columns]
     want = base[name].filter(kept).with_columns(_later(c) for c in dates)
-    assert _differences(want, shifted[name].filter(kept)) == {}
-
-
-@pytest.mark.parametrize("name", FILES)
-def test_shuffling_input_rows_changes_nothing(name: str, base: Outputs, shuffled: Outputs) -> None:
-    assert _differences(base[name], shuffled[name]) == {}
+    assert _differences(want, back.filter(kept)) == {}

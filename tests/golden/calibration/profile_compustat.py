@@ -306,4 +306,4 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
     result = profile(args.data_dir.expanduser(), args.chars.expanduser(), args.vintage)
-    args.out.write_text(json.dumps(result, indent=1) + "\n")
+    args.out.write_text(json.dumps(result, separators=(",", ":")) + "\n")
