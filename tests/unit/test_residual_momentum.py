@@ -13,6 +13,7 @@ import pytest
 from polars.testing import assert_frame_equal
 
 from jkp.data.aux_functions import residual_momentum
+from jkp.data.config import RES_MOM_MIN_STD
 from tests.golden.residual_momentum_inputs import (
     AP_FACTORS_MONTHLY_INPUT_SCHEMA,
     WORLD_MSF_INPUT_SCHEMA,
@@ -394,12 +395,16 @@ def test_near_constant_ret_gives_no_score(test_paths) -> None:
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize(("spread", "scored"), [(1e-9, False), (1e-3, True)])
-def test_near_equal_scored_residuals_give_no_score(test_paths, spread: float, scored: bool) -> None:
+@pytest.mark.parametrize(
+    ("ratio", "scored"), [(1e-3, False), (0.5, False), (2.0, True), (1e3, True)]
+)
+def test_near_equal_scored_residuals_give_no_score(test_paths, ratio: float, scored: bool) -> None:
     """When the scored residuals are almost equal (std at most RES_MOM_MIN_STD), mean / std would
     divide by almost zero, so the score is null (#347). The scored months t-5..t-1 get the same
-    factors and the same return up to ``spread``, so their residuals differ only by ``spread``;
-    the other months vary as usual, so the RET_MIN_STD guard doesn't apply."""
+    factors and returns 0.02 + spread * (-2..2), so their residuals have std sqrt(2.5) * spread,
+    which is ``ratio`` times the floor; the other months vary as usual, so the RET_MIN_STD guard
+    doesn't apply."""
+    spread = ratio * RES_MOM_MIN_STD / np.sqrt(2.5)
     world, fcts = _custom_frames()
     grid = month_grid()
     same = pl.col("eom").is_in(grid[_TERMINAL_IDX - 5 : _TERMINAL_IDX])

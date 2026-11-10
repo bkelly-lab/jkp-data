@@ -9275,8 +9275,8 @@ def res_mom(df, sfx, __min, incl, skip):
            least 90% of its months (_guard_constant with RET_MIN_STD), so the score is null too.
         2) Filter to windows inside (max_date - incl, max_date - skip].
         3) Require at least __min obs; compute mean(res)/std(res). The score is null when
-           std(res) is at most RES_MOM_MIN_STD: it would divide by almost zero, so it is a
-           wrong value set by how close the scored residuals happen to be.
+           std(res) is at most RES_MOM_MIN_STD (_guard_constant): it would divide by almost
+           zero, so it is a wrong value set by how close the scored residuals happen to be.
 
     Output:
         LazyFrame with column f'resff3_{incl}_{skip}' per (id_int, group_number).
@@ -9308,8 +9308,12 @@ def res_mom(df, sfx, __min, incl, skip):
         )
         .group_by(["id_int", "group_number"])
         .agg(
-            pl.when(col("res").std() > RES_MOM_MIN_STD)
-            .then(col("res").mean() / col("res").std())
+            _guard_constant(
+                "res",
+                pl.col("res").mean() / pl.col("res").std(),
+                min_std=RES_MOM_MIN_STD,
+                max_zero_frac=None,
+            )
             .fill_nan(None)
             .alias(f"resff3_{incl}_{skip}")
         )
