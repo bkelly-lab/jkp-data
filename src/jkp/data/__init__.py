@@ -46,8 +46,8 @@ __all__ = [
 # We expose the names above via lazy module-level `__getattr__` (see Python's
 # "Customizing module attribute access" in the data model docs) rather than
 # eagerly re-exporting them at import time. Eager `from .main import
-# run_pipeline` would force `import polars`, `import duckdb`, and `import
-# ibis` — a few hundred milliseconds of work — on every `import jkp.data`,
+# run_pipeline` would force `import polars` and `import duckdb` — a few
+# hundred milliseconds of work — on every `import jkp.data`,
 # even for callers that only want `jkp.data.__version__`. With `__getattr__`
 # below, the heavy modules are imported only on first access of the name
 # they back, and `__version__` lookups stay cheap.

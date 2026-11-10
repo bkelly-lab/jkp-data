@@ -1,7 +1,7 @@
 """Golden-fixture parity test for run_portfolio.
 
-For each profile, run ``run_portfolio`` on deterministic synthetic data
-(seed=42) and compare every emitted parquet against a committed fixture
+For each profile, run ``run_portfolio`` and build themes v0 with ``run_themes``
+on deterministic synthetic data (seed=42) and compare every emitted parquet against a committed fixture
 tree under ``tests/golden/fixtures/<profile>/``.
 
 Run ``pytest tests/golden/test_run_portfolio_golden.py --regen-golden -v``
@@ -14,15 +14,14 @@ import shutil
 from datetime import date
 from pathlib import Path
 
+import polars as pl
 import pytest
 
 from tests.unit.portfolio.conftest import (
     build_synthetic_data,
     compare_parquets,
-    make_cluster_labels,
-    make_factor_details,
     make_multi_region_classification,
-    patch_resource_readers,
+    make_themes_dir,
 )
 
 # ---------------------------------------------------------------------------
@@ -33,7 +32,6 @@ PROFILES: dict[str, dict] = {
     "default_monthly": {
         "bps": "non_mc",
         "source": ["CRSP", "COMPUSTAT"],
-        "signals_us": False,
         "cmp_us": False,
         "daily_pf": False,
         "ind_pf": True,
@@ -41,7 +39,6 @@ PROFILES: dict[str, dict] = {
     "nyse_breakpoints": {
         "bps": "nyse",
         "source": ["CRSP", "COMPUSTAT"],
-        "signals_us": False,
         "cmp_us": False,
         "daily_pf": False,
         "ind_pf": True,
@@ -49,15 +46,6 @@ PROFILES: dict[str, dict] = {
     "crsp_only": {
         "bps": "non_mc",
         "source": ["CRSP"],
-        "signals_us": False,
-        "cmp_us": False,
-        "daily_pf": False,
-        "ind_pf": False,
-    },
-    "signals_on": {
-        "bps": "non_mc",
-        "source": ["CRSP", "COMPUSTAT"],
-        "signals_us": True,
         "cmp_us": False,
         "daily_pf": False,
         "ind_pf": False,
@@ -65,7 +53,6 @@ PROFILES: dict[str, dict] = {
     "cmp_on": {
         "bps": "non_mc",
         "source": ["CRSP", "COMPUSTAT"],
-        "signals_us": False,
         "cmp_us": True,
         "daily_pf": False,
         "ind_pf": True,
@@ -73,7 +60,6 @@ PROFILES: dict[str, dict] = {
     "full_daily": {
         "bps": "non_mc",
         "source": ["CRSP", "COMPUSTAT"],
-        "signals_us": False,
         "cmp_us": False,
         "daily_pf": True,
         "ind_pf": True,
@@ -94,13 +80,7 @@ def _build_settings(cfg: dict) -> dict:
         "wins_ret": True,
         "bps": cfg["bps"],
         "bp_min_n": 5,
-        "cmp": {"us": cfg["cmp_us"], "int": False},
-        "signals": {
-            "us": cfg["signals_us"],
-            "int": False,
-            "standardize": True,
-            "weight": "vw_cap",
-        },
+        "cmp": {"us": cfg["cmp_us"], "int": cfg["cmp_us"]},
         "regional_pfs": {
             "country_excl": ["ZWE", "VEN"],
             "country_weights": "market_cap",
@@ -126,23 +106,21 @@ def test_run_portfolio_golden(
 
     build_synthetic_data(tmp_path, COUNTRIES, chars, seed=42)
 
-    fd = make_factor_details(tmp_path, chars)
     cc = make_multi_region_classification(tmp_path)
-    cl = make_cluster_labels(tmp_path, dict.fromkeys(chars, "cluster_x"))
-
-    patch_resource_readers(monkeypatch)
+    themes_dir = make_themes_dir(tmp_path, dict.fromkeys(chars, "cluster_x"))
 
     # Paths are imported locally inside run_portfolio via `from .paths import ...`,
     # so patch the source module rather than jkp.data.portfolio.
-    monkeypatch.setattr("jkp.data.paths.get_factor_details_path", lambda: fd)
     monkeypatch.setattr("jkp.data.paths.get_country_classification_path", lambda: cc)
-    monkeypatch.setattr("jkp.data.paths.get_cluster_labels_path", lambda: cl)
+    monkeypatch.setattr("jkp.data.paths.get_themes_dir", lambda: themes_dir)
     monkeypatch.setattr("jkp.data.portfolio.PORTFOLIO_CHARS", chars)
     monkeypatch.setattr("jkp.data.portfolio.PORTFOLIO_SETTINGS", _build_settings(cfg))
 
-    from jkp.data.portfolio import run_portfolio
+    from jkp.data.portfolio import run_portfolio, run_themes
 
     run_portfolio(output_dir=tmp_path)
+    monkeypatch.setattr("jkp.data.output_writer._configured", False)  # a new CLI process
+    run_themes(output_dir=tmp_path, version="v0")
 
     output_root = tmp_path / "processed" / "portfolios"
     fixture_root = FIXTURES_DIR / profile
@@ -169,5 +147,13 @@ def test_run_portfolio_golden(
     extra = sorted(str(r) for r in actual_rels - fixture_rels)
     if extra:
         failures.append(f"unexpected extra outputs: {extra}")
+
+    # The pf stacks are not sorted after the country loop, so check they come in key order.
+    # compare_parquets sorts both sides and would not see an order error.
+    for path in sorted(output_root.glob("pfs*.parquet")):
+        pfs = pl.read_parquet(path)
+        keys = ["excntry", "characteristic", "pf", "eom" if "eom" in pfs.columns else "date"]
+        if not pfs.equals(pfs.sort(keys)):
+            failures.append(f"{path.name} is not sorted by {keys}")
 
     assert not failures, "\n".join(failures)

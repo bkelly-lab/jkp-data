@@ -10,7 +10,7 @@ import pytest
 from polars.testing import assert_frame_equal
 
 from jkp.data.paths import DataPaths
-from jkp.data.portfolio import portfolios
+from jkp.data.portfolio import _check_intraday_local, portfolios
 from tests.unit.portfolio.conftest import (
     SYNTHETIC_CHARS,
     make_cutoffs,
@@ -41,7 +41,6 @@ class TestPortfoliosCore:
             source=["CRSP", "COMPUSTAT"],
             wins_ret=True,
             cmp_key=False,
-            signals=False,
             daily_pf=True,
             ind_pf=True,
             ret_cutoffs=ret_cut,
@@ -133,7 +132,6 @@ class TestPortfoliosCore:
             source=["CRSP", "COMPUSTAT"],
             wins_ret=True,
             cmp_key=False,
-            signals=False,
             daily_pf=False,
             ind_pf=False,
             ret_cutoffs=tight_ret_cut,
@@ -150,7 +148,6 @@ class TestPortfoliosCore:
             source=["CRSP", "COMPUSTAT"],
             wins_ret=False,
             cmp_key=False,
-            signals=False,
             daily_pf=False,
             ind_pf=False,
             ret_cutoffs=tight_ret_cut,
@@ -177,14 +174,51 @@ class TestPortfoliosCore:
         )
 
 
+class TestChecksBeforeWork:
+    @pytest.mark.unit
+    def test_too_many_daily_columns_raise_before_any_read(self, tmp_path: Path):
+        with pytest.raises(ValueError, match="5 daily return columns, at most 4 fit"):
+            portfolios(
+                paths=DataPaths(base_dir=tmp_path),
+                excntry="SYN",
+                chars=SYNTHETIC_CHARS,
+                pfs=3,
+                bps="non_mc",
+                bp_min_n=10,
+                nyse_size_cutoffs=None,
+                daily_pf=True,
+                daily_oi_cols=["a", "b", "c", "d"],
+            )
+
+
+class TestCheckIntradayLocal:
+    @pytest.mark.unit
+    def test_equal_columns_pass(self, tmp_path: Path):
+        path = tmp_path / "daily.parquet"
+        values = [0.1, None, float("nan")]
+        pl.DataFrame({"ret_intraday": values, "ret_intraday_local": values}).write_parquet(path)
+        _check_intraday_local(path)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("local", [[0.1, 0.3], [0.1, None]])
+    def test_different_columns_raise(self, tmp_path: Path, local: list[float | None]):
+        path = tmp_path / "daily.parquet"
+        pl.DataFrame({"ret_intraday": [0.1, 0.2], "ret_intraday_local": local}).write_parquet(path)
+        with pytest.raises(ValueError, match="ret_intraday_local differs"):
+            _check_intraday_local(path)
+
+    @pytest.mark.unit
+    def test_file_without_the_columns_passes(self, tmp_path: Path):
+        path = tmp_path / "daily.parquet"
+        pl.DataFrame({"ret_exc": [0.1]}).write_parquet(path)
+        _check_intraday_local(path)
+
+
 class TestNanCharacteristics:
     """NaN characteristic values are left out of the sort, exactly like nulls."""
 
     @pytest.mark.unit
-    @pytest.mark.parametrize("signals", [False, True])
-    def test_nan_values_give_the_same_portfolios_as_nulls(
-        self, tmp_path: Path, seed: int, signals: bool
-    ):
+    def test_nan_values_give_the_same_portfolios_as_nulls(self, tmp_path: Path, seed: int):
         results = []
         for name, fill in [("null", None), ("nan", float("nan"))]:
             data_root = tmp_path / name / "processed"
@@ -211,8 +245,6 @@ class TestNanCharacteristics:
                     source=["CRSP", "COMPUSTAT"],
                     wins_ret=True,
                     cmp_key=True,
-                    signals=signals,
-                    signals_standardize=signals,
                     daily_pf=True,
                     ind_pf=False,
                     ret_cutoffs=ret_cut,
@@ -220,8 +252,7 @@ class TestNanCharacteristics:
                 )
             )
         with_null, with_nan = results
-        keys = ["pf_returns", "pf_daily", "cmp"] + (["signals"] if signals else [])
-        for key in keys:
+        for key in ["pf_returns", "pf_daily", "cmp_1", "cmp_2", "cmp_5"]:
             assert with_null[key].height > 0
             assert_frame_equal(with_null[key], with_nan[key], check_row_order=False)
 
@@ -249,7 +280,6 @@ class TestPortfoliosDaily:
             source=["CRSP", "COMPUSTAT"],
             wins_ret=True,
             cmp_key=False,
-            signals=False,
             daily_pf=True,
             ind_pf=False,
             ret_cutoffs=ret_cut,

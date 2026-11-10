@@ -55,19 +55,14 @@ def get_siccodes_path() -> Path:
     return _resource_path("Siccodes49.txt")
 
 
-def get_cluster_labels_path() -> Path:
-    """Return the path to the bundled cluster_labels.csv file."""
-    return _resource_path("cluster_labels.csv")
+def get_themes_dir() -> Path:
+    """Return the path to the bundled themes folder (current and superseded versions)."""
+    return _resource_path("themes")
 
 
 def get_country_classification_path() -> Path:
     """Return the path to the bundled country_classification.xlsx file."""
     return _resource_path("country_classification.xlsx")
-
-
-def get_factor_details_path() -> Path:
-    """Return the path to the bundled factor_details.xlsx file."""
-    return _resource_path("factor_details.xlsx")
 
 
 def get_fx_cad_backfill_path() -> Path:

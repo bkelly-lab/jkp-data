@@ -27,7 +27,6 @@ keywords = ["finance", "factor-models", "asset-pricing", "WRDS"]
 dependencies = [
     "duckdb>=1.4.3",
     "fastexcel>=0.16.0",
-    "ibis-framework[duckdb,postgres]>=12.0",
     "keyring>=25.6.0",
     "numba>=0.61",
     "numpy>=1.26.4",

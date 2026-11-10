@@ -112,6 +112,21 @@ def test_ff_load_funda_global_collapses_fiscal_change(tmp_path):
     assert rows_2019["datadate"].item() == date(2019, 12, 31)
 
 
+def test_ff_load_funda_global_indfmt_rule(tmp_path):
+    rows = [
+        _funda_row("001", date(2018, 12, 31), 100.0, indl=False),
+        _funda_row("001", date(2018, 12, 31), 999.0, indl=False, indfmt="FS"),
+        _funda_row("002", date(2018, 12, 31), 100.0, indl=False, indfmt="FS"),
+        _funda_row("002", date(2018, 12, 31), 100.0, indl=False, indfmt="FS"),
+    ]
+    _write_funda(tmp_path / "comp_g_funda.parquet", rows)
+
+    out = _ff_load_funda_global(tmp_path).collect().sort("gvkey")
+
+    # INDL wins over FS; a date reported only in FS is kept (#329's rule).
+    assert out.select("gvkey", "at").rows() == [("001", 100.0), ("002", 100.0)]
+
+
 def test_ff_global_be_op_inv_recovers_annual_inv(tmp_path):
     _write_funda(tmp_path / "comp_g_funda.parquet", _fiscal_change_rows("001", indl=False))
 
