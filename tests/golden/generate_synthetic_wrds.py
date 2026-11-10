@@ -252,6 +252,7 @@ def gen_crsp_msf_v2(reg: pl.DataFrame, rng: np.random.Generator) -> pl.DataFrame
     panel = panel.join(shrout_per_firm, on="permno")
     panel = panel.with_columns(
         mthprc=pl.col("me") / pl.col("shrout"),
+        mthprcdt=pl.col("mthcaldt"),
         mthcap=pl.col("me"),
         mthcumfacshr=pl.lit(1.0),
         mthvol=pl.col("shrout") * 0.05,
@@ -271,6 +272,7 @@ def gen_crsp_msf_v2(reg: pl.DataFrame, rng: np.random.Generator) -> pl.DataFrame
         "mthret",
         "mthretx",
         "mthprc",
+        "mthprcdt",
         "mthcap",
         "mthvol",
         "mthcumfacshr",

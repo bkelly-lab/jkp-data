@@ -11635,11 +11635,20 @@ def hxz_load_crsp(
 ) -> pl.DataFrame:
     """Load CRSP CIZ (msf_v2 or dsf_v2); permno-level (no permco aggregation).
 
+    Monthly ME is missing when the month's price (mthprc) is not from its last trading day
+    (mthprcdt before mthcaldt), as in HXZ. This ME only sizes and weights the HXZ sorts; the
+    published size variable is JKP's market_equity.
+
     Output: Eager [permno, permco, date, ret, retx, prc, shrout, me, exchcd, siccd, is_fin].
     """
     pq, p = ("crsp_msf_v2.parquet", "mth") if freq == "monthly" else ("crsp_dsf_v2.parquet", "dly")
     date_c, ret_c, retx_c, prc_c = f"{p}caldt", f"{p}ret", f"{p}retx", f"{p}prc"
     date_floor = pl.lit(True) if date_start is None else pl.col(date_c) >= date_start
+    # /1000: CIZ shrout is in thousands; me in USD millions matches the
+    # jkp world_msf convention so US and ex-US ME share one unit.
+    me = pl.col(prc_c).abs() * pl.col("shrout") / 1000.0
+    if freq == "monthly":
+        me = pl.when(pl.col("mthprcdt") == pl.col("mthcaldt")).then(me)
     return (
         pl.scan_parquet(raw_dir / pq)
         .filter(date_floor & _ciz_universe())
@@ -11653,9 +11662,7 @@ def hxz_load_crsp(
             pl.col(retx_c).alias("retx"),
             pl.col(prc_c).alias("prc"),
             "shrout",
-            # /1000: CIZ shrout is in thousands; me in USD millions matches the
-            # jkp world_msf convention so US and ex-US ME share one unit.
-            (pl.col(prc_c).abs() * pl.col("shrout") / 1000.0).alias("me"),
+            me.alias("me"),
             pl.col("primaryexch")
             .replace_strict({"N": 1, "A": 2, "Q": 3}, default=None, return_dtype=pl.Int64)
             .alias("exchcd"),
@@ -12614,7 +12621,12 @@ def gen_hxz_data(
         decide only which stocks enter a sort.
         - US: CRSP CIZ securities, sized by their own ME (permno level, no
           share-class aggregation); NYSE breakpoints. CIZ returns include
-          delisting returns.
+          delisting returns. As in HXZ, a month's ME is missing when its CIZ
+          price is not from the month's last trading day, so that stock-month
+          gets no size group and no weight.
+        - There is no me_hxz characteristic, as there is no me_ff: ME decides
+          only membership and weights, and the published size variable is
+          JKP's market_equity. (me_hxz in the factor files is the size factor.)
         - Elsewhere: JKP's main sample with a gvkey, the size_grp breakpoint
           pool, and the HXZ_MIN_STOCKS_BP / HXZ_MIN_STOCKS_PF minimums.
         - Timing: a characteristic at eom t is the value that sorted the

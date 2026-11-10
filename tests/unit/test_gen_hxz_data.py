@@ -31,6 +31,7 @@ from jkp.data.aux_functions import (
     hxz_classify_portfolios,
     hxz_compute_factors,
     hxz_impute_be_clean_surplus,
+    hxz_load_crsp,
     hxz_merge_be_chain,
     hxz_roe_by_month,
     one_row_per_date,
@@ -321,6 +322,47 @@ class TestHxzAttachSiccd:
 # ---------------------------------------------------------------------------
 # Stage 2 helpers
 # ---------------------------------------------------------------------------
+
+
+class TestHxzLoadCrsp:
+    """Tests for hxz_load_crsp: the HXZ month-end price rule."""
+
+    def test_me_missing_when_price_not_from_last_trading_day(self, tmp_path):
+        eom = date(2020, 6, 30)
+        n = 2
+        pl.DataFrame(
+            {
+                "permno": [1, 2],
+                "permco": [1, 2],
+                "mthcaldt": [eom, eom],
+                "mthprcdt": [eom, date(2020, 6, 26)],
+                "mthret": [0.01, 0.02],
+                "mthretx": [0.01, 0.02],
+                "mthprc": [10.0, 20.0],
+                "shrout": [1000.0, 1000.0],
+                "primaryexch": ["N"] * n,
+                "sharetype": ["NS"] * n,
+                "securitytype": ["EQTY"] * n,
+                "securitysubtype": ["COM"] * n,
+                "usincflg": ["Y"] * n,
+                "issuertype": ["CORP"] * n,
+            }
+        ).write_parquet(tmp_path / "crsp_msf_v2.parquet")
+        pl.DataFrame(
+            {
+                "permno": [1, 2],
+                "secinfostartdt": [date(2000, 1, 1)] * n,
+                "secinfoenddt": [None] * n,
+                "siccd": [3000, 3000],
+            },
+            schema_overrides={"secinfoenddt": pl.Date},
+        ).write_parquet(tmp_path / "crsp_stksecurityinfohist.parquet")
+
+        out = hxz_load_crsp(tmp_path, "monthly").sort("permno")
+
+        # Price from June 26 (not the last trading day): ME missing, return kept.
+        assert out["me"].to_list() == [10.0, None]
+        assert out["ret"].to_list() == [0.01, 0.02]
 
 
 class TestHxzMergeBeChain:
