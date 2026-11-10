@@ -2,7 +2,9 @@
 
 Mirrors ``test_gen_ff_data_golden`` for the HXZ4 builder. Compares
 ``hxz_factors_monthly.parquet``, ``hxz_factors_daily.parquet``, and
-``hxz_characteristics.parquet`` against the committed golden parquets.
+``hxz_characteristics.parquet`` against the committed golden parquets. The
+synthetic inputs are generated once per session by the ``synthetic_wrds_dir``
+fixture (``conftest.py``); nothing is committed.
 
 Regenerate with:
     pytest tests/golden/test_gen_hxz_data_golden.py --regen-golden -v
@@ -32,8 +34,10 @@ OUTPUTS = {
 
 
 @pytest.mark.regression
-def test_gen_hxz_data_golden(test_paths: DataPaths, request: pytest.FixtureRequest) -> None:
-    stage_synthetic_slices(test_paths)
+def test_gen_hxz_data_golden(
+    test_paths: DataPaths, synthetic_wrds_dir: Path, request: pytest.FixtureRequest
+) -> None:
+    stage_synthetic_slices(test_paths, synthetic_wrds_dir)
     with cwd(test_paths.interim_dir):
         gen_hxz_data(
             test_paths,
