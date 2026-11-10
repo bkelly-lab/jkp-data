@@ -8,7 +8,7 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-from jkp.data.aux_functions import compute_earnings_persistence
+from jkp.data.aux_functions import _duckdb_connect, compute_earnings_persistence
 from jkp.data.paths import DataPaths
 
 
@@ -134,3 +134,14 @@ def test_output_does_not_depend_on_thread_count(
         outputs.append(compute_earnings_persistence(test_paths, data_path, 5, 5))
     assert outputs[0].height > 0
     assert_frame_equal(outputs[0], outputs[1], check_exact=True)
+
+
+@pytest.mark.unit
+def test_duckdb_threads_fall_back_to_cpu_count(
+    test_paths: DataPaths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without a CPU affinity mask (macOS), DuckDB gets os.cpu_count() threads."""
+    monkeypatch.delattr(os, "sched_getaffinity", raising=False)
+    monkeypatch.setattr(os, "cpu_count", lambda: 3)
+    with _duckdb_connect(test_paths) as con:
+        assert con.execute("SELECT current_setting('threads')").fetchone() == (3,)

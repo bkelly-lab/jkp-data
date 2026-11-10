@@ -7,13 +7,18 @@ are locked by tests/golden/test_acc_chars_golden.py.
 
 from __future__ import annotations
 
+import shutil
+from pathlib import Path
+
 import polars as pl
 import pytest
 
 from jkp.data import aux_functions as af
+from jkp.data.config import ACCOUNTING_START_DATE
 from jkp.data.paths import DataPaths
 from tests.conftest import assert_unique_keys
 from tests.golden.generate_acc_chars_golden import KEYS, run_stage
+from tests.golden.synthetic_compustat import OUT_DIR as INPUT_DIR
 
 pytestmark = pytest.mark.integration
 
@@ -98,3 +103,27 @@ def test_no_characteristic_is_all_null_or_nan(outputs: dict[str, pl.DataFrame]) 
         pl.col(c).cast(pl.Float64).fill_nan(None).count() for c in af.acc_chars_list()
     ).row(0, named=True)
     assert [c for c, n in counts.items() if n == 0] == []
+
+
+@pytest.mark.parametrize(
+    ("coverage", "convert_to_usd", "sources", "usd_only"),
+    [
+        ("na", 1, {"NA"}, True),
+        ("global", 1, {"GLOBAL"}, True),
+        ("world", 0, {"NA", "GLOBAL"}, False),
+    ],
+)
+def test_standardization_coverage_and_currency_options(
+    tmp_path: Path, coverage: str, convert_to_usd: int, sources: set[str], usd_only: bool
+) -> None:
+    """The coverage and convert_to_usd options main.py doesn't use pick the sources and currency."""
+    paths = DataPaths(tmp_path)
+    af.setup_folder_structure(paths)
+    shutil.copytree(INPUT_DIR / "raw" / "raw_tables", paths.raw_tables_dir, dirs_exist_ok=True)
+    shutil.copy(INPUT_DIR / "interim" / "world_msf.parquet", paths.interim_dir)
+    af.gen_fx1(paths)
+    msf = paths.interim_dir / "world_msf.parquet"
+    af.standardized_accounting_data(paths, coverage, convert_to_usd, msf, 1, ACCOUNTING_START_DATE)
+    ann = pl.read_parquet(paths.interim_dir / "acc_std_ann.parquet")
+    assert set(ann["source"].unique()) == sources
+    assert (set(ann["curcd"].unique()) == {"USD"}) == usd_only
