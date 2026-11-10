@@ -6,7 +6,8 @@ tied at the minimum, signed zeros, infinities, nulls in one return column only, 
 daily returns, zero-``me`` months, thin months and single-stock groups.
 
 Keys, counts and null, NaN and infinity positions must match exactly. Finite floats
-may differ by ``TOLERANCE * max(1, |old|)``.
+may differ by ``TOLERANCE * max(1, |old|)``. The Numba kernels must give the same
+results when they run as plain Python, as under ``NUMBA_DISABLE_JIT=1``.
 """
 
 from __future__ import annotations
@@ -17,7 +18,9 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 import pytest
+from numba.core.dispatcher import Dispatcher
 
+from jkp.data import aux_functions
 from jkp.data.aux_functions import (
     _build_hml,
     _cmp_returns,
@@ -499,6 +502,69 @@ class TestCmpEquivalence:
         )
         assert row.height == 1
         assert row["ret_weighted"].is_nan().all()
+
+
+@pytest.fixture(scope="module")
+def plain_python(panel: pl.DataFrame, daily: pl.DataFrame) -> dict:
+    """The portfolios, monthly, daily and CMP returns with every kernel run as plain Python.
+
+    Numba types integers differently from NumPy: it widens ``uint8`` arithmetic to
+    ``int64``, where NumPy keeps ``uint8`` and overflows. Errors are ignored, as Numba's
+    ``error_model="numpy"`` does.
+    """
+    mp = pytest.MonkeyPatch()
+    for name, obj in vars(aux_functions).items():
+        if isinstance(obj, Dispatcher):
+            mp.setattr(aux_functions, name, obj.py_func)
+    try:
+        with np.errstate(all="ignore"):
+            pf_by_row, medians, cmp_totals = _rank_by_month(panel, CHARS, PFS, BP_MIN_N)
+            months, totals = _month_totals(panel, pf_by_row, PFS)
+            stock_days = _stock_days(panel, daily, RET_COLS)
+            return {
+                "pf_by_row": pf_by_row,
+                "monthly": _pf_returns(months, totals, medians, CHARS),
+                "daily": _pf_daily_returns(
+                    stock_days, pf_by_row, months, totals, CHARS, RET_COLS, PFS
+                ),
+                "cmp": {
+                    n: _cmp_returns(months, cmp_totals, CHARS, n, "usa") for n in CMP_SIZE_GROUPS
+                },
+            }
+    finally:
+        mp.undo()
+
+
+@pytest.mark.unit
+class TestPlainPythonKernels:
+    def test_portfolios_match(self, pf_by_row: np.ndarray, plain_python: dict) -> None:
+        assert np.array_equal(pf_by_row, plain_python["pf_by_row"])
+
+    def test_monthly_matches(self, new_monthly: pl.DataFrame, plain_python: dict) -> None:
+        _assert_within_tolerance(
+            new_monthly, plain_python["monthly"], ["characteristic", "pf", "eom"]
+        )
+
+    @pytest.mark.parametrize("ret_col", RET_COLS)
+    def test_daily_matches(
+        self, new_daily: dict[str, pl.DataFrame], plain_python: dict, ret_col: str
+    ) -> None:
+        _assert_within_tolerance(
+            new_daily[ret_col], plain_python["daily"][ret_col], ["characteristic", "pf", "date"]
+        )
+
+    @pytest.mark.parametrize("n_groups", CMP_SIZE_GROUPS)
+    def test_cmp_matches(
+        self,
+        ranked: tuple[np.ndarray, np.ndarray, np.ndarray],
+        month_sums: tuple[pl.Series, np.ndarray],
+        plain_python: dict,
+        n_groups: int,
+    ) -> None:
+        compiled = _cmp_returns(month_sums[0], ranked[2], CHARS, n_groups, "usa")
+        _assert_within_tolerance(
+            compiled, plain_python["cmp"][n_groups], ["characteristic", "size_grp", "eom"]
+        )
 
 
 @pytest.mark.unit

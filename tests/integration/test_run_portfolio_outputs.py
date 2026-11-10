@@ -172,6 +172,32 @@ class TestRunPortfolioOutputs:
         daily_files = list(out.rglob("*_daily.parquet"))
         assert not daily_files, f"unexpected daily files: {daily_files}"
 
+    def test_no_portfolios_writes_no_factor_files(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No month has enough breakpoint stocks: the run finishes without pfs or hml files."""
+        _setup(tmp_path, monkeypatch, settings_overrides={"bp_min_n": 10_000})
+        run_portfolio(output_format="parquet", output_dir=tmp_path)
+
+        out = _portfolios_dir(tmp_path)
+        for name in ("pfs", "hml", "pfs_daily", "hml_daily", "themes/v1.0/lms"):
+            assert not (out / f"{name}.parquet").exists(), name
+
+    def test_no_overnight_returns_writes_no_overnight_files(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        _setup(tmp_path, monkeypatch)
+        daily_dir = tmp_path / "processed" / "return_data" / "daily_rets_by_country"
+        for path in daily_dir.glob("*.parquet"):
+            daily = pl.read_parquet(path)
+            daily.with_columns(ret_overnight=pl.lit(None, dtype=pl.Float64)).write_parquet(path)
+        run_portfolio(output_format="parquet", output_dir=tmp_path)
+
+        assert "No overnight results produced" in capsys.readouterr().out
+        out = _portfolios_dir(tmp_path)
+        assert pl.read_parquet(out / "hml_daily.parquet").height > 0
+        assert not list(out.rglob("*overnight*"))
+
     def test_end_date_filter_applied(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         cutoff = _dt.date(2020, 4, 30)
         _setup(tmp_path, monkeypatch, settings_overrides={"end_date": cutoff})
@@ -464,6 +490,13 @@ class TestRunThemes:
         themes.write_csv(tmp_path / "...csv")
         with pytest.raises(ValueError, match="file name must start"):
             run_themes(output_dir=tmp_path, file=tmp_path / "...csv")
+
+    def test_without_saved_factors_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _setup(tmp_path, monkeypatch)
+        with pytest.raises(FileNotFoundError, match="run jkp portfolio first"):
+            run_themes(output_dir=tmp_path)
 
     def test_ignores_unknown_hml_files(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
