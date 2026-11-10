@@ -9,6 +9,8 @@ and combined outputs with the stage's outputs on the unchanged inputs:
     twin       a copy in EUR of an AUD firm, with the same USD values: equal to its source
     relabeled  gvkeys in reverse order: the outputs relabeled the same way
     shifted    every date 12 months later: the outputs 12 months later
+    shuffled   every input table's rows in another order: the same outputs, which catches a pick
+               that depends on the order of the input rows
 """
 
 from __future__ import annotations
@@ -51,6 +53,7 @@ COPIES = {"900070": "900010", "900080": "900030"}
 TWIN, TWIN_SOURCE, TWIN_CURRENCY = "900090", "900034", "EUR"  # TWIN_SOURCE reports in AUD
 # 900107's pre-1982 CAD rates come from a bundled file, whose dates the test does not shift.
 SHIFT_EXCLUDED = ["900107"]
+SHUFFLE_SEED = 303
 
 Tables = dict[str, pl.DataFrame]
 Outputs = dict[str, pl.DataFrame]
@@ -211,6 +214,13 @@ def _shifted(tables: Tables) -> Tables:
     )
 
 
+def _shuffled(tables: Tables) -> Tables:
+    """Every input table with its rows in a random (seeded) order."""
+    return {
+        name: df.sample(fraction=1, shuffle=True, seed=SHUFFLE_SEED) for name, df in tables.items()
+    }
+
+
 @pytest.fixture(scope="module")
 def inputs() -> Tables:
     raw = INPUT_DIR / "raw" / "raw_tables"
@@ -261,6 +271,11 @@ def shifted(tmp_path_factory: pytest.TempPathFactory, inputs: Tables) -> Outputs
     return _outputs(_run(tmp_path_factory.mktemp("shifted"), _shifted(inputs)))
 
 
+@pytest.fixture(scope="module")
+def shuffled(tmp_path_factory: pytest.TempPathFactory, inputs: Tables) -> Outputs:
+    return _outputs(_run(tmp_path_factory.mktemp("shuffled"), _shuffled(inputs)))
+
+
 @pytest.mark.parametrize("name", FILES)
 def test_scaling_money_scales_the_levels_only(name: str, base: Outputs, scaled: Outputs) -> None:
     want = base[name].with_columns(pl.col(LEVELS) * SCALE)
@@ -300,3 +315,8 @@ def test_shifting_dates_shifts_the_outputs(name: str, base: Outputs, shifted: Ou
     kept = ~pl.col("gvkey").is_in(SHIFT_EXCLUDED)
     want = base[name].filter(kept).with_columns(_later("public_date"))
     assert _differences(want, shifted[name].filter(kept)) == {}
+
+
+@pytest.mark.parametrize("name", FILES)
+def test_shuffling_input_rows_changes_nothing(name: str, base: Outputs, shuffled: Outputs) -> None:
+    assert _differences(base[name], shuffled[name]) == {}

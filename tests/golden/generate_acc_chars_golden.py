@@ -120,7 +120,6 @@ def write_goldens(outputs: dict[str, pl.DataFrame], out_dir: Path = GOLDEN_DIR) 
 
 
 if __name__ == "__main__":
-    pl.Config.set_engine_affinity("in-memory")  # as tests/conftest.py
     with tempfile.TemporaryDirectory() as tmp:
         outputs = compute_outputs(DataPaths(Path(tmp)))
     write_goldens(outputs, Path(sys.argv[1]) if len(sys.argv) > 1 else GOLDEN_DIR)
