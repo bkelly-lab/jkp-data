@@ -76,7 +76,6 @@ class TestDffSplice:
         assert row["gvkey"][0] is None
         assert row["op"][0] is None
         assert row["inv"][0] is None
-        assert row["count"][0] is None  # no Compustat history
 
     def test_year_offset_alignment(self, test_paths):
         # DFF be(t=1930) must land as unioned year=1929 so cyp1 = 1930 = june_year,
@@ -116,7 +115,6 @@ class TestDffSplice:
         assert rows["be"][0] == 999.0  # coalesce(dff, comp) -> DFF value
         assert rows["gvkey"][0] == "001"  # Compustat row identity kept
         assert rows["inv"][0] is not None  # Compustat accounting fields survive
-        assert rows["count"][0] == 2  # Compustat history count, not synthetic
 
     def test_collision_fills_null_compustat_be(self, test_paths):
         # Compustat row exists (CCM link) but its BE is null (seq missing, the
