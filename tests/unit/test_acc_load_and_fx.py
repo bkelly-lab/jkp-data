@@ -24,9 +24,7 @@ from jkp.data.aux_functions import (
 )
 from jkp.data.paths import DataPaths
 
-# ---------------------------------------------------------------------------
 # load_raw_fund_table_and_filter
-# ---------------------------------------------------------------------------
 
 
 def _fund_rows(path: Path, rows: list[tuple]) -> None:
@@ -85,9 +83,7 @@ def test_load_raw_fund_other_mode_keeps_only_indl_std_d(tmp_path: Path) -> None:
     assert out["source"].to_list() == ["gl", "gl"]
 
 
-# ---------------------------------------------------------------------------
 # gen_fx1
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.unit
@@ -134,9 +130,7 @@ def test_gen_fx1_cross_rates_via_gbp(test_paths: DataPaths) -> None:
     assert_frame_equal(out, expected, check_exact=False)
 
 
-# ---------------------------------------------------------------------------
 # compustat_fx
-# ---------------------------------------------------------------------------
 
 
 def _write_fx1(test_paths: DataPaths, rows: list[tuple]) -> None:
@@ -237,9 +231,7 @@ def test_compustat_fx_without_cad_quotes_has_no_backfill(test_paths: DataPaths) 
     assert compustat_fx(test_paths).filter(pl.col("curcdd") == "CAD").is_empty()
 
 
-# ---------------------------------------------------------------------------
 # add_fx_and_convert_vars
-# ---------------------------------------------------------------------------
 
 
 def _fx_df() -> pl.LazyFrame:
@@ -296,9 +288,7 @@ def test_add_fx_quarterly_uses_curcdq() -> None:
     assert "fx" not in out.columns
 
 
-# ---------------------------------------------------------------------------
 # load_mkt_equity_data
-# ---------------------------------------------------------------------------
 
 
 def _mkt_file(path: Path) -> None:
@@ -346,9 +336,7 @@ def test_load_mkt_equity_filters_and_takes_max_per_gvkey_eom(
     assert_frame_equal(out, expected)
 
 
-# ---------------------------------------------------------------------------
 # expand
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.unit
@@ -398,9 +386,7 @@ def test_expand_empty_range_drops_row() -> None:
     assert out.is_empty()
 
 
-# ---------------------------------------------------------------------------
 # ttm
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.unit

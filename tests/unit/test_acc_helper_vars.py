@@ -75,9 +75,7 @@ def _series(gvkey: str, n: int, fn: Any) -> list[dict[str, Any]]:
     return [{"gvkey": gvkey, "datadate": _month_end(t - 1), **fn(t)} for t in range(1, n + 1)]
 
 
-# --------------------------------------------------------------------------
 # Monthly grid
-# --------------------------------------------------------------------------
 
 
 @pytest.mark.unit
@@ -174,9 +172,7 @@ class TestGrid:
         assert row["sale_x"] == 0.0
 
 
-# --------------------------------------------------------------------------
 # Income statement helpers
-# --------------------------------------------------------------------------
 
 
 @pytest.mark.unit
@@ -259,9 +255,7 @@ class TestIncomeStatement:
         _check(_one(test_paths, ni=9.0), {"fi_x": None})
 
 
-# --------------------------------------------------------------------------
 # Balance sheet helpers
-# --------------------------------------------------------------------------
 
 
 @pytest.mark.unit
@@ -406,9 +400,7 @@ class TestBalanceSheet:
         assert _one(test_paths, icapt=1.0, che=5.0)["bev_x"] is None  # negative
 
 
-# --------------------------------------------------------------------------
 # Cash flow / financing helpers (single month)
-# --------------------------------------------------------------------------
 
 
 @pytest.mark.unit
@@ -485,9 +477,7 @@ class TestFinancingSingleMonth:
         _check(row, {"oacc_x": None, "tacc_x": None, "cop_x": None})
 
 
-# --------------------------------------------------------------------------
 # 12-month differences (14-month series)
-# --------------------------------------------------------------------------
 
 
 def _accrual_inputs(t: int) -> dict[str, float]:

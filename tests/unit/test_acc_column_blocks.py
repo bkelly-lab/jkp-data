@@ -89,9 +89,7 @@ def _all_null(row: dict, names: Sequence[str]) -> None:
         assert row[name] is None, name
 
 
-# --------------------------------------------------------------------------------------
 # add_accounting_misc_cols_1
-# --------------------------------------------------------------------------------------
 
 GROWTH_VARS = [
     "at_x", "ca_x", "nca_x", "lt", "cl_x", "ncl_x", "be_x", "pstk_x", "debt_x",
@@ -301,9 +299,7 @@ class TestMiscCols1Ratios:
         assert _row(out, "B", 12)["noa_at"] == _approx(124 / 100)  # first month with count > 12
 
 
-# --------------------------------------------------------------------------------------
 # financial_soundness_and_misc_ratios_exps
-# --------------------------------------------------------------------------------------
 
 COLS_FIN = [
     "act", "at_x", "be_x", "bev_x", "che", "cl_x", "debt_x", "div_x", "dlc", "dltt",
@@ -396,9 +392,7 @@ class TestFinancialSoundnessAndMisc:
             assert got == _approx(expected)
 
 
-# --------------------------------------------------------------------------------------
 # add_liq_and_efficiency_ratios
-# --------------------------------------------------------------------------------------
 
 COLS_LIQ = ["ap", "at_x", "ca_x", "caliq_x", "che", "cl_x", "cogs", "invt", "rect", "sale_x"]
 BASE_LIQ = {
@@ -510,9 +504,7 @@ class TestLiqAndEfficiency:
         assert _row(out, "A", 13)["inv_turnover"] == _approx(213 / 47)
 
 
-# --------------------------------------------------------------------------------------
 # add_profit_scaled_by_lagged_vars
-# --------------------------------------------------------------------------------------
 
 COLS_LAG = ["at_x", "be_x", "cop_x", "gp_x", "op_x", "ope_x"]
 BASE_LAG = {"at_x": 100.0, "be_x": 50.0, "cop_x": 20.0, "gp_x": 60.0, "op_x": 30.0, "ope_x": 10.0}
@@ -594,9 +586,7 @@ class TestProfitScaledByLaggedVars:
         assert _row(out, "A", 13)["op_atl1"] == _approx(43 / 101)
 
 
-# --------------------------------------------------------------------------------------
 # add_accounting_misc_cols_2
-# --------------------------------------------------------------------------------------
 
 COLS_2_SPEC = {  # column -> (base, slope) for firm A
     "at_x": (100.0, 0.0), "sale_x": (200.0, 0.0), "be_x": (50.0, 0.0),

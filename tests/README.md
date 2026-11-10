@@ -492,7 +492,7 @@ WRDS rows can't be committed, so the accounting stage (`standardized_accounting_
 |---|---|
 | `tests/golden/compustat_profile.json` | Statistics of the real inputs and outputs: schemas, null and sign rates, quantiles, correlations. No rows or firm identifiers. Written on Yale by `tests/golden/calibration/profile_compustat.py`. |
 | `tests/golden/synthetic_compustat.py` | Seeded generator. Random firms (gvkey 900001 up) are sampled from the profile. Persona firms (900101 up) each plant one edge case or past bug, listed in its docstring. Its output (`comp_funda`, `comp_fundq`, `comp_g_funda`, `comp_g_fundq`, `comp_exrt_dly` and `interim/world_msf`, in the real schemas) is not committed: the tests generate it once per session, in about 3 seconds. |
-| `tests/golden/fixtures/acc_chars/fingerprint.parquet` | Golden of the stage's output (`generate_acc_chars_golden.py`): per column, the dtype, non-null and null counts, sum, min and max. |
+| `tests/golden/fixtures/acc_chars/fingerprint.parquet` | Golden of the stage's output (`generate_acc_chars_golden.py`): per column, the dtype, non-null and null counts, sum, min and max (dates as days), and the number of distinct values of the string and date columns. |
 
 ### Tests that use it
 

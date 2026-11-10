@@ -7,7 +7,8 @@ or with --regen-golden on tests/golden/test_acc_chars_golden.py.
 Generates the synthetic Compustat inputs (synthetic_compustat.py), runs the accounting stage on
 them as main.py does, and writes the fingerprint of its output to
 tests/golden/fixtures/acc_chars/fingerprint.parquet (or out_dir): per output column over all rows,
-its dtype, non-null count, null count, sum, min and max, in full precision. The oracle
+its dtype, non-null count, null count, sum, min and max (dates as days), in full precision, and the
+number of distinct values of the string and date columns. The oracle
 (tests/unit/test_acc_chars_oracle.py) checks the values row by row, so no rows are stored.
 """
 
@@ -61,20 +62,25 @@ def run_stage(paths: DataPaths, inputs: DataPaths) -> None:
 
 
 def fingerprint(df: pl.DataFrame) -> pl.DataFrame:
-    """One row per column: dtype, non-null count, null count, and sum, min and max if numeric."""
+    """One row per column: dtype, non-null count, null count; sum, min and max if numeric or a
+    date (dates as days since 1970-01-01); the number of distinct values if not numeric."""
 
     def stats(column: str, dtype: pl.DataType) -> pl.Expr:
-        x = pl.col(column).cast(pl.Float64)
+        x = pl.col(column).to_physical().cast(pl.Float64)
         none = pl.lit(None, pl.Float64)
         numeric = dtype.is_numeric()
+        summed = numeric or dtype == pl.Date
         return pl.struct(
             column=pl.lit(column),
             dtype=pl.lit(str(dtype)),
             count=pl.col(column).count(),
             nulls=pl.col(column).null_count(),
-            sum=x.sum() if numeric else none,
-            min=x.min() if numeric else none,
-            max=x.max() if numeric else none,
+            sum=x.sum() if summed else none,
+            min=x.min() if summed else none,
+            max=x.max() if summed else none,
+            unique=pl.lit(None, pl.UInt32)
+            if numeric
+            else pl.col(column).n_unique().cast(pl.UInt32),
         )
 
     return (

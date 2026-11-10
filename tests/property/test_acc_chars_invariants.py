@@ -20,9 +20,7 @@ from jkp.data.paths import DataPaths
 
 SETTINGS = settings(max_examples=30, deadline=None)
 
-# ---------------------------------------------------------------------------
 # quarterize
-# ---------------------------------------------------------------------------
 
 
 @st.composite
@@ -94,9 +92,7 @@ class TestQuarterizeInvariants:
                 assert grp["ytd_q"].sum() == grp.sort("fqtr")["ytd"][-1]
 
 
-# ---------------------------------------------------------------------------
 # safe_div
-# ---------------------------------------------------------------------------
 
 NUM = st.one_of(st.none(), st.integers(-6, 6).map(float))
 DEN = st.one_of(st.none(), st.integers(-3, 3).map(float))
@@ -209,9 +205,7 @@ class TestSafeDivLagModes:
             assert ordered[name].to_list() == values, name
 
 
-# ---------------------------------------------------------------------------
 # combine_ann_qtr_chars
-# ---------------------------------------------------------------------------
 
 GVKEYS = ["001", "002", "003"]
 MONTHS = [date(2016, m, 28) for m in (1, 2, 3)]

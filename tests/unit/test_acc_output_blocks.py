@@ -21,9 +21,7 @@ from jkp.data.aux_functions import (
 )
 from jkp.data.paths import DataPaths
 
-# ---------------------------------------------------------------------------
 # add_earnings_persistence_and_expand
-# ---------------------------------------------------------------------------
 
 
 def _annual_frame(rows: list[tuple[str, date, int]]) -> pl.DataFrame:
@@ -108,9 +106,7 @@ def test_expansion_drops_helper_columns_and_keeps_keys_unique(test_paths: DataPa
     assert out.select("gvkey", "public_date").is_unique().all()
 
 
-# ---------------------------------------------------------------------------
 # convert_raw_vars_to_usd
-# ---------------------------------------------------------------------------
 
 
 def _write_fx1(paths: DataPaths) -> None:
@@ -189,9 +185,7 @@ def test_convert_raw_vars_to_usd(test_paths: DataPaths) -> None:
     assert_frame_equal(out.select(expected.columns), expected)
 
 
-# ---------------------------------------------------------------------------
 # add_me_data_and_compute_me_mev_mat_eqdur_vars
-# ---------------------------------------------------------------------------
 
 _ME_VARS = [
     "at_x", "be_x", "debt_x", "netdebt_x", "che", "sale_x", "gp_x", "ebitda_x", "ebit_x", "ope_x",
@@ -396,9 +390,7 @@ def test_duplicate_gvkey_public_date_rows_collapse_to_one() -> None:
     assert out.height == 1
 
 
-# ---------------------------------------------------------------------------
 # rename_cols_and_select_keep_vars
-# ---------------------------------------------------------------------------
 
 
 def _rename_input() -> pl.LazyFrame:
