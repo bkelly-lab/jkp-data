@@ -10,7 +10,7 @@ to one row per `(gvkey, year)` (latest datadate) BEFORE the lag.
 
 Covers:
   - hxz_load_funda          (US annual inv)
-  - hxz_load_compustat_row  (ROW INDL/FS rule, NA record preferred, annual roe_a)
+  - hxz_load_compustat_row  (ROW INDL/FS rule, NA record preferred, annual roe_a lag)
 """
 
 from __future__ import annotations
@@ -136,8 +136,10 @@ def _write_keys(path, rows, *, na):
 
 
 def _write_acc(path, rows):
-    """acc_std_ann rows as (gvkey, datadate, be_x, ni_x)."""
-    pl.DataFrame(
+    """acc_std_ann from report rows (gvkey, datadate, be_x, ni_x), on its monthly grid:
+    one row per gvkey-month from the first to the last report, with source and the
+    values on report months only, as in production."""
+    reports = pl.DataFrame(
         {
             "gvkey": [r[0] for r in rows],
             "datadate": [r[1] for r in rows],
@@ -146,11 +148,24 @@ def _write_acc(path, rows):
         },
         schema={"gvkey": pl.Utf8, "datadate": pl.Date, "be_x": pl.Float64, "ni_x": pl.Float64},
     ).with_columns(
-        curcd=pl.lit("USD"),
         source=pl.lit("GLOBAL"),
         at_x=pl.lit(100.0),
         **{c: pl.lit(0.0) for c in ("ebitda_x", "xint", "mib", "mibt", "mibn")},
-    ).write_parquet(path)
+    )
+    (
+        reports.group_by("gvkey")
+        .agg(
+            datadate=pl.date_ranges(
+                pl.col("datadate").min().dt.month_start(),
+                pl.col("datadate").max().dt.month_start(),
+                "1mo",
+            )
+        )
+        .explode("datadate")
+        .with_columns(pl.col("datadate").dt.month_end(), curcd=pl.lit("USD"))
+        .join(reports, on=["gvkey", "datadate"], how="left")
+        .write_parquet(path)
+    )
 
 
 def test_hxz_load_compustat_row_na_record_preferred_over_global(test_paths):
@@ -190,7 +205,7 @@ def test_hxz_load_compustat_row_roe_a_uses_previous_be(test_paths):
     out = hxz_load_compustat_row(test_paths).filter(pl.col("gvkey") == "002").sort("datadate")
 
     got = out["roe_a"].to_list()
-    # roe_a = ni_x / previous record's be_x: null for the first record, a missing previous
+    # roe_a = ni_x / be_x 12 months earlier: null for the first record, a missing lagged
     # be_x (2021) and a previous be_x <= 0 (2024).
     assert [g is None for g in got] == [True, False, False, True, False, False, True]
     assert got[1] == pytest.approx(20.0 / 50.0)
@@ -199,9 +214,10 @@ def test_hxz_load_compustat_row_roe_a_uses_previous_be(test_paths):
     assert got[5] == pytest.approx(1.0 / 40.0)
 
 
-def test_hxz_load_compustat_row_roe_a_needs_previous_fiscal_year(test_paths):
-    # 003: no 2020 record (gap). 004: fiscal year-end moves Dec -> Mar with no FY 2020,
-    # then Mar 2021 -> Mar 2022, one fiscal year later.
+def test_hxz_load_compustat_row_roe_a_needs_report_12_months_earlier(test_paths):
+    # 003: no 2020 report (gap). 004: fiscal year-end moves Dec -> Mar with a 15-month
+    # year, then Mar 2021 -> Mar 2022. 005: a 3-month stub (Dec 2019 -> Mar 2020), then
+    # Mar 2020 -> Mar 2021.
     keys = [
         ("003", date(2018, 12, 31)),
         ("003", date(2019, 12, 31)),
@@ -209,6 +225,9 @@ def test_hxz_load_compustat_row_roe_a_needs_previous_fiscal_year(test_paths):
         ("004", date(2019, 12, 31)),
         ("004", date(2021, 3, 31)),
         ("004", date(2022, 3, 31)),
+        ("005", date(2019, 12, 31)),
+        ("005", date(2020, 3, 31)),
+        ("005", date(2021, 3, 31)),
     ]
     _write_keys(test_paths.raw_tables_dir / "comp_funda.parquet", keys, na=True)
     _write_keys(test_paths.raw_tables_dir / "comp_g_funda.parquet", [("999", keys[0][1])], na=False)
@@ -222,12 +241,15 @@ def test_hxz_load_compustat_row_roe_a_needs_previous_fiscal_year(test_paths):
         .sort("gvkey", "datadate")
     )
 
-    # roe_a needs a record for fiscal year y-1 (fiscal years named by the calendar year
-    # they end in); a record two fiscal years back doesn't count.
+    # roe_a needs a report exactly 12 months earlier, the accounting stage's lag: a gap
+    # year, a 15-month year and a 3-month stub all leave it null.
     assert out["roe_a"].to_list() == [
         None,
         pytest.approx(0.1),
         None,
+        None,
+        None,
+        pytest.approx(0.1),
         None,
         None,
         pytest.approx(0.1),

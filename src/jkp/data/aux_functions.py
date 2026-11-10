@@ -10448,13 +10448,16 @@ def _jkp_annual_acc(paths: DataPaths) -> pl.DataFrame:
     """jkp standardized annual accounting at the fiscal-report rows, for the ROW FF/HXZ
     loaders: book equity (be_x, nulled when <=0), the operating-profit inputs (ebitda_x,
     xint) and minority interest (mib, mibt, mibn) for the ROW FF OP, asset growth
-    (at_gr1 = at_x/at_x.shift(12)-1, replicated exactly from create_acc_chars), and net
-    income (ni_x, the ROW HXZ ROE numerator).
+    (at_gr1 = at_x/at_x.shift(12)-1, replicated exactly from create_acc_chars), and the
+    ROW HXZ ROE (roe_a = ni_x over the be_x 12 months earlier, safe_div mode 4, the
+    accounting stage's rule for ratios to lagged values such as ope_bel1).
 
     acc_std_ann is monthly-expanded with the _x fields populated only on report months
-    (source not null); at_gr1 is computed on the full monthly grid (count = cum rows per
-    gvkey/curcd, guard count>12 & at_x_-12>0), then only real fiscal rows are kept, so every
-    value sits at the fiscal-year-end datadate. Keyed (gvkey, datadate).
+    (source not null); at_gr1 and roe_a are computed on the full monthly grid (count = cum
+    rows per gvkey/curcd, guard count>12 & the value 12 months earlier >0), then only real
+    fiscal rows are kept, so every value sits at the fiscal-year-end datadate. A lag needs
+    a report exactly 12 months earlier, so both are null after a gap year or a fiscal
+    year-end change. Keyed (gvkey, datadate).
 
     acc_std_ann is built with convert_to_usd=1 (main.py), so every monetary field here is
     already USD-denominated (curcd == "USD" for every row); no further FX conversion is applied.
@@ -10462,17 +10465,27 @@ def _jkp_annual_acc(paths: DataPaths) -> pl.DataFrame:
     return (
         pl.scan_parquet(paths.interim_dir / "acc_std_ann.parquet")
         .sort(["gvkey", "curcd", "datadate"])
-        .with_columns(_cnt=pl.col("gvkey").cum_count().over(["gvkey", "curcd"]))
+        .with_columns(count=pl.col("gvkey").cum_count().over(["gvkey", "curcd"]))
         .with_columns(
             at_gr1=pl.when(
-                (pl.col("_cnt") > 12) & (pl.col("at_x").shift(12).over(["gvkey", "curcd"]) > 0)
+                (pl.col("count") > 12) & (pl.col("at_x").shift(12).over(["gvkey", "curcd"]) > 0)
             )
             .then(pl.col("at_x") / pl.col("at_x").shift(12).over(["gvkey", "curcd"]) - 1)
-            .otherwise(None)
+            .otherwise(None),
+            roe_a=safe_div("ni_x", "be_x", "roe_a", mode=4),
         )
         .filter(pl.col("source").is_not_null())
         .select(
-            "gvkey", "datadate", "be_x", "ebitda_x", "xint", "mib", "mibt", "mibn", "at_gr1", "ni_x"
+            "gvkey",
+            "datadate",
+            "be_x",
+            "ebitda_x",
+            "xint",
+            "mib",
+            "mibt",
+            "mibn",
+            "at_gr1",
+            "roe_a",
         )
         .collect()
     )
@@ -11811,10 +11824,11 @@ def hxz_load_compustat_row(paths: DataPaths) -> pl.DataFrame:
     """Annual Compustat for ex-US HXZ: the fiscal records of comp_funda (NA) and
     comp_g_funda (Global), the universe of the FF loaders (_ff_load_funda_na,
     _ff_load_funda_global), one per (gvkey, year) with NA preferred, valued from jkp's
-    standardized panel: be_a = be_x, inv = at_gr1, and roe_a = ni_x of fiscal year y over
-    the be_x of fiscal year y-1 (unitless, no FX). Fiscal years are named by the calendar
-    year they end in, as in Hou, Xue and Zhang's (2020) ratios to 1-year-lagged book
-    equity; roe_a is null when the gvkey has no fiscal year y-1 record. Values sit at the
+    standardized panel: be_a = be_x, inv = at_gr1, and roe_a = ni_x over the be_x reported
+    12 months earlier (unitless, no FX), Hou, Xue and Zhang's (2020) 1-year-lagged book
+    equity. The lag is the accounting stage's (_jkp_annual_acc), the same one inv uses, so
+    roe_a is null when the gvkey has no report exactly 12 months earlier (a gap year, a
+    fiscal year-end change, or the first year after a stub period). Values sit at the
     fiscal-year-end datadate.
 
     Roe is annual here, unlike the US quarterly Roe (hxz_roe_by_month): Compustat Global's
@@ -11828,9 +11842,7 @@ def hxz_load_compustat_row(paths: DataPaths) -> pl.DataFrame:
     """
     na = _ff_load_funda_na(paths).select("gvkey", "datadate", "year", _src=pl.lit(0))
     gl = _ff_load_funda_global(paths).select("gvkey", "datadate", "year", _src=pl.lit(1))
-    acc = _jkp_annual_acc(paths).select("gvkey", "datadate", "be_x", "at_gr1", "ni_x").lazy()
-    be_x_lag1 = pl.col("be_x").shift(1).over("gvkey")
-    prev_is_fy_lag1 = pl.col("year").shift(1).over("gvkey") == pl.col("year") - 1
+    acc = _jkp_annual_acc(paths).select("gvkey", "datadate", "be_x", "at_gr1", "roe_a").lazy()
     return (
         pl.concat([na, gl], how="vertical_relaxed")
         # A gvkey in both NA and Global has two records per year; keep NA's.
@@ -11839,10 +11851,6 @@ def hxz_load_compustat_row(paths: DataPaths) -> pl.DataFrame:
         .drop("_src")
         .join(acc, on=["gvkey", "datadate"], how="left")
         .sort("gvkey", "datadate")
-        .with_columns(
-            roe_a=pl.when(prev_is_fy_lag1).then(safe_div("ni_x", be_x_lag1, "roe_a", mode=3))
-        )
-        .drop("ni_x")
         .rename({"be_x": "be_a", "at_gr1": "inv"})
         .collect()
     )
@@ -12368,11 +12376,11 @@ def gen_hxz_data(
           JKP's market_equity. (me_hxz in the factor files is the size factor.)
         - Elsewhere: JKP's main sample with a gvkey, the size_grp breakpoint
           pool, and the FACTOR_MIN_STOCKS_BP / FACTOR_MIN_STOCKS_PF minimums.
-        - Ex-US Roe is annual: net income for fiscal year y over book equity for
-          fiscal year y-1, usable 6 to 18 months after the fiscal year-end. Fiscal
-          years are named by the calendar year they end in, as in Hou, Xue and
-          Zhang's (2020) ratios to 1-year-lagged book equity, so Roe is null when
-          the firm has no fiscal year y-1 record.
+        - Ex-US Roe is annual: net income over the book equity reported 12 months
+          earlier (Hou, Xue and Zhang's (2020) 1-year-lagged book equity), usable 6
+          to 18 months after the fiscal year-end. The lag is the accounting stage's,
+          the same one I/A uses, so Roe is null when the firm has no report exactly
+          12 months earlier, e.g. after a fiscal year-end change.
         - Timing: a characteristic at eom t is the value that sorted the
           portfolio held in month t. ia_hxz is constant from July to June;
           roe_hxz is the latest quarter announced before month t.
