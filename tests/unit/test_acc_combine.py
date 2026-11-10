@@ -196,7 +196,11 @@ def test_precedence_per_variable(test_paths: DataPaths) -> None:
 
 @pytest.mark.unit
 def test_null_annual_datadate_keeps_annual_value(test_paths: DataPaths) -> None:
-    """With an unknown annual datadate the 'quarterly is more recent' test is null, so a present annual value stays."""
+    """With an unknown annual datadate the 'quarterly is more recent' test is null, so a present annual value stays.
+
+    SAS would take the quarterly value (a missing date sorts first). The stage never builds such a
+    row: every annual row has a datadate.
+    """
     ann = pl.DataFrame([("NA", "001", _PD, None, 100.0, 10.0)], schema=_ROW_SCHEMA_A, orient="row")
     qtr = pl.DataFrame(
         [("NA", "001", _PD, date(2016, 3, 31), 90.0, 9.0)], schema=_ROW_SCHEMA_Q, orient="row"

@@ -500,8 +500,8 @@ WRDS rows can't be committed, so the accounting stage (`standardized_accounting_
 - `golden/test_synthetic_compustat.py`: the data obey the rules in `golden/compustat_invariants.py`, each persona plants its case, and the output's null rates and sign shares are near the real ones.
 - `golden/test_acc_chars_golden.py`: the output equals the goldens, also on one Polars thread.
 - `integration/test_accounting_stage_pipeline.py`: keys, columns and public-date row counts of every stage file.
-- `unit/test_acc_chars_oracle.py` (`methodology`): every characteristic equals `unit/acc_char_oracle.py`, plain Python written from `accounting_chars.sas` with line citations.
-- `property/test_acc_chars_metamorphic.py`: doubled money, added firms, a currency twin, relabeled gvkeys and shifted dates change the output as they should.
+- `unit/test_acc_chars_oracle.py` (`methodology`): every characteristic equals `unit/acc_char_oracle.py`, plain Python written from `accounting_chars.sas` with line citations. Where the pipeline departs from the SAS on purpose, the oracle follows the pipeline and lists the departure in its docstring.
+- `property/test_acc_chars_metamorphic.py`: doubled money, added firms, a currency twin, relabeled gvkeys, shifted dates and shuffled input rows change the output as they should.
 
 `scripts/mutation_check_acc_chars.py` (not in CI) checks that these tests catch a list of planted bugs.
 

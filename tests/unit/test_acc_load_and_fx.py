@@ -60,9 +60,9 @@ def test_load_raw_fund_mode_1_keeps_indl_and_fs_hist_std(tmp_path: Path) -> None
             ("G", "XXX", "HIST_STD", "I", "C", d),  # other indfmt
         ],
     )
-    out = load_raw_fund_table_and_filter(f, date(2000, 1, 1), "na", 1).collect()
+    out = load_raw_fund_table_and_filter(f, date(2000, 1, 1), "GLOBAL", 1).collect()
     assert out["gvkey"].to_list() == ["A", "B"]
-    assert out["source"].to_list() == ["na", "na"]
+    assert out["source"].to_list() == ["GLOBAL", "GLOBAL"]
     assert out["n"].to_list() == [0, 1]  # row index of the raw file, before filtering
 
 
@@ -419,8 +419,10 @@ def test_ttm_null_input_propagates_to_four_windows() -> None:
 
 
 @pytest.mark.unit
-def test_ttm_does_not_separate_groups_without_over() -> None:
+def test_ttm_separates_groups_only_with_over() -> None:
     # ttm is a plain shift expression: grouping is the caller's job via .over().
     df = pl.DataFrame({"g": ["A"] * 4 + ["B"] * 4, "x": [1.0] * 4 + [10.0] * 4})
-    out = df.with_columns(t=ttm("x").over("g"))["t"].to_list()
-    assert out == [None, None, None, 4.0, None, None, None, 40.0]
+    bare = df.select(t=ttm("x"))["t"].to_list()
+    grouped = df.with_columns(t=ttm("x").over("g"))["t"].to_list()
+    assert bare == [None, None, None, 4.0, 13.0, 22.0, 31.0, 40.0]  # windows run from A into B
+    assert grouped == [None, None, None, 4.0, None, None, None, 40.0]

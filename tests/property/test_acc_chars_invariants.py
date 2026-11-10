@@ -278,6 +278,8 @@ class TestCombineInvariants:
         for key in sorted(set(a) | set(q)):
             a_src, a_dd, a_val = a.get(key, (None, None, None))
             q_src, q_dd, q_val = q.get(key, (None, None, None))
+            # A missing annual datadate keeps the annual value: Python's rule (SAS would take the
+            # quarterly one); the stage never builds such a row.
             q_newer = q_dd is not None and a_dd is not None and q_dd > a_dd
             take_q = key in q and (a_val is None or (q_val is not None and q_newer))
             expected.append((a_src or q_src, key[0], key[1], q_val if take_q else a_val))

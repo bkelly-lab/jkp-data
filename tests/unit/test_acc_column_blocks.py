@@ -364,7 +364,7 @@ class TestFinancialSoundnessAndMisc:
         assert _row(fin, "B", 20)["cash_at"] == _approx(1.0)
 
     def test_zero_denominators_are_null(self, fin: pl.DataFrame) -> None:
-        _all_null(_row(fin, "A", 21), FIN_MODE1 + FIN_MODE3 + ["div_ni"][:0])
+        _all_null(_row(fin, "A", 21), FIN_MODE1 + FIN_MODE3)
 
     def test_mode3_needs_positive_denominator(self, fin: pl.DataFrame) -> None:
         row = _row(fin, "A", 22)

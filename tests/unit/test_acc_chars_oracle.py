@@ -1,7 +1,7 @@
 """Expected values for every accounting characteristic (issue #303, step 5).
 
-acc_char_oracle.py computes the characteristics again in plain Python from accounting_chars.sas.
-These tests run the stage on the synthetic Compustat inputs (tests/golden/fixtures/
+acc_char_oracle.py computes the characteristics again in plain Python from accounting_chars.sas,
+following Python's rule where the pipeline departs from the SAS on purpose. These tests run the stage on the synthetic Compustat inputs (tests/golden/fixtures/
 synthetic_compustat/) and compare each characteristic with the oracle in the annual, quarterly and
 combined outputs.
 """
@@ -26,7 +26,7 @@ KEEP = af.acc_chars_list()
 FILES = {"achars_world": "", "qchars_world": "_qitem", "acc_chars_world": ""}
 # The persistence regression runs in DuckDB, so allow last-digit differences.
 REL_TOL, ABS_TOL = 1e-9, 1e-12
-# characteristic -> why the stage deliberately differs from the SAS. None today.
+# characteristic -> why the stage differs from the oracle. None today.
 KNOWN_DIFFERENCES: dict[str, str] = {}
 
 Frame = dict[tuple[str, dt.date], dict]

@@ -42,13 +42,14 @@ def assert_matches_golden(actual: pl.DataFrame, name: str, tolerance: ToleranceS
         tolerance, since the earnings-persistence regression runs in DuckDB.
     Steps:
         1) personas and random hold Float32 values: STANDARD tolerance, above Float32 rounding.
-        2) The fingerprint is full precision: GOLDEN tolerance.
+        2) The fingerprint is full precision: GOLDEN tolerance, plus 1e-10 absolute for column
+           sums that cancel to near zero (the acceptance rule).
     Output:
         None; raises AssertionError on a mismatch.
     """
     path = GOLDEN_DIR / f"{name}.parquet"
     assert path.exists(), f"missing golden fixture: {path}"
-    tol = tolerance.GOLDEN if name == "fingerprint" else tolerance.STANDARD
+    tol = {**tolerance.GOLDEN, "atol": 1e-10} if name == "fingerprint" else tolerance.STANDARD
     polars.testing.assert_frame_equal(actual, pl.read_parquet(path), check_exact=False, **tol)
 
 
@@ -75,12 +76,13 @@ def test_single_thread_run_matches_golden(tmp_path: Path, tolerance: ToleranceSp
         "POLARS_MAX_THREADS": "1",
         "PYTHONPATH": os.pathsep.join([str(REPO_ROOT / "src"), str(REPO_ROOT)]),
     }
-    subprocess.run(
+    run = subprocess.run(
         [sys.executable, "-m", "tests.golden.generate_acc_chars_golden", str(tmp_path)],
         env=env,
         cwd=REPO_ROOT,
-        check=True,
         capture_output=True,
+        text=True,
     )
+    assert run.returncode == 0, run.stderr
     for name in GOLDEN_NAMES:
         assert_matches_golden(pl.read_parquet(tmp_path / f"{name}.parquet"), name, tolerance)

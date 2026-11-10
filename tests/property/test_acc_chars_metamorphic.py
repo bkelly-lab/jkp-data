@@ -89,13 +89,15 @@ def _differences(want: pl.DataFrame, got: pl.DataFrame) -> dict[str, int]:
     Steps:
         1) Require the same columns, dtypes and keys.
         2) Match rows on the keys. A characteristic differs if exactly one side is null or the
-           two differ by more than ABS_TOL + REL_TOL x |want|; source must be equal.
+           two differ by more than ABS_TOL + REL_TOL x |want|; source, and datadate where the
+           file has it, must be equal.
     Output:
         Column -> number of differing rows, for the columns with any.
     """
     assert want.schema == got.schema
     assert want.height > 0
     assert want.select(KEYS).sort(KEYS).equals(got.select(KEYS).sort(KEYS))
+    exact = [c for c in ["source", "datadate"] if c in want.columns]
 
     def differs(c: str) -> pl.Expr:
         a, b = pl.col(c).cast(pl.Float64), pl.col(f"{c}_got").cast(pl.Float64)
@@ -104,7 +106,7 @@ def _differences(want: pl.DataFrame, got: pl.DataFrame) -> dict[str, int]:
     counts = (
         want.join(got, on=KEYS, suffix="_got")
         .select(
-            pl.col("source").ne_missing(pl.col("source_got")).sum(),
+            *(pl.col(c).ne_missing(pl.col(f"{c}_got")).sum() for c in exact),
             *(differs(c).sum().alias(c) for c in CHARS),
         )
         .row(0, named=True)
@@ -313,7 +315,8 @@ def test_relabeling_gvkeys_relabels_the_outputs(
 @pytest.mark.parametrize("name", FILES)
 def test_shifting_dates_shifts_the_outputs(name: str, base: Outputs, shifted: Outputs) -> None:
     kept = ~pl.col("gvkey").is_in(SHIFT_EXCLUDED)
-    want = base[name].filter(kept).with_columns(_later("public_date"))
+    dates = [c for c in ["public_date", "datadate"] if c in base[name].columns]
+    want = base[name].filter(kept).with_columns(_later(c) for c in dates)
     assert _differences(want, shifted[name].filter(kept)) == {}
 
 

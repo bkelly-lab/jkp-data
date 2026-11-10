@@ -648,6 +648,7 @@ class TestSafeDivMode6:
             pl.concat([a, b]).select(safe_div("num", "den", "result", mode=6))["result"].to_list()
         )
         assert result[12] is None
+        assert result[13:25] == [None] * 12  # B's first 12 rows have no lag of B's own
         assert result[25] == 1.0 / 5.0
 
 
@@ -690,6 +691,7 @@ class TestSafeDivMode7:
             pl.concat([a, b]).select(safe_div("num", "den", "result", mode=7))["result"].to_list()
         )
         assert result[12] is None
+        assert result[13:25] == [None] * 12  # B's first 12 rows have no lag of B's own
         assert result[25] == 3.0 / 6.0
 
 

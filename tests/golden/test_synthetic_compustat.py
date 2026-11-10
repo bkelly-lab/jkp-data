@@ -145,7 +145,7 @@ def test_output_is_non_degenerate(chars: pl.DataFrame) -> None:
     stats = chars.select(
         *(finite[c].count().alias(f"{c}|values") for c in names),
         *(finite[c].null_count().alias(f"{c}|nulls") for c in names),
-        *(finite[c].n_unique().alias(f"{c}|distinct") for c in names),
+        *(finite[c].drop_nulls().n_unique().alias(f"{c}|distinct") for c in names),
     ).row(0, named=True)
     bad = [
         c
@@ -163,6 +163,7 @@ def test_random_firms_match_real_output(chars: pl.DataFrame, tmp_path: Path) -> 
     chars.filter(pl.col("gvkey").cast(pl.Int64) < PERSONA_GVKEY).write_parquet(path)
     synthetic = output_stats(path)["chars"]
     real = PROFILE["outputs"]["chars"]
+    assert set(synthetic) == set(real)
     null_far = {
         c: (round(s["null"] + s["nan"], 3), round(real[c]["null"] + real[c]["nan"], 3))
         for c, s in synthetic.items()
@@ -173,6 +174,5 @@ def test_random_firms_match_real_output(chars: pl.DataFrame, tmp_path: Path) -> 
         for c, s in synthetic.items()
         if c not in SIGN_ALLOWLIST and abs(s["pos"] - real[c]["pos"]) > CHAR_BAND
     }
-    assert set(synthetic) == set(real)
     assert not null_far, null_far
     assert not sign_far, sign_far

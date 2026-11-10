@@ -1,10 +1,17 @@
 """Plain-Python reference for the accounting characteristics (issue #303, step 5).
 
-The stage's characteristics computed again, one firm at a time, from the SAS that defines them:
-GlobalFactors/accounting_chars.sas and char_macros.sas in bkelly-lab/ReplicationCrisis (commit
-1b7a9be). Each section cites the SAS lines it follows; nothing here calls aux_functions.py.
+The stage's characteristics computed again, one firm at a time, by the Python pipeline's rules:
+the SAS that defines them, GlobalFactors/accounting_chars.sas and char_macros.sas in
+bkelly-lab/ReplicationCrisis (commit 1b7a9be), except where Python departs from it on purpose.
+Each section cites the SAS lines it follows; nothing here calls aux_functions.py.
 test_acc_chars_oracle.py runs it on the synthetic stage inputs and compares it with the stage's
 output, characteristic by characteristic.
+
+Where Python departs from the SAS, the oracle follows Python:
+    - earnings_persistence: no regression when the std of lagged NI/AT is at or below
+      NI_AT_MIN_STD (#339).
+    - combine: an annual row with a missing datadate keeps its value, where SAS would take the
+      quarterly one. The stage can't produce such a row: every annual row has a datadate.
 
 How the SAS data steps map to Python:
     - A firm is the monthly rows of one (gvkey, curcd) in acc_std_ann or acc_std_qtr, sorted by
@@ -33,6 +40,8 @@ from collections.abc import Callable
 from itertools import groupby
 
 import polars as pl
+
+from jkp.data.config import NI_AT_MIN_STD
 
 Value = float | None
 Firm = dict[str, list]
@@ -1369,8 +1378,9 @@ def earnings_persistence(f: Firm) -> None:
            every date with a kept row in any firm, but the window holds at most five dates and
            needs five, so only the firm's own kept dates can give a regression.
         3) Need at least 5 rows. Regress ni_at on its lag with an intercept: ni_ar1 is the slope,
-           ni_ivol = sqrt(rmse^2 * edf / (edf + 1)) with edf = n - 2. When the regressor has no
-           variance both are missing (judgment: SAS's proc reg has no slope then).
+           ni_ivol = sqrt(rmse^2 * edf / (edf + 1)) with edf = n - 2. Both are missing when the
+           sample std of the regressor is at or below NI_AT_MIN_STD (Python's rule, #339; SAS
+           only lacks a slope when the regressor has no variance).
     Output:
         Adds columns ni_ar1 and ni_ivol (missing where no regression was run).
     """
@@ -1392,7 +1402,7 @@ def earnings_persistence(f: Firm) -> None:
                 mx = math.fsum(x for x, _ in win) / n
                 my = math.fsum(y for _, y in win) / n
                 sxx = math.fsum((x - mx) ** 2 for x, _ in win)
-                if sxx > 0:
+                if math.sqrt(sxx / (n - 1)) > NI_AT_MIN_STD:
                     slope = math.fsum((x - mx) * (y - my) for x, y in win) / sxx
                     icpt = my - slope * mx
                     sse = math.fsum((y - icpt - slope * x) ** 2 for x, y in win)
@@ -1704,7 +1714,8 @@ def combine(
     Steps:
         1) Full join on (gvkey, public_date); source from the annual row, else the quarterly.
         2) Each characteristic takes the quarterly value if the annual one is missing, or if
-           the quarterly one is present and its datadate is later.
+           the quarterly one is present and its datadate is later than a known annual datadate
+           (Python's rule; SAS also takes it when the annual datadate is missing).
     Output:
         Dict (gvkey, public_date) -> row with source and the keep list.
     """
@@ -1712,7 +1723,7 @@ def combine(
     for k in sorted(annual.keys() | quarterly.keys()):
         a, q = annual.get(k, {}), quarterly.get(k, {})
         qd, ad = q.get("datadate"), a.get("datadate")
-        newer = qd is not None and (ad is None or qd > ad)  # type: ignore[operator]
+        newer = qd is not None and ad is not None and qd > ad  # type: ignore[operator]
         row: Row = {"source": a.get("source", q.get("source"))}
         for c in keep:
             av, qv = a.get(c), q.get(c)
