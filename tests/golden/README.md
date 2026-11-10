@@ -20,7 +20,7 @@ is ever written:
   distribution.
 - Identifiers live in synthetic bands disjoint from real WRDS allocation:
   `permno >= 9_000_000`, `gvkey >= "900000"`, `world_id >= 9_000_000_000`.
-- Schemas mirror the real WRDS tables (column set, dtypes, and null shares
+- Schemas mirror the real WRDS tables (column set, dtypes, and null patterns
   measured on WRDS 2000-2015), but the cell values are not derived
   from any obfuscation of WRDS data.
 
@@ -56,6 +56,14 @@ uv run python -m tests.golden.generate_synthetic_wrds --out /tmp/synthetic_wrds
 ```
 
 The generator is deterministic (seed = 42; nulls come from a separate RNG).
+
+Nulls are sampled from `synthetic_null_patterns.json`: for each table (and, for
+`world_msf` / `world_dsf` / `world_data`, for CRSP-sourced and ex-US rows separately) the
+share of rows with each pattern of null columns, measured on the real tables for 2000-2015.
+The file holds frequencies only, no values or identifiers; patterns seen in fewer than 100
+real rows are dropped. Firm counts (`US_EXCH_COUNTS`, `ROW_FIRMS`) are set so the
+CRSP-sourced share of `world_msf` and the North America (US + Canada) share of
+`acc_std_ann` match the real tables.
 
 ### Regenerate the golden outputs (after intentional builder changes)
 

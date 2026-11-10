@@ -13,7 +13,7 @@ synthetic data.
 Nothing generated here is committed: the golden tests call
 ``write_synthetic_wrds`` into a temporary directory (session fixture in
 ``conftest.py``). Values are rounded to the real WRDS scale at generation time,
-nulls are injected to match real null shares (``NULL_BLOCKS`` / ``NULL_TOTALS``,
+nulls are injected by sampling the real tables' null patterns (``synthetic_null_patterns.json``,
 drawn from a separate RNG so base values do not depend on them), and columns are
 cast to the real WRDS dtypes only when written.
 
@@ -27,6 +27,8 @@ Deterministic for a given seed on a given CPU type.
 from __future__ import annotations
 
 import argparse
+import functools
+import json
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -53,98 +55,18 @@ ID_RANGES = {
 }
 
 COUNTRIES = ["USA", "CAN", "GBR", "JPN", "DEU", "AUS"]
-ROW_COUNTRIES = ["CAN", "GBR", "JPN", "DEU", "AUS"]
 CURRENCY = {"USA": "USD", "CAN": "CAD", "GBR": "GBP", "JPN": "JPY", "DEU": "EUR", "AUS": "AUD"}
 
-US_EXCH_COUNTS = {"N": 300, "A": 100, "Q": 100}
-ROW_FIRMS_PER_COUNTRY = 50
+# Firm counts chosen so the generated composition matches the real 2000-2015 tables: CRSP-sourced
+# (US) rows are ~14% of world_msf (permno present), and Compustat North America (US + CAN) is
+# ~26% of acc_std_ann rows, the rest Compustat Global.
+US_EXCH_COUNTS = {"N": 96, "A": 32, "Q": 32}
+ROW_FIRMS = {"CAN": 130, "GBR": 200, "JPN": 200, "DEU": 200, "AUS": 200}
+# Compustat North America covers the US and Canada; Global holds every other country.
+NA_COUNTRIES = ("USA", "CAN")
+NULL_PATTERNS_PATH = Path(__file__).with_name("synthetic_null_patterns.json")
 
 # fmt: off
-# Null shares in percent as (joint_share, columns) blocks, then per-column totals.
-# WRDS 2000-2015, builder screens, measured 2026-11-09 (Yale jobs 4236247/4236283)
-NULL_BLOCKS: dict[str, list[tuple[float, list[str]]]] = {
-    "crsp_msf_v2": [(2.4, ["mthret", "mthretx", "mthprc", "mthcap", "mthvol"])],
-    "crsp_dsf_v2": [(2.5, ["dlyret", "dlyretx", "dlyprc", "dlycap", "dlyvol"])],
-    "comp_funda": [
-        (
-            15.6,
-            [
-                "itcb", "act", "at", "ceq", "che", "cogs", "dlc", "dltt", "dp", "ebitda",
-                "ib", "invt", "lct", "lt", "mib", "mibt", "mibn", "ni", "oancf", "oibdp",
-                "pi", "ppegt", "pstk", "pstkl", "pstkrv", "revt", "sale", "seq", "txdb",
-                "txditc", "txp", "xint", "xopr", "xsga",
-            ],
-        )
-    ],
-    "comp_fundq": [
-        (
-            16.3,
-            [
-                "rdq", "ibq", "niq", "saleq", "piq", "revtq", "atq", "seqq", "ceqq", "pstkq",
-                "pstkrq", "cheq", "ltq", "dlttq", "actq", "lctq", "txditcq",
-            ],
-        ),
-        (19.2, ["atq", "seqq", "ceqq", "pstkq", "pstkrq", "cheq", "ltq", "dlttq"]),
-        (4.9, ["cshoq", "dvpsxq"]),
-    ],
-    "comp_g_funda": [
-        (19.1, ["che", "sale", "txdb", "txditc", "xopr"]),
-        (20.2, ["cogs", "xsga"]),
-        (0.4, ["at", "lt", "ceq"]),
-    ],
-    "comp_g_fundq": [(13.0, ["atq", "ltq"]), (8.5, ["seqq", "ceqq"])],
-    # ex-US (Compustat-sourced) rows only; CRSP-sourced US rows keep the crsp_msf_v2 nulls
-    "world_msf": [(3.8, ["me", "me_company", "size_grp"]), (1.1, ["ret", "ret_exc", "ret_lag_dif"])],
-    "world_msf_all_rows": [(21.5, ["naics", "sic"])],
-    "world_dsf": [(13.3, ["prc_high", "prc_low"]), (7.8, ["ret", "ret_lag_dif"])],
-    "world_data": [
-        (28.2, ["oaccruals_at", "gp_at", "noa_at", "ppeinv_gr1a", "o_score"]),
-        (8.9, ["ret_12_1", "eqnpo_12m", "chcsho_12m"]),
-    ],
-}
-NULL_TOTALS: dict[str, dict[str, float]] = {
-    "crsp_msf_v2": {"mthret": 2.5, "mthretx": 2.5, "mthcumfacshr": 0.6},
-    "crsp_dsf_v2": {},
-    "comp_funda": {
-        "itcb": 23.0, "act": 30.1, "adjex_c": 7.2, "at": 15.6, "ceq": 15.8, "che": 15.6,
-        "cogs": 16.1, "csho": 4.7, "dlc": 15.7, "dltt": 15.8, "dp": 18.8, "ebitda": 18.2,
-        "ib": 16.1, "invt": 16.5, "lct": 29.8, "lt": 15.7, "mib": 18.2, "mibt": 18.9,
-        "mibn": 66.5, "ni": 16.1, "oancf": 18.5, "oibdp": 18.2, "pi": 16.1, "ppegt": 25.9,
-        "prcc_f": 10.8, "pstk": 15.8, "pstkl": 16.7, "pstkrv": 16.7, "revt": 16.1,
-        "sale": 16.1, "seq": 15.6, "txdb": 21.1, "txditc": 24.6, "txp": 23.7, "xint": 27.7,
-        "xopr": 16.1, "xsga": 31.1, "fyear": 0.1, "fyr": 0.1, "curcd": 0.1,
-    },
-    "comp_fundq": {
-        "rdq": 19.9, "atq": 19.3, "seqq": 19.4, "ceqq": 19.7, "pstkq": 19.8, "pstkrq": 19.5,
-        "ibq": 16.8, "saleq": 17.0, "revtq": 23.5, "niq": 16.9, "cheq": 19.5, "ltq": 19.4,
-        "dlttq": 19.9, "actq": 33.1, "lctq": 32.9, "piq": 17.2, "cshoq": 9.3, "dvpsxq": 12.9,
-        "txditcq": 30.0,
-    },
-    "comp_g_funda": {
-        "at": 0.4, "ceq": 0.4, "che": 19.1, "cogs": 20.2, "dp": 4.0, "ebitda": 1.0, "lt": 0.4,
-        "oibdp": 1.0, "pstk": 16.6, "revt": 0.2, "sale": 19.1, "seq": 1.3, "txdb": 19.1,
-        "txditc": 19.1, "xint": 8.7, "xopr": 19.4, "xsga": 20.2,
-    },
-    "comp_g_fundq": {
-        "atq": 13.0, "seqq": 8.5, "ceqq": 30.7, "pstkq": 95.3, "ibq": 17.3, "saleq": 38.1,
-        "cheq": 10.8, "ltq": 13.1,
-    },
-    "world_msf": {
-        "me": 3.8, "me_company": 3.8, "size_grp": 3.8, "ret": 1.4, "ret_exc": 1.4,
-        "ret_lag_dif": 1.1, "prc": 0.6,
-    },
-    "world_msf_all_rows": {"naics": 22.6, "sic": 24.8, "gvkey": 0.3},
-    "world_dsf": {
-        "ret": 8.1, "me": 3.7, "prc_high": 13.4, "prc_low": 13.3, "tvol": 11.1,
-        "ret_lag_dif": 7.8, "prc": 0.3, "bidask": 0.3, "obs_main": 1.7,
-    },
-    "world_data": {
-        "adjfct": 0.2, "shares": 3.4, "dolvol": 3.9, "oaccruals_at": 34.4, "at_gr1": 25.7,
-        "gp_at": 33.3, "ppeinv_gr1a": 36.8, "noa_at": 37.2, "o_score": 39.7, "niq_at": 41.8,
-        "ret_12_1": 10.0, "eqnpo_12m": 13.2, "eqnpo_60m": 40.8, "chcsho_12m": 12.8,
-    },
-}
-
 # Real WRDS dtypes (measured 2026-11-09); generation stays Float64, cast only when writing.
 _D = pl.Decimal
 REAL_DTYPES: dict[str, dict[str, pl.DataType]] = {
@@ -224,37 +146,72 @@ def _round_comp(df: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def _apply_nulls(
-    df: pl.DataFrame, table: str, nrng: np.random.Generator, rows: np.ndarray | None = None
+@functools.cache
+def _null_patterns() -> dict:
+    return json.loads(NULL_PATTERNS_PATH.read_text())
+
+
+def _apply_null_patterns(
+    df: pl.DataFrame,
+    table: str,
+    nrng: np.random.Generator,
+    stratum_mask: np.ndarray | None = None,
+    given: tuple[str, ...] = (),
+    stratum: str = "all",
 ) -> pl.DataFrame:
-    """Null cells until the table's joint (block) and per-column shares reach the targets.
+    """Null cells by sampling each row's null pattern from the real table's pattern frequencies.
 
-    Blocks apply in order: each nulls all its columns together on extra rows, with probability
-    (target - current) / (1 - current) over rows not already jointly null. Totals then top up
-    each column the same way. Shares are measured over ``rows`` (default: all rows).
+    ``synthetic_null_patterns.json`` stores, per table and stratum, the share of rows with each
+    pattern of null columns (measured on the real table). Patterns are projected onto the
+    columns ``df`` has, identical projections merged. ``given`` names columns whose nulls are
+    already set by propagation: each row draws from the patterns that agree with its current
+    nulls on ``given`` (the nearest ones if none agree) and the other columns are nulled as drawn.
+    Each column is then topped up to its real null share (``totals``), which the dropped rare
+    patterns leave short.
+    Only rows in ``stratum_mask`` (default all) are touched; nulls are only added.
     """
-    blocks, totals = NULL_BLOCKS.get(table, []), NULL_TOTALS.get(table, {})
-    n = df.height
-    elig = np.ones(n, dtype=bool) if rows is None else rows
-    cols = {c for _, cs in blocks for c in cs} | set(totals)
-    nul = {c: df[c].is_null().to_numpy().copy() for c in sorted(cols)}
+    spec = _null_patterns()[table][stratum]
+    keep = [i for i, c in enumerate(spec["columns"]) if c in df.columns]
+    cols = [spec["columns"][i] for i in keep]
+    bits = np.array([[p[i] == "1" for i in keep] for _, p in spec["patterns"]], dtype=bool)
+    bits, inverse = np.unique(bits, axis=0, return_inverse=True)
+    share = np.bincount(inverse.ravel(), weights=[w for w, _ in spec["patterns"]])
 
-    def top_up(is_null: np.ndarray, target: float) -> np.ndarray:
-        cur = float(is_null[elig].mean())
-        draw = nrng.random(n)
-        if target / 100 <= cur:
-            return np.zeros(n, dtype=bool)
-        return elig & ~is_null & (draw < (target / 100 - cur) / (1 - cur))
-
-    for share, bcols in blocks:
-        pick = top_up(np.logical_and.reduce([nul[c] for c in bcols]), share)
-        for c in bcols:
-            nul[c] |= pick
-    for c, share in totals.items():
-        nul[c] |= top_up(nul[c], share)
-    return df.with_columns(
-        pl.when(pl.Series(nul[c])).then(None).otherwise(pl.col(c)).alias(c) for c in nul
-    )
+    rows = np.arange(df.height) if stratum_mask is None else np.flatnonzero(stratum_mask)
+    gi = [j for j, c in enumerate(cols) if c in given]
+    code = 1 << np.arange(len(gi))
+    pattern_code = bits[:, gi] @ code
+    current = np.zeros((rows.size, len(gi)), dtype=bool)
+    for k, j in enumerate(gi):
+        current[:, k] = df[cols[j]].is_null().to_numpy()[rows]
+    row_code = current @ code
+    pick = np.empty(rows.size, dtype=np.int64)
+    for c in np.unique(row_code):
+        sel = np.flatnonzero(row_code == c)
+        ok = np.flatnonzero(pattern_code == c)
+        if ok.size == 0:
+            # no pattern agrees: take the nearest ones (fewest differing given columns)
+            distance = (bits[:, gi] != current[sel[0]]).sum(axis=1)
+            ok = np.flatnonzero(distance == distance.min())
+        cum = np.cumsum(share[ok])
+        # stratified draws: every pattern gets its share of the group's rows up to rounding
+        u = (nrng.permutation(sel.size) + nrng.random(sel.size)) / sel.size
+        draw = np.searchsorted(cum, u * cum[-1], side="right")
+        pick[sel] = ok[np.minimum(draw, ok.size - 1)]
+    new = bits[pick]
+    exprs = []
+    for j, c in enumerate(cols):
+        nul = df[c].is_null().to_numpy()[rows] | new[:, j]
+        # patterns seen in few real rows are dropped from the file, which leaves the column
+        # short of its real null share: top up from the rows not yet null
+        total, cur = spec["totals"][c], nul.mean()
+        if cur < total:
+            nul |= ~nul & (nrng.random(rows.size) < (total - cur) / (1 - cur))
+        if nul.any():
+            is_null = np.zeros(df.height, dtype=bool)
+            is_null[rows] = nul
+            exprs.append(pl.when(pl.Series(is_null)).then(None).otherwise(pl.col(c)).alias(c))
+    return df.with_columns(exprs)
 
 
 def build_firm_registry(rng: np.random.Generator) -> pl.DataFrame:
@@ -315,8 +272,8 @@ def build_firm_registry(rng: np.random.Generator) -> pl.DataFrame:
 
     world_id = world_row_base
     gvkey_row = gv_row_lo
-    for ctry in ROW_COUNTRIES:
-        for _ in range(ROW_FIRMS_PER_COUNTRY):
+    for ctry, n_firms in ROW_FIRMS.items():
+        for _ in range(n_firms):
             inception = date(
                 int(rng.integers(1995, 2005)),
                 int(rng.integers(1, 13)),
@@ -615,10 +572,7 @@ def gen_crsp_a_indexes_acti(rng: np.random.Generator) -> pl.DataFrame:
 
 def _gen_funda(reg: pl.DataFrame, rng: np.random.Generator, is_global: bool) -> pl.DataFrame:
     """Annual Compustat (NA or Global). One row per (gvkey, fiscal_year_end)."""
-    if is_global:
-        sub = reg.filter(pl.col("excntry") != "USA")
-    else:
-        sub = reg.filter(pl.col("excntry") == "USA")
+    sub = reg.filter(pl.col("excntry").is_in(NA_COUNTRIES) != is_global)
 
     rows: list[dict] = []
     years = list(range(DATE_START.year, DATE_END.year + 1))
@@ -632,7 +586,8 @@ def _gen_funda(reg: pl.DataFrame, rng: np.random.Generator, is_global: bool) -> 
                 continue
             at = float(rng.lognormal(mean=18.0, sigma=1.5))
             seq = at * float(rng.uniform(0.1, 0.7))
-            if rng.random() < 0.03:
+            # real acc_std_ann: BE <= 0 nulls be_x in ~12% of NA and ~4% of Global report rows
+            if rng.random() < (0.03 if is_global else 0.14):
                 seq = -abs(seq * 0.1)
             ceq = max(seq * float(rng.uniform(0.7, 1.0)), 0.0)
             pstk = at * float(rng.uniform(0.0, 0.05))
@@ -721,28 +676,16 @@ def _gen_funda(reg: pl.DataFrame, rng: np.random.Generator, is_global: bool) -> 
             }
             rec["curcd"] = r["currency"]
             if is_global:
-                # Global table has narrower column set
+                # Global table has a narrower column set
                 for k in (
-                    "act",
                     "adjex_c",
                     "ajex",
                     "csho",
-                    "dlc",
-                    "dltt",
-                    "invt",
                     "itcb",
-                    "lct",
-                    "mib",
-                    "mibt",
-                    "mibn",
                     "ni",
-                    "oancf",
-                    "pi",
-                    "ppegt",
                     "prcc_f",
                     "pstkl",
                     "pstkrv",
-                    "txp",
                 ):
                     rec.pop(k, None)
             rec.pop("datafmt_marker", None)
@@ -761,10 +704,7 @@ def gen_comp_g_funda(reg: pl.DataFrame, rng: np.random.Generator) -> pl.DataFram
 
 def _gen_fundq(reg: pl.DataFrame, rng: np.random.Generator, is_global: bool) -> pl.DataFrame:
     """Quarterly Compustat. One row per (gvkey, fiscal quarter)."""
-    if is_global:
-        sub = reg.filter(pl.col("excntry") != "USA")
-    else:
-        sub = reg.filter(pl.col("excntry") == "USA")
+    sub = reg.filter(pl.col("excntry").is_in(NA_COUNTRIES) != is_global)
     rows: list[dict] = []
     quarter_ends = [(m, _eom_of(date(2000, m, 1))) for m in (3, 6, 9, 12)]
     for r in sub.iter_rows(named=True):
@@ -900,8 +840,8 @@ def gen_world_msf(
 ) -> pl.DataFrame:
     """World monthly panel. US rows mirror msf_us; ROW rows generated.
 
-    Nulls of the CRSP-sourced US rows are exactly those of msf_us. The ex-US (Compustat-sourced)
-    rows are topped up to the real null shares, and naics/sic/gvkey on all rows.
+    Nulls of the CRSP-sourced US rows start from those of msf_us; both strata then draw the
+    remaining nulls from the real null patterns of their source.
     """
     month_ends = _month_ends(DATE_START, DATE_END)
     # US rows from msf
@@ -1019,86 +959,105 @@ def gen_world_msf(
             me_company=pl.col("me"),
         )
     )
-    world = _apply_nulls(world, "world_msf", nrng, rows=(world["source_crsp"] == 0).to_numpy())
-    return _apply_nulls(world, "world_msf_all_rows", nrng).with_columns(
-        me_lag1=pl.col("me").shift(1).over("id")
-    )
+    us_rows = (world["source_crsp"] == 1).to_numpy()
+    # US rows carry the crsp_msf_v2 nulls (me, ret, prc and what is derived from them); the
+    # structural permno nulls of ex-US rows are part of the stratum-0 patterns.
+    us_given = ("permno", "me", "me_company", "prc", "ret", "ret_exc", "size_grp", "ret_lag_dif")
+    world = _apply_null_patterns(world, "world_msf", nrng, us_rows, us_given, "1")
+    world = _apply_null_patterns(world, "world_msf", nrng, ~us_rows, ("permno", "ret_lag_dif"), "0")
+    return world.with_columns(me_lag1=pl.col("me").shift(1).over("id"))
 
 
 def gen_world_dsf(
     reg: pl.DataFrame, rng: np.random.Generator, dsf_us: pl.DataFrame, nrng: np.random.Generator
 ) -> pl.DataFrame:
-    """World daily panel — ROW only.
-
-    Every builder that reads ``world_dsf.parquet`` filters
-    ``excntry != USA`` (see ``_mp_world_load_world_dsf``,
-    ``ff_load_world_panel``, ``hxz_load_panel_row``). Emitting US rows is
-    dead weight that pushes the parquet over GitHub's 100 MB hard limit
-    on a synthetic build large enough to exercise ROW breakpoints.
+    """World daily panel. US rows mirror dsf_us (as in the real table, whose CRSP-sourced rows
+    are ~16%); ROW rows are generated. Builders that read ``world_dsf`` filter ``excntry``.
     """
-    del dsf_us
-    weekdays = _weekdays(DATE_START, DATE_END)
+    weekdays = np.array(_weekdays(DATE_START, DATE_END), dtype="datetime64[D]")
+    reg_us = reg.filter(pl.col("excntry") == "USA").select("permno", "world_id")
+    us = dsf_us.join(reg_us, on="permno").select(
+        id=pl.col("world_id").cast(pl.Int64),
+        date=pl.col("dlycaldt"),
+        excntry=pl.lit("USA"),
+        ret=pl.col("dlyret"),
+        me=pl.col("dlycap"),
+        prc=pl.col("dlyprc"),
+        tvol=pl.col("dlyvol"),
+    )
 
     reg_row = reg.filter(pl.col("excntry") != "USA")
-    rows: list[dict] = []
-    weekday_arr = np.array(weekdays)
-    n_days = len(weekdays)
-    n_row = reg_row.height
-    daily_rets_row = rng.normal(0.0003, 0.02, size=(n_row, n_days))
-    daily_rets_row = np.clip(daily_rets_row, -0.2, 0.2)
+    daily_rets_row = np.clip(
+        rng.normal(0.0003, 0.02, size=(reg_row.height, weekdays.size)), -0.2, 0.2
+    )
+    parts: dict[str, list[np.ndarray]] = {
+        k: [] for k in ("id", "excntry", "date", "ret", "me", "prc", "tvol")
+    }
     for i, r in enumerate(reg_row.iter_rows(named=True)):
-        inc = r["inception_eom"]
-        delist = r["delisting_eom"] if r["delisting_eom"] is not None else weekday_arr[-1]
-        mask = (weekday_arr >= inc) & (weekday_arr <= delist)
-        idx = np.where(mask)[0]
+        delist = r["delisting_eom"] if r["delisting_eom"] is not None else DATE_END
+        idx = np.flatnonzero(
+            (weekdays >= np.datetime64(r["inception_eom"])) & (weekdays <= np.datetime64(delist))
+        )
         if idx.size == 0:
             continue
         log_me0 = float(rng.normal(17.5, 1.5))
         # shrout = initial ME / target price → realistic $10-$100 start price
         # (matches gen_world_msf; avoids sub-$1 prices failing lag_prc > 5).
         shrout = float(np.exp(log_me0)) / float(rng.uniform(10.0, 100.0))
-        cum = np.cumsum(np.log1p(daily_rets_row[i, idx]))
-        me_series = np.exp(log_me0 + cum)
-        prc_series = me_series / shrout
-        for j_idx, d_i in enumerate(idx):
-            d = weekdays[d_i]
-            ret = float(daily_rets_row[i, d_i])
-            prc = float(prc_series[j_idx])
-            rows.append(
-                {
-                    "id": r["world_id"],
-                    "date": d,
-                    "eom": _eom_of(d),
-                    "excntry": r["excntry"],
-                    "common": 1,
-                    "primary_sec": 1,
-                    "obs_main": 1,
-                    "exch_main": 1,
-                    "ret": ret,
-                    "me": float(me_series[j_idx]),
-                    "prc": prc,
-                    "prc_high": prc * 1.01,
-                    "prc_low": prc * 0.99,
-                    "tvol": shrout * 0.002,
-                    "bidask": 0,
-                    "adjfct": 1.0,
-                }
-            )
-    row_df = pl.DataFrame(rows).with_columns(
-        pl.col("id").cast(pl.Int64),
-        pl.col("date").cast(pl.Date),
-        pl.col("eom").cast(pl.Date),
-        pl.col("common").cast(pl.Int8),
-        pl.col("primary_sec").cast(pl.Int8),
-        pl.col("obs_main").cast(pl.Int8),
-        pl.col("exch_main").cast(pl.Int8),
-    )
+        me = np.exp(log_me0 + np.cumsum(np.log1p(daily_rets_row[i, idx])))
+        parts["id"].append(np.full(idx.size, r["world_id"], dtype=np.int64))
+        parts["excntry"].append(np.full(idx.size, r["excntry"]))
+        parts["date"].append(weekdays[idx])
+        parts["ret"].append(daily_rets_row[i, idx])
+        parts["me"].append(me)
+        parts["prc"].append(me / shrout)
+        parts["tvol"].append(np.full(idx.size, shrout * 0.002))
+    row_df = pl.DataFrame({k: np.concatenate(v) for k, v in parts.items()})
+
     # ret_lag_dif mirrors production world_dsf (days since the prior
     # observation per id; null on the first row).
-    world = row_df.sort(["id", "date"]).with_columns(
-        ret_lag_dif=(pl.col("date") - pl.col("date").shift(1).over("id")).dt.total_days()
+    world = (
+        pl.concat([us, row_df], how="diagonal_relaxed")
+        .with_columns(
+            eom=pl.col("date").dt.month_end(),
+            common=pl.lit(1, dtype=pl.Int8),
+            primary_sec=pl.lit(1, dtype=pl.Int8),
+            obs_main=pl.lit(1, dtype=pl.Int8),
+            exch_main=pl.lit(1, dtype=pl.Int8),
+            prc_high=pl.col("prc") * 1.01,
+            prc_low=pl.col("prc") * 0.99,
+            bidask=pl.lit(0),
+            adjfct=pl.lit(1.0),
+        )
+        .sort(["id", "date"])
+        .with_columns(
+            ret_lag_dif=(pl.col("date") - pl.col("date").shift(1).over("id")).dt.total_days()
+        )
+        .select(
+            "id",
+            "date",
+            "eom",
+            "excntry",
+            "common",
+            "primary_sec",
+            "obs_main",
+            "exch_main",
+            "ret",
+            "me",
+            "prc",
+            "prc_high",
+            "prc_low",
+            "tvol",
+            "bidask",
+            "adjfct",
+            "ret_lag_dif",
+        )
     )
-    return _apply_nulls(world, "world_dsf", nrng)
+    us_rows = (world["excntry"] == "USA").to_numpy()
+    us_given = ("me", "prc", "ret", "tvol", "ret_lag_dif")
+    world = _apply_null_patterns(world, "world_dsf", nrng, us_rows, us_given, "1")
+    world = _apply_null_patterns(world, "world_dsf", nrng, ~us_rows, (), "0")
+    return world
 
 
 def gen_world_data(
@@ -1116,25 +1075,27 @@ def gen_world_data(
     # ret_12_1 = ri(t-1)/ri(t-12) - 1, eqnpo_12m = ln(ri ratio) - ln(me ratio)
     # (eqnpo_60m the same at the 60m horizon, backing DHS ROW IR),
     # chcsho_12m = 12m split-adjusted share growth - 1.
+    # The panel starts in 2000, but real firms have earlier history: a window longer than the
+    # available history reaches back to the firm's first observation instead of going null.
     world_msf = world_msf.sort(["id", "eom"]).with_columns(
-        _ri=(1 + pl.col("ret").fill_null(0.0)).cum_prod().over("id")
+        _ri=(1 + pl.col("ret").fill_null(0.0)).cum_prod().over("id"),
+        _me=pl.col("me").forward_fill().backward_fill().over("id"),
     )
-    ri_1, ri_12 = pl.col("_ri").shift(1).over("id"), pl.col("_ri").shift(12).over("id")
-    me_12 = pl.col("me").shift(12).over("id")
-    ri_60, me_60 = pl.col("_ri").shift(60).over("id"), pl.col("me").shift(60).over("id")
+
+    def back(col: str, k: int) -> pl.Expr:
+        return pl.coalesce(pl.col(col).shift(k).over("id"), pl.col(col).first().over("id"))
+
+    ri_1, ri_12, ri_60 = back("_ri", 1), back("_ri", 12), back("_ri", 60)
+    me_12, me_60 = back("_me", 12), back("_me", 60)
     world_data = (
         world_msf.with_columns(
             adjfct=pl.lit(1.0),
-            shares=pl.col("me") / pl.col("prc"),
+            shares=pl.col("shrout"),
             ret_12_1=ri_1 / ri_12 - 1,
-            eqnpo_12m=pl.when((pl.col("me") > 0) & (me_12 > 0) & (ri_12 > 0))
-            .then((pl.col("_ri") / ri_12).log() - (pl.col("me") / me_12).log())
-            .otherwise(None),
-            eqnpo_60m=pl.when((pl.col("me") > 0) & (me_60 > 0) & (ri_60 > 0))
-            .then((pl.col("_ri") / ri_60).log() - (pl.col("me") / me_60).log())
-            .otherwise(None),
+            eqnpo_12m=(pl.col("_ri") / ri_12).log() - (pl.col("_me") / me_12).log(),
+            eqnpo_60m=(pl.col("_ri") / ri_60).log() - (pl.col("_me") / me_60).log(),
             beme=pl.Series("beme", rng.uniform(0.1, 3.0, size=n)),
-            dolvol=pl.col("me") * 0.01,
+            dolvol=pl.col("shrout") * 0.5,
             mom=pl.Series("mom", rng.normal(0.0, 0.2, size=n)),
             mscore=pl.Series("mscore", rng.normal(-2.5, 1.0, size=n)),
             roe=pl.Series("roe", rng.normal(0.05, 0.1, size=n)),
@@ -1152,7 +1113,10 @@ def gen_world_data(
             # shares*adjfct is constant per id in the synthetic panel, so the 12m
             # share change is 0 once 12 months of history exist (null before)
             chcsho_12m=(pl.col("shares") * pl.col("adjfct"))
-            / (pl.col("shares") * pl.col("adjfct")).shift(12).over("id")
+            / pl.coalesce(
+                (pl.col("shares") * pl.col("adjfct")).shift(12).over("id"),
+                (pl.col("shares") * pl.col("adjfct")).first().over("id"),
+            )
             - 1,
         )
         .select(
@@ -1190,9 +1154,23 @@ def gen_world_data(
             "eqnpo_12m",
             "eqnpo_60m",
             "chcsho_12m",
+            "source_crsp",
         )
     )
-    return _apply_nulls(world_data, "world_data", nrng)
+    # nulls inherited from world_msf; everything derived here has its nulls sampled
+    propagated = (
+        "permno",
+        "gvkey",
+        "me",
+        "prc",
+        "ret",
+        "ret_lag_dif",
+        "size_grp",
+    )
+    us_rows = (world_data["source_crsp"] == 1).to_numpy()
+    for stratum, mask in (("1", us_rows), ("0", ~us_rows)):
+        world_data = _apply_null_patterns(world_data, "world_data", nrng, mask, propagated, stratum)
+    return world_data.drop("source_crsp")
 
 
 def gen_market_returns(world_msf: pl.DataFrame) -> pl.DataFrame:
@@ -1364,21 +1342,21 @@ def write_synthetic_wrds(out_dir: Path, seed: int = SEED) -> None:
     nrng = np.random.default_rng(seed + 1)
     reg = build_firm_registry(rng)
 
-    msf = _apply_nulls(gen_crsp_msf_v2(reg, rng), "crsp_msf_v2", nrng)
+    msf = _apply_null_patterns(gen_crsp_msf_v2(reg, rng), "crsp_msf_v2", nrng)
     _write(msf, out_dir, "crsp_msf_v2")
-    dsf = _apply_nulls(gen_crsp_dsf_v2(reg, rng, msf), "crsp_dsf_v2", nrng)
+    dsf = _apply_null_patterns(gen_crsp_dsf_v2(reg, rng, msf), "crsp_dsf_v2", nrng)
     _write(dsf, out_dir, "crsp_dsf_v2")
     _write(gen_crsp_stksecurityinfohist(reg), out_dir, "crsp_stksecurityinfohist")
     _write(gen_crsp_a_indexes_msp500(rng), out_dir, "crsp_a_indexes_msp500")
     _write(gen_crsp_a_indexes_acti(rng), out_dir, "crsp_a_indexes_acti")
 
-    funda = _apply_nulls(gen_comp_funda(reg, rng), "comp_funda", nrng)
+    funda = _apply_null_patterns(gen_comp_funda(reg, rng), "comp_funda", nrng)
     _write(funda, out_dir, "comp_funda")
-    fundq = _apply_nulls(gen_comp_fundq(reg, rng), "comp_fundq", nrng)
+    fundq = _apply_null_patterns(gen_comp_fundq(reg, rng), "comp_fundq", nrng)
     _write(fundq, out_dir, "comp_fundq")
-    g_funda = _apply_nulls(gen_comp_g_funda(reg, rng), "comp_g_funda", nrng)
+    g_funda = _apply_null_patterns(gen_comp_g_funda(reg, rng), "comp_g_funda", nrng)
     _write(g_funda, out_dir, "comp_g_funda")
-    g_fundq = _apply_nulls(gen_comp_g_fundq(reg, rng), "comp_g_fundq", nrng)
+    g_fundq = _apply_null_patterns(gen_comp_g_fundq(reg, rng), "comp_g_fundq", nrng)
     _write(g_fundq, out_dir, "comp_g_fundq")
     _write(gen_ccm_lnkhist(reg, nrng), out_dir, "crsp_ccmxpf_lnkhist")
 
