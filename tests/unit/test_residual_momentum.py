@@ -411,6 +411,7 @@ def test_near_equal_scored_residuals_give_no_score(test_paths, ratio: float, sco
     fcts = fcts.with_columns(
         pl.when(same).then(0.01).otherwise(pl.col(c)).alias(c) for c in ["mktrf", "hml", "smb_ff"]
     )
+    # k cycles through -2..2 down the frame; the five consecutive scored months take each value once.
     k = pl.int_range(pl.len()) % 5 - 2
     world = world.with_columns(
         ret_exc=pl.when(same).then(0.02 + spread * k).otherwise(pl.col("ret_exc"))
@@ -419,6 +420,7 @@ def test_near_equal_scored_residuals_give_no_score(test_paths, ratio: float, sco
     value = out.filter((pl.col("id") == 1000) & (pl.col("eom") == grid[_TERMINAL_IDX]))
     assert value.height == 1
     if scored:
+        assert value["resff3_6_1"][0] is not None
         assert np.isfinite(value["resff3_6_1"][0])
     else:
         assert value["resff3_6_1"][0] is None
