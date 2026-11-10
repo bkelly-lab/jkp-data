@@ -197,3 +197,38 @@ def test_hxz_load_compustat_row_roe_a_uses_previous_be(test_paths):
     assert got[2] == pytest.approx(30.0 / 100.0)
     assert got[4] == pytest.approx(4.0 / 80.0)
     assert got[5] == pytest.approx(1.0 / 40.0)
+
+
+def test_hxz_load_compustat_row_roe_a_needs_previous_fiscal_year(test_paths):
+    # 003: no 2020 record (gap). 004: fiscal year-end moves Dec -> Mar with no FY 2020,
+    # then Mar 2021 -> Mar 2022, one fiscal year later.
+    keys = [
+        ("003", date(2018, 12, 31)),
+        ("003", date(2019, 12, 31)),
+        ("003", date(2021, 12, 31)),
+        ("004", date(2019, 12, 31)),
+        ("004", date(2021, 3, 31)),
+        ("004", date(2022, 3, 31)),
+    ]
+    _write_keys(test_paths.raw_tables_dir / "comp_funda.parquet", keys, na=True)
+    _write_keys(test_paths.raw_tables_dir / "comp_g_funda.parquet", [("999", keys[0][1])], na=False)
+    _write_acc(
+        test_paths.interim_dir / "acc_std_ann.parquet", [(g, d, 100.0, 10.0) for g, d in keys]
+    )
+
+    out = (
+        hxz_load_compustat_row(test_paths)
+        .filter(pl.col("gvkey") != "999")
+        .sort("gvkey", "datadate")
+    )
+
+    # roe_a needs a record for fiscal year y-1 (fiscal years named by the calendar year
+    # they end in); a record two fiscal years back doesn't count.
+    assert out["roe_a"].to_list() == [
+        None,
+        pytest.approx(0.1),
+        None,
+        None,
+        None,
+        pytest.approx(0.1),
+    ]

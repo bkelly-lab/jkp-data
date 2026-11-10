@@ -11811,9 +11811,11 @@ def hxz_load_compustat_row(paths: DataPaths) -> pl.DataFrame:
     """Annual Compustat for ex-US HXZ: the fiscal records of comp_funda (NA) and
     comp_g_funda (Global), the universe of the FF loaders (_ff_load_funda_na,
     _ff_load_funda_global), one per (gvkey, year) with NA preferred, valued from jkp's
-    standardized panel: be_a = be_x, inv = at_gr1, and roe_a = ni_x over the be_x of the
-    gvkey's previous fiscal record (unitless, no FX). Values sit at the fiscal-year-end
-    datadate.
+    standardized panel: be_a = be_x, inv = at_gr1, and roe_a = ni_x of fiscal year y over
+    the be_x of fiscal year y-1 (unitless, no FX). Fiscal years are named by the calendar
+    year they end in, as in Hou, Xue and Zhang's (2020) ratios to 1-year-lagged book
+    equity; roe_a is null when the gvkey has no fiscal year y-1 record. Values sit at the
+    fiscal-year-end datadate.
 
     Roe is annual here, unlike the US quarterly Roe (hxz_roe_by_month): Compustat Global's
     quarterly coverage is too thin to carry ex-US Roe, and a quarterly Roe is about a
@@ -11828,6 +11830,7 @@ def hxz_load_compustat_row(paths: DataPaths) -> pl.DataFrame:
     gl = _ff_load_funda_global(paths).select("gvkey", "datadate", "year", _src=pl.lit(1))
     acc = _jkp_annual_acc(paths).select("gvkey", "datadate", "be_x", "at_gr1", "ni_x").lazy()
     be_x_lag1 = pl.col("be_x").shift(1).over("gvkey")
+    prev_is_fy_lag1 = pl.col("year").shift(1).over("gvkey") == pl.col("year") - 1
     return (
         pl.concat([na, gl], how="vertical_relaxed")
         # A gvkey in both NA and Global has two records per year; keep NA's.
@@ -11836,7 +11839,9 @@ def hxz_load_compustat_row(paths: DataPaths) -> pl.DataFrame:
         .drop("_src")
         .join(acc, on=["gvkey", "datadate"], how="left")
         .sort("gvkey", "datadate")
-        .with_columns(roe_a=safe_div("ni_x", be_x_lag1, "roe_a", mode=3))
+        .with_columns(
+            roe_a=pl.when(prev_is_fy_lag1).then(safe_div("ni_x", be_x_lag1, "roe_a", mode=3))
+        )
         .drop("ni_x")
         .rename({"be_x": "be_a", "at_gr1": "inv"})
         .collect()
@@ -12363,6 +12368,11 @@ def gen_hxz_data(
           JKP's market_equity. (me_hxz in the factor files is the size factor.)
         - Elsewhere: JKP's main sample with a gvkey, the size_grp breakpoint
           pool, and the FACTOR_MIN_STOCKS_BP / FACTOR_MIN_STOCKS_PF minimums.
+        - Ex-US Roe is annual: net income for fiscal year y over book equity for
+          fiscal year y-1, usable 6 to 18 months after the fiscal year-end. Fiscal
+          years are named by the calendar year they end in, as in Hou, Xue and
+          Zhang's (2020) ratios to 1-year-lagged book equity, so Roe is null when
+          the firm has no fiscal year y-1 record.
         - Timing: a characteristic at eom t is the value that sorted the
           portfolio held in month t. ia_hxz is constant from July to June;
           roe_hxz is the latest quarter announced before month t.
