@@ -10548,8 +10548,9 @@ def _ff_load_funda_na(raw_dir: Path) -> pl.LazyFrame:
 
 
 def _ff_load_funda_global(raw_dir: Path) -> pl.LazyFrame:
-    """Load comp_g_funda (Global): INDL-or-FS / HIST_STD / I / C screen with
-    INDL-over-FS preference when a (gvkey, datadate) carries both formats.
+    """Load comp_g_funda (Global): INDL-or-FS / HIST_STD / I / C screen, then per
+    (gvkey, datadate) the INDL rows if there are any, else the FS rows
+    (apply_indfmt_filter, the accounting stage's rule).
     Collapses to one row per (gvkey, year) BEFORE be/op/inv are computed."""
     floats = [
         "pstk",
@@ -10580,9 +10581,7 @@ def _ff_load_funda_global(raw_dir: Path) -> pl.LazyFrame:
             & (pl.col("popsrc") == "I")
             & (pl.col("consol") == "C")
         )
-        .with_columns(_n=pl.len().over(["gvkey", "datadate"]))
-        .filter((pl.col("_n") == 1) | ((pl.col("_n") == 2) & (pl.col("indfmt") == "INDL")))
-        .drop("_n")
+        .pipe(apply_indfmt_filter, ["gvkey", "datadate"])
         .with_columns(year=pl.col("datadate").dt.year())
         .pipe(_collapse_to_latest_fy, resort=False)
     )
