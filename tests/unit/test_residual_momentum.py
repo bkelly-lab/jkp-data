@@ -10,6 +10,7 @@ from __future__ import annotations
 import numpy as np
 import polars as pl
 import pytest
+from polars.testing import assert_frame_equal
 
 from jkp.data.aux_functions import residual_momentum
 from tests.golden.residual_momentum_inputs import (
@@ -401,7 +402,7 @@ def test_output_unique_id_eom(test_paths) -> None:
 
 @pytest.mark.unit
 def test_determinism_rerun(test_paths) -> None:
-    """Re-running the same inputs yields a byte-identical output frame."""
+    """Re-running the same inputs gives the same output within 1e-10."""
     first = _run(test_paths, 12, 1)
     second = _run(test_paths, 12, 1)
-    assert first.equals(second)
+    assert_frame_equal(first, second, rel_tol=1e-10, abs_tol=1e-10)

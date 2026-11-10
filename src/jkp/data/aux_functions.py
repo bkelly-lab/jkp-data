@@ -130,10 +130,10 @@ def setup_folder_structure(paths: DataPaths) -> None:
     shutil.copy2(get_data_readme_path(), paths.base_dir / "README.md")
 
 
-def collect_and_write(df, filename, collect_streaming=False):
+def collect_and_write(df, filename):
     """
     Description:
-        Collect a Polars LazyFrame (optionally streaming) and write to Parquet.
+        Collect a Polars LazyFrame and write to Parquet.
         Used for interim files during pipeline execution in main.py.
 
         Note: For final output files (in portfolio.py), use write_dataframe() from
@@ -141,14 +141,13 @@ def collect_and_write(df, filename, collect_streaming=False):
         integrates with CSV conversion at pipeline end.
 
     Steps:
-        1) df.collect() on the streaming engine if collect_streaming, else in-memory.
+        1) df.collect().
         2) write_parquet(filename).
 
     Output:
         Parquet file at `filename`.
     """
-    engine = "streaming" if collect_streaming else "in-memory"
-    df.collect(engine=engine).write_parquet(filename)
+    df.collect().write_parquet(filename)
 
 
 def _duckdb_connect(paths: DataPaths, database: Path | None = None) -> duckdb.DuckDBPyConnection:
@@ -3602,10 +3601,10 @@ def add_ret_exc_wins(
         1) Validate lower/upper and map them to precomputed cutoff column names.
         2) Read world_{freq}sf.parquet; drop ret_exc_wins if already present (idempotency).
         3) Left-join precomputed cutoffs from return_cutoffs{,_daily}.parquet on eom (monthly)
-           or year/month (daily).
+           or year/month (daily), keeping the file's row order.
         4) Build ret_exc_wins via pl.when: clip Compustat rows to [lower_col, upper_col],
            leave CRSP rows and nulls unchanged.
-        5) Collect and overwrite the file.
+        5) Sink to a temporary file, then replace the original with it.
 
     Output:
         Overwrites 'world_{freq}sf.parquet' with ret_exc_wins added.
@@ -3655,7 +3654,7 @@ def add_ret_exc_wins(
         drop_cols += ["year", "month"]
 
     result = (
-        data.join(cutoffs, on=group_vars, how="left")
+        data.join(cutoffs, on=group_vars, how="left", maintain_order="left")
         .with_columns(
             ret_exc_wins=pl.when((pl.col("source_crsp") == 0) & pl.col("ret_exc").is_not_null())
             .then(pl.col("ret_exc").clip(pl.col(lower_col), pl.col(upper_col)))
@@ -3663,7 +3662,9 @@ def add_ret_exc_wins(
         )
         .drop(drop_cols)
     )
-    result.collect(engine="streaming" if freq == "d" else "in-memory").write_parquet(data_path)
+    tmp_path = data_path.with_name(f"{data_path.stem}_tmp.parquet")
+    result.sink_parquet(tmp_path)
+    tmp_path.replace(data_path)
 
 
 def load_mkt_returns_params(freq):
@@ -7110,7 +7111,9 @@ def market_chars_monthly(paths: DataPaths, data_path, market_ret_path, local_cur
         .sort(["id", "eom"])
     )
 
-    data.collect().write_parquet(paths.interim_dir / "market_chars_m.parquet")
+    # In-memory: the streaming engine runs each of seasonality()'s ~260 shift() terms as its own node
+    # and is about 3x slower here.
+    data.collect(engine="in-memory").write_parquet(paths.interim_dir / "market_chars_m.parquet")
 
 
 @measure_time
