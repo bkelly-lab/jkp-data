@@ -12,14 +12,16 @@ the other factor models add their own golden tests as they land):
 
 ## License compliance (synthetic inputs)
 
-All builder inputs are **synthetic** and committed under
-`fixtures/synthetic_wrds/`. No real WRDS cell is ever written:
+All builder inputs are **synthetic** and generated at test time by
+`generate_synthetic_wrds.py` (no input data is committed). No real WRDS cell
+is ever written:
 
 - Every numeric value is independently sampled from a plausible
   distribution.
 - Identifiers live in synthetic bands disjoint from real WRDS allocation:
   `permno >= 9_000_000`, `gvkey >= "900000"`, `world_id >= 9_000_000_000`.
-- Schemas mirror the real WRDS tables, but the cell values are not derived
+- Schemas mirror the real WRDS tables (column set, dtypes, and null shares
+  measured on WRDS 2000-2015), but the cell values are not derived
   from any obfuscation of WRDS data.
 
 This satisfies the WRDS distribution agreement clause that permits "only
@@ -28,8 +30,6 @@ reverse-engineered to the underlying source."
 
 ## What's committed
 
-- `fixtures/synthetic_wrds/` — 17 deterministically generated parquets
-  (~117 MB, compressed with zstd-22) used as the builder inputs.
 - `fixtures/ff/` — golden output parquets produced by `gen_ff_data` against
   the synthetic inputs.
 
@@ -44,15 +44,18 @@ factors against real-world returns.
 
 ## Workflow
 
-### Regenerate the synthetic inputs
+### Synthetic inputs
+
+The `synthetic_wrds_dir` session fixture (`conftest.py`) calls
+`write_synthetic_wrds` once into a pytest temp directory. To inspect the
+17 parquets:
 
 ```bash
 uv sync --group test
-uv run python -m tests.golden.generate_synthetic_wrds
+uv run python -m tests.golden.generate_synthetic_wrds --out /tmp/synthetic_wrds
 ```
 
-The generator is deterministic (seed = 42). Re-running overwrites
-`fixtures/synthetic_wrds/` byte-identically.
+The generator is deterministic (seed = 42; nulls come from a separate RNG).
 
 ### Regenerate the golden outputs (after intentional builder changes)
 

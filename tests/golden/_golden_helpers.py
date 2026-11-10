@@ -9,7 +9,7 @@ Three responsibilities:
   3. Compare actual-vs-golden factor parquets with NaN-aware tolerance
      against ``ToleranceSpec``.
 
-Fixture slice layout (committed under ``tests/golden/fixtures/synthetic_wrds/``):
+Synthetic slice layout (generated into a temp dir by ``generate_synthetic_wrds``, not committed):
   crsp_msf_v2.parquet              -> raw_tables_dir
   crsp_dsf_v2.parquet              -> raw_tables_dir
   comp_funda.parquet               -> raw_tables_dir
@@ -45,8 +45,6 @@ if TYPE_CHECKING:
     from jkp.data.paths import DataPaths
 
 
-SYNTHETIC_SLICES_DIR = Path(__file__).parent / "fixtures" / "synthetic_wrds"
-
 RAW_FILES: tuple[str, ...] = (
     "crsp_msf_v2.parquet",
     "crsp_dsf_v2.parquet",
@@ -73,8 +71,8 @@ INTERIM_SUBDIR_FILES: tuple[tuple[str, str], ...] = (
 )
 
 
-def stage_synthetic_slices(paths: DataPaths, src_dir: Path = SYNTHETIC_SLICES_DIR) -> None:
-    """Symlink committed synthetic slice parquets into the DataPaths layout.
+def stage_synthetic_slices(paths: DataPaths, src_dir: Path) -> None:
+    """Symlink generated synthetic slice parquets into the DataPaths layout.
 
     Missing source files are silently skipped so a builder that doesn't need
     a particular slice doesn't fail.

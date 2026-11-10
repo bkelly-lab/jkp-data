@@ -1,12 +1,12 @@
 """Golden-fixture regression test for ``gen_ff_data``.
 
-Runs the real builder against the committed synthetic slices and
+Runs the real builder against the generated synthetic slices and
 compares ``ff_factors_monthly.parquet``, ``ff_factors_daily.parquet``,
 and ``ff_characteristics.parquet`` against the committed golden parquets
 within ``rtol=1e-6, atol=1e-10`` (key columns matched exactly).
 
-The synthetic inputs are committed under
-``tests/golden/fixtures/synthetic_wrds/`` and contain no real WRDS data
+The synthetic inputs are generated once per session by the ``synthetic_wrds_dir``
+fixture (``conftest.py``); nothing is committed and no real WRDS data is used
 (see ``generate_synthetic_wrds.py``).
 
 Regenerate goldens with:
@@ -38,8 +38,10 @@ OUTPUTS = {
 
 
 @pytest.mark.regression
-def test_gen_ff_data_golden(test_paths: DataPaths, request: pytest.FixtureRequest) -> None:
-    stage_synthetic_slices(test_paths)
+def test_gen_ff_data_golden(
+    test_paths: DataPaths, synthetic_wrds_dir: Path, request: pytest.FixtureRequest
+) -> None:
+    stage_synthetic_slices(test_paths, synthetic_wrds_dir)
     stage_ff_mom_input(test_paths)
     with cwd(test_paths.interim_dir):
         gen_ff_data(
