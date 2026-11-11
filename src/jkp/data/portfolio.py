@@ -358,6 +358,31 @@ def _read_saved(path: Path) -> pl.DataFrame:
     return pl.read_csv(path.with_suffix(".csv"), try_parse_dates=True)
 
 
+def _remove_stale_hml(portfolios_dir: Path, written_hml: set[str]) -> None:
+    """Remove HML output files left by earlier runs that this run did not produce.
+
+    Description:
+        ``run_portfolio`` overwrites the HML files it writes in this run, but
+        leaves files from an earlier run on disk. ``run_themes`` reads every
+        known HML file in the portfolio directory, so a rerun that produces
+        fewer series would otherwise build themes from stale factors.
+
+    Steps:
+        1) Collect the HML files written in this run (``written_hml``).
+        2) Delete any known HML file, parquet or csv, that this run did not
+           write.
+
+    Output:
+        None; stale files are removed from ``portfolios_dir``.
+    """
+    known = ["hml", "hml_daily", *(f"hml_{component}" for component, _ in OI_COMPONENTS)]
+    for name in known:
+        if name in written_hml:
+            continue
+        for ext in ("parquet", "csv"):
+            (portfolios_dir / f"{name}.{ext}").unlink(missing_ok=True)
+
+
 def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
     """Run JKP portfolio generation.
 
@@ -618,6 +643,9 @@ def run_portfolio(*, output_format: str = "parquet", output_dir: Path) -> None:
             _write_filtered(hml_oi, portfolios_dir / f"hml_{component}.parquet", "date", end_date)
             hml_series.append((f"_{component}", hml_oi, "date"))
         del pf_oi
+
+    written_hml = {f"hml{suffix}" for suffix, df, _ in hml_series if df is not None}
+    _remove_stale_hml(portfolios_dir, written_hml)
 
     # The themes step needs only the HML factors and CMP, so free the rest first.
     del portfolio_data, pf_returns, pf_daily, gics_returns, ff49_returns, gics_daily, ff49_daily
