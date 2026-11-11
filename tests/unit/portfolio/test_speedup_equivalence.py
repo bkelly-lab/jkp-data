@@ -18,13 +18,13 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import date
 from pathlib import Path
 
+import numba
 import numpy as np
 import polars as pl
 import pytest
-from numba.core.dispatcher import Dispatcher
+from numba.extending import is_jitted
 
 from jkp.data import aux_functions
 from jkp.data.aux_functions import (
@@ -38,12 +38,11 @@ from jkp.data.aux_functions import (
 )
 from jkp.data.config import CMP_SIZE_GROUPS
 from jkp.data.portfolio import run_portfolio
+from tests.fixtures.portfolio_build import OI_SETTINGS, patch_build
 from tests.fixtures.portfolio_oi_legacy import add_ecdf
 from tests.unit.portfolio.conftest import (
     SYNTHETIC_CHARS,
     build_synthetic_data,
-    make_multi_region_classification,
-    make_themes_dir,
     month_ends,
     weekdays_in_month_after,
 )
@@ -428,13 +427,15 @@ def _kernels(mode: str) -> Iterator[None]:
         np.errstate(divide="ignore", invalid="ignore", over="raise"),
     ):
         for name, obj in list(vars(aux_functions).items()):
-            if isinstance(obj, Dispatcher):
+            if is_jitted(obj):
                 mp.setattr(aux_functions, name, obj.py_func)
         yield
 
 
 @pytest.fixture(scope="module", params=["compiled", "plain_python"])
 def kernels(request: pytest.FixtureRequest) -> str:
+    if request.param == "compiled" and numba.config.DISABLE_JIT:
+        pytest.skip("with the JIT off, the compiled kernels are plain Python too")
     return request.param
 
 
@@ -638,8 +639,6 @@ def test_intraday_local_files_reuse_intraday(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reset_output_writer: None
 ) -> None:
     """The local intraday outputs come from one aggregation of ``ret_intraday``."""
-    import jkp.data.portfolio as pf_mod
-
     chars = SYNTHETIC_CHARS[:3]
     build_synthetic_data(tmp_path, ["USA", "GBR"], chars, n_ids=40, n_months=6)
     daily_dir = tmp_path / "processed" / "return_data" / "daily_rets_by_country"
@@ -654,33 +653,14 @@ def test_intraday_local_files_reuse_intraday(
 
     resources = tmp_path / "resources"
     resources.mkdir()
-    themes_dir = make_themes_dir(resources, dict.fromkeys(chars, "cluster_alpha"))
-    classification = make_multi_region_classification(resources)
-    monkeypatch.setattr("jkp.data.paths.get_themes_dir", lambda: themes_dir)
-    monkeypatch.setattr("jkp.data.paths.get_country_classification_path", lambda: classification)
-    monkeypatch.setattr(pf_mod, "PORTFOLIO_CHARS", chars)
-    monkeypatch.setattr(
-        pf_mod,
-        "PORTFOLIO_SETTINGS",
-        {
-            "end_date": date(2030, 12, 31),
-            "pfs": PFS,
-            "source": ["CRSP", "COMPUSTAT"],
-            "wins_ret": True,
-            "bps": "non_mc",
-            "bp_min_n": 3,
-            "cmp": {"us": False, "int": False},
-            "regional_pfs": {
-                "country_excl": [],
-                "country_weights": "market_cap",
-                "stocks_min": 1,
-                "months_min": 1,
-                "countries_min": 1,
-            },
-            "daily_pf": True,
-            "ind_pf": False,
-        },
-    )
+    settings = {
+        **OI_SETTINGS,
+        "bp_min_n": 3,
+        "cmp": {"us": False, "int": False},
+        "regional_pfs": {**OI_SETTINGS["regional_pfs"], "country_excl": []},
+        "ind_pf": False,
+    }
+    patch_build(monkeypatch, resources, dict.fromkeys(chars, "cluster_alpha"), settings)
 
     run_portfolio(output_dir=tmp_path)
 

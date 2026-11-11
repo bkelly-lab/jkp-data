@@ -126,7 +126,7 @@ class TestQmjPipeline:
             polars.testing.assert_series_equal(
                 merged[col].rename(col),
                 merged[ref_col].rename(col),
-                **tolerance.STANDARD,
+                **tolerance.polars(tolerance.STANDARD),
                 check_names=True,
             )
 

@@ -9,7 +9,8 @@ change the outputs:
 
 - ``shuffled_inputs``: the rows of every parquet input in another order. The themes
   and country classification files are written by the build process and keep theirs,
-- ``one_thread``: one Polars and one Numba thread,
+- ``polars_one_thread``: one Polars thread,
+- ``numba_one_thread``: one Numba thread,
 - ``hash_seed``: another Python hash seed, which changes the iteration order of sets
   of strings.
 
@@ -29,14 +30,8 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-from jkp.data.portfolio import run_portfolio, run_themes
 from tests.conftest import ToleranceSpec
-from tests.fixtures.portfolio_build import (
-    OI_SETTINGS,
-    build_oi_inputs,
-    output_files,
-    patch_oi_build,
-)
+from tests.fixtures.portfolio_build import build_oi_inputs, output_files
 
 pytestmark = pytest.mark.integration
 
@@ -47,18 +42,10 @@ BASELINE_ENV = {"POLARS_MAX_THREADS": "4", "NUMBA_NUM_THREADS": "4", "PYTHONHASH
 VARIANTS = {
     "repeat": ({}, False),
     "shuffled_inputs": ({}, True),
-    "one_thread": ({"POLARS_MAX_THREADS": "1", "NUMBA_NUM_THREADS": "1"}, False),
+    "polars_one_thread": ({"POLARS_MAX_THREADS": "1"}, False),
+    "numba_one_thread": ({"NUMBA_NUM_THREADS": "1"}, False),
     "hash_seed": ({"PYTHONHASHSEED": "1"}, False),
 }
-
-
-def _build(root: Path) -> None:
-    """Run the portfolio build on ``root``: the entry point of each build process."""
-    resources = root / "resources"
-    resources.mkdir()
-    patch_oi_build(pytest.MonkeyPatch(), resources, OI_SETTINGS)
-    run_portfolio(output_format="parquet", output_dir=root)
-    run_themes(output_dir=root, version="v0")
 
 
 def _run_build(inputs: Path, root: Path, env: dict[str, str], shuffle: bool) -> Path:
@@ -69,8 +56,8 @@ def _run_build(inputs: Path, root: Path, env: dict[str, str], shuffle: bool) -> 
             pl.read_parquet(path).sample(fraction=1.0, shuffle=True, seed=i).write_parquet(path)
     code = (
         "import sys; from pathlib import Path; "
-        "from tests.integration.test_portfolio_determinism import _build; "
-        "_build(Path(sys.argv[1]))"
+        "from tests.fixtures.portfolio_build import run_oi_build; "
+        "run_oi_build(Path(sys.argv[1]))"
     )
     try:
         result = subprocess.run(
@@ -119,7 +106,7 @@ def test_outputs_match_baseline(
                 pl.read_parquet(out / rel),
                 pl.read_parquet(baseline / rel),
                 check_exact=False,
-                **tolerance.TIGHT,
+                **tolerance.polars(tolerance.TIGHT),
             )
         except AssertionError as e:
             raise AssertionError(f"{variant}: {rel}: {e}") from e

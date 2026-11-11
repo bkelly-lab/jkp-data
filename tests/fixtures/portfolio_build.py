@@ -2,8 +2,10 @@
 
 ``build_oi_inputs`` writes synthetic inputs with overnight/intraday returns, and
 ``patch_oi_build`` points ``run_portfolio`` and ``run_themes`` at stub resources for
-them. ``output_files`` lists the files a build wrote. Used by the O/I equivalence, the
-determinism and the output-file tests.
+them. ``patch_build`` does the same for any characteristics and settings.
+``run_oi_build`` runs the whole build on the O/I inputs, and ``output_files`` lists the
+files a build wrote. Used by the O/I equivalence, the determinism, the output-file and
+the intraday tests.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ import polars as pl
 import pytest
 
 from jkp.data.output_writer import configure_output_format
+from jkp.data.portfolio import run_portfolio, run_themes
 from tests.unit.portfolio.conftest import (
     build_synthetic_data,
     make_multi_region_classification,
@@ -121,21 +124,43 @@ def allow_output_format_reset(format_str: str, *, _allow_reset: bool = False) ->
     configure_output_format(format_str, _allow_reset=True)
 
 
-def patch_oi_build(monkeypatch: pytest.MonkeyPatch, resources: Path, settings: dict) -> Path:
-    """Point ``run_portfolio`` and ``run_themes`` at stub resources for the O/I inputs.
+def patch_build(
+    monkeypatch: pytest.MonkeyPatch, resources: Path, themes: dict[str, str], settings: dict
+) -> Path:
+    """Point ``run_portfolio`` and ``run_themes`` at stub resources.
 
-    Writes the country classification and themes under ``resources`` and returns the
-    themes folder.
+    Writes the country classification, and a themes folder with each characteristic
+    in ``themes`` under its theme, under ``resources``. The build uses those
+    characteristics and ``settings``. Returns the themes folder.
     """
     cc_path = make_multi_region_classification(resources)
-    themes_dir = make_themes_dir(resources, {"char_a": "c1", "char_b": "c1", "char_c": "c2"})
+    themes_dir = make_themes_dir(resources, themes)
     monkeypatch.setattr("jkp.data.paths.get_country_classification_path", lambda: cc_path)
     monkeypatch.setattr("jkp.data.paths.get_themes_dir", lambda: themes_dir)
-    monkeypatch.setattr("jkp.data.portfolio.PORTFOLIO_CHARS", OI_CHARS)
+    monkeypatch.setattr("jkp.data.portfolio.PORTFOLIO_CHARS", list(themes))
     monkeypatch.setattr("jkp.data.portfolio.PORTFOLIO_SETTINGS", settings)
+    return themes_dir
+
+
+def patch_oi_build(monkeypatch: pytest.MonkeyPatch, resources: Path, settings: dict) -> Path:
+    """``patch_build`` for the O/I inputs, with output-format resets allowed."""
+    themes = {"char_a": "c1", "char_b": "c1", "char_c": "c2"}
+    themes_dir = patch_build(monkeypatch, resources, themes, settings)
     monkeypatch.setattr("jkp.data.portfolio.configure_output_format", allow_output_format_reset)
     configure_output_format("parquet", _allow_reset=True)
     return themes_dir
+
+
+def run_oi_build(root: Path) -> None:
+    """Build the portfolios and the v0 themes from the O/I inputs under ``root``.
+
+    The entry point of each build process in the determinism test.
+    """
+    resources = root / "resources"
+    resources.mkdir()
+    patch_oi_build(pytest.MonkeyPatch(), resources, OI_SETTINGS)
+    run_portfolio(output_format="parquet", output_dir=root)
+    run_themes(output_dir=root, version="v0")
 
 
 def output_files(root: Path, suffix: str = "parquet") -> set[str]:

@@ -17,11 +17,14 @@ import pytest
 import jkp.data.portfolio as portfolio_module
 from jkp.data.output_writer import configure_output_format
 from jkp.data.portfolio import _read_saved, run_portfolio, run_themes
-from tests.fixtures.portfolio_build import allow_output_format_reset, output_files
+from tests.fixtures.portfolio_build import (
+    OI_SETTINGS,
+    allow_output_format_reset,
+    output_files,
+    patch_build,
+)
 from tests.unit.portfolio.conftest import (
     build_synthetic_data,
-    make_multi_region_classification,
-    make_themes_dir,
 )
 
 
@@ -41,34 +44,8 @@ def _setup(
     settings_overrides: dict | None = None,
 ) -> Path:
     build_synthetic_data(tmp_path, list(countries), list(chars))
-    cc_path = make_multi_region_classification(tmp_path)
-    themes_dir = make_themes_dir(tmp_path, dict.fromkeys(chars, "cluster_x"))
-
-    monkeypatch.setattr("jkp.data.paths.get_country_classification_path", lambda: cc_path)
-    monkeypatch.setattr("jkp.data.paths.get_themes_dir", lambda: themes_dir)
-    monkeypatch.setattr("jkp.data.portfolio.PORTFOLIO_CHARS", list(chars))
-
-    base_settings = {
-        "end_date": _dt.date(2030, 12, 31),
-        "pfs": 3,
-        "source": ["CRSP", "COMPUSTAT"],
-        "wins_ret": True,
-        "bps": "non_mc",
-        "bp_min_n": 5,
-        "cmp": {"us": True, "int": True},
-        "regional_pfs": {
-            "country_excl": ["ZWE", "VEN"],
-            "country_weights": "market_cap",
-            "stocks_min": 1,
-            "months_min": 1,
-            "countries_min": 1,
-        },
-        "daily_pf": True,
-        "ind_pf": True,
-    }
-    if settings_overrides:
-        base_settings.update(settings_overrides)
-    monkeypatch.setattr("jkp.data.portfolio.PORTFOLIO_SETTINGS", base_settings)
+    settings = {**OI_SETTINGS, "cmp": {"us": True, "int": True}, **(settings_overrides or {})}
+    patch_build(monkeypatch, tmp_path, dict.fromkeys(chars, "cluster_x"), settings)
     return tmp_path
 
 

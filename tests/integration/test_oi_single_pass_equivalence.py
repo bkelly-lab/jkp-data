@@ -124,7 +124,9 @@ class TestOiSinglePassEquivalence:
             # differ in the last bits because the shared join feeds rows to
             # each sum in a different order than the per-component passes.
             try:
-                assert_frame_equal(_sorted(b), _sorted(a), check_exact=False, **tolerance.TIGHT)
+                assert_frame_equal(
+                    _sorted(b), _sorted(a), check_exact=False, **tolerance.polars(tolerance.TIGHT)
+                )
             except AssertionError as e:
                 raise AssertionError(f"{rel}: {e}") from e
 
