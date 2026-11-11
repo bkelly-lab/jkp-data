@@ -2,8 +2,10 @@
 
 Each build runs ``run_portfolio`` and then ``run_themes`` for v0 in a fresh Python
 process on the same synthetic inputs, which include the overnight/intraday columns. The
-baseline uses four Polars and four Numba threads; each variant changes one thing that
-must not change the outputs:
+baseline uses four Polars and four Numba threads. ``repeat`` builds with the same
+settings again: if it fails, the outputs vary from run to run and a failing variant
+says nothing about its setting. Each other variant changes one thing that must not
+change the outputs:
 
 - ``shuffled_inputs``: the rows of every parquet input in another order. The themes
   and country classification files are written by the build process and keep theirs,
@@ -29,7 +31,7 @@ from polars.testing import assert_frame_equal
 
 from jkp.data.portfolio import run_portfolio, run_themes
 from tests.conftest import ToleranceSpec
-from tests.unit.portfolio.conftest import OI_SETTINGS, build_oi_inputs, patch_oi_build
+from tests.fixtures.portfolio_build import OI_SETTINGS, build_oi_inputs, patch_oi_build
 
 pytestmark = pytest.mark.integration
 
@@ -38,6 +40,7 @@ REPO_ROOT = Path(__file__).parents[2]
 BUILD_TIMEOUT = 300
 BASELINE_ENV = {"POLARS_MAX_THREADS": "4", "NUMBA_NUM_THREADS": "4", "PYTHONHASHSEED": "0"}
 VARIANTS = {
+    "repeat": ({}, False),
     "shuffled_inputs": ({}, True),
     "one_thread": ({"POLARS_MAX_THREADS": "1", "NUMBA_NUM_THREADS": "1"}, False),
     "hash_seed": ({"PYTHONHASHSEED": "1"}, False),
@@ -64,14 +67,19 @@ def _run_build(inputs: Path, root: Path, env: dict[str, str], shuffle: bool) -> 
         "from tests.integration.test_portfolio_determinism import _build; "
         "_build(Path(sys.argv[1]))"
     )
-    result = subprocess.run(
-        [sys.executable, "-c", code, str(root)],
-        cwd=REPO_ROOT,
-        env={**os.environ, **env},
-        capture_output=True,
-        text=True,
-        timeout=BUILD_TIMEOUT,
-    )
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", code, str(root)],
+            cwd=REPO_ROOT,
+            env={**os.environ, **env},
+            capture_output=True,
+            text=True,
+            timeout=BUILD_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired as e:
+        # The captured stderr is bytes here, whatever ``text`` says.
+        stderr = (e.stderr or b"").decode(errors="replace")
+        raise AssertionError(f"build hung past {BUILD_TIMEOUT} s:\n{stderr[-4000:]}") from e
     assert result.returncode == 0, result.stderr[-4000:]
     return root / "processed" / "portfolios"
 
@@ -89,14 +97,12 @@ def inputs(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 @pytest.fixture(scope="module")
 def baseline(inputs: Path, tmp_path_factory: pytest.TempPathFactory) -> Path:
-    return _run_build(inputs, tmp_path_factory.mktemp("baseline"), BASELINE_ENV, shuffle=False)
-
-
-def test_baseline_writes_factors(baseline: Path) -> None:
-    """Guard the comparison: the baseline must write the files it is compared on."""
+    """The baseline build, which must write the files the variants are compared on."""
+    out = _run_build(inputs, tmp_path_factory.mktemp("baseline"), BASELINE_ENV, shuffle=False)
     for rel in ("pfs.parquet", "pfs_overnight.parquet", "themes/v0/lms.parquet"):
-        path = baseline / rel
+        path = out / rel
         assert path.exists() and pl.read_parquet(path).height > 0, rel
+    return out
 
 
 @pytest.mark.parametrize("variant", VARIANTS)

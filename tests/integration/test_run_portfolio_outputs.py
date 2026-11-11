@@ -17,6 +17,7 @@ import pytest
 import jkp.data.portfolio as portfolio_module
 from jkp.data.output_writer import configure_output_format
 from jkp.data.portfolio import _read_saved, run_portfolio, run_themes
+from tests.fixtures.portfolio_build import allow_output_format_reset
 from tests.unit.portfolio.conftest import (
     build_synthetic_data,
     make_multi_region_classification,
@@ -27,11 +28,7 @@ from tests.unit.portfolio.conftest import (
 @pytest.fixture(autouse=True)
 def _allow_format_reconfigure(monkeypatch: pytest.MonkeyPatch) -> None:
     """Always permit reconfiguring the output-format singleton inside ``run_portfolio``."""
-
-    def _force_reset(format_str: str, *, _allow_reset: bool = False) -> None:
-        configure_output_format(format_str, _allow_reset=True)
-
-    monkeypatch.setattr("jkp.data.portfolio.configure_output_format", _force_reset)
+    monkeypatch.setattr("jkp.data.portfolio.configure_output_format", allow_output_format_reset)
     configure_output_format("parquet", _allow_reset=True)
 
 

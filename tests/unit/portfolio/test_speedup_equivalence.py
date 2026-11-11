@@ -7,9 +7,9 @@ daily returns, zero-``me`` months, thin months, single-stock groups and a month 
 more than 255 breakpoint stocks.
 
 Keys, counts and null, NaN and infinity positions must match exactly. Finite floats
-may differ by ``TOLERANCE * max(1, |old|)``. Every comparison runs twice: with the
-compiled Numba kernels and with the kernels run as plain Python, as under
-``NUMBA_DISABLE_JIT=1``. NumPy keeps ``uint8`` arithmetic in ``uint8``, where it
+may differ by ``TOLERANCE * max(1, |old|)``. The portfolio, monthly, daily and CMP
+comparisons run twice: with the compiled Numba kernels and with the kernels run as
+plain Python, as under ``NUMBA_DISABLE_JIT=1``. NumPy keeps ``uint8`` arithmetic in ``uint8``, where it
 wraps past 255; Numba widens it to ``int64``.
 """
 
@@ -503,7 +503,9 @@ class TestDailyEquivalence:
         monthly = _old_pf_returns_lazy(_assigned(panel, "c_cont"), "c_cont").collect()
         assert monthly["ret_vw"].is_nan().sum() > 0
         assert EOMS[5] not in _assigned(panel, "c_cont").collect()["eom"].to_list()
-        assert panel.filter(pl.col("eom") == WIDE_MONTH)["bp_stock"].sum() > 255
+        # The kernel counts the breakpoint stocks of each characteristic; c_cont has no nulls.
+        wide = panel.filter((pl.col("eom") == WIDE_MONTH) & pl.col("c_cont").is_not_null())
+        assert wide["bp_stock"].sum() > 255
 
 
 @pytest.mark.unit

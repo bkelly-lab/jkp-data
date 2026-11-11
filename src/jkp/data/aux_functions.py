@@ -10486,9 +10486,7 @@ def _rank_rows_kernel(
                         vals[n] = value
                         rows[n] = row
                         n += 1
-                        # int(): a count of the uint8 flags stays uint8 and wraps past
-                        # 255 when the kernel runs as plain Python (NUMBA_DISABLE_JIT).
-                        n_bp += int(bp_stock[row])
+                        n_bp += bp_stock[row]
                         size = size_code[row]
                         group_n[0] += 1
                         group_n[two_groups[size]] += 1
@@ -10513,7 +10511,7 @@ def _rank_rows_kernel(
                     tie_n[:] = 0
                     for i in range(tie, tie_stop):
                         row = rows[order[i]]
-                        seen_bp += int(bp_stock[row])  # int(): as for n_bp
+                        seen_bp += bp_stock[row]
                         size = size_code[row]
                         tie_n[0] += 1
                         tie_n[two_groups[size]] += 1
@@ -10584,8 +10582,10 @@ def _rank_by_month(
         task_starts,
         month_starts,
         data.select(pl.col(chars).cast(pl.Float64)).to_numpy(order="c").ravel(),
-        data["bp_stock"].fill_null(False).cast(pl.UInt8).to_numpy(),
-        data["size_grp"].replace_strict(size_codes, return_dtype=pl.UInt8).to_numpy(),
+        # Int64, not UInt8: as plain Python (NUMBA_DISABLE_JIT) NumPy keeps uint8
+        # arithmetic in uint8, so a count of breakpoint stocks would wrap past 255.
+        data["bp_stock"].fill_null(False).cast(pl.Int64).to_numpy(),
+        data["size_grp"].replace_strict(size_codes, return_dtype=pl.Int64).to_numpy(),
         data["ret_exc_lead1m"].to_numpy(),
         n_chars,
         n_pfs,

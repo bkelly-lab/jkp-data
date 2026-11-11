@@ -20,7 +20,7 @@ from polars.testing import assert_frame_equal
 
 from jkp.data.portfolio import run_portfolio, run_themes
 from tests.fixtures import portfolio_oi_legacy
-from tests.unit.portfolio.conftest import (
+from tests.fixtures.portfolio_build import (
     OI_CHARS,
     OI_SETTINGS,
     allow_output_format_reset,
