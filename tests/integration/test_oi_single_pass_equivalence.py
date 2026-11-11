@@ -11,136 +11,39 @@ so the legacy files are compared through ``_new_path``.
 
 from __future__ import annotations
 
-import datetime as _dt
 import re
 from pathlib import Path
 
-import numpy as np
 import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-from jkp.data.output_writer import configure_output_format
 from jkp.data.portfolio import run_portfolio, run_themes
 from tests.fixtures import portfolio_oi_legacy
 from tests.unit.portfolio.conftest import (
-    build_synthetic_data,
-    make_multi_region_classification,
-    make_themes_dir,
+    OI_CHARS,
+    OI_SETTINGS,
+    allow_output_format_reset,
+    build_oi_inputs,
+    patch_oi_build,
 )
 
 pytestmark = pytest.mark.integration
 
-COUNTRIES = ["DEU", "GBR", "USA"]
-CHARS = ["char_a", "char_b", "char_c"]
-OI_COLS = ["ret_overnight", "ret_intraday", "ret_overnight_local", "ret_intraday_local"]
-COMPUSTAT_ID_OFFSET = 200_000
 SETTINGS = {
-    "end_date": _dt.date(2030, 12, 31),
-    "pfs": 3,
-    "source": ["CRSP", "COMPUSTAT"],
-    "wins_ret": True,
-    "bps": "non_mc",
-    "bp_min_n": 5,
-    "cmp": {"us": True, "int": False},
+    **OI_SETTINGS,
     # Read only by the frozen legacy code.
     "signals": {"us": False, "int": False, "standardize": True, "weight": "vw_cap"},
-    "regional_pfs": {
-        "country_excl": ["ZWE", "VEN"],
-        "country_weights": "market_cap",
-        "stocks_min": 1,
-        "months_min": 1,
-        "countries_min": 1,
-    },
-    "daily_pf": True,
-    "ind_pf": True,
 }
 
 
-def _add_oi_columns(processed: Path, excntry: str, seed: int) -> None:
-    """Give one country's inputs Compustat ids and O/I return columns with edge cases.
-
-    Description:
-        Compustat stocks (``source_crsp == 0``) get ids above 99999 so daily
-        winsorization applies to them. The daily file gets the four O/I
-        columns with: stock-days where only ``ret_exc`` is present, a date
-        where every O/I return is null, stock-days where only the O/I returns
-        are present, extra nulls in the local overnight leg only, and extreme
-        Compustat returns beyond the daily cutoffs. ``ret_intraday_local`` equals
-        ``ret_intraday``, as in the production builders. DEU has the columns but
-        all null.
-    """
-    char_path = processed / "characteristics" / f"{excntry}.parquet"
-    daily_path = processed / "return_data" / "daily_rets_by_country" / f"{excntry}.parquet"
-    chars = pl.read_parquet(char_path)
-    comp_ids = chars.filter(pl.col("source_crsp") == 0)["id"].unique()
-    remap = pl.when(pl.col("id").is_in(comp_ids.implode())).then(pl.col("id") + COMPUSTAT_ID_OFFSET)
-    chars.with_columns(remap.otherwise(pl.col("id")).alias("id")).write_parquet(char_path)
-
-    daily = pl.read_parquet(daily_path)
-    daily = daily.with_columns(remap.otherwise(pl.col("id")).alias("id"))
-    n = daily.height
-    rng = np.random.default_rng(seed)
-    if excntry == "DEU":
-        daily = daily.with_columns(pl.lit(None, dtype=pl.Float64).alias(c) for c in OI_COLS)
-        daily.write_parquet(daily_path)
-        return
-
-    first_date = daily["date"].min()
-    no_open = pl.Series(rng.random(n) < 0.10) | (daily["date"] == first_date)
-    no_close = pl.Series(rng.random(n) < 0.03)
-    local_extra_null = pl.Series(rng.random(n) < 0.05)
-    extreme = pl.Series(rng.random(n) < 0.05) & (daily["id"] > 99999)
-    daily = (
-        daily.with_columns(
-            [pl.Series(c, rng.normal(0.0002, 0.01, n)) for c in OI_COLS],
-            no_open=no_open,
-            no_close=no_close,
-            local_extra_null=local_extra_null,
-            extreme=extreme,
-        )
-        .with_columns(
-            pl.when(pl.col("extreme")).then(0.5).otherwise(pl.col("ret_exc")).alias("ret_exc"),
-            *[pl.when(pl.col("extreme")).then(-0.4).otherwise(pl.col(c)).alias(c) for c in OI_COLS],
-        )
-        .with_columns(
-            pl.when(~pl.col("no_close")).then(pl.col("ret_exc")).alias("ret_exc"),
-            *[pl.when(~pl.col("no_open")).then(pl.col(c)).alias(c) for c in OI_COLS],
-        )
-        .with_columns(
-            pl.when(~pl.col("local_extra_null"))
-            .then(pl.col("ret_overnight_local"))
-            .alias("ret_overnight_local"),
-            ret_intraday_local=pl.col("ret_intraday"),
-        )
-        .drop("no_open", "no_close", "local_extra_null", "extreme")
-    )
-    daily.write_parquet(daily_path)
-
-
-def _build_inputs(root: Path) -> None:
-    build_synthetic_data(root, COUNTRIES, CHARS, n_ids=80, n_months=10)
-    for i, ex in enumerate(COUNTRIES):
-        _add_oi_columns(root / "processed", ex, seed=7 + i)
-
-
 def _patch(monkeypatch: pytest.MonkeyPatch, resources: Path, settings: dict) -> None:
-    cc_path = make_multi_region_classification(resources)
-    themes_dir = make_themes_dir(resources, {"char_a": "c1", "char_b": "c1", "char_c": "c2"})
-    monkeypatch.setattr("jkp.data.paths.get_country_classification_path", lambda: cc_path)
-    monkeypatch.setattr("jkp.data.paths.get_themes_dir", lambda: themes_dir)
-    monkeypatch.setattr(
-        "tests.fixtures.portfolio_oi_legacy.V0_DIR", themes_dir / "superseded_themes" / "v0"
-    )
-
-    def _force_reset(format_str: str, *, _allow_reset: bool = False) -> None:
-        configure_output_format(format_str, _allow_reset=True)
-
-    for mod in ("jkp.data.portfolio", "tests.fixtures.portfolio_oi_legacy"):
-        monkeypatch.setattr(f"{mod}.PORTFOLIO_CHARS", CHARS)
-        monkeypatch.setattr(f"{mod}.PORTFOLIO_SETTINGS", settings)
-        monkeypatch.setattr(f"{mod}.configure_output_format", _force_reset)
-    configure_output_format("parquet", _allow_reset=True)
+    themes_dir = patch_oi_build(monkeypatch, resources, settings)
+    legacy = "tests.fixtures.portfolio_oi_legacy"
+    monkeypatch.setattr(f"{legacy}.V0_DIR", themes_dir / "superseded_themes" / "v0")
+    monkeypatch.setattr(f"{legacy}.PORTFOLIO_CHARS", OI_CHARS)
+    monkeypatch.setattr(f"{legacy}.PORTFOLIO_SETTINGS", settings)
+    monkeypatch.setattr(f"{legacy}.configure_output_format", allow_output_format_reset)
 
 
 def _sorted(df: pl.DataFrame) -> pl.DataFrame:
@@ -156,8 +59,8 @@ def outputs(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path]:
     mp = pytest.MonkeyPatch()
     legacy_root = tmp_path_factory.mktemp("legacy")
     new_root = tmp_path_factory.mktemp("new")
-    _build_inputs(legacy_root)
-    _build_inputs(new_root)
+    build_oi_inputs(legacy_root)
+    build_oi_inputs(new_root)
     _patch(mp, tmp_path_factory.mktemp("resources"), SETTINGS)
     try:
         portfolio_oi_legacy.run_portfolio(output_format="parquet", output_dir=legacy_root)

@@ -10486,7 +10486,9 @@ def _rank_rows_kernel(
                         vals[n] = value
                         rows[n] = row
                         n += 1
-                        n_bp += bp_stock[row]
+                        # int(): a count of the uint8 flags stays uint8 and wraps past
+                        # 255 when the kernel runs as plain Python (NUMBA_DISABLE_JIT).
+                        n_bp += int(bp_stock[row])
                         size = size_code[row]
                         group_n[0] += 1
                         group_n[two_groups[size]] += 1
@@ -10511,7 +10513,7 @@ def _rank_rows_kernel(
                     tie_n[:] = 0
                     for i in range(tie, tie_stop):
                         row = rows[order[i]]
-                        seen_bp += bp_stock[row]
+                        seen_bp += int(bp_stock[row])  # int(): as for n_bp
                         size = size_code[row]
                         tie_n[0] += 1
                         tie_n[two_groups[size]] += 1

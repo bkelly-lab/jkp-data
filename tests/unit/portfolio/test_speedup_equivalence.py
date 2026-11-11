@@ -3,15 +3,20 @@
 The ``_old_*`` functions are frozen copies of the slower implementations. The panel
 is built to break a rewrite: ties across breakpoints, a third of breakpoint stocks
 tied at the minimum, signed zeros, infinities, nulls in one return column only, NaN
-daily returns, zero-``me`` months, thin months and single-stock groups.
+daily returns, zero-``me`` months, thin months, single-stock groups and a month with
+more than 255 breakpoint stocks.
 
 Keys, counts and null, NaN and infinity positions must match exactly. Finite floats
-may differ by ``TOLERANCE * max(1, |old|)``. The Numba kernels must give the same
-results when they run as plain Python, as under ``NUMBA_DISABLE_JIT=1``.
+may differ by ``TOLERANCE * max(1, |old|)``. Every comparison runs twice: with the
+compiled Numba kernels and with the kernels run as plain Python, as under
+``NUMBA_DISABLE_JIT=1``. NumPy keeps ``uint8`` arithmetic in ``uint8``, where it
+wraps past 255; Numba widens it to ``int64``.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
 
@@ -58,6 +63,7 @@ CHARS = [
     "c_inf_month",
 ]
 EOMS = month_ends(6)
+WIDE_MONTH = EOMS[4]
 
 
 def _old_pf_returns_lazy(sub: pl.LazyFrame, x: str) -> pl.LazyFrame:
@@ -250,6 +256,11 @@ def panel() -> pl.DataFrame:
         .join(pl.DataFrame({"eom": pl.Series(EOMS, dtype=pl.Date)}), how="cross")
         .filter(pl.Series(rng.random(720) > 0.1))
     )
+    # More breakpoint stocks than a uint8 counts.
+    wide = pl.DataFrame({"id": np.arange(121, 521)}).with_columns(
+        eom=pl.lit(WIDE_MONTH, dtype=pl.Date)
+    )
+    frame = pl.concat([frame, wide])
     n = frame.height
     groups = ["mega", "large", "small", "micro"]
     zero_me_month = pl.col("eom") == EOMS[2]
@@ -313,7 +324,7 @@ def daily(panel: pl.DataFrame) -> pl.DataFrame:
     rng = np.random.default_rng(11)
     dates = [d for eom in EOMS for d in weekdays_in_month_after(eom, 5)]
     frame = (
-        pl.DataFrame({"id": [*range(1, 121), 999]})
+        pl.DataFrame({"id": [*range(1, 521), 999]})
         .join(pl.DataFrame({"date": pl.Series(dates, dtype=pl.Date)}), how="cross")
         .with_columns(pl.col("date").dt.month_start().dt.offset_by("-1d").alias("eom_lag1"))
     )
@@ -363,9 +374,32 @@ def _assigned(panel: pl.DataFrame, x: str) -> pl.LazyFrame:
     )
 
 
+@contextmanager
+def _kernels(mode: str) -> Iterator[None]:
+    """Run the Numba kernels compiled, or as plain Python as under ``NUMBA_DISABLE_JIT=1``.
+
+    Plain Python ignores float division by zero and invalid operations, as Numba's
+    ``error_model="numpy"`` does. Integer overflow still warns.
+    """
+    if mode == "compiled":
+        yield
+        return
+    with pytest.MonkeyPatch.context() as mp, np.errstate(divide="ignore", invalid="ignore"):
+        for name, obj in list(vars(aux_functions).items()):
+            if isinstance(obj, Dispatcher):
+                mp.setattr(aux_functions, name, obj.py_func)
+        yield
+
+
+@pytest.fixture(scope="module", params=["compiled", "plain_python"])
+def kernels(request: pytest.FixtureRequest) -> str:
+    return request.param
+
+
 @pytest.fixture(scope="module")
-def ranked(panel: pl.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    return _rank_by_month(panel, CHARS, PFS, BP_MIN_N)
+def ranked(panel: pl.DataFrame, kernels: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    with _kernels(kernels):
+        return _rank_by_month(panel, CHARS, PFS, BP_MIN_N)
 
 
 @pytest.fixture(scope="module")
@@ -374,17 +408,22 @@ def pf_by_row(ranked: tuple[np.ndarray, np.ndarray, np.ndarray]) -> np.ndarray:
 
 
 @pytest.fixture(scope="module")
-def month_sums(panel: pl.DataFrame, pf_by_row: np.ndarray) -> tuple[pl.Series, np.ndarray]:
-    return _month_totals(panel, pf_by_row, PFS)
+def month_sums(
+    panel: pl.DataFrame, pf_by_row: np.ndarray, kernels: str
+) -> tuple[pl.Series, np.ndarray]:
+    with _kernels(kernels):
+        return _month_totals(panel, pf_by_row, PFS)
 
 
 @pytest.fixture(scope="module")
 def new_monthly(
     ranked: tuple[np.ndarray, np.ndarray, np.ndarray],
     month_sums: tuple[pl.Series, np.ndarray],
+    kernels: str,
 ) -> pl.DataFrame:
     months, totals = month_sums
-    return _pf_returns(months, totals, ranked[1], CHARS)
+    with _kernels(kernels):
+        return _pf_returns(months, totals, ranked[1], CHARS)
 
 
 @pytest.fixture(scope="module")
@@ -393,10 +432,12 @@ def new_daily(
     daily: pl.DataFrame,
     pf_by_row: np.ndarray,
     month_sums: tuple[pl.Series, np.ndarray],
+    kernels: str,
 ) -> dict[str, pl.DataFrame]:
     months, totals = month_sums
     stock_days = _stock_days(panel, daily, RET_COLS)
-    return _pf_daily_returns(stock_days, pf_by_row, months, totals, CHARS, RET_COLS, PFS)
+    with _kernels(kernels):
+        return _pf_daily_returns(stock_days, pf_by_row, months, totals, CHARS, RET_COLS, PFS)
 
 
 @pytest.mark.unit
@@ -462,6 +503,7 @@ class TestDailyEquivalence:
         monthly = _old_pf_returns_lazy(_assigned(panel, "c_cont"), "c_cont").collect()
         assert monthly["ret_vw"].is_nan().sum() > 0
         assert EOMS[5] not in _assigned(panel, "c_cont").collect()["eom"].to_list()
+        assert panel.filter(pl.col("eom") == WIDE_MONTH)["bp_stock"].sum() > 255
 
 
 @pytest.mark.unit
@@ -502,69 +544,6 @@ class TestCmpEquivalence:
         )
         assert row.height == 1
         assert row["ret_weighted"].is_nan().all()
-
-
-@pytest.fixture(scope="module")
-def plain_python(panel: pl.DataFrame, daily: pl.DataFrame) -> dict:
-    """The portfolios, monthly, daily and CMP returns with every kernel run as plain Python.
-
-    Numba types integers differently from NumPy: it widens ``uint8`` arithmetic to
-    ``int64``, where NumPy keeps ``uint8`` and overflows. Errors are ignored, as Numba's
-    ``error_model="numpy"`` does.
-    """
-    mp = pytest.MonkeyPatch()
-    for name, obj in vars(aux_functions).items():
-        if isinstance(obj, Dispatcher):
-            mp.setattr(aux_functions, name, obj.py_func)
-    try:
-        with np.errstate(all="ignore"):
-            pf_by_row, medians, cmp_totals = _rank_by_month(panel, CHARS, PFS, BP_MIN_N)
-            months, totals = _month_totals(panel, pf_by_row, PFS)
-            stock_days = _stock_days(panel, daily, RET_COLS)
-            return {
-                "pf_by_row": pf_by_row,
-                "monthly": _pf_returns(months, totals, medians, CHARS),
-                "daily": _pf_daily_returns(
-                    stock_days, pf_by_row, months, totals, CHARS, RET_COLS, PFS
-                ),
-                "cmp": {
-                    n: _cmp_returns(months, cmp_totals, CHARS, n, "usa") for n in CMP_SIZE_GROUPS
-                },
-            }
-    finally:
-        mp.undo()
-
-
-@pytest.mark.unit
-class TestPlainPythonKernels:
-    def test_portfolios_match(self, pf_by_row: np.ndarray, plain_python: dict) -> None:
-        assert np.array_equal(pf_by_row, plain_python["pf_by_row"])
-
-    def test_monthly_matches(self, new_monthly: pl.DataFrame, plain_python: dict) -> None:
-        _assert_within_tolerance(
-            new_monthly, plain_python["monthly"], ["characteristic", "pf", "eom"]
-        )
-
-    @pytest.mark.parametrize("ret_col", RET_COLS)
-    def test_daily_matches(
-        self, new_daily: dict[str, pl.DataFrame], plain_python: dict, ret_col: str
-    ) -> None:
-        _assert_within_tolerance(
-            new_daily[ret_col], plain_python["daily"][ret_col], ["characteristic", "pf", "date"]
-        )
-
-    @pytest.mark.parametrize("n_groups", CMP_SIZE_GROUPS)
-    def test_cmp_matches(
-        self,
-        ranked: tuple[np.ndarray, np.ndarray, np.ndarray],
-        month_sums: tuple[pl.Series, np.ndarray],
-        plain_python: dict,
-        n_groups: int,
-    ) -> None:
-        compiled = _cmp_returns(month_sums[0], ranked[2], CHARS, n_groups, "usa")
-        _assert_within_tolerance(
-            compiled, plain_python["cmp"][n_groups], ["characteristic", "size_grp", "eom"]
-        )
 
 
 @pytest.mark.unit

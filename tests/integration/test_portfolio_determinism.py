@@ -5,7 +5,8 @@ process on the same synthetic inputs, which include the overnight/intraday colum
 baseline uses four Polars and four Numba threads; each variant changes one thing that
 must not change the outputs:
 
-- ``shuffled_inputs``: the rows of every input file in another order,
+- ``shuffled_inputs``: the rows of every parquet input in another order. The themes
+  and country classification files are written by the build process and keep theirs,
 - ``one_thread``: one Polars and one Numba thread,
 - ``hash_seed``: another Python hash seed, which changes the iteration order of sets
   of strings.
@@ -27,11 +28,14 @@ import pytest
 from polars.testing import assert_frame_equal
 
 from jkp.data.portfolio import run_portfolio, run_themes
-from tests.integration.test_oi_single_pass_equivalence import SETTINGS, _build_inputs, _patch
+from tests.conftest import ToleranceSpec
+from tests.unit.portfolio.conftest import OI_SETTINGS, build_oi_inputs, patch_oi_build
 
 pytestmark = pytest.mark.integration
 
 REPO_ROOT = Path(__file__).parents[2]
+# A build takes seconds; the limit only stops a hung one.
+BUILD_TIMEOUT = 300
 BASELINE_ENV = {"POLARS_MAX_THREADS": "4", "NUMBA_NUM_THREADS": "4", "PYTHONHASHSEED": "0"}
 VARIANTS = {
     "shuffled_inputs": ({}, True),
@@ -44,8 +48,7 @@ def _build(root: Path) -> None:
     """Run the portfolio build on ``root``: the entry point of each build process."""
     resources = root / "resources"
     resources.mkdir()
-    mp = pytest.MonkeyPatch()
-    _patch(mp, resources, SETTINGS)
+    patch_oi_build(pytest.MonkeyPatch(), resources, OI_SETTINGS)
     run_portfolio(output_format="parquet", output_dir=root)
     run_themes(output_dir=root, version="v0")
 
@@ -67,6 +70,7 @@ def _run_build(inputs: Path, root: Path, env: dict[str, str], shuffle: bool) -> 
         env={**os.environ, **env},
         capture_output=True,
         text=True,
+        timeout=BUILD_TIMEOUT,
     )
     assert result.returncode == 0, result.stderr[-4000:]
     return root / "processed" / "portfolios"
@@ -79,7 +83,7 @@ def _files(root: Path) -> list[str]:
 @pytest.fixture(scope="module")
 def inputs(tmp_path_factory: pytest.TempPathFactory) -> Path:
     root = tmp_path_factory.mktemp("inputs")
-    _build_inputs(root)
+    build_oi_inputs(root)
     return root / "processed"
 
 
@@ -88,9 +92,16 @@ def baseline(inputs: Path, tmp_path_factory: pytest.TempPathFactory) -> Path:
     return _run_build(inputs, tmp_path_factory.mktemp("baseline"), BASELINE_ENV, shuffle=False)
 
 
+def test_baseline_writes_factors(baseline: Path) -> None:
+    """Guard the comparison: the baseline must write the files it is compared on."""
+    for rel in ("pfs.parquet", "pfs_overnight.parquet", "themes/v0/lms.parquet"):
+        path = baseline / rel
+        assert path.exists() and pl.read_parquet(path).height > 0, rel
+
+
 @pytest.mark.parametrize("variant", VARIANTS)
 def test_outputs_match_baseline(
-    inputs: Path, baseline: Path, tmp_path: Path, variant: str, tolerance
+    inputs: Path, baseline: Path, tmp_path: Path, variant: str, tolerance: ToleranceSpec
 ) -> None:
     env, shuffle = VARIANTS[variant]
     out = _run_build(inputs, tmp_path, {**BASELINE_ENV, **env}, shuffle)

@@ -172,16 +172,26 @@ class TestRunPortfolioOutputs:
         daily_files = list(out.rglob("*_daily.parquet"))
         assert not daily_files, f"unexpected daily files: {daily_files}"
 
-    def test_no_portfolios_writes_no_factor_files(
+    def test_no_portfolios_writes_only_cmp_and_industry_files(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """No month has enough breakpoint stocks: the run finishes without pfs or hml files."""
+        """No month has enough breakpoint stocks: the run finishes and writes only the
+        CMP and industry files, which use no breakpoints."""
         _setup(tmp_path, monkeypatch, settings_overrides={"bp_min_n": 10_000})
         run_portfolio(output_format="parquet", output_dir=tmp_path)
 
-        out = _portfolios_dir(tmp_path)
-        for name in ("pfs", "hml", "pfs_daily", "hml_daily", "themes/v1.0/lms"):
-            assert not (out / f"{name}.parquet").exists(), name
+        assert _files(_portfolios_dir(tmp_path)) == {
+            "hml_cmp_1.parquet",
+            "hml_cmp_2.parquet",
+            "hml_cmp_5.parquet",
+            "industry_ff49.parquet",
+            "industry_ff49_daily.parquet",
+            "industry_gics.parquet",
+            "industry_gics_daily.parquet",
+            "themes/v1.0/lms_cmp_1.parquet",
+            "themes/v1.0/lms_cmp_2.parquet",
+            "themes/v1.0/lms_cmp_5.parquet",
+        }
 
     def test_no_overnight_returns_writes_no_overnight_files(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
