@@ -164,4 +164,4 @@ jobs:
         # is enough: the lockfile has one NumPy for all of them.
         env:
           NUMBA_DISABLE_JIT: "1"
-        run: uv run pytest tests/unit/portfolio/ --tb=short --no-cov -n auto
+        run: uv run pytest tests/unit/portfolio/ --tb=short --no-cov
