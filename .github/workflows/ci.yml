@@ -116,13 +116,6 @@ jobs:
             -v --tb=short \
             --junitxml=pytest.xml
 
-      - name: Run portfolio tests with the Numba JIT off
-        # The kernels then run as plain Python, where NumPy keeps uint8 arithmetic in
-        # uint8 and it wraps past 255; compiled Numba widens it to int64.
-        env:
-          NUMBA_DISABLE_JIT: "1"
-        run: uv run pytest tests/unit/portfolio/ --tb=short --no-cov
-
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@v6
@@ -130,3 +123,45 @@ jobs:
           name: test-reports-py${{ matrix.python-version }}
           path: pytest.xml
           retention-days: 7
+
+  # ============================================================
+  # Job 3: Portfolio tests with the Numba JIT off (beside job 2, so it adds no time)
+  # ============================================================
+  portfolio-no-jit:
+    name: Portfolio tests (JIT off)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: lint
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+          enable-cache: false
+
+      - name: Cache dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/uv
+            .venv
+          key: uv-${{ runner.os }}-py3.12-${{ hashFiles('uv.lock') }}
+          restore-keys: |
+            uv-${{ runner.os }}-py3.12-
+
+      - name: Install dependencies
+        run: uv sync --frozen --group test
+
+      - name: Run portfolio tests with the Numba JIT off
+        # The kernels run as plain Python, where NumPy keeps uint8 arithmetic in uint8
+        # and it wraps past 255; compiled Numba widens it to int64. One Python version
+        # is enough: the lockfile has one NumPy for all of them.
+        env:
+          NUMBA_DISABLE_JIT: "1"
+        run: uv run pytest tests/unit/portfolio/ --tb=short --no-cov -n auto
