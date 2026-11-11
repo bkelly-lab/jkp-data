@@ -10585,7 +10585,7 @@ def _rank_by_month(
         # Int64, not UInt8: as plain Python (NUMBA_DISABLE_JIT) NumPy keeps uint8
         # arithmetic in uint8, so a count of breakpoint stocks would wrap past 255.
         data["bp_stock"].fill_null(False).cast(pl.Int64).to_numpy(),
-        data["size_grp"].replace_strict(size_codes, return_dtype=pl.Int64).to_numpy(),
+        data["size_grp"].replace_strict(size_codes, return_dtype=pl.UInt8).to_numpy(),
         data["ret_exc_lead1m"].to_numpy(),
         n_chars,
         n_pfs,

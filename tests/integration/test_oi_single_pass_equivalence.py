@@ -25,6 +25,7 @@ from tests.fixtures.portfolio_build import (
     OI_SETTINGS,
     allow_output_format_reset,
     build_oi_inputs,
+    output_files,
     patch_oi_build,
 )
 
@@ -71,10 +72,6 @@ def outputs(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path]:
     return legacy_root / "processed" / "portfolios", new_root / "processed" / "portfolios"
 
 
-def _files(root: Path) -> set[str]:
-    return {p.relative_to(root).as_posix() for p in root.rglob("*.parquet")}
-
-
 _MOVED = [
     (r"^cmp\.parquet$", "hml_cmp_5.parquet"),
     (r"^lms(.*)\.parquet$", r"themes/v0/lms\1.parquet"),
@@ -102,13 +99,15 @@ class TestOiSinglePassEquivalence:
             "themes/v0/cmp.parquet",
         }
         v0_and_unsigned = {
-            f for f in _files(new) if not f.startswith("themes/v1.0/") and f not in not_in_legacy
+            f
+            for f in output_files(new)
+            if not f.startswith("themes/v1.0/") and f not in not_in_legacy
         }
-        assert v0_and_unsigned == {_new_path(f) for f in _files(legacy)}
+        assert v0_and_unsigned == {_new_path(f) for f in output_files(legacy)}
 
     def test_oi_outputs_written(self, outputs: tuple[Path, Path]) -> None:
         _, new = outputs
-        files = _files(new)
+        files = output_files(new)
         for component in ("overnight", "intraday", "overnight_local", "intraday_local"):
             for name in ("pfs", "hml", "themes/v0/lms", "themes/v0/themes"):
                 assert f"{name}_{component}.parquet" in files
@@ -116,7 +115,7 @@ class TestOiSinglePassEquivalence:
 
     def test_all_outputs_match(self, outputs: tuple[Path, Path], tolerance) -> None:
         legacy, new = outputs
-        for rel in sorted(_files(legacy)):
+        for rel in sorted(output_files(legacy)):
             a = pl.read_parquet(legacy / rel).rename({"cluster": "theme"}, strict=False)
             b = pl.read_parquet(new / _new_path(rel)).drop("n_subthemes", strict=False)
             assert b.schema == a.schema, rel

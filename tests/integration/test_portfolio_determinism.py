@@ -31,7 +31,12 @@ from polars.testing import assert_frame_equal
 
 from jkp.data.portfolio import run_portfolio, run_themes
 from tests.conftest import ToleranceSpec
-from tests.fixtures.portfolio_build import OI_SETTINGS, build_oi_inputs, patch_oi_build
+from tests.fixtures.portfolio_build import (
+    OI_SETTINGS,
+    build_oi_inputs,
+    output_files,
+    patch_oi_build,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -84,10 +89,6 @@ def _run_build(inputs: Path, root: Path, env: dict[str, str], shuffle: bool) -> 
     return root / "processed" / "portfolios"
 
 
-def _files(root: Path) -> list[str]:
-    return sorted(p.relative_to(root).as_posix() for p in root.rglob("*.parquet"))
-
-
 @pytest.fixture(scope="module")
 def inputs(tmp_path_factory: pytest.TempPathFactory) -> Path:
     root = tmp_path_factory.mktemp("inputs")
@@ -111,8 +112,8 @@ def test_outputs_match_baseline(
 ) -> None:
     env, shuffle = VARIANTS[variant]
     out = _run_build(inputs, tmp_path, {**BASELINE_ENV, **env}, shuffle)
-    assert _files(out) == _files(baseline)
-    for rel in _files(baseline):
+    assert output_files(out) == output_files(baseline)
+    for rel in sorted(output_files(baseline)):
         try:
             assert_frame_equal(
                 pl.read_parquet(out / rel),

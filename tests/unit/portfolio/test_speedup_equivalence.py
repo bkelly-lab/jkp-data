@@ -9,8 +9,9 @@ more than 255 breakpoint stocks.
 Keys, counts and null, NaN and infinity positions must match exactly. Finite floats
 may differ by ``TOLERANCE * max(1, |old|)``. The portfolio, monthly, daily and CMP
 comparisons run twice: with the compiled Numba kernels and with the kernels run as
-plain Python, as under ``NUMBA_DISABLE_JIT=1``. NumPy keeps ``uint8`` arithmetic in ``uint8``, where it
-wraps past 255; Numba widens it to ``int64``.
+plain Python, as under ``NUMBA_DISABLE_JIT=1``. NumPy keeps ``uint8`` arithmetic in
+``uint8``, where it wraps past 255; Numba widens it to ``int64``. The frozen results
+are computed once and compared with both.
 """
 
 from __future__ import annotations
@@ -323,11 +324,18 @@ def daily(panel: pl.DataFrame) -> pl.DataFrame:
     """Five days after each month: some without a stock-month, some with one return."""
     rng = np.random.default_rng(11)
     dates = [d for eom in EOMS for d in weekdays_in_month_after(eom, 5)]
-    frame = (
-        pl.DataFrame({"id": [*range(1, 521), 999]})
-        .join(pl.DataFrame({"date": pl.Series(dates, dtype=pl.Date)}), how="cross")
-        .with_columns(pl.col("date").dt.month_start().dt.offset_by("-1d").alias("eom_lag1"))
-    )
+    wide_dates = weekdays_in_month_after(WIDE_MONTH, 5)
+    frame = pl.concat(
+        [
+            pl.DataFrame({"id": [*range(1, 121), 999]}).join(
+                pl.DataFrame({"date": pl.Series(dates, dtype=pl.Date)}), how="cross"
+            ),
+            # The stocks of the wide month only, on the days after it.
+            pl.DataFrame({"id": range(121, 521)}).join(
+                pl.DataFrame({"date": pl.Series(wide_dates, dtype=pl.Date)}), how="cross"
+            ),
+        ]
+    ).with_columns(pl.col("date").dt.month_start().dt.offset_by("-1d").alias("eom_lag1"))
     # Stock-months with no daily rows.
     dropped = panel.select(id="id", eom_lag1="eom").sample(fraction=0.05, seed=3)
     frame = frame.join(dropped, on=["id", "eom_lag1"], how="anti")
@@ -374,17 +382,51 @@ def _assigned(panel: pl.DataFrame, x: str) -> pl.LazyFrame:
     )
 
 
+@pytest.fixture(scope="module")
+def assigned(panel: pl.DataFrame) -> dict[str, pl.DataFrame]:
+    """The frozen portfolio assignment of each characteristic."""
+    return {x: _assigned(panel, x).collect() for x in CHARS}
+
+
+@pytest.fixture(scope="module")
+def old_monthly(assigned: dict[str, pl.DataFrame]) -> dict[str, pl.DataFrame]:
+    return {
+        x: _old_pf_returns_lazy(sub.lazy(), x).collect()
+        for x, sub in assigned.items()
+        if x != "c_all_null"
+    }
+
+
+@pytest.fixture(scope="module")
+def old_daily(assigned: dict[str, pl.DataFrame], daily: pl.DataFrame) -> dict[str, pl.DataFrame]:
+    """The frozen daily result of each characteristic, with both return columns."""
+    return {
+        x: _old_pf_daily_lazy(sub.lazy(), daily, x, RET_COLS).collect()
+        for x, sub in assigned.items()
+        if x != "c_all_null"
+    }
+
+
+@pytest.fixture(scope="module")
+def old_cmp(panel: pl.DataFrame) -> dict[int, pl.DataFrame]:
+    return {n: _old_cmp_returns(panel, CHARS, n, "usa") for n in CMP_SIZE_GROUPS}
+
+
 @contextmanager
 def _kernels(mode: str) -> Iterator[None]:
     """Run the Numba kernels compiled, or as plain Python as under ``NUMBA_DISABLE_JIT=1``.
 
     Plain Python ignores float division by zero and invalid operations, as Numba's
-    ``error_model="numpy"`` does. Integer overflow still warns.
+    ``error_model="numpy"`` does. Overflow raises, so a value that wraps fails the
+    test at the line where it happens.
     """
     if mode == "compiled":
         yield
         return
-    with pytest.MonkeyPatch.context() as mp, np.errstate(divide="ignore", invalid="ignore"):
+    with (
+        pytest.MonkeyPatch.context() as mp,
+        np.errstate(divide="ignore", invalid="ignore", over="raise"),
+    ):
         for name, obj in list(vars(aux_functions).items()):
             if isinstance(obj, Dispatcher):
                 mp.setattr(aux_functions, name, obj.py_func)
@@ -444,11 +486,14 @@ def new_daily(
 class TestAssignmentEquivalence:
     @pytest.mark.parametrize("x", CHARS)
     def test_portfolios_match_old_exactly(
-        self, panel: pl.DataFrame, pf_by_row: np.ndarray, x: str
+        self,
+        panel: pl.DataFrame,
+        assigned: dict[str, pl.DataFrame],
+        pf_by_row: np.ndarray,
+        x: str,
     ) -> None:
-        assigned = _assigned(panel, x).collect()
         old = np.zeros(panel.height, dtype=np.uint8)
-        old[assigned["sm"].to_numpy()] = assigned["pf"].to_numpy()
+        old[assigned[x]["sm"].to_numpy()] = assigned[x]["pf"].to_numpy()
         assert np.array_equal(old, pf_by_row[:, CHARS.index(x)])
 
 
@@ -456,11 +501,10 @@ class TestAssignmentEquivalence:
 class TestMonthlyEquivalence:
     @pytest.mark.parametrize("x", [c for c in CHARS if c != "c_all_null"])
     def test_monthly_matches_old(
-        self, panel: pl.DataFrame, new_monthly: pl.DataFrame, x: str
+        self, old_monthly: dict[str, pl.DataFrame], new_monthly: pl.DataFrame, x: str
     ) -> None:
-        old = _old_pf_returns_lazy(_assigned(panel, x), x).collect()
         new = new_monthly.filter(pl.col("characteristic") == x)
-        _assert_within_tolerance(old, new, ["pf", "eom"])
+        _assert_within_tolerance(old_monthly[x], new, ["pf", "eom"])
 
     def test_all_null_characteristic_gives_no_rows(self, new_monthly: pl.DataFrame) -> None:
         assert "c_all_null" not in new_monthly["characteristic"].to_list()
@@ -472,15 +516,14 @@ class TestDailyEquivalence:
     @pytest.mark.parametrize("ret_col", RET_COLS)
     def test_daily_leg_matches_old(
         self,
-        panel: pl.DataFrame,
-        daily: pl.DataFrame,
+        old_daily: dict[str, pl.DataFrame],
         new_daily: dict[str, pl.DataFrame],
         x: str,
         ret_col: str,
     ) -> None:
-        wide = _old_pf_daily_lazy(_assigned(panel, x), daily, x, RET_COLS).collect()
+        old = _old_split_daily_leg(old_daily[x], ret_col)
         new = new_daily[ret_col].filter(pl.col("characteristic") == x)
-        _assert_within_tolerance(_old_split_daily_leg(wide, ret_col), new, ["pf", "date"])
+        _assert_within_tolerance(old, new, ["pf", "date"])
 
     @pytest.mark.parametrize("ret_col", RET_COLS)
     def test_all_null_characteristic_gives_no_rows(
@@ -489,20 +532,20 @@ class TestDailyEquivalence:
         assert "c_all_null" not in new_daily[ret_col]["characteristic"].to_list()
 
     def test_panel_reaches_the_awkward_cases(
-        self, panel: pl.DataFrame, daily: pl.DataFrame
+        self,
+        panel: pl.DataFrame,
+        assigned: dict[str, pl.DataFrame],
+        old_monthly: dict[str, pl.DataFrame],
+        old_daily: dict[str, pl.DataFrame],
     ) -> None:
         """Guard the fixture: each edge case must actually occur."""
-        min_tied = _assigned(panel, "c_min_tied").collect()
+        min_tied = assigned["c_min_tied"]
         assert min_tied.filter(pl.col("var") == 0.0)["cdf"].unique().to_list() == [0.00000001]
         assert min_tied.filter(pl.col("var") == 0.0)["pf"].unique().to_list() == [1.0]
-        leg = _old_split_daily_leg(
-            _old_pf_daily_lazy(_assigned(panel, "c_cont"), daily, "c_cont", RET_COLS).collect(),
-            "ret_exc",
-        )
+        leg = _old_split_daily_leg(old_daily["c_cont"], "ret_exc")
         assert leg["ret_vw"].is_nan().sum() > 0
-        monthly = _old_pf_returns_lazy(_assigned(panel, "c_cont"), "c_cont").collect()
-        assert monthly["ret_vw"].is_nan().sum() > 0
-        assert EOMS[5] not in _assigned(panel, "c_cont").collect()["eom"].to_list()
+        assert old_monthly["c_cont"]["ret_vw"].is_nan().sum() > 0
+        assert EOMS[5] not in assigned["c_cont"]["eom"].to_list()
         # The kernel counts the breakpoint stocks of each characteristic; c_cont has no nulls.
         wide = panel.filter((pl.col("eom") == WIDE_MONTH) & pl.col("c_cont").is_not_null())
         assert wide["bp_stock"].sum() > 255
@@ -513,14 +556,13 @@ class TestCmpEquivalence:
     @pytest.mark.parametrize("n_groups", CMP_SIZE_GROUPS)
     def test_cmp_matches_old(
         self,
-        panel: pl.DataFrame,
+        old_cmp: dict[int, pl.DataFrame],
         ranked: tuple[np.ndarray, np.ndarray, np.ndarray],
         month_sums: tuple[pl.Series, np.ndarray],
         n_groups: int,
     ) -> None:
-        old = _old_cmp_returns(panel, CHARS, n_groups, "usa")
         new = _cmp_returns(month_sums[0], ranked[2], CHARS, n_groups, "usa")
-        _assert_within_tolerance(old, new, ["characteristic", "size_grp", "eom"])
+        _assert_within_tolerance(old_cmp[n_groups], new, ["characteristic", "size_grp", "eom"])
 
     def test_constant_and_single_stock_groups_are_dropped(
         self,

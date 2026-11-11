@@ -116,6 +116,13 @@ jobs:
             -v --tb=short \
             --junitxml=pytest.xml
 
+      - name: Run portfolio tests with the Numba JIT off
+        # The kernels then run as plain Python, where NumPy keeps uint8 arithmetic in
+        # uint8 and it wraps past 255; compiled Numba widens it to int64.
+        env:
+          NUMBA_DISABLE_JIT: "1"
+        run: uv run pytest tests/unit/portfolio/ --tb=short --no-cov
+
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@v6

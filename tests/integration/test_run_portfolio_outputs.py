@@ -17,7 +17,7 @@ import pytest
 import jkp.data.portfolio as portfolio_module
 from jkp.data.output_writer import configure_output_format
 from jkp.data.portfolio import _read_saved, run_portfolio, run_themes
-from tests.fixtures.portfolio_build import allow_output_format_reset
+from tests.fixtures.portfolio_build import allow_output_format_reset, output_files
 from tests.unit.portfolio.conftest import (
     build_synthetic_data,
     make_multi_region_classification,
@@ -173,22 +173,32 @@ class TestRunPortfolioOutputs:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """No month has enough breakpoint stocks: the run finishes and writes only the
-        CMP and industry files, which use no breakpoints."""
+        CMP and industry files. The CMP files use no breakpoints and have rows. The
+        industry files are empty, because an industry group also needs ``bp_min_n``
+        stocks."""
         _setup(tmp_path, monkeypatch, settings_overrides={"bp_min_n": 10_000})
         run_portfolio(output_format="parquet", output_dir=tmp_path)
 
-        assert _files(_portfolios_dir(tmp_path)) == {
+        out = _portfolios_dir(tmp_path)
+        cmp_files = {
             "hml_cmp_1.parquet",
             "hml_cmp_2.parquet",
             "hml_cmp_5.parquet",
-            "industry_ff49.parquet",
-            "industry_ff49_daily.parquet",
-            "industry_gics.parquet",
-            "industry_gics_daily.parquet",
             "themes/v1.0/lms_cmp_1.parquet",
             "themes/v1.0/lms_cmp_2.parquet",
             "themes/v1.0/lms_cmp_5.parquet",
         }
+        industry_files = {
+            "industry_ff49.parquet",
+            "industry_ff49_daily.parquet",
+            "industry_gics.parquet",
+            "industry_gics_daily.parquet",
+        }
+        assert output_files(out) == cmp_files | industry_files
+        for rel in cmp_files:
+            assert pl.read_parquet(out / rel).height > 0, rel
+        for rel in industry_files:
+            assert pl.read_parquet(out / rel).height == 0, rel
 
     def test_no_overnight_returns_writes_no_overnight_files(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
@@ -266,10 +276,6 @@ class TestRunPortfolioOutputs:
             )
 
 
-def _files(root: Path, suffix: str = "parquet") -> set[str]:
-    return {p.relative_to(root).as_posix() for p in root.rglob(f"*.{suffix}")}
-
-
 def _assert_cmp_signed(signed: pl.DataFrame, unsigned: pl.DataFrame) -> None:
     """Each signed cmp row is the unsigned row times its direction, in the same order."""
     keys = ["excntry", "characteristic", "size_grp", "eom"]
@@ -287,13 +293,13 @@ class TestRunThemes:
         _setup(tmp_path, monkeypatch)
         run_portfolio(output_format="parquet", output_dir=tmp_path)
         themes_dir = _portfolios_dir(tmp_path) / "themes"
-        expected = {rel: pl.read_parquet(themes_dir / rel) for rel in _files(themes_dir)}
+        expected = {rel: pl.read_parquet(themes_dir / rel) for rel in output_files(themes_dir)}
         for path in themes_dir.rglob("*.parquet"):
             path.unlink()
 
         run_themes(output_dir=tmp_path)
 
-        assert _files(themes_dir) == set(expected)
+        assert output_files(themes_dir) == set(expected)
         assert [p.name for p in themes_dir.iterdir()] == ["v1.0"]
         for rel, df in expected.items():
             assert pl.read_parquet(themes_dir / rel).equals(df), rel
@@ -302,7 +308,7 @@ class TestRunThemes:
         _setup(tmp_path, monkeypatch)
         run_portfolio(output_format="parquet", output_dir=tmp_path)
         out = _portfolios_dir(tmp_path) / "themes"
-        v1 = {rel: pl.read_parquet(out / "v1.0" / rel) for rel in _files(out / "v1.0")}
+        v1 = {rel: pl.read_parquet(out / "v1.0" / rel) for rel in output_files(out / "v1.0")}
 
         run_themes(output_dir=tmp_path, version="v0")
 
@@ -532,13 +538,13 @@ class TestRunThemes:
         _setup(tmp_path, monkeypatch)
         run_portfolio(output_format="csv", output_dir=tmp_path)
         themes_dir = _portfolios_dir(tmp_path) / "themes"
-        expected = _files(themes_dir, "csv")
+        expected = output_files(themes_dir, "csv")
         for path in themes_dir.rglob("*.csv"):
             path.unlink()
 
         run_themes(output_dir=tmp_path)
 
-        assert _files(themes_dir, "csv") == expected
+        assert output_files(themes_dir, "csv") == expected
         assert not list(tmp_path.rglob("*.parquet"))
 
         run_themes(output_dir=tmp_path, version="v0")

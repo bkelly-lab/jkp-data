@@ -2,7 +2,8 @@
 
 ``build_oi_inputs`` writes synthetic inputs with overnight/intraday returns, and
 ``patch_oi_build`` points ``run_portfolio`` and ``run_themes`` at stub resources for
-them. Used by the O/I equivalence and the determinism tests.
+them. ``output_files`` lists the files a build wrote. Used by the O/I equivalence, the
+determinism and the output-file tests.
 """
 
 from __future__ import annotations
@@ -135,3 +136,8 @@ def patch_oi_build(monkeypatch: pytest.MonkeyPatch, resources: Path, settings: d
     monkeypatch.setattr("jkp.data.portfolio.configure_output_format", allow_output_format_reset)
     configure_output_format("parquet", _allow_reset=True)
     return themes_dir
+
+
+def output_files(root: Path, suffix: str = "parquet") -> set[str]:
+    """The ``*.suffix`` files under ``root``, as posix paths relative to it."""
+    return {p.relative_to(root).as_posix() for p in root.rglob(f"*.{suffix}")}
