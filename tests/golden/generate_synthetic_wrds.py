@@ -1057,7 +1057,9 @@ def gen_world_dsf(
     us_given = ("me", "prc", "ret", "tvol", "ret_lag_dif")
     world = _apply_null_patterns(world, "world_dsf", nrng, us_rows, us_given, "1")
     world = _apply_null_patterns(world, "world_dsf", nrng, ~us_rows, (), "0")
-    return world
+    # source_crsp has no nulls in the real table; added after the null draws so the
+    # random stream (and every other synthetic value) is unchanged.
+    return world.with_columns(source_crsp=pl.Series(us_rows.astype(np.int32)))
 
 
 def gen_world_data(

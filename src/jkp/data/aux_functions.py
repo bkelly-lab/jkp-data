@@ -10255,16 +10255,21 @@ def ff_load_crsp_panel(paths: DataPaths, freq: Literal["monthly", "daily"]) -> p
     it equals the CIZ-only permco sum except where a company has a non-CIZ class.
     Daily ME (weights only) is the CIZ permco sum.
 
+    The return (retadj) is JKP's CRSP return from world_msf/world_dsf: CIZ's return
+    plus CRSP's delisting return, and -30% where a bad delisting has none
+    (prepare_crsp_sf). Raw CIZ returns would lose the delisting return on every
+    daily delisting and on monthly delistings that MthRet leaves out (MthDelFlg G).
+
     Output: Lazy [permno, permco, date, retadj, retx, prc, shrout, exchcd, shrcd, me].
     """
     pq, p = ("crsp_msf_v2.parquet", "mth") if freq == "monthly" else ("crsp_dsf_v2.parquet", "dly")
-    date_c, ret_c, retx_c, prc_c = f"{p}caldt", f"{p}ret", f"{p}retx", f"{p}prc"
+    date_c, retx_c, prc_c = f"{p}caldt", f"{p}retx", f"{p}prc"
     lf = (
         pl.scan_parquet(paths.raw_tables_dir / pq)
         .with_columns(
             pl.col(date_c).cast(pl.Date),
             pl.col("permno", "permco").cast(pl.Int64),
-            pl.col(ret_c, retx_c, prc_c, "shrout").cast(pl.Float64),
+            pl.col(retx_c, prc_c, "shrout").cast(pl.Float64),
         )
         .filter(_ciz_universe())
         .with_columns(
@@ -10276,7 +10281,7 @@ def ff_load_crsp_panel(paths: DataPaths, freq: Literal["monthly", "daily"]) -> p
             ),
             shrcd=pl.lit(10, dtype=pl.Int64),
         )
-        .rename({date_c: "date", ret_c: "retadj", retx_c: "retx", prc_c: "prc"})
+        .rename({date_c: "date", retx_c: "retx", prc_c: "prc"})
     )
     date_expr = pl.col("date").dt.month_end() if freq == "monthly" else pl.col("date")
     panel = (
@@ -10285,7 +10290,6 @@ def ff_load_crsp_panel(paths: DataPaths, freq: Literal["monthly", "daily"]) -> p
             "permno",
             "permco",
             "date",
-            "retadj",
             "retx",
             "prc",
             "shrout",
@@ -10301,13 +10305,20 @@ def ff_load_crsp_panel(paths: DataPaths, freq: Literal["monthly", "daily"]) -> p
         .drop("meq")
     )
     if freq == "daily":
-        return panel
-    me_company = (
+        dsf = (
+            pl.scan_parquet(paths.interim_dir / "world_dsf.parquet")
+            .filter(pl.col("source_crsp") == 1)
+            .select("id", "date", retadj=pl.col("ret"))
+        )
+        return panel.join(dsf, left_on=["permno", "date"], right_on=["id", "date"], how="left")
+    msf = (
         pl.scan_parquet(paths.interim_dir / "world_msf.parquet")
         .filter(pl.col("source_crsp") == 1)
-        .select(permno=pl.col("id").cast(pl.Int64), date=pl.col("eom"), me=pl.col("me_company"))
+        .select("id", "eom", me=pl.col("me_company"), retadj=pl.col("ret"))
     )
-    return panel.drop("me").join(me_company, on=["permno", "date"], how="left")
+    return panel.drop("me").join(
+        msf, left_on=["permno", "date"], right_on=["id", "eom"], how="left"
+    )
 
 
 def _ff_us_rets_weights_lazy(
@@ -11346,6 +11357,8 @@ def gen_ff_data(
           breakpoints. Daily weights use the CIZ permco sum.
         - Elsewhere: JKP's main sample with ME, per-country breakpoints, and the
           FACTOR_MIN_STOCKS_BP / FACTOR_MIN_STOCKS_PF minimums.
+        - Returns, every country: JKP's world_msf/world_dsf, so US returns include
+          CRSP's delisting return (-30% where a bad delisting has none).
         - Formation, every country: June ME from the June row and Dec ME from the
           December t-1 row, with no fallback to earlier months, so a stock halted
           over June or December leaves that year's sorts. The B/M, OP and INV

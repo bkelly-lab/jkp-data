@@ -5,7 +5,7 @@ Covers:
   - _ff_bm_eligible / _ff_op_eligible / _ff_inv_eligible / _ff_mom_eligible
   - ff_country_breakpoints, _ff_bm_breaks / _ff_op_breaks / _ff_inv_breaks,
     _ff_size_breaks
-  - ff_annual_characteristics, ff_load_crsp_panel (monthly ME)
+  - ff_annual_characteristics, ff_load_crsp_panel (monthly ME, returns)
   - ff_assign_portfolios
   - ff_assign_to_panel
   - _ff_vw_leg
@@ -710,9 +710,10 @@ class TestFFAnnualCharacteristics:
 
 
 class TestFFLoadCrspPanel:
-    """ff_load_crsp_panel: one permno per permco; monthly ME is JKP's me_company."""
+    """ff_load_crsp_panel: one permno per permco; monthly ME is JKP's me_company;
+    returns are JKP's CRSP returns (world_msf/world_dsf), not raw CIZ."""
 
-    def test_monthly_me_is_me_company(self, test_paths):
+    def test_monthly_me_and_ret_from_world_msf(self, test_paths):
         n = 3
         pl.DataFrame(
             {
@@ -737,13 +738,50 @@ class TestFFLoadCrspPanel:
                 "eom": [date(2020, 6, 30)] * 2,
                 "source_crsp": [1, 1],
                 "me_company": [25.0, 25.0],
+                # -0.29: a delisting month whose world return includes the delisting return
+                "ret": [-0.29, 0.02],
             }
         ).write_parquet(test_paths.interim_dir / "world_msf.parquet")
         out = ff_load_crsp_panel(test_paths, "monthly").collect().sort("permno")
         # permno 1 has the larger CIZ ME (10 vs 5); its me is me_company (25), not
-        # the CIZ permco sum (15). permno 3 has no world_msf row.
+        # the CIZ permco sum (15), and its return is world_msf's, not CIZ's 0.01.
+        # permno 3 has no world_msf row.
         assert out["permno"].to_list() == [1, 3]
         assert out["me"].to_list() == [25.0, None]
+        assert out["retadj"].to_list() == [-0.29, None]
+
+    def test_daily_ret_from_world_dsf(self, test_paths):
+        n = 2
+        pl.DataFrame(
+            {
+                "permno": [1, 2],
+                "permco": [100, 200],
+                "dlycaldt": [date(2020, 6, 30)] * n,
+                "dlyret": [0.01] * n,
+                "dlyretx": [0.01] * n,
+                "dlyprc": [10.0, 8.0],
+                "shrout": [1000.0] * n,
+                "sharetype": ["NS"] * n,
+                "securitytype": ["EQTY"] * n,
+                "securitysubtype": ["COM"] * n,
+                "usincflg": ["Y"] * n,
+                "issuertype": ["CORP"] * n,
+                "primaryexch": ["N"] * n,
+            }
+        ).write_parquet(test_paths.raw_tables_dir / "crsp_dsf_v2.parquet")
+        pl.DataFrame(
+            {
+                "id": [1, 2],
+                "date": [date(2020, 6, 30)] * n,
+                "source_crsp": [1, 0],
+                "ret": [-0.29, 0.5],
+            }
+        ).write_parquet(test_paths.interim_dir / "world_dsf.parquet")
+        out = ff_load_crsp_panel(test_paths, "daily").collect().sort("permno")
+        # permno 1 takes world_dsf's CRSP return; id 2 is a Compustat row there,
+        # so permno 2 gets no return. The join adds no rows.
+        assert out["permno"].to_list() == [1, 2]
+        assert out["retadj"].to_list() == [-0.29, None]
 
 
 # =============================================================================
