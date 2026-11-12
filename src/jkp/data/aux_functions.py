@@ -4403,7 +4403,9 @@ def standardized_accounting_data(
     if coverage == "na":
         aname, qname = __funda, __fundq
     elif coverage == "global":
-        aname, qname = __gfunda, __gfundq
+        # G_FUNDQ has no doq or doy; in world coverage, the NA rows bring them in prefer_global.
+        aname = __gfunda
+        qname = __gfundq.with_columns(fl_none().alias("doq"), fl_none().alias("doy"))
     else:
         aname, qname = __wfunda, __wfundq
 
