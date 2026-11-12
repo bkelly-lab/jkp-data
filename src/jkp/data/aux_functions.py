@@ -38,11 +38,11 @@ from .config import (
     CMP_MIN_STD,
     CMP_SIZE_GROUPS,
     CORRECTION_SPILL_COMPRESSION,
+    DAILY_TURNOVER_FIXED_POINT_SCALE,
     END_DATE,
     MAIN_FILTERS,
     NI_AT_MIN_STD,
     RET_MIN_STD,
-    TURNOVER_FIXED_POINT_SCALE,
 )
 from .output_writer import write_dataframe
 from .paths import DataPaths, get_fx_cad_backfill_path
@@ -9681,7 +9681,7 @@ def zero_trades(df, sfx, __min):
     Steps:
         1) For each (id_int,group_number): zero_trades = mean(tvol==0)*21;
            turnover = mean(tvol/(shares*1e6)) for rows with shares!=0. Each daily
-           turnover is truncated to a multiple of 1/TURNOVER_FIXED_POINT_SCALE and
+           turnover is truncated to a multiple of 1/DAILY_TURNOVER_FIXED_POINT_SCALE and
            summed as Int128, so the sum is exact in any row order and equal daily
            turnovers tie.
         2) Keep groups with at least __min non-null tvol and non-null zero_trades.
@@ -9697,8 +9697,8 @@ def zero_trades(df, sfx, __min):
         .agg(
             ((col("tvol") == 0).mean() * 21).alias("zero_trades"),
             (
-                (turnover * TURNOVER_FIXED_POINT_SCALE).cast(pl.Int128).sum().cast(pl.Float64)
-                / TURNOVER_FIXED_POINT_SCALE
+                (turnover * DAILY_TURNOVER_FIXED_POINT_SCALE).cast(pl.Int128).sum().cast(pl.Float64)
+                / DAILY_TURNOVER_FIXED_POINT_SCALE
             ).alias("turnover_sum"),
             turnover.count().alias("turnover_n"),
             pl.col("tvol").count().alias("n"),
