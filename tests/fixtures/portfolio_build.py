@@ -120,7 +120,11 @@ def build_oi_inputs(root: Path) -> None:
 
 
 def allow_output_format_reset(format_str: str, *, _allow_reset: bool = False) -> None:
-    """``configure_output_format`` that lets one process run several builds."""
+    """``configure_output_format`` that lets one process run several builds.
+
+    It takes the same arguments so it can be patched in for that function. The build
+    never passes ``_allow_reset``, and a reset is always allowed here.
+    """
     configure_output_format(format_str, _allow_reset=True)
 
 
@@ -158,9 +162,10 @@ def run_oi_build(root: Path) -> None:
     """
     resources = root / "resources"
     resources.mkdir()
-    patch_oi_build(pytest.MonkeyPatch(), resources, OI_SETTINGS)
-    run_portfolio(output_format="parquet", output_dir=root)
-    run_themes(output_dir=root, version="v0")
+    with pytest.MonkeyPatch.context() as mp:
+        patch_oi_build(mp, resources, OI_SETTINGS)
+        run_portfolio(output_format="parquet", output_dir=root)
+        run_themes(output_dir=root, version="v0")
 
 
 def output_files(root: Path, suffix: str = "parquet") -> set[str]:
