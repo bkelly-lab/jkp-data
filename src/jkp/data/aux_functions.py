@@ -10125,7 +10125,9 @@ def _ff_ccm_link(paths: DataPaths, comp: pl.LazyFrame) -> pl.DataFrame:
     )
     # Backfill rescue (FF_CCM_BACKDATE_* in config): a June formation may use fiscal
     # rows predating the link window when the link is the permno's first and starts
-    # within MAX_YEARS of the formation. In-window links win any collision.
+    # after the formation, within MAX_YEARS of it. A first link that already ended
+    # before the formation is not a late-starting link and gets no rescue. In-window
+    # links win any collision.
     in_window = (pl.col("linkdt") <= pl.col("jun_end")) & (
         pl.col("linkenddt").is_null() | (pl.col("linkenddt") >= pl.col("jun_end"))
     )
@@ -10134,6 +10136,7 @@ def _ff_ccm_link(paths: DataPaths, comp: pl.LazyFrame) -> pl.DataFrame:
             pl.date(FF_CCM_BACKDATE_FROM, 6, 30), pl.date(FF_CCM_BACKDATE_THROUGH, 6, 30)
         )
         & (pl.col("linkdt") == pl.col("first_linkdt"))
+        & (pl.col("linkdt") > pl.col("jun_end"))
         & (pl.col("linkdt") <= pl.col("jun_end").dt.offset_by(f"{FF_CCM_BACKDATE_MAX_YEARS}y"))
     )
     return (

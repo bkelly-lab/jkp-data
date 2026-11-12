@@ -246,7 +246,8 @@ class TestUsBeLadder:
 
 
 def _write_lnkhist_rows(path, rows):
-    """rows: list of (gvkey, permno, linkdt) — P/LC links, open-ended."""
+    """rows: list of (gvkey, permno, linkdt[, linkenddt]) — P/LC links, open-ended
+    unless a linkenddt is given."""
     pl.DataFrame(
         {
             "gvkey": [r[0] for r in rows],
@@ -254,7 +255,7 @@ def _write_lnkhist_rows(path, rows):
             "linkprim": ["P"] * len(rows),
             "linktype": ["LC"] * len(rows),
             "linkdt": [r[2] for r in rows],
-            "linkenddt": [None] * len(rows),
+            "linkenddt": [r[3] if len(r) > 3 else None for r in rows],
         }
     ).with_columns(
         pl.col("linkdt").cast(pl.Date),
@@ -315,6 +316,16 @@ class TestCcmBackdateRescue:
             test_paths,
             [_funda_row("002", date(1962, 12, 31), 100.0, indl=True)],
             [("001", 10001, date(1955, 1, 1)), ("002", 10001, date(1965, 1, 1))],
+        )
+        assert out.height == 0
+
+    def test_ended_first_link_not_rescued(self, test_paths):
+        # The permno's first link runs 1960-01-01 to 1963-03-31, so it ended
+        # before the June 1963 formation: it is not a late-starting link.
+        out = self._run(
+            test_paths,
+            [_funda_row("001", date(1962, 12, 31), 100.0, indl=True)],
+            [("001", 10001, date(1960, 1, 1), date(1963, 3, 31))],
         )
         assert out.height == 0
 
