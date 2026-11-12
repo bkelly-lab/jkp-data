@@ -1039,7 +1039,7 @@ class TestZeroTrades:
             }
         )
 
-        result = zero_trades(df, "_21d", __min=15).sort(["id_int", "group_number"])
+        result = zero_trades(df, "_21d", __min=1).sort(["id_int", "group_number"])
 
         # id=1: zero_trades = (2/3)*21 = 14.0, lower turnover so rank=2 of 2 => 2/2=1.0 => +0.01
         # id=2: zero_trades = 0.0, higher turnover so rank=1 of 2 => 1/2=0.5 => +0.005
@@ -1050,25 +1050,61 @@ class TestZeroTrades:
             err_msg=f"Unexpected zero_trades_21d values: {result['zero_trades_21d'].to_list()}",
         )
 
-    def test_zero_trades_ignores_min_parameter(self):
-        """zero_trades currently ignores __min."""
+    def test_zero_trades_drops_groups_below_min(self):
+        """Stock-windows with fewer than __min rows are dropped before the turnover rank."""
         df = pl.DataFrame(
             {
-                "id_int": [1, 1, 1, 2, 2, 2],
-                "group_number": [10, 10, 10, 10, 10, 10],
-                "tvol": [0.0, 0.0, 10.0, 20.0, 20.0, 20.0],
-                "shares": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+                "id_int": [1, 1, 1, 2, 2],
+                "group_number": [10, 10, 10, 10, 10],
+                "tvol": [10.0, 10.0, 10.0, 20.0, 20.0],
+                "shares": [1.0, 1.0, 1.0, 1.0, 1.0],
             }
         )
-        low_min = zero_trades(df, "_21d", __min=1).sort(["id_int", "group_number"])
-        high_min = zero_trades(df, "_21d", __min=10_000).sort(["id_int", "group_number"])
-        assert low_min.equals(high_min), "Expected identical output regardless of __min"
+        result = zero_trades(df, "_21d", __min=3)
+        # id 2 has 2 rows and is dropped, so id 1 is ranked alone: rank 1 of 1 -> 0.01
+        assert result["id_int"].to_list() == [1]
+        assert result["zero_trades_21d"].to_list() == [0.01]
+
+    def test_zero_trades_min_filter_matches_row_level_count(self):
+        """Counting rows in the group_by keeps the same stock-windows as counting them per row."""
+        from tests.golden.generate_rolling_golden import build_zero_trades_input
+
+        # Vary the rows per id from 15 to 29 so that __min=20 drops some ids.
+        df = build_zero_trades_input(seed=44).filter(
+            pl.int_range(pl.len()).over("id_int") < pl.col("id_int") % 15 + 15
+        )
+        row_level = df.with_columns(n=pl.len().over(["id_int", "group_number"])).filter(
+            pl.col("n") >= 20
+        )
+        expected = zero_trades(row_level.drop("n").lazy(), "_126d", __min=0).collect()
+        result = zero_trades(df.lazy(), "_126d", __min=20).collect()
+        assert 0 < result.height < df["id_int"].n_unique()
+        assert_frame_equal(result.sort("id_int"), expected.sort("id_int"))
+
+    def test_zero_trades_equal_turnover_ties_regardless_of_row_order(self):
+        """Stocks with the same daily turnovers in a different row order tie on turnover rank.
+
+        Summed as floats in row order, 0.3 + 0.7 + 0.1 and 0.1 + 0.7 + 0.3 differ in the last
+        bit, which used to split the tie.
+        """
+        df = pl.DataFrame(
+            {
+                "id_int": [1, 1, 1, 2, 2, 2, 3, 3, 3],
+                "group_number": [10] * 9,
+                "tvol": [3e5, 7e5, 1e5, 1e5, 7e5, 3e5, 0.0, 0.0, 0.0],
+                "shares": [1.0] * 9,
+            }
+        )
+        z = zero_trades(df, "_21d", __min=1).sort("id_int")["zero_trades_21d"].to_list()
+        # ids 1 and 2 tie at rank 1.5 of 3 -> 0.005; id 3: 21 zero days + rank 3 of 3 -> 21.01
+        assert z[0] == z[1]
+        assert z == pytest.approx([0.005, 0.005, 21.01])
 
     def test_zero_trades_empty_input_returns_empty(self):
         df = _empty_df(
             {"id_int": pl.Int64, "group_number": pl.Int64, "tvol": pl.Float64, "shares": pl.Float64}
         )
-        result = zero_trades(df, "_21d", __min=15)
+        result = zero_trades(df, "_21d", __min=1)
         assert len(result) == 0
 
     def test_zero_trades_tied_turnover_ranks(self, tolerance):
@@ -1082,7 +1118,7 @@ class TestZeroTrades:
                 "shares": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
             }
         )
-        result = zero_trades(df, "_21d", __min=15).sort(["id_int"])
+        result = zero_trades(df, "_21d", __min=1).sort(["id_int"])
         # zero_trades_days = 0 for both; rank tie → average rank = 1.5; rank_frac = 1.5/2
         # composite = 1.5/2/100 + 0 = 0.0075
         np.testing.assert_allclose(
@@ -1093,17 +1129,19 @@ class TestZeroTrades:
 
     def test_zero_trades_shares_zero_skipped_in_mean(self, tolerance):
         """Rows with shares==0 produce null turnover_d; mean skips nulls."""
-        # id=1: shares [1,0,1], tvol [6,999,12]; turnover_d = [6e-6, null, 12e-6] → mean=9e-6
-        # id=2: shares [1,1,1], tvol [9,9,9]; mean=9e-6 → same turnover → tied rank
+        # id=1: shares [1,0,1], tvol [6,999,12]; turnover_d = [6e-6, null, 12e-6]
+        # id=2: shares [1,1], tvol [12,6]; turnover_d = [12e-6, 6e-6], the same daily
+        # turnovers → tied rank. Equal means from different daily turnovers (e.g. [9e-6] * 3)
+        # need not tie: they are equal in decimal but not in binary.
         df = pl.DataFrame(
             {
-                "id_int": [1, 1, 1, 2, 2, 2],
-                "group_number": [10, 10, 10, 10, 10, 10],
-                "tvol": [6.0, 999.0, 12.0, 9.0, 9.0, 9.0],
-                "shares": [1.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+                "id_int": [1, 1, 1, 2, 2],
+                "group_number": [10, 10, 10, 10, 10],
+                "tvol": [6.0, 999.0, 12.0, 12.0, 6.0],
+                "shares": [1.0, 0.0, 1.0, 1.0, 1.0],
             }
         )
-        result = zero_trades(df, "_21d", __min=15).sort(["id_int"])
+        result = zero_trades(df, "_21d", __min=1).sort(["id_int"])
         # Both have mean turnover_d = 9e-6; tied rank = 1.5/2; zero_trades_days = 0
         np.testing.assert_allclose(
             result["zero_trades_21d"].to_list(),
@@ -1123,7 +1161,7 @@ class TestZeroTrades:
                 "shares": [0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
             }
         )
-        result = zero_trades(df, "_21d", __min=15).sort(["id_int"])
+        result = zero_trades(df, "_21d", __min=1).sort(["id_int"])
         # Both rows kept (filter drops only null zero_trades, not null turnover means)
         assert len(result) == 2
         # id=1 gets null composite because mean turnover is null
@@ -1144,7 +1182,7 @@ class TestZeroTrades:
                 "shares": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0],
             }
         )
-        result = zero_trades(df, "_21d", __min=15).sort(["id_int"])
+        result = zero_trades(df, "_21d", __min=1).sort(["id_int"])
         # All 3 rows kept; id=3 has null composite
         assert len(result) == 3
         # id=1: lower turnover (10e-6) → descending rank=2 of 2 non-null → rank_frac=2/2=1.0
@@ -1169,7 +1207,7 @@ class TestZeroTrades:
                 "shares": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
             }
         )
-        result = zero_trades(df, "_21d", __min=15).sort(["id_int"])
+        result = zero_trades(df, "_21d", __min=1).sort(["id_int"])
         # zero_trades_days = 21 for both; turnover=0 both → tied rank=1.5; rank_frac=1.5/2
         # composite = 1.5/2/100 + 21 = 21.0075
         np.testing.assert_allclose(

@@ -38,6 +38,7 @@ from .config import (
     CMP_MIN_STD,
     CMP_SIZE_GROUPS,
     CORRECTION_SPILL_COMPRESSION,
+    DAILY_TURNOVER_FIXED_POINT_SCALE,
     END_DATE,
     MAIN_FILTERS,
     NI_AT_MIN_STD,
@@ -9183,13 +9184,13 @@ def apply_group_filter(df, stat, min_obs):
 
     Steps:
         1) For 'dimsonbeta': require counts by (id_int,eom) and (id_int,group_number) and non-null lags.
-        2) For zero_trades/dolvol/others: count needed column within (id_int,group_number), require ≥ min_obs.
-        3) Pass-through for 'turnover' and 'mktcorr' (later filters inside function).
+        2) For dolvol/others: count needed column within (id_int,group_number), require ≥ min_obs.
+        3) Pass-through for 'turnover', 'mktcorr' and 'zero_trades' (later filters inside function).
 
     Output:
         Filtered LazyFrame for subsequent aggregation/regression.
     """
-    if stat in ("turnover", "mktcorr"):
+    if stat in ("turnover", "mktcorr", "zero_trades"):
         pass
     elif stat == "dimsonbeta":
         df = df.with_columns(
@@ -9202,7 +9203,7 @@ def apply_group_filter(df, stat, min_obs):
             & (col("mktrf_ld1").is_not_null())
         )
     else:
-        filter_var = {"zero_trades": "tvol", "dolvol": "dolvol_d"}.get(stat, "ret_exc")
+        filter_var = {"dolvol": "dolvol_d"}.get(stat, "ret_exc")
         df = df.with_columns(n=pl.count(filter_var).over(["id_int", "group_number"])).filter(
             col("n") >= min_obs
         )
@@ -9693,21 +9694,31 @@ def zero_trades(df, sfx, __min):
 
     Steps:
         1) For each (id_int,group_number): zero_trades = mean(tvol==0)*21;
-           turnover = mean(tvol/(shares*1e6)) for rows with shares>0.
-        2) Drop groups where zero_trades is null.
+           turnover = mean(tvol/(shares*1e6)) for rows with shares!=0. Each daily
+           turnover is truncated to a multiple of 1/DAILY_TURNOVER_FIXED_POINT_SCALE and
+           summed as Int128, so the sum is exact in any row order and equal daily
+           turnovers tie.
+        2) Keep groups with at least __min non-null tvol and non-null zero_trades.
         3) Rank turnover descending within group_number (method="average");
            composite = rank/count/100 + zero_trades.
 
     Output:
         LazyFrame with f'zero_trades{sfx}'.
     """
+    turnover = _turnover_d_expr()
     df = (
         df.group_by(["id_int", "group_number"])
         .agg(
             ((col("tvol") == 0).mean() * 21).alias("zero_trades"),
-            _turnover_d_expr().mean().alias("turnover"),
+            (
+                (turnover * DAILY_TURNOVER_FIXED_POINT_SCALE).cast(pl.Int128).sum().cast(pl.Float64)
+                / DAILY_TURNOVER_FIXED_POINT_SCALE
+            ).alias("turnover_sum"),
+            turnover.count().alias("turnover_n"),
+            pl.col("tvol").count().alias("n"),
         )
-        .filter(col("zero_trades").is_not_null())
+        .filter((pl.col("n") >= __min) & pl.col("zero_trades").is_not_null())
+        .with_columns(safe_div("turnover_sum", "turnover_n", "turnover"))
         .with_columns(
             (
                 (
