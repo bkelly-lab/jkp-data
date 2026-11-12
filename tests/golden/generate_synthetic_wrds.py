@@ -877,6 +877,7 @@ def gen_world_msf(
             "permno",
             "prc",
             "primary_sec",
+            "primaryexch",
             "ret",
             "ret_exc",
             "retx",
