@@ -106,8 +106,12 @@ def test_no_characteristic_is_all_null_or_nan(outputs: dict[str, pl.DataFrame]) 
 
 @pytest.mark.parametrize(
     ("coverage", "convert_to_usd", "sources", "usd_only"),
-    # coverage="global" raises ColumnNotFoundError ("doq") on these inputs; not tested here.
-    [("na", 1, {"NA"}, True), ("world", 0, {"NA", "GLOBAL"}, False)],
+    [
+        ("na", 1, {"NA"}, True),
+        ("global", 1, {"GLOBAL"}, True),
+        ("global", 0, {"GLOBAL"}, False),
+        ("world", 0, {"NA", "GLOBAL"}, False),
+    ],
 )
 def test_standardization_coverage_and_currency_options(
     tmp_path: Path,
