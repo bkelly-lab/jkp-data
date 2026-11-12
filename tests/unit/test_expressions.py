@@ -540,3 +540,187 @@ class TestExpressionChaining:
         assert result["ratio_xz"][0] == 5.0, (
             f"ratio_xz[0]: expected 5.0, got {result['ratio_xz'][0]}"
         )
+
+
+class TestSafeDivMode4:
+    """Tests for safe_div() mode 4 - num / den lagged 12, needs count > 12 and lagged den > 0."""
+
+    @staticmethod
+    def _df(n: int, gvkey: str = "001", den0: float = 2.0) -> pl.DataFrame:
+        return pl.DataFrame(
+            {
+                "gvkey": [gvkey] * n,
+                "curcd": ["USD"] * n,
+                "count": list(range(1, n + 1)),
+                "num": [float(i + 1) for i in range(n)],
+                "den": [den0 + i for i in range(n)],
+            }
+        )
+
+    def test_safe_div_mode4_lagged_denominator(self):
+        """Row 12 divides num by den from row 0; earlier rows are null (count <= 12)."""
+        result = self._df(14).select(safe_div("num", "den", "result", mode=4))["result"].to_list()
+        assert result[:12] == [None] * 12
+        assert result[12] == 13.0 / 2.0
+        assert result[13] == 14.0 / 3.0
+
+    def test_safe_div_mode4_nonpositive_lag_is_null(self):
+        df = self._df(14).with_columns(
+            den=pl.Series([0.0, -1.0] + [5.0] * 12),
+        )
+        result = df.select(safe_div("num", "den", "result", mode=4))["result"].to_list()
+        assert result[12] is None
+        assert result[13] is None
+
+    def test_safe_div_mode4_count_gate(self):
+        """The lag exists at row 12, but count == 12 still nulls it."""
+        df = self._df(14).with_columns(count=pl.Series([*range(1, 13), 12, 14]))
+        result = df.select(safe_div("num", "den", "result", mode=4))["result"].to_list()
+        assert result[12] is None
+        assert result[13] == 14.0 / 3.0
+
+    def test_safe_div_mode4_separates_firms(self):
+        """Lags are taken within (gvkey, curcd); firm B's short history stays null."""
+        a = self._df(14, "A", 2.0)
+        b = self._df(5, "B", 100.0)
+        result = (
+            pl.concat([a, b]).select(safe_div("num", "den", "result", mode=4))["result"].to_list()
+        )
+        assert result[12] == 13.0 / 2.0
+        assert result[14:] == [None] * 5
+
+
+class TestSafeDivMode5:
+    """Tests for safe_div() mode 5 - (num * fx) / den when den != 0."""
+
+    def test_safe_div_mode5_applies_fx(self):
+        df = pl.DataFrame(
+            {
+                "num": [10.0, 10.0, 10.0, 10.0],
+                "den": [4.0, -4.0, 0.0, 5.0],
+                "fx": [2.0, 0.5, 3.0, None],
+            }
+        )
+        result = df.select(safe_div("num", "den", "result", mode=5))["result"].to_list()
+        assert result[0] == 10.0 * 2.0 / 4.0
+        assert result[1] == 10.0 * 0.5 / -4.0
+        assert result[2] is None
+        assert result[3] is None
+
+
+class TestSafeDivMode6:
+    """Tests for safe_div() mode 6 - num / den lagged 12 when the lagged den != 0 (no count gate)."""
+
+    def test_safe_div_mode6_lagged_denominator(self):
+        n = 14
+        den = [4.0, -2.0, 0.0] + [1.0] * 11
+        df = pl.DataFrame(
+            {
+                "gvkey": ["A"] * n,
+                "curcd": ["USD"] * n,
+                "num": [float(i + 1) for i in range(n)],
+                "den": den,
+            }
+        )
+        result = df.select(safe_div("num", "den", "result", mode=6))["result"].to_list()
+        assert result[:12] == [None] * 12  # lag is null
+        assert result[12] == 13.0 / 4.0
+        assert result[13] == 14.0 / -2.0  # negative lag allowed
+
+    def test_safe_div_mode6_zero_lag_is_null_and_firms_separate(self):
+        a = pl.DataFrame(
+            {
+                "gvkey": ["A"] * 13,
+                "curcd": ["USD"] * 13,
+                "num": [1.0] * 13,
+                "den": [0.0] + [1.0] * 12,
+            }
+        )
+        b = pl.DataFrame(
+            {
+                "gvkey": ["B"] * 13,
+                "curcd": ["USD"] * 13,
+                "num": [1.0] * 13,
+                "den": [5.0] + [1.0] * 12,
+            }
+        )
+        result = (
+            pl.concat([a, b]).select(safe_div("num", "den", "result", mode=6))["result"].to_list()
+        )
+        assert result[12] is None
+        assert result[13:25] == [None] * 12  # B's first 12 rows have no lag of B's own
+        assert result[25] == 1.0 / 5.0
+
+
+class TestSafeDivMode7:
+    """Tests for safe_div() mode 7 - the ratio num / den lagged 12 when the lagged den > 0."""
+
+    def test_safe_div_mode7_lagged_ratio(self):
+        n = 14
+        df = pl.DataFrame(
+            {
+                "gvkey": ["A"] * n,
+                "curcd": ["USD"] * n,
+                "num": [float(i + 1) for i in range(n)],
+                "den": [2.0, 0.0] + [4.0] * 12,
+            }
+        )
+        result = df.select(safe_div("num", "den", "result", mode=7))["result"].to_list()
+        assert result[:12] == [None] * 12
+        assert result[12] == 1.0 / 2.0  # ratio at row 0
+        assert result[13] is None  # lagged den is 0
+
+    def test_safe_div_mode7_negative_den_and_firms_separate(self):
+        a = pl.DataFrame(
+            {
+                "gvkey": ["A"] * 13,
+                "curcd": ["USD"] * 13,
+                "num": [3.0] * 13,
+                "den": [-1.0] + [1.0] * 12,
+            }
+        )
+        b = pl.DataFrame(
+            {
+                "gvkey": ["B"] * 13,
+                "curcd": ["USD"] * 13,
+                "num": [3.0] * 13,
+                "den": [6.0] + [1.0] * 12,
+            }
+        )
+        result = (
+            pl.concat([a, b]).select(safe_div("num", "den", "result", mode=7))["result"].to_list()
+        )
+        assert result[12] is None
+        assert result[13:25] == [None] * 12  # B's first 12 rows have no lag of B's own
+        assert result[25] == 3.0 / 6.0
+
+
+class TestSafeDivMode9:
+    """Tests for safe_div() mode 9 - num / den lagged 3 when count > 3 and lagged den > 0."""
+
+    def test_safe_div_mode9_lag3(self):
+        df = pl.DataFrame(
+            {
+                "count": [1, 2, 3, 4, 5, 6],
+                "num": [10.0, 10.0, 10.0, 10.0, 10.0, 10.0],
+                "den": [2.0, 0.0, -1.0, 9.0, 9.0, 9.0],
+            }
+        )
+        result = df.select(safe_div("num", "den", "result", mode=9))["result"].to_list()
+        assert result[:3] == [None] * 3  # count <= 3
+        assert result[3] == 10.0 / 2.0
+        assert result[4] is None  # lagged den 0
+        assert result[5] is None  # lagged den negative
+
+    def test_safe_div_mode9_count_gate(self):
+        """Lag exists at row 3 but count == 3 nulls it; count == 4 keeps it."""
+        df = pl.DataFrame(
+            {
+                "count": [1, 2, 3, 3, 4],
+                "num": [1.0] * 5,
+                "den": [2.0] * 5,
+            }
+        )
+        result = df.select(safe_div("num", "den", "result", mode=9))["result"].to_list()
+        assert result[3] is None
+        assert result[4] == 1.0 / 2.0
