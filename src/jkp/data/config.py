@@ -245,6 +245,14 @@ RET_MIN_STD = 1e-6
 # slopes near 4e5; the next windows vary by 3e-6 or more.
 NI_AT_MIN_STD = 1e-6
 
+# Floor on the standard deviation of the residuals that residual momentum scores.
+# At or below it `resff3_12_1` and `resff3_6_1` are null: mean / std would divide
+# by almost zero, so the score would be a wrong value set by how close the scored
+# residuals happen to be (one stock with two residuals 1e-7 apart scored 585,175).
+# Our choice (#347): on the 2026-11 data it nulls 2 `resff3_6_1` windows, neither
+# in the published characteristics; 1e-5 would null 9 published stock-months.
+RES_MOM_MIN_STD = 1e-6
+
 PORTFOLIO_SETTINGS = {
     "end_date": END_DATE,
     "pfs": PORTFOLIO_PFS,
