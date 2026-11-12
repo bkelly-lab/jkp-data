@@ -20,6 +20,7 @@ from .aux_functions import (
     filter_world,
     finish_daily_chars,
     firm_age,
+    gen_ff_data,
     gen_raw_data_dfs,
     market_beta,
     market_chars_monthly,
@@ -138,6 +139,12 @@ def run_pipeline(
         interim / "market_chars_m.parquet",
         interim / "acc_chars_world.parquet",
         interim / "world_data_prelim.parquet",
+    )
+    gen_ff_data(
+        paths,
+        interim / "ff_factors_monthly.parquet",
+        interim / "ff_factors_daily.parquet",
+        interim / "ff_characteristics.parquet",
     )
     ap_factors(
         paths,
