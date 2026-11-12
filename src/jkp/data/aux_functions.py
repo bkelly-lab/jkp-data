@@ -9996,7 +9996,8 @@ def _ff_mom_eligible() -> pl.Expr:
 
 
 def _ciz_universe() -> pl.Expr:
-    """CRSP CIZ universe filter of the FF builder (ff_load_crsp_panel)."""
+    """CRSP CIZ universe of the FF builder (_ff_us_firm_map; ff_load_crsp_panel
+    applies it through world_msf/world_dsf's common flag)."""
     return (
         (pl.col("sharetype") == "NS")
         & (pl.col("securitytype") == "EQTY")
@@ -10367,76 +10368,82 @@ def ff_load_crsp_panel(
 ) -> pl.LazyFrame:
     """
     Description:
-        US CRSP panel with one row per FF firm (_ff_us_firm_map) and date. Fama and
-        French combine a company's share classes as securities in a portfolio:
+        US CRSP panel with one row per FF firm (_ff_us_firm_map) and date. Class rows
+        are JKP's CRSP rows in world_msf/world_dsf; the raw CIZ file adds only what
+        the world files don't carry: usincflg, retx and, daily, primaryexch. The
+        universe is _ciz_universe's: world's common flag is its share, security and
+        issuer type test. Fama and French combine a company's share classes as
+        securities in a portfolio:
         - Return: the classes' returns weighted by each class's ME at t-1; a firm
-          with one class that date keeps its return. Returns are JKP's CRSP returns
-          from world_msf/world_dsf: CIZ's return plus CRSP's delisting return, and
-          -30% where a bad delisting has none (prepare_crsp_sf). Raw CIZ returns
-          would lose the delisting return on every daily delisting and on monthly
-          delistings that MthRet leaves out (MthDelFlg G).
+          with one class that date keeps its return. Returns are JKP's CRSP returns:
+          CIZ's return plus CRSP's delisting return, and -30% where a bad delisting
+          has none (prepare_crsp_sf). Raw CIZ returns would lose the delisting
+          return on every daily delisting and on monthly delistings that MthRet
+          leaves out (MthDelFlg G).
         - Monthly ME: JKP's me_company (all of the company's share classes), or
           the sum of the firm's classes' me when the permco is split. Daily ME
-          (weights only): the CIZ sum over the firm's classes.
+          (weights only): the sum of the firm's classes' me.
         - NYSE if any class is NYSE-listed (exchcd is the minimum). prc is the
           largest |price|, used only to check that a price exists.
         Tracking stocks (resources/ff_tracking_stocks.csv) are left out.
     Steps:
-        1) CIZ universe class rows mapped to firms; tracking stocks dropped.
-        2) Join JKP's return (monthly also me and me_company); class ME at t-1.
+        1) World CRSP common-share rows joined to raw CIZ rows of US-incorporated
+           companies; NYSE, AMEX or NASDAQ only.
+        2) Classes mapped to firms; tracking stocks dropped; class ME at t-1.
         3) Aggregate to (id, date).
     Output:
         Lazy [id, date, retadj, retx, prc, exchcd, me].
     """
-    pq, p = ("crsp_msf_v2.parquet", "mth") if freq == "monthly" else ("crsp_dsf_v2.parquet", "dly")
-    date_c, retx_c, prc_c = f"{p}caldt", f"{p}retx", f"{p}prc"
-    cls = (
-        pl.scan_parquet(paths.raw_tables_dir / pq)
-        .with_columns(
-            pl.col(date_c).cast(pl.Date),
-            pl.col("permno").cast(pl.Int64),
-            pl.col(retx_c, prc_c, "shrout").cast(pl.Float64),
+    permno = pl.col("permno").cast(pl.Int64)
+    if freq == "monthly":
+        world = pl.scan_parquet(paths.interim_dir / "world_msf.parquet").select(
+            "source_crsp",
+            "common",
+            "primaryexch",
+            "prc",
+            "me",
+            "me_company",
+            permno=pl.col("id").cast(pl.Int64),
+            date="eom",
+            retadj="ret",
         )
-        .filter(_ciz_universe())
+        raw = pl.scan_parquet(paths.raw_tables_dir / "crsp_msf_v2.parquet").select(
+            "usincflg",
+            permno=permno,
+            date=pl.col("mthcaldt").cast(pl.Date).dt.month_end(),
+            retx=pl.col("mthretx").cast(pl.Float64),
+        )
+        me = _ff_firm_me()
+    else:
+        world = pl.scan_parquet(paths.interim_dir / "world_dsf.parquet").select(
+            "source_crsp",
+            "common",
+            "date",
+            "prc",
+            "me",
+            permno=pl.col("id").cast(pl.Int64),
+            retadj="ret",
+        )
+        raw = pl.scan_parquet(paths.raw_tables_dir / "crsp_dsf_v2.parquet").select(
+            "usincflg",
+            "primaryexch",
+            permno=permno,
+            date=pl.col("dlycaldt").cast(pl.Date),
+            retx=pl.col("dlyretx").cast(pl.Float64),
+        )
+        me = pl.when(pl.col("me").is_not_null().any()).then(pl.col("me").sum())
+    return (
+        world.filter((pl.col("source_crsp") == 1) & (pl.col("common") == 1))
+        .join(raw.filter(pl.col("usincflg") == "Y"), on=["permno", "date"], how="inner")
+        .filter(pl.col("primaryexch").is_in(["N", "A", "Q"]))
         .join(firm_map.lazy(), on="permno", how="left")
         .filter(~pl.col("tracking").fill_null(False))
-        .select(
-            "permno",
+        .with_columns(
             id=pl.coalesce("id", "permno"),
             split=pl.col("split").fill_null(False),
-            date=pl.col(date_c).dt.month_end() if freq == "monthly" else pl.col(date_c),
-            retx=pl.col(retx_c),
-            prc=pl.col(prc_c),
-            # /1000: CIZ shrout is in thousands; me in USD millions matches
-            # Compustat BE and the jkp world convention (one unit, US + ROW).
-            meq=pl.col(prc_c).abs() * pl.col("shrout") / 1000.0,
             exchcd=pl.col("primaryexch").replace_strict(
                 {"N": 1, "A": 2, "Q": 3}, default=None, return_dtype=pl.Int64
             ),
-        )
-    )
-    if freq == "daily":
-        world = pl.scan_parquet(paths.interim_dir / "world_dsf.parquet").select(
-            "source_crsp", "date", retadj="ret", permno=pl.col("id").cast(pl.Int64)
-        )
-        me = pl.when(pl.col("me").is_not_null().any()).then(pl.col("me").sum())
-        cls = cls.rename({"meq": "me"})
-    else:
-        world = pl.scan_parquet(paths.interim_dir / "world_msf.parquet").select(
-            "source_crsp",
-            "me",
-            "me_company",
-            date="eom",
-            retadj="ret",
-            permno=pl.col("id").cast(pl.Int64),
-        )
-        me = _ff_firm_me()
-        cls = cls.drop("meq")
-    return (
-        cls.join(
-            world.filter(pl.col("source_crsp") == 1).drop("source_crsp"),
-            on=["permno", "date"],
-            how="left",
         )
         .sort("permno", "date")
         .with_columns(w_cls=pl.col("me").shift(1).over("permno"))

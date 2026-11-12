@@ -898,42 +898,50 @@ class TestFFAnnualCharacteristicsFirms:
 
 
 class TestFFLoadCrspPanel:
-    """ff_load_crsp_panel: one row per FF firm and date. Class returns are weighted
-    by class ME at t-1; monthly ME is JKP's me_company (the firm's classes' sum when
-    the permco is split); returns are JKP's CRSP returns, not raw CIZ."""
+    """ff_load_crsp_panel: one row per FF firm and date. Class rows come from the
+    world files, with retx (and daily primaryexch) from raw CIZ. Class returns are
+    weighted by class ME at t-1; monthly ME is JKP's me_company (the firm's classes'
+    sum when the permco is split); returns are JKP's CRSP returns, not raw CIZ."""
 
     @staticmethod
     def _run_monthly(test_paths) -> pl.DataFrame:
         may, jun = date(2020, 5, 31), date(2020, 6, 30)
-        # permno, permco, date, mthretx, mthprc, primaryexch
-        rows = [
-            (1, 100, may, 0.0, 10.0, "Q"),
-            (2, 100, may, 0.0, 5.0, "N"),
-            (1, 100, jun, 0.01, -12.0, "Q"),
-            (2, 100, jun, 0.03, 6.0, "N"),
-            (3, 200, jun, 0.01, 8.0, "Q"),
-            (4, 300, jun, 0.01, 8.0, "N"),
-            (5, 300, jun, 0.01, 8.0, "N"),
-            (6, 300, jun, 0.01, 8.0, "N"),
+        # permno, mthcaldt, mthretx, usincflg; permno 3 is foreign-incorporated
+        raw = [
+            (1, date(2020, 5, 29), 0.0, "Y"),
+            (2, date(2020, 5, 29), 0.0, "Y"),
+            (1, date(2020, 6, 30), 0.01, "Y"),
+            (2, date(2020, 6, 30), 0.03, "Y"),
+            (3, date(2020, 6, 30), 0.01, "N"),
+            (4, date(2020, 6, 30), 0.01, "Y"),
+            (5, date(2020, 6, 30), 0.01, "Y"),
+            (6, date(2020, 6, 30), 0.01, "Y"),
+            (7, date(2020, 6, 30), 0.01, "Y"),
+            (8, date(2020, 6, 30), 0.01, "Y"),
         ]
-        cols = ["permno", "permco", "mthcaldt", "mthretx", "mthprc", "primaryexch"]
-        common = {k: v for k, v in _CIZ_COMMON.items() if k != "primaryexch"}
-        pl.DataFrame(rows, schema=cols, orient="row").with_columns(
-            shrout=pl.lit(1000.0),
-            mthret=pl.col("mthretx"),
-            **{k: pl.lit(v) for k, v in common.items()},
-        ).write_parquet(test_paths.raw_tables_dir / "crsp_msf_v2.parquet")
         pl.DataFrame(
-            {
-                "id": [1, 2, 1, 2, 4, 5, 6],
-                "eom": [may, may, jun, jun, jun, jun, jun],
-                "source_crsp": [1] * 7,
-                "me": [30.0, 10.0, 33.0, 11.0, 20.0, 5.0, 75.0],
-                "me_company": [40.0, 40.0, 44.0, 44.0, 100.0, 100.0, 100.0],
-                # -0.29: a delisting month whose world return includes the delisting return
-                "ret": [0.0, 0.0, 0.02, 0.10, -0.29, 0.0, 0.0],
-            }
-        ).write_parquet(test_paths.interim_dir / "world_msf.parquet")
+            raw, schema=["permno", "mthcaldt", "mthretx", "usincflg"], orient="row"
+        ).write_parquet(test_paths.raw_tables_dir / "crsp_msf_v2.parquet")
+        # id, eom, source_crsp, common, primaryexch, prc, me, me_company, ret.
+        # 7 is not a common share, 8 trades off the main exchanges, 9 is Compustat.
+        world = [
+            (1, may, 1, 1, "Q", 10.0, 30.0, 40.0, 0.0),
+            (2, may, 1, 1, "N", 5.0, 10.0, 40.0, 0.0),
+            (1, jun, 1, 1, "Q", -12.0, 33.0, 44.0, 0.02),
+            (2, jun, 1, 1, "N", 6.0, 11.0, 44.0, 0.10),
+            (3, jun, 1, 1, "Q", 8.0, 8.0, 8.0, 0.01),
+            # -0.29: a delisting month whose world return includes the delisting return
+            (4, jun, 1, 1, "N", 8.0, 20.0, 100.0, -0.29),
+            (5, jun, 1, 1, "N", 8.0, 5.0, 100.0, 0.0),
+            (6, jun, 1, 1, "N", 8.0, 75.0, 100.0, 0.0),
+            (7, jun, 1, 0, "N", 8.0, 8.0, 8.0, 0.01),
+            (8, jun, 1, 1, "X", 8.0, 8.0, 8.0, 0.01),
+            (9, jun, 0, 1, None, 8.0, 8.0, 8.0, 0.01),
+        ]
+        cols = ["id", "eom", "source_crsp", "common", "primaryexch", "prc", "me", "me_company"]
+        pl.DataFrame(world, schema=[*cols, "ret"], orient="row").write_parquet(
+            test_paths.interim_dir / "world_msf.parquet"
+        )
         firm_map = _firm_map(
             [
                 (1, 1, False, False),
@@ -942,13 +950,17 @@ class TestFFLoadCrspPanel:
                 (4, 4, True, False),
                 (5, 4, True, False),
                 (6, 6, True, True),
+                (7, 7, False, False),
+                (8, 8, False, False),
             ]
         )
         out = ff_load_crsp_panel(test_paths, "monthly", firm_map).collect()
         return out.filter(pl.col("date") == jun).sort("id")
 
-    def test_one_row_per_firm_tracking_dropped(self, test_paths):
-        assert self._run_monthly(test_paths)["id"].to_list() == [1, 3, 4]
+    def test_universe_and_tracking(self, test_paths):
+        """3 (raw usincflg N), 7 (world common 0), 8 (exchange X), 9 (Compustat)
+        and the tracking stock 6 are out."""
+        assert self._run_monthly(test_paths)["id"].to_list() == [1, 4]
 
     def test_two_class_firm(self, test_paths, tolerance):
         """Return and retx weighted by May class ME (30, 10); ME is me_company; NYSE
@@ -958,47 +970,40 @@ class TestFFLoadCrspPanel:
         np.testing.assert_allclose(r["retx"], (0.01 * 30 + 0.03 * 10) / 40, **tolerance.STANDARD)
         assert (r["me"], r["exchcd"], r["prc"]) == (44.0, 1, 12.0)
 
-    def test_single_class_firm_without_world_row(self, test_paths):
-        r = self._run_monthly(test_paths).row(1, named=True)
-        assert (r["me"], r["retadj"], r["retx"]) == (None, None, 0.01)
-
     def test_split_firm_me_sums_its_own_classes(self, test_paths):
         """Split permco: ME is the firm's classes (20 + 5), not me_company (100,
         which includes the tracking stock). A class with no ME at t-1 keeps the
         firm's return from the classes that have one, so with none it is null."""
-        r = self._run_monthly(test_paths).row(2, named=True)
+        r = self._run_monthly(test_paths).row(1, named=True)
         assert r["me"] == 25.0
         assert r["retadj"] is None
 
-    def test_daily_ret_from_world_dsf(self, test_paths):
-        n = 2
+    def test_daily_from_world_dsf(self, test_paths):
+        day = date(2020, 6, 30)
         pl.DataFrame(
             {
                 "permno": [1, 2],
-                "permco": [100, 200],
-                "dlycaldt": [date(2020, 6, 30)] * n,
-                "dlyret": [0.01] * n,
-                "dlyretx": [0.01] * n,
-                "dlyprc": [10.0, 8.0],
-                "shrout": [1000.0] * n,
-                **{k: [v] * n for k, v in _CIZ_COMMON.items()},
+                "dlycaldt": [day] * 2,
+                "dlyretx": [0.01] * 2,
+                "usincflg": ["Y"] * 2,
+                "primaryexch": ["N", "X"],
             }
         ).write_parquet(test_paths.raw_tables_dir / "crsp_dsf_v2.parquet")
         pl.DataFrame(
             {
                 "id": [1, 2],
-                "date": [date(2020, 6, 30)] * n,
-                "source_crsp": [1, 0],
+                "date": [day] * 2,
+                "source_crsp": [1, 1],
+                "common": [1, 1],
+                "prc": [10.0, 8.0],
+                "me": [10.0, 8.0],
                 "ret": [-0.29, 0.5],
             }
         ).write_parquet(test_paths.interim_dir / "world_dsf.parquet")
         firm_map = _firm_map([(1, 1, False, False), (2, 2, False, False)])
-        out = ff_load_crsp_panel(test_paths, "daily", firm_map).collect().sort("id")
-        # permno 1 takes world_dsf's CRSP return; id 2 is a Compustat row there,
-        # so permno 2 gets no return. The join adds no rows; daily ME is CIZ's.
-        assert out["id"].to_list() == [1, 2]
-        assert out["retadj"].to_list() == [-0.29, None]
-        assert out["me"].to_list() == [10.0, 8.0]
+        out = ff_load_crsp_panel(test_paths, "daily", firm_map).collect()
+        # Daily primaryexch comes from raw CIZ: permno 2 trades on exchange X.
+        assert out.select("id", "retadj", "retx", "me").rows() == [(1, -0.29, 0.01, 10.0)]
 
 
 # =============================================================================
