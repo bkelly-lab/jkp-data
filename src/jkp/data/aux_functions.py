@@ -62,7 +62,7 @@ from .config import (
     US_EXCNTRY,
 )
 from .output_writer import write_dataframe
-from .paths import DataPaths, get_dff_be_path, get_ff_split_classes_path, get_fx_cad_backfill_path
+from .paths import DataPaths, get_dff_be_path, get_ff_tracking_stocks_path, get_fx_cad_backfill_path
 from .wrds_connection import (
     _attach_wrds,
     _install_postgres_extension,
@@ -10253,7 +10253,7 @@ def _ff_us_firm_map(paths: DataPaths) -> pl.DataFrame:
         The FF firm of each US CRSP permno. Fama and French form portfolios from
         companies (CRSP permcos) and split a permco by hand where its securities
         are not one company; this map applies those splits by rule, plus the
-        hand-kept list resources/ff_split_classes.csv for tracking stocks.
+        hand-kept list of tracking stocks, resources/ff_tracking_stocks.csv.
     Steps:
         1) CIZ universe months of each permno, and the CCM links (CCM_LINKTYPES,
            any linkprim) active in each month.
@@ -10264,9 +10264,7 @@ def _ff_us_firm_map(paths: DataPaths) -> pl.DataFrame:
         3) Within a piece, a permno that starts after every earlier permno has
            ended starts a new firm (sequential listings).
         4) id = the firm's smallest permno, so a single-class firm keeps its permno.
-        5) tracking marks the list's tracking stocks, which stay out of the sorts.
-           A class that trades in a split month but is not on the list is
-           warned about, so a new case gets classified.
+        5) tracking marks the listed tracking stocks, which stay out of the sorts.
     Output:
         Eager [permno, id, split, tracking], one row per permno in the CIZ universe.
     """
@@ -10301,26 +10299,9 @@ def _ff_us_firm_map(paths: DataPaths) -> pl.DataFrame:
         .filter(pl.col("n_gvkey") > 1)
         .select("permco", "date")
     )
-    listed = pl.read_csv(
-        get_ff_split_classes_path(),
-        columns=["permno", "role"],
-        schema_overrides={"permno": pl.Int64},
-    )
-    unlisted = (
-        cls.join(split_months, on=["permco", "date"])
-        .select("permco", "permno")
-        .unique()
-        .join(listed, on="permno", how="anti")
-        .sort("permco", "permno")
-    )
-    if unlisted.height:
-        warnings.warn(
-            f"{unlisted.height} US share classes trade while their company's classes link to "
-            "different Compustat records but are not in resources/ff_split_classes.csv; "
-            "classify each as tracking, parent or group: "
-            + ", ".join(f"permco {c} permno {n}" for c, n in unlisted.head(20).iter_rows()),
-            stacklevel=2,
-        )
+    tracking = pl.read_csv(
+        get_ff_tracking_stocks_path(), columns=["permno"], schema_overrides={"permno": pl.Int64}
+    ).with_columns(tracking=pl.lit(True))
     last_gvkey = (
         lnk.sort("permno", "linkdt", "linkenddt", "gvkey", nulls_last=True)
         .group_by("permno")
@@ -10349,8 +10330,8 @@ def _ff_us_firm_map(paths: DataPaths) -> pl.DataFrame:
             .over(piece)
         )
         .with_columns(id=pl.col("permno").min().over([*piece, "seq"]))
-        .join(listed, on="permno", how="left")
-        .select("permno", "id", "split", tracking=(pl.col("role") == "tracking").fill_null(False))
+        .join(tracking, on="permno", how="left")
+        .select("permno", "id", "split", pl.col("tracking").fill_null(False))
         .sort("permno")
     )
 
@@ -10396,7 +10377,7 @@ def ff_load_crsp_panel(
           (weights only): the CIZ sum over the firm's classes.
         - NYSE if any class is NYSE-listed (exchcd is the minimum). prc is the
           largest |price|, used only to check that a price exists.
-        Tracking stocks (resources/ff_split_classes.csv) are left out.
+        Tracking stocks (resources/ff_tracking_stocks.csv) are left out.
     Steps:
         1) CIZ universe class rows mapped to firms; tracking stocks dropped.
         2) Join JKP's return (monthly also me and me_company); class ME at t-1.
@@ -11568,7 +11549,7 @@ def gen_ff_data(
           class publishes its company's characteristics. A permco whose classes
           link to different Compustat records is split by record, a security
           relisted under the same permco is a new firm, and tracking stocks
-          (resources/ff_split_classes.csv) stay out of the sorts. A company is
+          (resources/ff_tracking_stocks.csv) stay out of the sorts. A company is
           NYSE if any class is. Daily weights use the CIZ sum over the classes.
         - Elsewhere: JKP's main sample with ME, per-country breakpoints, and the
           FACTOR_MIN_STOCKS_BP / FACTOR_MIN_STOCKS_PF minimums.

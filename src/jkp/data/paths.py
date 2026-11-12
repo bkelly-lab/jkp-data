@@ -73,10 +73,10 @@ def get_fx_cad_backfill_path() -> Path:
     return _resource_path("fx_cad_1960_1982.csv")
 
 
-def get_ff_split_classes_path() -> Path:
-    """Return the path to the bundled list of US share classes whose company's classes
-    link to different Compustat records: tracking stocks, their parents, group stocks."""
-    return _resource_path("ff_split_classes.csv")
+def get_ff_tracking_stocks_path() -> Path:
+    """Return the path to the bundled list of US tracking stocks, which FF leave out of
+    their sorts."""
+    return _resource_path("ff_tracking_stocks.csv")
 
 
 def get_data_readme_path() -> Path:

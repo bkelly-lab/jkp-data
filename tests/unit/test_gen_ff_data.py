@@ -625,7 +625,7 @@ class TestFFUsFirmMap:
     different gvkeys is split by gvkey; a later listing is a new firm."""
 
     @staticmethod
-    def _run(test_paths, monkeypatch, listed: str) -> dict[int, dict]:
+    def _run(test_paths, monkeypatch) -> dict[int, dict]:
         # permno, permco, first month, months, gvkey
         classes = [
             (2, 100, date(2000, 1, 31), 6, "g1"),
@@ -652,37 +652,30 @@ class TestFFUsFirmMap:
             },
             schema_overrides={"linkenddt": pl.Date},
         ).write_parquet(test_paths.raw_tables_dir / "crsp_ccmxpf_lnkhist.parquet")
-        csv = test_paths.base_dir / "ff_split_classes.csv"
-        csv.write_text("permno,role\n" + listed)
-        monkeypatch.setattr(af, "get_ff_split_classes_path", lambda: csv)
+        csv = test_paths.base_dir / "ff_tracking_stocks.csv"
+        csv.write_text("permno\n6\n")
+        monkeypatch.setattr(af, "get_ff_tracking_stocks_path", lambda: csv)
         out = af._ff_us_firm_map(test_paths)
         assert out["permno"].is_duplicated().sum() == 0
         return {r["permno"]: r for r in out.iter_rows(named=True)}
 
-    _LISTED = "5,parent\n6,tracking\n7,parent\n"
-
     def test_overlapping_classes_are_one_firm_with_smallest_permno(self, test_paths, monkeypatch):
-        r = self._run(test_paths, monkeypatch, self._LISTED)
+        r = self._run(test_paths, monkeypatch)
         assert [r[p]["id"] for p in (1, 2)] == [1, 1]
         assert not r[1]["split"]
 
     def test_later_listing_is_a_new_firm(self, test_paths, monkeypatch):
-        r = self._run(test_paths, monkeypatch, self._LISTED)
+        r = self._run(test_paths, monkeypatch)
         assert [r[p]["id"] for p in (3, 4)] == [3, 4]
 
     def test_permco_split_by_gvkey(self, test_paths, monkeypatch):
-        r = self._run(test_paths, monkeypatch, self._LISTED)
+        r = self._run(test_paths, monkeypatch)
         assert [r[p]["id"] for p in (5, 6, 7)] == [5, 6, 5]
         assert all(r[p]["split"] for p in (5, 6, 7))
 
     def test_tracking_flag_from_list(self, test_paths, monkeypatch):
-        r = self._run(test_paths, monkeypatch, self._LISTED)
+        r = self._run(test_paths, monkeypatch)
         assert [p for p in r if r[p]["tracking"]] == [6]
-
-    def test_unlisted_class_in_split_month_warns(self, test_paths, monkeypatch):
-        with pytest.warns(UserWarning, match="permno 7"):
-            r = self._run(test_paths, monkeypatch, "5,parent\n6,tracking\n")
-        assert r[7]["id"] == 5
 
 
 # =============================================================================
