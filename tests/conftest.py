@@ -79,6 +79,9 @@ class ToleranceSpec:
     Usage:
         np.testing.assert_allclose(actual, expected, **ToleranceSpec.STANDARD)
         np.testing.assert_allclose(actual, expected, **ToleranceSpec.FINANCIAL_RATIOS)
+        assert_frame_equal(
+            actual, expected, check_exact=False, **ToleranceSpec.polars(ToleranceSpec.STANDARD)
+        )
     """
 
     # Core precision levels
@@ -101,6 +104,11 @@ class ToleranceSpec:
 
     # Default for when you're unsure
     DEFAULT = STANDARD
+
+    @staticmethod
+    def polars(level: dict[str, float]) -> dict[str, float]:
+        """``level`` under the names Polars' assert functions take: ``rel_tol``, ``abs_tol``."""
+        return {"rel_tol": level["rtol"], "abs_tol": level["atol"]}
 
 
 @pytest.fixture

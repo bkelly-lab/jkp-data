@@ -10207,7 +10207,9 @@ def _sum_rows_kernel(
                 pf_row = stock_months[row] * n_chars
                 value_row = row * _SUM_VALUES
                 for char in range(n_chars):
-                    at = (char * n_bins + pf_by_row[pf_row + char]) * _SUM_VALUES
+                    # int(): with the uint8 portfolio the index stays uint8 and overflows
+                    # past 255 when the kernel runs as plain Python (NUMBA_DISABLE_JIT).
+                    at = (char * n_bins + int(pf_by_row[pf_row + char])) * _SUM_VALUES
                     for k in range(_SUM_VALUES):
                         totals[at + k] += values[value_row + k]
             out[period * per_period : (period + 1) * per_period] = totals
@@ -10605,7 +10607,9 @@ def _rank_by_month(
         task_starts,
         month_starts,
         data.select(pl.col(chars).cast(pl.Float64)).to_numpy(order="c").ravel(),
-        data["bp_stock"].fill_null(False).cast(pl.UInt8).to_numpy(),
+        # Int64, not UInt8: as plain Python (NUMBA_DISABLE_JIT) NumPy keeps uint8
+        # arithmetic in uint8, so a count of breakpoint stocks would wrap past 255.
+        data["bp_stock"].fill_null(False).cast(pl.Int64).to_numpy(),
         data["size_grp"].replace_strict(size_codes, return_dtype=pl.UInt8).to_numpy(),
         data["ret_exc_lead1m"].to_numpy(),
         n_chars,

@@ -481,14 +481,14 @@ class TestPrcToHigh:
 
     def test_prc_to_high_golden_fixture(self):
         """Lock prc_to_high output on a 500-id seeded synthetic fixture with unique
-        (id_int, group_number, date). rtol=1e-12 absorbs cross-platform float rounding.
+        (id_int, group_number, date). rel_tol=1e-12 absorbs cross-platform float rounding.
         """
         from tests.golden.generate_rolling_golden import build_prc_to_high_input
 
         golden = pl.read_parquet(GOLDEN_DIR / "prc_to_high_21d.parquet")
         df = build_prc_to_high_input(seed=42)
         result = prc_to_high(df.lazy(), "_21d", __min=10).collect().sort(["id_int", "group_number"])
-        assert_frame_equal(result, golden, check_exact=False, atol=0.0, rtol=1e-12)
+        assert_frame_equal(result, golden, check_exact=False, abs_tol=0.0, rel_tol=1e-12)
 
 
 class TestCapm:
@@ -1225,7 +1225,7 @@ class TestZeroTrades:
         result = (
             zero_trades(df.lazy(), "_126d", __min=20).collect().sort(["id_int", "group_number"])
         )
-        assert_frame_equal(result, golden, check_exact=False, atol=0.0, rtol=1e-12)
+        assert_frame_equal(result, golden, check_exact=False, abs_tol=0.0, rel_tol=1e-12)
 
 
 class TestDolvol:
@@ -1421,7 +1421,7 @@ class TestTurnover:
         golden = pl.read_parquet(GOLDEN_DIR / "turnover_126d.parquet")
         df = build_turnover_input(seed=43)
         result = turnover(df.lazy(), "_126d", __min=20).collect().sort(["id_int", "group_number"])
-        assert_frame_equal(result, golden, check_exact=False, atol=0.0, rtol=1e-12)
+        assert_frame_equal(result, golden, check_exact=False, abs_tol=0.0, rel_tol=1e-12)
 
 
 class TestMktcorr:
@@ -1541,7 +1541,7 @@ class TestMktcorr:
         result_new = mktcorr(df, "_21d", __min=5).sort(["id_int", "group_number"])
         result_legacy = _mktcorr_legacy(df, "_21d", __min=5).sort(["id_int", "group_number"])
 
-        assert_frame_equal(result_new, result_legacy, check_exact=False, atol=1e-14)
+        assert_frame_equal(result_new, result_legacy, check_exact=False, abs_tol=1e-14)
 
 
 class TestDimsonbeta:

@@ -72,6 +72,6 @@ def test_residual_momentum_golden(
     polars.testing.assert_series_equal(
         actual[value_col],
         expected[value_col],
-        **tolerance.STANDARD,
+        **tolerance.polars(tolerance.STANDARD),
         check_names=True,
     )
