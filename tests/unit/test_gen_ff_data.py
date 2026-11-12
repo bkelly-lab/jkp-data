@@ -5,7 +5,7 @@ Covers:
   - _ff_bm_eligible / _ff_op_eligible / _ff_inv_eligible / _ff_mom_eligible
   - ff_country_breakpoints, _ff_bm_breaks / _ff_op_breaks / _ff_inv_breaks,
     _ff_size_breaks
-  - ff_annual_characteristics, ff_load_crsp_panel (monthly ME, returns)
+  - _ff_us_firm_map, ff_annual_characteristics, ff_load_crsp_panel (firm returns, ME)
   - ff_assign_portfolios
   - ff_assign_to_panel
   - _ff_vw_leg
@@ -22,6 +22,7 @@ import numpy as np
 import polars as pl
 import pytest
 
+import jkp.data.aux_functions as af
 from jkp.data.aux_functions import (
     _ff_bm_breaks,
     _ff_bm_eligible,
@@ -590,19 +591,114 @@ class TestFFSpecBreaks:
 
 
 # =============================================================================
+# TestFFUsFirmMap
+# =============================================================================
+
+
+_CIZ_COMMON = {
+    "sharetype": "NS",
+    "securitytype": "EQTY",
+    "securitysubtype": "COM",
+    "usincflg": "Y",
+    "issuertype": "CORP",
+    "primaryexch": "N",
+}
+
+
+def _firm_map(rows: list[tuple[int, int, bool, bool]]) -> pl.DataFrame:
+    """[permno, id, split, tracking] rows, the _ff_us_firm_map output."""
+    schema = {"permno": pl.Int64, "id": pl.Int64, "split": pl.Boolean, "tracking": pl.Boolean}
+    return pl.DataFrame(rows, schema=schema, orient="row")
+
+
+def _month_ends(first: date, n: int) -> list[date]:
+    out = []
+    for k in range(n):
+        y, m = divmod(first.month - 1 + k, 12)
+        nxt = date(first.year + y + (m + 1) // 12, (m + 1) % 12 + 1, 1)
+        out.append(date.fromordinal(nxt.toordinal() - 1))
+    return out
+
+
+class TestFFUsFirmMap:
+    """_ff_us_firm_map: permcos become firms; a permco whose classes link to
+    different gvkeys is split by gvkey; a later listing is a new firm."""
+
+    @staticmethod
+    def _run(test_paths, monkeypatch, listed: str) -> dict[int, dict]:
+        # permno, permco, first month, months, gvkey
+        classes = [
+            (2, 100, date(2000, 1, 31), 6, "g1"),
+            (1, 100, date(2000, 3, 31), 4, "g1"),  # overlaps 2: same firm
+            (3, 200, date(2000, 1, 31), 2, "g3"),
+            (4, 200, date(2000, 4, 30), 3, "g3"),  # starts after 3 ended: new firm
+            (5, 300, date(2000, 1, 31), 6, "g5"),
+            (6, 300, date(2000, 1, 31), 6, "g6"),  # tracking stock of 5
+            (7, 300, date(2000, 1, 31), 6, "g5"),  # second class of 5
+        ]
+        msf = [
+            {"permno": p, "permco": c, "mthcaldt": d, **_CIZ_COMMON}
+            for p, c, first, n, _ in classes
+            for d in _month_ends(first, n)
+        ]
+        pl.DataFrame(msf).write_parquet(test_paths.raw_tables_dir / "crsp_msf_v2.parquet")
+        pl.DataFrame(
+            {
+                "gvkey": [g for *_, g in classes],
+                "linktype": ["LC"] * len(classes),
+                "lpermno": [p for p, *_ in classes],
+                "linkdt": [date(1999, 1, 1)] * len(classes),
+                "linkenddt": [None] * len(classes),
+            },
+            schema_overrides={"linkenddt": pl.Date},
+        ).write_parquet(test_paths.raw_tables_dir / "crsp_ccmxpf_lnkhist.parquet")
+        csv = test_paths.base_dir / "ff_split_classes.csv"
+        csv.write_text("permno,role\n" + listed)
+        monkeypatch.setattr(af, "get_ff_split_classes_path", lambda: csv)
+        out = af._ff_us_firm_map(test_paths)
+        assert out["permno"].is_duplicated().sum() == 0
+        return {r["permno"]: r for r in out.iter_rows(named=True)}
+
+    _LISTED = "5,parent\n6,tracking\n7,parent\n"
+
+    def test_overlapping_classes_are_one_firm_with_smallest_permno(self, test_paths, monkeypatch):
+        r = self._run(test_paths, monkeypatch, self._LISTED)
+        assert [r[p]["id"] for p in (1, 2)] == [1, 1]
+        assert not r[1]["split"]
+
+    def test_later_listing_is_a_new_firm(self, test_paths, monkeypatch):
+        r = self._run(test_paths, monkeypatch, self._LISTED)
+        assert [r[p]["id"] for p in (3, 4)] == [3, 4]
+
+    def test_permco_split_by_gvkey(self, test_paths, monkeypatch):
+        r = self._run(test_paths, monkeypatch, self._LISTED)
+        assert [r[p]["id"] for p in (5, 6, 7)] == [5, 6, 5]
+        assert all(r[p]["split"] for p in (5, 6, 7))
+
+    def test_tracking_flag_from_list(self, test_paths, monkeypatch):
+        r = self._run(test_paths, monkeypatch, self._LISTED)
+        assert [p for p in r if r[p]["tracking"]] == [6]
+
+    def test_unlisted_class_in_split_month_warns(self, test_paths, monkeypatch):
+        with pytest.warns(UserWarning, match="permno 7"):
+            r = self._run(test_paths, monkeypatch, "5,parent\n6,tracking\n")
+        assert r[7]["id"] == 5
+
+
+# =============================================================================
 # TestFFAnnualCharacteristics
 # =============================================================================
 
 
-def _write_annual_world_msf(test_paths) -> None:
+def _write_annual_world_msf(test_paths, rows: list[tuple] | None = None) -> None:
     """world_msf rows for ff_annual_characteristics (all fiscal 2019 -> port_year 2020).
 
-    GBR (Compustat): 10 Dec ME 50; 11 Dec ME 0; 12 Dec ME 30 as a secondary
-    line (primary_sec 0); 13 halted, last row in Nov. US: 20 Compustat-only
-    (me 55, me_company 60); 21 Compustat-only with a Nov row only; 30 CRSP (me 40,
-    me_company 60, world_msf gvkey g20); 31 CRSP with no accounting.
+    Default rows. GBR (Compustat): 10 Dec ME 50; 11 Dec ME 0; 12 Dec ME 30 as a
+    secondary line (primary_sec 0); 13 halted, last row in Nov. US: 20
+    Compustat-only (me 55, me_company 60); 21 Compustat-only with a Nov row only;
+    30 CRSP (me 40, me_company 60, world_msf gvkey g20); 31 CRSP with no accounting.
     """
-    rows = [
+    rows = rows or [
         # id, excntry, gvkey, eom, me, me_company, source_crsp, primary_sec
         (10, "GBR", "g10", date(2019, 12, 31), 50.0, 50.0, 0, 1),
         (11, "GBR", "g11", date(2019, 12, 31), 0.0, 0.0, 0, 1),
@@ -619,18 +715,24 @@ def _write_annual_world_msf(test_paths) -> None:
     ).write_parquet(test_paths.interim_dir / "world_msf.parquet")
 
 
-def _acc(gvkeys: list[str], be: float, op: float, inv: float | None) -> pl.DataFrame:
+def _acc(
+    gvkeys: list[str | None],
+    be: float | None,
+    op: float | None,
+    inv: float | None,
+    datadate: date = date(2019, 12, 31),
+) -> pl.DataFrame:
     n = len(gvkeys)
     return pl.DataFrame(
         {
             "gvkey": gvkeys,
-            "datadate": [date(2019, 12, 31)] * n,
+            "datadate": [datadate] * n,
             "year": [2019] * n,
             "be": [be] * n,
             "op": [op] * n,
             "inv": [inv] * n,
         },
-        schema_overrides={"inv": pl.Float64},
+        schema_overrides={"gvkey": pl.Utf8, "be": pl.Float64, "op": pl.Float64, "inv": pl.Float64},
     )
 
 
@@ -644,9 +746,10 @@ class TestFFAnnualCharacteristics:
         acc_us = _acc(["g20", "g21"], be=30.0, op=0.2, inv=None)
         comp_world = _acc(["g10", "g11", "g12", "g13"], be=25.0, op=0.1, inv=0.05)
         ccm2a = _acc(["g30"], be=40.0, op=0.3, inv=0.02).with_columns(permno=pl.lit(30))
-        # FF's CRSP sample in December 2019: permno 30 only (31 is outside it).
-        crsp_m = pl.LazyFrame({"permno": [30], "date": [date(2019, 12, 31)]})
-        out = ff_annual_characteristics(test_paths, acc_us, ccm2a, comp_world, crsp_m)
+        # FF's CRSP sample in December 2019: firm 30 only (31 is outside it).
+        crsp_m = pl.LazyFrame({"id": [30], "date": [date(2019, 12, 31)]})
+        firm_map = _firm_map([(30, 30, False, False), (31, 31, False, False)])
+        out = ff_annual_characteristics(test_paths, acc_us, ccm2a, comp_world, crsp_m, firm_map)
         assert out.select("id", "port_year").is_duplicated().sum() == 0
         assert out["port_year"].unique().to_list() == [2020]
         return {r["id"]: r for r in out.iter_rows(named=True)}
@@ -676,7 +779,7 @@ class TestFFAnnualCharacteristics:
         assert [out[i]["dec_universe"] for i in (10, 12)] == [True, False]
 
     def test_us_dec_universe_is_ff_crsp_sample(self, test_paths):
-        """US: in the December universe only if the permno is in FF's CRSP sample
+        """US: in the December universe only if the firm is in FF's CRSP sample
         that December; Compustat-only securities never are. Dec ME is unaffected."""
         out = self._run(test_paths)
         assert [out[i]["dec_universe"] for i in (20, 30, 31)] == [False, True, False]
@@ -704,51 +807,175 @@ class TestFFAnnualCharacteristics:
         assert r["be"] is None and r["beme"] is None
 
 
+class TestFFAnnualCharacteristicsFirms:
+    """ff_annual_characteristics keys US CRSP securities by their FF firm: a
+    company's classes share one row, whichever class carries the accounting."""
+
+    @staticmethod
+    def _run(test_paths) -> dict[int, dict]:
+        dec = date(2019, 12, 31)
+        _write_annual_world_msf(
+            test_paths,
+            [
+                # firm 40: classes 40 and 41 of one company (me_company 100)
+                (40, US_EXCNTRY, None, dec, 60.0, 100.0, 1, 1),
+                (41, US_EXCNTRY, None, dec, 40.0, 100.0, 1, 1),
+                # split permco: firm 50 and its tracking stock 51
+                (50, US_EXCNTRY, None, dec, 70.0, 100.0, 1, 1),
+                (51, US_EXCNTRY, None, dec, 30.0, 100.0, 1, 1),
+                # firm 60: classes 60 and 61, each with a Compustat record
+                (60, US_EXCNTRY, None, dec, 30.0, 50.0, 1, 1),
+                (61, US_EXCNTRY, None, dec, 20.0, 50.0, 1, 1),
+                # firm 70: Compustat record without BE on 71, DFF BE on 70
+                (70, US_EXCNTRY, None, dec, 10.0, 16.0, 1, 1),
+                (71, US_EXCNTRY, None, dec, 6.0, 16.0, 1, 1),
+            ],
+        )
+        ccm2a = pl.concat(
+            [
+                _acc(["g40"], be=50.0, op=0.2, inv=0.1).with_columns(permno=pl.lit(41)),
+                # DFF record (no gvkey) on the other class
+                _acc([None], be=45.0, op=None, inv=None, datadate=date(2020, 6, 30)).with_columns(
+                    permno=pl.lit(40)
+                ),
+                _acc(["g50"], be=20.0, op=0.3, inv=0.05).with_columns(permno=pl.lit(50)),
+                _acc(["g51"], be=10.0, op=0.4, inv=0.06).with_columns(permno=pl.lit(51)),
+                _acc(["g60"], be=5.0, op=0.5, inv=0.0, datadate=date(2019, 6, 30)).with_columns(
+                    permno=pl.lit(60)
+                ),
+                _acc(["g61"], be=6.0, op=0.6, inv=0.0).with_columns(permno=pl.lit(61)),
+                _acc(["g71"], be=None, op=0.1, inv=0.0).with_columns(permno=pl.lit(71)),
+                _acc([None], be=8.0, op=None, inv=None, datadate=date(2020, 6, 30)).with_columns(
+                    permno=pl.lit(70)
+                ),
+            ]
+        )
+        no_acc = _acc(["gx"], be=1.0, op=0.0, inv=0.0)
+        crsp_m = pl.LazyFrame({"id": [40, 50, 60], "date": [date(2019, 12, 31)] * 3})
+        firm_map = _firm_map(
+            [
+                (40, 40, False, False),
+                (41, 40, False, False),
+                (50, 50, True, False),
+                (51, 51, True, True),
+                (60, 60, False, False),
+                (61, 60, False, False),
+                (70, 70, False, False),
+                (71, 70, False, False),
+            ]
+        )
+        out = ff_annual_characteristics(test_paths, no_acc, ccm2a, no_acc, crsp_m, firm_map)
+        assert out.select("id", "port_year").is_duplicated().sum() == 0
+        return {r["id"]: r for r in out.iter_rows(named=True)}
+
+    def test_one_row_per_firm(self, test_paths):
+        assert sorted(self._run(test_paths)) == [40, 50, 51, 60, 70]
+
+    def test_other_class_accounting_reaches_the_firm_compustat_first(self, test_paths):
+        """Class 41 carries the Compustat record, class 40 a DFF BE: the firm keeps
+        the Compustat record, with the company's December ME."""
+        r = self._run(test_paths)[40]
+        assert (r["be"], r["op"], r["inv"], r["dec_me"]) == (50.0, 0.2, 0.1, 100.0)
+        assert r["beme"] == pytest.approx(0.5)
+
+    def test_dff_on_other_class_fills_missing_compustat_be(self, test_paths):
+        """Class 71's Compustat record has no BE; class 70's DFF BE fills it."""
+        r = self._run(test_paths)[70]
+        assert (r["be"], r["op"]) == (8.0, 0.1)
+
+    def test_split_firm_dec_me_is_its_own_classes(self, test_paths):
+        out = self._run(test_paths)
+        assert (out[50]["dec_me"], out[51]["dec_me"]) == (70.0, 30.0)
+        assert out[50]["beme"] == pytest.approx(20.0 / 70.0)
+
+    def test_tracking_stock_keeps_published_values(self, test_paths):
+        """A tracking stock is outside the sorts (not in crsp_m) but keeps its values."""
+        r = self._run(test_paths)[51]
+        assert r["beme"] == pytest.approx(10.0 / 30.0)
+        assert r["dec_universe"] is False
+
+    def test_latest_fiscal_year_end_wins_within_firm(self, test_paths):
+        r = self._run(test_paths)[60]
+        assert (r["be"], r["op"]) == (6.0, 0.6)
+
+
 # =============================================================================
 # TestFFLoadCrspPanel
 # =============================================================================
 
 
 class TestFFLoadCrspPanel:
-    """ff_load_crsp_panel: one permno per permco; monthly ME is JKP's me_company;
-    returns are JKP's CRSP returns (world_msf/world_dsf), not raw CIZ."""
+    """ff_load_crsp_panel: one row per FF firm and date. Class returns are weighted
+    by class ME at t-1; monthly ME is JKP's me_company (the firm's classes' sum when
+    the permco is split); returns are JKP's CRSP returns, not raw CIZ."""
 
-    def test_monthly_me_and_ret_from_world_msf(self, test_paths):
-        n = 3
-        pl.DataFrame(
-            {
-                "permno": [1, 2, 3],
-                "permco": [100, 100, 200],
-                "mthcaldt": [date(2020, 6, 30)] * n,
-                "mthret": [0.01] * n,
-                "mthretx": [0.01] * n,
-                "mthprc": [10.0, 5.0, 8.0],
-                "shrout": [1000.0] * n,
-                "sharetype": ["NS"] * n,
-                "securitytype": ["EQTY"] * n,
-                "securitysubtype": ["COM"] * n,
-                "usincflg": ["Y"] * n,
-                "issuertype": ["CORP"] * n,
-                "primaryexch": ["N"] * n,
-            }
+    @staticmethod
+    def _run_monthly(test_paths) -> pl.DataFrame:
+        may, jun = date(2020, 5, 31), date(2020, 6, 30)
+        # permno, permco, date, mthretx, mthprc, primaryexch
+        rows = [
+            (1, 100, may, 0.0, 10.0, "Q"),
+            (2, 100, may, 0.0, 5.0, "N"),
+            (1, 100, jun, 0.01, -12.0, "Q"),
+            (2, 100, jun, 0.03, 6.0, "N"),
+            (3, 200, jun, 0.01, 8.0, "Q"),
+            (4, 300, jun, 0.01, 8.0, "N"),
+            (5, 300, jun, 0.01, 8.0, "N"),
+            (6, 300, jun, 0.01, 8.0, "N"),
+        ]
+        cols = ["permno", "permco", "mthcaldt", "mthretx", "mthprc", "primaryexch"]
+        common = {k: v for k, v in _CIZ_COMMON.items() if k != "primaryexch"}
+        pl.DataFrame(rows, schema=cols, orient="row").with_columns(
+            shrout=pl.lit(1000.0),
+            mthret=pl.col("mthretx"),
+            **{k: pl.lit(v) for k, v in common.items()},
         ).write_parquet(test_paths.raw_tables_dir / "crsp_msf_v2.parquet")
         pl.DataFrame(
             {
-                "id": [1, 2],
-                "eom": [date(2020, 6, 30)] * 2,
-                "source_crsp": [1, 1],
-                "me_company": [25.0, 25.0],
+                "id": [1, 2, 1, 2, 4, 5, 6],
+                "eom": [may, may, jun, jun, jun, jun, jun],
+                "source_crsp": [1] * 7,
+                "me": [30.0, 10.0, 33.0, 11.0, 20.0, 5.0, 75.0],
+                "me_company": [40.0, 40.0, 44.0, 44.0, 100.0, 100.0, 100.0],
                 # -0.29: a delisting month whose world return includes the delisting return
-                "ret": [-0.29, 0.02],
+                "ret": [0.0, 0.0, 0.02, 0.10, -0.29, 0.0, 0.0],
             }
         ).write_parquet(test_paths.interim_dir / "world_msf.parquet")
-        out = ff_load_crsp_panel(test_paths, "monthly").collect().sort("permno")
-        # permno 1 has the larger CIZ ME (10 vs 5); its me is me_company (25), not
-        # the CIZ permco sum (15), and its return is world_msf's, not CIZ's 0.01.
-        # permno 3 has no world_msf row.
-        assert out["permno"].to_list() == [1, 3]
-        assert out["me"].to_list() == [25.0, None]
-        assert out["retadj"].to_list() == [-0.29, None]
+        firm_map = _firm_map(
+            [
+                (1, 1, False, False),
+                (2, 1, False, False),
+                (3, 3, False, False),
+                (4, 4, True, False),
+                (5, 4, True, False),
+                (6, 6, True, True),
+            ]
+        )
+        out = ff_load_crsp_panel(test_paths, "monthly", firm_map).collect()
+        return out.filter(pl.col("date") == jun).sort("id")
+
+    def test_one_row_per_firm_tracking_dropped(self, test_paths):
+        assert self._run_monthly(test_paths)["id"].to_list() == [1, 3, 4]
+
+    def test_two_class_firm(self, test_paths, tolerance):
+        """Return and retx weighted by May class ME (30, 10); ME is me_company; NYSE
+        if any class is; prc is the largest |price|."""
+        r = self._run_monthly(test_paths).row(0, named=True)
+        np.testing.assert_allclose(r["retadj"], (0.02 * 30 + 0.10 * 10) / 40, **tolerance.STANDARD)
+        np.testing.assert_allclose(r["retx"], (0.01 * 30 + 0.03 * 10) / 40, **tolerance.STANDARD)
+        assert (r["me"], r["exchcd"], r["prc"]) == (44.0, 1, 12.0)
+
+    def test_single_class_firm_without_world_row(self, test_paths):
+        r = self._run_monthly(test_paths).row(1, named=True)
+        assert (r["me"], r["retadj"], r["retx"]) == (None, None, 0.01)
+
+    def test_split_firm_me_sums_its_own_classes(self, test_paths):
+        """Split permco: ME is the firm's classes (20 + 5), not me_company (100,
+        which includes the tracking stock). A class with no ME at t-1 keeps the
+        firm's return from the classes that have one, so with none it is null."""
+        r = self._run_monthly(test_paths).row(2, named=True)
+        assert r["me"] == 25.0
+        assert r["retadj"] is None
 
     def test_daily_ret_from_world_dsf(self, test_paths):
         n = 2
@@ -761,12 +988,7 @@ class TestFFLoadCrspPanel:
                 "dlyretx": [0.01] * n,
                 "dlyprc": [10.0, 8.0],
                 "shrout": [1000.0] * n,
-                "sharetype": ["NS"] * n,
-                "securitytype": ["EQTY"] * n,
-                "securitysubtype": ["COM"] * n,
-                "usincflg": ["Y"] * n,
-                "issuertype": ["CORP"] * n,
-                "primaryexch": ["N"] * n,
+                **{k: [v] * n for k, v in _CIZ_COMMON.items()},
             }
         ).write_parquet(test_paths.raw_tables_dir / "crsp_dsf_v2.parquet")
         pl.DataFrame(
@@ -777,11 +999,13 @@ class TestFFLoadCrspPanel:
                 "ret": [-0.29, 0.5],
             }
         ).write_parquet(test_paths.interim_dir / "world_dsf.parquet")
-        out = ff_load_crsp_panel(test_paths, "daily").collect().sort("permno")
+        firm_map = _firm_map([(1, 1, False, False), (2, 2, False, False)])
+        out = ff_load_crsp_panel(test_paths, "daily", firm_map).collect().sort("id")
         # permno 1 takes world_dsf's CRSP return; id 2 is a Compustat row there,
-        # so permno 2 gets no return. The join adds no rows.
-        assert out["permno"].to_list() == [1, 2]
+        # so permno 2 gets no return. The join adds no rows; daily ME is CIZ's.
+        assert out["id"].to_list() == [1, 2]
         assert out["retadj"].to_list() == [-0.29, None]
+        assert out["me"].to_list() == [10.0, 8.0]
 
 
 # =============================================================================
@@ -1903,6 +2127,15 @@ class TestFFMomSignalMonthly:
             pl.int_range(pl.len()) != missing
         )
         assert self._last(_run_monthly(panel.lazy()).collect())["eligible_mom"] is False
+
+    @pytest.mark.parametrize(("excntry", "expected"), [(US_EXCNTRY, 1.01**11 - 1), ("GBR", 9.0)])
+    def test_us_compounds_panel_returns_row_uses_jkp(self, excntry, expected, tolerance):
+        """US: the FF firm's own panel returns compounded over t-12..t-2 (a company's
+        combined return). Elsewhere: JKP's ret_12_1 (here a stand-in 9.0)."""
+        panel = _make_monthly_panel(months=20, excntry=excntry).lazy()
+        jkp = _jkp_mom(panel).with_columns(ret_12_1=pl.lit(9.0))
+        result = _ff_mom_signal_monthly(panel, _mom_src(panel, "monthly"), jkp).collect()
+        np.testing.assert_allclose(self._last(result)["mom_2_12"], expected, **tolerance.STANDARD)
 
     def test_row_price_without_me_at_start_eligible(self):
         """Non-US: the start check reads world_msf directly, so a priced row whose

@@ -62,7 +62,7 @@ from .config import (
     US_EXCNTRY,
 )
 from .output_writer import write_dataframe
-from .paths import DataPaths, get_dff_be_path, get_fx_cad_backfill_path
+from .paths import DataPaths, get_dff_be_path, get_ff_split_classes_path, get_fx_cad_backfill_path
 from .wrds_connection import (
     _attach_wrds,
     _install_postgres_extension,
@@ -10247,77 +10247,223 @@ def ff_load_compustat_us(
     return _ff_merge_dff_be(comp_ccm, ff5, use_dff, dff_path)
 
 
-def ff_load_crsp_panel(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl.LazyFrame:
-    """Load CRSP msf_v2/dsf_v2 with CIZ universe filters; one permno per permco.
+def _ff_us_firm_map(paths: DataPaths) -> pl.DataFrame:
+    """
+    Description:
+        The FF firm of each US CRSP permno. Fama and French form portfolios from
+        companies (CRSP permcos) and split a permco by hand where its securities
+        are not one company; this map applies those splits by rule, plus the
+        hand-kept list resources/ff_split_classes.csv for tracking stocks.
+    Steps:
+        1) CIZ universe months of each permno, and the CCM links (CCM_LINKTYPES,
+           any linkprim) active in each month.
+        2) A permco is split if, in some month, its classes link to two or more
+           gvkeys (group stocks, tracking stocks). In a split permco each class
+           belongs, for its whole life, to the piece of its last link's gvkey;
+           any other permco is one piece.
+        3) Within a piece, a permno that starts after every earlier permno has
+           ended starts a new firm (sequential listings).
+        4) id = the firm's smallest permno, so a single-class firm keeps its permno.
+        5) tracking marks the list's tracking stocks, which stay out of the sorts.
+           A class that trades in a split month but is not on the list is
+           warned about, so a new case gets classified.
+    Output:
+        Eager [permno, id, split, tracking], one row per permno in the CIZ universe.
+    """
+    raw = paths.raw_tables_dir
+    cls = (
+        pl.scan_parquet(raw / "crsp_msf_v2.parquet")
+        .with_columns(pl.col("mthcaldt").cast(pl.Date), pl.col("permno", "permco").cast(pl.Int64))
+        .filter(_ciz_universe())
+        .select("permno", "permco", date=pl.col("mthcaldt").dt.month_end())
+        .unique()
+        .collect()
+    )
+    lnk = (
+        pl.scan_parquet(raw / "crsp_ccmxpf_lnkhist.parquet")
+        .filter(pl.col("linktype").is_in(CCM_LINKTYPES) & pl.col("lpermno").is_not_null())
+        .select(
+            pl.col("gvkey").cast(pl.Utf8),
+            pl.col("linkdt", "linkenddt").cast(pl.Date),
+            permno=pl.col("lpermno").cast(pl.Int64),
+        )
+        .collect()
+    )
+    split_months = (
+        cls.join(lnk, on="permno")
+        .filter(
+            pl.col("date").is_between(
+                pl.col("linkdt"), pl.col("linkenddt").fill_null(date(9999, 12, 31))
+            )
+        )
+        .group_by("permco", "date")
+        .agg(n_gvkey=pl.col("gvkey").n_unique())
+        .filter(pl.col("n_gvkey") > 1)
+        .select("permco", "date")
+    )
+    listed = pl.read_csv(
+        get_ff_split_classes_path(),
+        columns=["permno", "role"],
+        schema_overrides={"permno": pl.Int64},
+    )
+    unlisted = (
+        cls.join(split_months, on=["permco", "date"])
+        .select("permco", "permno")
+        .unique()
+        .join(listed, on="permno", how="anti")
+        .sort("permco", "permno")
+    )
+    if unlisted.height:
+        warnings.warn(
+            f"{unlisted.height} US share classes trade while their company's classes link to "
+            "different Compustat records but are not in resources/ff_split_classes.csv; "
+            "classify each as tracking, parent or group: "
+            + ", ".join(f"permco {c} permno {n}" for c, n in unlisted.head(20).iter_rows()),
+            stacklevel=2,
+        )
+    last_gvkey = (
+        lnk.sort("permno", "linkdt", "linkenddt", "gvkey", nulls_last=True)
+        .group_by("permno")
+        .agg(last_gvkey=pl.col("gvkey").last())
+    )
+    ym = pl.col("date").dt.year() * 12 + pl.col("date").dt.month()
+    piece = ["permco", "piece"]
+    return (
+        cls.group_by("permno")
+        .agg(permco=pl.col("permco").sort_by("date").last(), first=ym.min(), last=ym.max())
+        .join(
+            split_months.select("permco").unique().with_columns(split=pl.lit(True)),
+            on="permco",
+            how="left",
+        )
+        .join(last_gvkey, on="permno", how="left")
+        .with_columns(pl.col("split").fill_null(False))
+        .with_columns(
+            piece=pl.when(pl.col("split")).then(pl.col("last_gvkey")).otherwise(None).fill_null("")
+        )
+        .sort("permco", "piece", "first", "permno")
+        .with_columns(prev_last=pl.col("last").cum_max().shift(1).over(piece))
+        .with_columns(
+            seq=(pl.col("prev_last").is_null() | (pl.col("first") > pl.col("prev_last")))
+            .cum_sum()
+            .over(piece)
+        )
+        .with_columns(id=pl.col("permno").min().over([*piece, "seq"]))
+        .join(listed, on="permno", how="left")
+        .select("permno", "id", "split", tracking=(pl.col("role") == "tracking").fill_null(False))
+        .sort("permno")
+    )
 
-    Each (date, permco) keeps its largest-meq permno. Monthly ME is JKP's
-    me_company for that permno (world_msf, all of the company's share classes);
-    it equals the CIZ-only permco sum except where a company has a non-CIZ class.
-    Daily ME (weights only) is the CIZ permco sum.
 
-    The return (retadj) is JKP's CRSP return from world_msf/world_dsf: CIZ's return
-    plus CRSP's delisting return, and -30% where a bad delisting has none
-    (prepare_crsp_sf). Raw CIZ returns would lose the delisting return on every
-    daily delisting and on monthly delistings that MthRet leaves out (MthDelFlg G).
+def _ff_class_vw(c: str) -> pl.Expr:
+    """A firm's value of column c as an aggregation over its classes' rows: weighted by
+    each class's ME at t-1 (w_cls), over classes with a value and a positive weight.
+    A firm with one class that date keeps that class's value."""
+    ok = pl.col(c).is_not_null() & (pl.col("w_cls") > 0)
+    weighted = safe_div(
+        (pl.col(c) * pl.col("w_cls")).filter(ok).sum(), pl.col("w_cls").filter(ok).sum(), c
+    )
+    return pl.when(pl.len() == 1).then(pl.col(c).first()).otherwise(weighted).alias(c)
 
-    Output: Lazy [permno, permco, date, retadj, retx, prc, shrout, exchcd, shrcd, me].
+
+def _ff_firm_me() -> pl.Expr:
+    """A firm's monthly ME as an aggregation over its classes' world_msf rows: JKP's
+    me_company (all of the company's classes), or the sum of the firm's classes' me
+    when the permco is split."""
+    me = pl.col("me")
+    return (
+        pl.when(pl.col("split").any())
+        .then(pl.when(me.is_not_null().any()).then(me.sum()))
+        .otherwise(pl.col("me_company").max())
+    )
+
+
+def ff_load_crsp_panel(
+    paths: DataPaths, freq: Literal["monthly", "daily"], firm_map: pl.DataFrame
+) -> pl.LazyFrame:
+    """
+    Description:
+        US CRSP panel with one row per FF firm (_ff_us_firm_map) and date. Fama and
+        French combine a company's share classes as securities in a portfolio:
+        - Return: the classes' returns weighted by each class's ME at t-1; a firm
+          with one class that date keeps its return. Returns are JKP's CRSP returns
+          from world_msf/world_dsf: CIZ's return plus CRSP's delisting return, and
+          -30% where a bad delisting has none (prepare_crsp_sf). Raw CIZ returns
+          would lose the delisting return on every daily delisting and on monthly
+          delistings that MthRet leaves out (MthDelFlg G).
+        - Monthly ME: JKP's me_company (all of the company's share classes), or
+          the sum of the firm's classes' me when the permco is split. Daily ME
+          (weights only): the CIZ sum over the firm's classes.
+        - NYSE if any class is NYSE-listed (exchcd is the minimum). prc is the
+          largest |price|, used only to check that a price exists.
+        Tracking stocks (resources/ff_split_classes.csv) are left out.
+    Steps:
+        1) CIZ universe class rows mapped to firms; tracking stocks dropped.
+        2) Join JKP's return (monthly also me and me_company); class ME at t-1.
+        3) Aggregate to (id, date).
+    Output:
+        Lazy [id, date, retadj, retx, prc, exchcd, me].
     """
     pq, p = ("crsp_msf_v2.parquet", "mth") if freq == "monthly" else ("crsp_dsf_v2.parquet", "dly")
     date_c, retx_c, prc_c = f"{p}caldt", f"{p}retx", f"{p}prc"
-    lf = (
+    cls = (
         pl.scan_parquet(paths.raw_tables_dir / pq)
         .with_columns(
             pl.col(date_c).cast(pl.Date),
-            pl.col("permno", "permco").cast(pl.Int64),
+            pl.col("permno").cast(pl.Int64),
             pl.col(retx_c, prc_c, "shrout").cast(pl.Float64),
         )
         .filter(_ciz_universe())
-        .with_columns(
+        .join(firm_map.lazy(), on="permno", how="left")
+        .filter(~pl.col("tracking").fill_null(False))
+        .select(
+            "permno",
+            id=pl.coalesce("id", "permno"),
+            split=pl.col("split").fill_null(False),
+            date=pl.col(date_c).dt.month_end() if freq == "monthly" else pl.col(date_c),
+            retx=pl.col(retx_c),
+            prc=pl.col(prc_c),
             # /1000: CIZ shrout is in thousands; me in USD millions matches
             # Compustat BE and the jkp world convention (one unit, US + ROW).
             meq=pl.col(prc_c).abs() * pl.col("shrout") / 1000.0,
             exchcd=pl.col("primaryexch").replace_strict(
                 {"N": 1, "A": 2, "Q": 3}, default=None, return_dtype=pl.Int64
             ),
-            shrcd=pl.lit(10, dtype=pl.Int64),
         )
-        .rename({date_c: "date", retx_c: "retx", prc_c: "prc"})
-    )
-    date_expr = pl.col("date").dt.month_end() if freq == "monthly" else pl.col("date")
-    panel = (
-        lf.with_columns(date=date_expr)
-        .select(
-            "permno",
-            "permco",
-            "date",
-            "retx",
-            "prc",
-            "shrout",
-            "meq",
-            "exchcd",
-            "shrcd",
-        )
-        # permno last in the key: two permnos of one permco with equal meq
-        # would otherwise leave unique(keep="last") engine-order-dependent
-        .sort(["date", "permco", "meq", "permno"])
-        .with_columns(me=pl.col("meq").sum().over(["date", "permco"]))
-        .unique(subset=["date", "permco"], keep="last", maintain_order=True)
-        .drop("meq")
     )
     if freq == "daily":
-        dsf = (
-            pl.scan_parquet(paths.interim_dir / "world_dsf.parquet")
-            .filter(pl.col("source_crsp") == 1)
-            .select("id", "date", retadj=pl.col("ret"))
+        world = pl.scan_parquet(paths.interim_dir / "world_dsf.parquet").select(
+            "source_crsp", "date", retadj="ret", permno=pl.col("id").cast(pl.Int64)
         )
-        return panel.join(dsf, left_on=["permno", "date"], right_on=["id", "date"], how="left")
-    msf = (
-        pl.scan_parquet(paths.interim_dir / "world_msf.parquet")
-        .filter(pl.col("source_crsp") == 1)
-        .select("id", "eom", me=pl.col("me_company"), retadj=pl.col("ret"))
-    )
-    return panel.drop("me").join(
-        msf, left_on=["permno", "date"], right_on=["id", "eom"], how="left"
+        me = pl.when(pl.col("me").is_not_null().any()).then(pl.col("me").sum())
+        cls = cls.rename({"meq": "me"})
+    else:
+        world = pl.scan_parquet(paths.interim_dir / "world_msf.parquet").select(
+            "source_crsp",
+            "me",
+            "me_company",
+            date="eom",
+            retadj="ret",
+            permno=pl.col("id").cast(pl.Int64),
+        )
+        me = _ff_firm_me()
+        cls = cls.drop("meq")
+    return (
+        cls.join(
+            world.filter(pl.col("source_crsp") == 1).drop("source_crsp"),
+            on=["permno", "date"],
+            how="left",
+        )
+        .sort("permno", "date")
+        .with_columns(w_cls=pl.col("me").shift(1).over("permno"))
+        .group_by("id", "date")
+        .agg(
+            _ff_class_vw("retadj"),
+            _ff_class_vw("retx"),
+            prc=pl.col("prc").abs().max(),
+            exchcd=pl.col("exchcd").min(),
+            me=me,
+        )
     )
 
 
@@ -10331,40 +10477,39 @@ def _ff_us_rets_weights_lazy(
     shared with _ff_row_rets_weights_lazy (prc_us feeds UMD's price-at-start check;
     size_grp is null for the US)."""
     period = (
-        (pl.col("date").dt.month() == 7).cast(pl.Int32).cum_sum().over("permno")
+        (pl.col("date").dt.month() == 7).cast(pl.Int32).cum_sum().over("id")
         if freq == "monthly"
         else pl.when(pl.col("date").dt.month() >= 7)
         .then(pl.col("date").dt.year())
         .otherwise(pl.col("date").dt.year() - 1)
     )
     return (
-        raw_panel.sort(["permno", "date"])
+        raw_panel.sort(["id", "date"])
         .with_columns(
             period=period,
             retx_safe=pl.col("retx").fill_null(0.0),
-            lag_me=pl.col("me").shift(1).over("permno"),
+            lag_me=pl.col("me").shift(1).over("id"),
         )
         .with_columns(
             me_base=pl.when(
-                (pl.col("period") != pl.col("period").shift(1).over("permno")).fill_null(True)
+                (pl.col("period") != pl.col("period").shift(1).over("id")).fill_null(True)
             )
             .then(pl.col("lag_me"))
             .otherwise(None)
             .forward_fill()
-            .over(["permno", "period"]),
-            cumretx=(1.0 + pl.col("retx_safe")).cum_prod().over(["permno", "period"]),
+            .over(["id", "period"]),
+            cumretx=(1.0 + pl.col("retx_safe")).cum_prod().over(["id", "period"]),
         )
         .with_columns(
             weight_port=pl.when(pl.col("lag_me").is_not_null() & (pl.col("lag_me") > 0))
             .then(
-                pl.col("me_base")
-                * pl.col("cumretx").shift(1).over(["permno", "period"]).fill_null(1.0)
+                pl.col("me_base") * pl.col("cumretx").shift(1).over(["id", "period"]).fill_null(1.0)
             )
             .otherwise(None),
         )
         .select(
             excntry=pl.lit(US_EXCNTRY),
-            id=pl.col("permno"),
+            id=pl.col("id"),
             date=pl.col("date"),
             ret=pl.col("retadj"),
             w=pl.col("weight_port"),
@@ -10583,6 +10728,7 @@ def ff_annual_characteristics(
     ccm2a: pl.DataFrame,
     comp_world: pl.DataFrame,
     crsp_m: pl.LazyFrame,
+    firm_map: pl.DataFrame,
 ) -> pl.DataFrame:
     """
     Description:
@@ -10590,22 +10736,53 @@ def ff_annual_characteristics(
         every security, keyed by the July-June year they apply to:
         port_year y uses fiscal year y-1 accounting and December y-1 ME. The
         published characteristics and the June sorts both read this table, so a
-        sort value always equals the published value.
+        sort value always equals the published value. US CRSP securities are
+        keyed by their FF firm (_ff_us_firm_map), so every share class of a
+        company carries the company's values.
     Steps:
         1) Fiscal year y-1 accounting. CRSP securities: ccm2a by permno (CCM link,
-           DFF BE). Compustat securities: by gvkey, acc_us in the US and comp_world
-           elsewhere.
-        2) December y-1 ME, kept when > 0: me_company in the US (all share classes
-           of the company), the security's me elsewhere; no December row, no
-           December ME. dec_universe flags a December row in the FF universe: in
-           the US, the permno is in FF's CRSP sample that month (crsp_m, from
-           ff_load_crsp_panel); elsewhere, JKP's main sample. It is a sort
-           screen, not a formula input.
+           DFF BE), mapped to the firm. A firm-year with several records keeps
+           the Compustat record (the latest fiscal year-end if there are
+           several), whose BE already includes its own permno's DFF BE
+           (_ff_merge_dff_be); a DFF record on another class fills BE only when
+           the Compustat BE is missing. Compustat securities: by gvkey, acc_us in
+           the US and comp_world elsewhere.
+        2) December y-1 ME, kept when > 0. US CRSP: the firm's ME (_ff_firm_me);
+           US Compustat: me_company; elsewhere: the security's me. No December
+           row, no December ME. dec_universe flags a December row in the FF
+           universe: in the US, the firm is in FF's CRSP sample that month
+           (crsp_m, from ff_load_crsp_panel); elsewhere, JKP's main sample. It is
+           a sort screen, not a formula input.
         3) Full join on (id, port_year); beme = be / dec_me.
     Output:
         Eager [id, port_year, be, op, inv, dec_me, dec_universe, beme].
     """
     acc_cols = ["be", "op", "inv"]
+    firm = firm_map.lazy().select("permno", "id", "split")
+    crsp = (
+        ccm2a.lazy()
+        .select(pl.col("permno").cast(pl.Int64), "gvkey", "year", "datadate", *acc_cols)
+        .join(firm, on="permno", how="left")
+        .with_columns(id=pl.coalesce("id", "permno"))
+    )
+    crsp_comp = (
+        crsp.filter(pl.col("gvkey").is_not_null())
+        .sort(
+            "id",
+            "year",
+            "datadate",
+            "gvkey",
+            "permno",
+            descending=[False, False, True, False, False],
+        )
+        .unique(["id", "year"], keep="first", maintain_order=True)
+    )
+    crsp_dff = (
+        crsp.filter(pl.col("gvkey").is_null())
+        .sort("id", "year", "permno")
+        .unique(["id", "year"], keep="first", maintain_order=True)
+        .select("id", "year", be_dff="be")
+    )
     by_gvkey = pl.concat(
         [
             acc_us.lazy().select("gvkey", "year", *acc_cols, us=pl.lit(True)),
@@ -10615,7 +10792,9 @@ def ff_annual_characteristics(
     ).with_columns(pl.col("gvkey").cast(pl.Utf8))
     accounting = pl.concat(
         [
-            ccm2a.lazy().select(pl.col("permno").cast(pl.Int64).alias("id"), "year", *acc_cols),
+            crsp_comp.join(crsp_dff, on=["id", "year"], how="full", coalesce=True).select(
+                "id", "year", pl.coalesce("be", "be_dff").alias("be"), "op", "inv"
+            ),
             _compustat_id_gvkey(paths)
             .join(by_gvkey, on=["gvkey", "us"])
             .select("id", "year", *acc_cols),
@@ -10623,19 +10802,39 @@ def ff_annual_characteristics(
         how="vertical_relaxed",
     ).select("id", *acc_cols, port_year=pl.col("year") + 1)
     us = pl.col("excntry") == US_EXCNTRY
-    us_sample = crsp_m.filter(pl.col("date").dt.month() == 12).select(
-        id=pl.col("permno"), port_year=pl.col("date").dt.year() + 1, in_us_sample=pl.lit(True)
-    )
-    dec_me = (
+    december = (
         pl.scan_parquet(paths.interim_dir / "world_msf.parquet")
         .filter(pl.col("eom").dt.month() == 12)
         .select(
             pl.col("id").cast(pl.Int64),
+            "me",
+            "me_company",
             port_year=pl.col("eom").dt.year() + 1,
-            dec_me=pl.when(us).then(pl.col("me_company")).otherwise(pl.col("me")),
+            us_crsp=(pl.col("source_crsp") == 1) & us,
             us=us,
             world_universe=_ff_world_universe().fill_null(False),
         )
+    )
+    crsp_dec = (
+        december.filter(pl.col("us_crsp"))
+        .join(firm.rename({"id": "firm"}), left_on="id", right_on="permno", how="left")
+        .with_columns(id=pl.coalesce("firm", "id"), split=pl.col("split").fill_null(False))
+        .group_by("id", "port_year")
+        .agg(dec_me=_ff_firm_me())
+        .with_columns(us=pl.lit(True), world_universe=pl.lit(False))
+    )
+    other_dec = december.filter(~pl.col("us_crsp")).select(
+        "id",
+        "port_year",
+        pl.when(pl.col("us")).then(pl.col("me_company")).otherwise(pl.col("me")).alias("dec_me"),
+        "us",
+        "world_universe",
+    )
+    us_sample = crsp_m.filter(pl.col("date").dt.month() == 12).select(
+        "id", port_year=pl.col("date").dt.year() + 1, in_us_sample=pl.lit(True)
+    )
+    dec_me = (
+        pl.concat([crsp_dec, other_dec], how="vertical_relaxed")
         .filter(pl.col("dec_me") > 0)
         .join(us_sample, on=["id", "port_year"], how="left")
         .select(
@@ -11172,13 +11371,17 @@ def _ff_mom_gate(src: pl.LazyFrame, start: int, end: int, full: int, min_rows: i
 def _ff_mom_signal_monthly(
     panel: pl.LazyFrame, src: pl.LazyFrame, jkp_mom: pl.LazyFrame
 ) -> pl.LazyFrame:
-    """Monthly UMD signal: JKP's ret_12_1 under French's eligibility gate.
+    """Monthly UMD signal under French's eligibility gate: the compounded t-12..t-2
+    return.
 
-    jkp_mom: [id, mth_idx, ret_12_1] keyed by holding month (JKP eom t-1 -> t).
-    The value is JKP's compounded t-12..t-2 return on a calendar grid: missing
-    months count as 0 and a return spanning a gap is kept. Eligibility
-    (_ff_mom_gate on src): price at t-13, good return at t-2, ME > 0 at t-1,
-    and rows in t-12..t-2 — all 11 in the US, >= FF_UMD_ROW_MIN_MONTHS elsewhere.
+    US: the FF firm's own panel returns compounded, exp(cum_log[t-2] - cum_log[t-13])
+    - 1, so a company with several share classes uses its combined return. The gate
+    requires all 11 months, and a -99/null return counts as 0.
+    Elsewhere: JKP's ret_12_1. jkp_mom: [id, mth_idx, ret_12_1] keyed by holding
+    month (JKP eom t-1 -> t), compounded on a calendar grid: missing months count
+    as 0 and a return spanning a gap is kept.
+    Eligibility (_ff_mom_gate on src): price at t-13, good return at t-2, ME > 0 at
+    t-1, and rows in t-12..t-2 — all 11 in the US, >= FF_UMD_ROW_MIN_MONTHS elsewhere.
     """
     idx = (pl.col("date").dt.year() * 12 + pl.col("date").dt.month()).cast(pl.Int64)
     gate = _ff_mom_gate(
@@ -11194,7 +11397,13 @@ def _ff_mom_signal_monthly(
         .join(jkp_mom, left_on=["id", "idx"], right_on=["id", "mth_idx"], how="left")
         .with_columns(
             eligible_mom=pl.col("eligible_mom").fill_null(False),
-            mom_2_12=pl.when(pl.col("eligible_mom")).then(pl.col("ret_12_1")).otherwise(None),
+            mom_2_12=pl.when(pl.col("eligible_mom"))
+            .then(
+                pl.when(pl.col("excntry") == US_EXCNTRY)
+                .then((pl.col("cum_log_end") - pl.col("cum_log_start")).exp() - 1.0)
+                .otherwise(pl.col("ret_12_1"))
+            )
+            .otherwise(None),
         )
         .select(_MOM_OUT_COLS)
     )
@@ -11250,9 +11459,9 @@ def ff_build_mom_signal(
     return at its end, ME at t-1, listed throughout), judged on _ff_mom_source:
     the US FF panel, and world_msf/world_dsf for other countries, where a halt
     shows up as missing rows and is tolerated down to FF_UMD_ROW_MIN_MONTHS/DAYS.
-    Dispatches to monthly (JKP ret_12_1 from market_chars_m) or daily (per-excntry
-    trading-day index, cum_log diff over t-250..t-21). Builds lazily and collects
-    once at the boundary.
+    Dispatches to monthly (US: the firm's compounded panel returns; elsewhere JKP's
+    ret_12_1 from market_chars_m) or daily (per-excntry trading-day index, cum_log
+    diff over t-250..t-21). Builds lazily and collects once at the boundary.
 
     Output: panel + [me_lag1, mom_2_12, eligible_mom].
     """
@@ -11352,9 +11561,15 @@ def gen_ff_data(
         Each characteristic is built once, in ff_annual_characteristics; the
         published file and the June sorts read that table, and the sample screens
         decide only which stocks enter a sort.
-        - US: CRSP CIZ common shares of US companies on NYSE/AMEX/NASDAQ, one
-          share class per company sized by JKP's me_company (all classes), NYSE
-          breakpoints. Daily weights use the CIZ permco sum.
+        - US: CRSP CIZ common shares of US companies on NYSE/AMEX/NASDAQ, NYSE
+          breakpoints. The unit is the company (_ff_us_firm_map): its share
+          classes combine as securities in a portfolio (ff_load_crsp_panel), with
+          ME = JKP's me_company and the return weighted by class ME at t-1; every
+          class publishes its company's characteristics. A permco whose classes
+          link to different Compustat records is split by record, a security
+          relisted under the same permco is a new firm, and tracking stocks
+          (resources/ff_split_classes.csv) stay out of the sorts. A company is
+          NYSE if any class is. Daily weights use the CIZ sum over the classes.
         - Elsewhere: JKP's main sample with ME, per-country breakpoints, and the
           FACTOR_MIN_STOCKS_BP / FACTOR_MIN_STOCKS_PF minimums.
         - Returns, every country: JKP's world_msf/world_dsf, so US returns include
@@ -11371,13 +11586,16 @@ def gen_ff_data(
           held in month t, so the annual ones are constant from July to June.
         - Daily FF3/FF5 hold the monthly June portfolios; only returns and weights
           are daily.
-        - UMD sorts on JKP's ret_12_1 under French's eligibility rules
-          (ff_build_mom_signal); daily UMD uses French's daily signal.
+        - UMD sorts on the compounded t-12..t-2 return under French's eligibility
+          rules (ff_build_mom_signal): the company's own return in the US, JKP's
+          ret_12_1 elsewhere; daily UMD uses French's daily signal.
     Steps:
-        1) Build the US accounting once; link it to permnos (ccm2a); load
-           Compustat for other countries; build the annual characteristics table.
-        2) Write the characteristics: every world_msf security-month joined to the
-           annual table on its July-June year.
+        1) Map US permnos to FF firms. Build the US accounting once; link it to
+           permnos (ccm2a); load Compustat for other countries; build the annual
+           characteristics table.
+        2) Write the characteristics: every world_msf security-month (a US CRSP
+           security through its firm) joined to the annual table on its July-June
+           year.
         3) Collect the monthly US and ex-US panels; their June rows joined to the
            annual table; breakpoints and portfolio assignments.
         4) Monthly factors: FF3/FF5 from the June assignments, UMD from the
@@ -11392,13 +11610,20 @@ def gen_ff_data(
     acc_us = _ff_us_accounting(paths, ff5=True).collect()
     ccm2a = ff_load_compustat_us(paths, acc_us, ff5=True, use_dff=FF_USE_DFF_BE)
     comp_world = ff_load_world_compustat(paths)
-    crsp_m = ff_load_crsp_panel(paths, "monthly")
-    annual = ff_annual_characteristics(paths, acc_us, ccm2a, comp_world, crsp_m)
+    firm_map = _ff_us_firm_map(paths)
+    crsp_m = ff_load_crsp_panel(paths, "monthly", firm_map)
+    annual = ff_annual_characteristics(paths, acc_us, ccm2a, comp_world, crsp_m, firm_map)
     (
         pl.scan_parquet(paths.interim_dir / "world_msf.parquet")
         .select("excntry", pl.col("id").cast(pl.Int64), date=pl.col("eom"))
-        .with_columns(_ff_port_year())
-        .join(annual.lazy(), on=["id", "port_year"], how="left")
+        # permno -> firm; Compustat ids (>= 100,100,001) never match a permno
+        .join(
+            firm_map.lazy().select("permno", firm="id"), left_on="id", right_on="permno", how="left"
+        )
+        .with_columns(_ff_port_year(), firm=pl.coalesce("firm", "id"))
+        .join(
+            annual.lazy(), left_on=["firm", "port_year"], right_on=["id", "port_year"], how="left"
+        )
         .sort("date", "excntry", "id")
         .select(
             eom=pl.col("date"),
@@ -11443,7 +11668,9 @@ def gen_ff_data(
         panel_d = pl.concat(
             pl.collect_all(
                 [
-                    ff_load_crsp_panel(paths, "daily").pipe(_ff_us_rets_weights_lazy, "daily"),
+                    ff_load_crsp_panel(paths, "daily", firm_map).pipe(
+                        _ff_us_rets_weights_lazy, "daily"
+                    ),
                     ff_load_world_panel(paths, "daily").pipe(_ff_row_rets_weights_lazy, "daily"),
                 ]
             ),
