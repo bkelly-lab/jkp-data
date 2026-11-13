@@ -8,9 +8,10 @@ effects can't mask each other share a stage run, which keeps the tests fast:
     extended  copies of two firms under new gvkeys, and a copy in EUR of an AUD firm with the same
               USD values: each copy equals its source and no other firm changes, which catches a
               lag or window computed across firms
-    moved     gvkeys in reverse order, every date 12 months later and every input table's rows in
-              another order: the outputs relabeled and 12 months later, which also catches a pick
-              that depends on the order of the input rows
+    moved     gvkeys in reverse order, every date 12 months later (and the book-equity deferred-tax
+              cutoff year one later) and every input table's rows in another order: the outputs
+              relabeled and 12 months later, which also catches a pick that depends on the order
+              of the input rows
 """
 
 from __future__ import annotations
@@ -269,7 +270,10 @@ def extended(
 @pytest.fixture(scope="module")
 def moved(tmp_path_factory: pytest.TempPathFactory, inputs: Tables) -> Outputs:
     tables = _shuffled(_shifted(_relabeled(inputs)))
-    return _outputs(_run(tmp_path_factory.mktemp("moved"), tables))
+    # The deferred-tax cutoff in be_x is a calendar year, so it moves with the dates.
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(af, "BE_DEFERRED_TAX_END_YEAR", af.BE_DEFERRED_TAX_END_YEAR + 1)
+        return _outputs(_run(tmp_path_factory.mktemp("moved"), tables))
 
 
 @pytest.mark.parametrize("name", FILES)
