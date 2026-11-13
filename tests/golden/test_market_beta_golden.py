@@ -62,6 +62,6 @@ def test_market_beta_golden(
         polars.testing.assert_series_equal(
             actual[col],
             expected[col],
-            **tolerance.GOLDEN,
+            **tolerance.polars(tolerance.GOLDEN),
             check_names=True,
         )

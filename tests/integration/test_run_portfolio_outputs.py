@@ -17,21 +17,21 @@ import pytest
 import jkp.data.portfolio as portfolio_module
 from jkp.data.output_writer import configure_output_format
 from jkp.data.portfolio import _read_saved, run_portfolio, run_themes
+from tests.fixtures.portfolio_build import (
+    OI_SETTINGS,
+    allow_output_format_reset,
+    output_files,
+    patch_build,
+)
 from tests.unit.portfolio.conftest import (
     build_synthetic_data,
-    make_multi_region_classification,
-    make_themes_dir,
 )
 
 
 @pytest.fixture(autouse=True)
 def _allow_format_reconfigure(monkeypatch: pytest.MonkeyPatch) -> None:
     """Always permit reconfiguring the output-format singleton inside ``run_portfolio``."""
-
-    def _force_reset(format_str: str, *, _allow_reset: bool = False) -> None:
-        configure_output_format(format_str, _allow_reset=True)
-
-    monkeypatch.setattr("jkp.data.portfolio.configure_output_format", _force_reset)
+    monkeypatch.setattr("jkp.data.portfolio.configure_output_format", allow_output_format_reset)
     configure_output_format("parquet", _allow_reset=True)
 
 
@@ -44,34 +44,8 @@ def _setup(
     settings_overrides: dict | None = None,
 ) -> Path:
     build_synthetic_data(tmp_path, list(countries), list(chars))
-    cc_path = make_multi_region_classification(tmp_path)
-    themes_dir = make_themes_dir(tmp_path, dict.fromkeys(chars, "cluster_x"))
-
-    monkeypatch.setattr("jkp.data.paths.get_country_classification_path", lambda: cc_path)
-    monkeypatch.setattr("jkp.data.paths.get_themes_dir", lambda: themes_dir)
-    monkeypatch.setattr("jkp.data.portfolio.PORTFOLIO_CHARS", list(chars))
-
-    base_settings = {
-        "end_date": _dt.date(2030, 12, 31),
-        "pfs": 3,
-        "source": ["CRSP", "COMPUSTAT"],
-        "wins_ret": True,
-        "bps": "non_mc",
-        "bp_min_n": 5,
-        "cmp": {"us": True, "int": True},
-        "regional_pfs": {
-            "country_excl": ["ZWE", "VEN"],
-            "country_weights": "market_cap",
-            "stocks_min": 1,
-            "months_min": 1,
-            "countries_min": 1,
-        },
-        "daily_pf": True,
-        "ind_pf": True,
-    }
-    if settings_overrides:
-        base_settings.update(settings_overrides)
-    monkeypatch.setattr("jkp.data.portfolio.PORTFOLIO_SETTINGS", base_settings)
+    settings = {**OI_SETTINGS, "cmp": {"us": True, "int": True}, **(settings_overrides or {})}
+    patch_build(monkeypatch, tmp_path, dict.fromkeys(chars, "cluster_x"), settings)
     return tmp_path
 
 
@@ -172,6 +146,52 @@ class TestRunPortfolioOutputs:
         daily_files = list(out.rglob("*_daily.parquet"))
         assert not daily_files, f"unexpected daily files: {daily_files}"
 
+    def test_no_portfolios_writes_only_cmp_and_industry_files(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No month has enough breakpoint stocks: the run finishes and writes only the
+        CMP and industry files. The CMP files use no breakpoints and have rows. The
+        industry files are empty, because an industry group also needs ``bp_min_n``
+        stocks."""
+        _setup(tmp_path, monkeypatch, settings_overrides={"bp_min_n": 10_000})
+        run_portfolio(output_format="parquet", output_dir=tmp_path)
+
+        out = _portfolios_dir(tmp_path)
+        cmp_files = {
+            "hml_cmp_1.parquet",
+            "hml_cmp_2.parquet",
+            "hml_cmp_5.parquet",
+            "themes/v1.0/lms_cmp_1.parquet",
+            "themes/v1.0/lms_cmp_2.parquet",
+            "themes/v1.0/lms_cmp_5.parquet",
+        }
+        industry_files = {
+            "industry_ff49.parquet",
+            "industry_ff49_daily.parquet",
+            "industry_gics.parquet",
+            "industry_gics_daily.parquet",
+        }
+        assert output_files(out) == cmp_files | industry_files
+        for rel in cmp_files:
+            assert pl.read_parquet(out / rel).height > 0, rel
+        for rel in industry_files:
+            assert pl.read_parquet(out / rel).height == 0, rel
+
+    def test_no_overnight_returns_writes_no_overnight_files(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        _setup(tmp_path, monkeypatch)
+        daily_dir = tmp_path / "processed" / "return_data" / "daily_rets_by_country"
+        for path in daily_dir.glob("*.parquet"):
+            daily = pl.read_parquet(path)
+            daily.with_columns(ret_overnight=pl.lit(None, dtype=pl.Float64)).write_parquet(path)
+        run_portfolio(output_format="parquet", output_dir=tmp_path)
+
+        assert "No overnight results produced" in capsys.readouterr().out
+        out = _portfolios_dir(tmp_path)
+        assert pl.read_parquet(out / "hml_daily.parquet").height > 0
+        assert not list(out.rglob("*overnight*"))
+
     def test_end_date_filter_applied(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         cutoff = _dt.date(2020, 4, 30)
         _setup(tmp_path, monkeypatch, settings_overrides={"end_date": cutoff})
@@ -233,10 +253,6 @@ class TestRunPortfolioOutputs:
             )
 
 
-def _files(root: Path, suffix: str = "parquet") -> set[str]:
-    return {p.relative_to(root).as_posix() for p in root.rglob(f"*.{suffix}")}
-
-
 def _assert_cmp_signed(signed: pl.DataFrame, unsigned: pl.DataFrame) -> None:
     """Each signed cmp row is the unsigned row times its direction, in the same order."""
     keys = ["excntry", "characteristic", "size_grp", "eom"]
@@ -254,13 +270,13 @@ class TestRunThemes:
         _setup(tmp_path, monkeypatch)
         run_portfolio(output_format="parquet", output_dir=tmp_path)
         themes_dir = _portfolios_dir(tmp_path) / "themes"
-        expected = {rel: pl.read_parquet(themes_dir / rel) for rel in _files(themes_dir)}
+        expected = {rel: pl.read_parquet(themes_dir / rel) for rel in output_files(themes_dir)}
         for path in themes_dir.rglob("*.parquet"):
             path.unlink()
 
         run_themes(output_dir=tmp_path)
 
-        assert _files(themes_dir) == set(expected)
+        assert output_files(themes_dir) == set(expected)
         assert [p.name for p in themes_dir.iterdir()] == ["v1.0"]
         for rel, df in expected.items():
             assert pl.read_parquet(themes_dir / rel).equals(df), rel
@@ -269,7 +285,7 @@ class TestRunThemes:
         _setup(tmp_path, monkeypatch)
         run_portfolio(output_format="parquet", output_dir=tmp_path)
         out = _portfolios_dir(tmp_path) / "themes"
-        v1 = {rel: pl.read_parquet(out / "v1.0" / rel) for rel in _files(out / "v1.0")}
+        v1 = {rel: pl.read_parquet(out / "v1.0" / rel) for rel in output_files(out / "v1.0")}
 
         run_themes(output_dir=tmp_path, version="v0")
 
@@ -465,6 +481,13 @@ class TestRunThemes:
         with pytest.raises(ValueError, match="file name must start"):
             run_themes(output_dir=tmp_path, file=tmp_path / "...csv")
 
+    def test_without_saved_factors_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _setup(tmp_path, monkeypatch)
+        with pytest.raises(FileNotFoundError, match="run jkp portfolio first"):
+            run_themes(output_dir=tmp_path)
+
     def test_ignores_unknown_hml_files(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -492,13 +515,13 @@ class TestRunThemes:
         _setup(tmp_path, monkeypatch)
         run_portfolio(output_format="csv", output_dir=tmp_path)
         themes_dir = _portfolios_dir(tmp_path) / "themes"
-        expected = _files(themes_dir, "csv")
+        expected = output_files(themes_dir, "csv")
         for path in themes_dir.rglob("*.csv"):
             path.unlink()
 
         run_themes(output_dir=tmp_path)
 
-        assert _files(themes_dir, "csv") == expected
+        assert output_files(themes_dir, "csv") == expected
         assert not list(tmp_path.rglob("*.parquet"))
 
         run_themes(output_dir=tmp_path, version="v0")

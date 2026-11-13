@@ -30,8 +30,7 @@ if TYPE_CHECKING:
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    """Register custom markers and run Polars in memory, as portfolio.py does (bit-reproducible reductions)."""
-    pl.Config.set_engine_affinity("in-memory")
+    """Register custom markers."""
     config.addinivalue_line("markers", "unit: Unit tests (fast, isolated)")
     config.addinivalue_line("markers", "integration: Integration tests (module interactions)")
     config.addinivalue_line("markers", "methodology: Paper methodology validation tests")
@@ -80,6 +79,9 @@ class ToleranceSpec:
     Usage:
         np.testing.assert_allclose(actual, expected, **ToleranceSpec.STANDARD)
         np.testing.assert_allclose(actual, expected, **ToleranceSpec.FINANCIAL_RATIOS)
+        assert_frame_equal(
+            actual, expected, check_exact=False, **ToleranceSpec.polars(ToleranceSpec.STANDARD)
+        )
     """
 
     # Core precision levels
@@ -102,6 +104,11 @@ class ToleranceSpec:
 
     # Default for when you're unsure
     DEFAULT = STANDARD
+
+    @staticmethod
+    def polars(level: dict[str, float]) -> dict[str, float]:
+        """``level`` under the names Polars' assert functions take: ``rel_tol``, ``abs_tol``."""
+        return {"rel_tol": level["rtol"], "abs_tol": level["atol"]}
 
 
 @pytest.fixture
@@ -313,3 +320,27 @@ def test_paths(temp_data_dir: Path) -> DataPaths:
     from jkp.data.paths import DataPaths
 
     return DataPaths(base_dir=temp_data_dir)
+
+
+@pytest.fixture(scope="session")
+def synthetic_inputs(tmp_path_factory: pytest.TempPathFactory) -> DataPaths:
+    """The synthetic Compustat inputs (``tests/golden/synthetic_compustat.py``), generated once
+    per session. Read-only: a test that changes them writes its own copy."""
+    from jkp.data.paths import DataPaths
+    from tests.golden.synthetic_compustat import generate
+
+    inputs = DataPaths(tmp_path_factory.mktemp("synthetic_compustat"))
+    generate(inputs.base_dir)
+    return inputs
+
+
+@pytest.fixture(scope="session")
+def acc_stage(tmp_path_factory: pytest.TempPathFactory, synthetic_inputs: DataPaths) -> DataPaths:
+    """The accounting stage run once per session on the synthetic inputs, shared by the golden,
+    oracle, integration, synthetic-data and metamorphic tests. Read-only."""
+    from jkp.data.paths import DataPaths
+    from tests.golden.generate_acc_chars_golden import run_stage
+
+    paths = DataPaths(tmp_path_factory.mktemp("acc_stage"))
+    run_stage(paths, synthetic_inputs)
+    return paths

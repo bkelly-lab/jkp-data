@@ -1,0 +1,137 @@
+"""Integration test for the accounting stage (issue #303, step 4).
+
+Uses the stage run on the synthetic Compustat inputs (acc_stage in tests/conftest.py), with the
+stage's calls in main.py's order, and checks the shape of what it writes. The values are checked
+by tests/unit/test_acc_chars_oracle.py and tests/golden/test_acc_chars_golden.py.
+"""
+
+from __future__ import annotations
+
+import shutil
+from pathlib import Path
+
+import polars as pl
+import pytest
+
+from jkp.data import aux_functions as af
+from jkp.data.config import ACCOUNTING_START_DATE
+from jkp.data.paths import DataPaths
+from tests.conftest import assert_unique_keys
+from tests.golden.generate_acc_chars_golden import KEYS
+
+pytestmark = pytest.mark.integration
+
+# file -> its key columns
+STAGE_FILES = {
+    "acc_std_ann": ["gvkey", "datadate"],
+    "acc_std_qtr": ["gvkey", "datadate"],
+    "achars_world": KEYS,
+    "qchars_world": KEYS,
+    "acc_chars_world": KEYS,
+}
+
+
+@pytest.fixture(scope="module")
+def outputs(acc_stage: DataPaths) -> dict[str, pl.DataFrame]:
+    return {
+        name: pl.read_parquet(acc_stage.interim_dir / f"{name}.parquet") for name in STAGE_FILES
+    }
+
+
+def _public_months(std: pl.DataFrame) -> int:
+    """
+    Description:
+        Public dates the expansion should produce from a standardized table, counted directly.
+    Steps:
+        1) Keep reports with data_available = 1.
+        2) A report is public from the month-end 4 months after datadate until the month before
+           the firm's next report becomes public, for at most 18 months after datadate.
+    Output:
+        Total number of (report, public month) pairs.
+    """
+    month = pl.col("datadate").dt.offset_by
+    spans = (
+        std.filter(pl.col("data_available") == 1)
+        .sort("gvkey", "datadate")
+        .with_columns(start=month("4mo").dt.month_end())
+        .with_columns(
+            end=pl.min_horizontal(
+                pl.col("start").shift(-1).over("gvkey").dt.offset_by("-1mo").dt.month_end(),
+                month("18mo").dt.month_end(),
+            )
+        )
+    )
+    months = (
+        (pl.col("end").dt.year() - pl.col("start").dt.year()) * 12
+        + pl.col("end").dt.month()
+        - pl.col("start").dt.month()
+        + 1
+    )
+    return spans.select(months.clip(0).sum()).item()
+
+
+@pytest.mark.parametrize(("name", "keys"), STAGE_FILES.items())
+def test_stage_file_is_written_with_unique_keys(
+    name: str, keys: list[str], outputs: dict[str, pl.DataFrame]
+) -> None:
+    assert outputs[name].height > 0
+    assert_unique_keys(outputs[name], keys)
+
+
+def test_output_has_keys_and_every_characteristic(outputs: dict[str, pl.DataFrame]) -> None:
+    assert outputs["acc_chars_world"].columns == ["source", *KEYS, *af.acc_chars_list()]
+
+
+@pytest.mark.parametrize(
+    ("std", "chars"), [("acc_std_ann", "achars_world"), ("acc_std_qtr", "qchars_world")]
+)
+def test_public_date_expansion_row_counts(
+    std: str, chars: str, outputs: dict[str, pl.DataFrame]
+) -> None:
+    assert outputs[chars].height == _public_months(outputs[std])
+
+
+def test_combined_output_is_union_of_annual_and_quarterly(outputs: dict[str, pl.DataFrame]) -> None:
+    union = pl.concat([outputs["achars_world"].select(KEYS), outputs["qchars_world"].select(KEYS)])
+    assert outputs["acc_chars_world"].height == union.unique().height
+
+
+def test_no_characteristic_is_all_null_or_nan(outputs: dict[str, pl.DataFrame]) -> None:
+    chars = outputs["acc_chars_world"]
+    counts = chars.select(
+        pl.col(c).cast(pl.Float64).fill_nan(None).count() for c in af.acc_chars_list()
+    ).row(0, named=True)
+    assert [c for c, n in counts.items() if n == 0] == []
+
+
+@pytest.mark.parametrize(
+    ("coverage", "convert_to_usd", "sources", "usd_only"),
+    [
+        ("na", 1, {"NA"}, True),
+        ("global", 1, {"GLOBAL"}, True),
+        ("global", 0, {"GLOBAL"}, False),
+        ("world", 0, {"NA", "GLOBAL"}, False),
+    ],
+)
+def test_standardization_coverage_and_currency_options(
+    tmp_path: Path,
+    synthetic_inputs: DataPaths,
+    coverage: str,
+    convert_to_usd: int,
+    sources: set[str],
+    usd_only: bool,
+) -> None:
+    """The coverage and convert_to_usd options main.py doesn't use pick the sources and currency
+    of the reports (data_available = 1; the monthly filler rows have no source)."""
+    paths = DataPaths(tmp_path)
+    af.setup_folder_structure(paths)
+    shutil.copytree(synthetic_inputs.raw_tables_dir, paths.raw_tables_dir, dirs_exist_ok=True)
+    shutil.copy(synthetic_inputs.interim_dir / "world_msf.parquet", paths.interim_dir)
+    af.gen_fx1(paths)
+    msf = paths.interim_dir / "world_msf.parquet"
+    af.standardized_accounting_data(paths, coverage, convert_to_usd, msf, 1, ACCOUNTING_START_DATE)
+    ann = pl.read_parquet(paths.interim_dir / "acc_std_ann.parquet").filter(
+        pl.col("data_available") == 1
+    )
+    assert set(ann["source"].unique()) == sources
+    assert (set(ann["curcd"].unique()) == {"USD"}) == usd_only

@@ -187,7 +187,11 @@ class TestCmp:
             [1.0, np.inf],
             [np.inf, np.inf],
             [-np.inf, np.inf],
-            [-1e308, 1e308],
+            pytest.param(
+                [-1e308, 1e308],
+                # The weighted sums overflow to infinity on purpose.
+                marks=pytest.mark.filterwarnings("ignore:overflow encountered:RuntimeWarning"),
+            ),
         ],
     )
     def test_group_above_the_minimum_std_stays(self, values: list[float]) -> None:

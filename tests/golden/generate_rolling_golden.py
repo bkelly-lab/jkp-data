@@ -95,10 +95,11 @@ def build_turnover_input(seed: int = 43) -> pl.DataFrame:
                 }
             )
 
-    # Add mixed-magnitude stress groups
+    # Add mixed-magnitude stress groups, non-negative like real volume: a +1e10/-1e10 pair cancels
+    # the mean to ~1e-6, whose last digits then depend on summation order
     for stress_id, group_number in [(9001, 10), (9002, 20)]:
         # scaled so tvol/shares*1e6 stays representable
-        for tvol_val, shares_val in [(1e10, 1.0), (1.0, 1.0), (-1e10, 1.0), (1.0, 1.0)]:
+        for tvol_val, shares_val in [(1e10, 1.0), (1.0, 1.0), (1e10, 1.0), (1.0, 1.0)]:
             rows.append(
                 {
                     "id_int": stress_id,

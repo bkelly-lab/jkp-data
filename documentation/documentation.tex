@@ -123,6 +123,9 @@ Jensen is at Yale School of Management; \url{www.tijensen.com}. Kelly is at AQR 
 \textbf{Date} & \textbf{Changes} \\
 \hline
 \endhead
+11-10-2026 & \textbullet~\texttt{resff3\_12\_1} and \texttt{resff3\_6\_1} are null when the standard deviation of the scored residuals is at most $10^{-6}$. This guards against wrong values: the score divides the residuals' mean by their standard deviation, so near-equal residuals give a score set by how close they happen to be. One stock with two scored residuals $10^{-7}$ apart scored 585,175, where a typical score is of order 1. On the current data this nulls 2 values of \texttt{resff3\_6\_1}, none of them published. \\
+& \textbullet~Affected output files: \texttt{characteristics/world\_data.parquet}, the per-country files under \texttt{characteristics/}, and downstream factor portfolios; on the current data none of their values change. \\
+\hline
 11-09-2026 & \textbullet~Rolling regressions and return statistics share one guard against near-constant windows. The return-based characteristics guarded since 10-15-2026, including the monthly \texttt{beta\_60m} and \texttt{ivol\_capm\_60m}, and now also \texttt{resff3\_12\_1} and \texttt{resff3\_6\_1}, are null when the standard deviation of raw USD \texttt{ret} over the window is at most $10^{-6}$, or \texttt{ret} is zero in at least 90\% of it. Before, only an exactly constant \texttt{ret} counted, and residual momentum had no guard. \texttt{ni\_ar1} and \texttt{ni\_ivol} are null when the standard deviation of lagged NI/AT over the regression window is at most $10^{-6}$. On the current data this changes 5 published stock-months of one security (\texttt{ni\_ar1} about $3.8\times10^{5}$). \\
 & \textbullet~Affected output files: \texttt{characteristics/world\_data.parquet}, the per-country files under \texttt{characteristics/}, and downstream factor portfolios. \\
 \hline
@@ -1422,7 +1425,7 @@ The abbreviation is used to refer to the accounting variable. A suffix of '\mbox
 	
 	Operating Profit ala Ball et al (2015) & op\mbox{*} & We use EBITDA\mbox{*} + \href{https://wrds-www.wharton.upenn.edu/data-dictionary/form_metadata/comp_na_daily_all_funda_incomestatementitems/XRD/}{XRD}. If XRD is unavailable, we set it to zero \\
 	
-	Operating Profit to Equity & ope\mbox{*} & We use EBITDA\mbox{*}-\href{https://wrds-www.wharton.upenn.edu/data-dictionary/form_metadata/comp_na_daily_all_funda_incomestatementitems/XINT/}{XINT}. Note that we target the same variable as the numerator of the profitability characteristic used to create the Robust-minus weak factor in the fama-French 5 factor model (Fama and French, 2015) \\
+	Operating Profit to Equity & ope\mbox{*} & We use EBITDA\mbox{*}-\href{https://wrds-www.wharton.upenn.edu/data-dictionary/form_metadata/comp_na_daily_all_funda_incomestatementitems/XINT/}{XINT}, with a missing XINT set to zero. Note that we target the same variable as the numerator of the profitability characteristic used to create the Robust-minus weak factor in the fama-French 5 factor model (Fama and French, 2015). Fama and French (2015) divide this numerator by book equity; Kenneth French's data library now divides it by book equity plus minority interest. Operating profit to book equity (ope\_be) follows the paper. \\
 	
 	Earnings before Tax and Extraordinary Items & pi\mbox{*} & We prefer to use \href{https://wrds-www.wharton.upenn.edu/data-dictionary/form_metadata/comp_na_daily_all_funda_incomestatementitems/PI/}{PI}. If this is unavailable we use EBIT\mbox{*}-\href{https://wrds-www.wharton.upenn.edu/data-dictionary/form_metadata/comp_na_daily_all_funda_incomestatementitems/XINT/}{XINT}+\href{https://wrds-www.wharton.upenn.edu/data-dictionary/form_metadata/comp_na_daily_all_funda_incomestatementitems/SPI/}{SPI}+\href{https://wrds-www.wharton.upenn.edu/data-dictionary/form_metadata/comp_na_daily_all_funda_incomestatementitems/NOPI/}{NOPI} where we set SPI and NOPI to zero if missing\\
 	
@@ -1564,7 +1567,7 @@ The abbreviation is used to refer to the accounting variable. A suffix of '\mbox
 	\href{https://wrds-www.wharton.upenn.edu/data-dictionary/form_metadata/comp_na_daily_all_funda_balancesheetitems/AT/}{AT}-
 	\href{https://wrds-www.wharton.upenn.edu/data-dictionary/form_metadata/comp_na_daily_all_funda_balancesheetitems/LT/}{LT} \\
 	
-	Book Equity & be\mbox{*} & We use SEQ\mbox{*}+TXDITC\mbox{*}-PSTK\mbox{*} where we set TXDITC\mbox{*} and PSTK\mbox{*} to zero if missing \\
+	Book Equity & be\mbox{*} & We use SEQ\mbox{*}+TXDITC\mbox{*}-PSTK\mbox{*} where we set TXDITC\mbox{*} and PSTK\mbox{*} to zero if missing. Following Fama and French, we add TXDITC\mbox{*} only for fiscal periods ending before 1993, in every country \\
 	
 	Book Enterprise Value & bev\mbox{*} & We prefer to use 
 	\href{https://wrds-www.wharton.upenn.edu/data-dictionary/form_metadata/comp_na_daily_all_funda_balancesheetitems/ICAPT/}{ICAPT}+\href{https://wrds-www.wharton.upenn.edu/data-dictionary/form_metadata/comp_na_daily_all_funda_balancesheetitems/DLC/}{DLC}-\href{https://wrds-www.wharton.upenn.edu/data-dictionary/form_metadata/comp_na_daily_all_funda_balancesheetitems/CHE/}{CHE} where DLC and CHE are set to zero if missing. If this is unavailable, we use SEQ\mbox{*}+NETDEBT\mbox{*}+
@@ -2544,7 +2547,7 @@ These stock-level columns are also used as the daily return leg when constructin
     
     Local Return & ret\_local\mbox{*} & Equal to RET\mbox{*} for CRSP (USD is the local currency). Delisting treatment is identical to RET\mbox{*}: monthly compounding with \href{https://wrds-www.wharton.upenn.edu/data-dictionary/crsp_m_stock/dsedelist/dlret/}{DLRET} unless \texttt{MthDelFlg} is \texttt{A}, \texttt{P}, or \texttt{V}; daily returns are compounded with \texttt{DLRET} on the last trading day.\\
      
-    Excess Return & ret\_exc\mbox{*} & We use RET\mbox{*}-\href{https://wrds-www.wharton.upenn.edu/data-dictionary/crsp_a_indexes/mcti/#row-t30ret}{T30RET}/21. If T30RET is unavailable, we use 
+    Excess Return & ret\_exc\mbox{*} & We use RET\mbox{*}-\href{https://wrds-www.wharton.upenn.edu/data-dictionary/crsp_a_indexes/indmthseriesdata_ind/#row-mthtotret}{T30RET}/21. If T30RET is unavailable, we use 
     \href{https://wrds-www.wharton.upenn.edu/data-dictionary/ff_all/factors_monthly/#row-rf}{RF}. If the return is a monthly return rather than a daily return, the T30RET is divided by 1 rather than 21. \\
     
     Excess Return t+1 & ret\_exc\_lead1m\mbox{*} &  Excess return (ret\_exc\mbox{*}) in month t+1 \\
@@ -2599,7 +2602,7 @@ These stock-level columns are also used as the daily return leg when constructin
     
     Return & RET\mbox{*} & We use RI\mbox{*}/lag(RI\mbox{*}) - 1. In case of delisting, we calculate as (RI\mbox{*}/lag(RI\mbox{*}) * (1+dlret) -1)\\
     
-    Excess Return & ret\_exc\mbox{*} & We use RET\mbox{*}-\href{https://wrds-www.wharton.upenn.edu/data-dictionary/crsp_a_indexes/mcti/#row-t30ret}{T30RET}/21. If T30RET is unavailable, we use 
+    Excess Return & ret\_exc\mbox{*} & We use RET\mbox{*}-\href{https://wrds-www.wharton.upenn.edu/data-dictionary/crsp_a_indexes/indmthseriesdata_ind/#row-mthtotret}{T30RET}/21. If T30RET is unavailable, we use 
     \href{https://wrds-www.wharton.upenn.edu/data-dictionary/ff_all/factors_monthly/#row-rf}{RF}. If the return is a monthly return rather than a daily return, the T30RET is divided by 1 rather than 21. \\
     
     Excess Return t+1 & ret\_exc\_lead1m\mbox{*} &  Excess return (ret\_exc\mbox{*}) in month t+1 \\
@@ -2875,7 +2878,7 @@ These stock-level columns are also used as the daily return leg when constructin
     
     \hypertarget{dbeta2}{Downside Beta} & betadown\_zd & Described in detail \hyperlink{dbeta}{here} \\
     
-	Zero Trades & zero\_trades\_zd & Number of days with zero trades over period. In case of equal number of zero trading days, turnover\_zd will decide on the rank following Liu (2006) \\
+	Zero Trades & zero\_trades\_zd & Number of days with zero trades over period. In case of equal number of zero trading days, turnover\_zd will decide on the rank following Liu (2006). Daily turnover is truncated to a multiple of $2^{-64}$ and summed as an integer, which is exact, so stocks with the same daily turnovers tie and share the average rank in any row order; the SAS code averaged turnover in data order \\
     
     Turnover & turnover\_zd &$\overline{\left(\frac{TVOL\mbox{*}_t}{SHARES\mbox{*}_t*1000000}\right)}_{zD}$\\
     

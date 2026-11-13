@@ -34,11 +34,13 @@ from .compustat_correction import (
     drop_unreliable_observations,
 )
 from .config import (
+    BE_DEFERRED_TAX_END_YEAR,
     CALENDAR_RUN_MAX_GAP_DAYS,
     CCM_LINKTYPES,
     CMP_MIN_STD,
     CMP_SIZE_GROUPS,
     CORRECTION_SPILL_COMPRESSION,
+    DAILY_TURNOVER_FIXED_POINT_SCALE,
     END_DATE,
     FACTOR_MIN_STOCKS_BP,
     FACTOR_MIN_STOCKS_PF,
@@ -58,6 +60,7 @@ from .config import (
     FF_USE_DFF_BE,
     MAIN_FILTERS,
     NI_AT_MIN_STD,
+    RES_MOM_MIN_STD,
     RET_MIN_STD,
     US_EXCNTRY,
 )
@@ -148,10 +151,10 @@ def setup_folder_structure(paths: DataPaths) -> None:
     shutil.copy2(get_data_readme_path(), paths.base_dir / "README.md")
 
 
-def collect_and_write(df, filename, collect_streaming=False):
+def collect_and_write(df, filename):
     """
     Description:
-        Collect a Polars LazyFrame (optionally streaming) and write to Parquet.
+        Collect a Polars LazyFrame and write to Parquet.
         Used for interim files during pipeline execution in main.py.
 
         Note: For final output files (in portfolio.py), use write_dataframe() from
@@ -159,14 +162,13 @@ def collect_and_write(df, filename, collect_streaming=False):
         integrates with CSV conversion at pipeline end.
 
     Steps:
-        1) df.collect() on the streaming engine if collect_streaming, else in-memory.
+        1) df.collect().
         2) write_parquet(filename).
 
     Output:
         Parquet file at `filename`.
     """
-    engine = "streaming" if collect_streaming else "in-memory"
-    df.collect(engine=engine).write_parquet(filename)
+    df.collect().write_parquet(filename)
 
 
 def _duckdb_connect(paths: DataPaths, database: Path | None = None) -> duckdb.DuckDBPyConnection:
@@ -432,7 +434,7 @@ def gen_raw_data_dfs(paths: DataPaths):
         2) Derive SIC/NAICS (NA & Global), GICS (NA & Global), delist files (CRSP m/d),
         security info (NA & Global), T-bill return, FF monthly factors, exchange code map,
         exchange→country map, company headers (NA+Global), and CRSP security files (m & d).
-        3) Call build_mcti() to derive the CRSP 30-Year Treasury index table.
+        3) Call build_mcti() to derive the CRSP 30-day T-bill return table.
         4) Call aug_msf_v2() to augment the monthly CRSP file with daily high/low prices.
         5) Standardize types/columns, sort/deduplicate where needed.
         6) Write all to raw_data_dfs/*.parquet.
@@ -1358,8 +1360,8 @@ def build_mcti(paths: DataPaths):
     Steps:
         1) Read indmthseriesdata and indseriesinfohdr from parquet.
         2) Inner join indmthseriesdata with indseriesinfohdr on "indno".
-        4) Filter for CRSP 30-Year Treasury Returns (indno == 1000708).
-        5) Write parquet to raw_data_dfs/crsp_mcti.parquet
+        3) Filter for CRSP 30-day T-bill returns (indno == 1000708).
+        4) Write parquet to raw_data_dfs/crsp_mcti.parquet
 
     Output:
         Writes raw_data_dfs/crsp_mcti.parquet (no return value).
@@ -3620,10 +3622,10 @@ def add_ret_exc_wins(
         1) Validate lower/upper and map them to precomputed cutoff column names.
         2) Read world_{freq}sf.parquet; drop ret_exc_wins if already present (idempotency).
         3) Left-join precomputed cutoffs from return_cutoffs{,_daily}.parquet on eom (monthly)
-           or year/month (daily).
+           or year/month (daily), keeping the file's row order.
         4) Build ret_exc_wins via pl.when: clip Compustat rows to [lower_col, upper_col],
            leave CRSP rows and nulls unchanged.
-        5) Collect and overwrite the file.
+        5) Sink to a temporary file, then replace the original with it.
 
     Output:
         Overwrites 'world_{freq}sf.parquet' with ret_exc_wins added.
@@ -3673,7 +3675,7 @@ def add_ret_exc_wins(
         drop_cols += ["year", "month"]
 
     result = (
-        data.join(cutoffs, on=group_vars, how="left")
+        data.join(cutoffs, on=group_vars, how="left", maintain_order="left")
         .with_columns(
             ret_exc_wins=pl.when((pl.col("source_crsp") == 0) & pl.col("ret_exc").is_not_null())
             .then(pl.col("ret_exc").clip(pl.col(lower_col), pl.col(upper_col)))
@@ -3681,7 +3683,9 @@ def add_ret_exc_wins(
         )
         .drop(drop_cols)
     )
-    result.collect(engine="streaming" if freq == "d" else "in-memory").write_parquet(data_path)
+    tmp_path = data_path.with_name(f"{data_path.stem}_tmp.parquet")
+    result.sink_parquet(tmp_path)
+    tmp_path.replace(data_path)
 
 
 def load_mkt_returns_params(freq):
@@ -4424,7 +4428,9 @@ def standardized_accounting_data(
     if coverage == "na":
         aname, qname = __funda, __fundq
     elif coverage == "global":
-        aname, qname = __gfunda, __gfundq
+        # G_FUNDQ has no doq or doy; in world coverage, the NA rows bring them in prefer_global.
+        aname = __gfunda
+        qname = __gfundq.with_columns(fl_none().alias("doq"), fl_none().alias("doy"))
     else:
         aname, qname = __wfunda, __wfundq
 
@@ -4690,6 +4696,8 @@ def add_helper_vars(paths: DataPaths, data):
            deduplicate per date, keeping Global over NA, then the lowest row index n.
         2) Bring grid to Polars; sanitize key vars; construct building blocks (sale_x, debt_x, pstk_x, opex_x, etc.).
         3) Derive financial aggregates (seq_x, nwc_x, be_x/bev_x, ebitda_x/ebit_x/op_x/ope_x, oa_x/ol_x/noa_x, etc.).
+           be_x adds txditc_x only for periods ending before BE_DEFERRED_TAX_END_YEAR.
+           ope_x counts a missing xint as 0.
         4) Compute flows/changes (cowc_x, nncoa_x, oacc_x, tacc_x, netis_x, dbnetis_x) with 12-month diffs where available; guard with early-count rules.
         5) Finalize financing/cashflow measures (ocf_x, cop_x, fcf_x, fincf_x); drop helpers.
 
@@ -4831,7 +4839,9 @@ def add_helper_vars(paths: DataPaths, data):
             ol_x=col("col_x") + col("ncol_x"),
             nfna_x=col("fna_x") - col("fnl_x"),
             be_x=col("seq_x")
-            + pl.coalesce([col("txditc_x"), pl.lit(0)])
+            + pl.when(col("datadate").dt.year() < BE_DEFERRED_TAX_END_YEAR)
+            .then(pl.coalesce([col("txditc_x"), pl.lit(0.0)]))
+            .otherwise(pl.lit(0.0))
             - pl.coalesce([col("pstk_x"), pl.lit(0)]),
             bev_x=pl.coalesce(
                 [
@@ -4843,7 +4853,7 @@ def add_helper_vars(paths: DataPaths, data):
         .with_columns(
             ebit_x=pl.coalesce(["ebit", "oiadp", col("ebitda_x") - col("dp")]),
             op_x=col("ebitda_x") + pl.coalesce(["xrd", 0.0]),
-            ope_x=col("ebitda_x") - col("xint"),
+            ope_x=col("ebitda_x") - pl.coalesce([col("xint"), 0.0]),
             nca_x=col("at_x") - col("ca_x"),
             ncoa_x=col("at_x") - col("ca_x") - pl.coalesce(["ivao", 0]),
             aliq_x=col("che")
@@ -7139,7 +7149,9 @@ def market_chars_monthly(paths: DataPaths, data_path, market_ret_path, local_cur
         .sort(["id", "eom"])
     )
 
-    data.collect().write_parquet(paths.interim_dir / "market_chars_m.parquet")
+    # In-memory: the streaming engine runs each of seasonality()'s ~260 shift() terms as its own node
+    # and is about 3x slower here.
+    data.collect(engine="in-memory").write_parquet(paths.interim_dir / "market_chars_m.parquet")
 
 
 @measure_time
@@ -9206,13 +9218,13 @@ def apply_group_filter(df, stat, min_obs):
 
     Steps:
         1) For 'dimsonbeta': require counts by (id_int,eom) and (id_int,group_number) and non-null lags.
-        2) For zero_trades/dolvol/others: count needed column within (id_int,group_number), require ≥ min_obs.
-        3) Pass-through for 'turnover' and 'mktcorr' (later filters inside function).
+        2) For dolvol/others: count needed column within (id_int,group_number), require ≥ min_obs.
+        3) Pass-through for 'turnover', 'mktcorr' and 'zero_trades' (later filters inside function).
 
     Output:
         Filtered LazyFrame for subsequent aggregation/regression.
     """
-    if stat in ("turnover", "mktcorr"):
+    if stat in ("turnover", "mktcorr", "zero_trades"):
         pass
     elif stat == "dimsonbeta":
         df = df.with_columns(
@@ -9225,7 +9237,7 @@ def apply_group_filter(df, stat, min_obs):
             & (col("mktrf_ld1").is_not_null())
         )
     else:
-        filter_var = {"zero_trades": "tvol", "dolvol": "dolvol_d"}.get(stat, "ret_exc")
+        filter_var = {"dolvol": "dolvol_d"}.get(stat, "ret_exc")
         df = df.with_columns(n=pl.count(filter_var).over(["id_int", "group_number"])).filter(
             col("n") >= min_obs
         )
@@ -9299,7 +9311,9 @@ def res_mom(df, sfx, __min, incl, skip):
            Residuals are null when raw ret is near-constant over the window or zero in at
            least 90% of its months (_guard_constant with RET_MIN_STD), so the score is null too.
         2) Filter to windows inside (max_date - incl, max_date - skip].
-        3) Require at least __min obs; compute mean(res)/std(res).
+        3) Require at least __min obs; compute mean(res)/std(res). The score is null when
+           std(res) is at most RES_MOM_MIN_STD (_guard_constant): it would divide by almost
+           zero, so it is a wrong value set by how close the scored residuals happen to be.
 
     Output:
         LazyFrame with column f'resff3_{incl}_{skip}' per (id_int, group_number).
@@ -9330,7 +9344,16 @@ def res_mom(df, sfx, __min, incl, skip):
             & (col("n") >= __min)
         )
         .group_by(["id_int", "group_number"])
-        .agg((col("res").mean() / col("res").std()).fill_nan(None).alias(f"resff3_{incl}_{skip}"))
+        .agg(
+            _guard_constant(
+                "res",
+                pl.col("res").mean() / pl.col("res").std(),
+                min_std=RES_MOM_MIN_STD,
+                max_zero_frac=None,
+            )
+            .fill_nan(None)
+            .alias(f"resff3_{incl}_{skip}")
+        )
     )
     return df
 
@@ -9705,21 +9728,31 @@ def zero_trades(df, sfx, __min):
 
     Steps:
         1) For each (id_int,group_number): zero_trades = mean(tvol==0)*21;
-           turnover = mean(tvol/(shares*1e6)) for rows with shares>0.
-        2) Drop groups where zero_trades is null.
+           turnover = mean(tvol/(shares*1e6)) for rows with shares!=0. Each daily
+           turnover is truncated to a multiple of 1/DAILY_TURNOVER_FIXED_POINT_SCALE and
+           summed as Int128, so the sum is exact in any row order and equal daily
+           turnovers tie.
+        2) Keep groups with at least __min non-null tvol and non-null zero_trades.
         3) Rank turnover descending within group_number (method="average");
            composite = rank/count/100 + zero_trades.
 
     Output:
         LazyFrame with f'zero_trades{sfx}'.
     """
+    turnover = _turnover_d_expr()
     df = (
         df.group_by(["id_int", "group_number"])
         .agg(
             ((col("tvol") == 0).mean() * 21).alias("zero_trades"),
-            _turnover_d_expr().mean().alias("turnover"),
+            (
+                (turnover * DAILY_TURNOVER_FIXED_POINT_SCALE).cast(pl.Int128).sum().cast(pl.Float64)
+                / DAILY_TURNOVER_FIXED_POINT_SCALE
+            ).alias("turnover_sum"),
+            turnover.count().alias("turnover_n"),
+            pl.col("tvol").count().alias("n"),
         )
-        .filter(col("zero_trades").is_not_null())
+        .filter((pl.col("n") >= __min) & pl.col("zero_trades").is_not_null())
+        .with_columns(safe_div("turnover_sum", "turnover_n", "turnover"))
         .with_columns(
             (
                 (
@@ -12025,7 +12058,9 @@ def _sum_rows_kernel(
                 pf_row = stock_months[row] * n_chars
                 value_row = row * _SUM_VALUES
                 for char in range(n_chars):
-                    at = (char * n_bins + pf_by_row[pf_row + char]) * _SUM_VALUES
+                    # int(): with the uint8 portfolio the index stays uint8 and overflows
+                    # past 255 when the kernel runs as plain Python (NUMBA_DISABLE_JIT).
+                    at = (char * n_bins + int(pf_by_row[pf_row + char])) * _SUM_VALUES
                     for k in range(_SUM_VALUES):
                         totals[at + k] += values[value_row + k]
             out[period * per_period : (period + 1) * per_period] = totals
@@ -12423,7 +12458,9 @@ def _rank_by_month(
         task_starts,
         month_starts,
         data.select(pl.col(chars).cast(pl.Float64)).to_numpy(order="c").ravel(),
-        data["bp_stock"].fill_null(False).cast(pl.UInt8).to_numpy(),
+        # Int64, not UInt8: as plain Python (NUMBA_DISABLE_JIT) NumPy keeps uint8
+        # arithmetic in uint8, so a count of breakpoint stocks would wrap past 255.
+        data["bp_stock"].fill_null(False).cast(pl.Int64).to_numpy(),
         data["size_grp"].replace_strict(size_codes, return_dtype=pl.UInt8).to_numpy(),
         data["ret_exc_lead1m"].to_numpy(),
         n_chars,

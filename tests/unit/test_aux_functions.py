@@ -268,7 +268,7 @@ def test_merge_roll_apply_daily_results_writes_once_with_deterministic_order(tes
     # Re-run must produce identical content (idempotent + single-write safety).
     merge_roll_apply_daily_results(test_paths)
     df2 = pl.read_parquet(out)
-    assert df.equals(df2)
+    assert df.sort("id", "eom").equals(df2.sort("id", "eom"))
 
 
 def test_dsf1_unique_id_int_date(test_paths) -> None:

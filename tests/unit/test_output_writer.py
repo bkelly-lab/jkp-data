@@ -308,23 +308,6 @@ class TestConvertOutputsToCsv:
             assert "No parquet files to convert" in captured.out
 
 
-class TestStreamingMode:
-    """Tests for streaming parameter in write_dataframe."""
-
-    def test_streaming_collection(self, sample_dataframe, reset_output_format):
-        """LazyFrame with streaming=True should work."""
-        configure_output_format("parquet", _allow_reset=True)
-        lazy_df = sample_dataframe.lazy()
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "test.parquet"
-            write_dataframe(lazy_df, path, streaming=True)
-
-            assert path.exists()
-            df_read = pl.read_parquet(path)
-            assert df_read.shape == sample_dataframe.shape
-
-
 class TestCollectDataframe:
     """Tests for _collect_dataframe helper function."""
 
@@ -338,12 +321,5 @@ class TestCollectDataframe:
         """_collect_dataframe collects LazyFrame."""
         lazy_df = sample_dataframe.lazy()
         result = _collect_dataframe(lazy_df)
-        assert isinstance(result, pl.DataFrame)
-        assert result.shape == sample_dataframe.shape
-
-    def test_collect_dataframe_with_streaming(self, sample_dataframe):
-        """_collect_dataframe uses streaming when requested."""
-        lazy_df = sample_dataframe.lazy()
-        result = _collect_dataframe(lazy_df, streaming=True)
         assert isinstance(result, pl.DataFrame)
         assert result.shape == sample_dataframe.shape

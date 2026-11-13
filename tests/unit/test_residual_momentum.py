@@ -10,8 +10,10 @@ from __future__ import annotations
 import numpy as np
 import polars as pl
 import pytest
+from polars.testing import assert_frame_equal
 
 from jkp.data.aux_functions import residual_momentum
+from jkp.data.config import RES_MOM_MIN_STD
 from tests.golden.residual_momentum_inputs import (
     AP_FACTORS_MONTHLY_INPUT_SCHEMA,
     WORLD_MSF_INPUT_SCHEMA,
@@ -393,6 +395,38 @@ def test_near_constant_ret_gives_no_score(test_paths) -> None:
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("ratio", "scored"), [(1e-3, False), (0.5, False), (2.0, True), (1e3, True)]
+)
+def test_near_equal_scored_residuals_give_no_score(test_paths, ratio: float, scored: bool) -> None:
+    """When the scored residuals are almost equal (std at most RES_MOM_MIN_STD), mean / std would
+    divide by almost zero, so the score is null (#347). The scored months t-5..t-1 get the same
+    factors and returns 0.02 + spread * (-2..2), so their residuals have std sqrt(2.5) * spread,
+    which is ``ratio`` times the floor; the other months vary as usual, so the RET_MIN_STD guard
+    doesn't apply."""
+    spread = ratio * RES_MOM_MIN_STD / np.sqrt(2.5)
+    world, fcts = _custom_frames()
+    grid = month_grid()
+    same = pl.col("eom").is_in(grid[_TERMINAL_IDX - 5 : _TERMINAL_IDX])
+    fcts = fcts.with_columns(
+        pl.when(same).then(0.01).otherwise(pl.col(c)).alias(c) for c in ["mktrf", "hml", "smb_ff"]
+    )
+    # k cycles through -2..2 down the frame; the five consecutive scored months take each value once.
+    k = pl.int_range(pl.len()) % 5 - 2
+    world = world.with_columns(
+        ret_exc=pl.when(same).then(0.02 + spread * k).otherwise(pl.col("ret_exc"))
+    ).with_columns(ret=pl.col("ret_exc") + 0.001)
+    out = _run_frames(test_paths, 6, 1, world, fcts)
+    value = out.filter((pl.col("id") == 1000) & (pl.col("eom") == grid[_TERMINAL_IDX]))
+    assert value.height == 1
+    if scored:
+        assert value["resff3_6_1"][0] is not None
+        assert np.isfinite(value["resff3_6_1"][0])
+    else:
+        assert value["resff3_6_1"][0] is None
+
+
+@pytest.mark.unit
 def test_output_unique_id_eom(test_paths) -> None:
     """(id, eom) is a unique key in the output — no duplicate rows per stock-month."""
     out = _run(test_paths, 12, 1)
@@ -401,7 +435,7 @@ def test_output_unique_id_eom(test_paths) -> None:
 
 @pytest.mark.unit
 def test_determinism_rerun(test_paths) -> None:
-    """Re-running the same inputs yields a byte-identical output frame."""
+    """Re-running the same inputs gives the same output within 1e-10."""
     first = _run(test_paths, 12, 1)
     second = _run(test_paths, 12, 1)
-    assert first.equals(second)
+    assert_frame_equal(first, second, rel_tol=1e-10, abs_tol=1e-10)

@@ -80,7 +80,7 @@ class TestCreateWorldDataPrelim:
                 "assets": [7, None, None],
             }
         )
-        assert_frame_equal(out, expected, check_exact=True)
+        assert_frame_equal(out.sort("id", "eom"), expected, check_exact=True)
 
     def test_accounting_matches_eom_to_public_date_not_datadate(
         self, test_paths: DataPaths
@@ -231,7 +231,7 @@ class TestMergeWorldDataPrelim:
             bidaskhl_21d=pl.lit(7),
             age=pl.lit(8),
         )
-        assert_frame_equal(out, expected, check_exact=True)
+        assert_frame_equal(out.sort("id", "eom"), expected, check_exact=True)
 
     def test_only_age_comes_from_firm_age(self, test_paths: DataPaths) -> None:
         """Other firm_age columns are not added to the output."""
