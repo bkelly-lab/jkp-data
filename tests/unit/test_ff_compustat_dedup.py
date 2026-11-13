@@ -2,16 +2,13 @@
 Unit tests for the fiscal-year-change dedup in the FF Compustat loaders.
 
 A firm that moves its fiscal-year-end reports two `datadate` in one calendar
-year. Before the fix, `be/op/inv` were computed over the raw datadate sequence
-and the loaders then kept the latest datadate per (gvkey/permno, year) — so the
-`inv` lag (`at.shift(1)`, gated on `fy_gap == 1`) spanned the sub-annual stub,
-nulling `inv` on the surviving row. The loaders now collapse to one row per
-(gvkey, year) at the source (latest datadate) BEFORE computing `inv`, which both
-removes the downstream `(id, eom)` fan-out and recovers the annual `inv`.
+year. The loaders collapse to one row per (gvkey, year) at the source (latest
+datadate), which removes the downstream `(id, eom)` fan-out. US INV is JKP's
+at_gr1 at the kept record.
 
 Covers:
   - _ff_load_funda_global     (ROW per-source collapse)
-  - ff_load_compustat_us      (US collapse + inv recovery + BE ladder)
+  - ff_load_compustat_us      (US collapse + JKP inv at the kept record + BE ladder)
 """
 
 from __future__ import annotations
@@ -23,6 +20,7 @@ import polars as pl
 from jkp.data.aux_functions import (
     _ff_load_funda_global,
     _ff_us_accounting,
+    _jkp_annual_acc,
     ff_load_compustat_us,
     ff_load_world_compustat,
 )
@@ -81,6 +79,21 @@ def _write_funda(path, rows):
         pl.col("datadate").cast(pl.Date),
         *[pl.col(c).cast(pl.Float64) for c in _FLOAT_COLS],
     ).write_parquet(path)
+
+
+def _acc_us(test_paths, at_gr1=None):
+    """_ff_us_accounting(ff5=True) on the written comp_funda; JKP's at_gr1 given as
+    {(gvkey, datadate): value}, none by default."""
+    at_gr1 = at_gr1 or {}
+    jkp_acc = pl.DataFrame(
+        {
+            "gvkey": [g for g, _ in at_gr1],
+            "datadate": [d for _, d in at_gr1],
+            "at_gr1": list(at_gr1.values()),
+        },
+        schema={"gvkey": pl.String, "datadate": pl.Date, "at_gr1": pl.Float64},
+    )
+    return _ff_us_accounting(test_paths, True, jkp_acc).collect()
 
 
 # Fiscal-year-change firm: two datadate in 2019 (06-30 stub + 12-31), plus a
@@ -148,21 +161,21 @@ def _write_lnkhist(path, gvkey, permno):
     ).write_parquet(path)
 
 
-def test_ff_load_compustat_us_collapses_and_recovers_inv(test_paths):
+def test_ff_load_compustat_us_collapses_and_takes_jkp_inv(test_paths):
     _write_funda(
         test_paths.raw_tables_dir / "comp_funda.parquet", _fiscal_change_rows("001", indl=True)
     )
     _write_lnkhist(test_paths.raw_tables_dir / "crsp_ccmxpf_lnkhist.parquet", "001", 10001)
+    jkp_inv = {("001", date(2019, 6, 30)): 0.10, ("001", date(2019, 12, 31)): 0.20}
 
-    out = ff_load_compustat_us(test_paths, _ff_us_accounting(test_paths, True).collect(), ff5=True)
+    out = ff_load_compustat_us(test_paths, _acc_us(test_paths, jkp_inv), ff5=True)
 
     # Unique per (permno, year) — no fiscal-change fan-out.
     keyed = out.select("permno", "year")
     assert keyed.height == keyed.unique().height
 
-    inv_2019 = out.filter(pl.col("year") == 2019)["inv"].item()
-    assert inv_2019 is not None
-    assert abs(inv_2019 - 0.20) < 1e-9
+    # INV is JKP's at_gr1 at the kept (latest) 2019 record; null where JKP has none.
+    assert dict(out.select("year", "inv").iter_rows()) == {2018: None, 2019: 0.20}
 
 
 # =============================================================================
@@ -186,9 +199,7 @@ class TestUsBeLadder:
         row = _funda_row("001", date(2019, 12, 31), 100.0, indl=True, **over)
         _write_funda(test_paths.raw_tables_dir / "comp_funda.parquet", [row])
         _write_lnkhist(test_paths.raw_tables_dir / "crsp_ccmxpf_lnkhist.parquet", "001", 10001)
-        out = ff_load_compustat_us(
-            test_paths, _ff_us_accounting(test_paths, True).collect(), ff5=True
-        )
+        out = ff_load_compustat_us(test_paths, _acc_us(test_paths), ff5=True)
         assert out.height == 1
         return out
 
@@ -268,9 +279,7 @@ class TestCcmBackdateRescue:
     def _run(test_paths, funda_rows, lnk_rows):
         _write_funda(test_paths.raw_tables_dir / "comp_funda.parquet", funda_rows)
         _write_lnkhist_rows(test_paths.raw_tables_dir / "crsp_ccmxpf_lnkhist.parquet", lnk_rows)
-        return ff_load_compustat_us(
-            test_paths, _ff_us_accounting(test_paths, True).collect(), ff5=True
-        )
+        return ff_load_compustat_us(test_paths, _acc_us(test_paths), ff5=True)
 
     def test_backfilled_year_rescued(self, test_paths):
         # fy1962 -> jun_end 1963-06-30, inside [1963, 1966]; link starts
@@ -396,7 +405,11 @@ def test_ff_load_world_compustat_op_definition(test_paths):
             ("105", -5.0, 15.0, 5.0, None, None, None),  # non-positive BE -> null
         ],
     )
-    op = dict(ff_load_world_compustat(test_paths).select("gvkey", "op").iter_rows())
+    op = dict(
+        ff_load_world_compustat(test_paths, _jkp_annual_acc(test_paths))
+        .select("gvkey", "op")
+        .iter_rows()
+    )
     assert abs(op["101"] - 15.0 / 50.0) < 1e-12
     assert abs(op["102"] - 10.0 / 60.0) < 1e-12
     assert abs(op["103"] - 10.0 / 60.0) < 1e-12

@@ -17,10 +17,10 @@ from datetime import date
 import polars as pl
 import pytest
 
-from jkp.data.aux_functions import _ff_us_accounting, ff_load_compustat_us
+from jkp.data.aux_functions import ff_load_compustat_us
 
 # Reuse the synthetic comp_funda/lnkhist builders from the dedup tests.
-from tests.unit.test_ff_compustat_dedup import _funda_row, _write_funda, _write_lnkhist
+from tests.unit.test_ff_compustat_dedup import _acc_us, _funda_row, _write_funda, _write_lnkhist
 
 
 def _write_dff(path, rows):
@@ -49,12 +49,12 @@ def _compustat_inputs(test_paths, *, gvkey="001", permno=10001, years=(2018, 201
 class TestDffSplice:
     def test_use_dff_false_is_noop(self, test_paths):
         _compustat_inputs(test_paths)
-        base = ff_load_compustat_us(
-            test_paths, _ff_us_accounting(test_paths, True).collect(), ff5=True
-        ).sort(["permno", "year"])
-        off = ff_load_compustat_us(
-            test_paths, _ff_us_accounting(test_paths, True).collect(), ff5=True, use_dff=False
-        ).sort(["permno", "year"])
+        base = ff_load_compustat_us(test_paths, _acc_us(test_paths), ff5=True).sort(
+            ["permno", "year"]
+        )
+        off = ff_load_compustat_us(test_paths, _acc_us(test_paths), ff5=True, use_dff=False).sort(
+            ["permno", "year"]
+        )
         assert off.equals(base)
 
     def test_dff_fills_missing_permno_year(self, test_paths):
@@ -64,7 +64,7 @@ class TestDffSplice:
         )
         out = ff_load_compustat_us(
             test_paths,
-            _ff_us_accounting(test_paths, True).collect(),
+            _acc_us(test_paths),
             ff5=True,
             use_dff=True,
             dff_path=dff,
@@ -84,7 +84,7 @@ class TestDffSplice:
         dff = _write_dff(test_paths.raw_tables_dir / "dff.txt", [(20002, 1930, 1930, {1930: 5.0})])
         out = ff_load_compustat_us(
             test_paths,
-            _ff_us_accounting(test_paths, True).collect(),
+            _acc_us(test_paths),
             ff5=True,
             use_dff=True,
             dff_path=dff,
@@ -104,7 +104,7 @@ class TestDffSplice:
         )
         out = ff_load_compustat_us(
             test_paths,
-            _ff_us_accounting(test_paths, True).collect(),
+            _acc_us(test_paths, {("001", date(2019, 12, 31)): 0.1}),
             ff5=True,
             use_dff=True,
             dff_path=dff,
@@ -114,7 +114,7 @@ class TestDffSplice:
         assert rows.height == 1
         assert rows["be"][0] == 999.0  # coalesce(dff, comp) -> DFF value
         assert rows["gvkey"][0] == "001"  # Compustat row identity kept
-        assert rows["inv"][0] is not None  # Compustat accounting fields survive
+        assert rows["inv"][0] == 0.1  # Compustat accounting fields survive
 
     def test_collision_fills_null_compustat_be(self, test_paths):
         # Compustat row exists (CCM link) but its BE is null (seq missing, the
@@ -128,7 +128,7 @@ class TestDffSplice:
         dff = _write_dff(test_paths.raw_tables_dir / "dff.txt", [(10001, 2020, 2020, {2020: 55.0})])
         out = ff_load_compustat_us(
             test_paths,
-            _ff_us_accounting(test_paths, True).collect(),
+            _acc_us(test_paths),
             ff5=True,
             use_dff=True,
             dff_path=dff,
@@ -145,12 +145,10 @@ class TestDffSplice:
             test_paths.raw_tables_dir / "dff.txt",
             [(20002, 1930, 1932, {1930: 5.0, 1931: 6.0, 1932: 7.0})],
         )
-        base = ff_load_compustat_us(
-            test_paths, _ff_us_accounting(test_paths, True).collect(), ff5=True
-        )
+        base = ff_load_compustat_us(test_paths, _acc_us(test_paths), ff5=True)
         out = ff_load_compustat_us(
             test_paths,
-            _ff_us_accounting(test_paths, True).collect(),
+            _acc_us(test_paths),
             ff5=True,
             use_dff=True,
             dff_path=dff,
@@ -167,7 +165,7 @@ class TestDffSplice:
         )
         out = ff_load_compustat_us(
             test_paths,
-            _ff_us_accounting(test_paths, True).collect(),
+            _acc_us(test_paths),
             ff5=True,
             use_dff=True,
             dff_path=dff,
@@ -184,7 +182,7 @@ class TestDffSplice:
         )
         out = ff_load_compustat_us(
             test_paths,
-            _ff_us_accounting(test_paths, True).collect(),
+            _acc_us(test_paths),
             ff5=True,
             use_dff=True,
             dff_path=dff,
@@ -199,7 +197,7 @@ class TestDffSplice:
         dff = _write_dff(test_paths.raw_tables_dir / "dff.txt", [(20002, 1930, 1930, {1930: 5.0})])
         out = ff_load_compustat_us(
             test_paths,
-            _ff_us_accounting(test_paths, True).collect(),
+            _acc_us(test_paths),
             ff5=True,
             use_dff=True,
             dff_path=dff,
@@ -219,7 +217,7 @@ class TestDffSplice:
         )
         out = ff_load_compustat_us(
             test_paths,
-            _ff_us_accounting(test_paths, True).collect(),
+            _acc_us(test_paths),
             ff5=True,
             use_dff=True,
             dff_path=dff,

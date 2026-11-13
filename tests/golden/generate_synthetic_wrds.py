@@ -1250,7 +1250,8 @@ def gen_acc_std_ann(funda: pl.DataFrame, g_funda: pl.DataFrame) -> pl.DataFrame:
 
     The ROW FF/HXZ loaders read book equity (be_x), the operating-profit inputs
     (ebitda_x, xint), minority interest (mib, mibt, mibn), assets (at_x -> asset
-    growth) and net income (ni_x) from this panel via ``_jkp_annual_acc``. The real
+    growth) and net income (ni_x) from this panel via ``_jkp_annual_acc``; the US FF
+    loader reads only the asset growth. The real
     builder (``standardized_accounting_data``) pulls ~40 Compustat vars this synthetic
     fixture doesn't carry, so instead we reproduce the panel's *shape and the fields
     the loaders consume*:
