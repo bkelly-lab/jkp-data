@@ -35,6 +35,8 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
+from jkp.data.config import BE_DEFERRED_TAX_END_YEAR
+
 SEED = 42
 
 # 2000-2015 window (was 1995-2015): firms are born 1995-2004 (see
@@ -1248,10 +1250,9 @@ def _write(df: pl.DataFrame, out_dir: Path, table: str) -> None:
 def gen_acc_std_ann(funda: pl.DataFrame, g_funda: pl.DataFrame) -> pl.DataFrame:
     """Synthesize jkp's standardized annual accounting panel (``acc_std_ann``).
 
-    The ROW FF/HXZ loaders read book equity (be_x), the operating-profit inputs
-    (ebitda_x, xint), minority interest (mib, mibt, mibn), assets (at_x -> asset
-    growth) and net income (ni_x) from this panel via ``_jkp_annual_acc``; the US FF
-    loader reads only the asset growth. The real
+    The FF/HXZ loaders read book equity (be_x), operating profit (ope_x), minority
+    interest (mib, mibt, mibn) and net income (ni_x) from this panel via
+    ``_jkp_annual_acc``; asset growth comes from ``gen_achars_world``. The real
     builder (``standardized_accounting_data``) pulls ~40 Compustat vars this synthetic
     fixture doesn't carry, so instead we reproduce the panel's *shape and the fields
     the loaders consume*:
@@ -1295,7 +1296,10 @@ def gen_acc_std_ann(funda: pl.DataFrame, g_funda: pl.DataFrame) -> pl.DataFrame:
         pstk_x = pl.coalesce("pstkrv", "pstkl", "pstk")
         txditc_x = pl.coalesce("txditc", pl.col("txdb") + pl.col("itcb"))
         seq_x = pl.coalesce("seq", pl.col("ceq") + pstk_x, pl.col("at") - pl.col("lt"))
-        be_x = seq_x + pl.coalesce(txditc_x, pl.lit(0.0)) - pl.coalesce(pstk_x, pl.lit(0.0))
+        txditc_kept = pl.when(pl.col("datadate").dt.year() < BE_DEFERRED_TAX_END_YEAR).then(
+            pl.coalesce(txditc_x, pl.lit(0.0))
+        )
+        be_x = seq_x + txditc_kept.otherwise(0.0) - pl.coalesce(pstk_x, pl.lit(0.0))
         opex_x = pl.coalesce("xopr", pl.col("cogs") + pl.col("xsga"))
         ebitda_x = pl.coalesce("ebitda", "oibdp", pl.coalesce("sale", "revt") - opex_x)
         return df.select(
@@ -1304,9 +1308,7 @@ def gen_acc_std_ann(funda: pl.DataFrame, g_funda: pl.DataFrame) -> pl.DataFrame:
             "curcd",
             source=pl.lit(source),
             be_x=pl.when(be_x > 0).then(be_x).otherwise(None),
-            ope_x=ebitda_x - pl.col("xint"),
-            ebitda_x=ebitda_x,
-            xint=pl.col("xint"),
+            ope_x=ebitda_x - pl.coalesce(pl.col("xint"), pl.lit(0.0)),
             mib=pl.col("mib"),
             mibt=pl.col("mibt"),
             mibn=pl.col("mibn"),
@@ -1332,6 +1334,28 @@ def gen_acc_std_ann(funda: pl.DataFrame, g_funda: pl.DataFrame) -> pl.DataFrame:
     )
     return grid.join(reports.drop("curcd"), on=["gvkey", "datadate"], how="left").sort(
         ["gvkey", "curcd", "datadate"]
+    )
+
+
+def gen_achars_world(acc_std_ann: pl.DataFrame) -> pl.DataFrame:
+    """Synthesize the slice of jkp's annual characteristics (``achars_world``) the FF/HXZ
+    loaders read: at_gr1 at each fiscal report, on its first public_date (4 months after
+    the fiscal year-end). at_gr1 follows create_acc_chars: at_x over at_x 12 grid rows
+    earlier, minus 1, when the (gvkey, curcd) panel has more than 12 rows and the lagged
+    at_x is positive.
+    """
+    lag = pl.col("at_x").shift(12).over(["gvkey", "curcd"])
+    return (
+        acc_std_ann.sort(["gvkey", "curcd", "datadate"])
+        .with_columns(n=pl.col("gvkey").cum_count().over(["gvkey", "curcd"]))
+        .filter(pl.col("source").is_not_null())
+        .select(
+            "source",
+            "gvkey",
+            "datadate",
+            public_date=pl.col("datadate").dt.offset_by("4mo").dt.month_end(),
+            at_gr1=pl.when((pl.col("n") > 12) & (lag > 0)).then(pl.col("at_x") / lag - 1),
+        )
     )
 
 
@@ -1372,7 +1396,9 @@ def write_synthetic_wrds(out_dir: Path, seed: int = SEED) -> None:
     _write(gen_market_returns(world_msf), out_dir, "market_returns")
     _write(gen_market_returns_daily(world_dsf), out_dir, "market_returns_daily")
     _write(gen_fx1(rng), out_dir, "__fx1")
-    _write(gen_acc_std_ann(funda, g_funda), out_dir, "acc_std_ann")
+    acc_std_ann = gen_acc_std_ann(funda, g_funda)
+    _write(acc_std_ann, out_dir, "acc_std_ann")
+    _write(gen_achars_world(acc_std_ann), out_dir, "achars_world")
 
 
 def main() -> None:

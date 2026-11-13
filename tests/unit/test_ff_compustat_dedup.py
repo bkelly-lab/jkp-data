@@ -3,12 +3,13 @@ Unit tests for the fiscal-year-change dedup in the FF Compustat loaders.
 
 A firm that moves its fiscal-year-end reports two `datadate` in one calendar
 year. The loaders collapse to one row per (gvkey, year) at the source (latest
-datadate), which removes the downstream `(id, eom)` fan-out. US INV is JKP's
-at_gr1 at the kept record.
+datadate), which removes the downstream `(id, eom)` fan-out. US BE, OP and INV
+are JKP's values at the kept record.
 
 Covers:
   - _ff_load_funda_global     (ROW per-source collapse)
-  - ff_load_compustat_us      (US collapse + JKP inv at the kept record + BE ladder)
+  - ff_load_compustat_us      (US collapse + JKP be/op/inv at the kept record)
+  - _jkp_annual_acc           (FF OP definition, at_gr1 from achars_world)
 """
 
 from __future__ import annotations
@@ -81,17 +82,31 @@ def _write_funda(path, rows):
     ).write_parquet(path)
 
 
-def _acc_us(test_paths, at_gr1=None):
-    """_ff_us_accounting(ff5=True) on the written comp_funda; JKP's at_gr1 given as
-    {(gvkey, datadate): value}, none by default."""
-    at_gr1 = at_gr1 or {}
+def _acc_us(test_paths, at_gr1=None, op=None):
+    """_ff_us_accounting(ff5=True) on the written comp_funda, with JKP's annual accounting
+    mocked per written record: be_x = seq (the rows carry no deferred taxes or preferred
+    stock), null when not positive; op and at_gr1 from {(gvkey, datadate): value} maps,
+    none by default."""
+    at_gr1, op = at_gr1 or {}, op or {}
+    funda = pl.read_parquet(
+        test_paths.raw_tables_dir / "comp_funda.parquet", columns=["gvkey", "datadate", "seq"]
+    )
+    keys = list(zip(funda["gvkey"], funda["datadate"], strict=True))
     jkp_acc = pl.DataFrame(
         {
-            "gvkey": [g for g, _ in at_gr1],
-            "datadate": [d for _, d in at_gr1],
-            "at_gr1": list(at_gr1.values()),
+            "gvkey": funda["gvkey"],
+            "datadate": funda["datadate"],
+            "be_x": [v if v is not None and v > 0 else None for v in funda["seq"]],
+            "op": [op.get(k) for k in keys],
+            "at_gr1": [at_gr1.get(k) for k in keys],
         },
-        schema={"gvkey": pl.String, "datadate": pl.Date, "at_gr1": pl.Float64},
+        schema={
+            "gvkey": pl.String,
+            "datadate": pl.Date,
+            "be_x": pl.Float64,
+            "op": pl.Float64,
+            "at_gr1": pl.Float64,
+        },
     )
     return _ff_us_accounting(test_paths, True, jkp_acc).collect()
 
@@ -161,90 +176,35 @@ def _write_lnkhist(path, gvkey, permno):
     ).write_parquet(path)
 
 
-def test_ff_load_compustat_us_collapses_and_takes_jkp_inv(test_paths):
+def test_ff_load_compustat_us_collapses_and_takes_jkp_values(test_paths):
     _write_funda(
         test_paths.raw_tables_dir / "comp_funda.parquet", _fiscal_change_rows("001", indl=True)
     )
     _write_lnkhist(test_paths.raw_tables_dir / "crsp_ccmxpf_lnkhist.parquet", "001", 10001)
-    jkp_inv = {("001", date(2019, 6, 30)): 0.10, ("001", date(2019, 12, 31)): 0.20}
+    stub, kept = ("001", date(2019, 6, 30)), ("001", date(2019, 12, 31))
+    acc = _acc_us(test_paths, at_gr1={stub: 0.10, kept: 0.20}, op={stub: 0.3, kept: 0.4})
 
-    out = ff_load_compustat_us(test_paths, _acc_us(test_paths, jkp_inv), ff5=True)
+    out = ff_load_compustat_us(test_paths, acc, ff5=True)
 
     # Unique per (permno, year) — no fiscal-change fan-out.
     keyed = out.select("permno", "year")
     assert keyed.height == keyed.unique().height
 
-    # INV is JKP's at_gr1 at the kept (latest) 2019 record; null where JKP has none.
-    assert dict(out.select("year", "inv").iter_rows()) == {2018: None, 2019: 0.20}
+    # BE, OP and INV are JKP's at the kept (latest) 2019 record; null where JKP has none.
+    assert out.sort("year").select("year", "be", "op", "inv").rows() == [
+        (2018, 50.0, None, None),
+        (2019, 60.0, 0.4, 0.20),
+    ]
 
 
-# =============================================================================
-# US BE ladder: SHE = coalesce(seq, ceq + pstk, at - lt)
-# (French data library / DFF 2000: "the value reported by Moody's or
-# Compustat, if it is available. If not, ... the book value of common equity
-# plus the par value of preferred stock, or the book value of assets minus
-# total liabilities (in that order)")
-# =============================================================================
-
-
-class TestUsBeLadder:
-    @staticmethod
-    def _be(test_paths, **over):
-        """BE from a single 2019 funda row with the given overrides.
-
-        _funda_row defaults: seq = at/2, pstk = 0, txditc = 0 (and the
-        FASB-109 gate zeroes txditc for years >= 1993 anyway), so
-        ps = coalesce(pstkrv, pstkl, pstk, 0) = pstk.
-        """
-        row = _funda_row("001", date(2019, 12, 31), 100.0, indl=True, **over)
-        _write_funda(test_paths.raw_tables_dir / "comp_funda.parquet", [row])
-        _write_lnkhist(test_paths.raw_tables_dir / "crsp_ccmxpf_lnkhist.parquet", "001", 10001)
-        out = ff_load_compustat_us(test_paths, _acc_us(test_paths), ff5=True)
-        assert out.height == 1
-        return out
-
-    def test_ceq_pstk_rung(self, test_paths):
-        # she = ceq + pstk = 45; be = she - ps = she - pstk = ceq = 40.
-        out = self._be(test_paths, seq=None, ceq=40.0, pstk=5.0, lt=30.0)
-        assert abs(out["be"][0] - 40.0) < 1e-12
-
-    def test_at_lt_rung(self, test_paths):
-        out = self._be(test_paths, seq=None, ceq=None, pstk=None, lt=30.0)
-        assert abs(out["be"][0] - 70.0) < 1e-12  # at(100) - lt(30)
-
-    def test_null_pstk_falls_to_at_lt(self, test_paths):
-        # SAS sum semantics: ceq + null pstk -> null rung -> at - lt, not ceq.
-        out = self._be(test_paths, seq=None, ceq=40.0, pstk=None, lt=30.0)
-        assert abs(out["be"][0] - 70.0) < 1e-12
-
-    def test_all_rungs_null_be_null(self, test_paths):
-        out = self._be(test_paths, seq=None, ceq=None, pstk=None, at=None, lt=None)
-        assert out["be"][0] is None
-
-    def test_negative_ladder_be_nulled(self, test_paths):
-        out = self._be(test_paths, seq=None, ceq=None, pstk=None, lt=170.0)
-        assert out["be"][0] is None  # at(100) - lt(170) < 0
-
-    def test_seq_dominates(self, test_paths):
-        out = self._be(test_paths, seq=50.0, ceq=40.0, lt=30.0)
-        assert abs(out["be"][0] - 50.0) < 1e-12
-
-    def test_op_computed_on_ladder_be(self, test_paths):
-        # be = at - lt = 70; op = (revt - cogs) / be = 15 / 70.
-        out = self._be(test_paths, seq=None, ceq=None, pstk=None, lt=30.0, revt=20.0, cogs=5.0)
-        assert abs(out["op"][0] - 15.0 / 70.0) < 1e-12
-
-    def test_op_denominator_uses_total_minority_interest(self, test_paths):
-        # be = seq = 50; mibt (total) wins over mib (redeemable only)
-        out = self._be(test_paths, revt=20.0, cogs=5.0, mib=2.0, mibn=8.0, mibt=10.0)
-        assert abs(out["op"][0] - 15.0 / 60.0) < 1e-12
-
-    def test_op_denominator_sums_parts_when_mibt_missing(self, test_paths):
-        out = self._be(test_paths, revt=20.0, cogs=5.0, mib=2.0, mibn=8.0)
-        assert abs(out["op"][0] - 15.0 / 60.0) < 1e-12
-        # no minority-interest fields at all -> denominator is BE alone
-        out = self._be(test_paths, revt=20.0, cogs=5.0)
-        assert abs(out["op"][0] - 15.0 / 50.0) < 1e-12
+def test_ff_load_compustat_us_drops_record_without_jkp_be(test_paths):
+    # JKP's be_x is null (here: seq missing), so the record leaves the US sorts.
+    _write_funda(
+        test_paths.raw_tables_dir / "comp_funda.parquet",
+        [_funda_row("001", date(2019, 12, 31), 100.0, indl=True, seq=None)],
+    )
+    _write_lnkhist(test_paths.raw_tables_dir / "crsp_ccmxpf_lnkhist.parquet", "001", 10001)
+    assert ff_load_compustat_us(test_paths, _acc_us(test_paths), ff5=True).height == 0
 
 
 # =============================================================================
@@ -357,13 +317,13 @@ class TestCcmBackdateRescue:
 
 
 # =============================================================================
-# ROW FF OP: (ebitda_x - coalesce(xint, 0)) / (be_x + coalesce(mibt, mib + mibn))
-# from jkp's standardized panel (acc_std_ann), mirroring the US construction.
+# JKP's annual accounting for the FF loaders (_jkp_annual_acc):
+# op = ope_x / (be_x + coalesce(mibt, mib + mibn)), at_gr1 from achars_world.
 # =============================================================================
 
 
 def _write_acc_std_ann(path, rows):
-    """rows: (gvkey, be_x, ebitda_x, xint, mib, mibt, mibn) on a 2019-12-31 report row."""
+    """rows: (gvkey, be_x, ope_x, mib, mibt, mibn) on a 2019-12-31 report row."""
     pl.DataFrame(
         {
             "gvkey": [r[0] for r in rows],
@@ -371,17 +331,27 @@ def _write_acc_std_ann(path, rows):
             "datadate": [date(2019, 12, 31)] * len(rows),
             "source": ["GLOBAL"] * len(rows),
             "be_x": [r[1] for r in rows],
-            "ebitda_x": [r[2] for r in rows],
-            "xint": [r[3] for r in rows],
-            "mib": [r[4] for r in rows],
-            "mibt": [r[5] for r in rows],
-            "mibn": [r[6] for r in rows],
-            "at_x": [100.0] * len(rows),
+            "ope_x": [r[2] for r in rows],
+            "mib": [r[3] for r in rows],
+            "mibt": [r[4] for r in rows],
+            "mibn": [r[5] for r in rows],
             "ni_x": [1.0] * len(rows),
         },
-        schema_overrides=dict.fromkeys(
-            ["be_x", "ebitda_x", "xint", "mib", "mibt", "mibn"], pl.Float64
-        ),
+        schema_overrides=dict.fromkeys(["be_x", "ope_x", "mib", "mibt", "mibn"], pl.Float64),
+    ).write_parquet(path)
+
+
+def _write_achars_world(path, rows):
+    """rows: (gvkey, datadate, public_date, at_gr1)."""
+    pl.DataFrame(
+        rows,
+        schema={
+            "gvkey": pl.String,
+            "datadate": pl.Date,
+            "public_date": pl.Date,
+            "at_gr1": pl.Float64,
+        },
+        orient="row",
     ).write_parquet(path)
 
 
@@ -398,20 +368,39 @@ def test_ff_load_world_compustat_op_definition(test_paths):
     _write_acc_std_ann(
         test_paths.interim_dir / "acc_std_ann.parquet",
         [
-            ("101", 50.0, 15.0, None, None, None, None),  # xint missing -> 0
-            ("102", 50.0, 15.0, 5.0, 2.0, 10.0, 8.0),  # mibt wins
-            ("103", 50.0, 15.0, 5.0, 2.0, None, 8.0),  # mib + mibn
-            ("104", 50.0, 15.0, 5.0, None, None, None),  # no minority interest
-            ("105", -5.0, 15.0, 5.0, None, None, None),  # non-positive BE -> null
+            ("101", 50.0, None, None, None, None),  # ope_x missing -> null
+            ("102", 50.0, 10.0, 2.0, 10.0, 8.0),  # mibt wins
+            ("103", 50.0, 10.0, 2.0, None, 8.0),  # mib + mibn
+            ("104", 50.0, 10.0, None, None, None),  # no minority interest
+            ("105", -5.0, 10.0, None, None, None),  # non-positive BE -> null
         ],
     )
+    _write_achars_world(test_paths.interim_dir / "achars_world.parquet", [])
     op = dict(
         ff_load_world_compustat(test_paths, _jkp_annual_acc(test_paths))
         .select("gvkey", "op")
         .iter_rows()
     )
-    assert abs(op["101"] - 15.0 / 50.0) < 1e-12
+    assert op.get("101") is None
     assert abs(op["102"] - 10.0 / 60.0) < 1e-12
     assert abs(op["103"] - 10.0 / 60.0) < 1e-12
     assert abs(op["104"] - 10.0 / 50.0) < 1e-12
     assert op.get("105") is None
+
+
+def test_jkp_annual_acc_at_gr1_at_first_public_date(test_paths):
+    _write_acc_std_ann(
+        test_paths.interim_dir / "acc_std_ann.parquet",
+        [("101", 50.0, 10.0, None, None, None), ("102", 50.0, 10.0, None, None, None)],
+    )
+    fy = date(2019, 12, 31)
+    _write_achars_world(
+        test_paths.interim_dir / "achars_world.parquet",
+        [
+            ("101", fy, date(2020, 5, 31), 0.9),  # later month of the same record
+            ("101", fy, date(2020, 4, 30), 0.1),
+        ],
+    )
+    out = _jkp_annual_acc(test_paths).sort("gvkey")
+    # The first public_date's value; a record missing from achars_world gets null.
+    assert out.select("gvkey", "at_gr1").rows() == [("101", 0.1), ("102", None)]

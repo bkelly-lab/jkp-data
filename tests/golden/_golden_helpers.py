@@ -64,6 +64,7 @@ INTERIM_FILES: tuple[str, ...] = (
     "market_returns.parquet",
     "market_returns_daily.parquet",
     "acc_std_ann.parquet",
+    "achars_world.parquet",
 )
 INTERIM_SUBDIR_FILES: tuple[tuple[str, str], ...] = (
     # (relative subdir under interim_dir, filename)

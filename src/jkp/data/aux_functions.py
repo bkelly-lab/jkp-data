@@ -10055,80 +10055,32 @@ def _collapse_to_latest_fy(lf: pl.LazyFrame, *, resort: bool = True) -> pl.LazyF
 
 
 def _ff_us_accounting(paths: DataPaths, ff5: bool, jkp_acc: pl.DataFrame) -> pl.LazyFrame:
-    """Scan comp_funda.parquet and compute FF-strict BE/OP, with INV from jkp_acc.
-
-    BE = SHE + txditc_FASB109 − coalesce(pstkrv, pstkl, pstk, 0),
-    SHE = coalesce(seq, ceq + pstk, at − lt) per French's ladder; null when BE < 0.
-    ff5: OP = (revt − cogs − xsga − xint) / (BE + MI), with total minority interest
-    MI = coalesce(mibt, mib + mibn). Since 2009 Compustat splits minority interest
-    into redeemable (mib) and non-redeemable (mibn) parts, with mibt = mib + mibn;
-    before 2009 mib is the total.
-    INV = JKP's at_gr1 at the same fiscal record (jkp_acc, from _jkp_annual_acc), as in
-    every other country.
-
-    Output: Lazy [gvkey, datadate, year, be, (op, inv)].
     """
-    base = ["pstkrv", "pstkl", "pstk", "seq", "ceq", "lt", "at", "txditc"]
-    extra = ["revt", "cogs", "xsga", "xint", "mib", "mibt", "mibn"]
-    floats = base + (extra if ff5 else [])
-    # Stockholders' equity ladder per French (data library / DFF 2000):
-    # seq, else ceq + pstk, else at - lt. ceq + pstk nulls when pstk is
-    # missing, falling to at - lt (SAS sum semantics).
-    she = pl.coalesce(
-        pl.col("seq"),
-        pl.col("ceq") + pl.col("pstk"),
-        pl.col("at") - pl.col("lt"),
-    )
-    be_raw = she + pl.col("txditc") - pl.col("ps")
-
-    lf = (
+    Description:
+        US fiscal records for the FF sorts: French's comp_funda record universe, with
+        BE, OP and INV taken from JKP's annual accounting at the same record.
+    Steps:
+        1) comp_funda under the NA filter, one record per (gvkey, year), the latest
+           datadate.
+        2) Left-join jkp_acc (_jkp_annual_acc) on (gvkey, datadate): be = be_x, op,
+           inv = at_gr1.
+    Output:
+        Lazy [gvkey, datadate, year, be, (op, inv)]; BE in USD.
+    """
+    keep = ["op", "inv"] if ff5 else []
+    return (
         pl.scan_parquet(paths.raw_tables_dir / "comp_funda.parquet")
-        .with_columns(
-            pl.col("datadate").cast(pl.Date),
-            pl.col(*floats).cast(pl.Float64),
-        )
+        .with_columns(pl.col("datadate").cast(pl.Date))
         .filter(_compustat_na_filter())
-        .with_columns(
-            ps=pl.coalesce("pstkrv", "pstkl", "pstk", pl.lit(0.0)),
-            txditc=pl.when(pl.col("datadate").dt.year() < 1993)
-            .then(pl.col("txditc").fill_null(0.0))
-            .otherwise(pl.lit(0.0)),
-            year=pl.col("datadate").dt.year(),
-        )
-        .with_columns(be=pl.when(be_raw < 0).then(None).otherwise(be_raw))
-        # one record per (gvkey, year), as the ROW loaders (_ff_load_funda_na/_ff_load_funda_global)
+        .with_columns(year=pl.col("datadate").dt.year())
         .pipe(_collapse_to_latest_fy)
-    )
-
-    if ff5:
-        op_elig = pl.col("revt").is_not_null() & (
-            pl.col("cogs").is_not_null()
-            | pl.col("xsga").is_not_null()
-            | pl.col("xint").is_not_null()
-        )
-        op_num = (
-            pl.col("revt")
-            - pl.coalesce("cogs", pl.lit(0.0))
-            - pl.coalesce("xsga", pl.lit(0.0))
-            - pl.coalesce("xint", pl.lit(0.0))
-        )
-        # OP denominator per French's variable definitions: book equity plus
-        # (total) minority interest; the positive-BE screen stays on BE alone.
-        mi = pl.coalesce(
-            pl.col("mibt"), pl.col("mib").fill_null(0.0) + pl.col("mibn").fill_null(0.0)
-        )
-        lf = lf.with_columns(
-            op=pl.when(op_elig & (pl.col("be") > 0))
-            .then(safe_div(op_num, pl.col("be") + mi, "op"))
-            .otherwise(None),
-        ).join(
-            jkp_acc.lazy().select("gvkey", "datadate", inv="at_gr1"),
+        .join(
+            jkp_acc.lazy().select("gvkey", "datadate", "op", be="be_x", inv="at_gr1"),
             on=["gvkey", "datadate"],
             how="left",
         )
-
-    keep = ["op", "inv"] if ff5 else []
-    return lf.select(["gvkey", "datadate", "year", "be", *keep])
+        .select("gvkey", "datadate", "year", "be", *keep)
+    )
 
 
 def _ff_ccm_link(paths: DataPaths, comp: pl.LazyFrame) -> pl.DataFrame:
@@ -10262,10 +10214,11 @@ def ff_load_compustat_us(
     use_dff: bool = False,
     dff_path: Path | None = None,
 ) -> pl.DataFrame:
-    """FF-strict Compustat NA funda linked gvkey→permno via CCM. FF3: BE only; FF5 adds OP/INV.
+    """US Compustat fiscal records with JKP's values, linked gvkey→permno via CCM. FF3: BE
+    only; FF5 adds OP/INV.
 
-    acc_us: the gvkey-keyed FF-strict accounting (_ff_us_accounting, built with the
-    same ff5), passed in so the caller builds it once.
+    acc_us: the gvkey-keyed accounting (_ff_us_accounting, built with the same ff5),
+    passed in so the caller builds it once.
     use_dff: unions DFF hand-collected Moody's BE (permno-keyed) to extend coverage to
     June 1926. DFF be(t) pairs with Dec(t−1) ME (year = t − 1 in the output); BE in
     $M, identical to Compustat and to the panel's me. Modern Compustat backfill
@@ -10612,36 +10565,45 @@ def _ff_load_funda_global(paths: DataPaths) -> pl.LazyFrame:
 
 
 def _jkp_annual_acc(paths: DataPaths) -> pl.DataFrame:
-    """jkp standardized annual accounting at the fiscal-report rows, for the FF loaders
-    and the ROW HXZ loader: book equity (be_x, nulled when <=0), the operating-profit inputs (ebitda_x,
-    xint) and minority interest (mib, mibt, mibn) for the ROW FF OP, asset growth
-    (at_gr1 = at_x/at_x.shift(12)-1, replicated exactly from create_acc_chars; FF INV in
-    every country), and net
-    income (ni_x, the ROW HXZ ROE numerator).
-
-    acc_std_ann is monthly-expanded with the _x fields populated only on report months
-    (source not null); at_gr1 is computed on the full monthly grid (count = cum rows per
-    gvkey/curcd, guard count>12 & at_x_-12>0), then only real fiscal rows are kept, so every
-    value sits at the fiscal-year-end datadate. Keyed (gvkey, datadate).
-
-    acc_std_ann is built with convert_to_usd=1 (main.py), so every monetary field here is
-    already USD-denominated (curcd == "USD" for every row); no further FX conversion is applied.
     """
+    Description:
+        JKP's annual accounting at each fiscal record, for the FF loaders and the
+        ex-US HXZ loader. FF operating profitability divides JKP's ope_x by book
+        equity plus minority interest: Fama and French (2015) divide by book equity
+        alone, and French's data library now adds minority interest; we follow the
+        data library.
+    Steps:
+        1) acc_std_ann report rows: be_x, ni_x, and op = ope_x / (be_x + MI) when
+           be_x > 0, with MI = coalesce(mibt, mib + mibn) and missing parts 0.
+           Since 2009 Compustat splits minority interest into redeemable (mib) and
+           non-redeemable (mibn) parts, with mibt = mib + mibn; before 2009 mib is
+           the total.
+        2) Left-join at_gr1 from achars_world at the record's first public_date.
+    Output:
+        Eager [gvkey, datadate, be_x, ni_x, op, at_gr1], keyed (gvkey, datadate),
+        USD (acc_std_ann is built with convert_to_usd=1).
+    """
+    mi = pl.coalesce(pl.col("mibt"), pl.col("mib").fill_null(0.0) + pl.col("mibn").fill_null(0.0))
+    at_gr1 = (
+        pl.scan_parquet(paths.interim_dir / "achars_world.parquet")
+        .select("gvkey", "datadate", "public_date", "at_gr1")
+        .sort("gvkey", "datadate", "public_date")
+        .unique(["gvkey", "datadate"], keep="first", maintain_order=True)
+        .drop("public_date")
+    )
     return (
         pl.scan_parquet(paths.interim_dir / "acc_std_ann.parquet")
-        .sort(["gvkey", "curcd", "datadate"])
-        .with_columns(_cnt=pl.col("gvkey").cum_count().over(["gvkey", "curcd"]))
-        .with_columns(
-            at_gr1=pl.when(
-                (pl.col("_cnt") > 12) & (pl.col("at_x").shift(12).over(["gvkey", "curcd"]) > 0)
-            )
-            .then(pl.col("at_x") / pl.col("at_x").shift(12).over(["gvkey", "curcd"]) - 1)
-            .otherwise(None)
-        )
         .filter(pl.col("source").is_not_null())
         .select(
-            "gvkey", "datadate", "be_x", "ebitda_x", "xint", "mib", "mibt", "mibn", "at_gr1", "ni_x"
+            "gvkey",
+            "datadate",
+            "be_x",
+            "ni_x",
+            op=pl.when(pl.col("be_x") > 0)
+            .then(safe_div(pl.col("ope_x"), pl.col("be_x") + mi, "op"))
+            .otherwise(None),
         )
+        .join(at_gr1, on=["gvkey", "datadate"], how="left")
         .collect()
     )
 
@@ -10660,16 +10622,9 @@ def ff_load_world_compustat(paths: DataPaths, jkp_acc: pl.DataFrame) -> pl.DataF
     Output:
         Eager [gvkey, datadate, year, be, op, inv] (BE in USD, OP/INV unitless).
 
-    Book equity, operating profitability, and investment are all sourced from jkp's
-    standardized panel rather than the raw-funda formulas: be = be_x (nulled when BE<=0),
-    op = (ebitda_x - xint) / (be_x + MI), inv = jkp at_gr1 (at_x growth). So HML/RMW share
-    one jkp book-equity definition and CMA uses jkp asset growth. OP follows the US FF
-    construction: a missing xint counts as zero (French's missing-component rule) and the
-    denominator adds total minority interest MI = coalesce(mibt, mib + mibn), missing parts
-    zero; the positive-BE screen stays on be_x alone. acc_std_ann is already
-    USD-denominated (built with convert_to_usd=1), so be = be_x directly with no FX step.
-    All three are read/computed at the fiscal-year-end datadate, so the June(t)/Dec(t-1)
-    timing in ff_annual_characteristics is unchanged. USA is unaffected (this loader feeds only ROW).
+    BE, OP and INV are JKP's (_jkp_annual_acc): be = be_x, op, inv = at_gr1, all USD or
+    unitless at the fiscal-year-end datadate. This loader feeds only countries other than
+    the US.
     """
     na = _ff_load_funda_na(paths).select("gvkey", "datadate", "year", _src=pl.lit(0))
     gl = _ff_load_funda_global(paths).select("gvkey", "datadate", "year", _src=pl.lit(1))
@@ -10679,30 +10634,18 @@ def ff_load_world_compustat(paths: DataPaths, jkp_acc: pl.DataFrame) -> pl.DataF
         .unique(subset=["gvkey", "datadate"], keep="first")
         .collect()
     )
-    mi = pl.coalesce(pl.col("mibt"), pl.col("mib").fill_null(0.0) + pl.col("mibn").fill_null(0.0))
     combined = (
         ff_side.join(jkp_acc, on=["gvkey", "datadate"], how="full", coalesce=True)
         .with_columns(
             year=pl.coalesce("year", pl.col("datadate").dt.year()),
             _src=pl.coalesce("_src", pl.lit(2)),  # acc-only rows least preferred in dedup
         )
-        .with_columns(
-            op=pl.when((pl.col("be_x") > 0) & pl.col("ebitda_x").is_not_null())
-            .then(
-                safe_div(
-                    pl.col("ebitda_x") - pl.col("xint").fill_null(0.0),
-                    pl.col("be_x") + mi,
-                    "op",
-                )
-            )
-            .otherwise(None)
-        )
         # one fiscal record per (gvkey, year): prefer funda-sourced rows, then latest
         # datadate, so the June join can't fan out.
         .sort(["gvkey", "year", "_src", "datadate"], descending=[False, False, False, True])
         .unique(subset=["gvkey", "year"], keep="first")
         .rename({"at_gr1": "inv"})
-        .drop("_src", "ebitda_x", "xint", "mib", "mibt", "mibn")
+        .drop("_src")
     )
     return (
         # be_x is already USD (acc_std_ann built convert_to_usd=1), so no FX conversion.
@@ -11599,6 +11542,13 @@ def gen_ff_data(
           French (1993) required two, against the backfill bias of firms Compustat
           adds with past years of data; their later descriptions of the factors
           and French's data library state no such rule.
+        - BE, every country: JKP's be_x at the fiscal year t-1 record, in USD and
+          null when not positive. Like French's, it has no deferred taxes for
+          fiscal years ending in 1993 or later.
+        - OP, every country: JKP's ope_x (EBITDA minus interest expense, a missing
+          XINT counting as 0) over be_x plus minority interest, at the same record
+          (_jkp_annual_acc). French's numerator is revenue minus the cost of goods
+          sold, SG&A and interest expense.
         - INV, every country: JKP's at_gr1 (at_x over at_x 12 months earlier,
           minus 1) at the fiscal year t-1 record. French's US rule grows assets
           over consecutive fiscal years whatever their spacing; at_gr1 is null
@@ -11611,8 +11561,8 @@ def gen_ff_data(
           rules (ff_build_mom_signal): the company's own return in the US, JKP's
           ret_12_1 elsewhere; daily UMD uses French's daily signal.
     Steps:
-        1) Map US permnos to FF firms. Read JKP's annual accounting once; build
-           the US accounting from it and comp_funda; link that to permnos
+        1) Map US permnos to FF firms. Read JKP's annual accounting once; take
+           the US fiscal records from comp_funda with JKP's values; link them to permnos
            (ccm2a); load Compustat for other countries; build the annual
            characteristics table.
         2) Write the characteristics: every world_msf security-month (a US CRSP
