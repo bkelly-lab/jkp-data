@@ -11601,7 +11601,8 @@ def gen_ff_data(
     ccm2a = ff_load_compustat_us(paths, acc_us, ff5=True, use_dff=FF_USE_DFF_BE)
     comp_world = ff_load_world_compustat(paths, jkp_acc)
     firm_map = _ff_us_firm_map(paths)
-    crsp_m = ff_load_crsp_panel(paths, "monthly", firm_map)
+    # Collected once: the annual table and the monthly panel both read it.
+    crsp_m = ff_load_crsp_panel(paths, "monthly", firm_map).collect().lazy()
     annual = ff_annual_characteristics(paths, acc_us, ccm2a, comp_world, crsp_m, firm_map)
     (
         pl.scan_parquet(paths.interim_dir / "world_msf.parquet")
