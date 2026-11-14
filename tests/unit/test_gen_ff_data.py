@@ -6,6 +6,7 @@ Covers:
   - ff_country_breakpoints, _ff_bm_breaks / _ff_op_breaks / _ff_inv_breaks,
     _ff_size_breaks
   - _ff_us_firm_map, ff_annual_characteristics, ff_load_crsp_panel (firm returns, ME)
+  - _ff_rets_weights_lazy (buy-and-hold weights)
   - ff_assign_portfolios
   - ff_assign_to_panel
   - _ff_vw_leg
@@ -899,29 +900,29 @@ class TestFFAnnualCharacteristicsFirms:
 
 class TestFFLoadCrspPanel:
     """ff_load_crsp_panel: one row per FF firm and date. Class rows come from the
-    world files, with retx (and daily primaryexch) from raw CIZ. Class returns are
+    world files, with usincflg (and daily primaryexch) from raw CIZ. Class returns are
     weighted by class ME at t-1; monthly ME is JKP's me_company (the firm's classes'
     sum when the permco is split); returns are JKP's CRSP returns, not raw CIZ."""
 
     @staticmethod
     def _run_monthly(test_paths) -> pl.DataFrame:
         may, jun = date(2020, 5, 31), date(2020, 6, 30)
-        # permno, mthcaldt, mthretx, usincflg; permno 3 is foreign-incorporated
+        # permno, mthcaldt, usincflg; permno 3 is foreign-incorporated
         raw = [
-            (1, date(2020, 5, 29), 0.0, "Y"),
-            (2, date(2020, 5, 29), 0.0, "Y"),
-            (1, date(2020, 6, 30), 0.01, "Y"),
-            (2, date(2020, 6, 30), 0.03, "Y"),
-            (3, date(2020, 6, 30), 0.01, "N"),
-            (4, date(2020, 6, 30), 0.01, "Y"),
-            (5, date(2020, 6, 30), 0.01, "Y"),
-            (6, date(2020, 6, 30), 0.01, "Y"),
-            (7, date(2020, 6, 30), 0.01, "Y"),
-            (8, date(2020, 6, 30), 0.01, "Y"),
+            (1, date(2020, 5, 29), "Y"),
+            (2, date(2020, 5, 29), "Y"),
+            (1, date(2020, 6, 30), "Y"),
+            (2, date(2020, 6, 30), "Y"),
+            (3, date(2020, 6, 30), "N"),
+            (4, date(2020, 6, 30), "Y"),
+            (5, date(2020, 6, 30), "Y"),
+            (6, date(2020, 6, 30), "Y"),
+            (7, date(2020, 6, 30), "Y"),
+            (8, date(2020, 6, 30), "Y"),
         ]
-        pl.DataFrame(
-            raw, schema=["permno", "mthcaldt", "mthretx", "usincflg"], orient="row"
-        ).write_parquet(test_paths.raw_tables_dir / "crsp_msf_v2.parquet")
+        pl.DataFrame(raw, schema=["permno", "mthcaldt", "usincflg"], orient="row").write_parquet(
+            test_paths.raw_tables_dir / "crsp_msf_v2.parquet"
+        )
         # id, eom, source_crsp, common, primaryexch, prc, me, me_company, ret.
         # 7 is not a common share, 8 trades off the main exchanges, 9 is Compustat.
         world = [
@@ -963,12 +964,11 @@ class TestFFLoadCrspPanel:
         assert self._run_monthly(test_paths)["id"].to_list() == [1, 4]
 
     def test_two_class_firm(self, test_paths, tolerance):
-        """Return and retx weighted by May class ME (30, 10); ME is me_company; NYSE
-        if any class is; prc is the largest |price|."""
+        """Return weighted by May class ME (30, 10); ME is me_company; NYSE if any
+        class is; prc_us is the largest |price|."""
         r = self._run_monthly(test_paths).row(0, named=True)
-        np.testing.assert_allclose(r["retadj"], (0.02 * 30 + 0.10 * 10) / 40, **tolerance.STANDARD)
-        np.testing.assert_allclose(r["retx"], (0.01 * 30 + 0.03 * 10) / 40, **tolerance.STANDARD)
-        assert (r["me"], r["exchcd"], r["prc"]) == (44.0, 1, 12.0)
+        np.testing.assert_allclose(r["ret"], (0.02 * 30 + 0.10 * 10) / 40, **tolerance.STANDARD)
+        assert (r["excntry"], r["me"], r["exchcd_us"], r["prc_us"]) == (US_EXCNTRY, 44.0, 1, 12.0)
 
     def test_split_firm_me_sums_its_own_classes(self, test_paths):
         """Split permco: ME is the firm's classes (20 + 5), not me_company (100,
@@ -976,7 +976,7 @@ class TestFFLoadCrspPanel:
         firm's return from the classes that have one, so with none it is null."""
         r = self._run_monthly(test_paths).row(1, named=True)
         assert r["me"] == 25.0
-        assert r["retadj"] is None
+        assert r["ret"] is None
 
     def test_daily_from_world_dsf(self, test_paths):
         day = date(2020, 6, 30)
@@ -984,7 +984,6 @@ class TestFFLoadCrspPanel:
             {
                 "permno": [1, 2],
                 "dlycaldt": [day] * 2,
-                "dlyretx": [0.01] * 2,
                 "usincflg": ["Y"] * 2,
                 "primaryexch": ["N", "X"],
             }
@@ -1003,7 +1002,117 @@ class TestFFLoadCrspPanel:
         firm_map = _firm_map([(1, 1, False, False), (2, 2, False, False)])
         out = ff_load_crsp_panel(test_paths, "daily", firm_map).collect()
         # Daily primaryexch comes from raw CIZ: permno 2 trades on exchange X.
-        assert out.select("id", "retadj", "retx", "me").rows() == [(1, -0.29, 0.01, 10.0)]
+        assert out.select("id", "ret", "me").rows() == [(1, -0.29, 10.0)]
+
+
+# =============================================================================
+# TestFFRetsWeights
+# =============================================================================
+
+
+def _weights(rows: list[tuple], freq: str = "monthly") -> dict[tuple[int, date], float | None]:
+    """_ff_rets_weights_lazy on (excntry, id, date, ret, me) rows → {(id, date): w}."""
+    panel = pl.DataFrame(
+        rows, schema=["excntry", "id", "date", "ret", "me"], orient="row"
+    ).with_columns(
+        exchcd_us=pl.lit(None, dtype=pl.Int64),
+        prc_us=pl.lit(None, dtype=pl.Float64),
+        size_grp=pl.lit(None, dtype=pl.Utf8),
+    )
+    out = af._ff_rets_weights_lazy(panel.lazy(), freq).collect()
+    return {(i, d): w for i, d, w in out.select("id", "date", "w").iter_rows()}
+
+
+class TestFFRetsWeights:
+    """_ff_rets_weights_lazy: buy-and-hold from June in every country. The weight is
+    the end-of-June ME grown by the total return since then; a null return
+    compounds as 0; a listing gap nulls the weight unless the whole market skipped
+    those dates."""
+
+    def test_drifts_from_june_me_by_ret(self):
+        """July weight = June ME; later months grow it by ret, not by the ME path
+        (the share count doubles in August)."""
+        w = _weights(
+            [
+                ("GBR", 1, date(2020, 6, 30), 0.0, 100.0),
+                ("GBR", 1, date(2020, 7, 31), 0.10, 110.0),
+                ("GBR", 1, date(2020, 8, 31), None, 400.0),
+                ("GBR", 1, date(2020, 9, 30), -0.5, 200.0),
+                ("GBR", 1, date(2020, 10, 31), 0.0, 200.0),
+            ]
+        )
+        assert w[(1, date(2020, 7, 31))] == 100.0
+        assert w[(1, date(2020, 8, 31))] == pytest.approx(110.0)
+        # August ret is null: compounds as 0
+        assert w[(1, date(2020, 9, 30))] == pytest.approx(110.0)
+        assert w[(1, date(2020, 10, 31))] == pytest.approx(55.0)
+
+    def test_new_year_restarts_from_june(self):
+        """The next July starts again from the June ME (row before the year)."""
+        rows = [("USA", 1, date(2020, 6, 30), 0.0, 100.0)]
+        rows += [("USA", 1, date(2020, m, 28), 0.1, 100.0) for m in range(7, 13)]
+        rows += [("USA", 1, date(2021, m, 28), 0.1, 100.0) for m in range(1, 7)]
+        rows += [("USA", 1, date(2021, 7, 28), 0.1, 100.0)]
+        w = _weights(rows)
+        assert w[(1, date(2021, 6, 28))] == pytest.approx(100.0 * 1.1**11)
+        assert w[(1, date(2021, 7, 28))] == 100.0
+
+    def test_listing_gap_nulls_weight(self):
+        """A stock back after a missing month has no weight that month; the rest
+        of the year keeps the June base."""
+        w = _weights(
+            [
+                ("GBR", 1, date(2020, 6, 30), 0.0, 100.0),
+                ("GBR", 1, date(2020, 7, 31), 0.10, 110.0),
+                ("GBR", 1, date(2020, 9, 30), 0.0, 120.0),
+                ("GBR", 1, date(2020, 10, 31), 0.0, 120.0),
+                # another stock keeps September a trading month of the market
+                ("GBR", 2, date(2020, 8, 31), 0.0, 1.0),
+                ("GBR", 2, date(2020, 9, 30), 0.0, 1.0),
+            ]
+        )
+        assert w[(1, date(2020, 9, 30))] is None
+        assert w[(1, date(2020, 10, 31))] == pytest.approx(110.0)
+
+    def test_market_closure_is_not_a_gap(self):
+        """Daily: a stock whose previous row is the market's previous trading date
+        keeps its weight even 7 days later (an exchange closure)."""
+        w = _weights(
+            [
+                ("USA", 1, date(2001, 6, 29), 0.0, 100.0),
+                ("USA", 1, date(2001, 9, 10), 0.0, 100.0),
+                ("USA", 1, date(2001, 9, 17), -0.05, 95.0),
+                ("USA", 2, date(2001, 9, 10), 0.0, 50.0),
+                ("USA", 2, date(2001, 9, 17), -0.05, 47.5),
+            ],
+            freq="daily",
+        )
+        assert w[(1, date(2001, 9, 17))] == 100.0
+        assert w[(2, date(2001, 9, 17))] is None  # no June row: first row's base is null
+
+    def test_nonpositive_lagged_me_nulls_weight(self):
+        w = _weights(
+            [
+                ("GBR", 1, date(2020, 6, 30), 0.0, 100.0),
+                ("GBR", 1, date(2020, 7, 31), 0.0, 0.0),
+                ("GBR", 1, date(2020, 8, 31), 0.0, 100.0),
+            ]
+        )
+        assert w[(1, date(2020, 7, 31))] == 100.0
+        assert w[(1, date(2020, 8, 31))] is None
+
+    def test_stock_listed_mid_year_has_no_weight_until_next_july(self):
+        """No row before the year's first row → no base ME for the rest of the year."""
+        w = _weights(
+            [
+                ("GBR", 1, date(2020, 9, 30), 0.0, 100.0),
+                ("GBR", 1, date(2020, 10, 31), 0.0, 100.0),
+                ("GBR", 1, date(2021, 6, 30), 0.0, 100.0),
+                ("GBR", 1, date(2021, 7, 31), 0.0, 100.0),
+            ]
+        )
+        assert w[(1, date(2020, 10, 31))] is None
+        assert w[(1, date(2021, 7, 31))] == 100.0
 
 
 # =============================================================================

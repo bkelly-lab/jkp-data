@@ -10349,7 +10349,7 @@ def ff_load_crsp_panel(
     Description:
         US CRSP panel with one row per FF firm (_ff_us_firm_map) and date. Class rows
         are JKP's CRSP rows in world_msf/world_dsf; the raw CIZ file adds only what
-        the world files don't carry: usincflg, retx and, daily, primaryexch. The
+        the world files don't carry: usincflg and, daily, primaryexch. The
         universe is _ciz_universe's: world's common flag is its share, security and
         issuer type test. Fama and French combine a company's share classes as
         securities in a portfolio:
@@ -10362,8 +10362,8 @@ def ff_load_crsp_panel(
         - Monthly ME: JKP's me_company (all of the company's share classes), or
           the sum of the firm's classes' me when the permco is split. Daily ME
           (weights only): the sum of the firm's classes' me.
-        - NYSE if any class is NYSE-listed (exchcd is the minimum). prc is the
-          largest |price|, used only to check that a price exists.
+        - NYSE if any class is NYSE-listed (exchcd_us is the minimum). prc_us is
+          the largest |price|, used only to check that a price exists.
         Tracking stocks (resources/ff_tracking_stocks.csv) are left out.
     Steps:
         1) World CRSP common-share rows joined to raw CIZ rows of US-incorporated
@@ -10371,7 +10371,8 @@ def ff_load_crsp_panel(
         2) Classes mapped to firms; tracking stocks dropped; class ME at t-1.
         3) Aggregate to (id, date).
     Output:
-        Lazy [id, date, retadj, retx, prc, exchcd, me].
+        Lazy [excntry, id, date, ret, me, exchcd_us, prc_us, size_grp], the panel
+        schema of _ff_rets_weights_lazy (size_grp null).
     """
     permno = pl.col("permno").cast(pl.Int64)
     if freq == "monthly":
@@ -10382,15 +10383,14 @@ def ff_load_crsp_panel(
             "prc",
             "me",
             "me_company",
+            "ret",
             permno=pl.col("id").cast(pl.Int64),
             date="eom",
-            retadj="ret",
         )
         raw = pl.scan_parquet(paths.raw_tables_dir / "crsp_msf_v2.parquet").select(
             "usincflg",
             permno=permno,
             date=pl.col("mthcaldt").cast(pl.Date).dt.month_end(),
-            retx=pl.col("mthretx").cast(pl.Float64),
         )
         me = _ff_firm_me()
     else:
@@ -10400,15 +10400,14 @@ def ff_load_crsp_panel(
             "date",
             "prc",
             "me",
+            "ret",
             permno=pl.col("id").cast(pl.Int64),
-            retadj="ret",
         )
         raw = pl.scan_parquet(paths.raw_tables_dir / "crsp_dsf_v2.parquet").select(
             "usincflg",
             "primaryexch",
             permno=permno,
             date=pl.col("dlycaldt").cast(pl.Date),
-            retx=pl.col("dlyretx").cast(pl.Float64),
         )
         me = pl.when(pl.col("me").is_not_null().any()).then(pl.col("me").sum())
     return (
@@ -10428,94 +10427,72 @@ def ff_load_crsp_panel(
         .with_columns(w_cls=pl.col("me").shift(1).over("permno"))
         .group_by("id", "date")
         .agg(
-            _ff_class_vw("retadj"),
-            _ff_class_vw("retx"),
-            prc=pl.col("prc").abs().max(),
-            exchcd=pl.col("exchcd").min(),
+            _ff_class_vw("ret"),
+            prc_us=pl.col("prc").abs().max(),
+            exchcd_us=pl.col("exchcd").min(),
             me=me,
         )
+        .with_columns(excntry=pl.lit(US_EXCNTRY), size_grp=pl.lit(None, dtype=pl.Utf8))
     )
 
 
-def _ff_us_rets_weights_lazy(
-    raw_panel: pl.LazyFrame, freq: Literal["monthly", "daily"]
-) -> pl.LazyFrame:
-    """Lazy US returns/weights panel: FF intra-year ME-compounding weight
-    (`weight_port` = me_base x cumretx at the prior bar within the July-June
-    portfolio year). Fuses with the loader scan; collected once per leg.
-    Output: [excntry, id, date, ret, w, me, exchcd_us, prc_us, size_grp], the schema
-    shared with _ff_row_rets_weights_lazy (prc_us feeds UMD's price-at-start check;
-    size_grp is null for the US)."""
-    period = (
-        (pl.col("date").dt.month() == 7).cast(pl.Int32).cum_sum().over("id")
+def _ff_rets_weights_lazy(panel: pl.LazyFrame, freq: Literal["monthly", "daily"]) -> pl.LazyFrame:
+    """
+    Description:
+        FF value weights, the same rule in every country. Fama and French hold each
+        portfolio from July to June, so a stock's weight is its ME at the end of June
+        grown by its total return since then (buy-and-hold): share issues, buybacks
+        and share-count errors during the year don't move it.
+    Steps:
+        1) Portfolio year: July to June of the row's date. me_base: ME on the stock's
+           row before the year's first row, the end of June when the stock has a
+           June row.
+        2) w = me_base x the year's cumulative (1 + ret) up to t-1, a null ret
+           compounding as 0; null unless ME at t-1 is positive.
+        3) Listing gap: w is null when the previous row is more than a month back
+           (daily: more than 5 days) and is not the country's previous trading
+           date, so a market-wide closure is not a gap.
+    Output:
+        Lazy [excntry, id, date, ret, w, me, exchcd_us, prc_us, size_grp].
+    """
+    k = ["excntry", "id"]
+    yp = [*k, "period"]
+    year = pl.col("date").dt.year()
+    prev = pl.col("date").shift(1).over(k)
+    in_reach = (
+        (year * 12 + pl.col("date").dt.month()) - (prev.dt.year() * 12 + prev.dt.month()) == 1
         if freq == "monthly"
-        else pl.when(pl.col("date").dt.month() >= 7)
-        .then(pl.col("date").dt.year())
-        .otherwise(pl.col("date").dt.year() - 1)
+        else (pl.col("date") - prev).dt.total_days() <= 5
     )
     return (
-        raw_panel.sort(["id", "date"])
+        panel.sort([*k, "date"])
         .with_columns(
-            period=period,
-            retx_safe=pl.col("retx").fill_null(0.0),
-            lag_me=pl.col("me").shift(1).over("id"),
+            period=pl.when(pl.col("date").dt.month() >= 7).then(year).otherwise(year - 1),
+            tday=pl.col("date").rank("dense").over("excntry"),
+            lag_me=pl.col("me").shift(1).over(k),
         )
         .with_columns(
-            me_base=pl.when(
-                (pl.col("period") != pl.col("period").shift(1).over("id")).fill_null(True)
-            )
+            contiguous=in_reach | (pl.col("tday") - pl.col("tday").shift(1).over(k) == 1),
+            me_base=pl.when((pl.col("period") != pl.col("period").shift(1).over(k)).fill_null(True))
             .then(pl.col("lag_me"))
             .otherwise(None)
             .forward_fill()
-            .over(["id", "period"]),
-            cumretx=(1.0 + pl.col("retx_safe")).cum_prod().over(["id", "period"]),
-        )
-        .with_columns(
-            weight_port=pl.when(pl.col("lag_me").is_not_null() & (pl.col("lag_me") > 0))
-            .then(
-                pl.col("me_base") * pl.col("cumretx").shift(1).over(["id", "period"]).fill_null(1.0)
-            )
-            .otherwise(None),
+            .over(yp),
+            cum=(1.0 + pl.col("ret").fill_null(0.0)).cum_prod().over(yp),
         )
         .select(
-            excntry=pl.lit(US_EXCNTRY),
-            id=pl.col("id"),
-            date=pl.col("date"),
-            ret=pl.col("retadj"),
-            w=pl.col("weight_port"),
+            "excntry",
+            "id",
+            "date",
+            "ret",
+            w=pl.when(pl.col("contiguous") & (pl.col("lag_me") > 0)).then(
+                pl.col("me_base") * pl.col("cum").shift(1).over(yp).fill_null(1.0)
+            ),
             me=pl.col("me"),
-            exchcd_us=pl.col("exchcd"),
-            prc_us=pl.col("prc"),
-            size_grp=pl.lit(None, dtype=pl.Utf8),
+            exchcd_us=pl.col("exchcd_us"),
+            prc_us=pl.col("prc_us"),
+            size_grp=pl.col("size_grp"),
         )
-    )
-
-
-def _ff_row_rets_weights_lazy(raw_panel: pl.LazyFrame, freq: str) -> pl.LazyFrame:
-    """Lazy ROW returns/weights panel: w = me.shift(1) over (excntry, id), with a
-    continuity guard — a listing gap (prev row > 1 month back for monthly, > 5
-    days for daily) nulls w so a re-entrant stock doesn't carry a stale market
-    cap into the VW legs.
-    world_dsf carries no clean retx, so cumretx intra-year compounding is skipped.
-    Output: the _ff_us_rets_weights_lazy schema (exchcd_us, prc_us null)."""
-    prev_date = pl.col("date").shift(1).over("excntry", "id")
-    ym = pl.col("date").dt.year() * 12 + pl.col("date").dt.month()
-    prev_ym = prev_date.dt.year() * 12 + prev_date.dt.month()
-    contiguous = (
-        (ym - prev_ym) == 1
-        if freq == "monthly"
-        else (pl.col("date") - prev_date).dt.total_days() <= 5
-    )
-    return raw_panel.sort(["excntry", "id", "date"]).select(
-        "excntry",
-        "id",
-        "date",
-        "ret",
-        w=pl.when(contiguous).then(pl.col("me").shift(1).over("excntry", "id")).otherwise(None),
-        me=pl.col("me"),
-        exchcd_us=pl.lit(None, dtype=pl.Int64),
-        prc_us=pl.lit(None, dtype=pl.Float64),
-        size_grp=pl.col("size_grp"),
     )
 
 
@@ -10855,6 +10832,8 @@ def ff_load_world_panel(paths: DataPaths, freq: str) -> pl.LazyFrame:
                 gap_ret.alias("ret"),
                 "me",
                 "size_grp",
+                exchcd_us=pl.lit(None, dtype=pl.Int64),
+                prc_us=pl.lit(None, dtype=pl.Float64),
             )
         )
     # world_msf can carry duplicate share-class records per security-month
@@ -10875,7 +10854,17 @@ def ff_load_world_panel(paths: DataPaths, freq: str) -> pl.LazyFrame:
         .filter(base_filter)
         .select("excntry", "id", "eom", pl.col("date"), gap_ret.alias("ret"), "me")
         .join(msf_keys, on=["id", "eom"], how="inner")
-        .select("excntry", "id", "gvkey", "date", "ret", "me", "size_grp")
+        .select(
+            "excntry",
+            "id",
+            "gvkey",
+            "date",
+            "ret",
+            "me",
+            "size_grp",
+            exchcd_us=pl.lit(None, dtype=pl.Int64),
+            prc_us=pl.lit(None, dtype=pl.Float64),
+        )
     )
 
 
@@ -11534,6 +11523,10 @@ def gen_ff_data(
           FACTOR_MIN_STOCKS_BP / FACTOR_MIN_STOCKS_PF minimums.
         - Returns, every country: JKP's world_msf/world_dsf, so US returns include
           CRSP's delisting return (-30% where a bad delisting has none).
+        - Weights, every country: buy-and-hold from June, as Fama and French hold the
+          portfolios from July to June. A stock's weight is its end-of-June ME grown
+          by its total return since then (_ff_rets_weights_lazy); UMD, re-sorted
+          every period, weights by ME at t-1.
         - Formation, every country: June ME from the June row and Dec ME from the
           December t-1 row, with no fallback to earlier months, so a stock halted
           over June or December leaves that year's sorts. The B/M, OP and INV
@@ -11612,8 +11605,8 @@ def gen_ff_data(
     panel_m = pl.concat(
         pl.collect_all(
             [
-                crsp_m.pipe(_ff_us_rets_weights_lazy, "monthly"),
-                ff_load_world_panel(paths, "monthly").pipe(_ff_row_rets_weights_lazy, "monthly"),
+                crsp_m.pipe(_ff_rets_weights_lazy, "monthly"),
+                ff_load_world_panel(paths, "monthly").pipe(_ff_rets_weights_lazy, "monthly"),
             ]
         ),
         how="vertical_relaxed",
@@ -11643,9 +11636,9 @@ def gen_ff_data(
             pl.collect_all(
                 [
                     ff_load_crsp_panel(paths, "daily", firm_map).pipe(
-                        _ff_us_rets_weights_lazy, "daily"
+                        _ff_rets_weights_lazy, "daily"
                     ),
-                    ff_load_world_panel(paths, "daily").pipe(_ff_row_rets_weights_lazy, "daily"),
+                    ff_load_world_panel(paths, "daily").pipe(_ff_rets_weights_lazy, "daily"),
                 ]
             ),
             how="vertical_relaxed",
