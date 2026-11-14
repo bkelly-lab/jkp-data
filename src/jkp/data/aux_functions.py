@@ -11193,21 +11193,26 @@ _MOM_OUT_COLS = (
 
 def _ff_mom_flags(rows: pl.LazyFrame, freq: Literal["monthly", "daily"]) -> pl.LazyFrame:
     """UMD eligibility flags, the same rule in every country, on rows
-    [excntry, id, date, prc, me, ret, ret_lag_dif]. A priced row has prc > 0; a
-    good return is a one-period return (1 month / <= 5 days); log_ret compounds a
-    missing return as 0 and keeps a return spanning a gap in full, so the first
-    return after a halt (p_end / p_start) is compounded.
+    [excntry, id, date, prc, me, ret, ret_lag_dif, in_univ]. A priced row has
+    prc > 0; a good return is a one-period return (1 month / <= 5 days). Only rows
+    in the FF universe (in_univ) count for the price, return and ME checks, while
+    log_ret covers every row of the security: it compounds a missing return as 0
+    and keeps a return spanning a gap in full, so the first return after a halt
+    (p_end / p_start) is compounded.
 
-    Output: [excntry, id, date, me, has_prc, good_ret, log_ret].
+    Output: [excntry, id, date, in_univ, me, has_prc, good_ret, log_ret].
     """
     max_gap = 1 if freq == "monthly" else 5
     return rows.select(
         "excntry",
         "id",
         "date",
-        "me",
-        has_prc=pl.col("prc") > 0,
-        good_ret=pl.col("ret").is_not_null() & (pl.col("ret_lag_dif") <= max_gap),
+        "in_univ",
+        me=pl.when(pl.col("in_univ")).then(pl.col("me")),
+        has_prc=(pl.col("prc") > 0) & pl.col("in_univ"),
+        good_ret=pl.col("ret").is_not_null()
+        & (pl.col("ret_lag_dif") <= max_gap)
+        & pl.col("in_univ"),
         log_ret=(1.0 + pl.col("ret").fill_null(0.0)).log(),
     )
 
@@ -11215,24 +11220,43 @@ def _ff_mom_flags(rows: pl.LazyFrame, freq: Literal["monthly", "daily"]) -> pl.L
 def _ff_mom_source(
     paths: DataPaths, panel: pl.LazyFrame, freq: Literal["monthly", "daily"]
 ) -> pl.LazyFrame:
-    """Rows UMD eligibility is judged on (_ff_mom_flags).
+    """Rows the UMD signal compounds and eligibility is judged on (_ff_mom_flags).
 
     US: the FF panel itself, at the company level, with the firm's price prc_us
     (CRSP keeps missing-price rows, and CIZ returns span no gaps, so ret_lag_dif
-    is 0). Elsewhere: world_msf/world_dsf under the FF universe but without the
-    ME filter, so a priced row counts even when shares are missing and the check
-    is independent of the other FF factors.
+    is 0). Elsewhere: every world_msf/world_dsf row of a common share, so the
+    signal compounds each return the security has, also in a month it is outside
+    the FF universe (e.g. flagged as not the primary security). Eligibility counts
+    only the rows in the FF universe (in_univ), without the ME filter, so a priced
+    row counts even when shares are missing and the check is independent of the
+    other FF factors.
 
-    Output: [excntry, id, date, me, has_prc, good_ret, log_ret].
+    Output: [excntry, id, date, in_univ, me, has_prc, good_ret, log_ret].
     """
     src, date_col = ("world_msf", "eom") if freq == "monthly" else ("world_dsf", "date")
     us = panel.filter(pl.col("excntry") == US_EXCNTRY).select(
-        "excntry", "id", "date", "me", "ret", prc="prc_us", ret_lag_dif=pl.lit(0)
+        "excntry",
+        "id",
+        "date",
+        "me",
+        "ret",
+        prc="prc_us",
+        ret_lag_dif=pl.lit(0),
+        in_univ=pl.lit(True),
     )
     world = (
         pl.scan_parquet(paths.interim_dir / f"{src}.parquet")
-        .filter(_ff_world_universe())
-        .select("excntry", "id", pl.col(date_col).alias("date"), "me", "ret", "prc", "ret_lag_dif")
+        .filter((pl.col("excntry") != US_EXCNTRY) & (pl.col("common") == 1))
+        .select(
+            "excntry",
+            "id",
+            pl.col(date_col).alias("date"),
+            "me",
+            "ret",
+            "prc",
+            "ret_lag_dif",
+            in_univ=_ff_world_universe().fill_null(False),
+        )
     )
     return _ff_mom_flags(pl.concat([us, world], how="vertical_relaxed"), freq)
 
@@ -11240,7 +11264,8 @@ def _ff_mom_source(
 def _ff_mom_gate(src: pl.LazyFrame, start: int, end: int, min_rows: int) -> pl.LazyFrame:
     """Momentum eligibility on a period index `idx` (months or per-country trading
     days), the same in every country: a price at idx-start, a good return at
-    idx-end, ME > 0 at idx-1, and at least `min_rows` rows in (idx-start, idx-end].
+    idx-end, ME > 0 at idx-1, and at least `min_rows` FF-universe rows in
+    (idx-start, idx-end]. cum_log runs over every row of the security.
     French requires the stock to be listed throughout the window; the row floor
     departs from that in the US too, so a halt counts the same in every country
     (Compustat Global records a halt as missing rows). Endpoints are looked up by
@@ -11250,7 +11275,7 @@ def _ff_mom_gate(src: pl.LazyFrame, start: int, end: int, min_rows: int) -> pl.L
     """
     by = ["excntry", "id"]
     s = src.sort([*by, "idx"]).with_columns(
-        rn=pl.int_range(pl.len()).over(by),
+        rn=pl.col("in_univ").cast(pl.Int64).cum_sum().over(by),
         cum_log=pl.col("log_ret").cum_sum().over(by),
     )
 
@@ -11326,13 +11351,15 @@ def _ff_mom_signal_daily(panel: pl.LazyFrame, src: pl.LazyFrame) -> pl.LazyFrame
     at t-21, ME > 0 at t-1, and >= FF_UMD_ROW_MIN_DAYS rows in t-250..t-21.
     """
     trading_idx = (
-        src.select("excntry", "date")
+        src.filter(pl.col("in_univ"))
+        .select("excntry", "date")
         .unique()
         .sort(["excntry", "date"])
         .with_columns(idx=pl.int_range(0, pl.len()).cast(pl.Int64).over("excntry"))
     )
     gate = _ff_mom_gate(
-        src.join(trading_idx, on=["excntry", "date"], how="left"),
+        # inner: a date only off-universe rows trade on has no index, so it drops out
+        src.join(trading_idx, on=["excntry", "date"], how="inner"),
         start=FF_UMD_DAILY_LOOKBACK,
         end=FF_UMD_DAILY_SKIP,
         min_rows=FF_UMD_ROW_MIN_DAYS,
@@ -11358,10 +11385,10 @@ def ff_build_mom_signal(
     world_msf/world_dsf elsewhere). Eligibility follows French's detail pages
     (price at the window start, good return at its end, ME at t-1), except that
     instead of requiring the stock listed throughout the window, every country,
-    the US included, needs FF_UMD_ROW_MIN_MONTHS/DAYS rows in it. The signal
-    compounds the source returns: monthly over t-12..t-2 on a calendar-month
-    index, daily over t-250..t-21 on a per-excntry trading-day index. Builds
-    lazily and collects once at the boundary.
+    the US included, needs FF_UMD_ROW_MIN_MONTHS/DAYS FF-universe rows in it. The
+    signal compounds every source return, in or out of the universe: monthly over
+    t-12..t-2 on a calendar-month index, daily over t-250..t-21 on a per-excntry
+    trading-day index. Builds lazily and collects once at the boundary.
 
     Output: panel + [me_lag1, mom_2_12, eligible_mom].
     """

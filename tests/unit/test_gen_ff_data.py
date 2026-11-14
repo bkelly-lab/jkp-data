@@ -2044,6 +2044,7 @@ def _mom_src(panel: pl.LazyFrame, freq: str) -> pl.LazyFrame:
         ret_lag_dif=pl.when(pl.col("excntry") == US_EXCNTRY)
         .then(0)
         .otherwise(period.diff().over(by).fill_null(1)),
+        in_univ=pl.lit(True),
     )
     return _ff_mom_flags(rows, freq)
 
@@ -2117,6 +2118,21 @@ class TestFFMomSignalMonthly:
         last_row = result.sort("date").tail(1)
         assert last_row["eligible_mom"][0] is True
         np.testing.assert_allclose(last_row["mom_2_12"][0], 1.01**10 - 1, **tolerance.STANDARD)
+
+    def test_off_universe_month_compounds_but_does_not_count(self, tolerance):
+        """ROW: a window month outside the FF universe (e.g. not the primary security)
+        still compounds into the signal, but does not count toward the row floor."""
+        panel = _make_monthly_panel(months=20, excntry="GBR", ret_overrides={10: -0.2}).lazy()
+        src = _mom_src(panel, "monthly").with_columns(in_univ=pl.col("date") != date(2018, 11, 28))
+        last = _ff_mom_signal_monthly(panel, src).collect().sort("date").tail(1)
+        assert last["eligible_mom"][0] is True
+        np.testing.assert_allclose(last["mom_2_12"][0], 1.01**10 * 0.8 - 1, **tolerance.STANDARD)
+        # only t-2 left in the universe: one row, below the row floor
+        src_thin = _mom_src(panel, "monthly").with_columns(
+            in_univ=~pl.col("date").is_between(date(2018, 8, 28), date(2019, 5, 28))
+        )
+        thin = _ff_mom_signal_monthly(panel, src_thin).collect().sort("date").tail(1)
+        assert thin["eligible_mom"][0] is False
 
     def test_me_lag1_null_when_gap(self):
         """me_lag1 is null when there's a calendar month gap."""
