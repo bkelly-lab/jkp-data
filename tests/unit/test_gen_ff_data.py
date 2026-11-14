@@ -354,12 +354,12 @@ class TestFFCountryBreakpoints:
         assert row["beme30"] == 3.0
         assert row["beme70"] == 7.0
 
-    def test_us_always_emits_breakpoints_regardless_of_count(self):
-        """US bypasses the FACTOR_MIN_STOCKS_BP gate even with 1 stock."""
+    def test_us_below_min_stocks_suppressed(self):
+        """The US is gated like every country: 1 NYSE stock yields no breakpoints."""
         june = _make_june_us(1, [5.0])
         specs = [("beme", 0.50, "beme50")]
         bp = ff_country_breakpoints(june, specs, _ff_bm_eligible())
-        assert len(bp) == 1
+        assert len(bp) == 0
 
     def test_row_below_min_stocks_suppressed(self):
         """ROW country with count < FACTOR_MIN_STOCKS_BP yields no breakpoints."""
@@ -456,9 +456,9 @@ class TestFFCountryBreakpoints:
 
 # Standalone B/M 30/70 breakpoints (no size median), matching the former
 # ff_country_breaks_for_spec(june, "bm", with_size_median=False).
-def _bm_value_breaks(june: pl.DataFrame) -> pl.DataFrame:
+def _bm_value_breaks(june: pl.DataFrame, min_stocks_bp: int = FACTOR_MIN_STOCKS_BP) -> pl.DataFrame:
     return ff_country_breakpoints(
-        june, [("beme", 0.30, "beme30"), ("beme", 0.70, "beme70")], _ff_bm_eligible()
+        june, [("beme", 0.30, "beme30"), ("beme", 0.70, "beme70")], _ff_bm_eligible(), min_stocks_bp
     )
 
 
@@ -551,8 +551,8 @@ class TestFFSpecBreaks:
         me>0 stocks (incl. bm-ineligible); the sort-eligible pool is
         narrower. me<=0 and non-NYSE stay excluded from both."""
         june = self._make_june_size_pool()
-        strict = ff_country_breakpoints(june, [("me", 0.50, "sizemedn")], _ff_bm_eligible())
-        lenient = _ff_size_breaks(june, _ff_bm_eligible())
+        strict = ff_country_breakpoints(june, [("me", 0.50, "sizemedn")], _ff_bm_eligible(), 1)
+        lenient = _ff_size_breaks(june, _ff_bm_eligible(), 1)
         assert strict["sizemedn"][0] == 20.0  # bm-eligible pool: 10/20/30
         assert lenient["sizemedn"][0] == 30.0  # all NYSE me>0: 10/20/30/40/50
 
@@ -561,8 +561,9 @@ class TestFFSpecBreaks:
         beme30/70 in _ff_bm_breaks match the standalone value breaks
         regardless of the (widened) size-median pool."""
         june = self._make_june_size_pool()
-        value = _bm_value_breaks(june)
-        combined = _ff_bm_breaks(june)
+        value = _bm_value_breaks(june, 1)
+        combined = _ff_bm_breaks(june, 1)
+        assert combined.height == 1
         assert combined.select("excntry", "date", "beme30", "beme70").equals(
             value.select("excntry", "date", "beme30", "beme70")
         )
@@ -1474,13 +1475,16 @@ _BM_FLAG = "positivebeme"
 _BM_BUCKETS = ["SL", "SM", "SH", "BL", "BM", "BH"]
 
 
-def _vw_leg_bm(panel: pl.DataFrame) -> pl.DataFrame:
+def _vw_leg_bm(panel: pl.DataFrame, min_stocks_pf: int = 1) -> pl.DataFrame:
     """Apply the shared (w>0, ret not null, sizeport not null) filter — which
-    _ff_vw_leg no longer does internally — then run the B/M VW leg."""
+    _ff_vw_leg no longer does internally — then run the B/M VW leg. One stock per
+    bucket suffices unless a test sets min_stocks_pf."""
     filtered = panel.filter(
         (pl.col("w") > 0) & pl.col("ret").is_not_null() & pl.col("sizeport").is_not_null()
     )
-    return _ff_vw_leg(filtered, port=_BM_PORT, flag=_BM_FLAG, buckets=_BM_BUCKETS)
+    return _ff_vw_leg(
+        filtered, port=_BM_PORT, flag=_BM_FLAG, buckets=_BM_BUCKETS, min_stocks_pf=min_stocks_pf
+    )
 
 
 def _make_panel_bm(rows: list[dict]) -> pl.DataFrame:
@@ -1562,8 +1566,8 @@ class TestFFVwLeg:
         for col in _BM_BUCKETS:
             assert col in result.columns
 
-    def test_us_bypasses_min_stocks_gate(self):
-        """US bucket with only 1 stock passes (no FACTOR_MIN_STOCKS_PF gate for US)."""
+    def test_us_below_min_stocks_gated(self):
+        """The US is gated like every country: a 1-stock bucket is null."""
         panel = _make_panel_bm(
             [
                 {
@@ -1579,9 +1583,8 @@ class TestFFVwLeg:
                 },
             ]
         )
-        result = _vw_leg_bm(panel)
-        # With 1 stock, US should still emit a value
-        assert result["SH"][0] is not None
+        result = _vw_leg_bm(panel, min_stocks_pf=FACTOR_MIN_STOCKS_PF)
+        assert result["SH"][0] is None
 
     def test_row_below_min_stocks_nulled(self):
         """ROW bucket with n < FACTOR_MIN_STOCKS_PF gets null."""
@@ -1601,7 +1604,7 @@ class TestFFVwLeg:
             for i in range(n)
         ]
         panel = _make_panel_bm(rows)
-        result = _vw_leg_bm(panel)
+        result = _vw_leg_bm(panel, min_stocks_pf=FACTOR_MIN_STOCKS_PF)
         gbr_rows = result.filter(pl.col("excntry") == "GBR")
         assert len(gbr_rows) > 0
         assert gbr_rows["SH"][0] is None
@@ -1624,7 +1627,7 @@ class TestFFVwLeg:
             for i in range(n)
         ]
         panel = _make_panel_bm(rows)
-        result = _vw_leg_bm(panel)
+        result = _vw_leg_bm(panel, min_stocks_pf=FACTOR_MIN_STOCKS_PF)
         gbr_rows = result.filter(pl.col("excntry") == "GBR")
         assert len(gbr_rows) == 1
         assert gbr_rows["SH"][0] is not None
@@ -1878,7 +1881,7 @@ class TestFFComputeFactors:
             data["w"].append(1.0)
             data["me"].append(1.0)
         ccm4 = pl.DataFrame(data, schema=schema)
-        result = ff_compute_factors(ccm4)
+        result = ff_compute_factors(ccm4, min_stocks_pf=1)
         # BM leg only: SH=0.30, BH=0.10, SL=0.01, BL=0.02 (each one stock, w=1)
         # HML = (SH+BH)/2 - (SL+BL)/2 = 0.20 - 0.015 = 0.185
         np.testing.assert_allclose(result["hml_ff"][0], 0.185, **tolerance.STANDARD)
@@ -1944,7 +1947,7 @@ class TestFFComputeFactors:
             data["w"].append(1.0)
             data["me"].append(1.0)
         ccm4 = pl.DataFrame(data, schema=schema)
-        result = ff_compute_factors(ccm4)
+        result = ff_compute_factors(ccm4, min_stocks_pf=1)
         assert "smb_ff3" in result.columns
         assert "smb_ff5" in result.columns
         smb_bm = (0.10 + 0.05 + 0.02) / 3 - (0.01 + 0.01 + 0.01) / 3
@@ -1984,7 +1987,7 @@ class TestFFComputeFactors:
         ]
         data = {k: [r[i] for r in rows] for i, k in enumerate(schema)}
         ccm4 = pl.DataFrame(data, schema=schema)
-        result = ff_compute_factors(ccm4)
+        result = ff_compute_factors(ccm4, min_stocks_pf=1)
         # SH and BH are null → HML is null
         assert result["hml_ff"][0] is None
 
@@ -2447,7 +2450,7 @@ class TestFFComputeUmdFactor:
     def test_umd_arithmetic(self, tolerance):
         """umd_ff = 0.5*(SH+BH) - 0.5*(SL+BL) with known returns."""
         panel = _make_mom_panel()
-        result = ff_compute_umd_factor(panel)
+        result = ff_compute_umd_factor(panel, min_stocks_pf=1)
         # 0.5*(0.30+0.20) - 0.5*(0.02+0.01) = 0.25 - 0.015 = 0.235
         np.testing.assert_allclose(result["umd_ff"][0], 0.235, **tolerance.STANDARD)
 
@@ -2492,11 +2495,11 @@ class TestFFComputeUmdFactor:
     def test_null_when_bucket_missing(self):
         """If SH or BH bucket is absent, umd_ff is null."""
         panel = _make_mom_panel().filter(pl.col("momport") != "H")  # remove H bucket
-        result = ff_compute_umd_factor(panel)
+        result = ff_compute_umd_factor(panel, min_stocks_pf=1)
         assert result["umd_ff"][0] is None
 
-    def test_us_bypasses_min_stocks_gate(self):
-        """US with 1 stock per bucket still computes umd_ff."""
+    def test_us_below_min_stocks_gated(self):
+        """The US is gated like every country: 1 stock per bucket gives null umd_ff."""
         panel = _make_mom_panel(excntry=US_EXCNTRY)
         result = ff_compute_umd_factor(panel)
-        assert result["umd_ff"][0] is not None
+        assert result["umd_ff"][0] is None

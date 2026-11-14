@@ -9909,9 +9909,9 @@ def country_breakpoints(
 ) -> pl.DataFrame:
     """Per-`group_keys` QUANTILE_DISC breakpoints over `pool`; one row per group.
     specs = [(col, quantile, alias)]. `min_stocks` drops groups below that count;
-    `usa_exempt` keeps USA regardless. Shared by the FF/HXZ/DHS sorts — FF and DHS
-    exempt their US NYSE pool via usa_exempt, HXZ instead splits US/ROW into two
-    calls (US min_stocks=None, ROW gated), so the two idioms both route here."""
+    `usa_exempt` keeps USA regardless. Shared by the FF/HXZ/DHS sorts: FF gates every
+    country, DHS exempts its US NYSE pool via usa_exempt, and HXZ splits US/ROW into
+    two calls (US min_stocks=None, ROW gated)."""
     breaks_sql = ", ".join(f"QUANTILE_DISC({c}, {q}) AS {a}" for c, q, a in specs)
     cols = list(dict.fromkeys(c for c, _, _ in specs))
     gk = ", ".join(group_keys)
@@ -10880,8 +10880,8 @@ def ff_country_breakpoints(
               Country main-exchange (exch_main==1) gate applied upstream in
               ff_load_world_panel.
 
-    ROW additionally drops (excntry, date) where pool count < FACTOR_MIN_STOCKS_BP;
-    USA is exempt (always emits breakpoints).
+    Every country, the US included, drops (excntry, date) where the pool count
+    < min_stocks_bp.
     """
     # US = NYSE-only (exchcd_us==1); ROW = size_grp pool (ME >= US-NYSE p20)
     pool = eligible & (
@@ -10894,7 +10894,6 @@ def ff_country_breakpoints(
         group_keys=["excntry", "date"],
         pool=pool,
         min_stocks=min_stocks_bp,
-        usa_exempt=True,
     )
 
 
@@ -11056,15 +11055,20 @@ def vw_bucket_returns(
     date_col: str = "date",
     min_stocks_pf: int,
     ordered: bool = False,
+    usa_exempt: bool = True,
 ) -> pl.DataFrame:
     """Value-weight `ret_col` by `weight_col` per (excntry, date_col, bucket_col),
-    apply the ROW min-stocks gate (USA bypassed), and pivot wide to `buckets`
+    null buckets with fewer than `min_stocks_pf` stocks (USA bypassed when
+    `usa_exempt`; FF passes False to gate every country), and pivot wide to `buckets`
     (absent buckets filled as null Float64). Shared by the FF/HXZ/DHS size×char
     sorts; the caller supplies the pre-built `bucket_col` and has already applied any
     weight/return validity filter. `ordered`=True keeps input row order within each
     group (maintain_order + a group-key presort) for float-sum determinism at a
     discrete breakpoint; FF/HXZ leave it False. `safe_div` returns null on a zero
     weight sum. Output: [excntry, date_col, *buckets]."""
+    enough = pl.col("_n") >= min_stocks_pf
+    if usa_exempt:
+        enough = enough | (pl.col("excntry") == US_EXCNTRY)
     if ordered:
         frame = frame.sort(["excntry", date_col, bucket_col], maintain_order=True)
     wide = (
@@ -11075,11 +11079,7 @@ def vw_bucket_returns(
             ),
             _n=pl.len(),
         )
-        .with_columns(
-            vwret=pl.when((pl.col("excntry") == US_EXCNTRY) | (pl.col("_n") >= min_stocks_pf))
-            .then(pl.col("vwret"))
-            .otherwise(None)
-        )
+        .with_columns(vwret=pl.when(enough).then(pl.col("vwret")).otherwise(None))
         .pivot(values="vwret", index=["excntry", date_col], on=bucket_col)
     )
     missing = [c for c in buckets if c not in wide.columns]
@@ -11096,9 +11096,9 @@ def _ff_vw_leg(
     buckets: list[str],
     min_stocks_pf: int = FACTOR_MIN_STOCKS_PF,
 ) -> pl.DataFrame:
-    """FF size×`port` VW leg → [excntry, date, *buckets] via vw_bucket_returns. The
-    caller has already applied the shared w>0 / ret-not-null / sizeport-not-null
-    filter."""
+    """FF size×`port` VW leg → [excntry, date, *buckets] via vw_bucket_returns, with
+    the min_stocks_pf gate in every country, the US included. The caller has
+    already applied the shared w>0 / ret-not-null / sizeport-not-null filter."""
     return vw_bucket_returns(
         panel.filter((pl.col(flag) == 1) & pl.col(port).is_not_null()).with_columns(
             bucket=pl.col("sizeport") + pl.col(port)
@@ -11106,6 +11106,7 @@ def _ff_vw_leg(
         buckets=buckets,
         weight_col="w",
         min_stocks_pf=min_stocks_pf,
+        usa_exempt=False,
     )
 
 

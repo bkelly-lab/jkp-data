@@ -249,13 +249,12 @@ ROLLING_DAILY_SPECS: list[tuple[str, int, list[str]]] = [
 # ============================================================================
 
 # ISO-3 code for the United States; sentinel for excntry-branched filters in
-# the unified FF pipeline (US-strict NYSE breakpoint pool, US-bypassed
-# min-stocks gates).
+# the unified FF pipeline (US-strict NYSE breakpoint pool).
 US_EXCNTRY = "USA"
 
-# Ex-US minimums of the factor builders (FF here, later HXZ): min firms per
-# (excntry, formation date) for breakpoints, and per (excntry, date, bucket) for
-# the VW legs. US bypassed.
+# Minimums of the factor builders (FF here, later HXZ): min firms per (excntry,
+# formation date) for breakpoints, and per (excntry, date, bucket) for the VW
+# legs. FF applies both in every country; the shared helpers can exempt the US.
 FACTOR_MIN_STOCKS_BP = 10
 FACTOR_MIN_STOCKS_PF = 3
 
