@@ -9,6 +9,13 @@ END_DATE = date(2025, 12, 31)
 # accounting panel; rows with `datadate` before this are dropped.
 ACCOUNTING_START_DATE = pl.datetime(1949, 12, 31)
 
+# Book equity (`be_x`) adds balance-sheet deferred taxes (`txditc_x`) only for
+# fiscal periods ending before this calendar year. SFAS 109 (fiscal years from
+# 1993) books deferred taxes as a liability at enacted tax rates, and Fama and
+# French drop them from book equity from 1993 on. The same year applies in every
+# country.
+BE_DEFERRED_TAX_END_YEAR = 1993
+
 # Longest gap, in days, between two reports on one fiscal calendar before the
 # calendar's run restarts, used by `one_row_per_date` to choose between two
 # calendars on one date. Consecutive quarters are 89-92 days apart, semiannual

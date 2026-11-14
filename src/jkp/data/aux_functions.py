@@ -34,6 +34,7 @@ from .compustat_correction import (
     drop_unreliable_observations,
 )
 from .config import (
+    BE_DEFERRED_TAX_END_YEAR,
     CALENDAR_RUN_MAX_GAP_DAYS,
     CMP_MIN_STD,
     CMP_SIZE_GROUPS,
@@ -4671,6 +4672,8 @@ def add_helper_vars(paths: DataPaths, data):
            deduplicate per date, keeping Global over NA, then the lowest row index n.
         2) Bring grid to Polars; sanitize key vars; construct building blocks (sale_x, debt_x, pstk_x, opex_x, etc.).
         3) Derive financial aggregates (seq_x, nwc_x, be_x/bev_x, ebitda_x/ebit_x/op_x/ope_x, oa_x/ol_x/noa_x, etc.).
+           be_x adds txditc_x only for periods ending before BE_DEFERRED_TAX_END_YEAR.
+           ope_x counts a missing xint as 0.
         4) Compute flows/changes (cowc_x, nncoa_x, oacc_x, tacc_x, netis_x, dbnetis_x) with 12-month diffs where available; guard with early-count rules.
         5) Finalize financing/cashflow measures (ocf_x, cop_x, fcf_x, fincf_x); drop helpers.
 
@@ -4812,7 +4815,9 @@ def add_helper_vars(paths: DataPaths, data):
             ol_x=col("col_x") + col("ncol_x"),
             nfna_x=col("fna_x") - col("fnl_x"),
             be_x=col("seq_x")
-            + pl.coalesce([col("txditc_x"), pl.lit(0)])
+            + pl.when(col("datadate").dt.year() < BE_DEFERRED_TAX_END_YEAR)
+            .then(pl.coalesce([col("txditc_x"), pl.lit(0.0)]))
+            .otherwise(pl.lit(0.0))
             - pl.coalesce([col("pstk_x"), pl.lit(0)]),
             bev_x=pl.coalesce(
                 [
@@ -4824,7 +4829,7 @@ def add_helper_vars(paths: DataPaths, data):
         .with_columns(
             ebit_x=pl.coalesce(["ebit", "oiadp", col("ebitda_x") - col("dp")]),
             op_x=col("ebitda_x") + pl.coalesce(["xrd", 0.0]),
-            ope_x=col("ebitda_x") - col("xint"),
+            ope_x=col("ebitda_x") - pl.coalesce([col("xint"), 0.0]),
             nca_x=col("at_x") - col("ca_x"),
             ncoa_x=col("at_x") - col("ca_x") - pl.coalesce(["ivao", 0]),
             aliq_x=col("che")

@@ -1425,7 +1425,7 @@ The abbreviation is used to refer to the accounting variable. A suffix of '\mbox
 	
 	Operating Profit ala Ball et al (2015) & op\mbox{*} & We use EBITDA\mbox{*} + \href{https://wrds-www.wharton.upenn.edu/data-dictionary/form_metadata/comp_na_daily_all_funda_incomestatementitems/XRD/}{XRD}. If XRD is unavailable, we set it to zero \\
 	
-	Operating Profit to Equity & ope\mbox{*} & We use EBITDA\mbox{*}-\href{https://wrds-www.wharton.upenn.edu/data-dictionary/form_metadata/comp_na_daily_all_funda_incomestatementitems/XINT/}{XINT}. Note that we target the same variable as the numerator of the profitability characteristic used to create the Robust-minus weak factor in the fama-French 5 factor model (Fama and French, 2015) \\
+	Operating Profit to Equity & ope\mbox{*} & We use EBITDA\mbox{*}-\href{https://wrds-www.wharton.upenn.edu/data-dictionary/form_metadata/comp_na_daily_all_funda_incomestatementitems/XINT/}{XINT}, where we set XINT to zero if missing. This approximates the numerator of the operating profitability used to create the Robust-minus-Weak factor in the Fama-French 5 factor model (Fama and French, 2015), REVT$-$COGS$-$XSGA$-$XINT, since Compustat's EBITDA equals SALE$-$COGS$-$XSGA \\
 	
 	Earnings before Tax and Extraordinary Items & pi\mbox{*} & We prefer to use \href{https://wrds-www.wharton.upenn.edu/data-dictionary/form_metadata/comp_na_daily_all_funda_incomestatementitems/PI/}{PI}. If this is unavailable we use EBIT\mbox{*}-\href{https://wrds-www.wharton.upenn.edu/data-dictionary/form_metadata/comp_na_daily_all_funda_incomestatementitems/XINT/}{XINT}+\href{https://wrds-www.wharton.upenn.edu/data-dictionary/form_metadata/comp_na_daily_all_funda_incomestatementitems/SPI/}{SPI}+\href{https://wrds-www.wharton.upenn.edu/data-dictionary/form_metadata/comp_na_daily_all_funda_incomestatementitems/NOPI/}{NOPI} where we set SPI and NOPI to zero if missing\\
 	
@@ -1567,7 +1567,7 @@ The abbreviation is used to refer to the accounting variable. A suffix of '\mbox
 	\href{https://wrds-www.wharton.upenn.edu/data-dictionary/form_metadata/comp_na_daily_all_funda_balancesheetitems/AT/}{AT}-
 	\href{https://wrds-www.wharton.upenn.edu/data-dictionary/form_metadata/comp_na_daily_all_funda_balancesheetitems/LT/}{LT} \\
 	
-	Book Equity & be\mbox{*} & We use SEQ\mbox{*}+TXDITC\mbox{*}-PSTK\mbox{*} where we set TXDITC\mbox{*} and PSTK\mbox{*} to zero if missing \\
+	Book Equity & be\mbox{*} & We use SEQ\mbox{*}+TXDITC\mbox{*}-PSTK\mbox{*}, where we set TXDITC\mbox{*} and PSTK\mbox{*} to zero if missing. For fiscal years ending in 1993 or later, we set TXDITC\mbox{*} to zero in all countries, following \href{https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/data_library.html}{Kenneth French's data library} (FASB 109) \\
 	
 	Book Enterprise Value & bev\mbox{*} & We prefer to use 
 	\href{https://wrds-www.wharton.upenn.edu/data-dictionary/form_metadata/comp_na_daily_all_funda_balancesheetitems/ICAPT/}{ICAPT}+\href{https://wrds-www.wharton.upenn.edu/data-dictionary/form_metadata/comp_na_daily_all_funda_balancesheetitems/DLC/}{DLC}-\href{https://wrds-www.wharton.upenn.edu/data-dictionary/form_metadata/comp_na_daily_all_funda_balancesheetitems/CHE/}{CHE} where DLC and CHE are set to zero if missing. If this is unavailable, we use SEQ\mbox{*}+NETDEBT\mbox{*}+
@@ -1982,7 +1982,7 @@ The abbreviation is used to refer to the accounting variable. A suffix of '\mbox
 	\multicolumn{3}{|c|}{\textbf{Return on Book Equity}} \\
 	\hline 	
 	
-	Operating Profit to Equity scaled by BE & ope\_be &$\frac{OPE\mbox{*}_t}{BE\mbox{*}_t}$\\
+	Operating Profit to Equity scaled by BE & ope\_be &$\frac{OPE\mbox{*}_t}{BE\mbox{*}_t}$. Following Fama and French (2015), we divide by book equity; \href{https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/Data_Library/variable_definitions.html}{Kenneth French's data library} now divides by book equity plus minority interest \\
 	
 	Net Income scaled by BE & ni\_be &$\frac{NI\mbox{*}_t}{BE\mbox{*}_t}$\\
 	
