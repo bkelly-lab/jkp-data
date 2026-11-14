@@ -10052,90 +10052,6 @@ def _collapse_to_latest_fy(lf: pl.LazyFrame, *, resort: bool = True) -> pl.LazyF
     return out.sort(["gvkey", "datadate"]) if resort else out
 
 
-def _ff_us_accounting(paths: DataPaths, ff5: bool, jkp_acc: pl.DataFrame) -> pl.LazyFrame:
-    """
-    Description:
-        US fiscal records for the FF sorts: French's comp_funda record universe, with
-        BE, OP and INV taken from JKP's annual accounting at the same record.
-    Steps:
-        1) comp_funda under the NA filter, one record per (gvkey, year), the latest
-           datadate.
-        2) Left-join jkp_acc (_jkp_annual_acc) on (gvkey, datadate): be = be_x, op,
-           inv = at_gr1.
-    Output:
-        Lazy [gvkey, datadate, year, be, (op, inv)]; BE in USD.
-    """
-    keep = ["op", "inv"] if ff5 else []
-    return (
-        pl.scan_parquet(paths.raw_tables_dir / "comp_funda.parquet")
-        .with_columns(pl.col("datadate").cast(pl.Date))
-        .filter(_compustat_na_filter())
-        .with_columns(year=pl.col("datadate").dt.year())
-        .pipe(_collapse_to_latest_fy)
-        .join(
-            jkp_acc.lazy().select("gvkey", "datadate", "op", be="be_x", inv="at_gr1"),
-            on=["gvkey", "datadate"],
-            how="left",
-        )
-        .select("gvkey", "datadate", "year", "be", *keep)
-    )
-
-
-def _ff_ccm_link(paths: DataPaths, comp: pl.LazyFrame) -> pl.DataFrame:
-    """Link Compustat gvkey→permno via CCM; dedup to one row per (permno, year).
-
-    Links: CCM_LINKTYPES (LC/LU/LS, as the accounting stage), primary P or C.
-    Dedup ladder: in-window > backdated (FF_CCM_BACKDATE_*), then P > C on
-    (datadate, permno), then last entry per (permno, year).
-
-    Output: Eager [gvkey, permno, year, datadate, be, (op, inv,) ...].
-    """
-    lnk = (
-        pl.scan_parquet(paths.raw_tables_dir / "crsp_ccmxpf_lnkhist.parquet")
-        .filter(pl.col("linktype").is_in(CCM_LINKTYPES) & pl.col("linkprim").is_in(["P", "C"]))
-        .select("gvkey", "lpermno", "linkprim", "linkdt", "linkenddt")
-        .with_columns(
-            pl.col("lpermno").cast(pl.Int64),
-            pl.col("linkdt", "linkenddt").cast(pl.Date),
-        )
-        .with_columns(first_linkdt=pl.col("linkdt").min().over("lpermno"))
-    )
-    # Backfill rescue (FF_CCM_BACKDATE_* in config): a June formation may use fiscal
-    # rows predating the link window when the link is the permno's first and starts
-    # after the formation, within MAX_YEARS of it. A first link that already ended
-    # before the formation is not a late-starting link and gets no rescue. In-window
-    # links win any collision.
-    in_window = (pl.col("linkdt") <= pl.col("jun_end")) & (
-        pl.col("linkenddt").is_null() | (pl.col("linkenddt") >= pl.col("jun_end"))
-    )
-    backdated = (
-        pl.col("jun_end").is_between(
-            pl.date(FF_CCM_BACKDATE_FROM, 6, 30), pl.date(FF_CCM_BACKDATE_THROUGH, 6, 30)
-        )
-        & (pl.col("linkdt") == pl.col("first_linkdt"))
-        & (pl.col("linkdt") > pl.col("jun_end"))
-        & (pl.col("linkdt") <= pl.col("jun_end").dt.offset_by(f"{FF_CCM_BACKDATE_MAX_YEARS}y"))
-    )
-    return (
-        comp.with_columns(jun_end=pl.date(pl.col("datadate").dt.year() + 1, 6, 30))
-        .join(lnk, on="gvkey", how="inner")
-        .with_columns(in_window=in_window)
-        .filter(pl.col("in_window") | backdated)
-        .rename({"lpermno": "permno"})
-        # gvkey last: duplicate same-prim links on (datadate, permno) exist;
-        # without a total order the kept row is engine-order-dependent.
-        .sort(
-            ["datadate", "permno", "in_window", "linkprim", "gvkey"],
-            descending=[False, False, True, True, False],
-        )
-        .unique(subset=["datadate", "permno"], keep="first")
-        .sort(["permno", "year", "datadate"])
-        .unique(subset=["permno", "year"], keep="last")
-        .drop("in_window", "first_linkdt")
-        .collect()
-    )
-
-
 def _ff_merge_dff_be(
     comp_ccm: pl.DataFrame,
     ff5: bool,
@@ -10153,7 +10069,7 @@ def _ff_merge_dff_be(
     if not use_dff:
         return comp_ccm
 
-    # DFF hand-collected BE union (see ff_load_compustat_us docstring step 6)
+    # DFF hand-collected BE union (see ff_link_compustat_us)
     keep = ["op", "inv"] if ff5 else []
     select_cols = ["gvkey", "permno", "year", "datadate", "be", *keep]
     dff = (
@@ -10204,28 +10120,76 @@ def _ff_merge_dff_be(
     return pl.concat([comp_pool, dff_only], how="vertical_relaxed")
 
 
-def ff_load_compustat_us(
+def ff_link_compustat_us(
     paths: DataPaths,
-    acc_us: pl.DataFrame,
-    ff5: bool,
+    comp: pl.DataFrame,
     *,
     use_dff: bool = False,
     dff_path: Path | None = None,
 ) -> pl.DataFrame:
-    """US Compustat fiscal records with JKP's values, linked gvkey→permno via CCM. FF3: BE
-    only; FF5 adds OP/INV.
-
-    acc_us: the gvkey-keyed accounting (_ff_us_accounting, built with the same ff5),
-    passed in so the caller builds it once.
-    use_dff: unions DFF hand-collected Moody's BE (permno-keyed) to extend coverage to
-    June 1926. DFF be(t) pairs with Dec(t−1) ME (year = t − 1 in the output); BE in
-    $M, identical to Compustat and to the panel's me. Modern Compustat backfill
-    creates collisions resolved by be = coalesce(dff.be, comp.be).
-
-    Output: Eager [gvkey, permno, year, datadate, be, (op, inv,) ...].
     """
-    comp_ccm = _ff_ccm_link(paths, acc_us.lazy())
-    return _ff_merge_dff_be(comp_ccm, ff5, use_dff, dff_path)
+    Description:
+        Fiscal records for US CRSP securities, linked permno -> gvkey through the
+        gvkey JKP attaches to each CRSP security in world_msf, plus the DFF BE splice.
+    Steps:
+        1) Fiscal year y-1 links through the gvkey on the security's June y row.
+        2) Early links, June formations FF_CCM_BACKDATE_FROM..THROUGH: when the
+           June row has no gvkey, the permno's first gvkey, if it starts after the
+           formation and within FF_CCM_BACKDATE_MAX_YEARS of it. Compustat backfilled
+           statements of the early 1960s for firms whose link starts years later.
+        3) Inner-join comp on (gvkey, year); the June row is unique per permno and
+           year, so the result is too.
+        4) Optionally union DFF BE (_ff_merge_dff_be) to extend coverage to 1926.
+    Output:
+        Eager [gvkey, permno, year, datadate, be, op, inv].
+    """
+    msf = pl.scan_parquet(paths.interim_dir / "world_msf.parquet").filter(
+        (pl.col("source_crsp") == 1) & (pl.col("excntry") == US_EXCNTRY)
+    )
+    june = msf.filter(pl.col("eom").dt.month() == 6).select(
+        permno=pl.col("id").cast(pl.Int64),
+        eom="eom",
+        gvkey=pl.col("gvkey").cast(pl.Utf8),
+        year=(pl.col("eom").dt.year() - 1).cast(pl.Int32),
+    )
+    first = (
+        msf.filter(pl.col("gvkey").is_not_null())
+        .sort("id", "eom")
+        .group_by("id")
+        .agg(first_eom=pl.col("eom").first(), first_gvkey=pl.col("gvkey").first())
+        .select(
+            permno=pl.col("id").cast(pl.Int64),
+            first_eom="first_eom",
+            first_gvkey=pl.col("first_gvkey").cast(pl.Utf8),
+        )
+    )
+    early = (
+        june.filter(
+            pl.col("gvkey").is_null()
+            & pl.col("eom").dt.year().is_between(FF_CCM_BACKDATE_FROM, FF_CCM_BACKDATE_THROUGH)
+        )
+        .join(first, on="permno", how="inner")
+        .filter(
+            (pl.col("first_eom") > pl.col("eom"))
+            & (pl.col("first_eom") <= pl.col("eom").dt.offset_by(f"{FF_CCM_BACKDATE_MAX_YEARS}y"))
+        )
+        .select("permno", "year", gvkey="first_gvkey")
+    )
+    link = pl.concat(
+        [june.filter(pl.col("gvkey").is_not_null()).select("permno", "year", "gvkey"), early],
+        how="vertical_relaxed",
+    )
+    linked = (
+        link.join(
+            comp.lazy().with_columns(pl.col("gvkey").cast(pl.Utf8), pl.col("year").cast(pl.Int32)),
+            on=["gvkey", "year"],
+            how="inner",
+        )
+        .select("gvkey", "permno", "year", "datadate", "be", "op", "inv")
+        .sort("permno", "year")
+        .collect()
+    )
+    return _ff_merge_dff_be(linked, True, use_dff, dff_path)
 
 
 def _ff_us_firm_map(paths: DataPaths) -> pl.DataFrame:
@@ -10586,9 +10550,10 @@ def _jkp_annual_acc(paths: DataPaths) -> pl.DataFrame:
 def ff_load_world_compustat(paths: DataPaths, jkp_acc: pl.DataFrame) -> pl.DataFrame:
     """
     Description:
-        Worldwide Compustat BE/OP/INV for the ROW FF path: unions comp.funda (NA)
-        and comp.g_funda (Global) to establish the fiscal-record universe, then takes
-        the characteristics themselves from jkp's standardized panel.
+        Worldwide Compustat BE/OP/INV for the FF characteristics in every country:
+        unions comp.funda (NA) and comp.g_funda (Global) to establish the
+        fiscal-record universe, then takes the characteristics themselves from
+        JKP's standardized panel.
     Steps:
         1) Load NA (INDL/STD/D/C) and Global (INDL-or-FS/HIST_STD/I/C,
            INDL-over-FS dedup) for the (gvkey, datadate, year) fiscal universe.
@@ -10598,8 +10563,8 @@ def ff_load_world_compustat(paths: DataPaths, jkp_acc: pl.DataFrame) -> pl.DataF
         Eager [gvkey, datadate, year, be, op, inv] (BE in USD, OP/INV unitless).
 
     BE, OP and INV are JKP's (_jkp_annual_acc): be = be_x, op, inv = at_gr1, all USD or
-    unitless at the fiscal-year-end datadate. This loader feeds only countries other than
-    the US.
+    unitless at the fiscal-year-end datadate. US CRSP securities reach these records
+    through ff_link_compustat_us; every other security through its own gvkey.
     """
     na = _ff_load_funda_na(paths).select("gvkey", "datadate", "year", _src=pl.lit(0))
     gl = _ff_load_funda_global(paths).select("gvkey", "datadate", "year", _src=pl.lit(1))
@@ -10640,27 +10605,22 @@ def _compustat_id_gvkey(paths: DataPaths) -> pl.LazyFrame:
         link to accounting by permno instead.
     Steps:
         1) Keep world_msf rows with source_crsp == 0 and a gvkey.
-        2) Distinct (id, gvkey, us), sorted.
+        2) Distinct (id, gvkey), sorted.
     Output:
-        Lazy [id, gvkey, us], where us marks a US security.
+        Lazy [id, gvkey].
     """
     return (
         pl.scan_parquet(paths.interim_dir / "world_msf.parquet")
         .filter((pl.col("source_crsp") == 0) & pl.col("gvkey").is_not_null())
-        .select(
-            pl.col("id").cast(pl.Int64),
-            pl.col("gvkey").cast(pl.Utf8),
-            us=pl.col("excntry") == US_EXCNTRY,
-        )
+        .select(pl.col("id").cast(pl.Int64), pl.col("gvkey").cast(pl.Utf8))
         .unique()
-        .sort("id", "gvkey", "us")
+        .sort("id", "gvkey")
     )
 
 
 def ff_annual_characteristics(
     paths: DataPaths,
-    acc_us: pl.DataFrame,
-    ccm2a: pl.DataFrame,
+    crsp_acc: pl.DataFrame,
     comp_world: pl.DataFrame,
     crsp_m: pl.LazyFrame,
     firm_map: pl.DataFrame,
@@ -10675,13 +10635,12 @@ def ff_annual_characteristics(
         keyed by their FF firm (_ff_us_firm_map), so every share class of a
         company carries the company's values.
     Steps:
-        1) Fiscal year y-1 accounting. CRSP securities: ccm2a by permno (CCM link,
-           DFF BE), mapped to the firm. A firm-year with several records keeps
+        1) Fiscal year y-1 accounting. CRSP securities: crsp_acc by permno
+           (ff_link_compustat_us, DFF BE), mapped to the firm. A firm-year with several records keeps
            the Compustat record (the latest fiscal year-end if there are
            several), whose BE already includes its own permno's DFF BE
            (_ff_merge_dff_be); a DFF record on another class fills BE only when
-           the Compustat BE is missing. Compustat securities: by gvkey, acc_us in
-           the US and comp_world elsewhere.
+           the Compustat BE is missing. Compustat securities: comp_world by gvkey.
         2) December y-1 ME, kept when > 0. US CRSP: the firm's ME (_ff_firm_me);
            US Compustat: me_company; elsewhere: the security's me. No December
            row, no December ME. dec_universe flags a December row in the FF
@@ -10695,7 +10654,7 @@ def ff_annual_characteristics(
     acc_cols = ["be", "op", "inv"]
     firm = firm_map.lazy().select("permno", "id", "split")
     crsp = (
-        ccm2a.lazy()
+        crsp_acc.lazy()
         .select(pl.col("permno").cast(pl.Int64), "gvkey", "year", "datadate", *acc_cols)
         .join(firm, on="permno", how="left")
         .with_columns(id=pl.coalesce("id", "permno"))
@@ -10718,21 +10677,13 @@ def ff_annual_characteristics(
         .unique(["id", "year"], keep="first", maintain_order=True)
         .select("id", "year", be_dff="be")
     )
-    by_gvkey = pl.concat(
-        [
-            acc_us.lazy().select("gvkey", "year", *acc_cols, us=pl.lit(True)),
-            comp_world.lazy().select("gvkey", "year", *acc_cols, us=pl.lit(False)),
-        ],
-        how="vertical_relaxed",
-    ).with_columns(pl.col("gvkey").cast(pl.Utf8))
+    by_gvkey = comp_world.lazy().select(pl.col("gvkey").cast(pl.Utf8), "year", *acc_cols)
     accounting = pl.concat(
         [
             crsp_comp.join(crsp_dff, on=["id", "year"], how="full", coalesce=True).select(
                 "id", "year", pl.coalesce("be", "be_dff").alias("be"), "op", "inv"
             ),
-            _compustat_id_gvkey(paths)
-            .join(by_gvkey, on=["gvkey", "us"])
-            .select("id", "year", *acc_cols),
+            _compustat_id_gvkey(paths).join(by_gvkey, on="gvkey").select("id", "year", *acc_cols),
         ],
         how="vertical_relaxed",
     ).select("id", *acc_cols, port_year=pl.col("year") + 1)
@@ -11513,6 +11464,11 @@ def gen_ff_data(
           French (1993) required two, against the backfill bias of firms Compustat
           adds with past years of data; their later descriptions of the factors
           and French's data library state no such rule.
+        - Fiscal records, every country: Compustat's NA and Global annual records
+          with JKP's values (ff_load_world_compustat). A US CRSP security reaches
+          its record through the gvkey JKP attaches to it in world_msf, on its
+          June row, with an early-link rule for the June 1963-66 formations
+          (ff_link_compustat_us); before Compustat, the DFF BE.
         - BE, every country: JKP's be_x at the fiscal year t-1 record, in USD and
           null when not positive. Like French's, it has no deferred taxes for
           fiscal years ending in 1993 or later.
@@ -11534,10 +11490,9 @@ def gen_ff_data(
           where French requires it listed throughout (ff_build_mom_signal);
           daily UMD uses French's daily signal.
     Steps:
-        1) Map US permnos to FF firms. Read JKP's annual accounting once; take
-           the US fiscal records from comp_funda with JKP's values; link them to permnos
-           (ccm2a); load Compustat for other countries; build the annual
-           characteristics table.
+        1) Map US permnos to FF firms. Read JKP's annual accounting once; load the
+           fiscal records with JKP's values; link them to US CRSP permnos and add the
+           DFF BE (crsp_acc); build the annual characteristics table.
         2) Write the characteristics: every world_msf security-month (a US CRSP
            security through its firm) joined to the annual table on its July-June
            year.
@@ -11552,14 +11507,12 @@ def gen_ff_data(
         - <daily_factors_path> [excntry, date, smb_ff3, smb_ff5, hml_ff, rmw_ff, cma_ff, umd_ff]
         - <chars_path> [eom, id, beme_ff, op_ff, inv_ff], sorted by (eom, excntry, id)
     """
-    jkp_acc = _jkp_annual_acc(paths)
-    acc_us = _ff_us_accounting(paths, ff5=True, jkp_acc=jkp_acc).collect()
-    ccm2a = ff_load_compustat_us(paths, acc_us, ff5=True, use_dff=FF_USE_DFF_BE)
-    comp_world = ff_load_world_compustat(paths, jkp_acc)
+    comp_world = ff_load_world_compustat(paths, _jkp_annual_acc(paths))
+    crsp_acc = ff_link_compustat_us(paths, comp_world, use_dff=FF_USE_DFF_BE)
     firm_map = _ff_us_firm_map(paths)
     # Collected once: the annual table and the monthly panel both read it.
     crsp_m = ff_load_crsp_panel(paths, "monthly", firm_map).collect().lazy()
-    annual = ff_annual_characteristics(paths, acc_us, ccm2a, comp_world, crsp_m, firm_map)
+    annual = ff_annual_characteristics(paths, crsp_acc, comp_world, crsp_m, firm_map)
     (
         pl.scan_parquet(paths.interim_dir / "world_msf.parquet")
         .select("excntry", pl.col("id").cast(pl.Int64), date=pl.col("eom"))

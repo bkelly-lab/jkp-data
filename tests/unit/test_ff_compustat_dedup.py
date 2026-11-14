@@ -8,7 +8,7 @@ are JKP's values at the kept record.
 
 Covers:
   - _ff_load_funda_global     (ROW per-source collapse)
-  - ff_load_compustat_us      (US collapse + JKP be/op/inv at the kept record)
+  - ff_link_compustat_us      (US CRSP permno -> gvkey through world_msf, early links)
   - _jkp_annual_acc           (FF OP definition, at_gr1 from achars_world)
 """
 
@@ -20,9 +20,8 @@ import polars as pl
 
 from jkp.data.aux_functions import (
     _ff_load_funda_global,
-    _ff_us_accounting,
     _jkp_annual_acc,
-    ff_load_compustat_us,
+    ff_link_compustat_us,
     ff_load_world_compustat,
 )
 
@@ -82,35 +81,6 @@ def _write_funda(path, rows):
     ).write_parquet(path)
 
 
-def _acc_us(test_paths, at_gr1=None, op=None):
-    """_ff_us_accounting(ff5=True) on the written comp_funda, with JKP's annual accounting
-    mocked per written record: be_x = seq (the rows carry no deferred taxes or preferred
-    stock), null when not positive; op and at_gr1 from {(gvkey, datadate): value} maps,
-    none by default."""
-    at_gr1, op = at_gr1 or {}, op or {}
-    funda = pl.read_parquet(
-        test_paths.raw_tables_dir / "comp_funda.parquet", columns=["gvkey", "datadate", "seq"]
-    )
-    keys = list(zip(funda["gvkey"], funda["datadate"], strict=True))
-    jkp_acc = pl.DataFrame(
-        {
-            "gvkey": funda["gvkey"],
-            "datadate": funda["datadate"],
-            "be_x": [v if v is not None and v > 0 else None for v in funda["seq"]],
-            "op": [op.get(k) for k in keys],
-            "at_gr1": [at_gr1.get(k) for k in keys],
-        },
-        schema={
-            "gvkey": pl.String,
-            "datadate": pl.Date,
-            "be_x": pl.Float64,
-            "op": pl.Float64,
-            "at_gr1": pl.Float64,
-        },
-    )
-    return _ff_us_accounting(test_paths, True, jkp_acc).collect()
-
-
 # Fiscal-year-change firm: two datadate in 2019 (06-30 stub + 12-31), plus a
 # clean prior year. at grows 100 -> 120 across the *annual* boundary.
 def _fiscal_change_rows(gvkey, *, indl):
@@ -156,164 +126,150 @@ def test_ff_load_funda_global_indfmt_rule(test_paths):
 
 
 # =============================================================================
-# US path
+# US path: ff_link_compustat_us links a CRSP permno to its fiscal records
+# through the gvkey on the security's June row in world_msf.
 # =============================================================================
 
 
-def _write_lnkhist(path, gvkey, permno):
-    pl.DataFrame(
-        {
-            "gvkey": [gvkey],
-            "lpermno": [permno],
-            "linkprim": ["P"],
-            "linktype": ["LC"],
-            "linkdt": [date(1990, 1, 1)],
-            "linkenddt": [None],
-        }
-    ).with_columns(
-        pl.col("linkdt").cast(pl.Date),
-        pl.col("linkenddt").cast(pl.Date),
-    ).write_parquet(path)
-
-
-def test_ff_load_compustat_us_collapses_and_takes_jkp_values(test_paths):
-    _write_funda(
-        test_paths.raw_tables_dir / "comp_funda.parquet", _fiscal_change_rows("001", indl=True)
+def _comp(rows):
+    """rows: (gvkey, fiscal year, be, op, inv) with a December 31 fiscal year-end."""
+    return pl.DataFrame(
+        [(g, date(y, 12, 31), y, be, op, inv) for g, y, be, op, inv in rows],
+        schema={
+            "gvkey": pl.String,
+            "datadate": pl.Date,
+            "year": pl.Int32,
+            "be": pl.Float64,
+            "op": pl.Float64,
+            "inv": pl.Float64,
+        },
+        orient="row",
     )
-    _write_lnkhist(test_paths.raw_tables_dir / "crsp_ccmxpf_lnkhist.parquet", "001", 10001)
-    stub, kept = ("001", date(2019, 6, 30)), ("001", date(2019, 12, 31))
-    acc = _acc_us(test_paths, at_gr1={stub: 0.10, kept: 0.20}, op={stub: 0.3, kept: 0.4})
-
-    out = ff_load_compustat_us(test_paths, acc, ff5=True)
-
-    # Unique per (permno, year) — no fiscal-change fan-out.
-    keyed = out.select("permno", "year")
-    assert keyed.height == keyed.unique().height
-
-    # BE, OP and INV are JKP's at the kept (latest) 2019 record; null where JKP has none.
-    assert out.sort("year").select("year", "be", "op", "inv").rows() == [
-        (2018, 50.0, None, None),
-        (2019, 60.0, 0.4, 0.20),
-    ]
 
 
-def test_ff_load_compustat_us_drops_record_without_jkp_be(test_paths):
-    # JKP's be_x is null (here: seq missing), so the record leaves the US sorts.
+def _write_us_msf(test_paths, rows):
+    """rows: (permno, eom, gvkey) for US CRSP securities in world_msf."""
+    pl.DataFrame(
+        rows, schema={"id": pl.Int64, "eom": pl.Date, "gvkey": pl.String}, orient="row"
+    ).with_columns(excntry=pl.lit("USA"), source_crsp=pl.lit(1)).write_parquet(
+        test_paths.interim_dir / "world_msf.parquet"
+    )
+
+
+def test_ff_link_compustat_us_through_june_gvkey(test_paths):
+    # The June 2020 row links fiscal 2019, the June 2021 row fiscal 2020; fiscal
+    # 2018 has no June 2019 row and stays unlinked.
+    _write_us_msf(
+        test_paths,
+        [(10001, date(2020, 6, 30), "001"), (10001, date(2021, 6, 30), "001")],
+    )
+    comp = _comp([("001", y, 50.0 + y - 2018, 0.1, 0.2) for y in (2018, 2019, 2020)])
+    out = ff_link_compustat_us(test_paths, comp)
+    assert out.select("permno", "year", "be").rows() == [(10001, 2019, 51.0), (10001, 2020, 52.0)]
+
+
+def test_ff_link_compustat_us_june_row_without_gvkey(test_paths):
+    # Outside the early-link years, a June row without a gvkey links nothing.
+    _write_us_msf(
+        test_paths,
+        [(10001, date(2020, 6, 30), None), (10001, date(2020, 7, 31), "001")],
+    )
+    assert ff_link_compustat_us(test_paths, _comp([("001", 2019, 50.0, None, None)])).height == 0
+
+
+def test_ff_link_compustat_us_record_without_jkp_values_dropped(test_paths):
+    # JKP has no be_x, ope_x or at_gr1 for the record (here: seq missing), so it
+    # leaves the fiscal records and the US sorts.
     _write_funda(
         test_paths.raw_tables_dir / "comp_funda.parquet",
         [_funda_row("001", date(2019, 12, 31), 100.0, indl=True, seq=None)],
     )
-    _write_lnkhist(test_paths.raw_tables_dir / "crsp_ccmxpf_lnkhist.parquet", "001", 10001)
-    assert ff_load_compustat_us(test_paths, _acc_us(test_paths), ff5=True).height == 0
+    _write_funda(
+        test_paths.raw_tables_dir / "comp_g_funda.parquet",
+        [_funda_row("900", date(2019, 12, 31), 100.0, indl=False)],
+    )
+    _write_acc_std_ann(
+        test_paths.interim_dir / "acc_std_ann.parquet", [("001", None, None, None, None, None)]
+    )
+    _write_achars_world(test_paths.interim_dir / "achars_world.parquet", [])
+    _write_us_msf(test_paths, [(10001, date(2020, 6, 30), "001")])
+    comp = ff_load_world_compustat(test_paths, _jkp_annual_acc(test_paths))
+    assert ff_link_compustat_us(test_paths, comp).height == 0
 
 
-# =============================================================================
-# CCM backfill rescue (FF_CCM_BACKDATE_*): June 1963-66 formations may use
-# fiscal rows that predate the permno's first link window (Compustat added
-# ~200 small firms/yr around 1964-66 and backfilled fy1962-64; CCM stamps
-# linkdt at coverage start, so the standard window filter rejects exactly
-# the rows French's portfolios include).
-# =============================================================================
+class TestEarlyLinks:
+    """June 1963-66 formations (FF_CCM_BACKDATE_*): Compustat backfilled fy1962-64
+    statements for firms whose gvkey link starts years later."""
 
-
-def _write_lnkhist_rows(path, rows):
-    """rows: list of (gvkey, permno, linkdt[, linkenddt]) — P/LC links, open-ended
-    unless a linkenddt is given."""
-    pl.DataFrame(
-        {
-            "gvkey": [r[0] for r in rows],
-            "lpermno": [r[1] for r in rows],
-            "linkprim": ["P"] * len(rows),
-            "linktype": ["LC"] * len(rows),
-            "linkdt": [r[2] for r in rows],
-            "linkenddt": [r[3] if len(r) > 3 else None for r in rows],
-        }
-    ).with_columns(
-        pl.col("linkdt").cast(pl.Date),
-        pl.col("linkenddt").cast(pl.Date),
-    ).write_parquet(path)
-
-
-class TestCcmBackdateRescue:
     @staticmethod
-    def _run(test_paths, funda_rows, lnk_rows):
-        _write_funda(test_paths.raw_tables_dir / "comp_funda.parquet", funda_rows)
-        _write_lnkhist_rows(test_paths.raw_tables_dir / "crsp_ccmxpf_lnkhist.parquet", lnk_rows)
-        return ff_load_compustat_us(test_paths, _acc_us(test_paths), ff5=True)
+    def _run(test_paths, fiscal_year, gvkey, msf_rows):
+        _write_us_msf(test_paths, msf_rows)
+        return ff_link_compustat_us(test_paths, _comp([(gvkey, fiscal_year, 50.0, None, None)]))
 
-    def test_backfilled_year_rescued(self, test_paths):
-        # fy1962 -> jun_end 1963-06-30, inside [1963, 1966]; link starts
-        # 1965-01-01 (permno's first, within 5y of the formation).
+    def test_backfilled_year_linked(self, test_paths):
+        # fy1962 feeds June 1963; the permno's first gvkey starts January 1965.
         out = self._run(
             test_paths,
-            [_funda_row("001", date(1962, 12, 31), 100.0, indl=True)],
-            [("001", 10001, date(1965, 1, 1))],
+            1962,
+            "001",
+            [(10001, date(1963, 6, 30), None), (10001, date(1965, 1, 31), "001")],
         )
-        assert out.filter((pl.col("permno") == 10001) & (pl.col("year") == 1962)).height == 1
+        assert out.select("permno", "year", "gvkey").rows() == [(10001, 1962, "001")]
 
-    def test_no_rescue_after_gate(self, test_paths):
-        # fy1970 -> jun_end 1971-06-30 > THROUGH: standard window only.
+    def test_no_early_link_after_gate(self, test_paths):
+        # fy1970 feeds June 1971, after FF_CCM_BACKDATE_THROUGH.
         out = self._run(
             test_paths,
-            [_funda_row("001", date(1970, 12, 31), 100.0, indl=True)],
-            [("001", 10001, date(1973, 1, 1))],
+            1970,
+            "001",
+            [(10001, date(1971, 6, 30), None), (10001, date(1973, 1, 31), "001")],
         )
         assert out.height == 0
 
-    def test_no_rescue_before_gate(self, test_paths):
-        # fy1960 -> jun_end 1961-06-30 < FROM.
+    def test_no_early_link_before_gate(self, test_paths):
+        # fy1960 feeds June 1961, before FF_CCM_BACKDATE_FROM.
         out = self._run(
             test_paths,
-            [_funda_row("001", date(1960, 12, 31), 100.0, indl=True)],
-            [("001", 10001, date(1963, 1, 1))],
+            1960,
+            "001",
+            [(10001, date(1961, 6, 30), None), (10001, date(1963, 1, 31), "001")],
         )
         assert out.height == 0
 
     def test_distance_cap(self, test_paths):
-        # Link 1990 claiming fy1962: > MAX_YEARS after the formation.
+        # A first gvkey in 1990 is more than FF_CCM_BACKDATE_MAX_YEARS after June 1963.
         out = self._run(
             test_paths,
-            [_funda_row("001", date(1962, 12, 31), 100.0, indl=True)],
-            [("001", 10001, date(1990, 1, 1))],
+            1962,
+            "001",
+            [(10001, date(1963, 6, 30), None), (10001, date(1990, 1, 31), "001")],
         )
         assert out.height == 0
 
-    def test_first_link_guard(self, test_paths):
-        # permno's first link belongs to another gvkey (1955): the 1965 link
-        # is not first -> no rescue (recycled-permno protection).
+    def test_first_gvkey_before_formation_not_used(self, test_paths):
+        # The permno's first gvkey (001, 1955-60) predates the formation: an ended
+        # link, not a late one, so gvkey 002's record from 1965 on is not linked.
         out = self._run(
             test_paths,
-            [_funda_row("002", date(1962, 12, 31), 100.0, indl=True)],
-            [("001", 10001, date(1955, 1, 1)), ("002", 10001, date(1965, 1, 1))],
-        )
-        assert out.height == 0
-
-    def test_ended_first_link_not_rescued(self, test_paths):
-        # The permno's first link runs 1960-01-01 to 1963-03-31, so it ended
-        # before the June 1963 formation: it is not a late-starting link.
-        out = self._run(
-            test_paths,
-            [_funda_row("001", date(1962, 12, 31), 100.0, indl=True)],
-            [("001", 10001, date(1960, 1, 1), date(1963, 3, 31))],
-        )
-        assert out.height == 0
-
-    def test_in_window_beats_backdated(self, test_paths):
-        # Two gvkeys with fy1962 rows for one permno: gvkey 001 in-window
-        # (first link, 1955), gvkey 002 backdated. Dedup keeps the in-window
-        # match. (002 also fails the first-link guard; the sort-priority is
-        # belt-and-braces.)
-        out = self._run(
-            test_paths,
+            1962,
+            "002",
             [
-                _funda_row("001", date(1962, 12, 31), 100.0, indl=True),
-                _funda_row("002", date(1962, 12, 31), 200.0, indl=True),
+                (10001, date(1955, 1, 31), "001"),
+                (10001, date(1963, 6, 30), None),
+                (10001, date(1965, 1, 31), "002"),
             ],
-            [("001", 10001, date(1955, 1, 1)), ("002", 10001, date(1965, 1, 1))],
         )
-        rows = out.filter((pl.col("permno") == 10001) & (pl.col("year") == 1962))
-        assert rows.height == 1
-        assert rows["gvkey"][0] == "001"
+        assert out.height == 0
+
+    def test_june_gvkey_wins(self, test_paths):
+        # The June row has a gvkey: it links, and no early link is looked for.
+        _write_us_msf(
+            test_paths,
+            [(10001, date(1963, 6, 30), "001"), (10001, date(1965, 1, 31), "002")],
+        )
+        comp = _comp([("001", 1962, 50.0, None, None), ("002", 1962, 70.0, None, None)])
+        out = ff_link_compustat_us(test_paths, comp)
+        assert out.select("permno", "year", "gvkey").rows() == [(10001, 1962, "001")]
 
 
 # =============================================================================

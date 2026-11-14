@@ -736,13 +736,17 @@ class TestFFAnnualCharacteristics:
     @staticmethod
     def _run(test_paths) -> dict[int, dict]:
         _write_annual_world_msf(test_paths)
-        acc_us = _acc(["g20", "g21"], be=30.0, op=0.2, inv=None)
-        comp_world = _acc(["g10", "g11", "g12", "g13"], be=25.0, op=0.1, inv=0.05)
-        ccm2a = _acc(["g30"], be=40.0, op=0.3, inv=0.02).with_columns(permno=pl.lit(30))
+        comp_world = pl.concat(
+            [
+                _acc(["g20", "g21"], be=30.0, op=0.2, inv=None),
+                _acc(["g10", "g11", "g12", "g13"], be=25.0, op=0.1, inv=0.05),
+            ]
+        )
+        crsp_acc = _acc(["g30"], be=40.0, op=0.3, inv=0.02).with_columns(permno=pl.lit(30))
         # FF's CRSP sample in December 2019: firm 30 only (31 is outside it).
         crsp_m = pl.LazyFrame({"id": [30], "date": [date(2019, 12, 31)]})
         firm_map = _firm_map([(30, 30, False, False), (31, 31, False, False)])
-        out = ff_annual_characteristics(test_paths, acc_us, ccm2a, comp_world, crsp_m, firm_map)
+        out = ff_annual_characteristics(test_paths, crsp_acc, comp_world, crsp_m, firm_map)
         assert out.select("id", "port_year").is_duplicated().sum() == 0
         assert out["port_year"].unique().to_list() == [2020]
         return {r["id"]: r for r in out.iter_rows(named=True)}
@@ -778,7 +782,7 @@ class TestFFAnnualCharacteristics:
         assert [out[i]["dec_universe"] for i in (20, 30, 31)] == [False, True, False]
         assert out[31]["dec_me"] == 70.0
 
-    def test_us_compustat_only_uses_me_company_and_acc_us(self, test_paths):
+    def test_us_compustat_only_uses_me_company_and_own_gvkey(self, test_paths):
         r = self._run(test_paths)[20]
         assert r["dec_me"] == 60.0
         assert r["beme"] == pytest.approx(30.0 / 60.0)
@@ -789,7 +793,7 @@ class TestFFAnnualCharacteristics:
         assert r["dec_me"] is None and r["beme"] is None
         assert r["be"] == 30.0
 
-    def test_us_crsp_uses_ccm2a_not_world_msf_gvkey(self, test_paths):
+    def test_us_crsp_uses_linked_accounting_by_permno(self, test_paths):
         r = self._run(test_paths)[30]
         assert (r["be"], r["dec_me"]) == (40.0, 60.0)
         assert r["beme"] == pytest.approx(40.0 / 60.0)
@@ -824,7 +828,7 @@ class TestFFAnnualCharacteristicsFirms:
                 (71, US_EXCNTRY, None, dec, 6.0, 16.0, 1, 1),
             ],
         )
-        ccm2a = pl.concat(
+        crsp_acc = pl.concat(
             [
                 _acc(["g40"], be=50.0, op=0.2, inv=0.1).with_columns(permno=pl.lit(41)),
                 # DFF record (no gvkey) on the other class
@@ -857,7 +861,7 @@ class TestFFAnnualCharacteristicsFirms:
                 (71, 70, False, False),
             ]
         )
-        out = ff_annual_characteristics(test_paths, no_acc, ccm2a, no_acc, crsp_m, firm_map)
+        out = ff_annual_characteristics(test_paths, crsp_acc, no_acc, crsp_m, firm_map)
         assert out.select("id", "port_year").is_duplicated().sum() == 0
         return {r["id"]: r for r in out.iter_rows(named=True)}
 

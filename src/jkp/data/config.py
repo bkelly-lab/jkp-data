@@ -294,22 +294,21 @@ FF_DFF_MERGE_YEAR = 1954
 # balance-sheet fields absent from the current vintage), and where both are
 # non-null the sources agree (median |log ratio| ~ 0).
 
-# CCM link types accepted by the factor builders, the same set the accounting
-# stage uses (LC, LU, LS); LN/LX/LD links and non-L types are dropped.
+# CCM link types the FF firm map (_ff_us_firm_map) uses to split permcos, the
+# same set the accounting stage uses (LC, LU, LS); LN/LX/LD links and non-L
+# types are dropped.
 CCM_LINKTYPES = ["LC", "LU", "LS"]
 
-# CCM link-window backdating rescue for the early-1960s Compustat expansion.
+# Early-link rule for the early-1960s Compustat expansion (ff_link_compustat_us).
 # Compustat added ~200 (mostly small) NYSE/AMEX firms per year around 1964-66
-# and backfilled their fy1962-64 statements; CCM stamps linkdt at coverage
-# start, so those fiscal years sit BEFORE the link window and the standard
-# linkdt <= June(t) filter rejects them. French uses them (his ME x OP
-# portfolio counts exceed ours by ~200/yr in 1963-65 and match from 1966;
-# diagnosed 2026-06: 208/206/192 of the misses are window-only failures with
-# a valid L*/P-C link and a fy(t-1) funda row, median linkdt 2.6y after the
-# formation). Rescue: for June formations in [FROM, THROUGH], accept a link
-# whose linkdt is after the formation when it is the permno's first link and
-# starts within FF_CCM_BACKDATE_MAX_YEARS of the formation (kills recycled-
-# permno misattribution, e.g. a 2001 link claiming a 1963 row).
+# and backfilled their fy1962-64 statements, but the CCM link, and so the gvkey
+# JKP attaches to a CRSP security in world_msf, starts at coverage start, after
+# those fiscal years. French uses them (his ME x OP portfolio counts exceed ours
+# by ~200/yr in 1963-65 without the rule and match from 1966). Rule: for June
+# formations in [FROM, THROUGH], a security whose June row has no gvkey takes the
+# permno's first gvkey when it starts after the formation and within
+# FF_CCM_BACKDATE_MAX_YEARS of it (the cap stops a recycled permno from claiming
+# an old record).
 FF_CCM_BACKDATE_FROM = 1963
 FF_CCM_BACKDATE_THROUGH = 1966
 FF_CCM_BACKDATE_MAX_YEARS = 5
