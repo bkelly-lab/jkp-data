@@ -24,7 +24,6 @@ from jkp.data.paths import DataPaths
 from tests.golden._golden_helpers import (
     cwd,
     regen_or_compare,
-    stage_ff_mom_input,
     stage_synthetic_slices,
 )
 
@@ -42,7 +41,6 @@ def test_gen_ff_data_golden(
     test_paths: DataPaths, synthetic_wrds_dir: Path, request: pytest.FixtureRequest
 ) -> None:
     stage_synthetic_slices(test_paths, synthetic_wrds_dir)
-    stage_ff_mom_input(test_paths)
     with cwd(test_paths.interim_dir):
         gen_ff_data(
             test_paths,

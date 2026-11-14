@@ -20,7 +20,6 @@ from jkp.data.aux_functions import gen_ff_data
 from jkp.data.paths import DataPaths
 from tests.golden._golden_helpers import (
     cwd,
-    stage_ff_mom_input,
     stage_synthetic_slices,
 )
 from tests.golden.generate_synthetic_wrds import write_synthetic_wrds
@@ -42,7 +41,6 @@ def regenerate(out_dir: Path) -> None:
         slices_dir = Path(tmp) / "synthetic_wrds"
         write_synthetic_wrds(slices_dir)
         stage_synthetic_slices(paths, slices_dir)
-        stage_ff_mom_input(paths)
         with cwd(paths.interim_dir):
             gen_ff_data(
                 paths,

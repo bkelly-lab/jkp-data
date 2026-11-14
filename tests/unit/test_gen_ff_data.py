@@ -30,10 +30,9 @@ from jkp.data.aux_functions import (
     _ff_inv_breaks,
     _ff_inv_eligible,
     _ff_mom_eligible,
+    _ff_mom_flags,
     _ff_mom_signal_daily,
     _ff_mom_signal_monthly,
-    _ff_mom_source_row,
-    _ff_mom_source_us,
     _ff_op_breaks,
     _ff_op_eligible,
     _ff_size_breaks,
@@ -50,7 +49,6 @@ from jkp.data.aux_functions import (
 from jkp.data.config import (
     FACTOR_MIN_STOCKS_BP,
     FACTOR_MIN_STOCKS_PF,
-    FF_MISSING_RET_CODE,
     US_EXCNTRY,
 )
 
@@ -2001,14 +1999,11 @@ def _make_monthly_panel(
     base_ret: float = 0.01,
     excntry: str = US_EXCNTRY,
     stock_id: int = 1,
-    include_missing_sentinel: bool = False,
     ret_overrides: dict[int, float | None] | None = None,
 ) -> pl.DataFrame:
     """Consecutive monthly panel for a single stock."""
     dates = [date(2018 + (m // 12), (m % 12) + 1, 28) for m in range(months)]
     rets: list[float | None] = [base_ret] * months
-    if include_missing_sentinel:
-        rets[5] = FF_MISSING_RET_CODE  # inject -99 sentinel
     for i, v in (ret_overrides or {}).items():
         rets[i] = v
     return pl.DataFrame(
@@ -2027,52 +2022,31 @@ def _make_monthly_panel(
     )
 
 
-def _jkp_mom(panel: pl.LazyFrame) -> pl.LazyFrame:
-    """JKP ret_12_1 keyed by holding month, as market_chars_monthly builds it:
-    return index over zero-filled returns, ri[t-2] / ri[t-13] - 1."""
-    by = ["excntry", "id"]
-    r = pl.col("ret")
-    r0 = pl.when((r - FF_MISSING_RET_CODE).abs() < 1e-9).then(0.0).otherwise(r).fill_null(0.0)
-    return (
-        panel.sort([*by, "date"])
-        .with_columns(ri=(1.0 + r0).cum_prod().over(by))
-        .select(
-            pl.col("id").cast(pl.Int64),
-            mth_idx=(pl.col("date").dt.year() * 12 + pl.col("date").dt.month()).cast(pl.Int64),
-            ret_12_1=(pl.col("ri").shift(2) / pl.col("ri").shift(13) - 1.0).over(by),
-        )
-    )
-
-
 def _mom_src(panel: pl.LazyFrame, freq: str) -> pl.LazyFrame:
-    """UMD eligibility source for a test panel: US rows via _ff_mom_source_us;
-    non-US rows as a world_msf/world_dsf stand-in (prc = prc_us, ret_lag_dif =
-    periods since the previous row), via _ff_mom_source_row."""
+    """UMD eligibility source for a test panel, as _ff_mom_source builds it: US
+    rows with ret_lag_dif 0; non-US rows as a world_msf/world_dsf stand-in
+    (ret_lag_dif = periods since the previous row); prc = prc_us everywhere."""
     by = ["excntry", "id"]
     if freq == "monthly":
         period = pl.col("date").dt.year() * 12 + pl.col("date").dt.month()
     else:
         period = pl.col("date").cast(pl.Int64)
-    world = (
-        panel.filter(pl.col("excntry") != US_EXCNTRY)
-        .sort([*by, "date"])
-        .select(
-            "excntry",
-            "id",
-            "date",
-            "me",
-            "ret",
-            prc=pl.col("prc_us"),
-            ret_lag_dif=period.diff().over(by).fill_null(1),
-        )
+    rows = panel.sort([*by, "date"]).select(
+        "excntry",
+        "id",
+        "date",
+        "me",
+        "ret",
+        prc=pl.col("prc_us"),
+        ret_lag_dif=pl.when(pl.col("excntry") == US_EXCNTRY)
+        .then(0)
+        .otherwise(period.diff().over(by).fill_null(1)),
     )
-    return pl.concat(
-        [_ff_mom_source_us(panel), _ff_mom_source_row(world, freq)], how="vertical_relaxed"
-    )
+    return _ff_mom_flags(rows, freq)
 
 
 def _run_monthly(panel: pl.LazyFrame) -> pl.LazyFrame:
-    return _ff_mom_signal_monthly(panel, _mom_src(panel, "monthly"), _jkp_mom(panel))
+    return _ff_mom_signal_monthly(panel, _mom_src(panel, "monthly"))
 
 
 def _run_daily(panel: pl.LazyFrame) -> pl.LazyFrame:
@@ -2118,16 +2092,6 @@ class TestFFMomSignalMonthly:
         non_null = result.filter(pl.col("mom_2_12").is_not_null())
         assert len(non_null) > 0
 
-    def test_neg99_sentinel_treated_as_zero(self, tolerance):
-        """FF_MISSING_RET_CODE (-99) in any lag month is treated as 0.0 return."""
-        # Build 20-month panel with -99 at position 5 (will be a lagged return)
-        panel = _make_monthly_panel(months=20, base_ret=0.0, include_missing_sentinel=True)
-        lf = panel.lazy()
-        result = _run_monthly(lf).collect()
-        # Should still compute (sentinel becomes 0, doesn't make mom null)
-        non_null = result.filter(pl.col("mom_2_12").is_not_null())
-        assert len(non_null) > 0
-
     @staticmethod
     def _interior_null_panel(excntry: str) -> pl.LazyFrame:
         """20 consecutive months, ret null at month 10 (an interior 2-12 lag
@@ -2145,7 +2109,7 @@ class TestFFMomSignalMonthly:
         np.testing.assert_allclose(last_row["mom_2_12"][0], 1.01**10 - 1, **tolerance.STANDARD)
 
     def test_row_interior_null_month_tolerated(self, tolerance):
-        """ROW: same gate as the US; the null month counts as 0 in ret_12_1."""
+        """ROW: same gate as the US; the null month compounds as 0."""
         result = _run_monthly(self._interior_null_panel("GBR")).collect()
         last_row = result.sort("date").tail(1)
         assert last_row["eligible_mom"][0] is True
@@ -2211,38 +2175,45 @@ class TestFFMomSignalMonthly:
         )
         assert self._last(_run_monthly(panel.lazy()).collect())["eligible_mom"] is False
 
-    def test_us_missing_interior_row_ineligible(self):
-        """US: French requires a row (possibly -99) for every month t-12..t-2."""
-        panel = _make_monthly_panel(months=20).filter(pl.int_range(pl.len()) != 10)
-        assert self._last(_run_monthly(panel.lazy()).collect())["eligible_mom"] is False
-
+    @pytest.mark.parametrize("excntry", [US_EXCNTRY, "GBR"])
     @pytest.mark.parametrize(("halt", "eligible"), [(range(9, 14), True), (range(9, 15), False)])
-    def test_row_halt_tolerance(self, halt, eligible):
-        """Non-US: a halt is missing rows; 5 missing of 11 window months (6 left)
-        stays eligible, 6 missing does not."""
-        panel = _make_monthly_panel(months=20, excntry="GBR").filter(
+    def test_halt_tolerance(self, excntry, halt, eligible):
+        """Every country, the US included: a halt is missing rows; 5 missing of 11
+        window months (6 left) stays eligible, 6 missing does not."""
+        panel = _make_monthly_panel(months=20, excntry=excntry).filter(
             ~pl.int_range(pl.len()).is_in(list(halt))
         )
         last = self._last(_run_monthly(panel.lazy()).collect())
         assert last["eligible_mom"] is eligible
         assert (last["mom_2_12"] is not None) is eligible
 
+    @pytest.mark.parametrize("excntry", [US_EXCNTRY, "GBR"])
     @pytest.mark.parametrize("missing", [6, 17])
-    def test_row_halt_at_endpoint_ineligible(self, missing):
-        """Non-US: endpoints stay strict (price at t-13, good return at t-2)."""
-        panel = _make_monthly_panel(months=20, excntry="GBR").filter(
+    def test_halt_at_endpoint_ineligible(self, excntry, missing):
+        """Endpoints stay strict (price at t-13, good return at t-2)."""
+        panel = _make_monthly_panel(months=20, excntry=excntry).filter(
             pl.int_range(pl.len()) != missing
         )
         assert self._last(_run_monthly(panel.lazy()).collect())["eligible_mom"] is False
 
-    @pytest.mark.parametrize(("excntry", "expected"), [(US_EXCNTRY, 1.01**11 - 1), ("GBR", 9.0)])
-    def test_us_compounds_panel_returns_row_uses_jkp(self, excntry, expected, tolerance):
-        """US: the FF firm's own panel returns compounded over t-12..t-2 (a company's
-        combined return). Elsewhere: JKP's ret_12_1 (here a stand-in 9.0)."""
-        panel = _make_monthly_panel(months=20, excntry=excntry).lazy()
-        jkp = _jkp_mom(panel).with_columns(ret_12_1=pl.lit(9.0))
-        result = _ff_mom_signal_monthly(panel, _mom_src(panel, "monthly"), jkp).collect()
-        np.testing.assert_allclose(self._last(result)["mom_2_12"], expected, **tolerance.STANDARD)
+    @pytest.mark.parametrize("excntry", [US_EXCNTRY, "GBR"])
+    def test_compounds_source_returns(self, excntry, tolerance):
+        """Every country compounds its source returns over t-12..t-2 (in the US the
+        FF firm's own panel returns, a company's combined return)."""
+        result = _run_monthly(_make_monthly_panel(months=20, excntry=excntry).lazy()).collect()
+        np.testing.assert_allclose(
+            self._last(result)["mom_2_12"], 1.01**11 - 1, **tolerance.STANDARD
+        )
+
+    def test_row_halt_spanning_return_included(self):
+        """Non-US: the first return after a halt (p_end / p_start - 1) enters the
+        compounded window return in full."""
+        panel = _make_monthly_panel(
+            months=20, base_ret=0.0, excntry="GBR", ret_overrides={13: 0.5}
+        ).filter(~pl.int_range(pl.len()).is_between(10, 12))
+        last = self._last(_run_monthly(panel.lazy()).collect())
+        assert last["eligible_mom"] is True
+        assert abs(last["mom_2_12"] - 0.5) < 1e-9
 
     def test_row_price_without_me_at_start_eligible(self):
         """Non-US: the start check reads world_msf directly, so a priced row whose
@@ -2251,8 +2222,7 @@ class TestFFMomSignalMonthly:
             me=pl.when(pl.int_range(pl.len()) == 6).then(None).otherwise(pl.col("me"))
         )
         panel = full.filter(pl.col("me").is_not_null()).lazy()
-        src = _mom_src(full.lazy(), "monthly")
-        result = _ff_mom_signal_monthly(panel, src, _jkp_mom(full.lazy())).collect()
+        result = _ff_mom_signal_monthly(panel, _mom_src(full.lazy(), "monthly")).collect()
         assert self._last(result)["eligible_mom"] is True
 
 
@@ -2330,35 +2300,12 @@ class TestFFMomSignalDaily:
         non_null = result.filter(pl.col("mom_2_12").is_not_null())
         assert len(non_null) > 0
 
-    def test_neg99_sentinel_not_eligible(self):
-        """Row where ret_lag_skip == -99 is marked ineligible."""
-        from datetime import timedelta
-
+    @pytest.mark.parametrize("excntry", [US_EXCNTRY, "GBR"])
+    def test_null_ret_at_window_end_ineligible(self, excntry):
+        """A missing return at t-21, the window end, fails the good-return check."""
         n = 300
-        base = date(2018, 1, 2)
-        dates = [base + timedelta(days=i) for i in range(n)]
-        rets = [0.001] * n
-        # Place sentinel at position exactly skip=21 before the end
-        rets[n - 22] = FF_MISSING_RET_CODE
-        panel = pl.DataFrame(
-            {
-                "excntry": [US_EXCNTRY] * n,
-                "id": [1] * n,
-                "date": dates,
-                "ret": rets,
-                "me": [1.0] * n,
-                "prc_us": [1.0] * n,
-                "w": [1.0] * n,
-                "exchcd_us": [1] * n,
-                "size_grp": ["large"] * n,
-            }
-        )
-        lf = panel.lazy()
-        result = _run_daily(lf).collect()
-        # The last row may be ineligible due to sentinel
-        # (checking eligible_mom == False for the terminal row where skip lag == -99)
-        last_row = result.sort("date").tail(1)
-        # eligible_mom should be False when sentinel is at skip lag
+        panel = _make_daily_panel(n_days=n, excntry=excntry, ret_overrides={n - 22: None})
+        last_row = _run_daily(panel.lazy()).collect().sort("date").tail(1)
         assert last_row["eligible_mom"][0] is False
 
     @staticmethod
@@ -2446,10 +2393,12 @@ class TestFFMomSignalDaily:
         assert last["eligible_mom"] is True
         assert abs(last["mom_2_12"] - 0.5) < 1e-9
 
+    @pytest.mark.parametrize("excntry", [US_EXCNTRY, "GBR"])
     @pytest.mark.parametrize(("n_missing", "eligible"), [(115, True), (116, False)])
-    def test_row_halt_min_days(self, n_missing, eligible):
-        """Non-US: at least 115 of the 230 window days must be present."""
-        panel = _make_daily_panel(300, excntry="GBR").filter(
+    def test_halt_min_days(self, excntry, n_missing, eligible):
+        """Every country, the US included: at least 115 of the 230 window days
+        must be present."""
+        panel = _make_daily_panel(300, excntry=excntry).filter(
             ~pl.int_range(pl.len()).is_between(100, 100 + n_missing - 1)
         )
         assert (

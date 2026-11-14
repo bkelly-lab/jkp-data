@@ -259,20 +259,16 @@ US_EXCNTRY = "USA"
 FACTOR_MIN_STOCKS_BP = 10
 FACTOR_MIN_STOCKS_PF = 3
 
-# CRSP -99.0 missing-return sentinel: treat as 0 return when compounding the
-# UMD prior-(2-12) signal, per FF convention.
-FF_MISSING_RET_CODE = -99.0
-FF_MISSING_RET_TOL = 1e-6
-
 # UMD signal window lengths (trading days for daily, calendar months for monthly).
 FF_UMD_DAILY_SKIP = 21
 FF_UMD_DAILY_LOOKBACK = 251
 FF_UMD_MONTHLY_LOOKBACK = 12
 FF_UMD_MONTHLY_SKIP = 1
 
-# Non-US UMD halt tolerance: min rows in the momentum window (monthly t-12..t-2 =
-# 11 months; daily t-250..t-21 = 230 trading days). Compustat Global records a
-# halt as missing rows, not French's -99.0. Endpoints stay strict; US needs all.
+# UMD halt tolerance, every country: min rows in the momentum window (monthly
+# t-12..t-2 = 11 months; daily t-250..t-21 = 230 trading days). Endpoints stay
+# strict. In the US this departs from French, who requires the stock listed
+# throughout the window; Compustat Global records a halt as missing rows.
 FF_UMD_ROW_MIN_MONTHS = 6
 FF_UMD_ROW_MIN_DAYS = 115
 
