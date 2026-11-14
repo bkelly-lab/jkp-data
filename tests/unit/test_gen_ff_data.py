@@ -552,7 +552,7 @@ class TestFFSpecBreaks:
         narrower. me<=0 and non-NYSE stay excluded from both."""
         june = self._make_june_size_pool()
         strict = ff_country_breakpoints(june, [("me", 0.50, "sizemedn")], _ff_bm_eligible(), 1)
-        lenient = _ff_size_breaks(june, _ff_bm_eligible(), 1)
+        lenient = _ff_size_breaks(june, 1)
         assert strict["sizemedn"][0] == 20.0  # bm-eligible pool: 10/20/30
         assert lenient["sizemedn"][0] == 30.0  # all NYSE me>0: 10/20/30/40/50
 
@@ -568,9 +568,9 @@ class TestFFSpecBreaks:
             value.select("excntry", "date", "beme30", "beme70")
         )
 
-    def test_row_unaffected_by_us_size_all_nyse(self):
-        """ROW keeps the sort-eligible sizemedn pool: the all-NYSE helper and
-        the plain sort-eligible breakpoints agree for a ROW country."""
+    def test_row_size_median_pools_all_me_positive(self):
+        """Outside the US the size median follows the same rule: every size_grp
+        pool stock with me > 0, B/M-eligible or not; micro stocks stay out."""
         n = FACTOR_MIN_STOCKS_BP + 5
         june = pl.DataFrame(
             {
@@ -585,9 +585,14 @@ class TestFFSpecBreaks:
             },
             schema_overrides={"exchcd_us": pl.Int64},
         )
+        micro = june.head(3).with_columns(
+            id=pl.int_range(n, n + 3), me=pl.lit(1e6), size_grp=pl.lit("micro")
+        )
         strict = ff_country_breakpoints(june, [("me", 0.50, "sizemedn")], _ff_bm_eligible())
-        lenient = _ff_size_breaks(june, _ff_bm_eligible())
-        assert strict.equals(lenient)
+        lenient = _ff_size_breaks(pl.concat([june, micro]))
+        everyone = ff_country_breakpoints(june, [("me", 0.50, "sizemedn")], pl.lit(True))
+        assert lenient.equals(everyone)
+        assert lenient["sizemedn"][0] > strict["sizemedn"][0]
 
 
 # =============================================================================

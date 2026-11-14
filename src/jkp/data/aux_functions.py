@@ -10848,26 +10848,20 @@ def ff_country_breakpoints(
     )
 
 
-def _ff_size_breaks(
-    june: pl.DataFrame, value_eligible: pl.Expr, min_stocks_bp: int = FACTOR_MIN_STOCKS_BP
-) -> pl.DataFrame:
-    """Per-country size median (sizemedn). US pools ALL NYSE me>0 stocks per
-    DFF 2000 (no BE requirement), while value breakpoints stay on the
-    sort-eligible pool. ROW keeps the JKP convention (sort-eligible pool)."""
-    size_elig = (
-        pl.when(pl.col("excntry") == US_EXCNTRY).then(pl.col("me") > 0).otherwise(value_eligible)
-    )
-    return ff_country_breakpoints(june, [("me", 0.50, "sizemedn")], size_elig, min_stocks_bp)
+def _ff_size_breaks(june: pl.DataFrame, min_stocks_bp: int = FACTOR_MIN_STOCKS_BP) -> pl.DataFrame:
+    """Per-country size median (sizemedn), one rule in every country: all
+    breakpoint-pool stocks with me > 0 (US: NYSE; elsewhere: size_grp small,
+    large or mega), whatever their sort eligibility, per DFF 2000 (no BE
+    requirement). Value breakpoints stay on the sort-eligible pool."""
+    return ff_country_breakpoints(june, [("me", 0.50, "sizemedn")], pl.col("me") > 0, min_stocks_bp)
 
 
 def _ff_bm_breaks(june: pl.DataFrame, min_stocks_bp: int = FACTOR_MIN_STOCKS_BP) -> pl.DataFrame:
-    """B/M NYSE 30/70 breakpoints + all-NYSE size median per (excntry, date)."""
+    """B/M NYSE 30/70 breakpoints + the size median (_ff_size_breaks) per (excntry, date)."""
     bps = ff_country_breakpoints(
         june, [("beme", 0.30, "beme30"), ("beme", 0.70, "beme70")], _ff_bm_eligible(), min_stocks_bp
     )
-    return _ff_size_breaks(june, _ff_bm_eligible(), min_stocks_bp).join(
-        bps, on=["excntry", "date"], how="inner"
-    )
+    return _ff_size_breaks(june, min_stocks_bp).join(bps, on=["excntry", "date"], how="inner")
 
 
 def _ff_op_breaks(june: pl.DataFrame, min_stocks_bp: int = FACTOR_MIN_STOCKS_BP) -> pl.DataFrame:
@@ -10887,7 +10881,7 @@ def _ff_inv_breaks(june: pl.DataFrame, min_stocks_bp: int = FACTOR_MIN_STOCKS_BP
 def _ff_mom_breaks(
     mom_signal: pl.DataFrame, min_stocks_bp: int = FACTOR_MIN_STOCKS_BP
 ) -> pl.DataFrame:
-    """Momentum NYSE 30/70 breakpoints + all-NYSE size median per
+    """Momentum NYSE 30/70 breakpoints + the size median (_ff_size_breaks) per
     (excntry, date); size dimension is ME at end of t-1 (caller swaps
     me <- me_lag1 before calling)."""
     bps = ff_country_breakpoints(
@@ -10896,9 +10890,7 @@ def _ff_mom_breaks(
         _ff_mom_eligible(),
         min_stocks_bp,
     )
-    return _ff_size_breaks(mom_signal, _ff_mom_eligible(), min_stocks_bp).join(
-        bps, on=["excntry", "date"], how="inner"
-    )
+    return _ff_size_breaks(mom_signal, min_stocks_bp).join(bps, on=["excntry", "date"], how="inner")
 
 
 def ff_assign_portfolios(
@@ -11460,6 +11452,9 @@ def gen_ff_data(
           December t-1 row, with no fallback to earlier months, so a stock halted
           over June or December leaves that year's sorts. The B/M, OP and INV
           sorts also need the stock in the universe in December t-1.
+        - Size median, every country: one per country and date, shared by the
+          B/M, OP and INV sorts, over every breakpoint-pool stock with ME > 0,
+          whatever its sort eligibility (_ff_size_breaks).
         - No minimum number of years on Compustat, in any country. Fama and
           French (1993) required two, against the backfill bias of firms Compustat
           adds with past years of data; their later descriptions of the factors
