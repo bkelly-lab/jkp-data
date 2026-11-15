@@ -49,6 +49,7 @@ from .config import (
     FF_CCM_BACKDATE_THROUGH,
     FF_DFF_GATE_COMPUSTAT_PRE1954,
     FF_DFF_MERGE_YEAR,
+    FF_RET_MAX_GAP_DAYS,
     FF_UMD_DAILY_LOOKBACK,
     FF_UMD_DAILY_SKIP,
     FF_UMD_MONTHLY_LOOKBACK,
@@ -10016,8 +10017,9 @@ def _ff_inv_eligible() -> pl.Expr:
 
 
 def _ff_mom_eligible() -> pl.Expr:
-    """Momentum sort eligibility: 2-12 signal present, positive lagged me."""
-    return pl.col("mom_2_12").is_not_null() & (pl.col("me_lag1") > 0)
+    """Momentum sort eligibility: 2-12 signal present, positive me (ME at t-1 in the
+    momentum frame, ff_mom_signal)."""
+    return pl.col("mom_2_12").is_not_null() & (pl.col("me") > 0)
 
 
 def _ff_sorts() -> dict[str, tuple[str, list[str], pl.Expr]]:
@@ -10148,7 +10150,8 @@ def ff_link_accounting(
            statements of the early 1960s for firms whose link starts years later.
         3) Inner-join comp on (gvkey, year); the June row is unique per security and
            year, so the result is too.
-        4) Optionally union DFF BE (_ff_merge_dff_be) to extend coverage to 1926.
+        4) Optionally union DFF BE (_ff_merge_dff_be) into the US CRSP records, to
+           extend coverage to 1926; other records pass through.
     Output:
         Eager [gvkey, id, year, datadate, be, op, inv]; id is the security, the
         permno for CRSP.
@@ -10183,10 +10186,10 @@ def ff_link_accounting(
             (pl.col("first_eom") > pl.col("eom"))
             & (pl.col("first_eom") <= pl.col("eom").dt.offset_by(f"{FF_CCM_BACKDATE_MAX_YEARS}y"))
         )
-        .select("id", "year", gvkey="first_gvkey")
+        .select("id", "year", gvkey="first_gvkey", crsp=pl.lit(True))
     )
     link = pl.concat(
-        [june.filter(pl.col("gvkey").is_not_null()).select("id", "year", "gvkey"), early],
+        [june.filter(pl.col("gvkey").is_not_null()).select("id", "year", "gvkey", "crsp"), early],
         how="vertical_relaxed",
     )
     linked = (
@@ -10195,11 +10198,12 @@ def ff_link_accounting(
             on=["gvkey", "year"],
             how="inner",
         )
-        .select("gvkey", "id", "year", "datadate", "be", "op", "inv")
+        .select("gvkey", "id", "year", "datadate", "be", "op", "inv", "crsp")
         .sort("id", "year")
         .collect()
     )
-    return _ff_merge_dff_be(linked, True, use_dff, dff_path)
+    us = _ff_merge_dff_be(linked.filter("crsp").drop("crsp"), True, use_dff, dff_path)
+    return pl.concat([us, linked.filter(~pl.col("crsp")).drop("crsp")], how="vertical_relaxed")
 
 
 def _ff_us_firm_map(paths: DataPaths) -> pl.DataFrame:
@@ -10473,12 +10477,17 @@ def ff_load_panel(
     )
 
 
+def _ff_max_gap(freq: Literal["monthly", "daily"]) -> int:
+    """Longest ret_lag_dif an FF return may span: one month, or FF_RET_MAX_GAP_DAYS days."""
+    return 1 if freq == "monthly" else FF_RET_MAX_GAP_DAYS
+
+
 def ff_factor_rows(panel: pl.DataFrame, freq: Literal["monthly", "daily"]) -> pl.DataFrame:
     """
     Description:
         The panel rows that enter the factor portfolios, with FF value weights; the
-        same rule in every country. A return spanning a gap (ret_lag_dif over 1
-        month or 5 days) is nulled, not row-dropped, so the row's ME still serves
+        same rule in every country. A return spanning a gap (ret_lag_dif over
+        _ff_max_gap) is nulled, not row-dropped, so the row's ME still serves
         formation and the weight lags. Fama and French hold each portfolio from July
         to June, so a stock's weight is its ME at the end of June grown by its total
         return since then (buy-and-hold): share issues, buybacks and share-count
@@ -10491,12 +10500,12 @@ def ff_factor_rows(panel: pl.DataFrame, freq: Literal["monthly", "daily"]) -> pl
         3) w = me_base x the year's cumulative (1 + ret) up to t-1, a null ret
            compounding as 0; null unless ME at t-1 is positive.
         4) Listing gap: w is null when the previous row is more than a month back
-           (daily: more than 5 days) and is not the country's previous trading
+           (daily: more than FF_RET_MAX_GAP_DAYS days) and is not the country's previous trading
            date, so a market-wide closure is not a gap.
     Output:
         Eager [excntry, id, date, ret, w, me, bp_pool].
     """
-    max_gap = 1 if freq == "monthly" else 5
+    max_gap = _ff_max_gap(freq)
     k = ["excntry", "id"]
     yp = [*k, "period"]
     year = pl.col("date").dt.year()
@@ -10504,7 +10513,7 @@ def ff_factor_rows(panel: pl.DataFrame, freq: Literal["monthly", "daily"]) -> pl
     in_reach = (
         (year * 12 + pl.col("date").dt.month()) - (prev.dt.year() * 12 + prev.dt.month()) == 1
         if freq == "monthly"
-        else (pl.col("date") - prev).dt.total_days() <= 5
+        else (pl.col("date") - prev).dt.total_days() <= max_gap
     )
     return (
         panel.lazy()
@@ -10926,14 +10935,14 @@ def ff_mom_signal(
         after a halt counts: monthly t-12..t-2 on a calendar-month index, daily
         t-250..t-21 on a per-country trading-day index (French's daily detail).
     Steps:
-        1) Per panel row: has_prc (prc > 0), good_ret (a return over at most 1 month
-           or 5 days), log_ret.
+        1) Per panel row: has_prc (prc > 0), good_ret (a return within _ff_max_gap),
+           log_ret.
         2) Period index; _ff_mom_gate.
         3) Join to the factor rows; me and w become ME at t-1, UMD's size and weight.
     Output:
-        Eager [excntry, id, date, ret, bp_pool, me_lag1, me, w, mom_2_12].
+        Eager [excntry, id, date, ret, bp_pool, me, w, mom_2_12].
     """
-    max_gap = 1 if freq == "monthly" else 5
+    max_gap = _ff_max_gap(freq)
     src = panel.lazy().select(
         "excntry",
         "id",
@@ -10967,7 +10976,6 @@ def ff_mom_signal(
             "date",
             "ret",
             "bp_pool",
-            "me_lag1",
             me="me_lag1",
             w="me_lag1",
             mom_2_12=pl.when(pl.col("eligible_mom").fill_null(False)).then(mom),
@@ -11003,15 +11011,19 @@ def _ff_spread(sort: str, long: list[str], short: list[str]) -> pl.Expr:
 
 
 def ff_returns(
-    rows: pl.DataFrame, members: pl.DataFrame, mom: pl.DataFrame, min_stocks_pf: int
+    rows: pl.DataFrame,
+    members: pl.DataFrame,
+    mom: pl.DataFrame,
+    annual: list[str],
+    min_stocks_pf: int,
 ) -> pl.DataFrame:
     """
     Description:
         FF3/FF5 and UMD factor returns at the rows' frequency. The June memberships
         hold from July to June (_ff_port_year), so daily FF3/FF5 hold the monthly
         June portfolios and only returns and weights are daily; UMD's memberships
-        form every period. SMB3 is the B/M sort's size spread and SMB5 averages the
-        B/M, OP and INV size spreads.
+        form every period. `annual` names the June sorts (bm, op, inv). SMB3 is the
+        B/M sort's size spread and SMB5 averages the size spreads of the June sorts.
     Steps:
         1) Broadcast the June memberships to the rows of the following July-June.
         2) One leg per sort (_ff_leg).
@@ -11020,7 +11032,6 @@ def ff_returns(
     Output:
         [excntry, date, smb_ff3, smb_ff5, hml_ff, rmw_ff, cma_ff, umd_ff].
     """
-    annual = ["bm", "op", "inv"]
     held = rows.with_columns(_ff_port_year()).join(
         members.select(
             "excntry", "id", *[f"{s}_port" for s in annual], port_year=pl.col("date").dt.year()
@@ -11029,10 +11040,10 @@ def ff_returns(
         how="inner",
     )
     legs = [_ff_leg(held, s, min_stocks_pf) for s in annual] + [_ff_leg(mom, "mom", min_stocks_pf)]
+    labels = {s: _ff_sorts()[s][1] for s in annual}
     smb = {
-        s: _ff_spread(s, [f"S{lab}" for lab in labels], [f"B{lab}" for lab in labels])
-        for s, (_, labels, _) in _ff_sorts().items()
-        if s in annual
+        s: _ff_spread(s, [f"S{lab}" for lab in labels[s]], [f"B{lab}" for lab in labels[s]])
+        for s in annual
     }
     return (
         functools.reduce(
@@ -11042,7 +11053,7 @@ def ff_returns(
             "excntry",
             "date",
             smb_ff3=smb["bm"],
-            smb_ff5=(smb["bm"] + smb["op"] + smb["inv"]) / 3,
+            smb_ff5=pl.mean_horizontal(*smb.values(), ignore_nulls=False),
             hml_ff=_ff_spread("bm", ["SH", "BH"], ["SL", "BL"]),
             rmw_ff=_ff_spread("op", ["SR", "BR"], ["SW", "BW"]),
             cma_ff=_ff_spread("inv", ["SC", "BC"], ["SA", "BA"]),
@@ -11156,7 +11167,7 @@ def gen_ff_data(
     if "monthly" in freqs:
         mom = ff_mom_signal(panel, rows, "monthly")
         mom = ff_membership(mom, ff_breakpoints(mom, ["mom"], min_stocks_bp), ["mom"])
-        ff_returns(rows, members, mom, min_stocks_pf).rename({"date": "eom"}).write_parquet(
+        ff_returns(rows, members, mom, annual, min_stocks_pf).rename({"date": "eom"}).write_parquet(
             monthly_factors_path
         )
         del mom
@@ -11167,7 +11178,7 @@ def gen_ff_data(
         mom = ff_mom_signal(panel, rows, "daily")
         del panel
         mom = ff_membership(mom, ff_breakpoints(mom, ["mom"], min_stocks_bp), ["mom"])
-        ff_returns(rows, members, mom, min_stocks_pf).write_parquet(daily_factors_path)
+        ff_returns(rows, members, mom, annual, min_stocks_pf).write_parquet(daily_factors_path)
 
 
 def _build_industry_daily_returns(

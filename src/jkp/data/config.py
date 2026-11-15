@@ -271,6 +271,10 @@ FF_UMD_MONTHLY_SKIP = 1
 FF_UMD_ROW_MIN_MONTHS = 6
 FF_UMD_ROW_MIN_DAYS = 115
 
+# Longest gap a daily FF return may span (ret_lag_dif, calendar days); a longer
+# return is nulled. A monthly return may span one month.
+FF_RET_MAX_GAP_DAYS = 5
+
 # DFF (Davis-Fama-French) hand-collected Moody's BE splice into the US FF path.
 # When True, union DFF BE (permno-keyed, bundled resource) with Compustat BE;
 # DFF fills (permno, formation year) cells Compustat lacks, extending SMB/HML

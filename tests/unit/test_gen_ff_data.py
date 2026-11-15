@@ -250,41 +250,41 @@ class TestFFMomEligible:
     """Tests for _ff_mom_eligible()."""
 
     def test_passes_with_valid_inputs(self):
-        """Returns True when mom_2_12 not null and me_lag1 > 0."""
-        df = pl.DataFrame({"mom_2_12": [0.1], "me_lag1": [1.0]})
+        """Returns True when mom_2_12 not null and me > 0."""
+        df = pl.DataFrame({"mom_2_12": [0.1], "me": [1.0]})
         assert _apply_eligible(df, _ff_mom_eligible())[0] is True
 
     def test_mom_null_fails(self):
         """Returns False when mom_2_12 is null."""
         df = pl.DataFrame(
-            {"mom_2_12": [None], "me_lag1": [1.0]},
-            schema={"mom_2_12": pl.Float64, "me_lag1": pl.Float64},
+            {"mom_2_12": [None], "me": [1.0]},
+            schema={"mom_2_12": pl.Float64, "me": pl.Float64},
         )
         assert _apply_eligible(df, _ff_mom_eligible())[0] is False
 
-    def test_me_lag1_zero_fails(self):
-        """Returns False when me_lag1 == 0."""
-        df = pl.DataFrame({"mom_2_12": [0.1], "me_lag1": [0.0]})
+    def test_me_zero_fails(self):
+        """Returns False when me == 0."""
+        df = pl.DataFrame({"mom_2_12": [0.1], "me": [0.0]})
         assert _apply_eligible(df, _ff_mom_eligible())[0] is False
 
-    def test_me_lag1_negative_fails(self):
-        """Returns False when me_lag1 < 0."""
-        df = pl.DataFrame({"mom_2_12": [0.1], "me_lag1": [-1.0]})
+    def test_me_negative_fails(self):
+        """Returns False when me < 0."""
+        df = pl.DataFrame({"mom_2_12": [0.1], "me": [-1.0]})
         assert _apply_eligible(df, _ff_mom_eligible())[0] is False
 
-    def test_me_lag1_null_fails(self):
-        """Returns null (not True) when me_lag1 is null — Polars null propagation."""
+    def test_me_null_fails(self):
+        """Returns null (not True) when me is null — Polars null propagation."""
         df = pl.DataFrame(
-            {"mom_2_12": [0.1], "me_lag1": [None]},
-            schema={"mom_2_12": pl.Float64, "me_lag1": pl.Float64},
+            {"mom_2_12": [0.1], "me": [None]},
+            schema={"mom_2_12": pl.Float64, "me": pl.Float64},
         )
         assert _apply_eligible(df, _ff_mom_eligible())[0] is not True
 
     def test_both_null_fails(self):
         """Returns null (not True) when both are null."""
         df = pl.DataFrame(
-            {"mom_2_12": [None], "me_lag1": [None]},
-            schema={"mom_2_12": pl.Float64, "me_lag1": pl.Float64},
+            {"mom_2_12": [None], "me": [None]},
+            schema={"mom_2_12": pl.Float64, "me": pl.Float64},
         )
         assert _apply_eligible(df, _ff_mom_eligible())[0] is not True
 
@@ -293,14 +293,14 @@ class TestFFMomEligible:
         df = pl.DataFrame(
             {
                 "mom_2_12": [0.1, None, 0.1, 0.1],
-                "me_lag1": [1.0, 1.0, 0.0, None],
+                "me": [1.0, 1.0, 0.0, None],
             }
         )
         result = _apply_eligible(df, _ff_mom_eligible())
         assert result[0] is True
         assert result[1] is not True  # mom_2_12 null
-        assert result[2] is False  # me_lag1 == 0
-        assert result[3] is not True  # me_lag1 null
+        assert result[2] is False  # me == 0
+        assert result[3] is not True  # me null
 
 
 # =============================================================================
@@ -1502,6 +1502,9 @@ def _full_annual(bm: bool = True) -> list[tuple]:
 _FULL_MOM = [(0.01, "SL"), (0.01, "SH"), (0.01, "BL"), (0.01, "BH")]
 
 
+_ANNUAL = ["bm", "op", "inv"]
+
+
 def _returns(
     annual: list[tuple],
     mom: list[tuple] = _FULL_MOM,
@@ -1545,7 +1548,7 @@ def _returns(
             "mom_port": [m[1] for m in mom],
         }
     )
-    return ff_returns(rows, members, mom_frame, min_stocks_pf)
+    return ff_returns(rows, members, mom_frame, _ANNUAL, min_stocks_pf)
 
 
 class TestFFReturns:
@@ -1656,7 +1659,7 @@ class TestFFReturns:
                 {1: "SL", 2: "SH", 3: "BL", 4: "BH"}, return_dtype=pl.Utf8
             )
         )
-        out = ff_returns(rows, members, mom, 1)
+        out = ff_returns(rows, members, mom, _ANNUAL, 1)
         assert out["date"].to_list() == sorted(out["date"].to_list())
         hml = dict(out.select("date", "hml_ff").iter_rows())
         # 2020 memberships: (0.2+0.4)/2 - (0.1+0.3)/2 = 0.1; 2021 memberships: -0.1
@@ -1718,7 +1721,7 @@ def _run_daily(panel: pl.DataFrame) -> pl.DataFrame:
     return _run_mom(panel, "daily")
 
 
-_MOM_COLS = {"excntry", "id", "date", "ret", "bp_pool", "me_lag1", "me", "w", "mom_2_12"}
+_MOM_COLS = {"excntry", "id", "date", "ret", "bp_pool", "me", "w", "mom_2_12"}
 
 
 def _make_monthly_panel(
@@ -1759,9 +1762,8 @@ class TestFFMomSignalMonthly:
         """UMD sizes and weights by ME at t-1."""
         panel = _make_monthly_panel(months=3).with_columns(me=pl.Series([1.0, 2.0, 4.0]))
         result = _run_monthly(panel).sort("date")
-        assert result["me_lag1"].to_list() == [None, 1.0, 2.0]
-        assert result["me"].to_list() == result["me_lag1"].to_list()
-        assert result["w"].to_list() == result["me_lag1"].to_list()
+        assert result["me"].to_list() == [None, 1.0, 2.0]
+        assert result["w"].to_list() == result["me"].to_list()
 
     def test_insufficient_history_yields_null_mom(self):
         """Less than 13 months of data -> mom_2_12 is null (not enough lags)."""
@@ -1796,9 +1798,9 @@ class TestFFMomSignalMonthly:
         last_row = result.sort("date").tail(1)
         np.testing.assert_allclose(last_row["mom_2_12"][0], 1.01**10 - 1, **tolerance.STANDARD)
 
-    def test_me_lag1_null_when_gap(self):
-        """me_lag1 is null when there's a calendar month gap."""
-        # Two rows with a 2-month gap -> me_lag1 for the second row is null
+    def test_me_null_when_gap(self):
+        """me (ME at t-1) is null when there's a calendar month gap."""
+        # Two rows with a 2-month gap -> me for the second row is null
         panel = pl.DataFrame(
             {
                 "excntry": [US_EXCNTRY, US_EXCNTRY],
@@ -1812,7 +1814,7 @@ class TestFFMomSignalMonthly:
         )
         result = _run_monthly(panel).sort("date")
         mar_row = result.filter(pl.col("date") == date(2020, 3, 31))
-        assert mar_row["me_lag1"][0] is None
+        assert mar_row["me"][0] is None
 
     def test_mom_signal_2_12_skip(self, tolerance):
         """With constant 2% monthly return, compounded 2-12 (skip 1) ~ 1.02^11 - 1."""
