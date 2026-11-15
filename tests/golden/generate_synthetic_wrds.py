@@ -968,7 +968,14 @@ def gen_world_msf(
     us_given = ("permno", "me", "me_company", "prc", "ret", "ret_exc", "size_grp", "ret_lag_dif")
     world = _apply_null_patterns(world, "world_msf", nrng, us_rows, us_given, "1")
     world = _apply_null_patterns(world, "world_msf", nrng, ~us_rows, ("permno", "ret_lag_dif"), "0")
-    return world.with_columns(me_lag1=pl.col("me").shift(1).over("id"))
+    # permco joins after the null patterns so it leaves their draws unchanged; CRSP rows
+    # carry one, as in the real table, and ex-US rows none
+    permco = reg_us.join(reg.select("permno", "permco"), on="permno").select(
+        pl.col("world_id").cast(pl.Int64).alias("id"), pl.col("permco").cast(pl.Int64)
+    )
+    return world.join(permco, on="id", how="left", maintain_order="left").with_columns(
+        me_lag1=pl.col("me").shift(1).over("id")
+    )
 
 
 def gen_world_dsf(

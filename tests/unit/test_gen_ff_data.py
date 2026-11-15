@@ -4,7 +4,6 @@ Unit tests for the FF3/FF5/UMD factor builder helpers in aux_functions.py.
 Covers:
   - _ff_bm_eligible / _ff_op_eligible / _ff_inv_eligible / _ff_mom_eligible
   - ff_breakpoints (breakpoint pool, minimum stocks, size median, sort joins)
-  - _ff_us_firm_map
   - ff_annual_signals (accounting records, December ME from the panel)
   - _ff_universe_rows (rule columns, US vs elsewhere, monthly and daily)
   - ff_load_panel (class aggregation, ME, null-ME rows kept)
@@ -490,71 +489,6 @@ class TestFFBreakpoints:
 
 
 # =============================================================================
-# TestFFUsFirmMap
-# =============================================================================
-
-
-_CIZ_COMMON = {
-    "sharetype": "NS",
-    "securitytype": "EQTY",
-    "securitysubtype": "COM",
-    "usincflg": "Y",
-    "issuertype": "CORP",
-    "primaryexch": "N",
-}
-
-
-def _firm_map(rows: list[tuple[int, int]]) -> pl.DataFrame:
-    """[permno, id] rows, the _ff_us_firm_map output."""
-    schema = {"permno": pl.Int64, "id": pl.Int64}
-    return pl.DataFrame(rows, schema=schema, orient="row")
-
-
-def _month_ends(first: date, n: int) -> list[date]:
-    out = []
-    for k in range(n):
-        y, m = divmod(first.month - 1 + k, 12)
-        nxt = date(first.year + y + (m + 1) // 12, (m + 1) % 12 + 1, 1)
-        out.append(date.fromordinal(nxt.toordinal() - 1))
-    return out
-
-
-class TestFFUsFirmMap:
-    """_ff_us_firm_map: the firm is the permco, its id the smallest permno."""
-
-    @staticmethod
-    def _run(test_paths) -> dict[int, int]:
-        # permno, permco, first month, months
-        classes = [
-            (2, 100, date(2000, 1, 31), 6),
-            (1, 100, date(2000, 3, 31), 4),  # second class
-            (3, 200, date(2000, 1, 31), 2),
-            (4, 200, date(2000, 4, 30), 3),  # relisting under the same permco
-            (5, 300, date(2000, 1, 31), 6),
-        ]
-        msf = [
-            {"permno": p, "permco": c, "mthcaldt": d, **_CIZ_COMMON}
-            for p, c, first, n in classes
-            for d in _month_ends(first, n)
-        ]
-        pl.DataFrame(msf).write_parquet(test_paths.raw_tables_dir / "crsp_msf_v2.parquet")
-        out = af._ff_us_firm_map(test_paths)
-        assert out["permno"].is_duplicated().sum() == 0
-        return dict(out.iter_rows())
-
-    def test_classes_of_a_permco_are_one_firm_with_smallest_permno(self, test_paths):
-        r = self._run(test_paths)
-        assert [r[p] for p in (1, 2)] == [1, 1]
-
-    def test_relisting_stays_in_the_permco(self, test_paths):
-        r = self._run(test_paths)
-        assert [r[p] for p in (3, 4)] == [3, 3]
-
-    def test_single_class_keeps_its_permno(self, test_paths):
-        assert self._run(test_paths)[5] == 5
-
-
-# =============================================================================
 # TestFFAnnualSignals
 # =============================================================================
 
@@ -586,13 +520,26 @@ def _dec_panel(rows: list[tuple[str, int, float | None]]) -> pl.DataFrame:
 
 
 def _annual_signals(
-    test_paths, monkeypatch, records: pl.DataFrame, panel: pl.DataFrame, firm_map: pl.DataFrame
+    test_paths, monkeypatch, records: pl.DataFrame, panel: pl.DataFrame, permcos: dict[int, int]
 ) -> dict[int, dict]:
-    """ff_annual_signals with the accounting records fed in directly."""
+    """ff_annual_signals with the accounting records fed in directly. world_msf lists
+    every record's security: a CRSP security with its permco (permcos), else Compustat."""
+    _write_world_msf(
+        test_paths,
+        [
+            {
+                "id": i,
+                "eom": date(2020, 6, 30),
+                "source_crsp": int(i in permcos),
+                "permco": permcos.get(i),
+            }
+            for i in records["id"].unique().to_list()
+        ],
+    )
     monkeypatch.setattr(af, "_jkp_annual_acc", lambda paths: None)
     monkeypatch.setattr(af, "ff_load_world_compustat", lambda paths, acc: None)
     monkeypatch.setattr(af, "ff_link_accounting", lambda paths, comp, *, use_dff: records)
-    out = ff_annual_signals(test_paths, panel, firm_map)
+    out = ff_annual_signals(test_paths, panel)
     assert out.select("id", "port_year").is_duplicated().sum() == 0
     assert out["port_year"].unique().to_list() == [2020]
     return {r["id"]: r for r in out.iter_rows(named=True)}
@@ -625,8 +572,7 @@ class TestFFAnnualSignals:
                 (US_EXCNTRY, 31, 70.0),
             ]
         )
-        firm_map = _firm_map([(30, 30), (31, 31)])
-        return _annual_signals(test_paths, monkeypatch, records, panel, firm_map)
+        return _annual_signals(test_paths, monkeypatch, records, panel, {30: 30, 32: 32})
 
     def test_row_dec_me_and_beme(self, test_paths, monkeypatch):
         r = self._run(test_paths, monkeypatch)[10]
@@ -697,19 +643,8 @@ class TestFFAnnualSignalsFirms:
                 (US_EXCNTRY, 70, 16.0),
             ]
         )
-        firm_map = _firm_map(
-            [
-                (40, 40),
-                (41, 40),
-                (50, 50),
-                (51, 51),
-                (60, 60),
-                (61, 60),
-                (70, 70),
-                (71, 70),
-            ]
-        )
-        return _annual_signals(test_paths, monkeypatch, records, panel, firm_map)
+        permcos = {40: 40, 41: 40, 50: 50, 51: 51, 60: 60, 61: 60, 70: 70, 71: 70}
+        return _annual_signals(test_paths, monkeypatch, records, panel, permcos)
 
     def test_one_row_per_firm(self, test_paths, monkeypatch):
         assert sorted(self._run(test_paths, monkeypatch)) == [40, 50, 51, 60, 70]
@@ -767,6 +702,7 @@ _MSF_SCHEMA = {
     "ret": pl.Float64,
     "ret_lag_dif": pl.Int64,
     "size_grp": pl.Utf8,
+    "permco": pl.Int64,
 }
 
 _MSF_DEFAULTS = {
@@ -788,10 +724,11 @@ _MSF_DEFAULTS = {
 
 
 def _write_world_msf(test_paths, rows: list[dict]) -> None:
-    """world_msf from rows that give id, eom and what differs from _MSF_DEFAULTS."""
-    pl.DataFrame([{**_MSF_DEFAULTS, **r} for r in rows], schema=_MSF_SCHEMA).write_parquet(
-        test_paths.interim_dir / "world_msf.parquet"
-    )
+    """world_msf from rows that give id, eom and what differs from _MSF_DEFAULTS; the
+    permco defaults to the id, a company of one class."""
+    pl.DataFrame(
+        [{**_MSF_DEFAULTS, "permco": r["id"], **r} for r in rows], schema=_MSF_SCHEMA
+    ).write_parquet(test_paths.interim_dir / "world_msf.parquet")
 
 
 def _write_raw_msf(test_paths, rows: list[tuple[int, date, str]]) -> None:
@@ -858,8 +795,7 @@ class TestFFUniverseRows:
                 {"id": 104, "eom": jun, "excntry": "DEU", "source_crsp": 0, "size_grp": "mega"},
             ],
         )
-        firm_map = _firm_map([(1, 1), (2, 2), (3, 3)])
-        out = _ff_universe_rows(test_paths, "monthly", firm_map).collect()
+        out = _ff_universe_rows(test_paths, "monthly").collect()
         return {r["id"]: r for r in out.filter(pl.col("date") == jun).iter_rows(named=True)}
 
     def test_us_rule_columns(self, test_paths):
@@ -901,6 +837,7 @@ class TestFFUniverseRows:
                 "dlycaldt": [day] * 2,
                 "usincflg": ["Y"] * 2,
                 "primaryexch": ["N", "Q"],
+                "permco": [1, 2],
             }
         ).write_parquet(test_paths.raw_tables_dir / "crsp_dsf_v2.parquet")
         _write_world_dsf(
@@ -926,8 +863,7 @@ class TestFFUniverseRows:
                 {"id": 102, "eom": eom, "excntry": "GBR", "source_crsp": 0, "size_grp": "micro"},
             ],
         )
-        firm_map = _firm_map([(1, 1), (2, 2)])
-        out = _ff_universe_rows(test_paths, "daily", firm_map).collect()
+        out = _ff_universe_rows(test_paths, "daily").collect()
         r = {x["id"]: x for x in out.iter_rows(named=True)}
         assert [r[i]["bp_pool"] for i in (1, 2, 101, 102)] == [True, False, True, False]
         assert [r[i]["ret_lag_dif"] for i in (1, 2, 101)] == [0, 0, 4]
@@ -964,6 +900,8 @@ class TestFFLoadPanel:
         _write_raw_msf(test_paths, raw)
         # id, eom, source_crsp, common, primaryexch, prc, me, me_company, ret.
         # 7 is not a common share, 8 trades off the main exchanges, 9 is Compustat.
+        # Companies: 1 and 2; 4, 5 and 6; the rest have one class.
+        permco = {2: 1, 5: 4, 6: 4}
         world = [
             (1, may, 1, 1, "Q", 10.0, 30.0, 40.0, 0.0),
             (2, may, 1, 1, "N", 5.0, 10.0, 40.0, 0.0),
@@ -991,23 +929,12 @@ class TestFFLoadPanel:
                     "me": me,
                     "me_company": mec,
                     "ret": ret,
+                    "permco": permco.get(i, i),
                 }
                 for i, d, src, common, px, prc, me, mec, ret in world
             ],
         )
-        firm_map = _firm_map(
-            [
-                (1, 1),
-                (2, 1),
-                (3, 3),
-                (4, 4),
-                (5, 4),
-                (6, 4),
-                (7, 7),
-                (8, 8),
-            ]
-        )
-        out = ff_load_panel(test_paths, "monthly", firm_map)
+        out = ff_load_panel(test_paths, "monthly")
         return out.filter(pl.col("date") == jun).sort("id")
 
     def test_output_columns(self, test_paths):
@@ -1053,6 +980,7 @@ class TestFFLoadPanel:
                 "dlycaldt": [day] * 2,
                 "usincflg": ["Y"] * 2,
                 "primaryexch": ["N", "X"],
+                "permco": [1, 2],
             }
         ).write_parquet(test_paths.raw_tables_dir / "crsp_dsf_v2.parquet")
         _write_world_dsf(
@@ -1063,8 +991,7 @@ class TestFFLoadPanel:
             ],
         )
         _write_world_msf(test_paths, [{"id": 1, "eom": day}])
-        firm_map = _firm_map([(1, 1), (2, 2)])
-        out = ff_load_panel(test_paths, "daily", firm_map)
+        out = ff_load_panel(test_paths, "daily")
         # Daily primaryexch comes from raw CIZ: permno 2 trades on exchange X.
         assert out.select("id", "ret", "me").rows() == [(1, -0.29, 10.0)]
 
@@ -1085,7 +1012,7 @@ class TestFFLoadPanel:
         self._write_ex_us(
             test_paths, [{"id": 100, "prc": 9.0, "me": 120.0, "ret": 0.04, "ret_lag_dif": 2}]
         )
-        out = ff_load_panel(test_paths, "monthly", _firm_map([]))
+        out = ff_load_panel(test_paths, "monthly")
         assert out.rows(named=True) == [
             {
                 "excntry": "GBR",
@@ -1107,14 +1034,14 @@ class TestFFLoadPanel:
             test_paths,
             [{"id": 1, "gvkey": "g1", "me": 100.0}, {"id": 2, "gvkey": None, "me": 200.0}],
         )
-        out = ff_load_panel(test_paths, "monthly", _firm_map([]))
+        out = ff_load_panel(test_paths, "monthly")
         assert sorted(out["id"].to_list()) == [1, 2]
 
     def test_ex_us_row_without_me_stays_in_panel_but_leaves_factor_rows(self, test_paths):
         """Momentum counts a priced row whose ME is missing; the factor portfolios
         do not."""
         self._write_ex_us(test_paths, [{"id": 1, "me": 100.0}, {"id": 2, "me": None, "prc": 7.0}])
-        panel = ff_load_panel(test_paths, "monthly", _firm_map([])).sort("id")
+        panel = ff_load_panel(test_paths, "monthly").sort("id")
         assert panel["id"].to_list() == [1, 2]
         assert panel["me"].to_list() == [100.0, None]
         assert panel["prc"].to_list() == [8.0, 7.0]
