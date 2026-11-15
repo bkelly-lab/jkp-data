@@ -36,7 +36,6 @@ from .compustat_correction import (
 from .config import (
     BE_DEFERRED_TAX_END_YEAR,
     CALENDAR_RUN_MAX_GAP_DAYS,
-    CCM_LINKTYPES,
     CMP_MIN_STD,
     CMP_SIZE_GROUPS,
     CORRECTION_SPILL_COMPRESSION,
@@ -10209,85 +10208,27 @@ def ff_link_accounting(
 def _ff_us_firm_map(paths: DataPaths) -> pl.DataFrame:
     """
     Description:
-        The FF firm of each US CRSP permno. Fama and French form portfolios from
-        companies (CRSP permcos) and split a permco by hand where its securities
-        are not one company; this map applies those splits by rule. A tracking
-        stock is its own firm and enters the sorts; Fama and French drop it by
-        hand, and no CRSP or Compustat field marks one.
+        The FF firm of each US CRSP permno: its permco. Fama and French form
+        portfolios from companies, CRSP permcos. Their appendix splits some permcos
+        by hand (group stocks, tracking stocks, relistings); we take CRSP's permco
+        as it is.
     Steps:
-        1) CIZ universe months of each permno, and the CCM links (CCM_LINKTYPES,
-           any linkprim) active in each month.
-        2) A permco is split if, in some month, its classes link to two or more
-           gvkeys (group stocks, tracking stocks). In a split permco each class
-           belongs, for its whole life, to the piece of its last link's gvkey;
-           any other permco is one piece.
-        3) Within a piece, a permno that starts after every earlier permno has
-           ended starts a new firm (sequential listings).
-        4) id = the firm's smallest permno, so a single-class firm keeps its permno.
+        1) CIZ universe months of each permno; its permco in its last month.
+        2) id = the permco's smallest permno, so a single-class company keeps its
+           permno.
     Output:
-        Eager [permno, id, split], one row per permno in the CIZ universe.
+        Eager [permno, id], one row per permno in the CIZ universe.
     """
-    raw = paths.raw_tables_dir
-    cls = (
-        pl.scan_parquet(raw / "crsp_msf_v2.parquet")
+    return (
+        pl.scan_parquet(paths.raw_tables_dir / "crsp_msf_v2.parquet")
         .with_columns(pl.col("mthcaldt").cast(pl.Date), pl.col("permno", "permco").cast(pl.Int64))
         .filter(_ciz_universe())
-        .select("permno", "permco", date=pl.col("mthcaldt").dt.month_end())
-        .unique()
-        .collect()
-    )
-    lnk = (
-        pl.scan_parquet(raw / "crsp_ccmxpf_lnkhist.parquet")
-        .filter(pl.col("linktype").is_in(CCM_LINKTYPES) & pl.col("lpermno").is_not_null())
-        .select(
-            pl.col("gvkey").cast(pl.Utf8),
-            pl.col("linkdt", "linkenddt").cast(pl.Date),
-            permno=pl.col("lpermno").cast(pl.Int64),
-        )
-        .collect()
-    )
-    split_months = (
-        cls.join(lnk, on="permno")
-        .filter(
-            pl.col("date").is_between(
-                pl.col("linkdt"), pl.col("linkenddt").fill_null(date(9999, 12, 31))
-            )
-        )
-        .group_by("permco", "date")
-        .agg(n_gvkey=pl.col("gvkey").n_unique())
-        .filter(pl.col("n_gvkey") > 1)
-        .select("permco", "date")
-    )
-    last_gvkey = (
-        lnk.sort("permno", "linkdt", "linkenddt", "gvkey", nulls_last=True)
         .group_by("permno")
-        .agg(last_gvkey=pl.col("gvkey").last())
-    )
-    ym = pl.col("date").dt.year() * 12 + pl.col("date").dt.month()
-    piece = ["permco", "piece"]
-    return (
-        cls.group_by("permno")
-        .agg(permco=pl.col("permco").sort_by("date").last(), first=ym.min(), last=ym.max())
-        .join(
-            split_months.select("permco").unique().with_columns(split=pl.lit(True)),
-            on="permco",
-            how="left",
-        )
-        .join(last_gvkey, on="permno", how="left")
-        .with_columns(pl.col("split").fill_null(False))
-        .with_columns(
-            piece=pl.when(pl.col("split")).then(pl.col("last_gvkey")).otherwise(None).fill_null("")
-        )
-        .sort("permco", "piece", "first", "permno")
-        .with_columns(prev_last=pl.col("last").cum_max().shift(1).over(piece))
-        .with_columns(
-            seq=(pl.col("prev_last").is_null() | (pl.col("first") > pl.col("prev_last")))
-            .cum_sum()
-            .over(piece)
-        )
-        .with_columns(id=pl.col("permno").min().over([*piece, "seq"]))
-        .select("permno", "id", "split")
+        .agg(permco=pl.col("permco").sort_by("mthcaldt").last())
+        .with_columns(id=pl.col("permno").min().over("permco"))
+        .select("permno", "id")
         .sort("permno")
+        .collect()
     )
 
 
@@ -10326,10 +10267,9 @@ def _ff_universe_rows(
         - US: JKP's CRSP common-share rows of US-incorporated companies on NYSE,
           AMEX or NASDAQ; the raw CIZ files add only what the world files don't
           carry, usincflg and, daily, primaryexch. The unit (id) is the FF firm
-          (_ff_us_firm_map). w_cls, the class's ME at
-          t-1, weights the classes' returns. Monthly ME is JKP's me_company (all of
-          the company's classes) unless the permco is split (company_me). NYSE-listed
-          classes form the breakpoint pool. CIZ returns span no gaps, so ret_lag_dif
+          (_ff_us_firm_map), the permco. w_cls, the class's ME at t-1, weights the
+          classes' returns. Monthly ME is JKP's me_company, all of the company's
+          classes (company_me). NYSE-listed classes form the breakpoint pool. CIZ returns span no gaps, so ret_lag_dif
           is 0.
         - Elsewhere: JKP's main sample (_ff_world_universe); the unit is the
           security. size_grp small, large or mega forms the breakpoint pool (daily
@@ -10402,7 +10342,7 @@ def _ff_universe_rows(
             "prc",
             ret_lag_dif=pl.lit(0),
             w_cls=pl.col("me").shift(1).over("permno"),
-            company_me=~pl.col("split").fill_null(False) if monthly else pl.lit(False),
+            company_me=pl.lit(monthly),
             bp_pool=pl.col("primaryexch") == "N",
             needs_me=pl.lit(False),
         )
@@ -10441,8 +10381,8 @@ def ff_load_panel(
         The FF panel: one row per unit and date in the FF universe, with the same
         aggregation in every country. A US firm combines its share classes as
         securities in a portfolio: the return weighted by each class's ME at t-1
-        (_ff_class_vw), ME the sum of the classes' me or, monthly when the permco is
-        not split, JKP's me_company, and NYSE if any class is. A unit with one row
+        (_ff_class_vw), ME JKP's me_company monthly and the sum of the classes' me
+        daily, and NYSE if any class is. A unit with one row
         that date keeps that row's values, so elsewhere the panel is the security's
         own rows. Rows without ME stay in: momentum counts a priced row whose shares
         are missing.
@@ -11087,10 +11027,10 @@ def gen_ff_data(
         - US: CRSP CIZ common shares of US companies on NYSE/AMEX/NASDAQ, NYSE
           breakpoints. The unit is the company (_ff_us_firm_map): its share
           classes combine as securities in a portfolio (ff_load_panel), with
-          ME = JKP's me_company and the return weighted by class ME at t-1. A
-          permco whose classes link to different Compustat records is split by
-          record, so a tracking stock is its own firm, and a security relisted
-          under the same permco is a new firm. A company is NYSE if any class is. Daily weights use the CIZ sum over the classes.
+          ME = JKP's me_company and the return weighted by class ME at t-1. The
+          company is the CRSP permco as it is, without French's hand splits. A
+          company is NYSE if any class is. Daily weights use the CIZ sum over the
+          classes.
         - Elsewhere: JKP's main sample with ME, per-country breakpoints, and the
           FACTOR_MIN_STOCKS_BP / FACTOR_MIN_STOCKS_PF minimums.
         - Returns, every country: JKP's world_msf/world_dsf, so US returns include

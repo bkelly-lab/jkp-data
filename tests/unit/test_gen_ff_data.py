@@ -504,9 +504,9 @@ _CIZ_COMMON = {
 }
 
 
-def _firm_map(rows: list[tuple[int, int, bool]]) -> pl.DataFrame:
-    """[permno, id, split] rows, the _ff_us_firm_map output."""
-    schema = {"permno": pl.Int64, "id": pl.Int64, "split": pl.Boolean}
+def _firm_map(rows: list[tuple[int, int]]) -> pl.DataFrame:
+    """[permno, id] rows, the _ff_us_firm_map output."""
+    schema = {"permno": pl.Int64, "id": pl.Int64}
     return pl.DataFrame(rows, schema=schema, orient="row")
 
 
@@ -520,54 +520,38 @@ def _month_ends(first: date, n: int) -> list[date]:
 
 
 class TestFFUsFirmMap:
-    """_ff_us_firm_map: permcos become firms; a permco whose classes link to
-    different gvkeys is split by gvkey; a later listing is a new firm."""
+    """_ff_us_firm_map: the firm is the permco, its id the smallest permno."""
 
     @staticmethod
-    def _run(test_paths) -> dict[int, dict]:
-        # permno, permco, first month, months, gvkey
+    def _run(test_paths) -> dict[int, int]:
+        # permno, permco, first month, months
         classes = [
-            (2, 100, date(2000, 1, 31), 6, "g1"),
-            (1, 100, date(2000, 3, 31), 4, "g1"),  # overlaps 2: same firm
-            (3, 200, date(2000, 1, 31), 2, "g3"),
-            (4, 200, date(2000, 4, 30), 3, "g3"),  # starts after 3 ended: new firm
-            (5, 300, date(2000, 1, 31), 6, "g5"),
-            (6, 300, date(2000, 1, 31), 6, "g6"),  # tracking stock of 5: its own firm
-            (7, 300, date(2000, 1, 31), 6, "g5"),  # second class of 5
+            (2, 100, date(2000, 1, 31), 6),
+            (1, 100, date(2000, 3, 31), 4),  # second class
+            (3, 200, date(2000, 1, 31), 2),
+            (4, 200, date(2000, 4, 30), 3),  # relisting under the same permco
+            (5, 300, date(2000, 1, 31), 6),
         ]
         msf = [
             {"permno": p, "permco": c, "mthcaldt": d, **_CIZ_COMMON}
-            for p, c, first, n, _ in classes
+            for p, c, first, n in classes
             for d in _month_ends(first, n)
         ]
         pl.DataFrame(msf).write_parquet(test_paths.raw_tables_dir / "crsp_msf_v2.parquet")
-        pl.DataFrame(
-            {
-                "gvkey": [g for *_, g in classes],
-                "linktype": ["LC"] * len(classes),
-                "lpermno": [p for p, *_ in classes],
-                "linkdt": [date(1999, 1, 1)] * len(classes),
-                "linkenddt": [None] * len(classes),
-            },
-            schema_overrides={"linkenddt": pl.Date},
-        ).write_parquet(test_paths.raw_tables_dir / "crsp_ccmxpf_lnkhist.parquet")
         out = af._ff_us_firm_map(test_paths)
         assert out["permno"].is_duplicated().sum() == 0
-        return {r["permno"]: r for r in out.iter_rows(named=True)}
+        return dict(out.iter_rows())
 
-    def test_overlapping_classes_are_one_firm_with_smallest_permno(self, test_paths):
+    def test_classes_of_a_permco_are_one_firm_with_smallest_permno(self, test_paths):
         r = self._run(test_paths)
-        assert [r[p]["id"] for p in (1, 2)] == [1, 1]
-        assert not r[1]["split"]
+        assert [r[p] for p in (1, 2)] == [1, 1]
 
-    def test_later_listing_is_a_new_firm(self, test_paths):
+    def test_relisting_stays_in_the_permco(self, test_paths):
         r = self._run(test_paths)
-        assert [r[p]["id"] for p in (3, 4)] == [3, 4]
+        assert [r[p] for p in (3, 4)] == [3, 3]
 
-    def test_permco_split_by_gvkey(self, test_paths):
-        r = self._run(test_paths)
-        assert [r[p]["id"] for p in (5, 6, 7)] == [5, 6, 5]
-        assert all(r[p]["split"] for p in (5, 6, 7))
+    def test_single_class_keeps_its_permno(self, test_paths):
+        assert self._run(test_paths)[5] == 5
 
 
 # =============================================================================
@@ -641,7 +625,7 @@ class TestFFAnnualSignals:
                 (US_EXCNTRY, 31, 70.0),
             ]
         )
-        firm_map = _firm_map([(30, 30, False), (31, 31, False)])
+        firm_map = _firm_map([(30, 30), (31, 31)])
         return _annual_signals(test_paths, monkeypatch, records, panel, firm_map)
 
     def test_row_dec_me_and_beme(self, test_paths, monkeypatch):
@@ -715,14 +699,14 @@ class TestFFAnnualSignalsFirms:
         )
         firm_map = _firm_map(
             [
-                (40, 40, False),
-                (41, 40, False),
-                (50, 50, True),
-                (51, 51, True),
-                (60, 60, False),
-                (61, 60, False),
-                (70, 70, False),
-                (71, 70, False),
+                (40, 40),
+                (41, 40),
+                (50, 50),
+                (51, 51),
+                (60, 60),
+                (61, 60),
+                (70, 70),
+                (71, 70),
             ]
         )
         return _annual_signals(test_paths, monkeypatch, records, panel, firm_map)
@@ -742,7 +726,7 @@ class TestFFAnnualSignalsFirms:
         r = self._run(test_paths, monkeypatch)[70]
         assert (r["be"], r["op"]) == (8.0, 0.1)
 
-    def test_split_firm_dec_me_comes_from_the_panel(self, test_paths, monkeypatch):
+    def test_firm_dec_me_comes_from_the_panel(self, test_paths, monkeypatch):
         r = self._run(test_paths, monkeypatch)[50]
         assert r["dec_me"] == 70.0
         assert r["beme"] == pytest.approx(20.0 / 70.0)
@@ -853,7 +837,7 @@ class TestFFUniverseRows:
                     "ret_lag_dif": 7,
                 },
                 {"id": 2, "eom": jun, "primaryexch": "Q", "me": 11.0, "me_company": 44.0},
-                {"id": 3, "eom": jun, "primaryexch": "N", "me": 20.0, "me_company": 100.0},  # split
+                {"id": 3, "eom": jun, "primaryexch": "N", "me": 20.0, "me_company": 100.0},
                 {
                     "id": 101,
                     "eom": jun,
@@ -874,7 +858,7 @@ class TestFFUniverseRows:
                 {"id": 104, "eom": jun, "excntry": "DEU", "source_crsp": 0, "size_grp": "mega"},
             ],
         )
-        firm_map = _firm_map([(1, 1, False), (2, 2, False), (3, 3, True)])
+        firm_map = _firm_map([(1, 1), (2, 2), (3, 3)])
         out = _ff_universe_rows(test_paths, "monthly", firm_map).collect()
         return {r["id"]: r for r in out.filter(pl.col("date") == jun).iter_rows(named=True)}
 
@@ -889,10 +873,6 @@ class TestFFUniverseRows:
     def test_us_bp_pool_is_nyse_only(self, test_paths):
         out = self._monthly(test_paths)
         assert [out[i]["bp_pool"] for i in (1, 2, 3)] == [True, False, True]
-
-    def test_us_split_permco_has_no_company_me(self, test_paths):
-        out = self._monthly(test_paths)
-        assert [out[i]["company_me"] for i in (1, 3)] == [True, False]
 
     def test_other_country_rule_columns(self, test_paths):
         r = self._monthly(test_paths)[101]
@@ -946,7 +926,7 @@ class TestFFUniverseRows:
                 {"id": 102, "eom": eom, "excntry": "GBR", "source_crsp": 0, "size_grp": "micro"},
             ],
         )
-        firm_map = _firm_map([(1, 1, False), (2, 2, False)])
+        firm_map = _firm_map([(1, 1), (2, 2)])
         out = _ff_universe_rows(test_paths, "daily", firm_map).collect()
         r = {x["id"]: x for x in out.iter_rows(named=True)}
         assert [r[i]["bp_pool"] for i in (1, 2, 101, 102)] == [True, False, True, False]
@@ -963,8 +943,7 @@ class TestFFUniverseRows:
 class TestFFLoadPanel:
     """ff_load_panel: one row per FF firm and date. Class rows come from the
     world files, with usincflg (and daily primaryexch) from raw CIZ. Class returns are
-    weighted by class ME at t-1; monthly ME is JKP's me_company (the firm's classes'
-    sum when the permco is split); returns are JKP's CRSP returns, not raw CIZ."""
+    weighted by class ME at t-1; monthly ME is JKP's me_company; returns are JKP's CRSP returns, not raw CIZ."""
 
     @staticmethod
     def _run_monthly(test_paths) -> pl.DataFrame:
@@ -1018,14 +997,14 @@ class TestFFLoadPanel:
         )
         firm_map = _firm_map(
             [
-                (1, 1, False),
-                (2, 1, False),
-                (3, 3, False),
-                (4, 4, True),
-                (5, 4, True),
-                (6, 6, True),
-                (7, 7, False),
-                (8, 8, False),
+                (1, 1),
+                (2, 1),
+                (3, 3),
+                (4, 4),
+                (5, 4),
+                (6, 4),
+                (7, 7),
+                (8, 8),
             ]
         )
         out = ff_load_panel(test_paths, "monthly", firm_map)
@@ -1047,10 +1026,9 @@ class TestFFLoadPanel:
 
     def test_universe(self, test_paths):
         """3 (raw usincflg N), 7 (world common 0), 8 (exchange X) and 9 (Compustat)
-        are out; the tracking stock 6 is its own firm, with its own ME."""
+        are out."""
         out = self._run_monthly(test_paths)
-        assert out["id"].to_list() == [1, 4, 6]
-        assert out.row(2, named=True)["me"] == 75.0
+        assert out["id"].to_list() == [1, 4]
 
     def test_two_class_firm(self, test_paths, tolerance):
         """Return weighted by May class ME (30, 10); ME is me_company; NYSE if any
@@ -1060,12 +1038,11 @@ class TestFFLoadPanel:
         assert (r["excntry"], r["me"], r["bp_pool"], r["prc"]) == (US_EXCNTRY, 44.0, True, 12.0)
         assert (r["ret_lag_dif"], r["needs_me"]) == (0, False)
 
-    def test_split_firm_me_sums_its_own_classes(self, test_paths):
-        """Split permco: ME is the firm's classes (20 + 5), not me_company (100,
-        which includes class 6). A class with no ME at t-1 keeps the
-        firm's return from the classes that have one, so with none it is null."""
+    def test_three_class_firm_me_is_me_company(self, test_paths):
+        """Classes 4, 5 and 6 are one permco: ME is me_company (100). No class has
+        ME at t-1, so the firm's return is null."""
         r = self._run_monthly(test_paths).row(1, named=True)
-        assert r["me"] == 25.0
+        assert r["me"] == 100.0
         assert r["ret"] is None
 
     def test_daily_from_world_dsf(self, test_paths):
@@ -1086,7 +1063,7 @@ class TestFFLoadPanel:
             ],
         )
         _write_world_msf(test_paths, [{"id": 1, "eom": day}])
-        firm_map = _firm_map([(1, 1, False), (2, 2, False)])
+        firm_map = _firm_map([(1, 1), (2, 2)])
         out = ff_load_panel(test_paths, "daily", firm_map)
         # Daily primaryexch comes from raw CIZ: permno 2 trades on exchange X.
         assert out.select("id", "ret", "me").rows() == [(1, -0.29, 10.0)]

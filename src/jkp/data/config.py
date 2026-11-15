@@ -298,11 +298,6 @@ FF_DFF_MERGE_YEAR = 1954
 # balance-sheet fields absent from the current vintage), and where both are
 # non-null the sources agree (median |log ratio| ~ 0).
 
-# CCM link types the FF firm map (_ff_us_firm_map) uses to split permcos, the
-# same set the accounting stage uses (LC, LU, LS); LN/LX/LD links and non-L
-# types are dropped.
-CCM_LINKTYPES = ["LC", "LU", "LS"]
-
 # Early-link rule for the early-1960s Compustat expansion (ff_link_accounting).
 # Compustat added ~200 (mostly small) NYSE/AMEX firms per year around 1964-66
 # and backfilled their fy1962-64 statements, but the CCM link, and so the gvkey
