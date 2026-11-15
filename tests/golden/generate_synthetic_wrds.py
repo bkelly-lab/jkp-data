@@ -948,7 +948,7 @@ def gen_world_msf(
     row_df = row_df.sort(["id", "eom"]).with_columns(me_lag1=pl.col("me").shift(1).over("id"))
     prev_eom = pl.col("eom").shift(1).over("id")
     # ret_lag_dif mirrors the production world_msf column (calendar months since
-    # the prior observation; null on the first row) — ff_load_world_panel nulls
+    # the prior observation; null on the first row) — ff_factor_rows nulls
     # gap-spanning returns off it.
     world = (
         pl.concat([us, row_df], how="diagonal_relaxed")

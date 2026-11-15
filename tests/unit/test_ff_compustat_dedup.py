@@ -8,7 +8,7 @@ are JKP's values at the kept record.
 
 Covers:
   - _ff_load_funda_global     (ROW per-source collapse)
-  - ff_link_compustat_us      (US CRSP permno -> gvkey through world_msf, early links)
+  - ff_link_accounting      (every security -> gvkey through world_msf; US CRSP early links)
   - _jkp_annual_acc           (FF OP definition, at_gr1 from achars_world)
 """
 
@@ -21,7 +21,7 @@ import polars as pl
 from jkp.data.aux_functions import (
     _ff_load_funda_global,
     _jkp_annual_acc,
-    ff_link_compustat_us,
+    ff_link_accounting,
     ff_load_world_compustat,
 )
 
@@ -126,7 +126,7 @@ def test_ff_load_funda_global_indfmt_rule(test_paths):
 
 
 # =============================================================================
-# US path: ff_link_compustat_us links a CRSP permno to its fiscal records
+# ff_link_accounting links a security to its fiscal records
 # through the gvkey on the security's June row in world_msf.
 # =============================================================================
 
@@ -156,7 +156,7 @@ def _write_us_msf(test_paths, rows):
     )
 
 
-def test_ff_link_compustat_us_through_june_gvkey(test_paths):
+def test_ff_link_accounting_through_june_gvkey(test_paths):
     # The June 2020 row links fiscal 2019, the June 2021 row fiscal 2020; fiscal
     # 2018 has no June 2019 row and stays unlinked.
     _write_us_msf(
@@ -164,20 +164,39 @@ def test_ff_link_compustat_us_through_june_gvkey(test_paths):
         [(10001, date(2020, 6, 30), "001"), (10001, date(2021, 6, 30), "001")],
     )
     comp = _comp([("001", y, 50.0 + y - 2018, 0.1, 0.2) for y in (2018, 2019, 2020)])
-    out = ff_link_compustat_us(test_paths, comp)
-    assert out.select("permno", "year", "be").rows() == [(10001, 2019, 51.0), (10001, 2020, 52.0)]
+    out = ff_link_accounting(test_paths, comp)
+    assert out.select("id", "year", "be").rows() == [(10001, 2019, 51.0), (10001, 2020, 52.0)]
 
 
-def test_ff_link_compustat_us_june_row_without_gvkey(test_paths):
+def test_ff_link_accounting_ex_us_security_links_through_june_gvkey(test_paths):
+    # A source_crsp 0 security links through its June-row gvkey like a CRSP one, but
+    # gets no early link: its June 1963 row has no gvkey, so fiscal 1962 stays unlinked.
+    pl.DataFrame(
+        [
+            (20001, date(2020, 6, 30), "001"),
+            (20002, date(1963, 6, 30), None),
+            (20002, date(1965, 1, 31), "002"),
+        ],
+        schema={"id": pl.Int64, "eom": pl.Date, "gvkey": pl.String},
+        orient="row",
+    ).with_columns(excntry=pl.lit("GBR"), source_crsp=pl.lit(0)).write_parquet(
+        test_paths.interim_dir / "world_msf.parquet"
+    )
+    comp = _comp([("001", 2019, 50.0, 0.1, 0.2), ("002", 1962, 70.0, None, None)])
+    out = ff_link_accounting(test_paths, comp)
+    assert out.select("id", "year", "gvkey", "be").rows() == [(20001, 2019, "001", 50.0)]
+
+
+def test_ff_link_accounting_june_row_without_gvkey(test_paths):
     # Outside the early-link years, a June row without a gvkey links nothing.
     _write_us_msf(
         test_paths,
         [(10001, date(2020, 6, 30), None), (10001, date(2020, 7, 31), "001")],
     )
-    assert ff_link_compustat_us(test_paths, _comp([("001", 2019, 50.0, None, None)])).height == 0
+    assert ff_link_accounting(test_paths, _comp([("001", 2019, 50.0, None, None)])).height == 0
 
 
-def test_ff_link_compustat_us_record_without_jkp_values_dropped(test_paths):
+def test_ff_link_accounting_record_without_jkp_values_dropped(test_paths):
     # JKP has no be_x, ope_x or at_gr1 for the record (here: seq missing), so it
     # leaves the fiscal records and the US sorts.
     _write_funda(
@@ -194,7 +213,7 @@ def test_ff_link_compustat_us_record_without_jkp_values_dropped(test_paths):
     _write_achars_world(test_paths.interim_dir / "achars_world.parquet", [])
     _write_us_msf(test_paths, [(10001, date(2020, 6, 30), "001")])
     comp = ff_load_world_compustat(test_paths, _jkp_annual_acc(test_paths))
-    assert ff_link_compustat_us(test_paths, comp).height == 0
+    assert ff_link_accounting(test_paths, comp).height == 0
 
 
 class TestEarlyLinks:
@@ -204,7 +223,7 @@ class TestEarlyLinks:
     @staticmethod
     def _run(test_paths, fiscal_year, gvkey, msf_rows):
         _write_us_msf(test_paths, msf_rows)
-        return ff_link_compustat_us(test_paths, _comp([(gvkey, fiscal_year, 50.0, None, None)]))
+        return ff_link_accounting(test_paths, _comp([(gvkey, fiscal_year, 50.0, None, None)]))
 
     def test_backfilled_year_linked(self, test_paths):
         # fy1962 feeds June 1963; the permno's first gvkey starts January 1965.
@@ -214,7 +233,7 @@ class TestEarlyLinks:
             "001",
             [(10001, date(1963, 6, 30), None), (10001, date(1965, 1, 31), "001")],
         )
-        assert out.select("permno", "year", "gvkey").rows() == [(10001, 1962, "001")]
+        assert out.select("id", "year", "gvkey").rows() == [(10001, 1962, "001")]
 
     def test_no_early_link_after_gate(self, test_paths):
         # fy1970 feeds June 1971, after FF_CCM_BACKDATE_THROUGH.
@@ -268,8 +287,8 @@ class TestEarlyLinks:
             [(10001, date(1963, 6, 30), "001"), (10001, date(1965, 1, 31), "002")],
         )
         comp = _comp([("001", 1962, 50.0, None, None), ("002", 1962, 70.0, None, None)])
-        out = ff_link_compustat_us(test_paths, comp)
-        assert out.select("permno", "year", "gvkey").rows() == [(10001, 1962, "001")]
+        out = ff_link_accounting(test_paths, comp)
+        assert out.select("id", "year", "gvkey").rows() == [(10001, 1962, "001")]
 
 
 # =============================================================================
