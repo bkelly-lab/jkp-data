@@ -866,7 +866,7 @@ class TestFFUniverseRows:
         r = self._monthly(test_paths)[1]
         assert r["ret_lag_dif"] == 0
         assert r["needs_me"] is False
-        assert r["company_me"] is True
+        assert r["me_company"] == 44.0
         assert r["w_cls"] == 30.0  # the class's ME at t-1
         assert r["bp_pool"] is True  # NYSE
 
@@ -878,7 +878,7 @@ class TestFFUniverseRows:
         r = self._monthly(test_paths)[101]
         assert r["ret_lag_dif"] == 3  # the world file's value
         assert r["needs_me"] is True
-        assert r["company_me"] is False
+        assert r["me_company"] is None
         assert r["w_cls"] is None
         assert r["bp_pool"] is True
 
@@ -932,7 +932,7 @@ class TestFFUniverseRows:
         assert [r[i]["bp_pool"] for i in (1, 2, 101, 102)] == [True, False, True, False]
         assert [r[i]["ret_lag_dif"] for i in (1, 2, 101)] == [0, 0, 4]
         assert [r[i]["needs_me"] for i in (1, 101)] == [False, True]
-        assert r[1]["company_me"] is False
+        assert r[1]["me_company"] is None
 
 
 # =============================================================================

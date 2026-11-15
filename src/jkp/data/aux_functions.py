@@ -10268,9 +10268,9 @@ def _ff_universe_rows(
           AMEX or NASDAQ; the raw CIZ files add only what the world files don't
           carry, usincflg and, daily, primaryexch. The unit (id) is the FF firm
           (_ff_us_firm_map), the permco. w_cls, the class's ME at t-1, weights the
-          classes' returns. Monthly ME is JKP's me_company, all of the company's
-          classes (company_me). NYSE-listed classes form the breakpoint pool. CIZ returns span no gaps, so ret_lag_dif
-          is 0.
+          classes' returns. Monthly rows carry JKP's me_company, the ME of all the
+          company's classes; daily rows have none. NYSE-listed classes form the
+          breakpoint pool. CIZ returns span no gaps, so ret_lag_dif is 0.
         - Elsewhere: JKP's main sample (_ff_world_universe); the unit is the
           security. size_grp small, large or mega forms the breakpoint pool (daily
           rows take it from the month's world_msf row). Rows without ME stay out of
@@ -10286,7 +10286,7 @@ def _ff_universe_rows(
         3) Both with the rule columns, concatenated.
     Output:
         Lazy [excntry, id, date, ret, me, me_company, prc, ret_lag_dif, w_cls,
-        company_me, bp_pool, needs_me], one row per US class or other security.
+        bp_pool, needs_me], one row per US class or other security.
     """
     monthly = freq == "monthly"
     permno = pl.col("permno").cast(pl.Int64)
@@ -10342,7 +10342,6 @@ def _ff_universe_rows(
             "prc",
             ret_lag_dif=pl.lit(0),
             w_cls=pl.col("me").shift(1).over("permno"),
-            company_me=pl.lit(monthly),
             bp_pool=pl.col("primaryexch") == "N",
             needs_me=pl.lit(False),
         )
@@ -10366,7 +10365,6 @@ def _ff_universe_rows(
         prc="prc",
         ret_lag_dif="ret_lag_dif",
         w_cls=pl.lit(None, dtype=pl.Float64),
-        company_me=pl.lit(False),
         bp_pool=pl.col("size_grp").is_in(["small", "large", "mega"]),
         needs_me=pl.lit(True),
     )
@@ -10381,8 +10379,8 @@ def ff_load_panel(
         The FF panel: one row per unit and date in the FF universe, with the same
         aggregation in every country. A US firm combines its share classes as
         securities in a portfolio: the return weighted by each class's ME at t-1
-        (_ff_class_vw), ME JKP's me_company monthly and the sum of the classes' me
-        daily, and NYSE if any class is. A unit with one row
+        (_ff_class_vw), ME JKP's me_company where the rows carry it (US monthly)
+        and otherwise the sum of the rows' me, and NYSE if any row is. A unit with one row
         that date keeps that row's values, so elsewhere the panel is the security's
         own rows. Rows without ME stay in: momentum counts a priced row whose shares
         are missing.
@@ -10399,10 +10397,9 @@ def ff_load_panel(
         .group_by("excntry", "id", "date")
         .agg(
             _ff_class_vw("ret"),
-            me=pl.when(pl.col("company_me").any())
-            .then(pl.col("me_company").max())
-            .when(me.is_not_null().any())
-            .then(me.sum()),
+            me=pl.coalesce(
+                pl.col("me_company").max(), pl.when(me.is_not_null().any()).then(me.sum())
+            ),
             prc=pl.col("prc").abs().max(),
             ret_lag_dif=pl.col("ret_lag_dif").max(),
             bp_pool=pl.col("bp_pool").any(),
