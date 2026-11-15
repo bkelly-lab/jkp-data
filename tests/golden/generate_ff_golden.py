@@ -28,7 +28,6 @@ GOLDEN_DIR = Path(__file__).parent / "fixtures" / "ff"
 OUTPUTS = (
     "ff_factors_monthly.parquet",
     "ff_factors_daily.parquet",
-    "ff_characteristics.parquet",
 )
 
 
@@ -46,7 +45,6 @@ def regenerate(out_dir: Path) -> None:
                 paths,
                 monthly_factors_path="ff_factors_monthly.parquet",
                 daily_factors_path="ff_factors_daily.parquet",
-                chars_path="ff_characteristics.parquet",
             )
         for name in OUTPUTS:
             shutil.copy2(paths.interim_dir / name, out_dir / name)

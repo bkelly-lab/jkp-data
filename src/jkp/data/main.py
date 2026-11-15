@@ -144,7 +144,6 @@ def run_pipeline(
         paths,
         interim / "ff_factors_monthly.parquet",
         interim / "ff_factors_daily.parquet",
-        interim / "ff_characteristics.parquet",
     )
     ap_factors(
         paths,

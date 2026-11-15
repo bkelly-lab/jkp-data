@@ -1,8 +1,8 @@
 """Golden-fixture regression test for ``gen_ff_data``.
 
 Runs the real builder against the generated synthetic slices and
-compares ``ff_factors_monthly.parquet``, ``ff_factors_daily.parquet``,
-and ``ff_characteristics.parquet`` against the committed golden parquets
+compares ``ff_factors_monthly.parquet`` and ``ff_factors_daily.parquet``
+against the committed golden parquets
 within ``rtol=1e-6, atol=1e-10`` (key columns matched exactly).
 
 The synthetic inputs are generated once per session by the ``synthetic_wrds_dir``
@@ -32,7 +32,6 @@ GOLDEN_DIR = Path(__file__).parent / "fixtures" / "ff"
 OUTPUTS = {
     "ff_factors_monthly.parquet": ["excntry", "eom"],
     "ff_factors_daily.parquet": ["excntry", "date"],
-    "ff_characteristics.parquet": ["id", "eom"],
 }
 
 
@@ -46,7 +45,6 @@ def test_gen_ff_data_golden(
             test_paths,
             monthly_factors_path="ff_factors_monthly.parquet",
             daily_factors_path="ff_factors_daily.parquet",
-            chars_path="ff_characteristics.parquet",
         )
 
     regen = request.config.getoption("--regen-golden")

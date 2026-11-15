@@ -10630,8 +10630,7 @@ def ff_annual_characteristics(
         FF book equity, operating profitability, investment and December ME for
         every security, keyed by the July-June year they apply to:
         port_year y uses fiscal year y-1 accounting and December y-1 ME. The
-        published characteristics and the June sorts both read this table, so a
-        sort value always equals the published value. US CRSP securities are
+        June sorts read this table. US CRSP securities are
         keyed by their FF firm (_ff_us_firm_map), so every share class of a
         company carries the company's values.
     Steps:
@@ -11384,7 +11383,6 @@ def gen_ff_data(
     paths: DataPaths,
     monthly_factors_path: Path,
     daily_factors_path: Path,
-    chars_path: Path,
     freqs: tuple[str, ...] = ("monthly", "daily"),
     min_stocks_bp: int = FACTOR_MIN_STOCKS_BP,
     min_stocks_pf: int = FACTOR_MIN_STOCKS_PF,
@@ -11400,10 +11398,9 @@ def gen_ff_data(
         Historical book equity from Ken French's data library:
         https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/data_library.html#BookEquity
 
-        Build FF3/FF5/UMD factors and the FF characteristics for all countries.
-        Each characteristic is built once, in ff_annual_characteristics; the
-        published file and the June sorts read that table, and the sample screens
-        decide only which stocks enter a sort.
+        Build FF3/FF5/UMD factor series for all countries. Each characteristic
+        is built once, in ff_annual_characteristics, for the June sorts; the
+        sample screens decide only which stocks enter a sort.
         - US: CRSP CIZ common shares of US companies on NYSE/AMEX/NASDAQ, NYSE
           breakpoints. The unit is the company (_ff_us_firm_map): its share
           classes combine as securities in a portfolio (ff_load_crsp_panel), with
@@ -11448,8 +11445,6 @@ def gen_ff_data(
           minus 1) at the fiscal year t-1 record. French's US rule grows assets
           over consecutive fiscal years whatever their spacing; at_gr1 is null
           after a change of fiscal year-end and is growth in USD.
-        - Timing: a characteristic at eom t is the value that sorted the portfolio
-          held in month t, so the annual ones are constant from July to June.
         - Daily FF3/FF5 hold the monthly June portfolios; only returns and weights
           are daily.
         - UMD, every country: sorts on the compounded t-12..t-2 return (the
@@ -11461,19 +11456,15 @@ def gen_ff_data(
         1) Map US permnos to FF firms. Read JKP's annual accounting once; load the
            fiscal records with JKP's values; link them to US CRSP permnos and add the
            DFF BE (crsp_acc); build the annual characteristics table.
-        2) Write the characteristics: every world_msf security-month (a US CRSP
-           security through its firm) joined to the annual table on its July-June
-           year.
-        3) Collect the monthly US and ex-US panels; their June rows joined to the
+        2) Collect the monthly US and ex-US panels; their June rows joined to the
            annual table; breakpoints and portfolio assignments.
-        4) Monthly factors: FF3/FF5 from the June assignments, UMD from the
+        3) Monthly factors: FF3/FF5 from the June assignments, UMD from the
            monthly momentum signal.
-        5) Daily factors: the same June assignments on the daily panel, UMD from
+        4) Daily factors: the same June assignments on the daily panel, UMD from
            the daily momentum signal.
     Output:
         - <monthly_factors_path> [excntry, eom, smb_ff3, smb_ff5, hml_ff, rmw_ff, cma_ff, umd_ff]
         - <daily_factors_path> [excntry, date, smb_ff3, smb_ff5, hml_ff, rmw_ff, cma_ff, umd_ff]
-        - <chars_path> [eom, id, beme_ff, op_ff, inv_ff], sorted by (eom, excntry, id)
     """
     comp_world = ff_load_world_compustat(paths, _jkp_annual_acc(paths))
     crsp_acc = ff_link_compustat_us(paths, comp_world, use_dff=FF_USE_DFF_BE)
@@ -11481,27 +11472,6 @@ def gen_ff_data(
     # Collected once: the annual table and the monthly panel both read it.
     crsp_m = ff_load_crsp_panel(paths, "monthly", firm_map).collect().lazy()
     annual = ff_annual_characteristics(paths, crsp_acc, comp_world, crsp_m, firm_map)
-    (
-        pl.scan_parquet(paths.interim_dir / "world_msf.parquet")
-        .select("excntry", pl.col("id").cast(pl.Int64), date=pl.col("eom"))
-        # permno -> firm; Compustat ids (>= 100,100,001) never match a permno
-        .join(
-            firm_map.lazy().select("permno", firm="id"), left_on="id", right_on="permno", how="left"
-        )
-        .with_columns(_ff_port_year(), firm=pl.coalesce("firm", "id"))
-        .join(
-            annual.lazy(), left_on=["firm", "port_year"], right_on=["id", "port_year"], how="left"
-        )
-        .sort("date", "excntry", "id")
-        .select(
-            eom=pl.col("date"),
-            id=pl.col("id"),
-            beme_ff=pl.col("beme"),
-            op_ff=pl.col("op"),
-            inv_ff=pl.col("inv"),
-        )
-        .sink_parquet(chars_path)
-    )
 
     panel_m = pl.concat(
         pl.collect_all(
