@@ -504,9 +504,9 @@ _CIZ_COMMON = {
 }
 
 
-def _firm_map(rows: list[tuple[int, int, bool, bool]]) -> pl.DataFrame:
-    """[permno, id, split, tracking] rows, the _ff_us_firm_map output."""
-    schema = {"permno": pl.Int64, "id": pl.Int64, "split": pl.Boolean, "tracking": pl.Boolean}
+def _firm_map(rows: list[tuple[int, int, bool]]) -> pl.DataFrame:
+    """[permno, id, split] rows, the _ff_us_firm_map output."""
+    schema = {"permno": pl.Int64, "id": pl.Int64, "split": pl.Boolean}
     return pl.DataFrame(rows, schema=schema, orient="row")
 
 
@@ -524,7 +524,7 @@ class TestFFUsFirmMap:
     different gvkeys is split by gvkey; a later listing is a new firm."""
 
     @staticmethod
-    def _run(test_paths, monkeypatch) -> dict[int, dict]:
+    def _run(test_paths) -> dict[int, dict]:
         # permno, permco, first month, months, gvkey
         classes = [
             (2, 100, date(2000, 1, 31), 6, "g1"),
@@ -532,7 +532,7 @@ class TestFFUsFirmMap:
             (3, 200, date(2000, 1, 31), 2, "g3"),
             (4, 200, date(2000, 4, 30), 3, "g3"),  # starts after 3 ended: new firm
             (5, 300, date(2000, 1, 31), 6, "g5"),
-            (6, 300, date(2000, 1, 31), 6, "g6"),  # tracking stock of 5
+            (6, 300, date(2000, 1, 31), 6, "g6"),  # tracking stock of 5: its own firm
             (7, 300, date(2000, 1, 31), 6, "g5"),  # second class of 5
         ]
         msf = [
@@ -551,30 +551,23 @@ class TestFFUsFirmMap:
             },
             schema_overrides={"linkenddt": pl.Date},
         ).write_parquet(test_paths.raw_tables_dir / "crsp_ccmxpf_lnkhist.parquet")
-        csv = test_paths.base_dir / "ff_tracking_stocks.csv"
-        csv.write_text("permno\n6\n")
-        monkeypatch.setattr(af, "get_ff_tracking_stocks_path", lambda: csv)
         out = af._ff_us_firm_map(test_paths)
         assert out["permno"].is_duplicated().sum() == 0
         return {r["permno"]: r for r in out.iter_rows(named=True)}
 
-    def test_overlapping_classes_are_one_firm_with_smallest_permno(self, test_paths, monkeypatch):
-        r = self._run(test_paths, monkeypatch)
+    def test_overlapping_classes_are_one_firm_with_smallest_permno(self, test_paths):
+        r = self._run(test_paths)
         assert [r[p]["id"] for p in (1, 2)] == [1, 1]
         assert not r[1]["split"]
 
-    def test_later_listing_is_a_new_firm(self, test_paths, monkeypatch):
-        r = self._run(test_paths, monkeypatch)
+    def test_later_listing_is_a_new_firm(self, test_paths):
+        r = self._run(test_paths)
         assert [r[p]["id"] for p in (3, 4)] == [3, 4]
 
-    def test_permco_split_by_gvkey(self, test_paths, monkeypatch):
-        r = self._run(test_paths, monkeypatch)
+    def test_permco_split_by_gvkey(self, test_paths):
+        r = self._run(test_paths)
         assert [r[p]["id"] for p in (5, 6, 7)] == [5, 6, 5]
         assert all(r[p]["split"] for p in (5, 6, 7))
-
-    def test_tracking_flag_from_list(self, test_paths, monkeypatch):
-        r = self._run(test_paths, monkeypatch)
-        assert [p for p in r if r[p]["tracking"]] == [6]
 
 
 # =============================================================================
@@ -648,7 +641,7 @@ class TestFFAnnualSignals:
                 (US_EXCNTRY, 31, 70.0),
             ]
         )
-        firm_map = _firm_map([(30, 30, False, False), (31, 31, False, False)])
+        firm_map = _firm_map([(30, 30, False), (31, 31, False)])
         return _annual_signals(test_paths, monkeypatch, records, panel, firm_map)
 
     def test_row_dec_me_and_beme(self, test_paths, monkeypatch):
@@ -711,7 +704,7 @@ class TestFFAnnualSignalsFirms:
                 (None, 70, 8.0, None, None, dff),
             ]
         )
-        # December rows of the firms; the tracking stock 51 is outside the panel
+        # December rows of the firms; 51 has none
         panel = _dec_panel(
             [
                 (US_EXCNTRY, 40, 100.0),
@@ -722,14 +715,14 @@ class TestFFAnnualSignalsFirms:
         )
         firm_map = _firm_map(
             [
-                (40, 40, False, False),
-                (41, 40, False, False),
-                (50, 50, True, False),
-                (51, 51, True, True),
-                (60, 60, False, False),
-                (61, 60, False, False),
-                (70, 70, False, False),
-                (71, 70, False, False),
+                (40, 40, False),
+                (41, 40, False),
+                (50, 50, True),
+                (51, 51, True),
+                (60, 60, False),
+                (61, 60, False),
+                (70, 70, False),
+                (71, 70, False),
             ]
         )
         return _annual_signals(test_paths, monkeypatch, records, panel, firm_map)
@@ -754,9 +747,11 @@ class TestFFAnnualSignalsFirms:
         assert r["dec_me"] == 70.0
         assert r["beme"] == pytest.approx(20.0 / 70.0)
 
-    def test_tracking_stock_keeps_accounting_without_dec_me(self, test_paths, monkeypatch):
-        """A tracking stock never enters the panel: it keeps its accounting but has
-        no December ME, so it is out of every sort."""
+    def test_firm_without_december_row_keeps_accounting_without_dec_me(
+        self, test_paths, monkeypatch
+    ):
+        """A firm with no December row in the panel keeps its accounting but has no
+        December ME, so it is out of every sort."""
         r = self._run(test_paths, monkeypatch)[51]
         assert r["be"] == 10.0
         assert r["dec_me"] is None and r["beme"] is None
@@ -879,7 +874,7 @@ class TestFFUniverseRows:
                 {"id": 104, "eom": jun, "excntry": "DEU", "source_crsp": 0, "size_grp": "mega"},
             ],
         )
-        firm_map = _firm_map([(1, 1, False, False), (2, 2, False, False), (3, 3, True, False)])
+        firm_map = _firm_map([(1, 1, False), (2, 2, False), (3, 3, True)])
         out = _ff_universe_rows(test_paths, "monthly", firm_map).collect()
         return {r["id"]: r for r in out.filter(pl.col("date") == jun).iter_rows(named=True)}
 
@@ -951,7 +946,7 @@ class TestFFUniverseRows:
                 {"id": 102, "eom": eom, "excntry": "GBR", "source_crsp": 0, "size_grp": "micro"},
             ],
         )
-        firm_map = _firm_map([(1, 1, False, False), (2, 2, False, False)])
+        firm_map = _firm_map([(1, 1, False), (2, 2, False)])
         out = _ff_universe_rows(test_paths, "daily", firm_map).collect()
         r = {x["id"]: x for x in out.iter_rows(named=True)}
         assert [r[i]["bp_pool"] for i in (1, 2, 101, 102)] == [True, False, True, False]
@@ -1023,14 +1018,14 @@ class TestFFLoadPanel:
         )
         firm_map = _firm_map(
             [
-                (1, 1, False, False),
-                (2, 1, False, False),
-                (3, 3, False, False),
-                (4, 4, True, False),
-                (5, 4, True, False),
-                (6, 6, True, True),
-                (7, 7, False, False),
-                (8, 8, False, False),
+                (1, 1, False),
+                (2, 1, False),
+                (3, 3, False),
+                (4, 4, True),
+                (5, 4, True),
+                (6, 6, True),
+                (7, 7, False),
+                (8, 8, False),
             ]
         )
         out = ff_load_panel(test_paths, "monthly", firm_map)
@@ -1050,10 +1045,12 @@ class TestFFLoadPanel:
             "needs_me",
         ]
 
-    def test_universe_and_tracking(self, test_paths):
-        """3 (raw usincflg N), 7 (world common 0), 8 (exchange X), 9 (Compustat)
-        and the tracking stock 6 are out."""
-        assert self._run_monthly(test_paths)["id"].to_list() == [1, 4]
+    def test_universe(self, test_paths):
+        """3 (raw usincflg N), 7 (world common 0), 8 (exchange X) and 9 (Compustat)
+        are out; the tracking stock 6 is its own firm, with its own ME."""
+        out = self._run_monthly(test_paths)
+        assert out["id"].to_list() == [1, 4, 6]
+        assert out.row(2, named=True)["me"] == 75.0
 
     def test_two_class_firm(self, test_paths, tolerance):
         """Return weighted by May class ME (30, 10); ME is me_company; NYSE if any
@@ -1065,7 +1062,7 @@ class TestFFLoadPanel:
 
     def test_split_firm_me_sums_its_own_classes(self, test_paths):
         """Split permco: ME is the firm's classes (20 + 5), not me_company (100,
-        which includes the tracking stock). A class with no ME at t-1 keeps the
+        which includes class 6). A class with no ME at t-1 keeps the
         firm's return from the classes that have one, so with none it is null."""
         r = self._run_monthly(test_paths).row(1, named=True)
         assert r["me"] == 25.0
@@ -1089,7 +1086,7 @@ class TestFFLoadPanel:
             ],
         )
         _write_world_msf(test_paths, [{"id": 1, "eom": day}])
-        firm_map = _firm_map([(1, 1, False, False), (2, 2, False, False)])
+        firm_map = _firm_map([(1, 1, False), (2, 2, False)])
         out = ff_load_panel(test_paths, "daily", firm_map)
         # Daily primaryexch comes from raw CIZ: permno 2 trades on exchange X.
         assert out.select("id", "ret", "me").rows() == [(1, -0.29, 10.0)]

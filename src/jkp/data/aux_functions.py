@@ -64,7 +64,7 @@ from .config import (
     US_EXCNTRY,
 )
 from .output_writer import write_dataframe
-from .paths import DataPaths, get_dff_be_path, get_ff_tracking_stocks_path, get_fx_cad_backfill_path
+from .paths import DataPaths, get_dff_be_path, get_fx_cad_backfill_path
 from .wrds_connection import (
     _attach_wrds,
     _install_postgres_extension,
@@ -10211,8 +10211,9 @@ def _ff_us_firm_map(paths: DataPaths) -> pl.DataFrame:
     Description:
         The FF firm of each US CRSP permno. Fama and French form portfolios from
         companies (CRSP permcos) and split a permco by hand where its securities
-        are not one company; this map applies those splits by rule, plus the
-        hand-kept list of tracking stocks, resources/ff_tracking_stocks.csv.
+        are not one company; this map applies those splits by rule. A tracking
+        stock is its own firm and enters the sorts; Fama and French drop it by
+        hand, and no CRSP or Compustat field marks one.
     Steps:
         1) CIZ universe months of each permno, and the CCM links (CCM_LINKTYPES,
            any linkprim) active in each month.
@@ -10223,9 +10224,8 @@ def _ff_us_firm_map(paths: DataPaths) -> pl.DataFrame:
         3) Within a piece, a permno that starts after every earlier permno has
            ended starts a new firm (sequential listings).
         4) id = the firm's smallest permno, so a single-class firm keeps its permno.
-        5) tracking marks the listed tracking stocks, which stay out of the sorts.
     Output:
-        Eager [permno, id, split, tracking], one row per permno in the CIZ universe.
+        Eager [permno, id, split], one row per permno in the CIZ universe.
     """
     raw = paths.raw_tables_dir
     cls = (
@@ -10258,9 +10258,6 @@ def _ff_us_firm_map(paths: DataPaths) -> pl.DataFrame:
         .filter(pl.col("n_gvkey") > 1)
         .select("permco", "date")
     )
-    tracking = pl.read_csv(
-        get_ff_tracking_stocks_path(), columns=["permno"], schema_overrides={"permno": pl.Int64}
-    ).with_columns(tracking=pl.lit(True))
     last_gvkey = (
         lnk.sort("permno", "linkdt", "linkenddt", "gvkey", nulls_last=True)
         .group_by("permno")
@@ -10289,8 +10286,7 @@ def _ff_us_firm_map(paths: DataPaths) -> pl.DataFrame:
             .over(piece)
         )
         .with_columns(id=pl.col("permno").min().over([*piece, "seq"]))
-        .join(tracking, on="permno", how="left")
-        .select("permno", "id", "split", pl.col("tracking").fill_null(False))
+        .select("permno", "id", "split")
         .sort("permno")
     )
 
@@ -10330,7 +10326,7 @@ def _ff_universe_rows(
         - US: JKP's CRSP common-share rows of US-incorporated companies on NYSE,
           AMEX or NASDAQ; the raw CIZ files add only what the world files don't
           carry, usincflg and, daily, primaryexch. The unit (id) is the FF firm
-          (_ff_us_firm_map); tracking stocks are left out. w_cls, the class's ME at
+          (_ff_us_firm_map). w_cls, the class's ME at
           t-1, weights the classes' returns. Monthly ME is JKP's me_company (all of
           the company's classes) unless the permco is split (company_me). NYSE-listed
           classes form the breakpoint pool. CIZ returns span no gaps, so ret_lag_dif
@@ -10345,7 +10341,7 @@ def _ff_universe_rows(
         delistings that MthRet leaves out (MthDelFlg G).
     Steps:
         1) US: world CRSP common-share rows joined to raw CIZ rows with usincflg Y,
-           on N, A or Q; classes mapped to firms; tracking stocks dropped.
+           on N, A or Q; classes mapped to firms.
         2) Elsewhere: world rows under _ff_world_universe.
         3) Both with the rule columns, concatenated.
     Output:
@@ -10394,7 +10390,6 @@ def _ff_universe_rows(
         .join(raw.filter(pl.col("usincflg") == "Y"), on=["permno", "date"], how="inner")
         .filter(pl.col("primaryexch").is_in(["N", "A", "Q"]))
         .join(firm_map.lazy(), on="permno", how="left")
-        .filter(~pl.col("tracking").fill_null(False))
         .with_columns(id=pl.coalesce("id", "permno"))
         .sort("permno", "date")
         .select(
@@ -11092,12 +11087,10 @@ def gen_ff_data(
         - US: CRSP CIZ common shares of US companies on NYSE/AMEX/NASDAQ, NYSE
           breakpoints. The unit is the company (_ff_us_firm_map): its share
           classes combine as securities in a portfolio (ff_load_panel), with
-          ME = JKP's me_company and the return weighted by class ME at t-1; every
-          class publishes its company's characteristics. A permco whose classes
-          link to different Compustat records is split by record, a security
-          relisted under the same permco is a new firm, and tracking stocks
-          (resources/ff_tracking_stocks.csv) stay out of the sorts. A company is
-          NYSE if any class is. Daily weights use the CIZ sum over the classes.
+          ME = JKP's me_company and the return weighted by class ME at t-1. A
+          permco whose classes link to different Compustat records is split by
+          record, so a tracking stock is its own firm, and a security relisted
+          under the same permco is a new firm. A company is NYSE if any class is. Daily weights use the CIZ sum over the classes.
         - Elsewhere: JKP's main sample with ME, per-country breakpoints, and the
           FACTOR_MIN_STOCKS_BP / FACTOR_MIN_STOCKS_PF minimums.
         - Returns, every country: JKP's world_msf/world_dsf, so US returns include
