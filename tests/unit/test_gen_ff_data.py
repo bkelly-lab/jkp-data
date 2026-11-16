@@ -7,7 +7,7 @@ Covers:
   - ff_annual_signals (accounting records, December ME from the panel)
   - _ff_universe_rows (rule columns, US vs elsewhere, monthly and daily)
   - ff_load_panel (class aggregation, ME, null-ME rows kept)
-  - ff_factor_rows (buy-and-hold weights, gap-spanning returns, needs_me)
+  - ff_factor_rows (buy-and-hold weights, gap-spanning returns, null-ME rows kept)
   - ff_membership
   - _ff_leg
   - ff_returns (July-June broadcast, FF3/FF5/UMD spreads)
@@ -801,7 +801,6 @@ class TestFFUniverseRows:
     def test_us_rule_columns(self, test_paths):
         r = self._monthly(test_paths)[1]
         assert r["ret_lag_dif"] == 0
-        assert r["needs_me"] is False
         assert r["me_company"] == 44.0
         assert r["w_cls"] == 30.0  # the class's ME at t-1
         assert r["bp_pool"] is True  # NYSE
@@ -813,7 +812,6 @@ class TestFFUniverseRows:
     def test_other_country_rule_columns(self, test_paths):
         r = self._monthly(test_paths)[101]
         assert r["ret_lag_dif"] == 3  # the world file's value
-        assert r["needs_me"] is True
         assert r["me_company"] is None
         assert r["w_cls"] is None
         assert r["bp_pool"] is True
@@ -869,7 +867,6 @@ class TestFFUniverseRows:
         r = {x["id"]: x for x in out.iter_rows(named=True)}
         assert [r[i]["bp_pool"] for i in (1, 2, 101, 102)] == [True, False, True, False]
         assert [r[i]["ret_lag_dif"] for i in (1, 2, 101)] == [0, 0, 4]
-        assert [r[i]["needs_me"] for i in (1, 101)] == [False, True]
         assert r[1]["me_company"] is None
 
 
@@ -950,7 +947,6 @@ class TestFFLoadPanel:
             "prc",
             "ret_lag_dif",
             "bp_pool",
-            "needs_me",
         ]
 
     def test_universe(self, test_paths):
@@ -965,7 +961,7 @@ class TestFFLoadPanel:
         r = self._run_monthly(test_paths).row(0, named=True)
         np.testing.assert_allclose(r["ret"], (0.02 * 30 + 0.10 * 10) / 40, **tolerance.STANDARD)
         assert (r["excntry"], r["me"], r["bp_pool"], r["prc"]) == (US_EXCNTRY, 44.0, True, 12.0)
-        assert (r["ret_lag_dif"], r["needs_me"]) == (0, False)
+        assert r["ret_lag_dif"] == 0
 
     def test_three_class_firm_me_is_me_company(self, test_paths):
         """Classes 4, 5 and 6 are one permco: ME is me_company (100). No class has
@@ -1025,7 +1021,6 @@ class TestFFLoadPanel:
                 "prc": 9.0,
                 "ret_lag_dif": 2,
                 "bp_pool": True,
-                "needs_me": True,
             }
         ]
 
@@ -1067,7 +1062,7 @@ def _factor_panel(rows: list[tuple]) -> pl.DataFrame:
             "me": pl.Float64,
         },
         orient="row",
-    ).with_columns(ret_lag_dif=pl.lit(0), needs_me=pl.lit(False), bp_pool=pl.lit(False))
+    ).with_columns(ret_lag_dif=pl.lit(0), bp_pool=pl.lit(False))
 
 
 def _weights(rows: list[tuple], freq: str = "monthly") -> dict[tuple[int, date], float | None]:
@@ -1193,16 +1188,16 @@ class TestFFFactorRows:
         assert out["id"].to_list() == [1, 1]
         assert (out["ret"][1] is not None) is kept
 
-    def test_needs_me_rows_without_me_dropped(self):
-        """Only rows that need ME leave when it is null; the US keeps them."""
+    def test_rows_without_me_kept(self):
+        """A row without ME at t stays in every country."""
         panel = _factor_panel(
             [
                 ("GBR", 1, date(2020, 7, 31), 0.0, None),
                 ("GBR", 2, date(2020, 7, 31), 0.0, 5.0),
                 ("USA", 3, date(2020, 7, 31), 0.0, None),
             ]
-        ).with_columns(needs_me=pl.col("excntry") != "USA")
-        assert ff_factor_rows(panel, "monthly")["id"].sort().to_list() == [2, 3]
+        )
+        assert ff_factor_rows(panel, "monthly")["id"].sort().to_list() == [1, 2, 3]
 
 
 # =============================================================================

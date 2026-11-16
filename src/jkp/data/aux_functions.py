@@ -10159,8 +10159,7 @@ def _ff_class_vw(c: str) -> pl.Expr:
 
 def _ff_world_universe() -> pl.Expr:
     """ROW FF universe: non-US common stock, main observation, primary security,
-    main exchange. Rows without ME stay in the panel for UMD eligibility; needs_me
-    keeps them out of the factor rows."""
+    main exchange."""
     return (
         (pl.col("excntry") != US_EXCNTRY)
         & (pl.col("common") == 1)
@@ -10187,8 +10186,7 @@ def _ff_universe_rows(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl
         - Elsewhere: JKP's main sample (_ff_world_universe); the unit is the
           security. size_grp small, large or mega forms the breakpoint pool (daily
           rows take it from the previous month's world_msf row, the latest known
-          on every day of the month). Rows without ME stay out of the factor
-          portfolios (needs_me).
+          on every day of the month).
         Returns are JKP's: in the US, CIZ's return plus CRSP's delisting return, and
         -30% where a bad delisting has none (prepare_crsp_sf). Raw CIZ returns would
         lose the delisting return on every daily delisting and on monthly
@@ -10200,7 +10198,7 @@ def _ff_universe_rows(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl
         3) Both with the rule columns, concatenated.
     Output:
         Lazy [excntry, id, date, ret, me, me_company, prc, ret_lag_dif, w_cls,
-        bp_pool, needs_me], one row per US class or other security.
+        bp_pool], one row per US class or other security.
     """
     monthly = freq == "monthly"
     permno = pl.col("permno").cast(pl.Int64)
@@ -10261,7 +10259,6 @@ def _ff_universe_rows(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl
             ret_lag_dif=pl.lit(0),
             w_cls=pl.col("me").shift(1).over("permno"),
             bp_pool=pl.col("primaryexch") == "N",
-            needs_me=pl.lit(False),
         )
     )
     other = world.filter(_ff_world_universe())
@@ -10284,7 +10281,6 @@ def _ff_universe_rows(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl
         ret_lag_dif="ret_lag_dif",
         w_cls=pl.lit(None, dtype=pl.Float64),
         bp_pool=pl.col("size_grp").is_in(["small", "large", "mega"]),
-        needs_me=pl.lit(True),
     )
     return pl.concat([us, other], how="vertical_relaxed")
 
@@ -10304,7 +10300,7 @@ def ff_load_panel(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl.Dat
         1) _ff_universe_rows.
         2) Aggregate to (excntry, id, date).
     Output:
-        Eager [excntry, id, date, ret, me, prc, ret_lag_dif, bp_pool, needs_me]; prc
+        Eager [excntry, id, date, ret, me, prc, ret_lag_dif, bp_pool]; prc
         is the largest |price|, used only to check that a price exists.
     """
     me = pl.col("me")
@@ -10319,7 +10315,6 @@ def ff_load_panel(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl.Dat
             prc=pl.col("prc").abs().max(),
             ret_lag_dif=pl.col("ret_lag_dif").max(),
             bp_pool=pl.col("bp_pool").any(),
-            needs_me=pl.col("needs_me").all(),
         )
         .collect()
     )
@@ -10341,7 +10336,8 @@ def ff_factor_rows(panel: pl.DataFrame, freq: Literal["monthly", "daily"]) -> pl
         return since then (buy-and-hold): share issues, buybacks and share-count
         errors during the year don't move it.
     Steps:
-        1) Drop needs_me rows without ME; null the gap-spanning returns.
+        1) Null the gap-spanning returns. A row without ME stays: weights use ME
+           at t-1 and June, never ME at t.
         2) Portfolio year: July to June of the row's date. me_base: ME on the stock's
            row before the year's first row, the end of June when the stock has a
            June row.
@@ -10365,7 +10361,6 @@ def ff_factor_rows(panel: pl.DataFrame, freq: Literal["monthly", "daily"]) -> pl
     )
     return (
         panel.lazy()
-        .filter(~pl.col("needs_me") | pl.col("me").is_not_null())
         .with_columns(ret=pl.when(pl.col("ret_lag_dif") <= max_gap).then(pl.col("ret")))
         .sort([*k, "date"])
         .with_columns(
