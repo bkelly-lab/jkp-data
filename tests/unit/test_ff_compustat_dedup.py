@@ -310,7 +310,6 @@ def _write_acc_std_ann(path, rows):
             "mib": [r[3] for r in rows],
             "mibt": [r[4] for r in rows],
             "mibn": [r[5] for r in rows],
-            "ni_x": [1.0] * len(rows),
         },
         schema_overrides=dict.fromkeys(["be_x", "ope_x", "mib", "mibt", "mibn"], pl.Float64),
     ).write_parquet(path)

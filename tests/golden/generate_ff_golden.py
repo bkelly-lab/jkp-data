@@ -19,7 +19,6 @@ from pathlib import Path
 from jkp.data.aux_functions import gen_ff_data
 from jkp.data.paths import DataPaths
 from tests.golden._golden_helpers import (
-    cwd,
     stage_synthetic_slices,
 )
 from tests.golden.generate_synthetic_wrds import write_synthetic_wrds
@@ -40,12 +39,11 @@ def regenerate(out_dir: Path) -> None:
         slices_dir = Path(tmp) / "synthetic_wrds"
         write_synthetic_wrds(slices_dir)
         stage_synthetic_slices(paths, slices_dir)
-        with cwd(paths.interim_dir):
-            gen_ff_data(
-                paths,
-                monthly_factors_path="ff_factors_monthly.parquet",
-                daily_factors_path="ff_factors_daily.parquet",
-            )
+        gen_ff_data(
+            paths,
+            monthly_factors_path=paths.interim_dir / "ff_factors_monthly.parquet",
+            daily_factors_path=paths.interim_dir / "ff_factors_daily.parquet",
+        )
         for name in OUTPUTS:
             shutil.copy2(paths.interim_dir / name, out_dir / name)
             print(f"wrote {out_dir / name}")

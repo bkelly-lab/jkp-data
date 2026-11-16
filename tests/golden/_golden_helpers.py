@@ -1,36 +1,19 @@
-"""Shared helpers for factor-builder golden tests.
+"""Shared helpers for the FF golden test.
 
-Three responsibilities:
-  1. Stage column-projected WRDS slices into a DataPaths layout so the
-     cwd-based builders (gen_ff_data, gen_hxz_data, gen_mispricing_data)
-     see the inputs they expect.
-  2. Run a builder with cwd pinned to ``paths.interim_dir`` (the builders
-     read ``Path("../raw/raw_tables")`` and ``Path(".")`` relative to cwd).
-  3. Compare actual-vs-golden factor parquets with NaN-aware tolerance
-     against ``ToleranceSpec``.
+Two responsibilities:
+  1. Stage the synthetic WRDS-shaped inputs into a DataPaths layout.
+  2. Compare actual-vs-golden factor parquets with NaN-aware tolerance.
 
-Synthetic slice layout (generated into a temp dir by ``generate_synthetic_wrds``, not committed):
-  crsp_msf_v2.parquet              -> raw_tables_dir
-  crsp_dsf_v2.parquet              -> raw_tables_dir
-  comp_funda.parquet               -> raw_tables_dir
-  comp_fundq.parquet               -> raw_tables_dir
-  comp_g_funda.parquet             -> raw_tables_dir
-  comp_g_fundq.parquet             -> raw_tables_dir
-  crsp_ccmxpf_lnkhist.parquet      -> raw_tables_dir
-  crsp_stksecurityinfohist.parquet -> raw_tables_dir
-  crsp_a_indexes_msp500.parquet    -> raw_tables_dir
-  crsp_a_indexes_acti.parquet      -> raw_tables_dir
-  world_msf.parquet                -> interim_dir
-  world_dsf.parquet                -> interim_dir
-  world_data.parquet               -> interim_dir (also staged as world_data_prelim.parquet)
-  market_returns.parquet           -> interim_dir
-  market_returns_daily.parquet     -> interim_dir
+Synthetic input layout (generated into a temp dir by ``generate_synthetic_wrds``, not committed):
+  crsp_msf_v2.parquet, crsp_dsf_v2.parquet,
+  comp_funda.parquet, comp_g_funda.parquet         -> raw_tables_dir
+  world_msf.parquet, world_dsf.parquet,
+  acc_std_ann.parquet, achars_world.parquet        -> interim_dir
 """
 
 from __future__ import annotations
 
 import os
-from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -38,7 +21,7 @@ import numpy as np
 import polars as pl
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Iterator
+    from collections.abc import Iterable
 
     from jkp.data.paths import DataPaths
 
@@ -47,51 +30,25 @@ RAW_FILES: tuple[str, ...] = (
     "crsp_msf_v2.parquet",
     "crsp_dsf_v2.parquet",
     "comp_funda.parquet",
-    "comp_fundq.parquet",
     "comp_g_funda.parquet",
-    "comp_g_fundq.parquet",
-    "crsp_ccmxpf_lnkhist.parquet",
-    "crsp_stksecurityinfohist.parquet",
-    "crsp_a_indexes_msp500.parquet",
-    "crsp_a_indexes_acti.parquet",
 )
 INTERIM_FILES: tuple[str, ...] = (
     "world_msf.parquet",
     "world_dsf.parquet",
-    "world_data.parquet",
-    "market_returns.parquet",
-    "market_returns_daily.parquet",
     "acc_std_ann.parquet",
     "achars_world.parquet",
-)
-INTERIM_SUBDIR_FILES: tuple[tuple[str, str], ...] = (
-    # (relative subdir under interim_dir, filename)
-    ("raw_data_dfs", "__fx1.parquet"),
 )
 
 
 def stage_synthetic_slices(paths: DataPaths, src_dir: Path) -> None:
-    """Symlink generated synthetic slice parquets into the DataPaths layout.
-
-    Missing source files are silently skipped so a builder that doesn't need
-    a particular slice doesn't fail.
-    """
+    """Symlink the generated synthetic parquets into the DataPaths layout."""
     for name in RAW_FILES:
         _link(src_dir / name, paths.raw_tables_dir / name)
     for name in INTERIM_FILES:
         _link(src_dir / name, paths.interim_dir / name)
-    # gen_mispricing_data reads world_data_prelim.parquet (written by
-    # create_world_data_prelim, before merge_qmj_to_world_data). The synthetic
-    # world_data.parquet has the same 17 base cols and no qmj/beta/resmom/age
-    # overlay, so it stands in for prelim under either name.
-    _link(src_dir / "world_data.parquet", paths.interim_dir / "world_data_prelim.parquet")
-    for subdir, name in INTERIM_SUBDIR_FILES:
-        _link(src_dir / name, paths.interim_dir / subdir / name)
 
 
 def _link(src: Path, dst: Path) -> None:
-    if not src.exists():
-        return
     dst.parent.mkdir(parents=True, exist_ok=True)
     if dst.exists() or dst.is_symlink():
         dst.unlink()
@@ -102,28 +59,6 @@ def _link(src: Path, dst: Path) -> None:
         import shutil
 
         shutil.copy2(src, dst)
-
-
-@contextmanager
-def cwd(path: Path) -> Iterator[None]:
-    """Temporarily chdir into ``path``. Restores prior cwd on exit."""
-    prev = Path.cwd()
-    os.chdir(path)
-    try:
-        yield
-    finally:
-        os.chdir(prev)
-
-
-def run_builder(paths: DataPaths, fn: Callable[..., None], **kwargs: object) -> None:
-    """Run a cwd-based builder (gen_ff_data / gen_hxz_data / gen_mispricing_data)
-    with cwd pinned to ``paths.interim_dir``.
-
-    The mispricing builder takes no path kwargs and writes ``mp_*.parquet``
-    into cwd; the FF / HXZ builders take three explicit path kwargs.
-    """
-    with cwd(paths.interim_dir):
-        fn(**kwargs)
 
 
 def compare_factor_parquet(

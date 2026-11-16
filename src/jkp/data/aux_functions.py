@@ -46,8 +46,6 @@ from .config import (
     FF_CCM_BACKDATE_FROM,
     FF_CCM_BACKDATE_MAX_YEARS,
     FF_CCM_BACKDATE_THROUGH,
-    FF_DFF_GATE_COMPUSTAT_PRE1954,
-    FF_DFF_MERGE_YEAR,
     FF_RET_MAX_GAP_DAYS,
     FF_UMD_DAILY_LOOKBACK,
     FF_UMD_DAILY_SKIP,
@@ -55,7 +53,6 @@ from .config import (
     FF_UMD_MONTHLY_SKIP,
     FF_UMD_ROW_MIN_DAYS,
     FF_UMD_ROW_MIN_MONTHS,
-    FF_USE_DFF_BE,
     MAIN_FILTERS,
     NI_AT_MIN_STD,
     RES_MOM_MIN_STD,
@@ -9888,8 +9885,7 @@ def dimsonbeta(
 
 
 def _compustat_na_filter() -> pl.Expr:
-    """Standard Compustat NA screen (INDL/STD/D/C), shared by the FF, HXZ and
-    mispricing funda/fundq loaders."""
+    """Standard Compustat NA screen (INDL/STD/D/C) for the FF funda loader."""
     return (
         (pl.col("indfmt") == "INDL")
         & (pl.col("datafmt") == "STD")
@@ -9904,25 +9900,18 @@ def country_breakpoints(
     *,
     group_keys: list[str],
     pool: pl.Expr,
-    min_stocks: int | None = None,
-    usa_exempt: bool = False,
+    min_stocks: int,
 ) -> pl.DataFrame:
     """Per-`group_keys` QUANTILE_DISC breakpoints over `pool`; one row per group.
-    specs = [(col, quantile, alias)]. `min_stocks` drops groups below that count;
-    `usa_exempt` keeps USA regardless. Shared by the FF/HXZ/DHS sorts: FF gates every
-    country, DHS exempts its US NYSE pool via usa_exempt, and HXZ splits US/ROW into
-    two calls (US min_stocks=None, ROW gated)."""
+    specs = [(col, quantile, alias)]. Groups with fewer than `min_stocks` pool
+    stocks are dropped."""
     breaks_sql = ", ".join(f"QUANTILE_DISC({c}, {q}) AS {a}" for c, q, a in specs)
     cols = list(dict.fromkeys(c for c, _, _ in specs))
     gk = ", ".join(group_keys)
-    having = ""
-    if min_stocks is not None:
-        gate = f"COUNT(*) >= {min_stocks}"
-        having = f" HAVING excntry = '{US_EXCNTRY}' OR {gate}" if usa_exempt else f" HAVING {gate}"
     return (
         df.filter(pool)
         .select(*group_keys, *cols)
-        .sql(f"SELECT {gk}, {breaks_sql} FROM self GROUP BY {gk}{having}")
+        .sql(f"SELECT {gk}, {breaks_sql} FROM self GROUP BY {gk} HAVING COUNT(*) >= {min_stocks}")
     )
 
 
@@ -10045,13 +10034,8 @@ def _collapse_to_latest_fy(lf: pl.LazyFrame, *, resort: bool = True) -> pl.LazyF
     return out.sort(["gvkey", "datadate"]) if resort else out
 
 
-def _ff_merge_dff_be(
-    comp_ccm: pl.DataFrame,
-    ff5: bool,
-    use_dff: bool,
-    dff_path: Path | None,
-) -> pl.DataFrame:
-    """Optionally union DFF hand-collected Moody's BE to extend coverage back to 1926.
+def _ff_merge_dff_be(comp_ccm: pl.DataFrame, dff_path: Path) -> pl.DataFrame:
+    """Union DFF hand-collected Moody's BE to extend coverage back to 1926.
 
     DFF be(t) is aligned to year t−1 so the June join pairs it with Dec(t−1) ME.
     Value-level merge: be = coalesce(dff.be, comp.be); Compustat row keeps its
@@ -10059,13 +10043,9 @@ def _ff_merge_dff_be(
 
     DFF rows are keyed by permno, the id of a CRSP security.
 
-    Output: Eager [gvkey, id, year, datadate, be, (op, inv,) ...].
+    Output: Eager [gvkey, id, year, datadate, be, op, inv].
     """
-    if not use_dff:
-        return comp_ccm
-
-    # DFF hand-collected BE union (see ff_link_accounting)
-    keep = ["op", "inv"] if ff5 else []
+    keep = ["op", "inv"]
     select_cols = ["gvkey", "id", "year", "datadate", "be", *keep]
     dff = (
         load_dff_be(dff_path)
@@ -10086,28 +10066,12 @@ def _ff_merge_dff_be(
         )
         .select(select_cols)
     )
-    comp_pool = (
-        comp_ccm.filter(pl.col("year") >= FF_DFF_MERGE_YEAR - 1)
-        if FF_DFF_GATE_COMPUSTAT_PRE1954
-        else comp_ccm
-    )
-    n_collisions = (
-        comp_pool.select("id", "year")
-        .join(dff.select("id", "year"), on=["id", "year"], how="inner")
-        .height
-    )
-    if n_collisions:
-        print(
-            f"DFF/Compustat BE overlap: {n_collisions} (id, year) collisions; "
-            "be coalesced (DFF first)",
-            flush=True,
-        )
     # be = coalesce(dff.be, comp.be) on (id, year); sources agree where both are
     # non-null (median |log ratio| ~ 0). Typical collision: the CCM-linked Compustat
     # row has BE NULL, so DFF fills BE while that row keeps op/inv for FF5.
     keys = ["id", "year"]
     comp_pool = (
-        comp_pool.select(select_cols)
+        comp_ccm.select(select_cols)
         .join(dff.select([*keys, "be"]).rename({"be": "_be_dff"}), on=keys, how="left")
         .with_columns(be=pl.coalesce("_be_dff", "be"))
         .drop("_be_dff")
@@ -10120,7 +10084,6 @@ def ff_link_accounting(
     paths: DataPaths,
     comp: pl.DataFrame,
     *,
-    use_dff: bool = False,
     dff_path: Path | None = None,
 ) -> pl.DataFrame:
     """
@@ -10136,8 +10099,8 @@ def ff_link_accounting(
            statements of the early 1960s for firms whose link starts years later.
         3) Inner-join comp on (gvkey, year); the June row is unique per security and
            year, so the result is too.
-        4) Optionally union DFF BE (_ff_merge_dff_be) into the US CRSP records, to
-           extend coverage to 1926; other records pass through.
+        4) With dff_path, union DFF BE (_ff_merge_dff_be) into the US CRSP records,
+           to extend coverage to 1926; other records pass through.
     Output:
         Eager [gvkey, id, year, datadate, be, op, inv]; id is the security, the
         permno for CRSP.
@@ -10188,7 +10151,9 @@ def ff_link_accounting(
         .sort("id", "year")
         .collect()
     )
-    us = _ff_merge_dff_be(linked.filter("crsp").drop("crsp"), True, use_dff, dff_path)
+    us = linked.filter("crsp").drop("crsp")
+    if dff_path is not None:
+        us = _ff_merge_dff_be(us, dff_path)
     return pl.concat([us, linked.filter(~pl.col("crsp")).drop("crsp")], how="vertical_relaxed")
 
 
@@ -10490,20 +10455,19 @@ def _ff_load_funda_global(paths: DataPaths) -> pl.LazyFrame:
 def _jkp_annual_acc(paths: DataPaths) -> pl.DataFrame:
     """
     Description:
-        JKP's annual accounting at each fiscal record, for the FF loaders and the
-        ex-US HXZ loader. FF operating profitability divides JKP's ope_x by book
-        equity plus minority interest: Fama and French (2015) divide by book equity
-        alone, and French's data library now adds minority interest; we follow the
-        data library.
+        JKP's annual accounting at each fiscal record, for the FF loaders. FF
+        operating profitability divides JKP's ope_x by book equity plus minority
+        interest: Fama and French (2015) divide by book equity alone, and French's
+        data library now adds minority interest; we follow the data library.
     Steps:
-        1) acc_std_ann report rows: be_x, ni_x, and op = ope_x / (be_x + MI) when
+        1) acc_std_ann report rows: be_x and op = ope_x / (be_x + MI) when
            be_x > 0, with MI = coalesce(mibt, mib + mibn) and missing parts 0.
            Since 2009 Compustat splits minority interest into redeemable (mib) and
            non-redeemable (mibn) parts, with mibt = mib + mibn; before 2009 mib is
            the total.
         2) Left-join at_gr1 from achars_world at the record's first public_date.
     Output:
-        Eager [gvkey, datadate, be_x, ni_x, op, at_gr1], keyed (gvkey, datadate),
+        Eager [gvkey, datadate, be_x, op, at_gr1], keyed (gvkey, datadate),
         USD (acc_std_ann is built with convert_to_usd=1).
     """
     mi = pl.coalesce(pl.col("mibt"), pl.col("mib").fill_null(0.0) + pl.col("mibn").fill_null(0.0))
@@ -10521,7 +10485,6 @@ def _jkp_annual_acc(paths: DataPaths) -> pl.DataFrame:
             "gvkey",
             "datadate",
             "be_x",
-            "ni_x",
             op=pl.when(pl.col("be_x") > 0)
             .then(safe_div(pl.col("ope_x"), pl.col("be_x") + mi, "op"))
             .otherwise(None),
@@ -10619,7 +10582,7 @@ def ff_annual_signals(paths: DataPaths, panel: pl.DataFrame) -> pl.DataFrame:
         .unique()
     )
     records = (
-        ff_link_accounting(paths, comp, use_dff=FF_USE_DFF_BE)
+        ff_link_accounting(paths, comp, dff_path=get_dff_be_path())
         .lazy()
         .rename({"id": "security"})
         .join(unit, on="security", how="inner")
@@ -10971,9 +10934,6 @@ def gen_ff_data(
     paths: DataPaths,
     monthly_factors_path: Path,
     daily_factors_path: Path,
-    freqs: tuple[str, ...] = ("monthly", "daily"),
-    min_stocks_bp: int = FACTOR_MIN_STOCKS_BP,
-    min_stocks_pf: int = FACTOR_MIN_STOCKS_PF,
 ) -> None:
     """
     Description:
@@ -10996,8 +10956,8 @@ def gen_ff_data(
           breakpoints. The unit is the company, the CRSP permco: its share
           classes combine as securities in a portfolio (ff_load_panel), with
           ME = JKP's me_company and the return weighted by class ME at t-1,
-          without French's hand splits of a permco. A company is NYSE if any class is. Daily weights use the CIZ sum over the
-          classes.
+          without French's hand splits of a permco. A company is NYSE if any class
+          is. Daily weights use the CIZ sum over the classes.
         - Elsewhere: JKP's main sample with ME, per-country breakpoints, and the
           FACTOR_MIN_STOCKS_BP / FACTOR_MIN_STOCKS_PF minimums.
         - Returns, every country: JKP's world_msf/world_dsf, so US returns include
@@ -11061,23 +11021,20 @@ def gen_ff_data(
         .join(ff_annual_signals(paths, panel), on=["id", "port_year"], how="left")
     )
     annual = ["bm", "op", "inv"]
-    members = ff_membership(june, ff_breakpoints(june, annual, min_stocks_bp), annual)
+    members = ff_membership(june, ff_breakpoints(june, annual, FACTOR_MIN_STOCKS_BP), annual)
     del june
-    if "monthly" in freqs:
-        mom = ff_mom_signal(panel, rows, "monthly")
-        mom = ff_membership(mom, ff_breakpoints(mom, ["mom"], min_stocks_bp), ["mom"])
-        ff_returns(rows, members, mom, annual, min_stocks_pf).rename({"date": "eom"}).write_parquet(
-            monthly_factors_path
-        )
-        del mom
-    del panel, rows  # free the monthly frames before the daily scan
-    if "daily" in freqs:
-        panel = ff_load_panel(paths, "daily")
-        rows = ff_factor_rows(panel, "daily")
-        mom = ff_mom_signal(panel, rows, "daily")
-        del panel
-        mom = ff_membership(mom, ff_breakpoints(mom, ["mom"], min_stocks_bp), ["mom"])
-        ff_returns(rows, members, mom, annual, min_stocks_pf).write_parquet(daily_factors_path)
+    mom = ff_mom_signal(panel, rows, "monthly")
+    mom = ff_membership(mom, ff_breakpoints(mom, ["mom"], FACTOR_MIN_STOCKS_BP), ["mom"])
+    ff_returns(rows, members, mom, annual, FACTOR_MIN_STOCKS_PF).rename(
+        {"date": "eom"}
+    ).write_parquet(monthly_factors_path)
+    del mom, panel, rows  # free the monthly frames before the daily scan
+    panel = ff_load_panel(paths, "daily")
+    rows = ff_factor_rows(panel, "daily")
+    mom = ff_mom_signal(panel, rows, "daily")
+    del panel
+    mom = ff_membership(mom, ff_breakpoints(mom, ["mom"], FACTOR_MIN_STOCKS_BP), ["mom"])
+    ff_returns(rows, members, mom, annual, FACTOR_MIN_STOCKS_PF).write_parquet(daily_factors_path)
 
 
 def _build_industry_daily_returns(

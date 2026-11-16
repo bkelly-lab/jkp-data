@@ -48,7 +48,7 @@ factors against real-world returns.
 
 The `synthetic_wrds_dir` session fixture (`conftest.py`) calls
 `write_synthetic_wrds` once into a pytest temp directory. To inspect the
-17 parquets:
+parquets:
 
 ```bash
 uv sync --group test
@@ -58,7 +58,7 @@ uv run python -m tests.golden.generate_synthetic_wrds --out /tmp/synthetic_wrds
 The generator is deterministic (seed = 42; nulls come from a separate RNG).
 
 Nulls are sampled from `synthetic_null_patterns.json`: for each table (and, for
-`world_msf` / `world_dsf` / `world_data`, for CRSP-sourced and ex-US rows separately) the
+`world_msf` / `world_dsf`, for CRSP-sourced and ex-US rows separately) the
 share of rows with each pattern of null columns, measured on the real tables for 2000-2015.
 The file holds frequencies only, no values or identifiers; patterns seen in fewer than 100
 real rows are dropped. Firm counts (`US_EXCH_COUNTS`, `ROW_FIRMS`) are set so the

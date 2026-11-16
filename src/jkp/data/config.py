@@ -275,22 +275,6 @@ FF_UMD_ROW_MIN_DAYS = 115
 # return is nulled. A monthly return may span one month.
 FF_RET_MAX_GAP_DAYS = 5
 
-# DFF (Davis-Fama-French) hand-collected Moody's BE splice into the US FF path.
-# When True, union DFF BE (permno-keyed, bundled resource) with Compustat BE;
-# DFF fills (permno, formation year) cells Compustat lacks, extending SMB/HML
-# back to 1926-07 (and UMD to ~1927-01 via the longer CRSP panel). Per DFF
-# (2000) the two BE sets are disjoint by construction: "we collect book common
-# equity (BE) from 1925 to 1996 for all NYSE industrial firms that do not have
-# BE data on Compustat."
-FF_USE_DFF_BE = True
-
-# Strict DFF (2000) replication gate: "beginning in 1954 we merge the
-# hand-collected data ... with the Compustat data". True drops Compustat BE
-# from formations before June FF_DFF_MERGE_YEAR prior to the union (pre-1954
-# Compustat rows are backfill French never used). Default False: union
-# whatever Compustat exists.
-FF_DFF_GATE_COMPUSTAT_PRE1954 = False
-FF_DFF_MERGE_YEAR = 1954
 
 # On a (permno, year) collision the BE value is coalesced DFF-first
 # (be = coalesce(dff.be, comp.be)) while the Compustat row keeps its

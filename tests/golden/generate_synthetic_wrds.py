@@ -1,5 +1,5 @@
 """Generate synthetic WRDS-shaped parquets used by the factor-builder
-golden tests (FF3/FF5/UMD, HXZ4, Stambaugh-Yuan mispricing).
+golden test (FF3/FF5/UMD).
 
 License compliance
 ------------------
@@ -39,12 +39,8 @@ from jkp.data.config import BE_DEFERRED_TAX_END_YEAR
 
 SEED = 42
 
-# 2000-2015 window (was 1995-2015): firms are born 1995-2004 (see
-# build_firm_registry), so at the start nearly all have full in-window history
-# for the momentum/distress warmup, while trimming the daily-fixture footprint
-# vs the original 21-year span. A later start (e.g. 2005) thins the per-country
-# ROW universe (50 firms each) below the world breakpoint gate and empties the
-# ROW mispricing factors, so 2000 is the floor that keeps ROW coverage.
+# 2000-2015 window: firms are born 1995-2004 (see build_firm_registry), so at the
+# start nearly all have full in-window history for the momentum warmup.
 DATE_START = date(2000, 1, 1)
 DATE_END = date(2015, 12, 31)
 
@@ -80,25 +76,16 @@ REAL_DTYPES: dict[str, dict[str, pl.DataType]] = {
         "dlyret": _D(10, 6), "dlyretx": _D(10, 6), "dlyprc": _D(13, 6), "dlycap": _D(13, 2),
         "dlyvol": _D(14, 0), "shrout": pl.Int32, "siccd": pl.Int32,
     },
-    "crsp_ccmxpf_lnkhist": {"lpermno": pl.Float64},
-    "crsp_stksecurityinfohist": {"siccd": pl.Int32},
-    "crsp_a_indexes_msp500": {
-        "sprtrn": _D(9, 6), "vwretd": _D(9, 6), "vwretx": _D(9, 6), "totval": _D(13, 2),
-    },
-    "crsp_a_indexes_acti": {"cpiind": _D(9, 1)},
     "world_msf": dict.fromkeys(
         ["common", "exch_main", "obs_main", "primary_sec", "source_crsp"], pl.Int32
     ),
     "world_dsf": dict.fromkeys(
         ["common", "primary_sec", "obs_main", "exch_main", "bidask"], pl.Int32
     ),
-    "world_data": dict.fromkeys(["common", "primary_sec", "obs_main", "exch_main"], pl.Int32),
 }
 # Columns the real tables lack; generated internally, dropped when written.
 DROP_COLS: dict[str, list[str]] = {
     "world_msf": ["me_lag1", "retx", "shrout"],
-    "world_data": ["beme", "issue", "mom", "mscore", "roe", "rsup"],
-    "comp_g_fundq": ["rdq", "niq"],
 }
 # Compustat items carry Decimal(18,4) except these (Decimal(24,12)).
 COMP_WIDE_ITEMS = {"ajex", "adjex_c", "prcc_f", "ajexq"}
@@ -362,10 +349,7 @@ def gen_crsp_msf_v2(reg: pl.DataFrame, rng: np.random.Generator) -> pl.DataFrame
     month_ends = _month_ends(DATE_START, DATE_END)
     panel = _firm_monthly_panel(reg_us, month_ends, rng)
     # shrout per firm = (first ME) / target price, so the implied price
-    # (mthprc = me / shrout) starts in a realistic $10-$100 band. Drawing
-    # shrout independently of ME (the old approach) yielded sub-$1 prices that
-    # failed the mispricing penny-stock floor (lag_prc > 5), collapsing the
-    # synthetic universe and emptying the mispricing factor goldens.
+    # (mthprc = me / shrout) starts in a realistic $10-$100 band.
     first_me = panel.group_by("permno").agg(pl.col("me").first().alias("_me0")).sort("permno")
     target_price = rng.uniform(10.0, 100.0, size=first_me.height)
     shrout_per_firm = first_me.select(
@@ -507,71 +491,6 @@ def gen_crsp_dsf_v2(reg: pl.DataFrame, rng: np.random.Generator, msf: pl.DataFra
     return _round_to(out, {"dlyret": 6, "dlyretx": 6, "dlyprc": 6, "dlycap": 2, "dlyvol": 0})
 
 
-def gen_crsp_stksecurityinfohist(reg: pl.DataFrame) -> pl.DataFrame:
-    """One row per US firm spanning [inception, delisting or DATE_END]."""
-    rows: list[dict] = []
-    for r in reg.filter(pl.col("excntry") == "USA").iter_rows(named=True):
-        rows.append(
-            {
-                "permno": r["permno"],
-                "secinfostartdt": r["inception_eom"],
-                "secinfoenddt": r["delisting_eom"]
-                if r["delisting_eom"] is not None
-                else date(2099, 12, 31),
-                "siccd": r["sic"],
-            }
-        )
-    return pl.DataFrame(rows).with_columns(
-        pl.col("permno").cast(pl.Int64),
-        pl.col("secinfostartdt").cast(pl.Date),
-        pl.col("secinfoenddt").cast(pl.Date),
-        pl.col("siccd").cast(pl.Int64),
-    )
-
-
-def gen_crsp_a_indexes_msp500(rng: np.random.Generator) -> pl.DataFrame:
-    """Monthly S&P 500 index series. Columns: caldt, sprtrn, totval, vwretd, vwretx.
-
-    Real WRDS crsp_a_indexes.msp500 is monthly (one row per month-end), and the
-    distress calculation (``_mp_compute_distress``) joins it on
-    ``caldt.dt.month_end()`` assuming one row per eom. Emitting a daily calendar
-    here put ~22 rows per eom, fanning out that join so the downstream
-    ``unique(keep="first")`` picked a nondeterministic survivor under DuckDB's
-    parallel join order (only visible at high core counts) — making the distress
-    char and the perf-leg / SMB mispricing factors nonreproducible. One row per
-    month-end matches real WRDS and removes the fan-out.
-    """
-    months = _month_ends(DATE_START, DATE_END)
-    n = len(months)
-    sprtrn = rng.normal(0.008, 0.045, size=n)  # monthly S&P return magnitudes
-    sprtrn = np.clip(sprtrn, -0.3, 0.3)
-    totval = np.exp(np.cumsum(sprtrn) + 22.0)  # keeps totval inside Decimal(13,2)
-    vwretd = sprtrn + rng.normal(0.0, 0.0005, size=n)
-    vwretx = vwretd - 0.0001
-    df = pl.DataFrame(
-        {
-            "caldt": months,
-            "sprtrn": sprtrn.astype(np.float64),
-            "totval": totval.astype(np.float64),
-            "vwretd": vwretd.astype(np.float64),
-            "vwretx": vwretx.astype(np.float64),
-        }
-    ).with_columns(pl.col("caldt").cast(pl.Date))
-    return _round_to(df, {"sprtrn": 6, "totval": 2, "vwretd": 6, "vwretx": 6})
-
-
-def gen_crsp_a_indexes_acti(rng: np.random.Generator) -> pl.DataFrame:
-    """Annual CPI series (December rows + monthly). Columns: caldt, cpiind."""
-    # End-of-year + EoM rows; builders only use December rows.
-    month_ends = _month_ends(DATE_START, DATE_END)
-    n = len(month_ends)
-    cpi = 100.0 * np.exp(np.cumsum(rng.normal(0.002, 0.003, size=n)))
-    df = pl.DataFrame({"caldt": month_ends, "cpiind": cpi.astype(np.float64)}).with_columns(
-        pl.col("caldt").cast(pl.Date)
-    )
-    return _round_to(df, {"cpiind": 1})
-
-
 def _gen_funda(reg: pl.DataFrame, rng: np.random.Generator, is_global: bool) -> pl.DataFrame:
     """Annual Compustat (NA or Global). One row per (gvkey, fiscal_year_end)."""
     sub = reg.filter(pl.col("excntry").is_in(NA_COUNTRIES) != is_global)
@@ -704,139 +623,6 @@ def gen_comp_g_funda(reg: pl.DataFrame, rng: np.random.Generator) -> pl.DataFram
     return _gen_funda(reg, rng, is_global=True)
 
 
-def _gen_fundq(reg: pl.DataFrame, rng: np.random.Generator, is_global: bool) -> pl.DataFrame:
-    """Quarterly Compustat. One row per (gvkey, fiscal quarter)."""
-    sub = reg.filter(pl.col("excntry").is_in(NA_COUNTRIES) != is_global)
-    rows: list[dict] = []
-    quarter_ends = [(m, _eom_of(date(2000, m, 1))) for m in (3, 6, 9, 12)]
-    for r in sub.iter_rows(named=True):
-        inc_y, delist_y = (
-            r["inception_eom"].year,
-            (r["delisting_eom"].year if r["delisting_eom"] is not None else DATE_END.year),
-        )
-        for y in range(DATE_START.year, DATE_END.year + 1):
-            if y < inc_y or y > delist_y:
-                continue
-            for q, (month, _) in enumerate(quarter_ends, start=1):
-                datadate = _eom_of(date(y, month, 1))
-                rdq = datadate + timedelta(days=int(rng.integers(45, 90)))
-                atq = float(rng.lognormal(18.0, 1.5))
-                seqq = atq * float(rng.uniform(0.1, 0.7))
-                ceqq = max(seqq * float(rng.uniform(0.7, 1.0)), 0.0)
-                pstkq = atq * float(rng.uniform(0.0, 0.05))
-                pstkrq = pstkq * float(rng.uniform(0.9, 1.1))
-                ibq = atq * float(rng.uniform(-0.01, 0.05))
-                saleq = atq * float(rng.uniform(0.1, 0.4))
-                revtq = saleq
-                niq = ibq * float(rng.uniform(0.85, 1.05))
-                cheq = atq * float(rng.uniform(0.05, 0.2))
-                ltq = atq * float(rng.uniform(0.3, 0.8))
-                dlttq = ltq * float(rng.uniform(0.3, 0.6))
-                actq = atq * float(rng.uniform(0.3, 0.6))
-                lctq = ltq * float(rng.uniform(0.3, 0.5))
-                piq = ibq * float(rng.uniform(0.9, 1.1))
-                rec = {
-                    "gvkey": r["gvkey"],
-                    "datadate": datadate,
-                    "fyearq": y,
-                    "fqtr": q,
-                    "fyr": 12,
-                    "indfmt": "INDL",
-                    "datafmt": "HIST_STD" if is_global else "STD",
-                    "popsrc": "I" if is_global else "D",
-                    "consol": "C",
-                    "rdq": rdq,
-                    "atq": atq,
-                    "seqq": seqq,
-                    "ceqq": ceqq,
-                    "pstkq": pstkq,
-                    "pstkrq": pstkrq,
-                    "ibq": ibq,
-                    "saleq": saleq,
-                    "revtq": revtq,
-                    "niq": niq,
-                    "cheq": cheq,
-                    "ltq": ltq,
-                    "dlttq": dlttq,
-                    "actq": actq,
-                    "lctq": lctq,
-                    "piq": piq,
-                    "cshoq": float(rng.uniform(5, 500)),
-                    "ajexq": 1.0,
-                    "dvpsxq": float(rng.uniform(0.0, 2.0)),
-                    "txditcq": atq * float(rng.uniform(0.0, 0.05)),
-                }
-                if is_global:
-                    for k in (
-                        "actq",
-                        "ajexq",
-                        "cshoq",
-                        "dlttq",
-                        "dvpsxq",
-                        "lctq",
-                        "piq",
-                        "pstkrq",
-                        "revtq",
-                        "txditcq",
-                    ):
-                        rec.pop(k, None)
-                rows.append(rec)
-    df = pl.DataFrame(rows).with_columns(
-        pl.col("datadate").cast(pl.Date),
-        pl.col("rdq").cast(pl.Date),
-        pl.col("fyearq").cast(pl.Int32),
-        pl.col("fqtr").cast(pl.Int16),
-    )
-    return _round_comp(df)
-
-
-def gen_comp_fundq(reg: pl.DataFrame, rng: np.random.Generator) -> pl.DataFrame:
-    return _gen_fundq(reg, rng, is_global=False)
-
-
-def gen_comp_g_fundq(reg: pl.DataFrame, rng: np.random.Generator) -> pl.DataFrame:
-    return _gen_fundq(reg, rng, is_global=True)
-
-
-def gen_ccm_lnkhist(reg: pl.DataFrame, nrng: np.random.Generator) -> pl.DataFrame:
-    """CCM link table: one LC/P link per US firm spanning inception to delisting.
-
-    Real tables have 34.5% L* links (never null lpermno), 27.4% of them still open, and the
-    rest non-L links (NR/NU, 18% open) with null lpermno. Open links are closed at DATE_END (the last
-    CRSP date of a firm alive at the end), which cannot change linking inside the sample.
-    """
-    us = reg.filter(pl.col("excntry") == "USA")
-    links = us.select(
-        "gvkey",
-        lpermno=pl.col("permno").cast(pl.Float64),
-        linktype=pl.lit("LC"),
-        linkprim=pl.lit("P"),
-        linkdt=pl.col("inception_eom"),
-        linkenddt=pl.col("delisting_eom"),
-    )
-    is_open = links["linkenddt"].is_null().to_numpy()
-    close = is_open & (nrng.random(links.height) < (is_open.mean() - 0.274) / is_open.mean())
-    links = links.with_columns(
-        linkenddt=pl.when(pl.Series(close)).then(DATE_END).otherwise(pl.col("linkenddt"))
-    )
-    n_extra = round(links.height * 0.655 / 0.345)
-    extra = us[nrng.integers(0, us.height, size=n_extra)].select(
-        "gvkey",
-        lpermno=pl.lit(None, dtype=pl.Float64),
-        linktype=pl.Series(nrng.choice(["NR", "NU"], size=n_extra)),
-        linkprim=pl.lit("C"),
-        linkdt=pl.col("inception_eom"),
-        linkenddt=pl.coalesce("delisting_eom", pl.lit(DATE_END)),
-    )
-    # real non-L links are 18% open
-    extra = extra.with_columns(
-        linkenddt=pl.when(pl.Series(nrng.random(n_extra) < 0.18))
-        .then(None)
-        .otherwise(pl.col("linkenddt"))
-    )
-    return pl.concat([links, extra])
-
-
 def gen_world_msf(
     reg: pl.DataFrame, rng: np.random.Generator, msf_us: pl.DataFrame, nrng: np.random.Generator
 ) -> pl.DataFrame:
@@ -896,9 +682,7 @@ def gen_world_msf(
     for r in reg_row.iter_rows(named=True):
         log_me = float(rng.normal(17.5, 1.5))
         # shrout = initial ME / target price so the implied price (me / shrout)
-        # starts in a realistic $10-$100 band and clears the mispricing
-        # penny-stock floor (lag_prc > 5). An independent shrout draw produced
-        # sub-$1 ROW prices that emptied the world mispricing factor goldens.
+        # starts in a realistic $10-$100 band.
         shrout = float(np.exp(log_me)) / float(rng.uniform(10.0, 100.0))
         for eom in month_ends:
             if eom < r["inception_eom"]:
@@ -1072,172 +856,6 @@ def gen_world_dsf(
     return world.with_columns(source_crsp=pl.Series(us_rows.astype(np.int32)))
 
 
-def gen_world_data(
-    reg: pl.DataFrame, rng: np.random.Generator, world_msf: pl.DataFrame, nrng: np.random.Generator
-) -> pl.DataFrame:
-    """world_data: world_msf rows + extra char columns expected by mispricing.
-
-    Mispricing world stage reads these char columns; populate with plausible
-    random values so anomalies / mispricing scores compute.
-    """
-    n = world_msf.height
-    # Market chars backing the world mispricing MOMENTUM / COMPOSITE_ISSUE /
-    # STOCK_ISSUE anomalies (and DHS NS), derived from the panel itself the
-    # same way the production pipeline defines them: ri = cumulated returns,
-    # ret_12_1 = ri(t-1)/ri(t-12) - 1, eqnpo_12m = ln(ri ratio) - ln(me ratio)
-    # (eqnpo_60m the same at the 60m horizon, backing DHS ROW IR),
-    # chcsho_12m = 12m split-adjusted share growth - 1.
-    # The panel starts in 2000, but real firms have earlier history: a window longer than the
-    # available history reaches back to the firm's first observation instead of going null.
-    world_msf = world_msf.sort(["id", "eom"]).with_columns(
-        _ri=(1 + pl.col("ret").fill_null(0.0)).cum_prod().over("id"),
-        _me=pl.col("me").forward_fill().backward_fill().over("id"),
-    )
-
-    def back(col: str, k: int) -> pl.Expr:
-        return pl.coalesce(pl.col(col).shift(k).over("id"), pl.col(col).first().over("id"))
-
-    ri_1, ri_12, ri_60 = back("_ri", 1), back("_ri", 12), back("_ri", 60)
-    me_12, me_60 = back("_me", 12), back("_me", 60)
-    world_data = (
-        world_msf.with_columns(
-            adjfct=pl.lit(1.0),
-            shares=pl.col("shrout"),
-            ret_12_1=ri_1 / ri_12 - 1,
-            eqnpo_12m=(pl.col("_ri") / ri_12).log() - (pl.col("_me") / me_12).log(),
-            eqnpo_60m=(pl.col("_ri") / ri_60).log() - (pl.col("_me") / me_60).log(),
-            beme=pl.Series("beme", rng.uniform(0.1, 3.0, size=n)),
-            dolvol=pl.col("shrout") * 0.5,
-            mom=pl.Series("mom", rng.normal(0.0, 0.2, size=n)),
-            mscore=pl.Series("mscore", rng.normal(-2.5, 1.0, size=n)),
-            roe=pl.Series("roe", rng.normal(0.05, 0.1, size=n)),
-            rsup=pl.Series("rsup", rng.normal(0.0, 0.02, size=n)),
-            issue=pl.Series("issue", rng.normal(0.0, 0.1, size=n)),
-            oaccruals_at=pl.Series("oaccruals_at", rng.normal(0.0, 0.05, size=n)),
-            at_gr1=pl.Series("at_gr1", rng.normal(0.05, 0.2, size=n)),
-            gp_at=pl.Series("gp_at", rng.uniform(0.0, 0.6, size=n)),
-            ppeinv_gr1a=pl.Series("ppeinv_gr1a", rng.normal(0.05, 0.15, size=n)),
-            noa_at=pl.Series("noa_at", rng.uniform(0.0, 1.5, size=n)),
-            o_score=pl.Series("o_score", rng.normal(-1.0, 1.5, size=n)),
-            niq_at=pl.Series("niq_at", rng.normal(0.01, 0.02, size=n)),
-        )
-        .with_columns(
-            # shares*adjfct is constant per id in the synthetic panel, so the 12m
-            # share change is 0 once 12 months of history exist (null before)
-            chcsho_12m=(pl.col("shares") * pl.col("adjfct"))
-            / pl.coalesce(
-                (pl.col("shares") * pl.col("adjfct")).shift(12).over("id"),
-                (pl.col("shares") * pl.col("adjfct")).first().over("id"),
-            )
-            - 1,
-        )
-        .select(
-            "id",
-            "permno",
-            "gvkey",
-            "excntry",
-            "eom",
-            "me",
-            "prc",
-            "ret",
-            "ret_lag_dif",
-            "adjfct",
-            "shares",
-            "common",
-            "primary_sec",
-            "obs_main",
-            "exch_main",
-            "size_grp",
-            "beme",
-            "dolvol",
-            "issue",
-            "mom",
-            "mscore",
-            "roe",
-            "rsup",
-            "oaccruals_at",
-            "at_gr1",
-            "gp_at",
-            "ppeinv_gr1a",
-            "noa_at",
-            "o_score",
-            "niq_at",
-            "ret_12_1",
-            "eqnpo_12m",
-            "eqnpo_60m",
-            "chcsho_12m",
-            "source_crsp",
-        )
-    )
-    # nulls inherited from world_msf; everything derived here has its nulls sampled
-    propagated = (
-        "permno",
-        "gvkey",
-        "me",
-        "prc",
-        "ret",
-        "ret_lag_dif",
-        "size_grp",
-    )
-    us_rows = (world_data["source_crsp"] == 1).to_numpy()
-    for stratum, mask in (("1", us_rows), ("0", ~us_rows)):
-        world_data = _apply_null_patterns(world_data, "world_data", nrng, mask, propagated, stratum)
-    return world_data.drop("source_crsp")
-
-
-def gen_market_returns(world_msf: pl.DataFrame) -> pl.DataFrame:
-    """Per-(excntry, eom) market return + lagged ME aggregate."""
-    mr = (
-        world_msf.filter(
-            (pl.col("common") == 1) & (pl.col("primary_sec") == 1) & (pl.col("obs_main") == 1)
-        )
-        .group_by(["excntry", "eom"])
-        .agg(
-            mkt_vw=(pl.col("ret") * pl.col("me_lag1")).sum() / pl.col("me_lag1").sum(),
-            me_lag1=pl.col("me_lag1").sum(),
-        )
-        .with_columns(mkt_vw_exc=pl.col("mkt_vw") - 0.002)
-        .sort(["excntry", "eom"])
-    )
-    return mr
-
-
-def gen_market_returns_daily(world_dsf: pl.DataFrame) -> pl.DataFrame:
-    """Per-(excntry, date) market daily return + lagged ME aggregate."""
-    return (
-        world_dsf.filter(
-            (pl.col("common") == 1) & (pl.col("primary_sec") == 1) & (pl.col("obs_main") == 1)
-        )
-        .group_by(["excntry", "date"])
-        .agg(
-            mkt_vw=(pl.col("ret") * pl.col("me")).sum() / pl.col("me").sum(),
-            me_lag1=pl.col("me").sum(),
-        )
-        .with_columns(mkt_vw_exc=pl.col("mkt_vw") - 0.0001)
-        .sort(["excntry", "date"])
-    )
-
-
-def gen_fx1(rng: np.random.Generator) -> pl.DataFrame:
-    """FX rates per (curcdd, datadate). End-of-month resolution sufficient
-    for annual Compustat conversion.
-
-    All currencies share fx=1.0 to sidestep a non-determinism in
-    ``ff_load_world_compustat``'s ``join_asof(by="curcd")`` over FX, which
-    surfaces when the by-group lookup ties — synthetic data triggers it
-    more often than real WRDS data. Using fx=1.0 makes BE-USD identical
-    to BE-local and stabilises the regression test.
-    """
-    del rng
-    month_ends = _month_ends(DATE_START, DATE_END)
-    rows: list[dict] = []
-    # sorted: set order follows the per-process string hash seed
-    for ccy in sorted(set(CURRENCY.values())):
-        for d in month_ends:
-            rows.append({"curcdd": ccy, "datadate": d, "fx": 1.0})
-    return pl.DataFrame(rows).with_columns(pl.col("datadate").cast(pl.Date))
-
-
 def _write(df: pl.DataFrame, out_dir: Path, table: str) -> None:
     """Drop columns the real table lacks, cast to the real dtypes, write ``<table>.parquet``."""
     df = df.drop(DROP_COLS.get(table, []))
@@ -1257,8 +875,8 @@ def _write(df: pl.DataFrame, out_dir: Path, table: str) -> None:
 def gen_acc_std_ann(funda: pl.DataFrame, g_funda: pl.DataFrame) -> pl.DataFrame:
     """Synthesize jkp's standardized annual accounting panel (``acc_std_ann``).
 
-    The FF/HXZ loaders read book equity (be_x), operating profit (ope_x), minority
-    interest (mib, mibt, mibn) and net income (ni_x) from this panel via
+    The FF loaders read book equity (be_x), operating profit (ope_x), minority
+    interest (mib, mibt, mibn) from this panel via
     ``_jkp_annual_acc``; asset growth comes from ``gen_achars_world``. The real
     builder (``standardized_accounting_data``) pulls ~40 Compustat vars this synthetic
     fixture doesn't carry, so instead we reproduce the panel's *shape and the fields
@@ -1320,7 +938,6 @@ def gen_acc_std_ann(funda: pl.DataFrame, g_funda: pl.DataFrame) -> pl.DataFrame:
             mibt=pl.col("mibt"),
             mibn=pl.col("mibn"),
             at_x=pl.col("at"),
-            ni_x=pl.col("ib"),
         )
 
     reports = pl.concat(
@@ -1345,7 +962,7 @@ def gen_acc_std_ann(funda: pl.DataFrame, g_funda: pl.DataFrame) -> pl.DataFrame:
 
 
 def gen_achars_world(acc_std_ann: pl.DataFrame) -> pl.DataFrame:
-    """Synthesize the slice of jkp's annual characteristics (``achars_world``) the FF/HXZ
+    """Synthesize the slice of jkp's annual characteristics (``achars_world``) the FF
     loaders read: at_gr1 at each fiscal report, on its first public_date (4 months after
     the fiscal year-end). at_gr1 follows create_acc_chars: at_x over at_x 12 grid rows
     earlier, minus 1, when the (gvkey, curcd) panel has more than 12 rows and the lagged
@@ -1367,7 +984,7 @@ def gen_achars_world(acc_std_ann: pl.DataFrame) -> pl.DataFrame:
 
 
 def write_synthetic_wrds(out_dir: Path, seed: int = SEED) -> None:
-    """Generate all 17 synthetic WRDS-shaped parquets into ``out_dir``.
+    """Generate the synthetic WRDS-shaped parquets into ``out_dir``.
 
     Base values come from ``default_rng(seed)``; every null is drawn from a separate
     ``default_rng(seed + 1)`` so base values do not depend on the null targets.
@@ -1381,28 +998,16 @@ def write_synthetic_wrds(out_dir: Path, seed: int = SEED) -> None:
     _write(msf, out_dir, "crsp_msf_v2")
     dsf = _apply_null_patterns(gen_crsp_dsf_v2(reg, rng, msf), "crsp_dsf_v2", nrng)
     _write(dsf, out_dir, "crsp_dsf_v2")
-    _write(gen_crsp_stksecurityinfohist(reg), out_dir, "crsp_stksecurityinfohist")
-    _write(gen_crsp_a_indexes_msp500(rng), out_dir, "crsp_a_indexes_msp500")
-    _write(gen_crsp_a_indexes_acti(rng), out_dir, "crsp_a_indexes_acti")
 
     funda = _apply_null_patterns(gen_comp_funda(reg, rng), "comp_funda", nrng)
     _write(funda, out_dir, "comp_funda")
-    fundq = _apply_null_patterns(gen_comp_fundq(reg, rng), "comp_fundq", nrng)
-    _write(fundq, out_dir, "comp_fundq")
     g_funda = _apply_null_patterns(gen_comp_g_funda(reg, rng), "comp_g_funda", nrng)
     _write(g_funda, out_dir, "comp_g_funda")
-    g_fundq = _apply_null_patterns(gen_comp_g_fundq(reg, rng), "comp_g_fundq", nrng)
-    _write(g_fundq, out_dir, "comp_g_fundq")
-    _write(gen_ccm_lnkhist(reg, nrng), out_dir, "crsp_ccmxpf_lnkhist")
 
     world_msf = gen_world_msf(reg, rng, msf, nrng)
     _write(world_msf, out_dir, "world_msf")
     world_dsf = gen_world_dsf(reg, rng, dsf, nrng)
     _write(world_dsf, out_dir, "world_dsf")
-    _write(gen_world_data(reg, rng, world_msf, nrng), out_dir, "world_data")
-    _write(gen_market_returns(world_msf), out_dir, "market_returns")
-    _write(gen_market_returns_daily(world_dsf), out_dir, "market_returns_daily")
-    _write(gen_fx1(rng), out_dir, "__fx1")
     acc_std_ann = gen_acc_std_ann(funda, g_funda)
     _write(acc_std_ann, out_dir, "acc_std_ann")
     _write(gen_achars_world(acc_std_ann), out_dir, "achars_world")

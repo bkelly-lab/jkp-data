@@ -51,18 +51,12 @@ def _compustat_inputs(
 
 
 class TestDffSplice:
-    def test_use_dff_false_is_noop(self, test_paths):
-        comp = _compustat_inputs(test_paths)
-        base = ff_link_accounting(test_paths, comp).sort(["id", "year"])
-        off = ff_link_accounting(test_paths, comp, use_dff=False).sort(["id", "year"])
-        assert off.equals(base)
-
     def test_dff_fills_missing_permno_year(self, test_paths):
         comp = _compustat_inputs(test_paths, permno=10001)
         dff = _write_dff(
             test_paths.raw_tables_dir / "dff.txt", [(20002, 1930, 1932, {1930: 5.0, 1931: 6.0})]
         )
-        out = ff_link_accounting(test_paths, comp, use_dff=True, dff_path=dff)
+        out = ff_link_accounting(test_paths, comp, dff_path=dff)
 
         row = out.filter((pl.col("id") == 20002) & (pl.col("year") == 1929))
         assert row.height == 1
@@ -76,7 +70,7 @@ class TestDffSplice:
         # pairing with Dec(1929) ME downstream.
         comp = _compustat_inputs(test_paths)
         dff = _write_dff(test_paths.raw_tables_dir / "dff.txt", [(20002, 1930, 1930, {1930: 5.0})])
-        out = ff_link_accounting(test_paths, comp, use_dff=True, dff_path=dff)
+        out = ff_link_accounting(test_paths, comp, dff_path=dff)
 
         dff_rows = out.filter(pl.col("id") == 20002)
         assert dff_rows["year"].to_list() == [1929]
@@ -90,7 +84,7 @@ class TestDffSplice:
         dff = _write_dff(
             test_paths.raw_tables_dir / "dff.txt", [(10001, 2020, 2020, {2020: 999.0})]
         )
-        out = ff_link_accounting(test_paths, comp, use_dff=True, dff_path=dff)
+        out = ff_link_accounting(test_paths, comp, dff_path=dff)
 
         rows = out.filter((pl.col("id") == 10001) & (pl.col("year") == 2019))
         assert rows.height == 1
@@ -103,7 +97,7 @@ class TestDffSplice:
         # dominant 1950s collision case): coalesce fills BE from DFF.
         comp = _compustat_inputs(test_paths, years=(2018, 2019), be={2019: None})
         dff = _write_dff(test_paths.raw_tables_dir / "dff.txt", [(10001, 2020, 2020, {2020: 55.0})])
-        out = ff_link_accounting(test_paths, comp, use_dff=True, dff_path=dff)
+        out = ff_link_accounting(test_paths, comp, dff_path=dff)
 
         row = out.filter((pl.col("id") == 10001) & (pl.col("year") == 2019))
         assert row.height == 1
@@ -117,7 +111,7 @@ class TestDffSplice:
             [(20002, 1930, 1932, {1930: 5.0, 1931: 6.0, 1932: 7.0})],
         )
         base = ff_link_accounting(test_paths, comp)
-        out = ff_link_accounting(test_paths, comp, use_dff=True, dff_path=dff)
+        out = ff_link_accounting(test_paths, comp, dff_path=dff)
 
         assert out.height == base.height + 3
         keyed = out.select("id", "year")
@@ -128,7 +122,7 @@ class TestDffSplice:
         dff = _write_dff(
             test_paths.raw_tables_dir / "dff.txt", [(20002, 1930, 1931, {1930: -5.0, 1931: 6.0})]
         )
-        out = ff_link_accounting(test_paths, comp, use_dff=True, dff_path=dff)
+        out = ff_link_accounting(test_paths, comp, dff_path=dff)
 
         assert out.filter(pl.col("id") == 20002)["year"].to_list() == [1930]
 
@@ -139,19 +133,9 @@ class TestDffSplice:
         dff = _write_dff(
             test_paths.raw_tables_dir / "dff.txt", [(20002, 1930, 1930, {1930: 67.743})]
         )
-        out = ff_link_accounting(test_paths, comp, use_dff=True, dff_path=dff)
+        out = ff_link_accounting(test_paths, comp, dff_path=dff)
 
         assert out.filter(pl.col("id") == 20002)["be"][0] == pytest.approx(67.743)
-
-    def test_gate_pre1954_constant(self, test_paths, monkeypatch):
-        monkeypatch.setattr("jkp.data.aux_functions.FF_DFF_GATE_COMPUSTAT_PRE1954", True)
-        # Compustat fiscal years 1950/1951 -> formations June 1951/1952 < 1954: dropped.
-        comp = _compustat_inputs(test_paths, permno=10001, years=(1950, 1951))
-        dff = _write_dff(test_paths.raw_tables_dir / "dff.txt", [(20002, 1930, 1930, {1930: 5.0})])
-        out = ff_link_accounting(test_paths, comp, use_dff=True, dff_path=dff)
-
-        assert out.filter(pl.col("id") == 10001).height == 0
-        assert out.filter(pl.col("id") == 20002).height == 1
 
     def test_no_fanout_on_overlapping_inputs(self, test_paths):
         comp = _compustat_inputs(test_paths, permno=10001, years=(2018, 2019))
@@ -162,7 +146,7 @@ class TestDffSplice:
                 (20002, 1930, 1930, {1930: 5.0}),
             ],
         )
-        out = ff_link_accounting(test_paths, comp, use_dff=True, dff_path=dff)
+        out = ff_link_accounting(test_paths, comp, dff_path=dff)
 
         keyed = out.select("id", "year")
         assert keyed.height == keyed.unique().height
