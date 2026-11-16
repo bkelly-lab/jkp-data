@@ -254,7 +254,7 @@ US_EXCNTRY = "USA"
 
 # Minimums of the FF factor builder: min firms per (excntry,
 # formation date) for breakpoints, and per (excntry, date, bucket) for the VW
-# legs. FF applies both in every country.
+# legs. The FF builder applies both in every country, the US included.
 FACTOR_MIN_STOCKS_BP = 10
 FACTOR_MIN_STOCKS_PF = 3
 

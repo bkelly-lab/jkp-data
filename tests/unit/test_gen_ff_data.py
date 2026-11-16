@@ -2,7 +2,7 @@
 Unit tests for the FF3/FF5/UMD factor builder helpers in aux_functions.py.
 
 Covers:
-  - _ff_bm_eligible / _ff_op_eligible / _ff_inv_eligible / _ff_mom_eligible
+  - _ff_sorts (eligibility of each sort)
   - ff_breakpoints (breakpoint pool, minimum stocks, size median, sort joins)
   - ff_annual_signals (accounting records, December ME from the panel)
   - _ff_universe_rows (rule columns, US vs elsewhere, monthly and daily)
@@ -24,11 +24,8 @@ import pytest
 
 import jkp.data.aux_functions as af
 from jkp.data.aux_functions import (
-    _ff_bm_eligible,
-    _ff_inv_eligible,
     _ff_leg,
-    _ff_mom_eligible,
-    _ff_op_eligible,
+    _ff_sorts,
     _ff_universe_rows,
     ff_annual_signals,
     ff_breakpoints,
@@ -49,15 +46,15 @@ from jkp.data.config import (
 # =============================================================================
 
 
-def _apply_eligible(df: pl.DataFrame, expr: pl.Expr) -> pl.Series:
-    """Evaluate an eligibility Expr on df, returning the boolean Series.
+def _apply_eligible(df: pl.DataFrame, sort: str) -> pl.Series:
+    """Evaluate the sort's eligibility (_ff_sorts) on df, returning the boolean Series.
 
     Frames without dec_me get a positive December ME so the gates test their
     other conditions.
     """
     if "dec_me" not in df.columns:
         df = df.with_columns(dec_me=pl.lit(1.0))
-    return df.select(expr.alias("elig"))["elig"]
+    return df.select(_ff_sorts()[sort][2].alias("elig"))["elig"]
 
 
 # =============================================================================
@@ -66,24 +63,24 @@ def _apply_eligible(df: pl.DataFrame, expr: pl.Expr) -> pl.Series:
 
 
 class TestFFBmEligible:
-    """Tests for _ff_bm_eligible()."""
+    """Tests for the bm eligibility in _ff_sorts()."""
 
     def test_all_conditions_met(self):
         """Returns True when beme>0, me>0, in the December universe."""
         df = pl.DataFrame({"beme": [1.0], "me": [1.0]})
-        result = _apply_eligible(df, _ff_bm_eligible())
+        result = _apply_eligible(df, "bm")
         assert result[0] is True
 
     def test_beme_zero_fails(self):
         """Returns False when beme == 0."""
         df = pl.DataFrame({"beme": [0.0], "me": [1.0]})
-        result = _apply_eligible(df, _ff_bm_eligible())
+        result = _apply_eligible(df, "bm")
         assert result[0] is False
 
     def test_beme_negative_fails(self):
         """Returns False when beme < 0."""
         df = pl.DataFrame({"beme": [-1.0], "me": [1.0]})
-        result = _apply_eligible(df, _ff_bm_eligible())
+        result = _apply_eligible(df, "bm")
         assert result[0] is False
 
     def test_beme_null_fails(self):
@@ -92,19 +89,19 @@ class TestFFBmEligible:
             {"beme": [None], "me": [1.0]},
             schema={"beme": pl.Float64, "me": pl.Float64},
         )
-        result = _apply_eligible(df, _ff_bm_eligible())
+        result = _apply_eligible(df, "bm")
         assert result[0] is not True
 
     def test_me_zero_fails(self):
         """Returns False when me == 0."""
         df = pl.DataFrame({"beme": [1.0], "me": [0.0]})
-        result = _apply_eligible(df, _ff_bm_eligible())
+        result = _apply_eligible(df, "bm")
         assert result[0] is False
 
     def test_me_negative_fails(self):
         """Returns False when me < 0."""
         df = pl.DataFrame({"beme": [1.0], "me": [-1.0]})
-        result = _apply_eligible(df, _ff_bm_eligible())
+        result = _apply_eligible(df, "bm")
         assert result[0] is False
 
     def test_vectorised_mixed(self):
@@ -115,7 +112,7 @@ class TestFFBmEligible:
                 "me": [1.0, 1.0, 0.0, 1.0],
             }
         )
-        result = _apply_eligible(df, _ff_bm_eligible())
+        result = _apply_eligible(df, "bm")
         assert result[0] is True
         assert result[1] is False
         assert result[2] is False
@@ -127,7 +124,7 @@ class TestFFBmEligible:
         df = pl.DataFrame(
             {"beme": [None], "me": [1.0]}, schema={"beme": pl.Float64, "me": pl.Float64}
         )
-        assert _apply_eligible(df, _ff_bm_eligible())[0] is not True
+        assert _apply_eligible(df, "bm")[0] is not True
 
 
 # =============================================================================
@@ -136,12 +133,12 @@ class TestFFBmEligible:
 
 
 class TestFFOpEligible:
-    """Tests for _ff_op_eligible()."""
+    """Tests for the op eligibility in _ff_sorts()."""
 
     def test_all_conditions_met(self):
         """Returns True when me>0, be>0, op not null."""
         df = pl.DataFrame({"me": [1.0], "be": [1.0], "op": [0.5]})
-        assert _apply_eligible(df, _ff_op_eligible())[0] is True
+        assert _apply_eligible(df, "op")[0] is True
 
     def test_op_null_fails(self):
         """Returns False when op is null."""
@@ -149,22 +146,22 @@ class TestFFOpEligible:
             {"me": [1.0], "be": [1.0], "op": [None]},
             schema={"me": pl.Float64, "be": pl.Float64, "op": pl.Float64},
         )
-        assert _apply_eligible(df, _ff_op_eligible())[0] is False
+        assert _apply_eligible(df, "op")[0] is False
 
     def test_be_zero_fails(self):
         """Returns False when be == 0."""
         df = pl.DataFrame({"me": [1.0], "be": [0.0], "op": [0.5]})
-        assert _apply_eligible(df, _ff_op_eligible())[0] is False
+        assert _apply_eligible(df, "op")[0] is False
 
     def test_be_negative_fails(self):
         """Returns False when be < 0."""
         df = pl.DataFrame({"me": [1.0], "be": [-1.0], "op": [0.5]})
-        assert _apply_eligible(df, _ff_op_eligible())[0] is False
+        assert _apply_eligible(df, "op")[0] is False
 
     def test_me_zero_fails(self):
         """Returns False when me == 0."""
         df = pl.DataFrame({"me": [0.0], "be": [1.0], "op": [0.5]})
-        assert _apply_eligible(df, _ff_op_eligible())[0] is False
+        assert _apply_eligible(df, "op")[0] is False
 
     def test_vectorised_mixed(self):
         """Batch with two valid and two invalid rows."""
@@ -175,7 +172,7 @@ class TestFFOpEligible:
                 "op": [0.5, 0.5, 0.5, None],
             }
         )
-        result = _apply_eligible(df, _ff_op_eligible())
+        result = _apply_eligible(df, "op")
         assert result.to_list() == [True, False, False, False]
 
     @pytest.mark.parametrize("excntry", [US_EXCNTRY, "GBR"])
@@ -186,7 +183,7 @@ class TestFFOpEligible:
             {"me": [1.0], "dec_me": [dec_me], "be": [1.0], "op": [0.5]},
             schema_overrides={"dec_me": pl.Float64},
         ).with_columns(excntry=pl.lit(excntry))
-        assert _apply_eligible(df, _ff_op_eligible())[0] is False
+        assert _apply_eligible(df, "op")[0] is False
 
 
 # =============================================================================
@@ -195,39 +192,39 @@ class TestFFOpEligible:
 
 
 class TestFFInvEligible:
-    """Tests for _ff_inv_eligible()."""
+    """Tests for the inv eligibility in _ff_sorts()."""
 
     def test_passes_with_positive_me_and_inv(self):
         """Returns True when me>0 and inv is not null."""
         df = pl.DataFrame({"me": [1.0], "inv": [0.1]})
-        assert _apply_eligible(df, _ff_inv_eligible())[0] is True
+        assert _apply_eligible(df, "inv")[0] is True
 
     def test_inv_null_fails(self):
         """Returns False when inv is null."""
         df = pl.DataFrame(
             {"me": [1.0], "inv": [None]}, schema={"me": pl.Float64, "inv": pl.Float64}
         )
-        assert _apply_eligible(df, _ff_inv_eligible())[0] is False
+        assert _apply_eligible(df, "inv")[0] is False
 
     def test_me_zero_fails(self):
         """Returns False when me == 0."""
         df = pl.DataFrame({"me": [0.0], "inv": [0.1]})
-        assert _apply_eligible(df, _ff_inv_eligible())[0] is False
+        assert _apply_eligible(df, "inv")[0] is False
 
     def test_me_negative_fails(self):
         """Returns False when me < 0."""
         df = pl.DataFrame({"me": [-1.0], "inv": [0.1]})
-        assert _apply_eligible(df, _ff_inv_eligible())[0] is False
+        assert _apply_eligible(df, "inv")[0] is False
 
     def test_inv_zero_passes(self):
         """Returns True when inv == 0 (zero is valid, only null is excluded)."""
         df = pl.DataFrame({"me": [1.0], "inv": [0.0]})
-        assert _apply_eligible(df, _ff_inv_eligible())[0] is True
+        assert _apply_eligible(df, "inv")[0] is True
 
     def test_inv_negative_passes(self):
         """Returns True when inv < 0 (sign not gated)."""
         df = pl.DataFrame({"me": [1.0], "inv": [-0.5]})
-        assert _apply_eligible(df, _ff_inv_eligible())[0] is True
+        assert _apply_eligible(df, "inv")[0] is True
 
     @pytest.mark.parametrize("excntry", [US_EXCNTRY, "GBR"])
     @pytest.mark.parametrize("dec_me", [None, 0.0])
@@ -237,7 +234,7 @@ class TestFFInvEligible:
             {"me": [1.0], "dec_me": [dec_me], "inv": [0.1]},
             schema_overrides={"dec_me": pl.Float64},
         ).with_columns(excntry=pl.lit(excntry))
-        assert _apply_eligible(df, _ff_inv_eligible())[0] is False
+        assert _apply_eligible(df, "inv")[0] is False
 
 
 # =============================================================================
@@ -246,12 +243,12 @@ class TestFFInvEligible:
 
 
 class TestFFMomEligible:
-    """Tests for _ff_mom_eligible()."""
+    """Tests for the mom eligibility in _ff_sorts()."""
 
     def test_passes_with_valid_inputs(self):
         """Returns True when mom_2_12 not null and me > 0."""
         df = pl.DataFrame({"mom_2_12": [0.1], "me": [1.0]})
-        assert _apply_eligible(df, _ff_mom_eligible())[0] is True
+        assert _apply_eligible(df, "mom")[0] is True
 
     def test_mom_null_fails(self):
         """Returns False when mom_2_12 is null."""
@@ -259,17 +256,17 @@ class TestFFMomEligible:
             {"mom_2_12": [None], "me": [1.0]},
             schema={"mom_2_12": pl.Float64, "me": pl.Float64},
         )
-        assert _apply_eligible(df, _ff_mom_eligible())[0] is False
+        assert _apply_eligible(df, "mom")[0] is False
 
     def test_me_zero_fails(self):
         """Returns False when me == 0."""
         df = pl.DataFrame({"mom_2_12": [0.1], "me": [0.0]})
-        assert _apply_eligible(df, _ff_mom_eligible())[0] is False
+        assert _apply_eligible(df, "mom")[0] is False
 
     def test_me_negative_fails(self):
         """Returns False when me < 0."""
         df = pl.DataFrame({"mom_2_12": [0.1], "me": [-1.0]})
-        assert _apply_eligible(df, _ff_mom_eligible())[0] is False
+        assert _apply_eligible(df, "mom")[0] is False
 
     def test_me_null_fails(self):
         """Returns null (not True) when me is null — Polars null propagation."""
@@ -277,7 +274,7 @@ class TestFFMomEligible:
             {"mom_2_12": [0.1], "me": [None]},
             schema={"mom_2_12": pl.Float64, "me": pl.Float64},
         )
-        assert _apply_eligible(df, _ff_mom_eligible())[0] is not True
+        assert _apply_eligible(df, "mom")[0] is not True
 
     def test_both_null_fails(self):
         """Returns null (not True) when both are null."""
@@ -285,7 +282,7 @@ class TestFFMomEligible:
             {"mom_2_12": [None], "me": [None]},
             schema={"mom_2_12": pl.Float64, "me": pl.Float64},
         )
-        assert _apply_eligible(df, _ff_mom_eligible())[0] is not True
+        assert _apply_eligible(df, "mom")[0] is not True
 
     def test_vectorised(self):
         """Batch: True for valid row, False/null for invalid rows."""
@@ -295,7 +292,7 @@ class TestFFMomEligible:
                 "me": [1.0, 1.0, 0.0, None],
             }
         )
-        result = _apply_eligible(df, _ff_mom_eligible())
+        result = _apply_eligible(df, "mom")
         assert result[0] is True
         assert result[1] is not True  # mom_2_12 null
         assert result[2] is False  # me == 0
@@ -457,7 +454,7 @@ class TestFFBreakpoints:
             june,
             [("me", 0.50, "sizemedn")],
             group_keys=["excntry", "date"],
-            pool=pl.col("bp_pool") & _ff_bm_eligible(),
+            pool=pl.col("bp_pool") & _ff_sorts()["bm"][2],
             min_stocks=1,
         )
         wide = ff_breakpoints(june, ["bm"], 1)
