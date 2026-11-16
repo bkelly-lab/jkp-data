@@ -49,10 +49,10 @@ from .config import (
     FF_RET_MAX_GAP_DAYS,
     FF_UMD_DAILY_LOOKBACK,
     FF_UMD_DAILY_SKIP,
+    FF_UMD_MIN_DAYS,
+    FF_UMD_MIN_MONTHS,
     FF_UMD_MONTHLY_LOOKBACK,
     FF_UMD_MONTHLY_SKIP,
-    FF_UMD_ROW_MIN_DAYS,
-    FF_UMD_ROW_MIN_MONTHS,
     MAIN_FILTERS,
     NI_AT_MIN_STD,
     RES_MOM_MIN_STD,
@@ -10692,7 +10692,7 @@ def compute_ff_momentum_signal(
         follows French's detail pages (a price at the window start, a good return at
         its end, ME at t-1), except that instead of requiring the stock listed
         throughout the window, every country, the US included, needs
-        FF_UMD_ROW_MIN_MONTHS/DAYS rows in it (compute_ff_momentum_filter); periods outside the
+        FF_UMD_MIN_MONTHS/DAYS rows in it (compute_ff_momentum_filter); periods outside the
         universe count as missing. The signal compounds the unit's returns, a
         missing return as 0 and a return spanning a gap in full, so the first return
         after a halt counts: monthly t-12..t-2 on a calendar-month index, daily
@@ -10724,7 +10724,7 @@ def compute_ff_momentum_signal(
     if freq == "monthly":
         idx = (pl.col("date").dt.year() * 12 + pl.col("date").dt.month()).cast(pl.Int64)
         src, target = src.with_columns(idx=idx), target.with_columns(idx=idx)
-        window = (FF_UMD_MONTHLY_LOOKBACK + 1, FF_UMD_MONTHLY_SKIP + 1, FF_UMD_ROW_MIN_MONTHS)
+        window = (FF_UMD_MONTHLY_LOOKBACK + 1, FF_UMD_MONTHLY_SKIP + 1, FF_UMD_MIN_MONTHS)
     else:
         days = (
             src.select("excntry", "date")
@@ -10734,7 +10734,7 @@ def compute_ff_momentum_signal(
         )
         src = src.join(days, on=["excntry", "date"], how="left")
         target = target.join(days, on=["excntry", "date"], how="left")
-        window = (FF_UMD_DAILY_LOOKBACK, FF_UMD_DAILY_SKIP, FF_UMD_ROW_MIN_DAYS)
+        window = (FF_UMD_DAILY_LOOKBACK, FF_UMD_DAILY_SKIP, FF_UMD_MIN_DAYS)
     mom = (pl.col("cum_log_end") - pl.col("cum_log_start")).exp() - 1.0
     return (
         target.join(

@@ -75,6 +75,6 @@ June sorts; the sample screens decide only which stocks enter a sort.
   are daily.
 - **UMD, every country:** sorts on the compounded t-12..t-2 return (the
   company's own return in the US) under French's eligibility rules, with one
-  change: a stock needs `FF_UMD_ROW_MIN_MONTHS`/`FF_UMD_ROW_MIN_DAYS` rows in the
+  change: a stock needs `FF_UMD_MIN_MONTHS`/`FF_UMD_MIN_DAYS` rows in the
   window, where French requires it listed throughout
   (`compute_ff_momentum_signal`); daily UMD uses French's daily signal.

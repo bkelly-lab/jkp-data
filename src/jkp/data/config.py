@@ -264,12 +264,12 @@ FF_UMD_DAILY_LOOKBACK = 251
 FF_UMD_MONTHLY_LOOKBACK = 12
 FF_UMD_MONTHLY_SKIP = 1
 
-# UMD halt tolerance, every country: min rows in the momentum window (monthly
+# UMD halt tolerance, every country, the US included: min rows in the momentum window (monthly
 # t-12..t-2 = 11 months; daily t-250..t-21 = 230 trading days). Endpoints stay
 # strict. In the US this departs from French, who requires the stock listed
 # throughout the window; Compustat Global records a halt as missing rows.
-FF_UMD_ROW_MIN_MONTHS = 6
-FF_UMD_ROW_MIN_DAYS = 115
+FF_UMD_MIN_MONTHS = 6
+FF_UMD_MIN_DAYS = 115
 
 # Longest gap a daily FF return may span (ret_lag_dif, calendar days); a longer
 # return is nulled. A monthly return may span one month.
