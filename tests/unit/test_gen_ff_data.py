@@ -2,16 +2,16 @@
 Unit tests for the FF3/FF5/UMD factor builder helpers in aux_functions.py.
 
 Covers:
-  - _ff_sorts (eligibility of each sort)
-  - ff_breakpoints (breakpoint pool, minimum stocks, size median, sort joins)
-  - ff_annual_signals (accounting records, December ME from the panel)
-  - _ff_universe_rows (rule columns, US vs elsewhere, monthly and daily)
-  - ff_load_panel (class aggregation, ME, null-ME rows kept)
-  - ff_factor_rows (buy-and-hold weights, gap-spanning returns, null-ME rows kept)
-  - ff_membership
-  - _ff_leg
-  - ff_returns (July-June broadcast, FF3/FF5/UMD spreads)
-  - ff_mom_signal (monthly and daily)
+  - ff_sort_definitions (eligibility of each sort)
+  - compute_ff_breakpoints (breakpoint pool, minimum stocks, size median, sort joins)
+  - compute_ff_annual_characteristics (accounting records, December ME from the panel)
+  - load_ff_universe (rule columns, US vs elsewhere, monthly and daily)
+  - build_ff_firm_panel (class aggregation, ME, null-ME rows kept)
+  - add_ff_buy_and_hold_weights (buy-and-hold weights, gap-spanning returns, null-ME rows kept)
+  - assign_ff_portfolios
+  - compute_ff_portfolio_returns
+  - compute_ff_factor_returns (July-June broadcast, FF3/FF5/UMD spreads)
+  - compute_ff_momentum_signal (monthly and daily)
 """
 
 from __future__ import annotations
@@ -24,16 +24,16 @@ import pytest
 
 import jkp.data.aux_functions as af
 from jkp.data.aux_functions import (
-    _ff_leg,
-    _ff_sorts,
-    _ff_universe_rows,
-    ff_annual_signals,
-    ff_breakpoints,
-    ff_factor_rows,
-    ff_load_panel,
-    ff_membership,
-    ff_mom_signal,
-    ff_returns,
+    add_ff_buy_and_hold_weights,
+    assign_ff_portfolios,
+    build_ff_firm_panel,
+    compute_ff_annual_characteristics,
+    compute_ff_breakpoints,
+    compute_ff_factor_returns,
+    compute_ff_momentum_signal,
+    compute_ff_portfolio_returns,
+    ff_sort_definitions,
+    load_ff_universe,
 )
 from jkp.data.config import (
     FACTOR_MIN_STOCKS_BP,
@@ -47,14 +47,14 @@ from jkp.data.config import (
 
 
 def _apply_eligible(df: pl.DataFrame, sort: str) -> pl.Series:
-    """Evaluate the sort's eligibility (_ff_sorts) on df, returning the boolean Series.
+    """Evaluate the sort's eligibility (ff_sort_definitions) on df, returning the boolean Series.
 
     Frames without dec_me get a positive December ME so the gates test their
     other conditions.
     """
     if "dec_me" not in df.columns:
         df = df.with_columns(dec_me=pl.lit(1.0))
-    return df.select(_ff_sorts()[sort][2].alias("elig"))["elig"]
+    return df.select(ff_sort_definitions()[sort][2].alias("elig"))["elig"]
 
 
 # =============================================================================
@@ -63,7 +63,7 @@ def _apply_eligible(df: pl.DataFrame, sort: str) -> pl.Series:
 
 
 class TestFFBmEligible:
-    """Tests for the bm eligibility in _ff_sorts()."""
+    """Tests for the bm eligibility in ff_sort_definitions()."""
 
     def test_all_conditions_met(self):
         """Returns True when beme>0, me>0, in the December universe."""
@@ -133,7 +133,7 @@ class TestFFBmEligible:
 
 
 class TestFFOpEligible:
-    """Tests for the op eligibility in _ff_sorts()."""
+    """Tests for the op eligibility in ff_sort_definitions()."""
 
     def test_all_conditions_met(self):
         """Returns True when me>0, be>0, op not null."""
@@ -192,7 +192,7 @@ class TestFFOpEligible:
 
 
 class TestFFInvEligible:
-    """Tests for the inv eligibility in _ff_sorts()."""
+    """Tests for the inv eligibility in ff_sort_definitions()."""
 
     def test_passes_with_positive_me_and_inv(self):
         """Returns True when me>0 and inv is not null."""
@@ -243,7 +243,7 @@ class TestFFInvEligible:
 
 
 class TestFFMomEligible:
-    """Tests for the mom eligibility in _ff_sorts()."""
+    """Tests for the mom eligibility in ff_sort_definitions()."""
 
     def test_passes_with_valid_inputs(self):
         """Returns True when mom_2_12 not null and me > 0."""
@@ -326,11 +326,11 @@ def _june(
 
 
 class TestFFBreakpoints:
-    """Tests for ff_breakpoints()."""
+    """Tests for compute_ff_breakpoints()."""
 
     def test_us_30_70_quantiles(self):
         """30/70 quantiles of the pool's B/M match the expected values."""
-        bp = ff_breakpoints(_june(10, [float(i) for i in range(1, 11)]), ["bm"], 1)
+        bp = compute_ff_breakpoints(_june(10, [float(i) for i in range(1, 11)]), ["bm"], 1)
         assert len(bp) == 1
         row = bp.row(0, named=True)
         # QUANTILE_DISC at 0.30 of [1..10] => 3, at 0.70 => 7
@@ -339,26 +339,26 @@ class TestFFBreakpoints:
 
     def test_us_below_min_stocks_suppressed(self):
         """The US is gated like every country: 1 pool stock yields no breakpoints."""
-        bp = ff_breakpoints(_june(1, [5.0]), ["bm"], FACTOR_MIN_STOCKS_BP)
+        bp = compute_ff_breakpoints(_june(1, [5.0]), ["bm"], FACTOR_MIN_STOCKS_BP)
         assert len(bp) == 0
 
     def test_row_below_min_stocks_suppressed(self):
         """A country with fewer than FACTOR_MIN_STOCKS_BP pool stocks has no row."""
         n = FACTOR_MIN_STOCKS_BP - 1
         june = _june(n, [float(i) for i in range(1, n + 1)], excntry="GBR")
-        assert len(ff_breakpoints(june, ["bm"], FACTOR_MIN_STOCKS_BP)) == 0
+        assert len(compute_ff_breakpoints(june, ["bm"], FACTOR_MIN_STOCKS_BP)) == 0
 
     def test_row_at_min_stocks_emits_breakpoints(self):
         """A country with exactly FACTOR_MIN_STOCKS_BP pool stocks gets breakpoints."""
         n = FACTOR_MIN_STOCKS_BP
         june = _june(n, [float(i) for i in range(1, n + 1)], excntry="GBR")
-        assert len(ff_breakpoints(june, ["bm"], FACTOR_MIN_STOCKS_BP)) == 1
+        assert len(compute_ff_breakpoints(june, ["bm"], FACTOR_MIN_STOCKS_BP)) == 1
 
     def test_stocks_outside_pool_excluded(self):
         """Stocks with bp_pool False (e.g. micro caps) never form breakpoints."""
         n = FACTOR_MIN_STOCKS_BP + 5
         june = _june(n, [float(i) for i in range(1, n + 1)], excntry="DEU", bp_pool=False)
-        assert len(ff_breakpoints(june, ["bm"], FACTOR_MIN_STOCKS_BP)) == 0
+        assert len(compute_ff_breakpoints(june, ["bm"], FACTOR_MIN_STOCKS_BP)) == 0
 
     def test_empty_input_returns_empty(self):
         """Empty input produces empty output."""
@@ -372,11 +372,11 @@ class TestFFBreakpoints:
                 "bp_pool": pl.Boolean,
             }
         )
-        assert len(ff_breakpoints(june, ["bm"], FACTOR_MIN_STOCKS_BP)) == 0
+        assert len(compute_ff_breakpoints(june, ["bm"], FACTOR_MIN_STOCKS_BP)) == 0
 
     def test_output_schema(self):
         """Output is [excntry, date, sizemedn, <sort>_lo, <sort>_hi]."""
-        bp = ff_breakpoints(_june(10, [float(i) for i in range(1, 11)]), ["bm"], 1)
+        bp = compute_ff_breakpoints(_june(10, [float(i) for i in range(1, 11)]), ["bm"], 1)
         assert bp.columns == ["excntry", "date", "sizemedn", "bm_lo", "bm_hi"]
 
     def test_op_sort_returns_op_lo_hi(self):
@@ -393,7 +393,7 @@ class TestFFBreakpoints:
                 "bp_pool": [True] * 20,
             }
         )
-        bp = ff_breakpoints(june, ["op"], 1)
+        bp = compute_ff_breakpoints(june, ["op"], 1)
         assert bp.columns == ["excntry", "date", "sizemedn", "op_lo", "op_hi"]
         assert bp["op_lo"][0] < bp["op_hi"][0]
 
@@ -410,18 +410,18 @@ class TestFFBreakpoints:
                 "bp_pool": [True] * 20,
             }
         )
-        bp = ff_breakpoints(june, ["inv"], 1)
+        bp = compute_ff_breakpoints(june, ["inv"], 1)
         assert bp.columns == ["excntry", "date", "sizemedn", "inv_lo", "inv_hi"]
 
     def test_first_sort_sets_the_sample(self):
         """A country-date with no first-sort breakpoints forms nothing, even though
         its size median exists; later sorts are left-joined and only go null."""
         no_bm = _june(10, [None] * 10)
-        assert len(ff_breakpoints(no_bm, ["bm"], 1)) == 0
+        assert len(compute_ff_breakpoints(no_bm, ["bm"], 1)) == 0
         june = _june(10, [float(i) for i in range(1, 11)]).with_columns(
             op=pl.lit(None, dtype=pl.Float64), dec_me=pl.lit(1.0), be=pl.lit(1.0)
         )
-        bp = ff_breakpoints(june, ["bm", "op"], 1)
+        bp = compute_ff_breakpoints(june, ["bm", "op"], 1)
         assert bp.height == 1
         assert bp["bm_lo"][0] == 3.0
         assert bp["op_lo"][0] is None
@@ -454,17 +454,17 @@ class TestFFBreakpoints:
             june,
             [("me", 0.50, "sizemedn")],
             group_keys=["excntry", "date"],
-            pool=pl.col("bp_pool") & _ff_sorts()["bm"][2],
+            pool=pl.col("bp_pool") & ff_sort_definitions()["bm"][2],
             min_stocks=1,
         )
-        wide = ff_breakpoints(june, ["bm"], 1)
+        wide = compute_ff_breakpoints(june, ["bm"], 1)
         assert strict["sizemedn"][0] == 20.0  # B/M-eligible pool: 10/20/30
         assert wide["sizemedn"][0] == 30.0  # pool with me > 0: 10/20/30/40/50
 
     def test_value_breaks_use_eligible_pool(self):
         """30/70 breakpoints keep the sort-eligible pool, whatever the (wider)
         size-median pool: the pool B/M values are 1, 2, 3."""
-        bp = ff_breakpoints(self._june_size_pool(), ["bm"], 1)
+        bp = compute_ff_breakpoints(self._june_size_pool(), ["bm"], 1)
         assert (bp["bm_lo"][0], bp["bm_hi"][0]) == (1.0, 3.0)
 
     def test_row_size_median_excludes_non_pool_stocks(self):
@@ -480,7 +480,7 @@ class TestFFBreakpoints:
         micro = june.head(3).with_columns(
             id=pl.int_range(n, n + 3), me=pl.lit(1e6), bp_pool=pl.lit(False)
         )
-        bp = ff_breakpoints(pl.concat([june, micro]), ["bm"], FACTOR_MIN_STOCKS_BP)
+        bp = compute_ff_breakpoints(pl.concat([june, micro]), ["bm"], FACTOR_MIN_STOCKS_BP)
         # median (QUANTILE_DISC) of me 1..15 is 8; the B/M-eligible 1..13 give 7
         assert bp["sizemedn"][0] == 8.0
 
@@ -491,7 +491,7 @@ class TestFFBreakpoints:
 
 
 def _records(rows: list[tuple]) -> pl.DataFrame:
-    """ff_link_accounting output rows: (gvkey, id, be, op, inv, datadate); fiscal 2019."""
+    """link_accounting_to_securities output rows: (gvkey, id, be, op, inv, datadate); fiscal 2019."""
     return pl.DataFrame(
         [(g, i, 2019, d, be, op, inv) for g, i, be, op, inv, d in rows],
         schema={
@@ -519,7 +519,7 @@ def _dec_panel(rows: list[tuple[str, int, float | None]]) -> pl.DataFrame:
 def _annual_signals(
     test_paths, monkeypatch, records: pl.DataFrame, panel: pl.DataFrame, permcos: dict[int, int]
 ) -> dict[int, dict]:
-    """ff_annual_signals with the accounting records fed in directly. world_msf lists
+    """compute_ff_annual_characteristics with the accounting records fed in directly. world_msf lists
     every record's security: a CRSP security with its permco (permcos), else Compustat."""
     _write_world_msf(
         test_paths,
@@ -533,17 +533,19 @@ def _annual_signals(
             for i in records["id"].unique().to_list()
         ],
     )
-    monkeypatch.setattr(af, "_jkp_annual_acc", lambda paths: None)
-    monkeypatch.setattr(af, "ff_load_world_compustat", lambda acc: None)
-    monkeypatch.setattr(af, "ff_link_accounting", lambda paths, comp, *, dff_path: records)
-    out = ff_annual_signals(test_paths, panel)
+    monkeypatch.setattr(af, "load_jkp_annual_accounting", lambda paths: None)
+    monkeypatch.setattr(af, "select_ff_fiscal_records", lambda acc: None)
+    monkeypatch.setattr(
+        af, "link_accounting_to_securities", lambda paths, comp, *, dff_path: records
+    )
+    out = compute_ff_annual_characteristics(test_paths, panel)
     assert out.select("id", "port_year").is_duplicated().sum() == 0
     assert out["port_year"].unique().to_list() == [2020]
     return {r["id"]: r for r in out.iter_rows(named=True)}
 
 
 class TestFFAnnualSignals:
-    """ff_annual_signals: one row per unit with the accounting of fiscal y-1 and
+    """compute_ff_annual_characteristics: one row per unit with the accounting of fiscal y-1 and
     the panel's December y-1 ME; a unit not in the panel that December has no ME."""
 
     @staticmethod
@@ -612,7 +614,7 @@ class TestFFAnnualSignals:
 
 
 class TestFFAnnualSignalsFirms:
-    """ff_annual_signals keys US CRSP securities by their FF firm: a company's
+    """compute_ff_annual_characteristics keys US CRSP securities by their FF firm: a company's
     classes share one row, whichever class carries the accounting."""
 
     @staticmethod
@@ -751,7 +753,7 @@ def _write_world_dsf(test_paths, rows: list[dict]) -> None:
 
 
 class TestFFUniverseRows:
-    """_ff_universe_rows: the rule columns, where the US and other countries differ."""
+    """load_ff_universe: the rule columns, where the US and other countries differ."""
 
     @staticmethod
     def _monthly(test_paths) -> dict[int, dict]:
@@ -792,7 +794,7 @@ class TestFFUniverseRows:
                 {"id": 104, "eom": jun, "excntry": "DEU", "source_crsp": 0, "size_grp": "mega"},
             ],
         )
-        out = _ff_universe_rows(test_paths, "monthly").collect()
+        out = load_ff_universe(test_paths, "monthly").collect()
         return {r["id"]: r for r in out.filter(pl.col("date") == jun).iter_rows(named=True)}
 
     def test_us_rule_columns(self, test_paths):
@@ -860,7 +862,7 @@ class TestFFUniverseRows:
                 {"id": 102, "eom": eom, "excntry": "GBR", "source_crsp": 0, "size_grp": "mega"},
             ],
         )
-        out = _ff_universe_rows(test_paths, "daily").collect()
+        out = load_ff_universe(test_paths, "daily").collect()
         r = {x["id"]: x for x in out.iter_rows(named=True)}
         assert [r[i]["bp_pool"] for i in (1, 2, 101, 102)] == [True, False, True, False]
         assert [r[i]["ret_lag_dif"] for i in (1, 2, 101)] == [0, 0, 4]
@@ -873,7 +875,7 @@ class TestFFUniverseRows:
 
 
 class TestFFLoadPanel:
-    """ff_load_panel: one row per FF firm and date. Class rows come from the
+    """build_ff_firm_panel: one row per FF firm and date. Class rows come from the
     world files, with usincflg (and daily primaryexch) from raw CIZ. Class returns are
     weighted by class ME at t-1; monthly ME is JKP's me_company; returns are JKP's CRSP returns, not raw CIZ."""
 
@@ -930,7 +932,7 @@ class TestFFLoadPanel:
                 for i, d, src, common, px, prc, me, mec, ret in world
             ],
         )
-        out = ff_load_panel(test_paths, "monthly")
+        out = build_ff_firm_panel(test_paths, "monthly")
         return out.filter(pl.col("date") == jun).sort("id")
 
     def test_output_columns(self, test_paths):
@@ -986,7 +988,7 @@ class TestFFLoadPanel:
             ],
         )
         _write_world_msf(test_paths, [{"id": 1, "eom": day}])
-        out = ff_load_panel(test_paths, "daily")
+        out = build_ff_firm_panel(test_paths, "daily")
         # Daily primaryexch comes from raw CIZ: permno 2 trades on exchange X.
         assert out.select("id", "ret", "me").rows() == [(1, -0.29, 10.0)]
 
@@ -1007,7 +1009,7 @@ class TestFFLoadPanel:
         self._write_ex_us(
             test_paths, [{"id": 100, "prc": 9.0, "me": 120.0, "ret": 0.04, "ret_lag_dif": 2}]
         )
-        out = ff_load_panel(test_paths, "monthly")
+        out = build_ff_firm_panel(test_paths, "monthly")
         assert out.rows(named=True) == [
             {
                 "excntry": "GBR",
@@ -1028,17 +1030,17 @@ class TestFFLoadPanel:
             test_paths,
             [{"id": 1, "gvkey": "g1", "me": 100.0}, {"id": 2, "gvkey": None, "me": 200.0}],
         )
-        out = ff_load_panel(test_paths, "monthly")
+        out = build_ff_firm_panel(test_paths, "monthly")
         assert sorted(out["id"].to_list()) == [1, 2]
 
     def test_ex_us_row_without_me_stays(self, test_paths):
         """A priced row whose ME is missing stays in the panel and the factor rows."""
         self._write_ex_us(test_paths, [{"id": 1, "me": 100.0}, {"id": 2, "me": None, "prc": 7.0}])
-        panel = ff_load_panel(test_paths, "monthly").sort("id")
+        panel = build_ff_firm_panel(test_paths, "monthly").sort("id")
         assert panel["id"].to_list() == [1, 2]
         assert panel["me"].to_list() == [100.0, None]
         assert panel["prc"].to_list() == [8.0, 7.0]
-        assert ff_factor_rows(panel, "monthly")["id"].to_list() == [1, 2]
+        assert add_ff_buy_and_hold_weights(panel, "monthly")["id"].to_list() == [1, 2]
 
 
 # =============================================================================
@@ -1047,7 +1049,7 @@ class TestFFLoadPanel:
 
 
 def _factor_panel(rows: list[tuple]) -> pl.DataFrame:
-    """Panel rows (excntry, id, date, ret, me) with no gaps, as ff_factor_rows reads."""
+    """Panel rows (excntry, id, date, ret, me) with no gaps, as add_ff_buy_and_hold_weights reads."""
     return pl.DataFrame(
         rows,
         schema={
@@ -1062,13 +1064,13 @@ def _factor_panel(rows: list[tuple]) -> pl.DataFrame:
 
 
 def _weights(rows: list[tuple], freq: str = "monthly") -> dict[tuple[int, date], float | None]:
-    """ff_factor_rows on (excntry, id, date, ret, me) rows -> {(id, date): w}."""
-    out = ff_factor_rows(_factor_panel(rows), freq)
+    """add_ff_buy_and_hold_weights on (excntry, id, date, ret, me) rows -> {(id, date): w}."""
+    out = add_ff_buy_and_hold_weights(_factor_panel(rows), freq)
     return {(i, d): w for i, d, w in out.select("id", "date", "w").iter_rows()}
 
 
 class TestFFFactorRows:
-    """ff_factor_rows: buy-and-hold from June in every country. The weight is
+    """add_ff_buy_and_hold_weights: buy-and-hold from June in every country. The weight is
     the end-of-June ME grown by the total return since then; a null return
     compounds as 0; a listing gap nulls the weight unless the whole market skipped
     those dates."""
@@ -1167,7 +1169,7 @@ class TestFFFactorRows:
                 ("GBR", 1, date(2020, 8, 31), 0.1, 110.0),
             ]
         ).with_columns(ret_lag_dif=pl.Series([0, lag_dif]))
-        out = ff_factor_rows(panel, "monthly")
+        out = add_ff_buy_and_hold_weights(panel, "monthly")
         assert out["id"].to_list() == [1, 1]
         assert (out["ret"][1] is not None) is kept
 
@@ -1180,7 +1182,7 @@ class TestFFFactorRows:
                 ("GBR", 1, date(2020, 7, 7), 0.1, 110.0),
             ]
         ).with_columns(ret_lag_dif=pl.Series([0, lag_dif]))
-        out = ff_factor_rows(panel, "daily")
+        out = add_ff_buy_and_hold_weights(panel, "daily")
         assert out["id"].to_list() == [1, 1]
         assert (out["ret"][1] is not None) is kept
 
@@ -1193,7 +1195,7 @@ class TestFFFactorRows:
                 ("USA", 3, date(2020, 7, 31), 0.0, None),
             ]
         )
-        assert ff_factor_rows(panel, "monthly")["id"].sort().to_list() == [1, 2, 3]
+        assert add_ff_buy_and_hold_weights(panel, "monthly")["id"].sort().to_list() == [1, 2, 3]
 
 
 # =============================================================================
@@ -1233,14 +1235,14 @@ def _june_with_bp(
 
 
 class TestFFMembership:
-    """Tests for ff_membership()."""
+    """Tests for assign_ff_portfolios()."""
 
     def test_size_split_correct(self):
         """Firms below sizemedn -> S; at or above -> B."""
         june, breaks = _june_with_bp(
             [1.0, 1.0, 5.0, 5.0], [1.0, 3.0, 1.0, 3.0], sizemedn=2.0, bm_lo=2.0, bm_hi=4.0
         )
-        result = ff_membership(june, breaks, ["bm"])
+        result = assign_ff_portfolios(june, breaks, ["bm"])
         # me=1 < 2=sizemedn -> S; me=3 >= 2 -> B
         assert [p[0] for p in result["bm_port"]] == ["S", "B", "S", "B"]
 
@@ -1249,13 +1251,13 @@ class TestFFMembership:
         june, breaks = _june_with_bp(
             [1.0, 3.0, 5.0], [1.0, 1.0, 1.0], sizemedn=2.0, bm_lo=2.0, bm_hi=4.0
         )
-        result = ff_membership(june, breaks, ["bm"])
+        result = assign_ff_portfolios(june, breaks, ["bm"])
         assert result["bm_port"].to_list() == ["SL", "SM", "SH"]
 
     def test_ineligible_rows_get_null_port(self):
         """Rows failing eligibility (beme <= 0) get a null port."""
         june, breaks = _june_with_bp([-1.0, 1.0], [1.0, 1.0], sizemedn=0.5, bm_lo=0.5, bm_hi=1.5)
-        result = ff_membership(june, breaks, ["bm"])
+        result = assign_ff_portfolios(june, breaks, ["bm"])
         assert result["bm_port"][0] is None
         assert result["bm_port"][1] is not None
 
@@ -1263,18 +1265,18 @@ class TestFFMembership:
         """If the sort's breakpoints are null, eligible rows get a null port."""
         june, breaks = _june_with_bp([2.0], [1.0], sizemedn=0.5, bm_lo=None, bm_hi=None)
         breaks = breaks.cast({"bm_lo": pl.Float64, "bm_hi": pl.Float64})
-        assert ff_membership(june, breaks, ["bm"])["bm_port"][0] is None
+        assert assign_ff_portfolios(june, breaks, ["bm"])["bm_port"][0] is None
 
     def test_country_date_without_breakpoints_dropped(self):
         """Units in a country-date with no breakpoint row are not in the output."""
         june, breaks = _june_with_bp([1.0, 2.0], [1.0, 1.0], 0.5, 1.0, 2.0)
         june = pl.concat([june, june.with_columns(excntry=pl.lit("GBR"), id=pl.col("id") + 10)])
-        assert set(ff_membership(june, breaks, ["bm"])["excntry"]) == {US_EXCNTRY}
+        assert set(assign_ff_portfolios(june, breaks, ["bm"])["excntry"]) == {US_EXCNTRY}
 
     def test_output_columns(self):
         """Output keeps frame's columns plus <sort>_port; no breakpoint or flag columns."""
         june, breaks = _june_with_bp([1.0, 2.0], [1.0, 1.0], 0.5, 1.0, 2.0)
-        result = ff_membership(june, breaks, ["bm"])
+        result = assign_ff_portfolios(june, breaks, ["bm"])
         assert result.columns == [*june.columns, "bm_port"]
 
     def test_two_sorts(self):
@@ -1282,7 +1284,7 @@ class TestFFMembership:
         june, breaks = _june_with_bp([1.0, 1.0], [1.0, 3.0], 2.0, 0.5, 1.5)
         june = june.with_columns(dec_me=pl.lit(1.0), be=pl.lit(1.0), op=pl.Series([0.1, 0.9]))
         breaks = breaks.with_columns(op_lo=pl.lit(0.3), op_hi=pl.lit(0.6))
-        result = ff_membership(june, breaks, ["bm", "op"])
+        result = assign_ff_portfolios(june, breaks, ["bm", "op"])
         assert result["bm_port"].to_list() == ["SM", "BM"]
         assert result["op_port"].to_list() == ["SW", "BR"]
 
@@ -1296,7 +1298,7 @@ _BM_BUCKETS = ["bm_SL", "bm_SM", "bm_SH", "bm_BL", "bm_BM", "bm_BH"]
 
 
 def _leg_frame(rows: list[dict]) -> pl.DataFrame:
-    """Frame of (excntry, id, date, ret, w, bm_port) rows for _ff_leg."""
+    """Frame of (excntry, id, date, ret, w, bm_port) rows for compute_ff_portfolio_returns."""
     schema = {
         "excntry": pl.Utf8,
         "id": pl.Int64,
@@ -1312,24 +1314,28 @@ def _leg_frame(rows: list[dict]) -> pl.DataFrame:
 
 
 class TestFFLeg:
-    """Tests for _ff_leg() on the B/M sort."""
+    """Tests for compute_ff_portfolio_returns() on the B/M sort."""
 
     def test_vw_return_formula(self, tolerance):
         """VW return = sum(ret*w)/sum(w) per bucket: (0.1*1 + 0.2*3) / 4 = 0.175."""
         frame = _leg_frame([{"id": 1, "ret": 0.1, "w": 1.0}, {"id": 2, "ret": 0.2, "w": 3.0}])
-        result = _ff_leg(frame, "bm", 1)
+        result = compute_ff_portfolio_returns(frame, "bm", 1)
         np.testing.assert_allclose(result["bm_SH"][0], 0.175, **tolerance.TIGHT)
 
     def test_missing_buckets_filled_with_null(self):
         """Buckets absent from data are filled with null (not dropped)."""
-        result = _ff_leg(_leg_frame([{"id": 1, "ret": 0.1, "w": 1.0}]), "bm", 1)
+        result = compute_ff_portfolio_returns(
+            _leg_frame([{"id": 1, "ret": 0.1, "w": 1.0}]), "bm", 1
+        )
         for col in _BM_BUCKETS:
             assert col in result.columns
         assert result["bm_SL"][0] is None
 
     def test_us_below_min_stocks_gated(self):
         """The US is gated like every country: a 1-stock bucket is null."""
-        result = _ff_leg(_leg_frame([{"id": 1, "ret": 0.05, "w": 1.0}]), "bm", FACTOR_MIN_STOCKS_PF)
+        result = compute_ff_portfolio_returns(
+            _leg_frame([{"id": 1, "ret": 0.05, "w": 1.0}]), "bm", FACTOR_MIN_STOCKS_PF
+        )
         assert result["bm_SH"][0] is None
 
     def test_row_below_min_stocks_nulled(self):
@@ -1338,7 +1344,7 @@ class TestFFLeg:
             {"excntry": "GBR", "id": i, "ret": 0.1, "w": 1.0}
             for i in range(FACTOR_MIN_STOCKS_PF - 1)
         ]
-        result = _ff_leg(_leg_frame(rows), "bm", FACTOR_MIN_STOCKS_PF)
+        result = compute_ff_portfolio_returns(_leg_frame(rows), "bm", FACTOR_MIN_STOCKS_PF)
         gbr = result.filter(pl.col("excntry") == "GBR")
         assert len(gbr) > 0
         assert gbr["bm_SH"][0] is None
@@ -1348,7 +1354,7 @@ class TestFFLeg:
         rows = [
             {"excntry": "GBR", "id": i, "ret": 0.1, "w": 1.0} for i in range(FACTOR_MIN_STOCKS_PF)
         ]
-        result = _ff_leg(_leg_frame(rows), "bm", FACTOR_MIN_STOCKS_PF)
+        result = compute_ff_portfolio_returns(_leg_frame(rows), "bm", FACTOR_MIN_STOCKS_PF)
         gbr = result.filter(pl.col("excntry") == "GBR")
         assert len(gbr) == 1
         assert gbr["bm_SH"][0] is not None
@@ -1356,23 +1362,31 @@ class TestFFLeg:
     def test_null_ret_excluded(self):
         """Rows with null ret are excluded from VW computation."""
         frame = _leg_frame([{"id": 1, "ret": None, "w": 10.0}, {"id": 2, "ret": 0.1, "w": 1.0}])
-        np.testing.assert_allclose(_ff_leg(frame, "bm", 1)["bm_SH"][0], 0.1, rtol=1e-9)
+        np.testing.assert_allclose(
+            compute_ff_portfolio_returns(frame, "bm", 1)["bm_SH"][0], 0.1, rtol=1e-9
+        )
 
     def test_zero_w_excluded(self):
         """Rows with w == 0 are excluded from VW computation."""
         frame = _leg_frame([{"id": 1, "ret": 999.0, "w": 0.0}, {"id": 2, "ret": 0.05, "w": 1.0}])
-        np.testing.assert_allclose(_ff_leg(frame, "bm", 1)["bm_SH"][0], 0.05, rtol=1e-9)
+        np.testing.assert_allclose(
+            compute_ff_portfolio_returns(frame, "bm", 1)["bm_SH"][0], 0.05, rtol=1e-9
+        )
 
     def test_null_port_excluded(self):
         """Rows with no membership in the sort are excluded."""
         frame = _leg_frame(
             [{"id": 1, "ret": 999.0, "w": 1.0, "bm_port": None}, {"id": 2, "ret": 0.05, "w": 1.0}]
         )
-        np.testing.assert_allclose(_ff_leg(frame, "bm", 1)["bm_SH"][0], 0.05, rtol=1e-9)
+        np.testing.assert_allclose(
+            compute_ff_portfolio_returns(frame, "bm", 1)["bm_SH"][0], 0.05, rtol=1e-9
+        )
 
     def test_output_schema(self):
         """Output has excntry, date, and all 6 prefixed B/M buckets."""
-        result = _ff_leg(_leg_frame([{"id": 1, "ret": 0.1, "w": 1.0}]), "bm", 1)
+        result = compute_ff_portfolio_returns(
+            _leg_frame([{"id": 1, "ret": 0.1, "w": 1.0}]), "bm", 1
+        )
         assert result.columns == ["excntry", "date", *_BM_BUCKETS]
 
 
@@ -1406,7 +1420,7 @@ def _returns(
     min_stocks_pf: int = 1,
     d: date = date(2020, 7, 31),
 ) -> pl.DataFrame:
-    """ff_returns on stocks held July-June from the June 2020 memberships.
+    """compute_ff_factor_returns on stocks held July-June from the June 2020 memberships.
 
     annual: (ret, bm_port, op_port, inv_port) per stock; mom: (ret, mom_port) per
     stock. Every stock has weight 1.
@@ -1442,11 +1456,11 @@ def _returns(
             "mom_port": [m[1] for m in mom],
         }
     )
-    return ff_returns(rows, members, mom_frame, _ANNUAL, min_stocks_pf)
+    return compute_ff_factor_returns(rows, members, mom_frame, _ANNUAL, min_stocks_pf)
 
 
 class TestFFReturns:
-    """Tests for ff_returns()."""
+    """Tests for compute_ff_factor_returns()."""
 
     def test_output_columns(self):
         """Output is [excntry, date, smb_ff3, smb_ff5, hml_ff, rmw_ff, cma_ff, umd_ff]."""
@@ -1553,7 +1567,7 @@ class TestFFReturns:
                 {1: "SL", 2: "SH", 3: "BL", 4: "BH"}, return_dtype=pl.Utf8
             )
         )
-        out = ff_returns(rows, members, mom, _ANNUAL, 1)
+        out = compute_ff_factor_returns(rows, members, mom, _ANNUAL, 1)
         assert out["date"].to_list() == sorted(out["date"].to_list())
         hml = dict(out.select("date", "hml_ff").iter_rows())
         # 2020 memberships: (0.2+0.4)/2 - (0.1+0.3)/2 = 0.1; 2021 memberships: -0.1
@@ -1601,10 +1615,12 @@ def _with_lag(panel: pl.DataFrame, freq: str) -> pl.DataFrame:
 
 
 def _run_mom(panel: pl.DataFrame, freq: str, rows: pl.DataFrame | None = None) -> pl.DataFrame:
-    """ff_mom_signal on a test panel; rows default to the whole panel."""
+    """compute_ff_momentum_signal on a test panel; rows default to the whole panel."""
     full = _with_lag(panel, freq)
     rows = full if rows is None else rows
-    return ff_mom_signal(full, rows.select("excntry", "id", "date", "ret", "bp_pool"), freq)
+    return compute_ff_momentum_signal(
+        full, rows.select("excntry", "id", "date", "ret", "bp_pool"), freq
+    )
 
 
 def _run_monthly(panel: pl.DataFrame, rows: pl.DataFrame | None = None) -> pl.DataFrame:
@@ -1645,7 +1661,7 @@ def _make_monthly_panel(
 
 
 class TestFFMomSignalMonthly:
-    """Tests for ff_mom_signal() on monthly data."""
+    """Tests for compute_ff_momentum_signal() on monthly data."""
 
     def test_output_schema(self):
         """Output has the mom-signal columns."""
@@ -1841,7 +1857,7 @@ def _make_daily_panel(
 
 
 class TestFFMomSignalDaily:
-    """Tests for ff_mom_signal() on daily data."""
+    """Tests for compute_ff_momentum_signal() on daily data."""
 
     def test_output_schema(self):
         """Output has the mom-signal columns."""

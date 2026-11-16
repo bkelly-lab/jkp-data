@@ -275,7 +275,7 @@ FF_UMD_ROW_MIN_DAYS = 115
 # return is nulled. A monthly return may span one month.
 FF_RET_MAX_GAP_DAYS = 5
 
-# Early-link rule for the early-1960s Compustat expansion (ff_link_accounting).
+# Early-link rule for the early-1960s Compustat expansion (link_accounting_to_securities).
 # Compustat added ~200 (mostly small) NYSE/AMEX firms per year around 1964-66
 # and backfilled their fy1962-64 statements, but the CCM link, and so the gvkey
 # JKP attaches to a CRSP security in world_msf, starts at coverage start, after

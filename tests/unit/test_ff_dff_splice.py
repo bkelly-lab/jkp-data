@@ -1,6 +1,6 @@
 """
 Unit tests for the DFF (Davis-Fama-French) hand-collected BE splice in
-ff_link_accounting.
+link_accounting_to_securities.
 
 DFF (2000) collected Moody's BE for NYSE firms absent from Compustat; the
 splice unions the permno-keyed DFF rows with the linked Compustat rows,
@@ -17,7 +17,7 @@ from datetime import date
 import polars as pl
 import pytest
 
-from jkp.data.aux_functions import ff_link_accounting
+from jkp.data.aux_functions import link_accounting_to_securities
 
 # Reuse the synthetic fiscal-record and world_msf builders from the dedup tests.
 from tests.unit.test_ff_compustat_dedup import _comp, _write_us_msf
@@ -56,7 +56,7 @@ class TestDffSplice:
         dff = _write_dff(
             test_paths.raw_tables_dir / "dff.txt", [(20002, 1930, 1932, {1930: 5.0, 1931: 6.0})]
         )
-        out = ff_link_accounting(test_paths, comp, dff_path=dff)
+        out = link_accounting_to_securities(test_paths, comp, dff_path=dff)
 
         row = out.filter((pl.col("id") == 20002) & (pl.col("year") == 1929))
         assert row.height == 1
@@ -70,7 +70,7 @@ class TestDffSplice:
         # pairing with Dec(1929) ME downstream.
         comp = _compustat_inputs(test_paths)
         dff = _write_dff(test_paths.raw_tables_dir / "dff.txt", [(20002, 1930, 1930, {1930: 5.0})])
-        out = ff_link_accounting(test_paths, comp, dff_path=dff)
+        out = link_accounting_to_securities(test_paths, comp, dff_path=dff)
 
         dff_rows = out.filter(pl.col("id") == 20002)
         assert dff_rows["year"].to_list() == [1929]
@@ -84,7 +84,7 @@ class TestDffSplice:
         dff = _write_dff(
             test_paths.raw_tables_dir / "dff.txt", [(10001, 2020, 2020, {2020: 999.0})]
         )
-        out = ff_link_accounting(test_paths, comp, dff_path=dff)
+        out = link_accounting_to_securities(test_paths, comp, dff_path=dff)
 
         rows = out.filter((pl.col("id") == 10001) & (pl.col("year") == 2019))
         assert rows.height == 1
@@ -97,7 +97,7 @@ class TestDffSplice:
         # dominant 1950s collision case): coalesce fills BE from DFF.
         comp = _compustat_inputs(test_paths, years=(2018, 2019), be={2019: None})
         dff = _write_dff(test_paths.raw_tables_dir / "dff.txt", [(10001, 2020, 2020, {2020: 55.0})])
-        out = ff_link_accounting(test_paths, comp, dff_path=dff)
+        out = link_accounting_to_securities(test_paths, comp, dff_path=dff)
 
         row = out.filter((pl.col("id") == 10001) & (pl.col("year") == 2019))
         assert row.height == 1
@@ -110,8 +110,8 @@ class TestDffSplice:
             test_paths.raw_tables_dir / "dff.txt",
             [(20002, 1930, 1932, {1930: 5.0, 1931: 6.0, 1932: 7.0})],
         )
-        base = ff_link_accounting(test_paths, comp)
-        out = ff_link_accounting(test_paths, comp, dff_path=dff)
+        base = link_accounting_to_securities(test_paths, comp)
+        out = link_accounting_to_securities(test_paths, comp, dff_path=dff)
 
         assert out.height == base.height + 3
         keyed = out.select("id", "year")
@@ -122,7 +122,7 @@ class TestDffSplice:
         dff = _write_dff(
             test_paths.raw_tables_dir / "dff.txt", [(20002, 1930, 1931, {1930: -5.0, 1931: 6.0})]
         )
-        out = ff_link_accounting(test_paths, comp, dff_path=dff)
+        out = link_accounting_to_securities(test_paths, comp, dff_path=dff)
 
         assert out.filter(pl.col("id") == 20002)["year"].to_list() == [1930]
 
@@ -133,7 +133,7 @@ class TestDffSplice:
         dff = _write_dff(
             test_paths.raw_tables_dir / "dff.txt", [(20002, 1930, 1930, {1930: 67.743})]
         )
-        out = ff_link_accounting(test_paths, comp, dff_path=dff)
+        out = link_accounting_to_securities(test_paths, comp, dff_path=dff)
 
         assert out.filter(pl.col("id") == 20002)["be"][0] == pytest.approx(67.743)
 
@@ -146,7 +146,7 @@ class TestDffSplice:
                 (20002, 1930, 1930, {1930: 5.0}),
             ],
         )
-        out = ff_link_accounting(test_paths, comp, dff_path=dff)
+        out = link_accounting_to_securities(test_paths, comp, dff_path=dff)
 
         keyed = out.select("id", "year")
         assert keyed.height == keyed.unique().height

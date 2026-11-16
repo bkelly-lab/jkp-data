@@ -732,7 +732,7 @@ def gen_world_msf(
     row_df = row_df.sort(["id", "eom"]).with_columns(me_lag1=pl.col("me").shift(1).over("id"))
     prev_eom = pl.col("eom").shift(1).over("id")
     # ret_lag_dif mirrors the production world_msf column (calendar months since
-    # the prior observation; null on the first row) — ff_factor_rows nulls
+    # the prior observation; null on the first row) — add_ff_buy_and_hold_weights nulls
     # gap-spanning returns off it.
     world = (
         pl.concat([us, row_df], how="diagonal_relaxed")
@@ -877,7 +877,7 @@ def gen_acc_std_ann(funda: pl.DataFrame, g_funda: pl.DataFrame) -> pl.DataFrame:
 
     The FF loaders read book equity (be_x), operating profit (ope_x), minority
     interest (mib, mibt, mibn) from this panel via
-    ``_jkp_annual_acc``; asset growth comes from ``gen_achars_world``. The real
+    ``load_jkp_annual_accounting``; asset growth comes from ``gen_achars_world``. The real
     builder (``standardized_accounting_data``) pulls ~40 Compustat vars this synthetic
     fixture doesn't carry, so instead we reproduce the panel's *shape and the fields
     the loaders consume*:
@@ -887,7 +887,7 @@ def gen_acc_std_ann(funda: pl.DataFrame, g_funda: pl.DataFrame) -> pl.DataFrame:
         report exactly 12 rows back);
       * ``source`` and the ``_x`` fields populated only on report months (Dec),
         null on the fill months in between — matching production, where
-        ``_jkp_annual_acc`` filters ``source.is_not_null()``;
+        ``load_jkp_annual_accounting`` filters ``source.is_not_null()``;
       * ``_x`` fields computed with jkp's standardization identities.
     """
     raw_cols = [

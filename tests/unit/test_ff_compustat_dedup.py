@@ -2,14 +2,14 @@
 Unit tests for the FF fiscal records.
 
 A firm that moves its fiscal-year-end reports two `datadate` in one calendar
-year. ff_load_world_compustat keeps one JKP record per (gvkey, year), the latest
+year. select_ff_fiscal_records keeps one JKP record per (gvkey, year), the latest
 datadate, which removes the downstream `(id, eom)` fan-out. BE, OP and INV are
 JKP's values at the kept record.
 
 Covers:
-  - ff_load_world_compustat   (one record per year)
-  - ff_link_accounting      (every security -> gvkey through world_msf; US CRSP early links)
-  - _jkp_annual_acc           (FF OP definition, at_gr1 from achars_world)
+  - select_ff_fiscal_records   (one record per year)
+  - link_accounting_to_securities      (every security -> gvkey through world_msf; US CRSP early links)
+  - load_jkp_annual_accounting           (FF OP definition, at_gr1 from achars_world)
 """
 
 from __future__ import annotations
@@ -19,9 +19,9 @@ from datetime import date
 import polars as pl
 
 from jkp.data.aux_functions import (
-    _jkp_annual_acc,
-    ff_link_accounting,
-    ff_load_world_compustat,
+    link_accounting_to_securities,
+    load_jkp_annual_accounting,
+    select_ff_fiscal_records,
 )
 
 
@@ -45,7 +45,7 @@ def test_ff_load_world_compustat_latest_record_per_year():
         },
         schema_overrides=dict.fromkeys(["be_x", "op", "at_gr1"], pl.Float64),
     )
-    out = ff_load_world_compustat(jkp_acc)
+    out = select_ff_fiscal_records(jkp_acc)
     assert out.select("gvkey", "year", "be").rows() == [
         ("001", 2018, 1.0),
         ("001", 2019, 3.0),
@@ -54,7 +54,7 @@ def test_ff_load_world_compustat_latest_record_per_year():
 
 
 # =============================================================================
-# ff_link_accounting links a security to its fiscal records
+# link_accounting_to_securities links a security to its fiscal records
 # through the gvkey on the security's June row in world_msf.
 # =============================================================================
 
@@ -92,7 +92,7 @@ def test_ff_link_accounting_through_june_gvkey(test_paths):
         [(10001, date(2020, 6, 30), "001"), (10001, date(2021, 6, 30), "001")],
     )
     comp = _comp([("001", y, 50.0 + y - 2018, 0.1, 0.2) for y in (2018, 2019, 2020)])
-    out = ff_link_accounting(test_paths, comp)
+    out = link_accounting_to_securities(test_paths, comp)
     assert out.select("id", "year", "be").rows() == [(10001, 2019, 51.0), (10001, 2020, 52.0)]
 
 
@@ -111,7 +111,7 @@ def test_ff_link_accounting_ex_us_security_links_through_june_gvkey(test_paths):
         test_paths.interim_dir / "world_msf.parquet"
     )
     comp = _comp([("001", 2019, 50.0, 0.1, 0.2), ("002", 1962, 70.0, None, None)])
-    out = ff_link_accounting(test_paths, comp)
+    out = link_accounting_to_securities(test_paths, comp)
     assert out.select("id", "year", "gvkey", "be").rows() == [(20001, 2019, "001", 50.0)]
 
 
@@ -121,7 +121,10 @@ def test_ff_link_accounting_june_row_without_gvkey(test_paths):
         test_paths,
         [(10001, date(2020, 6, 30), None), (10001, date(2020, 7, 31), "001")],
     )
-    assert ff_link_accounting(test_paths, _comp([("001", 2019, 50.0, None, None)])).height == 0
+    assert (
+        link_accounting_to_securities(test_paths, _comp([("001", 2019, 50.0, None, None)])).height
+        == 0
+    )
 
 
 def test_ff_link_accounting_record_without_jkp_values_dropped(test_paths):
@@ -132,8 +135,8 @@ def test_ff_link_accounting_record_without_jkp_values_dropped(test_paths):
     )
     _write_achars_world(test_paths.interim_dir / "achars_world.parquet", [])
     _write_us_msf(test_paths, [(10001, date(2020, 6, 30), "001")])
-    comp = ff_load_world_compustat(_jkp_annual_acc(test_paths))
-    assert ff_link_accounting(test_paths, comp).height == 0
+    comp = select_ff_fiscal_records(load_jkp_annual_accounting(test_paths))
+    assert link_accounting_to_securities(test_paths, comp).height == 0
 
 
 class TestEarlyLinks:
@@ -143,7 +146,9 @@ class TestEarlyLinks:
     @staticmethod
     def _run(test_paths, fiscal_year, gvkey, msf_rows):
         _write_us_msf(test_paths, msf_rows)
-        return ff_link_accounting(test_paths, _comp([(gvkey, fiscal_year, 50.0, None, None)]))
+        return link_accounting_to_securities(
+            test_paths, _comp([(gvkey, fiscal_year, 50.0, None, None)])
+        )
 
     def test_backfilled_year_linked(self, test_paths):
         # fy1962 feeds June 1963; the permno's first gvkey starts January 1965.
@@ -207,12 +212,12 @@ class TestEarlyLinks:
             [(10001, date(1963, 6, 30), "001"), (10001, date(1965, 1, 31), "002")],
         )
         comp = _comp([("001", 1962, 50.0, None, None), ("002", 1962, 70.0, None, None)])
-        out = ff_link_accounting(test_paths, comp)
+        out = link_accounting_to_securities(test_paths, comp)
         assert out.select("id", "year", "gvkey").rows() == [(10001, 1962, "001")]
 
 
 # =============================================================================
-# JKP's annual accounting for the FF loaders (_jkp_annual_acc):
+# JKP's annual accounting for the FF loaders (load_jkp_annual_accounting):
 # op = ope_x / (be_x + coalesce(mibt, mib + mibn)), at_gr1 from achars_world.
 # =============================================================================
 
@@ -262,7 +267,9 @@ def test_ff_load_world_compustat_op_definition(test_paths):
     )
     _write_achars_world(test_paths.interim_dir / "achars_world.parquet", [])
     op = dict(
-        ff_load_world_compustat(_jkp_annual_acc(test_paths)).select("gvkey", "op").iter_rows()
+        select_ff_fiscal_records(load_jkp_annual_accounting(test_paths))
+        .select("gvkey", "op")
+        .iter_rows()
     )
     assert op.get("101") is None
     assert abs(op["102"] - 10.0 / 60.0) < 1e-12
@@ -284,6 +291,6 @@ def test_jkp_annual_acc_at_gr1_at_first_public_date(test_paths):
             ("101", fy, date(2020, 4, 30), 0.1),
         ],
     )
-    out = _jkp_annual_acc(test_paths).sort("gvkey")
+    out = load_jkp_annual_accounting(test_paths).sort("gvkey")
     # The first public_date's value; a record missing from achars_world gets null.
     assert out.select("gvkey", "at_gr1").rows() == [("101", 0.1), ("102", None)]
