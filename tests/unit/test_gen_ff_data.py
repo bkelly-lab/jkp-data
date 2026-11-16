@@ -1034,15 +1034,14 @@ class TestFFLoadPanel:
         out = ff_load_panel(test_paths, "monthly")
         assert sorted(out["id"].to_list()) == [1, 2]
 
-    def test_ex_us_row_without_me_stays_in_panel_but_leaves_factor_rows(self, test_paths):
-        """Momentum counts a priced row whose ME is missing; the factor portfolios
-        do not."""
+    def test_ex_us_row_without_me_stays(self, test_paths):
+        """A priced row whose ME is missing stays in the panel and the factor rows."""
         self._write_ex_us(test_paths, [{"id": 1, "me": 100.0}, {"id": 2, "me": None, "prc": 7.0}])
         panel = ff_load_panel(test_paths, "monthly").sort("id")
         assert panel["id"].to_list() == [1, 2]
         assert panel["me"].to_list() == [100.0, None]
         assert panel["prc"].to_list() == [8.0, 7.0]
-        assert ff_factor_rows(panel, "monthly")["id"].to_list() == [1]
+        assert ff_factor_rows(panel, "monthly")["id"].to_list() == [1, 2]
 
 
 # =============================================================================
