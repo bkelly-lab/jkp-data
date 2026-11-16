@@ -252,9 +252,9 @@ ROLLING_DAILY_SPECS: list[tuple[str, int, list[str]]] = [
 # the unified FF pipeline (US-strict NYSE breakpoint pool).
 US_EXCNTRY = "USA"
 
-# Minimums of the factor builders (FF here, later HXZ): min firms per (excntry,
+# Minimums of the FF factor builder: min firms per (excntry,
 # formation date) for breakpoints, and per (excntry, date, bucket) for the VW
-# legs. FF applies both in every country; the shared helpers can exempt the US.
+# legs. FF applies both in every country.
 FACTOR_MIN_STOCKS_BP = 10
 FACTOR_MIN_STOCKS_PF = 3
 
@@ -274,13 +274,6 @@ FF_UMD_ROW_MIN_DAYS = 115
 # Longest gap a daily FF return may span (ret_lag_dif, calendar days); a longer
 # return is nulled. A monthly return may span one month.
 FF_RET_MAX_GAP_DAYS = 5
-
-
-# On a (permno, year) collision the BE value is coalesced DFF-first
-# (be = coalesce(dff.be, comp.be)) while the Compustat row keeps its
-# accounting fields: most collisions are Compustat rows with NULL BE (early
-# balance-sheet fields absent from the current vintage), and where both are
-# non-null the sources agree (median |log ratio| ~ 0).
 
 # Early-link rule for the early-1960s Compustat expansion (ff_link_accounting).
 # Compustat added ~200 (mostly small) NYSE/AMEX firms per year around 1964-66

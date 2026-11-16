@@ -10021,17 +10021,16 @@ def _ff_sorts() -> dict[str, tuple[str, list[str], pl.Expr]]:
     }
 
 
-def _collapse_to_latest_fy(lf: pl.LazyFrame, *, resort: bool = True) -> pl.LazyFrame:
+def _collapse_to_latest_fy(lf: pl.LazyFrame) -> pl.LazyFrame:
     """One accounting row per (gvkey, fiscal year), keeping the latest datadate.
 
     A fiscal-year-end change can yield two datadates in one calendar year;
     without this the at.shift(1) lag spans the sub-annual stub (fy_gap=0)
     and nulls inv on the surviving row. Requires a `year` column.
     """
-    out = lf.sort(["gvkey", "datadate"]).unique(
+    return lf.sort(["gvkey", "datadate"]).unique(
         subset=["gvkey", "year"], keep="last", maintain_order=True
     )
-    return out.sort(["gvkey", "datadate"]) if resort else out
 
 
 def _ff_merge_dff_be(comp_ccm: pl.DataFrame, dff_path: Path) -> pl.DataFrame:
@@ -10050,8 +10049,8 @@ def _ff_merge_dff_be(comp_ccm: pl.DataFrame, dff_path: Path) -> pl.DataFrame:
     dff = (
         load_dff_be(dff_path)
         .rename({"permno": "id"})
-        # Match the US Compustat path: BE < 0 → null → dropped. BE == 0 flows
-        # through and is later excluded by the beme > 0 eligibility gate.
+        # Negative DFF BE is dropped; BE == 0 flows through and is later
+        # excluded by the beme > 0 eligibility gate.
         .filter(pl.col("be").is_not_null() & (pl.col("be") >= 0))
         .with_columns(
             # datadate from DFF year t BEFORE the year offset below: a synthetic
@@ -10427,7 +10426,7 @@ def _ff_load_funda_na(paths: DataPaths) -> pl.LazyFrame:
         .with_columns(pl.col("datadate").cast(pl.Date))
         .filter(_compustat_na_filter())
         .with_columns(year=pl.col("datadate").dt.year())
-        .pipe(_collapse_to_latest_fy, resort=False)
+        .pipe(_collapse_to_latest_fy)
     )
 
 
@@ -10448,7 +10447,7 @@ def _ff_load_funda_global(paths: DataPaths) -> pl.LazyFrame:
         )
         .pipe(apply_indfmt_filter, ["gvkey", "datadate"])
         .with_columns(year=pl.col("datadate").dt.year())
-        .pipe(_collapse_to_latest_fy, resort=False)
+        .pipe(_collapse_to_latest_fy)
     )
 
 
@@ -10692,42 +10691,30 @@ def vw_bucket_returns(
     *,
     buckets: list[str],
     weight_col: str,
-    bucket_col: str = "bucket",
-    ret_col: str = "ret",
-    date_col: str = "date",
     min_stocks_pf: int,
-    ordered: bool = False,
-    usa_exempt: bool = True,
 ) -> pl.DataFrame:
-    """Value-weight `ret_col` by `weight_col` per (excntry, date_col, bucket_col),
-    null buckets with fewer than `min_stocks_pf` stocks (USA bypassed when
-    `usa_exempt`; FF passes False to gate every country), and pivot wide to `buckets`
-    (absent buckets filled as null Float64). Shared by the FF/HXZ/DHS size×char
-    sorts; the caller supplies the pre-built `bucket_col` and has already applied any
-    weight/return validity filter. `ordered`=True keeps input row order within each
-    group (maintain_order + a group-key presort) for float-sum determinism at a
-    discrete breakpoint; FF/HXZ leave it False. `safe_div` returns null on a zero
-    weight sum. Output: [excntry, date_col, *buckets]."""
-    enough = pl.col("_n") >= min_stocks_pf
-    if usa_exempt:
-        enough = enough | (pl.col("excntry") == US_EXCNTRY)
-    if ordered:
-        frame = frame.sort(["excntry", date_col, bucket_col], maintain_order=True)
+    """Value-weight `ret` by `weight_col` per (excntry, date, bucket), null buckets
+    with fewer than `min_stocks_pf` stocks, and pivot wide to `buckets` (absent
+    buckets filled as null Float64). The caller supplies the pre-built `bucket`
+    column and has already applied any weight/return validity filter. `safe_div`
+    returns null on a zero weight sum. Output: [excntry, date, *buckets]."""
     wide = (
-        frame.group_by(["excntry", date_col, bucket_col], maintain_order=ordered)
+        frame.group_by(["excntry", "date", "bucket"])
         .agg(
             vwret=safe_div(
-                (pl.col(ret_col) * pl.col(weight_col)).sum(), pl.col(weight_col).sum(), "vwret"
+                (pl.col("ret") * pl.col(weight_col)).sum(), pl.col(weight_col).sum(), "vwret"
             ),
             _n=pl.len(),
         )
-        .with_columns(vwret=pl.when(enough).then(pl.col("vwret")).otherwise(None))
-        .pivot(values="vwret", index=["excntry", date_col], on=bucket_col)
+        .with_columns(
+            vwret=pl.when(pl.col("_n") >= min_stocks_pf).then(pl.col("vwret")).otherwise(None)
+        )
+        .pivot(values="vwret", index=["excntry", "date"], on="bucket")
     )
     missing = [c for c in buckets if c not in wide.columns]
     if missing:
         wide = wide.with_columns(*[pl.lit(None, dtype=pl.Float64).alias(c) for c in missing])
-    return wide.select("excntry", date_col, *buckets)
+    return wide.select("excntry", "date", *buckets)
 
 
 def _ff_mom_gate(src: pl.LazyFrame, start: int, end: int, min_rows: int) -> pl.LazyFrame:
@@ -10864,7 +10851,6 @@ def _ff_leg(frame: pl.DataFrame, sort: str, min_stocks_pf: int) -> pl.DataFrame:
         buckets=buckets,
         weight_col="w",
         min_stocks_pf=min_stocks_pf,
-        usa_exempt=False,
     ).rename({b: f"{sort}_{b}" for b in buckets})
 
 
@@ -11001,8 +10987,7 @@ def gen_ff_data(
           where French requires it listed throughout (ff_mom_signal);
           daily UMD uses French's daily signal.
     Steps:
-        1) Map US permnos to FF firms; the monthly panel (ff_load_panel) and its
-           factor rows with weights (ff_factor_rows).
+        1) The monthly panel (ff_load_panel) and its factor rows with weights (ff_factor_rows).
         2) Annual signals (ff_annual_signals) on the June factor rows.
         3) June breakpoints (ff_breakpoints) and 4) memberships (ff_membership),
            held from July to June at both frequencies.
