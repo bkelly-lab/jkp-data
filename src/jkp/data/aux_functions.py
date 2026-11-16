@@ -10569,6 +10569,41 @@ def assign_ff_portfolios(
     )
 
 
+def build_ff_june_assignments(
+    paths: DataPaths,
+    monthly_panel: pl.DataFrame,
+    monthly_return_data: pl.DataFrame,
+    june_sorts: list[str],
+) -> pl.DataFrame:
+    """
+    Description:
+        The June portfolio assignments for the B/M, OP and INV sorts, formed once a
+        year and held from July to June at both frequencies.
+    Steps:
+        1) June rows of the monthly return data, left-joined to the annual
+           characteristics (compute_ff_annual_characteristics), so stocks without
+           accounting stay in the size-breakpoint pools.
+        2) Breakpoints per country and June (compute_ff_breakpoints).
+        3) Assignments (assign_ff_portfolios).
+    Output:
+        Eager: the June rows in country-years with breakpoints, plus <sort>_port
+        for each June sort.
+    """
+    june_characteristics = (
+        monthly_return_data.filter(pl.col("date").dt.month() == 6)
+        .with_columns(port_year=pl.col("date").dt.year())
+        .join(
+            compute_ff_annual_characteristics(paths, monthly_panel),
+            on=["id", "port_year"],
+            how="left",
+        )
+    )
+    june_breakpoints = compute_ff_breakpoints(
+        june_characteristics, june_sorts, FACTOR_MIN_STOCKS_BP
+    )
+    return assign_ff_portfolios(june_characteristics, june_breakpoints, june_sorts)
+
+
 def _offset_period_index(s: pl.LazyFrame, k: int, **cols: pl.Expr) -> pl.LazyFrame:
     """Each row of s keyed at idx + k, so a join on idx reads the row k periods back."""
     return s.select("excntry", "id", idx=pl.col("idx") + k, **cols)
@@ -10717,6 +10752,27 @@ def compute_ff_momentum_signal(
     )
 
 
+def build_ff_momentum_assignments(
+    panel: pl.DataFrame,
+    return_data: pl.DataFrame,
+    freq: Literal["monthly", "daily"],
+) -> pl.DataFrame:
+    """
+    Description:
+        The UMD portfolio assignments at one frequency, re-formed every period.
+    Steps:
+        1) Momentum signal (compute_ff_momentum_signal).
+        2) Breakpoints per country and period (compute_ff_breakpoints).
+        3) Assignments (assign_ff_portfolios).
+    Output:
+        Eager: the momentum rows in country-periods with breakpoints, plus
+        mom_port.
+    """
+    momentum_data = compute_ff_momentum_signal(panel, return_data, freq)
+    momentum_breakpoints = compute_ff_breakpoints(momentum_data, ["mom"], FACTOR_MIN_STOCKS_BP)
+    return assign_ff_portfolios(momentum_data, momentum_breakpoints, ["mom"])
+
+
 def compute_ff_portfolio_returns(
     frame: pl.DataFrame, sort: str, min_stocks_pf: int
 ) -> pl.DataFrame:
@@ -10818,138 +10874,59 @@ def gen_ff_data(
 ) -> None:
     """
     Description:
-        Reference: Fama and French (1993) 'Common risk factors in the returns
-        on stocks and bonds', Journal of Financial Economics 33(1), pp. 3-56;
-        Fama and French (2015) 'A five-factor asset pricing model', Journal of
-        Financial Economics 116(1), pp. 1-22. WRDS "Fama-French Factors
-        (CIZ Format)":
-        https://wrds-www.wharton.upenn.edu/login/?next=/pages/wrds-research/applications/risk-factors-and-industry-benchmarks/fama-french-factors-ciz-format/
-        Historical book equity from Ken French's data library:
-        https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/data_library.html#BookEquity
-
-        Build FF3/FF5/UMD factor series for all countries, with one code path for
-        every country: the firm panel and its weights, the annual characteristics,
-        the breakpoints, the portfolio assignments, the momentum signal and the
-        factor returns. The functions appear in that order above. The rules that
-        differ between the US and other countries are row columns set in one place
-        (load_ff_universe). Each characteristic is built once, in
-        compute_ff_annual_characteristics, for the June sorts; the sample screens
-        decide only which stocks enter a sort.
-        - US: CRSP CIZ common shares of US companies on NYSE/AMEX/NASDAQ, NYSE
-          breakpoints. The unit is the company, the CRSP permco: its share
-          classes combine as securities in a portfolio (build_ff_firm_panel), with
-          ME = JKP's me_company and the return weighted by class ME at t-1,
-          without French's hand splits of a permco. A company is NYSE if any class
-          is. Daily weights use the CIZ sum over the classes.
-        - Elsewhere: JKP's main sample, per-country breakpoints.
-        - Minimums, every country, the US included: FACTOR_MIN_STOCKS_BP pool
-          stocks for a breakpoint and FACTOR_MIN_STOCKS_PF stocks for a portfolio
-          return.
-        - Returns, every country: JKP's world_msf/world_dsf, so US returns include
-          CRSP's delisting return (-30% where a bad delisting has none).
-        - Weights, every country: buy-and-hold from June, as Fama and French hold the
-          portfolios from July to June. A stock's weight is its end-of-June ME grown
-          by its total return since then (add_ff_buy_and_hold_weights); UMD, re-sorted
-          every period, weights by ME at t-1.
-        - Formation, every country: June ME from the June row and Dec ME from the
-          December t-1 row, with no fallback to earlier months, so a stock halted
-          over June or December leaves that year's sorts. The B/M, OP and INV
-          sorts also need the stock in the universe in December t-1.
-        - Size median, every country: one per country and date, shared by the
-          B/M, OP and INV sorts, over every breakpoint-pool stock with ME > 0,
-          whatever its sort eligibility (compute_ff_breakpoints).
-        - No minimum number of years on Compustat, in any country. Fama and
-          French (1993) required two, against the backfill bias of firms Compustat
-          adds with past years of data; their later descriptions of the factors
-          and French's data library state no such rule.
-        - Fiscal records, every country: JKP's annual records, Global over North
-          America at the same datadate, the latest per calendar year
-          (select_ff_fiscal_records). A US CRSP security reaches
-          its record through the gvkey JKP attaches to it in world_msf, on its
-          June row, with an early-link rule for the June 1963-66 formations
-          (link_accounting_to_securities); before Compustat, the DFF BE.
-        - BE, every country: JKP's be_x at the fiscal year t-1 record, in USD; a
-          stock with BE <= 0 is not eligible for the B/M and OP sorts. Like
-          French's, it has no deferred taxes for fiscal years ending in 1993 or
-          later.
-        - OP, every country: JKP's ope_x (EBITDA minus interest expense, a missing
-          XINT counting as 0) over be_x plus minority interest, at the same record
-          (load_jkp_annual_accounting). French's numerator is revenue minus the cost of goods
-          sold, SG&A and interest expense.
-        - INV, every country: JKP's at_gr1 (at_x over at_x 12 months earlier,
-          minus 1) at the fiscal year t-1 record. French's US rule grows assets
-          over consecutive fiscal years whatever their spacing; at_gr1 is null
-          after a change of fiscal year-end and is growth in USD.
-        - Daily FF3/FF5 hold the monthly June portfolios; only returns and weights
-          are daily.
-        - UMD, every country: sorts on the compounded t-12..t-2 return (the
-          company's own return in the US) under French's eligibility rules, with
-          one change: a stock needs FF_UMD_ROW_MIN_MONTHS/DAYS rows in the window,
-          where French requires it listed throughout (compute_ff_momentum_signal);
-          daily UMD uses French's daily signal.
+        Fama-French FF3/FF5/UMD factor returns for every country, monthly and daily.
+        Portfolios are formed first: the June B/M, OP and INV sorts once a year,
+        shared by both frequencies, and the momentum sort every period at each
+        frequency. The factor returns then follow from those assignments.
+        Methodology, references and the differences from Fama and French:
+        documentation/ff_factors.md.
     Steps:
-        1) Monthly firm panel (build_ff_firm_panel) and its return data with
-           buy-and-hold weights (add_ff_buy_and_hold_weights).
-        2) June characteristics (compute_ff_annual_characteristics) on the June rows.
-        3) June breakpoints (compute_ff_breakpoints) and portfolio assignments
-           (assign_ff_portfolios), held from July to June at both frequencies.
-        4) At each frequency: the momentum signal (compute_ff_momentum_signal), its
-           breakpoints and assignments every period, then the factor returns
-           (compute_ff_factor_returns).
+        1) Portfolio assignments: June sorts on the monthly data
+           (build_ff_june_assignments); momentum sorts on the monthly and on the
+           daily data (build_ff_momentum_assignments).
+        2) Monthly factor returns from the monthly return data.
+        3) Daily factor returns from the daily return data, with the same June
+           assignments.
     Output:
         - <monthly_factors_path> [excntry, eom, smb_ff3, smb_ff5, hml_ff, rmw_ff, cma_ff, umd_ff]
         - <daily_factors_path> [excntry, date, smb_ff3, smb_ff5, hml_ff, rmw_ff, cma_ff, umd_ff]
     """
     june_sorts = ["bm", "op", "inv"]
 
-    # Monthly: the June sorts, held July to June, and the momentum sort every month.
+    # 1) Portfolio assignments. Each panel is dropped once its sorts are formed.
     monthly_panel = build_ff_firm_panel(paths, "monthly")
     monthly_return_data = add_ff_buy_and_hold_weights(monthly_panel, "monthly")
-    # Left join: stocks without accounting stay in the size-breakpoint pools.
-    june_characteristics = (
-        monthly_return_data.filter(pl.col("date").dt.month() == 6)
-        .with_columns(port_year=pl.col("date").dt.year())
-        .join(
-            compute_ff_annual_characteristics(paths, monthly_panel),
-            on=["id", "port_year"],
-            how="left",
-        )
+    june_assignments = build_ff_june_assignments(
+        paths, monthly_panel, monthly_return_data, june_sorts
     )
-    june_breakpoints = compute_ff_breakpoints(
-        june_characteristics, june_sorts, FACTOR_MIN_STOCKS_BP
+    monthly_momentum_assignments = build_ff_momentum_assignments(
+        monthly_panel, monthly_return_data, "monthly"
     )
-    june_assignments = assign_ff_portfolios(june_characteristics, june_breakpoints, june_sorts)
-    del june_characteristics
-    momentum_data = compute_ff_momentum_signal(monthly_panel, monthly_return_data, "monthly")
-    momentum_breakpoints = compute_ff_breakpoints(momentum_data, ["mom"], FACTOR_MIN_STOCKS_BP)
-    momentum_assignments = assign_ff_portfolios(momentum_data, momentum_breakpoints, ["mom"])
-    monthly_factors = compute_ff_factor_returns(
-        monthly_return_data,
-        june_assignments,
-        momentum_assignments,
-        june_sorts,
-        FACTOR_MIN_STOCKS_PF,
-    )
-    monthly_factors.rename({"date": "eom"}).write_parquet(monthly_factors_path)
-    # Free the monthly frames before the daily scan.
-    del monthly_panel, monthly_return_data, momentum_data, momentum_assignments, monthly_factors
-
-    # Daily: the same June assignments; returns, weights and momentum are daily.
+    del monthly_panel
     daily_panel = build_ff_firm_panel(paths, "daily")
     daily_return_data = add_ff_buy_and_hold_weights(daily_panel, "daily")
-    momentum_data = compute_ff_momentum_signal(daily_panel, daily_return_data, "daily")
+    daily_momentum_assignments = build_ff_momentum_assignments(
+        daily_panel, daily_return_data, "daily"
+    )
     del daily_panel
-    momentum_breakpoints = compute_ff_breakpoints(momentum_data, ["mom"], FACTOR_MIN_STOCKS_BP)
-    momentum_assignments = assign_ff_portfolios(momentum_data, momentum_breakpoints, ["mom"])
-    del momentum_data
-    daily_factors = compute_ff_factor_returns(
-        daily_return_data,
+
+    # 2) Monthly factor returns.
+    compute_ff_factor_returns(
+        monthly_return_data,
         june_assignments,
-        momentum_assignments,
+        monthly_momentum_assignments,
         june_sorts,
         FACTOR_MIN_STOCKS_PF,
-    )
-    daily_factors.write_parquet(daily_factors_path)
+    ).rename({"date": "eom"}).write_parquet(monthly_factors_path)
+
+    # 3) Daily factor returns.
+    compute_ff_factor_returns(
+        daily_return_data,
+        june_assignments,
+        daily_momentum_assignments,
+        june_sorts,
+        FACTOR_MIN_STOCKS_PF,
+    ).write_parquet(daily_factors_path)
 
 
 def _build_industry_daily_returns(
