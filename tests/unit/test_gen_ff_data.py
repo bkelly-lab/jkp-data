@@ -763,7 +763,7 @@ class TestFFUniverseRows:
             test_paths,
             [
                 {"id": 1, "eom": may, "primaryexch": "N", "me": 30.0, "ret_lag_dif": 1},
-                # the world file's ret_lag_dif is ignored for the US
+                # the US takes the world file's ret_lag_dif, as other countries do
                 {
                     "id": 1,
                     "eom": jun,
@@ -799,7 +799,7 @@ class TestFFUniverseRows:
 
     def test_us_rule_columns(self, test_paths):
         r = self._monthly(test_paths)[1]
-        assert r["ret_lag_dif"] == 0
+        assert r["ret_lag_dif"] == 7  # the world file's value
         assert r["me_company"] == 44.0
         assert r["w_cls"] == 30.0  # the class's ME at t-1
         assert r["bp_pool"] is True  # NYSE
@@ -865,7 +865,7 @@ class TestFFUniverseRows:
         out = load_ff_universe(test_paths, "daily").collect()
         r = {x["id"]: x for x in out.iter_rows(named=True)}
         assert [r[i]["bp_pool"] for i in (1, 2, 101, 102)] == [True, False, True, False]
-        assert [r[i]["ret_lag_dif"] for i in (1, 2, 101)] == [0, 0, 4]
+        assert [r[i]["ret_lag_dif"] for i in (1, 2, 101)] == [9, 1, 4]
         assert r[1]["me_company"] is None
 
 
@@ -960,7 +960,7 @@ class TestFFLoadPanel:
         r = self._run_monthly(test_paths).row(0, named=True)
         np.testing.assert_allclose(r["ret"], (0.02 * 30 + 0.10 * 10) / 40, **tolerance.STANDARD)
         assert (r["excntry"], r["me"], r["bp_pool"], r["prc"]) == (US_EXCNTRY, 44.0, True, 12.0)
-        assert r["ret_lag_dif"] == 0
+        assert r["ret_lag_dif"] == 1
 
     def test_three_class_firm_me_is_me_company(self, test_paths):
         """Classes 4, 5 and 6 are one permco: ME is me_company (100). No class has
@@ -1599,9 +1599,9 @@ class TestFFReturns:
 
 
 def _with_lag(panel: pl.DataFrame, freq: str) -> pl.DataFrame:
-    """Add the panel's ret_lag_dif: 0 for the US (CIZ returns span no gaps), and for
-    other countries the periods since the stock's previous row, as world_msf and
-    world_dsf carry it."""
+    """Add the panel's ret_lag_dif as world_msf and world_dsf carry it: 1 for the US
+    (JKP's value on every CRSP row), and for other countries the periods since the
+    stock's previous row."""
     by = ["excntry", "id"]
     if freq == "monthly":
         period = pl.col("date").dt.year() * 12 + pl.col("date").dt.month()
@@ -1609,7 +1609,7 @@ def _with_lag(panel: pl.DataFrame, freq: str) -> pl.DataFrame:
         period = pl.col("date").cast(pl.Int64)
     return panel.sort([*by, "date"]).with_columns(
         ret_lag_dif=pl.when(pl.col("excntry") == US_EXCNTRY)
-        .then(0)
+        .then(1)
         .otherwise(period.diff().over(by).fill_null(1))
     )
 

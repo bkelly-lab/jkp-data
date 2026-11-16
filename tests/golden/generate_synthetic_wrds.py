@@ -731,8 +731,8 @@ def gen_world_msf(
     )
     row_df = row_df.sort(["id", "eom"]).with_columns(me_lag1=pl.col("me").shift(1).over("id"))
     prev_eom = pl.col("eom").shift(1).over("id")
-    # ret_lag_dif mirrors the production world_msf column (calendar months since
-    # the prior observation; null on the first row) — add_ff_buy_and_hold_weights nulls
+    # ret_lag_dif mirrors the production world_msf column (ex US: calendar months since
+    # the prior observation, null on the first row; US: 1, set below) — add_ff_buy_and_hold_weights nulls
     # gap-spanning returns off it.
     world = (
         pl.concat([us, row_df], how="diagonal_relaxed")
@@ -752,6 +752,11 @@ def gen_world_msf(
     us_given = ("permno", "me", "me_company", "prc", "ret", "ret_exc", "size_grp", "ret_lag_dif")
     world = _apply_null_patterns(world, "world_msf", nrng, us_rows, us_given, "1")
     world = _apply_null_patterns(world, "world_msf", nrng, ~us_rows, ("permno", "ret_lag_dif"), "0")
+    # JKP sets ret_lag_dif to 1 on every CRSP row; set after the null draws so the
+    # random stream is unchanged
+    world = world.with_columns(
+        ret_lag_dif=pl.when(pl.Series(us_rows)).then(1).otherwise(pl.col("ret_lag_dif"))
+    )
     # permco joins after the null patterns so it leaves their draws unchanged; CRSP rows
     # carry one, as in the real table, and ex-US rows none
     permco = reg_us.join(reg.select("permno", "permco"), on="permno").select(
@@ -808,8 +813,8 @@ def gen_world_dsf(
         parts["tvol"].append(np.full(idx.size, shrout * 0.002))
     row_df = pl.DataFrame({k: np.concatenate(v) for k, v in parts.items()})
 
-    # ret_lag_dif mirrors production world_dsf (days since the prior
-    # observation per id; null on the first row).
+    # ret_lag_dif mirrors production world_dsf (ex US: days since the prior
+    # observation per id, null on the first row; US: 1, set below).
     world = (
         pl.concat([us, row_df], how="diagonal_relaxed")
         .with_columns(
@@ -851,6 +856,9 @@ def gen_world_dsf(
     us_given = ("me", "prc", "ret", "tvol", "ret_lag_dif")
     world = _apply_null_patterns(world, "world_dsf", nrng, us_rows, us_given, "1")
     world = _apply_null_patterns(world, "world_dsf", nrng, ~us_rows, (), "0")
+    world = world.with_columns(
+        ret_lag_dif=pl.when(pl.Series(us_rows)).then(1).otherwise(pl.col("ret_lag_dif"))
+    )
     # source_crsp has no nulls in the real table; added after the null draws so the
     # random stream (and every other synthetic value) is unchanged.
     return world.with_columns(source_crsp=pl.Series(us_rows.astype(np.int32)))

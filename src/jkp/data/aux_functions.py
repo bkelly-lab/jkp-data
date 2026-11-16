@@ -9898,7 +9898,8 @@ def load_ff_universe(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl.
           by hand: group stocks, tracking stocks, relistings). w_cls, the class's ME at t-1, weights
           the classes' returns. Monthly rows carry JKP's me_company, the ME of all the
           company's classes; daily rows have none. NYSE-listed classes form the
-          breakpoint pool. CIZ returns span no gaps, so ret_lag_dif is 0.
+          breakpoint pool. ret_lag_dif is the world file's, as in every country: JKP
+          sets it to 1 on every CRSP row, so the gap rule never nulls a US return.
         - Elsewhere: JKP's main sample (common stock, main observation, primary
           security, main exchange); the unit is the
           security. size_grp small, large or mega forms the breakpoint pool (daily
@@ -9933,6 +9934,7 @@ def load_ff_universe(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl.
             "me",
             "me_company",
             "ret",
+            "ret_lag_dif",
             "permco",
             permno=pl.col("id").cast(pl.Int64),
         )
@@ -9949,6 +9951,7 @@ def load_ff_universe(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl.
             "prc",
             "me",
             "ret",
+            "ret_lag_dif",
             permno=pl.col("id").cast(pl.Int64),
             me_company=pl.lit(None, dtype=pl.Float64),
         )
@@ -9973,7 +9976,7 @@ def load_ff_universe(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl.
             "me",
             "me_company",
             "prc",
-            ret_lag_dif=pl.lit(0),
+            "ret_lag_dif",
             w_cls=pl.col("me").shift(1).over("permno"),
             bp_pool=pl.col("primaryexch") == "N",
         )
