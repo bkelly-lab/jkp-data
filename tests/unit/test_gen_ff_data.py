@@ -537,7 +537,7 @@ def _annual_signals(
         ],
     )
     monkeypatch.setattr(af, "_jkp_annual_acc", lambda paths: None)
-    monkeypatch.setattr(af, "ff_load_world_compustat", lambda paths, acc: None)
+    monkeypatch.setattr(af, "ff_load_world_compustat", lambda acc: None)
     monkeypatch.setattr(af, "ff_link_accounting", lambda paths, comp, *, dff_path: records)
     out = ff_annual_signals(test_paths, panel)
     assert out.select("id", "port_year").is_duplicated().sum() == 0
