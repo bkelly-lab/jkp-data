@@ -1,13 +1,13 @@
 """
-Unit tests for the fiscal-year-change dedup in the FF Compustat loaders.
+Unit tests for the FF fiscal records.
 
 A firm that moves its fiscal-year-end reports two `datadate` in one calendar
-year. The loaders collapse to one row per (gvkey, year) at the source (latest
-datadate), which removes the downstream `(id, eom)` fan-out. US BE, OP and INV
-are JKP's values at the kept record.
+year. ff_load_world_compustat keeps one JKP record per (gvkey, year), the latest
+datadate, which removes the downstream `(id, eom)` fan-out. BE, OP and INV are
+JKP's values at the kept record.
 
 Covers:
-  - _ff_load_funda_global     (ROW per-source collapse)
+  - ff_load_world_compustat   (one record per year)
   - ff_link_accounting      (every security -> gvkey through world_msf; US CRSP early links)
   - _jkp_annual_acc           (FF OP definition, at_gr1 from achars_world)
 """
@@ -19,110 +19,38 @@ from datetime import date
 import polars as pl
 
 from jkp.data.aux_functions import (
-    _ff_load_funda_global,
     _jkp_annual_acc,
     ff_link_accounting,
     ff_load_world_compustat,
 )
 
-# Every float column either loader casts, defaulted to None so callers can
-# override only what a test needs.
-_FLOAT_COLS = [
-    "pstk",
-    "seq",
-    "ceq",
-    "lt",
-    "txditc",
-    "txdb",
-    "revt",
-    "sale",
-    "cogs",
-    "xsga",
-    "xopr",
-    "xint",
-    "ebitda",
-    "oibdp",
-    "at",
-    "pstkrv",
-    "pstkl",
-    "itcb",
-    "mib",
-    "mibt",
-    "mibn",
-]
 
-
-def _funda_row(gvkey, datadate, at_, *, indl, **over):
-    """One synthetic comp_funda row. `indl` selects NA-style (INDL/STD/D) vs
-    Global-style (INDL/HIST_STD/I) filter-passing values."""
-    row = dict.fromkeys(_FLOAT_COLS)
-    row.update(
-        gvkey=gvkey,
-        datadate=datadate,
-        curcd="USD",
-        indfmt="INDL",
-        datafmt="STD" if indl else "HIST_STD",
-        popsrc="D" if indl else "I",
-        consol="C",
-        # be = seq + txditc - ps (ps=pstk here); keep positive and finite.
-        seq=at_ * 0.5,
-        txditc=0.0,
-        pstk=0.0,
-        at=at_,
+def test_ff_load_world_compustat_latest_record_per_year():
+    # A fiscal-year-end change gives two 2019 records; the latest (12-31) is kept,
+    # and a year whose kept record has no BE, OP or INV drops.
+    jkp_acc = pl.DataFrame(
+        {
+            "gvkey": ["001"] * 4 + ["002"] * 2,
+            "datadate": [
+                date(2018, 12, 31),
+                date(2019, 6, 30),
+                date(2019, 12, 31),
+                date(2020, 12, 31),
+                date(2020, 3, 31),
+                date(2020, 12, 31),
+            ],
+            "be_x": [1.0, 2.0, 3.0, 4.0, 5.0, None],
+            "op": [None] * 6,
+            "at_gr1": [None] * 6,
+        },
+        schema_overrides=dict.fromkeys(["be_x", "op", "at_gr1"], pl.Float64),
     )
-    row.update(over)
-    return row
-
-
-def _write_funda(path, rows):
-    pl.DataFrame(rows).with_columns(
-        pl.col("datadate").cast(pl.Date),
-        *[pl.col(c).cast(pl.Float64) for c in _FLOAT_COLS],
-    ).write_parquet(path)
-
-
-# Fiscal-year-change firm: two datadate in 2019 (06-30 stub + 12-31), plus a
-# clean prior year. at grows 100 -> 120 across the *annual* boundary.
-def _fiscal_change_rows(gvkey, *, indl):
-    return [
-        _funda_row(gvkey, date(2018, 12, 31), 100.0, indl=indl),
-        _funda_row(gvkey, date(2019, 6, 30), 110.0, indl=indl),  # stub, must drop
-        _funda_row(gvkey, date(2019, 12, 31), 120.0, indl=indl),
+    out = ff_load_world_compustat(jkp_acc)
+    assert out.select("gvkey", "year", "be").rows() == [
+        ("001", 2018, 1.0),
+        ("001", 2019, 3.0),
+        ("001", 2020, 4.0),
     ]
-
-
-# =============================================================================
-# ROW path
-# =============================================================================
-
-
-def test_ff_load_funda_global_collapses_fiscal_change(test_paths):
-    _write_funda(
-        test_paths.raw_tables_dir / "comp_g_funda.parquet", _fiscal_change_rows("001", indl=False)
-    )
-
-    out = _ff_load_funda_global(test_paths).collect()
-
-    # One row per (gvkey, year); the 2019 stub (06-30) is dropped for 12-31.
-    assert out.height == 2
-    rows_2019 = out.filter(pl.col("year") == 2019)
-    assert rows_2019.height == 1
-    assert rows_2019["datadate"].item() == date(2019, 12, 31)
-
-
-def test_ff_load_funda_global_indfmt_rule(test_paths):
-    rows = [
-        _funda_row("001", date(2018, 12, 31), 100.0, indl=False),
-        _funda_row("001", date(2018, 12, 31), 999.0, indl=False, indfmt="FS"),
-        _funda_row("002", date(2018, 12, 31), 100.0, indl=False, indfmt="FS"),
-        _funda_row("002", date(2018, 12, 31), 100.0, indl=False, indfmt="FS"),
-    ]
-    _write_funda(test_paths.raw_tables_dir / "comp_g_funda.parquet", rows)
-
-    out = _ff_load_funda_global(test_paths).collect().sort("gvkey")
-
-    # INDL wins over FS; a date reported only in FS is kept (#329's rule).
-    assert out.select("gvkey", "at").rows() == [("001", 100.0), ("002", 100.0)]
 
 
 # =============================================================================
@@ -197,22 +125,14 @@ def test_ff_link_accounting_june_row_without_gvkey(test_paths):
 
 
 def test_ff_link_accounting_record_without_jkp_values_dropped(test_paths):
-    # JKP has no be_x, ope_x or at_gr1 for the record (here: seq missing), so it
-    # leaves the fiscal records and the US sorts.
-    _write_funda(
-        test_paths.raw_tables_dir / "comp_funda.parquet",
-        [_funda_row("001", date(2019, 12, 31), 100.0, indl=True, seq=None)],
-    )
-    _write_funda(
-        test_paths.raw_tables_dir / "comp_g_funda.parquet",
-        [_funda_row("900", date(2019, 12, 31), 100.0, indl=False)],
-    )
+    # JKP has no be_x, ope_x or at_gr1 for the record, so it leaves the fiscal
+    # records and the US sorts.
     _write_acc_std_ann(
         test_paths.interim_dir / "acc_std_ann.parquet", [("001", None, None, None, None, None)]
     )
     _write_achars_world(test_paths.interim_dir / "achars_world.parquet", [])
     _write_us_msf(test_paths, [(10001, date(2020, 6, 30), "001")])
-    comp = ff_load_world_compustat(test_paths, _jkp_annual_acc(test_paths))
+    comp = ff_load_world_compustat(_jkp_annual_acc(test_paths))
     assert ff_link_accounting(test_paths, comp).height == 0
 
 
@@ -330,15 +250,6 @@ def _write_achars_world(path, rows):
 
 
 def test_ff_load_world_compustat_op_definition(test_paths):
-    gvkeys = ["101", "102", "103", "104", "105"]
-    _write_funda(
-        test_paths.raw_tables_dir / "comp_g_funda.parquet",
-        [_funda_row(g, date(2019, 12, 31), 100.0, indl=False) for g in gvkeys],
-    )
-    _write_funda(
-        test_paths.raw_tables_dir / "comp_funda.parquet",
-        [_funda_row("999", date(2019, 12, 31), 100.0, indl=True)],
-    )
     _write_acc_std_ann(
         test_paths.interim_dir / "acc_std_ann.parquet",
         [
@@ -351,9 +262,7 @@ def test_ff_load_world_compustat_op_definition(test_paths):
     )
     _write_achars_world(test_paths.interim_dir / "achars_world.parquet", [])
     op = dict(
-        ff_load_world_compustat(test_paths, _jkp_annual_acc(test_paths))
-        .select("gvkey", "op")
-        .iter_rows()
+        ff_load_world_compustat(_jkp_annual_acc(test_paths)).select("gvkey", "op").iter_rows()
     )
     assert op.get("101") is None
     assert abs(op["102"] - 10.0 / 60.0) < 1e-12

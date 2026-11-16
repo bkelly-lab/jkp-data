@@ -9884,16 +9884,6 @@ def dimsonbeta(
     )
 
 
-def _compustat_na_filter() -> pl.Expr:
-    """Standard Compustat NA screen (INDL/STD/D/C) for the FF funda loader."""
-    return (
-        (pl.col("indfmt") == "INDL")
-        & (pl.col("datafmt") == "STD")
-        & (pl.col("popsrc") == "D")
-        & (pl.col("consol") == "C")
-    )
-
-
 def country_breakpoints(
     df: pl.DataFrame,
     specs: list[tuple[str, float, str]],
@@ -10418,40 +10408,6 @@ def _ff_bucket(val: str, breaks: list[str], labels: list[str]) -> pl.Expr:
     return out.otherwise(pl.lit(labels[-1]))
 
 
-def _ff_load_funda_na(paths: DataPaths) -> pl.LazyFrame:
-    """Load comp_funda (NA) with the standard INDL/STD/D/C screen, then one row per
-    (gvkey, year), the latest datadate (_collapse_to_latest_fy). Only the fiscal-record
-    keys (gvkey, datadate, year) are used downstream."""
-    return (
-        pl.scan_parquet(paths.raw_tables_dir / "comp_funda.parquet")
-        .with_columns(pl.col("datadate").cast(pl.Date))
-        .filter(_compustat_na_filter())
-        .with_columns(year=pl.col("datadate").dt.year())
-        .pipe(_collapse_to_latest_fy)
-    )
-
-
-def _ff_load_funda_global(paths: DataPaths) -> pl.LazyFrame:
-    """Load comp_g_funda (Global): INDL-or-FS / HIST_STD / I / C screen, then per
-    (gvkey, datadate) the INDL rows if there are any, else the FS rows
-    (apply_indfmt_filter, the accounting stage's rule), then one row per (gvkey, year),
-    the latest datadate. Only the fiscal-record keys (gvkey, datadate, year) are used
-    downstream."""
-    return (
-        pl.scan_parquet(paths.raw_tables_dir / "comp_g_funda.parquet")
-        .with_columns(pl.col("datadate").cast(pl.Date))
-        .filter(
-            pl.col("indfmt").is_in(["INDL", "FS"])
-            & (pl.col("datafmt") == "HIST_STD")
-            & (pl.col("popsrc") == "I")
-            & (pl.col("consol") == "C")
-        )
-        .pipe(apply_indfmt_filter, ["gvkey", "datadate"])
-        .with_columns(year=pl.col("datadate").dt.year())
-        .pipe(_collapse_to_latest_fy)
-    )
-
-
 def _jkp_annual_acc(paths: DataPaths) -> pl.DataFrame:
     """
     Description:
@@ -10494,54 +10450,32 @@ def _jkp_annual_acc(paths: DataPaths) -> pl.DataFrame:
     )
 
 
-def ff_load_world_compustat(paths: DataPaths, jkp_acc: pl.DataFrame) -> pl.DataFrame:
+def ff_load_world_compustat(jkp_acc: pl.DataFrame) -> pl.DataFrame:
     """
     Description:
-        Worldwide Compustat BE/OP/INV for the FF characteristics in every country:
-        unions comp.funda (NA) and comp.g_funda (Global) to establish the
-        fiscal-record universe, then takes the characteristics themselves from
-        JKP's standardized panel.
+        Worldwide BE/OP/INV for the FF characteristics in every country: one fiscal
+        record per (gvkey, calendar year) from JKP's annual accounting, with JKP's
+        values at that record.
     Steps:
-        1) Load NA (INDL/STD/D/C) and Global (INDL-or-FS/HIST_STD/I/C,
-           INDL-over-FS dedup) for the (gvkey, datadate, year) fiscal universe.
-        2) Full-join jkp_acc (_jkp_annual_acc); dedup by (gvkey, year) preferring funda-sourced
-           rows then latest datadate.
+        1) jkp_acc (_jkp_annual_acc) holds JKP's records, Global over North America
+           where both report the same datadate (add_helper_vars).
+        2) One record per (gvkey, year), the latest datadate (_collapse_to_latest_fy);
+           a record with no BE, OP or INV drops.
     Output:
         Eager [gvkey, datadate, year, be, op, inv] (BE in USD, OP/INV unitless).
-
-    BE, OP and INV are JKP's (_jkp_annual_acc): be = be_x, op, inv = at_gr1, all USD or
-    unitless at the fiscal-year-end datadate. Securities reach these records through
-    ff_link_accounting.
+        Securities reach these records through ff_link_accounting.
     """
-    na = _ff_load_funda_na(paths).select("gvkey", "datadate", "year", _src=pl.lit(0))
-    gl = _ff_load_funda_global(paths).select("gvkey", "datadate", "year", _src=pl.lit(1))
-    ff_side = (
-        pl.concat([na, gl], how="vertical_relaxed")
-        .sort(["gvkey", "datadate", "_src"])
-        .unique(subset=["gvkey", "datadate"], keep="first")
-        .collect()
-    )
-    combined = (
-        ff_side.join(jkp_acc, on=["gvkey", "datadate"], how="full", coalesce=True)
-        .with_columns(
-            year=pl.coalesce("year", pl.col("datadate").dt.year()),
-            _src=pl.coalesce("_src", pl.lit(2)),  # acc-only rows least preferred in dedup
-        )
-        # one fiscal record per (gvkey, year): prefer funda-sourced rows, then latest
-        # datadate, so the June join can't fan out.
-        .sort(["gvkey", "year", "_src", "datadate"], descending=[False, False, False, True])
-        .unique(subset=["gvkey", "year"], keep="first")
-        .rename({"at_gr1": "inv"})
-        .drop("_src")
-    )
     return (
-        # be_x is already USD (acc_std_ann built convert_to_usd=1), so no FX conversion.
-        combined.rename({"be_x": "be"})
+        jkp_acc.lazy()
+        .with_columns(year=pl.col("datadate").dt.year())
+        .pipe(_collapse_to_latest_fy)
+        .rename({"be_x": "be", "at_gr1": "inv"})
         .filter(
             pl.col("be").is_not_null() | pl.col("op").is_not_null() | pl.col("inv").is_not_null()
         )
         .sort(["gvkey", "datadate"])
         .select("gvkey", "datadate", "year", "be", "op", "inv")
+        .collect()
     )
 
 
@@ -10568,7 +10502,7 @@ def ff_annual_signals(paths: DataPaths, panel: pl.DataFrame) -> pl.DataFrame:
         Eager [id, port_year, be, op, inv, dec_me, beme].
     """
     acc_cols = ["be", "op", "inv"]
-    comp = ff_load_world_compustat(paths, _jkp_annual_acc(paths))
+    comp = ff_load_world_compustat(_jkp_annual_acc(paths))
     unit = (
         pl.scan_parquet(paths.interim_dir / "world_msf.parquet")
         .select(
@@ -10726,7 +10660,9 @@ def _ff_mom_gate(src: pl.LazyFrame, start: int, end: int, min_rows: int) -> pl.L
     French requires the stock to be listed throughout the window; the row floor
     departs from that in the US too, so a halt counts the same in every country
     (Compustat Global records a halt as missing rows). Endpoints are looked up by
-    index, not by row shift, because interior rows may be missing.
+    index, not by row shift, because interior rows may be missing. A -100% return
+    in (idx-start, idx-end] makes the stock ineligible: its compounded return is
+    undefined in log terms, and later windows that leave it out are unaffected.
 
     Output: [excntry, id, idx, me_lag1, pool_lag1, cum_log_start, cum_log_end, eligible_mom].
     """
@@ -10734,6 +10670,7 @@ def _ff_mom_gate(src: pl.LazyFrame, start: int, end: int, min_rows: int) -> pl.L
     s = src.sort([*by, "idx"]).with_columns(
         rn=pl.int_range(pl.len()).over(by),
         cum_log=pl.col("log_ret").cum_sum().over(by),
+        cum_wipe=pl.col("wipe").cum_sum().over(by),
     )
 
     def at(k: int, **cols: pl.Expr) -> pl.LazyFrame:
@@ -10741,6 +10678,7 @@ def _ff_mom_gate(src: pl.LazyFrame, start: int, end: int, min_rows: int) -> pl.L
 
     n_rows = pl.col("rn_end") - pl.col("rn_start")
     endpoints_ok = pl.col("prc_start") & pl.col("good_end")
+    no_wipe = pl.col("wipe_end") == pl.col("wipe_start")
     return (
         s.select(*by, "idx")
         .join(
@@ -10749,13 +10687,18 @@ def _ff_mom_gate(src: pl.LazyFrame, start: int, end: int, min_rows: int) -> pl.L
                 rn_start=pl.col("rn"),
                 prc_start=pl.col("has_prc"),
                 cum_log_start=pl.col("cum_log"),
+                wipe_start=pl.col("cum_wipe"),
             ),
             on=[*by, "idx"],
             how="left",
         )
         .join(
             at(
-                end, rn_end=pl.col("rn"), good_end=pl.col("good_ret"), cum_log_end=pl.col("cum_log")
+                end,
+                rn_end=pl.col("rn"),
+                good_end=pl.col("good_ret"),
+                cum_log_end=pl.col("cum_log"),
+                wipe_end=pl.col("cum_wipe"),
             ),
             on=[*by, "idx"],
             how="left",
@@ -10768,9 +10711,9 @@ def _ff_mom_gate(src: pl.LazyFrame, start: int, end: int, min_rows: int) -> pl.L
             "pool_lag1",
             "cum_log_start",
             "cum_log_end",
-            eligible_mom=(endpoints_ok & (pl.col("me_lag1") > 0) & (n_rows >= min_rows)).fill_null(
-                False
-            ),
+            eligible_mom=(
+                endpoints_ok & no_wipe & (pl.col("me_lag1") > 0) & (n_rows >= min_rows)
+            ).fill_null(False),
         )
     )
 
@@ -10790,9 +10733,10 @@ def ff_mom_signal(
         missing return as 0 and a return spanning a gap in full, so the first return
         after a halt counts: monthly t-12..t-2 on a calendar-month index, daily
         t-250..t-21 on a per-country trading-day index (French's daily detail).
+        A window holding a -100% return has no signal.
     Steps:
         1) Per panel row: has_prc (prc > 0), good_ret (a return within _ff_max_gap),
-           log_ret.
+           log_ret, wipe (a -100% return, whose log_ret counts as 0).
         2) Period index; _ff_mom_gate.
         3) Join to the factor rows; me and w become ME at t-1, UMD's size and weight,
            and bp_pool the breakpoint pool at t-1, so the sort uses only what is
@@ -10809,7 +10753,8 @@ def ff_mom_signal(
         "bp_pool",
         has_prc=pl.col("prc") > 0,
         good_ret=pl.col("ret").is_not_null() & (pl.col("ret_lag_dif") <= max_gap),
-        log_ret=(1.0 + pl.col("ret").fill_null(0.0)).log(),
+        log_ret=pl.when(pl.col("ret") > -1.0).then((1.0 + pl.col("ret")).log()).otherwise(0.0),
+        wipe=(pl.col("ret") <= -1.0).fill_null(False).cast(pl.Int64),
     )
     target = rows.lazy().select("excntry", "id", "date", "ret")
     if freq == "monthly":
@@ -10969,8 +10914,9 @@ def gen_ff_data(
           French (1993) required two, against the backfill bias of firms Compustat
           adds with past years of data; their later descriptions of the factors
           and French's data library state no such rule.
-        - Fiscal records, every country: Compustat's NA and Global annual records
-          with JKP's values (ff_load_world_compustat). A US CRSP security reaches
+        - Fiscal records, every country: JKP's annual records, Global over North
+          America at the same datadate, the latest per calendar year
+          (ff_load_world_compustat). A US CRSP security reaches
           its record through the gvkey JKP attaches to it in world_msf, on its
           June row, with an early-link rule for the June 1963-66 formations
           (ff_link_accounting); before Compustat, the DFF BE.

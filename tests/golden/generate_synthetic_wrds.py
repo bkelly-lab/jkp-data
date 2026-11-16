@@ -1000,9 +1000,7 @@ def write_synthetic_wrds(out_dir: Path, seed: int = SEED) -> None:
     _write(dsf, out_dir, "crsp_dsf_v2")
 
     funda = _apply_null_patterns(gen_comp_funda(reg, rng), "comp_funda", nrng)
-    _write(funda, out_dir, "comp_funda")
     g_funda = _apply_null_patterns(gen_comp_g_funda(reg, rng), "comp_g_funda", nrng)
-    _write(g_funda, out_dir, "comp_g_funda")
 
     world_msf = gen_world_msf(reg, rng, msf, nrng)
     _write(world_msf, out_dir, "world_msf")

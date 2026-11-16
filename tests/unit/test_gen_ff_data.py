@@ -1667,6 +1667,15 @@ class TestFFMomSignalMonthly:
         result = _run_monthly(panel).sort("date")
         assert result["bp_pool"].to_list() == [False, True, False]
 
+    def test_minus_100_return_nulls_every_window_holding_it(self):
+        """A -100% return at month 5 nulls the windows t-12..t-2 that hold it
+        (t = 13..17); later windows compound normally."""
+        panel = _make_monthly_panel(months=20, ret_overrides={5: -1.0})
+        mom = _run_monthly(panel).sort("date")["mom_2_12"].to_list()
+        assert all(m is None for m in mom[:18])
+        assert mom[18] == pytest.approx(1.01**11 - 1, abs=1e-12)
+        assert mom[19] == pytest.approx(1.01**11 - 1, abs=1e-12)
+
     def test_me_and_w_are_lagged_me(self):
         """UMD sizes and weights by ME at t-1."""
         panel = _make_monthly_panel(months=3).with_columns(me=pl.Series([1.0, 2.0, 4.0]))
