@@ -413,18 +413,17 @@ class TestFFBreakpoints:
         bp = compute_ff_breakpoints(june, ["inv"], 1)
         assert bp.columns == ["excntry", "date", "sizemedn", "inv_lo", "inv_hi"]
 
-    def test_first_sort_sets_the_sample(self):
-        """A country-date with no first-sort breakpoints forms nothing, even though
-        its size median exists; later sorts are left-joined and only go null."""
-        no_bm = _june(10, [None] * 10)
-        assert len(compute_ff_breakpoints(no_bm, ["bm"], 1)) == 0
-        june = _june(10, [float(i) for i in range(1, 11)]).with_columns(
-            op=pl.lit(None, dtype=pl.Float64), dec_me=pl.lit(1.0), be=pl.lit(1.0)
+    def test_sorts_are_independent(self):
+        """A country-date with the size median forms each sort that has its own
+        breakpoints: no B/M breakpoints leaves bm null but still forms INV."""
+        june = _june(10, [None] * 10).with_columns(
+            inv=pl.Series([float(i) for i in range(1, 11)]), dec_me=pl.lit(1.0)
         )
-        bp = compute_ff_breakpoints(june, ["bm", "op"], 1)
+        bp = compute_ff_breakpoints(june, ["bm", "inv"], 1)
         assert bp.height == 1
-        assert bp["bm_lo"][0] == 3.0
-        assert bp["op_lo"][0] is None
+        row = bp.row(0, named=True)
+        assert row["bm_lo"] is None and row["bm_hi"] is None
+        assert row["inv_lo"] == 3.0 and row["inv_hi"] == 7.0
 
     @staticmethod
     def _june_size_pool() -> pl.DataFrame:

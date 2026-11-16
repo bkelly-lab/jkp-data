@@ -10502,12 +10502,11 @@ def compute_ff_breakpoints(
         ME > 0, whatever its sort eligibility (DFF 2000: no BE requirement), and
         the 30th and 70th percentiles of each sort's signal over the pool stocks
         eligible for that sort. A breakpoint needs min_stocks_bp pool stocks. The
-        first sort sets the sample: a country-date without the size median or the
-        first sort's breakpoints forms no portfolios in any sort.
+        sorts are independent: a country-date with the size median forms each sort
+        that has its own breakpoints.
     Steps:
         1) Size median per (excntry, date).
-        2) Each sort's 30/70 breakpoints: inner join for the first sort, left join
-           for the others.
+        2) Each sort's 30/70 breakpoints, left-joined to the size median.
     Output:
         [excntry, date, sizemedn, <sort>_lo, <sort>_hi for each sort].
     """
@@ -10519,7 +10518,7 @@ def compute_ff_breakpoints(
         pool=pl.col("bp_pool") & (pl.col("me") > 0),
         min_stocks=min_stocks_bp,
     )
-    for i, sort in enumerate(sorts):
+    for sort in sorts:
         signal, _, eligible = ff_sort_definitions()[sort]
         bps = country_breakpoints(
             frame,
@@ -10528,7 +10527,7 @@ def compute_ff_breakpoints(
             pool=pl.col("bp_pool") & eligible,
             min_stocks=min_stocks_bp,
         )
-        out = out.join(bps, on=keys, how="inner" if i == 0 else "left")
+        out = out.join(bps, on=keys, how="left")
     return out
 
 
