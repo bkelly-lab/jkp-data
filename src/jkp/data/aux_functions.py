@@ -10196,8 +10196,9 @@ def _ff_universe_rows(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl
           breakpoint pool. CIZ returns span no gaps, so ret_lag_dif is 0.
         - Elsewhere: JKP's main sample (_ff_world_universe); the unit is the
           security. size_grp small, large or mega forms the breakpoint pool (daily
-          rows take it from the month's world_msf row). Rows without ME stay out of
-          the factor portfolios (needs_me).
+          rows take it from the previous month's world_msf row, the latest known
+          on every day of the month). Rows without ME stay out of the factor
+          portfolios (needs_me).
         Returns are JKP's: in the US, CIZ's return plus CRSP's delisting return, and
         -30% where a bad delisting has none (prepare_crsp_sf). Raw CIZ returns would
         lose the delisting return on every daily delisting and on monthly
@@ -10277,7 +10278,7 @@ def _ff_universe_rows(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl
     if not monthly:
         other = other.join(
             pl.scan_parquet(paths.interim_dir / "world_msf.parquet").select(
-                "id", "eom", "size_grp"
+                "id", "size_grp", eom=pl.col("eom").dt.offset_by("1mo").dt.month_end()
             ),
             on=["id", "eom"],
             how="left",
@@ -10721,12 +10722,13 @@ def _ff_mom_gate(src: pl.LazyFrame, start: int, end: int, min_rows: int) -> pl.L
     """Momentum eligibility on a period index `idx` (months or per-country trading
     days), the same in every country: a price at idx-start, a good return at
     idx-end, ME > 0 at idx-1, and at least `min_rows` rows in (idx-start, idx-end].
+    me_lag1 and pool_lag1 (bp_pool) come from the row at idx-1, the formation date.
     French requires the stock to be listed throughout the window; the row floor
     departs from that in the US too, so a halt counts the same in every country
     (Compustat Global records a halt as missing rows). Endpoints are looked up by
     index, not by row shift, because interior rows may be missing.
 
-    Output: [excntry, id, idx, me_lag1, cum_log_start, cum_log_end, eligible_mom].
+    Output: [excntry, id, idx, me_lag1, pool_lag1, cum_log_start, cum_log_end, eligible_mom].
     """
     by = ["excntry", "id"]
     s = src.sort([*by, "idx"]).with_columns(
@@ -10758,11 +10760,12 @@ def _ff_mom_gate(src: pl.LazyFrame, start: int, end: int, min_rows: int) -> pl.L
             on=[*by, "idx"],
             how="left",
         )
-        .join(at(1, me_lag1=pl.col("me")), on=[*by, "idx"], how="left")
+        .join(at(1, me_lag1=pl.col("me"), pool_lag1=pl.col("bp_pool")), on=[*by, "idx"], how="left")
         .select(
             *by,
             "idx",
             "me_lag1",
+            "pool_lag1",
             "cum_log_start",
             "cum_log_end",
             eligible_mom=(endpoints_ok & (pl.col("me_lag1") > 0) & (n_rows >= min_rows)).fill_null(
@@ -10791,7 +10794,9 @@ def ff_mom_signal(
         1) Per panel row: has_prc (prc > 0), good_ret (a return within _ff_max_gap),
            log_ret.
         2) Period index; _ff_mom_gate.
-        3) Join to the factor rows; me and w become ME at t-1, UMD's size and weight.
+        3) Join to the factor rows; me and w become ME at t-1, UMD's size and weight,
+           and bp_pool the breakpoint pool at t-1, so the sort uses only what is
+           known at formation.
     Output:
         Eager [excntry, id, date, ret, bp_pool, me, w, mom_2_12].
     """
@@ -10801,11 +10806,12 @@ def ff_mom_signal(
         "id",
         "date",
         "me",
+        "bp_pool",
         has_prc=pl.col("prc") > 0,
         good_ret=pl.col("ret").is_not_null() & (pl.col("ret_lag_dif") <= max_gap),
         log_ret=(1.0 + pl.col("ret").fill_null(0.0)).log(),
     )
-    target = rows.lazy().select("excntry", "id", "date", "ret", "bp_pool")
+    target = rows.lazy().select("excntry", "id", "date", "ret")
     if freq == "monthly":
         idx = (pl.col("date").dt.year() * 12 + pl.col("date").dt.month()).cast(pl.Int64)
         src, target = src.with_columns(idx=idx), target.with_columns(idx=idx)
@@ -10828,7 +10834,7 @@ def ff_mom_signal(
             "id",
             "date",
             "ret",
-            "bp_pool",
+            bp_pool=pl.col("pool_lag1").fill_null(False),
             me="me_lag1",
             w="me_lag1",
             mom_2_12=pl.when(pl.col("eligible_mom").fill_null(False)).then(mom),

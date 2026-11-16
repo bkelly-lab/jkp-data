@@ -829,8 +829,8 @@ class TestFFUniverseRows:
 
     def test_daily_pool_columns(self, test_paths):
         """Daily: the US pool is NYSE on the raw dsf primaryexch; elsewhere size_grp
-        comes from the month's world_msf row."""
-        day, eom = date(2020, 6, 15), date(2020, 6, 30)
+        comes from the previous month's world_msf row, not the month's own."""
+        day, eom, prev = date(2020, 6, 15), date(2020, 6, 30), date(2020, 5, 31)
         pl.DataFrame(
             {
                 "permno": [1, 2],
@@ -859,8 +859,10 @@ class TestFFUniverseRows:
         _write_world_msf(
             test_paths,
             [
-                {"id": 101, "eom": eom, "excntry": "GBR", "source_crsp": 0, "size_grp": "mega"},
-                {"id": 102, "eom": eom, "excntry": "GBR", "source_crsp": 0, "size_grp": "micro"},
+                {"id": 101, "eom": prev, "excntry": "GBR", "source_crsp": 0, "size_grp": "mega"},
+                {"id": 101, "eom": eom, "excntry": "GBR", "source_crsp": 0, "size_grp": "micro"},
+                {"id": 102, "eom": prev, "excntry": "GBR", "source_crsp": 0, "size_grp": "micro"},
+                {"id": 102, "eom": eom, "excntry": "GBR", "source_crsp": 0, "size_grp": "mega"},
             ],
         )
         out = _ff_universe_rows(test_paths, "daily").collect()
@@ -1658,6 +1660,12 @@ class TestFFMomSignalMonthly:
         """Output has the mom-signal columns."""
         result = _run_monthly(_make_monthly_panel(months=20))
         assert set(result.columns) == _MOM_COLS
+
+    def test_bp_pool_is_lagged(self):
+        """UMD forms at t-1, so the breakpoint pool is the row's at t-1."""
+        panel = _make_monthly_panel(months=3).with_columns(bp_pool=pl.Series([True, False, True]))
+        result = _run_monthly(panel).sort("date")
+        assert result["bp_pool"].to_list() == [False, True, False]
 
     def test_me_and_w_are_lagged_me(self):
         """UMD sizes and weights by ME at t-1."""
