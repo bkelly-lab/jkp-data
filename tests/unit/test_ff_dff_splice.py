@@ -4,8 +4,8 @@ link_accounting_to_securities.
 
 DFF (2000) collected Moody's BE for NYSE firms absent from Compustat; the
 splice unions the permno-keyed DFF rows with the linked Compustat rows,
-DFF-first on any (id, year) collision (be = coalesce(dff, comp);
-the DFF BE takes precedence and fills years with no Compustat record).
+Compustat-first on any (id, year) collision (be = coalesce(comp, dff);
+the DFF BE fills years with no Compustat BE).
 DFF be(t) pairs with Dec(t-1) ME, so the unioned row carries year = t - 1
 (the annual characteristics use port_year = year + 1).
 """
@@ -77,9 +77,9 @@ class TestDffSplice:
         # Synthetic datadate stamps the formation June (of DFF year t), not t-1.
         assert dff_rows["datadate"].to_list() == [date(1930, 6, 30)]
 
-    def test_collision_coalesces_dff_be_keeps_compustat_fields(self, test_paths):
+    def test_collision_keeps_compustat_be_and_fields(self, test_paths):
         # Compustat fiscal 2019 row (year=2019) vs DFF be(2020) (-> year=2019),
-        # same permno: ONE merged row — DFF be, Compustat identity/accounting.
+        # same permno: ONE row, the Compustat BE, identity and accounting.
         comp = _compustat_inputs(test_paths, permno=10001, years=(2018, 2019), inv={2019: 0.1})
         dff = _write_dff(
             test_paths.raw_tables_dir / "dff.txt", [(10001, 2020, 2020, {2020: 999.0})]
@@ -88,7 +88,7 @@ class TestDffSplice:
 
         rows = out.filter((pl.col("id") == 10001) & (pl.col("year") == 2019))
         assert rows.height == 1
-        assert rows["be"][0] == 999.0  # coalesce(dff, comp) -> DFF value
+        assert rows["be"][0] == 51.0  # coalesce(comp, dff) -> Compustat value
         assert rows["gvkey"][0] == "001"  # Compustat row identity kept
         assert rows["inv"][0] == 0.1  # Compustat accounting fields survive
 
@@ -150,9 +150,9 @@ class TestDffSplice:
 
         keyed = out.select("id", "year")
         assert keyed.height == keyed.unique().height
-        # Colliding cells merge into the Compustat rows (DFF be via coalesce);
-        # only the disjoint DFF row carries a null gvkey.
+        # Colliding cells merge into the Compustat rows; only the disjoint DFF
+        # row carries a null gvkey.
         assert out.filter(pl.col("gvkey").is_null()).height == 1
-        # And the colliding rows carry the DFF be values.
-        assert out.filter((pl.col("id") == 10001) & (pl.col("year") == 2018))["be"][0] == 1.0
-        assert out.filter((pl.col("id") == 10001) & (pl.col("year") == 2019))["be"][0] == 2.0
+        # And the colliding rows keep the Compustat be values.
+        assert out.filter((pl.col("id") == 10001) & (pl.col("year") == 2018))["be"][0] == 50.0
+        assert out.filter((pl.col("id") == 10001) & (pl.col("year") == 2019))["be"][0] == 51.0

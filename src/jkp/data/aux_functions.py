@@ -10329,13 +10329,13 @@ def add_dff_book_equity(comp_ccm: pl.DataFrame, dff_path: Path) -> pl.DataFrame:
     Description:
         Union the DFF hand-collected Moody's BE with the linked Compustat records, to
         extend coverage back to 1926. DFF rows are keyed by permno, the id of a CRSP
-        security. be = coalesce(DFF, Compustat) on (id, year): the DFF BE takes
-        precedence where both exist and fills years with no Compustat record; a
-        Compustat record keeps its op and inv.
+        security. be = coalesce(Compustat, DFF) on (id, year): the DFF BE fills
+        years with no Compustat record or a null Compustat BE, as in Davis, Fama and
+        French (2000); a Compustat record keeps its op and inv.
     Steps:
         1) DFF rows with BE >= 0, year shifted to t-1 so the June join (port_year =
            year + 1) pairs DFF be(t) with December t-1 ME.
-        2) Compustat records take the DFF BE where one exists on (id, year).
+        2) Compustat records with a null BE take the DFF BE on (id, year).
         3) DFF rows with no Compustat record on (id, year) are appended, with null gvkey,
            op and inv.
     Output:
@@ -10361,12 +10361,12 @@ def add_dff_book_equity(comp_ccm: pl.DataFrame, dff_path: Path) -> pl.DataFrame:
         )
         .select(select_cols)
     )
-    # be = coalesce(dff.be, comp.be) on (id, year); the Compustat row keeps its op/inv.
+    # be = coalesce(comp.be, dff.be) on (id, year); the Compustat row keeps its op/inv.
     keys = ["id", "year"]
     comp_pool = (
         comp_ccm.select(select_cols)
         .join(dff.select([*keys, "be"]).rename({"be": "_be_dff"}), on=keys, how="left")
-        .with_columns(be=pl.coalesce("_be_dff", "be"))
+        .with_columns(be=pl.coalesce("be", "_be_dff"))
         .drop("_be_dff")
     )
     dff_only = dff.join(comp_pool.select(keys), on=keys, how="anti")
