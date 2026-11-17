@@ -16779,13 +16779,18 @@ def _dhs_jkp_june(
 
 def _dhs_be_fy(interim_dir: Path) -> pl.DataFrame:
     """JKP book equity per (gvkey, calendar year of the fiscal year end): be_x from
-    acc_std_ann (USD, positive-only by construction), latest datadate in the year.
+    acc_std_ann (USD, positive-only by construction) of the latest report in the
+    year, as DHS keep the later fiscal year end when a firm has two in one year.
+    Only report rows (source set) are read, which drops acc_std_ann's monthly
+    filler rows. be_x itself is not filtered: a latest report with BE <= 0 leaves
+    lagBE missing (fails the screen) rather than falling back to an earlier
+    report in the same year.
     Output: [gvkey, fy, lagBE]; ROW joins it on fy = YEAR - 1, the US path on
     fy = YEAR before lagging over the permno."""
     return (
         pl.scan_parquet(interim_dir / "acc_std_ann.parquet")
+        .filter(pl.col("gvkey").is_not_null() & pl.col("source").is_not_null())
         .select("gvkey", "datadate", "be_x")
-        .filter(pl.col("gvkey").is_not_null() & pl.col("be_x").is_not_null())
         .with_columns(fy=pl.col("datadate").dt.year().cast(pl.Int32))
         .sort(["gvkey", "fy", "datadate", "be_x"])
         .unique(subset=["gvkey", "fy"], keep="last", maintain_order=True)

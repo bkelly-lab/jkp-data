@@ -21,6 +21,7 @@ import pytest
 from jkp.data.aux_functions import (
     _dhs_abr_unscreened,
     _dhs_align_abr,
+    _dhs_be_fy,
     _dhs_chars_unscreened,
     _dhs_ibes_announcements,
     _dhs_ibes_gvkey_link,
@@ -80,6 +81,7 @@ def dhs_interim_dir(tmp_path):
             "gvkey": ["001000", "001000", "001000"],
             "datadate": [date(2000, 3, 31), date(2000, 12, 31), date(2001, 12, 31)],
             "be_x": [5.0, 7.0, 9.0],
+            "source": ["NA"] * 3,
         }
     )
     acc.write_parquet(tmp_path / "acc_std_ann.parquet")
@@ -238,6 +240,28 @@ def ibes_dirs(tmp_path):
     return raw, interim
 
 
+class TestDhsBeFy:
+    def test_latest_report_wins_even_without_be_and_fillers_are_skipped(self, tmp_path):
+        # 2005: March report (BE 50) then December report (BE <= 0, be_x null),
+        # plus a filler row; 2006: a report followed by a later filler row.
+        pl.DataFrame(
+            {
+                "gvkey": ["001000"] * 4,
+                "datadate": [
+                    date(2005, 3, 31),
+                    date(2005, 12, 31),
+                    date(2006, 9, 30),
+                    date(2006, 11, 30),
+                ],
+                "be_x": [50.0, None, 60.0, None],
+                "source": ["NA", "NA", "NA", None],
+            }
+        ).write_parquet(tmp_path / "acc_std_ann.parquet")
+        out = _dhs_be_fy(tmp_path).sort("fy")
+        assert out["fy"].to_list() == [2005, 2006]
+        assert out["lagBE"].to_list() == [None, 60.0]
+
+
 class TestDhsIssuanceChars:
     def test_lag_be_follows_the_permno_across_a_gvkey_change(self, tmp_path):
         # permno 1 is gvkey A through 2000 and gvkey B from 2001
@@ -267,7 +291,7 @@ class TestDhsIssuanceChars:
             }
         ).write_parquet(tmp_path / "crsp_ccmxpf_linktable.parquet")
         pl.DataFrame(
-            {"gvkey": gvkeys, "datadate": ends, "be_x": [1.0, 2.0, 3.0, 4.0]}
+            {"gvkey": gvkeys, "datadate": ends, "be_x": [1.0, 2.0, 3.0, 4.0], "source": ["NA"] * 4}
         ).write_parquet(tmp_path / "acc_std_ann.parquet")
         us_june = pl.DataFrame(
             {"id": [1], "YEAR": [2002], "IR": [0.1]}, schema_overrides={"YEAR": pl.Int32}
