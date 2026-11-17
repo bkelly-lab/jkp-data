@@ -1,8 +1,9 @@
 """
 Unit tests for DHS ROW helpers in aux_functions.py.
 
-Covers _dhs_row_chars: NS = log(1 + chcsho_12m), IR = -eqnpo_60m with 60 valid
-window returns (both sampled at June rows), the YEAR relabel split (IR emitted at YEAR=t, NS at YEAR=t-1),
+Covers _dhs_row_chars: NS = log(1 + chcsho_12m), IR = -eqnpo_60m (both sampled
+at June rows; the 60-valid-return window rule is US-only, tested via _dhs_jkp_june),
+the YEAR relabel split (IR emitted at YEAR=t, NS at YEAR=t-1),
 and the lagBE join (be_x of the fiscal year ending in calendar YEAR-1, latest
 statement per gvkey-fiscal-year). Also covers _dhs_ibes_announcements (ticker
 bridging via both security masters, SEDOL > CUSIP > ibtic link precedence,
@@ -26,6 +27,7 @@ from jkp.data.aux_functions import (
     _dhs_ibes_announcements,
     _dhs_ibes_gvkey_link,
     _dhs_issuance_chars,
+    _dhs_jkp_june,
     _dhs_load_row_daily,
     _dhs_load_row_panel,
     _dhs_non_financial,
@@ -102,6 +104,26 @@ class TestDhsNonFinancial:
         assert kept == [False, False, True, True, False, True, True]
 
 
+class TestDhsJkpJune:
+    """The US full-window IR rule, run on the fixture's ROW ids."""
+
+    @staticmethod
+    def _ir_years(interim_dir, id_, ir_ret_beg=None):
+        june = _dhs_jkp_june(interim_dir, 2000, 2002, pl.col("excntry") == "JPN", True, ir_ret_beg)
+        return june.filter((pl.col("id") == id_) & pl.col("IR").is_not_null())["YEAR"].to_list()
+
+    def test_full_window_needs_all_60_returns_ns_does_not(self, dhs_interim_dir):
+        # June 2001/2002 windows are fully observed for id 10; id 40 misses Mar-2000
+        assert self._ir_years(dhs_interim_dir, 10) == [2001, 2002]
+        assert self._ir_years(dhs_interim_dir, 40) == []
+        june = _dhs_jkp_june(dhs_interim_dir, 2000, 2002, pl.col("excntry") == "JPN", True, None)
+        assert june.filter(pl.col("id") == 40)["NS"].drop_nulls().len() == 3
+
+    def test_ir_ret_beg_drops_earlier_returns_from_the_window(self, dhs_interim_dir):
+        # From 1997 on, the first full window ends June 2002 (Jul-1997..Jun-2002)
+        assert self._ir_years(dhs_interim_dir, 10, 1997) == [2002]
+
+
 class TestDhsRowChars:
     def test_ir_is_minus_eqnpo_60m_at_june(self, dhs_interim_dir):
         out = _dhs_row_chars(dhs_interim_dir, 2000, 2002)
@@ -112,22 +134,11 @@ class TestDhsRowChars:
         assert ir["datadate"][0] == date(2001, 6, 30)
         assert math.isclose(ir["IR"][0], 0.25)
 
-    def test_ir_needs_all_60_window_returns_ns_does_not(self, dhs_interim_dir):
+    def test_row_ir_has_no_full_window_rule(self, dhs_interim_dir):
+        # id 40 misses Mar-2000 inside its June 2001/2002 windows; ex-US keeps IR
         out = _dhs_row_chars(dhs_interim_dir, 2000, 2002)
-        # June 2001/2002 windows are fully observed for id 10; id 40 misses Mar-2000
-        ir = out.filter(pl.col("YEAR").is_in([2001, 2002]) & pl.col("NS").is_null())
-        assert ir.filter(pl.col("id") == 10)["IR"].null_count() == 0
-        assert ir.filter(pl.col("id") == 40)["IR"].null_count() == 2
-        assert out.filter(pl.col("id") == 40)["NS"].drop_nulls().len() == 3
-
-    def test_ir_ret_beg_drops_earlier_returns_from_the_window(self, dhs_interim_dir):
-        # From 1997 on, the first full window ends June 2002 (Jul-1997..Jun-2002)
-        def ir_years(ir_ret_beg):
-            out = _dhs_row_chars(dhs_interim_dir, 2000, 2002, ir_ret_beg)
-            return out.filter((pl.col("id") == 10) & pl.col("IR").is_not_null())["YEAR"].to_list()
-
-        assert ir_years(None) == [2001, 2002]
-        assert ir_years(1997) == [2002]
+        ir = out.filter((pl.col("id") == 40) & pl.col("YEAR").is_in([2001, 2002]))
+        assert ir["IR"].drop_nulls().len() == 2
 
     def test_ns_is_log1p_chcsho_relabelled_to_prior_year(self, dhs_interim_dir):
         out = _dhs_row_chars(dhs_interim_dir, 2000, 2002)

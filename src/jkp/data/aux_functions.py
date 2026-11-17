@@ -16742,33 +16742,42 @@ def _dhs_load_row_panel(interim_dir: Path, beg: int, end: int) -> pl.DataFrame:
 
 
 def _dhs_jkp_june(
-    interim_dir: Path, beg: int, end: int, rows: pl.Expr, ir_ret_beg: int | None
+    interim_dir: Path,
+    beg: int,
+    end: int,
+    rows: pl.Expr,
+    full_window: bool,
+    ir_ret_beg: int | None,
 ) -> pl.DataFrame:
     """NS = log(1 + chcsho_12m) and IR = -eqnpo_60m at each June(t) from jkp's
     world_data_prelim, for the rows selected by `rows` (see _dhs_row_chars).
-    IR also requires a valid return in each of the 60 months ending at June(t)
-    (DHS's full-window rule; eqnpo_60m alone checks only the window endpoints).
-    A valid return is non-null with ret_lag_dif == 1, so 60 valid rows in a row
-    are 60 consecutive calendar months; with `ir_ret_beg` set (DHS_IR_RET_BEG),
-    returns before that year don't count, so the first IR is June(ir_ret_beg+5).
+    With `full_window` (the US), IR also requires a valid return in each of the
+    60 months ending at June(t) (DHS's full-window rule; eqnpo_60m alone checks
+    only the window endpoints). A valid return is non-null with ret_lag_dif == 1,
+    so 60 valid rows in a row are 60 consecutive calendar months; with
+    `ir_ret_beg` set (DHS_IR_RET_BEG), returns before that year don't count, so
+    the first IR is June(ir_ret_beg+5).
     Output: [id, gvkey, datadate, YEAR, NS, IR] with YEAR = t (not relabelled)."""
     ns_expr = pl.when((1 + pl.col("chcsho_12m")) > 0).then((1 + pl.col("chcsho_12m")).log())
-    valid = pl.col("ret").is_not_null() & (pl.col("ret_lag_dif") == 1)
-    if ir_ret_beg is not None:
-        valid = valid & (pl.col("eom").dt.year() >= ir_ret_beg)
-    valid_ret = valid.cast(pl.Int32)
-    n_valid = valid_ret.rolling_sum(window_size=60, min_samples=60).over("id")
-    return (
+    ir_expr = -pl.col("eqnpo_60m")
+    lf = (
         pl.scan_parquet(interim_dir / "world_data_prelim.parquet")
         .filter(rows & (pl.col("eom").dt.year() <= end))
         .select("id", "gvkey", "eom", "chcsho_12m", "eqnpo_60m", "ret", "ret_lag_dif")
-        .sort(["id", "eom"])
+    )
+    if full_window:
+        valid = pl.col("ret").is_not_null() & (pl.col("ret_lag_dif") == 1)
+        if ir_ret_beg is not None:
+            valid = valid & (pl.col("eom").dt.year() >= ir_ret_beg)
+        n_valid = valid.cast(pl.Int32).rolling_sum(window_size=60, min_samples=60).over("id")
         # the window count needs the full history, so it runs before the June filter
-        .with_columns(n_valid=n_valid)
-        .filter((pl.col("eom").dt.year() >= beg) & (pl.col("eom").dt.month() == 6))
+        lf = lf.sort(["id", "eom"]).with_columns(n_valid=n_valid)
+        ir_expr = pl.when(pl.col("n_valid") == 60).then(ir_expr)
+    return (
+        lf.filter((pl.col("eom").dt.year() >= beg) & (pl.col("eom").dt.month() == 6))
         .with_columns(
             NS=ns_expr.otherwise(None),
-            IR=pl.when(pl.col("n_valid") == 60).then(-pl.col("eqnpo_60m")),
+            IR=ir_expr,
             YEAR=pl.col("eom").dt.year().cast(pl.Int32),
             datadate=pl.col("eom"),
         )
@@ -16799,17 +16808,15 @@ def _dhs_be_fy(interim_dir: Path) -> pl.DataFrame:
     )
 
 
-def _dhs_row_chars(
-    interim_dir: Path, beg: int, end: int, ir_ret_beg: int | None = DHS_IR_RET_BEG
-) -> pl.DataFrame:
+def _dhs_row_chars(interim_dir: Path, beg: int, end: int) -> pl.DataFrame:
     """ROW (ex-US) annual FIN characteristics from jkp's world_data, in the US
     annual_chars schema [id, datadate, YEAR, lagBE, NS, IR] (excntry flows in later
     via the id join to the ROW panel). Computed at each June(t) per id:
         NS = log(1 + chcsho_12m) = log(adj_shares_June(t) / adj_shares_June(t-1))
              (reuses jkp's chcsho_12m 12-month share-change characteristic)
         IR = -eqnpo_60m = log(me_June(t) / me_June(t-5)) - log(60-month gross cumret)
-             (reuses jkp's eqnpo_60m 60-month equity-net-payout characteristic,
-             kept only with a valid return in all 60 months, as in the US)
+             (reuses jkp's eqnpo_60m 60-month equity-net-payout characteristic;
+             unlike the US, no full-window return rule)
         lagBE = be_x for the fiscal year ending in calendar YEAR-1 (JKP standardized
                 USD book equity, positive-only, joined by gvkey; the same prior-
                 fiscal-year BE-level guard as the US branch)
@@ -16822,7 +16829,7 @@ def _dhs_row_chars(
     # NS = log(adj_shares(t)/adj_shares(t-12)) = log(1 + chcsho_12m), sampled at the June
     # formation. Value-exact vs the prior direct computation on ROW (both use the same
     # Compustat-Global shares*adjfct); chcsho_12m carries its own 12-month/count guard.
-    june = _dhs_jkp_june(interim_dir, beg, end, pl.col("excntry") != US_EXCNTRY, ir_ret_beg)
+    june = _dhs_jkp_june(interim_dir, beg, end, pl.col("excntry") != US_EXCNTRY, False, None)
     # lagBE = be_x for the fiscal year ending in calendar YEAR-1, joined by gvkey
     # after the YEAR relabel below (the same prior-fiscal-year guard as the US
     # branch). The statement is always public by the rebalance: datadate <=
@@ -17897,7 +17904,7 @@ def gen_dhs_data(
     end_q] the quarterly announcement sample (coverage starts ~1971). end/end_q
     default to config.END_DATE's year so the DHS sample advances with the pipeline
     vintage instead of truncating at a hardcoded year. ir_ret_beg
-    (DHS_IR_RET_BEG) is the first year of returns the IR 60-month window uses;
+    (DHS_IR_RET_BEG) is the first year of returns the US IR 60-month window uses;
     None uses all history, 1966 replicates the authors' SAS (IR from June 1971).
 
     Steps:
@@ -17928,6 +17935,7 @@ def gen_dhs_data(
         beg,
         end,
         (pl.col("excntry") == US_EXCNTRY) & (pl.col("source_crsp") == 1),
+        True,
         ir_ret_beg,
     )
     annual_chars = _dhs_issuance_chars(raw_dir, interim_dir, us_crsp_june, beg, end)
@@ -17963,7 +17971,7 @@ def gen_dhs_data(
         annual_chars = pl.concat(
             [
                 annual_chars.select("id", "datadate", "YEAR", "lagBE", "NS", "IR"),
-                _dhs_row_chars(interim_dir, beg, end, ir_ret_beg),
+                _dhs_row_chars(interim_dir, beg, end),
             ],
             how="diagonal_relaxed",
         )
@@ -18008,6 +18016,7 @@ def gen_dhs_data(
             beg,
             end,
             (pl.col("excntry") == US_EXCNTRY) & (pl.col("source_crsp") == 0),
+            True,
             ir_ret_beg,
         )
         unscreened = _dhs_chars_unscreened(

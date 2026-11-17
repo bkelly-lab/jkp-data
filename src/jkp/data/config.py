@@ -238,8 +238,8 @@ FF_ROW_FORMATION_ME_LOOKBACK = 2
 HXZ_MIN_STOCKS_BP = 10
 HXZ_MIN_STOCKS_PF = 3
 
-# First calendar year of returns the DHS composite issuance (IR) 60-month window
-# may use; None = all available return history. Set 1966 to replicate the
+# First calendar year of returns the US DHS composite issuance (IR) 60-month
+# window may use (ex-US IR has no window rule); None = all available return history. Set 1966 to replicate the
 # authors' SAS, whose CRSP download starts in 1966, so IR first exists in June
 # 1971 and FIN sorts on NS alone before that.
 DHS_IR_RET_BEG: int | None = None
