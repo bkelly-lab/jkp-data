@@ -261,13 +261,10 @@ FACTOR_MIN_STOCKS_PF = 3
 # The June sorts of the FF builder (ff_sort_definitions keys): B/M, OP, INV.
 FF_JUNE_SORTS = ["bm", "op", "inv"]
 
-# UMD momentum window offsets, in periods before the formation period t (trading days
-# for daily, calendar months for monthly). The signal compounds the returns from t-250
-# to t-21 (daily) and from t-12 to t-2 (monthly). Daily: LOOKBACK is the offset of the
-# price that opens the window (one before the first return), SKIP the offset of the
-# last return. Monthly: LOOKBACK is the offset of the first return, SKIP the number of
-# months skipped after the last return before t-1; compute_ff_momentum_signal passes
-# LOOKBACK + 1 and SKIP + 1 as the window bounds.
+# UMD signal window, in periods before the holding period t: the signal compounds the
+# returns from t-250 to t-21 (daily, trading days) and t-12 to t-2 (monthly). The daily
+# constants are the offsets of the opening price and the last return; the monthly ones
+# are one less (compute_ff_momentum_signal adds 1).
 FF_UMD_DAILY_SKIP = 21
 FF_UMD_DAILY_LOOKBACK = 251
 FF_UMD_MONTHLY_LOOKBACK = 12
