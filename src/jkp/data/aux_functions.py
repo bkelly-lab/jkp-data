@@ -10831,9 +10831,51 @@ def _long_short_spread(sort: str, long: list[str], short: list[str]) -> pl.Expr:
     return long_mean - short_mean
 
 
+def compute_ff_june_exits(monthly_return_data: pl.DataFrame) -> pl.DataFrame:
+    """
+    Description:
+        The month each stock leaves its June portfolios: the first month from July in
+        which it earns no monthly return, because it has no row, a null return, or no
+        weight. It stays out until the next June, in the monthly and daily portfolios.
+        A month in which the whole country has no data is not a missing month.
+    Steps:
+        1) Per stock, flag rows with a null ret or w, and rows more than a month after
+           the previous row unless the country has no date in between.
+        2) exit_eom per stock and July-June year: the earliest flagged month; for a
+           missing month, the month after the previous row, at the earliest July.
+    Output:
+        Eager [excntry, id, port_year, exit_eom].
+    """
+    k = ["excntry", "id"]
+    year = pl.col("date").dt.year()
+    month = year * 12 + pl.col("date").dt.month()
+    country_month = pl.col("date").rank("dense").over("excntry")
+    missed = (month - month.shift(1).over(k) > 1) & (
+        country_month - country_month.shift(1).over(k) > 1
+    )
+    port_year = pl.when(pl.col("date").dt.month() >= 7).then(year).otherwise(year - 1)
+    return (
+        monthly_return_data.lazy()
+        .sort([*k, "date"])
+        .with_columns(
+            port_year=port_year,
+            exit_eom=pl.when(missed)
+            .then(pl.col("date").shift(1).over(k).dt.offset_by("1mo").dt.month_end())
+            .otherwise(pl.col("date")),
+            out=missed.fill_null(False) | pl.col("ret").is_null() | pl.col("w").is_null(),
+        )
+        .filter("out")
+        .group_by([*k, "port_year"])
+        .agg(pl.col("exit_eom").min())
+        .with_columns(exit_eom=pl.max_horizontal("exit_eom", pl.date(pl.col("port_year"), 7, 31)))
+        .collect()
+    )
+
+
 def compute_ff_factor_returns(
     return_data: pl.DataFrame,
     june_assignments: pl.DataFrame,
+    june_exits: pl.DataFrame,
     momentum_assignments: pl.DataFrame,
     min_stocks_pf: int,
 ) -> pl.DataFrame:
@@ -10845,7 +10887,8 @@ def compute_ff_factor_returns(
         form every period. SMB3 is the
         B/M sort's size spread and SMB5 averages the size spreads of the June sorts.
     Steps:
-        1) Broadcast the June assignments to the rows of the following July-June.
+        1) Broadcast the June assignments to the rows of the following July-June,
+           up to the stock's exit month (compute_ff_june_exits).
         2) One leg per sort (compute_ff_portfolio_returns).
         3) Full join on (excntry, date): a country-date can pass the minimum-stock
            rules for UMD but not for FF3/FF5. Then the spreads.
@@ -10853,14 +10896,19 @@ def compute_ff_factor_returns(
         [excntry, date, smb_ff3, smb_ff5, hml_ff, rmw_ff, cma_ff, umd_ff].
     """
     year = pl.col("date").dt.year()
-    held = return_data.with_columns(
-        port_year=pl.when(pl.col("date").dt.month() >= 7).then(year).otherwise(year - 1)
-    ).join(
-        june_assignments.select(
-            "excntry", "id", *[f"{s}_port" for s in FF_JUNE_SORTS], port_year=year
-        ),
-        on=["excntry", "id", "port_year"],
-        how="inner",
+    held = (
+        return_data.with_columns(
+            port_year=pl.when(pl.col("date").dt.month() >= 7).then(year).otherwise(year - 1)
+        )
+        .join(
+            june_assignments.select(
+                "excntry", "id", *[f"{s}_port" for s in FF_JUNE_SORTS], port_year=year
+            ),
+            on=["excntry", "id", "port_year"],
+            how="inner",
+        )
+        .join(june_exits, on=["excntry", "id", "port_year"], how="left")
+        .filter(pl.col("exit_eom").is_null() | (pl.col("date").dt.month_end() < pl.col("exit_eom")))
     )
     legs = [compute_ff_portfolio_returns(held, s, min_stocks_pf) for s in FF_JUNE_SORTS] + [
         compute_ff_portfolio_returns(momentum_assignments, "mom", min_stocks_pf)
@@ -10904,7 +10952,8 @@ def gen_ff_data(
         documentation/ff_factors.md.
     Steps:
         1) Portfolio assignments: June sorts on the monthly data
-           (build_ff_june_assignments); momentum sorts on the monthly and on the
+           (build_ff_june_assignments), with each stock's exit month
+           (compute_ff_june_exits); momentum sorts on the monthly and on the
            daily data (build_ff_momentum_assignments).
         2) Monthly factor returns from the monthly return data.
         3) Daily factor returns from the daily return data, with the same June
@@ -10917,6 +10966,7 @@ def gen_ff_data(
     monthly_panel = build_ff_firm_panel(paths, "monthly")
     monthly_return_data = add_ff_buy_and_hold_weights(monthly_panel, "monthly")
     june_assignments = build_ff_june_assignments(paths, monthly_panel, monthly_return_data)
+    june_exits = compute_ff_june_exits(monthly_return_data)
     monthly_momentum_assignments = build_ff_momentum_assignments(
         monthly_panel, monthly_return_data, "monthly"
     )
@@ -10932,6 +10982,7 @@ def gen_ff_data(
     compute_ff_factor_returns(
         monthly_return_data,
         june_assignments,
+        june_exits,
         monthly_momentum_assignments,
         FACTOR_MIN_STOCKS_PF,
     ).rename({"date": "eom"}).write_parquet(monthly_factors_path)
@@ -10940,6 +10991,7 @@ def gen_ff_data(
     compute_ff_factor_returns(
         daily_return_data,
         june_assignments,
+        june_exits,
         daily_momentum_assignments,
         FACTOR_MIN_STOCKS_PF,
     ).write_parquet(daily_factors_path)

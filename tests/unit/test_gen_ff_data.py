@@ -10,7 +10,8 @@ Covers:
   - add_ff_buy_and_hold_weights (buy-and-hold weights, gap-spanning returns, null-ME rows kept)
   - assign_ff_portfolios
   - compute_ff_portfolio_returns
-  - compute_ff_factor_returns (July-June broadcast, FF3/FF5/UMD spreads)
+  - compute_ff_june_exits (first month without a monthly return, out until June)
+  - compute_ff_factor_returns (July-June broadcast, exits, FF3/FF5/UMD spreads)
   - compute_ff_momentum_signal (monthly and daily)
 """
 
@@ -30,6 +31,7 @@ from jkp.data.aux_functions import (
     compute_ff_annual_characteristics,
     compute_ff_breakpoints,
     compute_ff_factor_returns,
+    compute_ff_june_exits,
     compute_ff_momentum_signal,
     compute_ff_portfolio_returns,
     ff_sort_definitions,
@@ -1407,6 +1409,8 @@ def _full_annual(bm: bool = True) -> list[tuple]:
 
 
 _FULL_MOM = [(0.01, "SL"), (0.01, "SH"), (0.01, "BL"), (0.01, "BH")]
+_EXIT_SCHEMA = {"excntry": pl.Utf8, "id": pl.Int64, "port_year": pl.Int32, "exit_eom": pl.Date}
+_NO_EXITS = pl.DataFrame(schema=_EXIT_SCHEMA)
 
 
 def _returns(
@@ -1415,6 +1419,7 @@ def _returns(
     excntry: str = US_EXCNTRY,
     min_stocks_pf: int = 1,
     d: date = date(2020, 7, 31),
+    exits: pl.DataFrame = _NO_EXITS,
 ) -> pl.DataFrame:
     """compute_ff_factor_returns on stocks held July-June from the June 2020 memberships.
 
@@ -1452,7 +1457,7 @@ def _returns(
             "mom_port": [m[1] for m in mom],
         }
     )
-    return compute_ff_factor_returns(rows, members, mom_frame, min_stocks_pf)
+    return compute_ff_factor_returns(rows, members, exits, mom_frame, min_stocks_pf)
 
 
 class TestComputeFFFactorReturns:
@@ -1563,7 +1568,7 @@ class TestComputeFFFactorReturns:
                 {1: "SL", 2: "SH", 3: "BL", 4: "BH"}, return_dtype=pl.Utf8
             )
         )
-        out = compute_ff_factor_returns(rows, members, mom, 1)
+        out = compute_ff_factor_returns(rows, members, _NO_EXITS, mom, 1)
         assert out["date"].to_list() == sorted(out["date"].to_list())
         hml = dict(out.select("date", "hml_ff").iter_rows())
         # 2020 memberships: (0.2+0.4)/2 - (0.1+0.3)/2 = 0.1; 2021 memberships: -0.1
@@ -1587,6 +1592,115 @@ class TestComputeFFFactorReturns:
         """The US is gated like every country: 1 stock per bucket gives null umd_ff."""
         result = _returns(_full_annual(), min_stocks_pf=FACTOR_MIN_STOCKS_PF)
         assert result["umd_ff"][0] is None
+
+    def test_exited_stock_leaves_june_legs_only(self):
+        """A stock whose exit month has come is out of its June legs; UMD is untouched.
+        Stock 2 is the only B/M SH stock, so HML is null; RMW and UMD still form."""
+        exits = pl.DataFrame(
+            {
+                "excntry": [US_EXCNTRY],
+                "id": [2],
+                "port_year": [2020],
+                "exit_eom": [date(2020, 7, 31)],
+            },
+            schema=_EXIT_SCHEMA,
+        )
+        result = _returns(_full_annual(), exits=exits)
+        assert result["hml_ff"][0] is None
+        assert result["rmw_ff"][0] is not None
+        assert result["umd_ff"][0] is not None
+
+    def test_stock_held_before_exit_month(self):
+        """An exit in August leaves July untouched."""
+        exits = pl.DataFrame(
+            {
+                "excntry": [US_EXCNTRY],
+                "id": [2],
+                "port_year": [2020],
+                "exit_eom": [date(2020, 8, 31)],
+            },
+            schema=_EXIT_SCHEMA,
+        )
+        assert _returns(_full_annual(), exits=exits)["hml_ff"][0] is not None
+
+
+# =============================================================================
+# TestComputeFFJuneExits
+# =============================================================================
+
+
+def _exits(rows: list[tuple]) -> dict[tuple[int, int], date]:
+    """compute_ff_june_exits on (id, date, ret, w) rows of one country ->
+    {(id, port_year): exit_eom}."""
+    df = pl.DataFrame(
+        [(US_EXCNTRY, *r) for r in rows],
+        schema={
+            "excntry": pl.Utf8,
+            "id": pl.Int64,
+            "date": pl.Date,
+            "ret": pl.Float64,
+            "w": pl.Float64,
+        },
+        orient="row",
+    )
+    out = compute_ff_june_exits(df)
+    return {(r["id"], r["port_year"]): r["exit_eom"] for r in out.iter_rows(named=True)}
+
+
+def _months(start: date, n: int) -> list[date]:
+    """n month-ends from start's month."""
+    out, y, m = [], start.year, start.month
+    for _ in range(n):
+        out.append(date(y + m // 12, m % 12 + 1, 1) - timedelta(days=1))
+        y, m = y + m // 12, m % 12 + 1
+    return out
+
+
+class TestComputeFFJuneExits:
+    """Tests for compute_ff_june_exits()."""
+
+    def test_no_gap_no_exit(self):
+        """A stock with a return and a weight every month never exits."""
+        assert _exits([(1, d, 0.01, 1.0) for d in _months(date(2020, 6, 30), 13)]) == {}
+
+    def test_null_return_exits_that_month(self):
+        """A null return in August 2020: out from August to June 2021."""
+        rows = [(1, d, 0.01, 1.0) for d in _months(date(2020, 6, 30), 13)]
+        rows[2] = (1, rows[2][1], None, 1.0)
+        assert _exits(rows) == {(1, 2020): date(2020, 8, 31)}
+
+    def test_null_weight_exits_that_month(self):
+        """No weight in July (no ME in June): out from July."""
+        rows = [(1, d, 0.01, 1.0) for d in _months(date(2020, 6, 30), 13)]
+        rows[1] = (1, rows[1][1], 0.01, None)
+        assert _exits(rows) == {(1, 2020): date(2020, 7, 31)}
+
+    def test_missing_rows_exit_the_month_after_the_last_row(self):
+        """No rows in August and September: out from August, not from October when it
+        is back; stock 2 keeps every country month."""
+        full = _months(date(2020, 6, 30), 13)
+        rows = [(1, d, 0.01, 1.0) for d in full if d.month not in (8, 9)]
+        rows += [(2, d, 0.01, 1.0) for d in full]
+        assert _exits(rows) == {(1, 2020): date(2020, 8, 31)}
+
+    def test_country_wide_missing_month_is_no_exit(self):
+        """No stock in the country has an August row: not a missing month."""
+        full = [d for d in _months(date(2020, 6, 30), 13) if d.month != 8]
+        assert _exits([(i, d, 0.01, 1.0) for i in (1, 2) for d in full]) == {}
+
+    def test_gap_from_the_previous_year_exits_in_july(self):
+        """Last row in April, back in September: the year from July 2020 starts out of
+        the portfolios, so the exit is July, not May."""
+        full = _months(date(2020, 3, 31), 16)
+        rows = [(1, d, 0.01, 1.0) for d in full if not date(2020, 5, 1) <= d <= date(2020, 8, 31)]
+        rows += [(2, d, 0.01, 1.0) for d in full]
+        assert _exits(rows) == {(1, 2020): date(2020, 7, 31)}
+
+    def test_exit_lasts_until_june(self):
+        """An exit in August 2020 doesn't carry into the year from July 2021."""
+        rows = [(1, d, 0.01, 1.0) for d in _months(date(2020, 6, 30), 25)]
+        rows[2] = (1, rows[2][1], None, 1.0)
+        assert _exits(rows) == {(1, 2020): date(2020, 8, 31)}
 
 
 # =============================================================================
