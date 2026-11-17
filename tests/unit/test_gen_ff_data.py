@@ -833,6 +833,22 @@ class TestLoadFFUniverse:
         assert w_cls.null_count() == 1
         assert w_cls.drop_nulls().to_list() == [10.0]
 
+    def test_us_class_weight_kept_after_months_off_exchange(self, test_paths):
+        """Class 1 is off N/A/Q in April and May but in CRSP: back in June, its weight
+        is its May ME."""
+        months = [date(2020, 3, 31), date(2020, 4, 30), date(2020, 5, 31), date(2020, 6, 30)]
+        _write_raw_msf(test_paths, [(1, d, "Y") for d in months])
+        _write_world_msf(
+            test_paths,
+            [
+                {"id": 1, "eom": d, "primaryexch": x, "me": me}
+                for d, x, me in zip(months, "NXXN", (30.0, 31.0, 32.0, 33.0), strict=True)
+            ],
+        )
+        out = load_ff_universe(test_paths, "monthly").collect()
+        assert out["date"].to_list() == [months[0], months[3]]
+        assert out.filter(pl.col("date") == months[3])["w_cls"].to_list() == [32.0]
+
     def test_us_bp_pool_is_nyse_only(self, test_paths):
         out = self._monthly(test_paths)
         assert [out[i]["bp_pool"] for i in (1, 2, 3)] == [True, False, True]
@@ -1716,13 +1732,13 @@ class TestComputeFFJuneExits:
         full = [d for d in _months(date(2020, 6, 30), 13) if d.month != 8]
         assert _exits([(i, d, 0.01, 1.0) for i in (1, 2) for d in full]) == {}
 
-    def test_gap_from_the_previous_year_exits_in_july(self):
-        """Last row in April, back in September: the year from July 2020 starts out of
-        the portfolios, so the exit is July, not May."""
-        full = _months(date(2020, 3, 31), 16)
-        rows = [(1, d, 0.01, 1.0) for d in full if not date(2020, 5, 1) <= d <= date(2020, 8, 31)]
+    def test_gap_exits_in_the_year_it_starts(self):
+        """Last row in March 2021, back in July 2021: out from April in the year from
+        July 2020; the year from July 2021 has no exit."""
+        full = _months(date(2020, 6, 30), 14)
+        rows = [(1, d, 0.01, 1.0) for d in full if not date(2021, 4, 1) <= d <= date(2021, 6, 30)]
         rows += [(2, d, 0.01, 1.0) for d in full]
-        assert _exits(rows) == {(1, 2020): date(2020, 7, 31)}
+        assert _exits(rows) == {(1, 2020): date(2021, 4, 30)}
 
     def test_exit_lasts_until_june(self):
         """An exit in August 2020 doesn't carry into the year from July 2021."""

@@ -52,7 +52,6 @@ ID_RANGES = {
     "world_id_row_base": 9_000_000_000,
 }
 
-COUNTRIES = ["USA", "CAN", "GBR", "JPN", "DEU", "AUS"]
 CURRENCY = {"USA": "USD", "CAN": "CAD", "GBR": "GBP", "JPN": "JPY", "DEU": "EUR", "AUS": "AUD"}
 
 # Firm counts chosen so the generated composition matches the real 2000-2015 tables: CRSP-sourced
@@ -211,7 +210,7 @@ def build_firm_registry(rng: np.random.Generator) -> pl.DataFrame:
     """
     rows: list[dict] = []
 
-    permno_lo, permno_hi = ID_RANGES["permno"]
+    permno_lo, _ = ID_RANGES["permno"]
     permco_lo, _ = ID_RANGES["permco"]
     gv_us_lo, _ = ID_RANGES["gvkey_us"]
     gv_row_lo, _ = ID_RANGES["gvkey_row"]
@@ -981,13 +980,14 @@ def gen_achars_world(acc_std_ann: pl.DataFrame) -> pl.DataFrame:
     return (
         acc_std_ann.sort(["gvkey", "curcd", "datadate"])
         .with_columns(n=pl.col("gvkey").cum_count().over(["gvkey", "curcd"]))
+        .with_columns(at_gr1=pl.when((pl.col("n") > 12) & (lag > 0)).then(pl.col("at_x") / lag - 1))
         .filter(pl.col("source").is_not_null())
         .select(
             "source",
             "gvkey",
             "datadate",
             public_date=pl.col("datadate").dt.offset_by("4mo").dt.month_end(),
-            at_gr1=pl.when((pl.col("n") > 12) & (lag > 0)).then(pl.col("at_x") / lag - 1),
+            at_gr1=pl.col("at_gr1"),
         )
     )
 

@@ -7252,7 +7252,7 @@ def country_breakpoints(
     group_keys: list[str],
     pool: pl.Expr,
     min_stocks: int,
-) -> pl.DataFrame:
+) -> pl.DataFrame | pl.LazyFrame:
     """
     Description:
         Per-`group_keys` QUANTILE_DISC breakpoints over the rows selected by `pool`;
@@ -9915,6 +9915,12 @@ def _ff_max_gap(freq: Literal["monthly", "daily"]) -> int:
     return 1 if freq == "monthly" else FF_RET_MAX_GAP_DAYS
 
 
+def _ff_port_year(date: str = "date") -> pl.Expr:
+    """The July-June year a date falls in, named by the year of its July."""
+    year = pl.col(date).dt.year()
+    return pl.when(pl.col(date).dt.month() >= 7).then(year).otherwise(year - 1)
+
+
 def _add_ff_contiguous(
     lf: pl.LazyFrame, freq: Literal["monthly", "daily"], by: list[str]
 ) -> pl.LazyFrame:
@@ -9955,8 +9961,8 @@ def load_ff_universe(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl.
           carry, usincflg and, daily, primaryexch and permco. The unit (id) is the
           company, the CRSP permco, as it is (Fama and French split some permcos
           by hand: group stocks, tracking stocks, relistings). w_cls, the class's ME at t-1
-          (null after a gap in the class's rows, _add_ff_contiguous), weights the
-          classes' returns. Monthly rows carry JKP's me_company, the ME of all the
+          from its CRSP common-share rows, so a class back on N/A/Q keeps it (null
+          after a gap in CRSP, _add_ff_contiguous), weights the classes' returns. Monthly rows carry JKP's me_company, the ME of all the
           company's classes; daily rows have none. NYSE-listed classes form the
           breakpoint pool. ret_lag_dif is the world file's, as in every country: JKP
           sets it to 1 on every CRSP row, so the gap rule never nulls a US return.
@@ -10022,11 +10028,12 @@ def load_ff_universe(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl.
         )
     us = (
         us.filter((pl.col("source_crsp") == 1) & (pl.col("common") == 1))
+        .sort("permno", "date")
+        .pipe(_add_ff_contiguous, freq, ["permno"])
+        .with_columns(w_cls=pl.when("contiguous").then(pl.col("me").shift(1).over("permno")))
         .join(raw.filter(pl.col("usincflg") == "Y"), on=["permno", "date"], how="inner")
         .filter(pl.col("primaryexch").is_in(["N", "A", "Q"]))
         .with_columns(id=pl.col("permco").cast(pl.Int64))
-        .sort("permno", "date")
-        .pipe(_add_ff_contiguous, freq, ["permno"])
         .select(
             "excntry",
             "id",
@@ -10036,7 +10043,7 @@ def load_ff_universe(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl.
             "me_company",
             "prc",
             "ret_lag_dif",
-            w_cls=pl.when("contiguous").then(pl.col("me").shift(1).over("permno")),
+            "w_cls",
             bp_pool=pl.col("primaryexch") == "N",
         )
     )
@@ -10137,14 +10144,13 @@ def add_ff_buy_and_hold_weights(
     """
     k = ["excntry", "id"]
     yp = [*k, "period"]
-    year = pl.col("date").dt.year()
     return (
         panel.lazy()
         .with_columns(ret=pl.when(pl.col("ret_lag_dif") <= _ff_max_gap(freq)).then(pl.col("ret")))
         .sort([*k, "date"])
         .pipe(_add_ff_contiguous, freq, k)
         .with_columns(
-            period=pl.when(pl.col("date").dt.month() >= 7).then(year).otherwise(year - 1),
+            period=_ff_port_year(),
             lag_me=pl.col("me").shift(1).over(k),
         )
         .with_columns(
@@ -10174,8 +10180,8 @@ def load_jkp_annual_accounting(paths: DataPaths) -> pl.DataFrame:
         interest: Fama and French (2015) divide by book equity alone, and French's
         data library now adds minority interest; we follow the data library.
     Steps:
-        1) acc_std_ann report rows: be_x and op = ope_x / (be_x + MI) when
-           be_x > 0, with MI = coalesce(mibt, mib + mibn) and missing parts 0.
+        1) acc_std_ann report rows: be_x and op = ope_x / (be_x + MI), null when
+           be_x is (BE <= 0), with MI = coalesce(mibt, mib + mibn) and missing parts 0.
            Since 2009 Compustat splits minority interest into redeemable (mib) and
            non-redeemable (mibn) parts, with mibt = mib + mibn; before 2009 mib is
            the total.
@@ -10201,9 +10207,7 @@ def load_jkp_annual_accounting(paths: DataPaths) -> pl.DataFrame:
             "datadate",
             "be_x",
             "seq_x",
-            op=pl.when(pl.col("be_x") > 0)
-            .then(safe_div(pl.col("ope_x"), pl.col("be_x") + mi, "op"))
-            .otherwise(None),
+            op=safe_div(pl.col("ope_x"), pl.col("be_x") + mi, "op"),
         )
         .join(at_gr1, on=["gvkey", "datadate"], how="left")
         .collect()
@@ -10389,7 +10393,7 @@ def add_dff_book_equity(comp_ccm: pl.DataFrame, dff_path: Path) -> pl.DataFrame:
            year + 1) pairs DFF be(t) with December t-1 ME.
         2) Compustat records with a null BE take the DFF BE on (id, year).
         3) DFF rows with no Compustat record on (id, year) are appended, with null gvkey,
-           op and inv.
+           datadate, op and inv.
     Output:
         Eager [gvkey, id, year, datadate, be, op, inv].
     """
@@ -10402,9 +10406,7 @@ def add_dff_book_equity(comp_ccm: pl.DataFrame, dff_path: Path) -> pl.DataFrame:
         # excluded by the beme > 0 eligibility rule.
         .filter(pl.col("be").is_not_null() & (pl.col("be") >= 0))
         .with_columns(
-            # Placeholder datadate: June 30 of the DFF year t, set before the year
-            # shift. No later step reads it for DFF rows.
-            datadate=pl.date(pl.col("year"), 6, 30),
+            datadate=pl.lit(None, dtype=pl.Date),
             # DFF be(t) becomes year t-1, so port_year = year + 1 = t pairs it
             # with December t-1 ME.
             year=pl.col("year") - 1,
@@ -10505,14 +10507,20 @@ def compute_ff_annual_characteristics(paths: DataPaths, panel: pl.DataFrame) -> 
 
 
 def ff_sort_definitions() -> dict[str, tuple[str, list[str], pl.Expr]]:
-    """The four FF sorts: signal column, portfolio labels from low to high signal,
-    and eligibility. B/M, OP and INV form in June; momentum forms every period.
-    - B/M: positive beme and June ME; beme needs December t-1 ME, which only a unit
-      in the FF universe that December has.
-    - OP and INV: positive June and December t-1 ME (French requires both for all
-      four FF5 sorts); OP also needs positive BE.
-    - Momentum: the 2-12 signal and positive ME (ME at t-1 in the momentum frame,
-      compute_ff_momentum_signal)."""
+    """
+    Description:
+        The four FF sorts. B/M, OP and INV form in June; momentum forms every period.
+        - B/M: positive beme and June ME; beme needs December t-1 ME, which only a
+          unit in the FF universe that December has.
+        - OP and INV: positive June and December t-1 ME (French requires both for all
+          four FF5 sorts); OP also needs positive BE.
+        - Momentum: the 2-12 signal and positive ME (ME at t-1 in the momentum frame,
+          compute_ff_momentum_signal).
+    Steps:
+        1) One entry per sort.
+    Output:
+        {sort: (signal column, portfolio labels from low to high signal, eligibility)}.
+    """
     me_ok = pl.col("me") > 0
     dec_me_ok = (pl.col("dec_me") > 0).fill_null(False)
     return {
@@ -10861,32 +10869,28 @@ def compute_ff_june_exits(monthly_return_data: pl.DataFrame) -> pl.DataFrame:
         weight. It stays out until the next June, in the monthly and daily portfolios.
         A month in which the whole country has no data is not a missing month.
     Steps:
-        1) Per stock, flag rows with a null ret or w, and rows whose previous row
-           is not the previous month (_add_ff_contiguous).
-        2) exit_eom per stock and July-June year: the earliest flagged month; for a
-           missing month, the month after the previous row, at the earliest July.
+        1) Per stock, the first missing month of each flagged row: its own month for a
+           null ret or w, the month after the previous row when the previous row is
+           not the previous month (_add_ff_contiguous).
+        2) exit_eom per stock and July-June year of that month: the earliest. A stock
+           held from June has a June row, so its gaps start in July or later.
     Output:
         Eager [excntry, id, port_year, exit_eom].
     """
     k = ["excntry", "id"]
-    year = pl.col("date").dt.year()
     missed = ~pl.col("contiguous").fill_null(True)
-    port_year = pl.when(pl.col("date").dt.month() >= 7).then(year).otherwise(year - 1)
     return (
         monthly_return_data.lazy()
         .sort([*k, "date"])
         .pipe(_add_ff_contiguous, "monthly", k)
         .with_columns(
-            port_year=port_year,
             exit_eom=pl.when(missed)
             .then(pl.col("date").shift(1).over(k).dt.offset_by("1mo").dt.month_end())
-            .otherwise(pl.col("date")),
-            out=missed | pl.col("ret").is_null() | pl.col("w").is_null(),
+            .otherwise(pl.col("date"))
         )
-        .filter("out")
-        .group_by([*k, "port_year"])
+        .filter(missed | pl.col("ret").is_null() | pl.col("w").is_null())
+        .group_by(*k, port_year=_ff_port_year("exit_eom"))
         .agg(pl.col("exit_eom").min())
-        .with_columns(exit_eom=pl.max_horizontal("exit_eom", pl.date(pl.col("port_year"), 7, 31)))
         .collect()
     )
 
@@ -10914,14 +10918,14 @@ def compute_ff_factor_returns(
     Output:
         [excntry, date, smb_ff3, smb_ff5, hml_ff, rmw_ff, cma_ff, umd_ff].
     """
-    year = pl.col("date").dt.year()
     held = (
-        return_data.with_columns(
-            port_year=pl.when(pl.col("date").dt.month() >= 7).then(year).otherwise(year - 1)
-        )
+        return_data.with_columns(port_year=_ff_port_year())
         .join(
             june_assignments.select(
-                "excntry", "id", *[f"{s}_port" for s in FF_JUNE_SORTS], port_year=year
+                "excntry",
+                "id",
+                *[f"{s}_port" for s in FF_JUNE_SORTS],
+                port_year=pl.col("date").dt.year(),
             ),
             on=["excntry", "id", "port_year"],
             how="inner",

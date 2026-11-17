@@ -71,8 +71,7 @@ class TestDffSplice:
 
         dff_rows = out.filter(pl.col("id") == 20002)
         assert dff_rows["year"].to_list() == [1929]
-        # Synthetic datadate stamps the formation June (of DFF year t), not t-1.
-        assert dff_rows["datadate"].to_list() == [date(1930, 6, 30)]
+        assert dff_rows["datadate"].to_list() == [None]
 
     def test_collision_keeps_compustat_be_and_fields(self, test_paths):
         # Compustat fiscal 2019 row (year=2019) vs DFF be(2020) (-> year=2019),
