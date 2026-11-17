@@ -37,6 +37,7 @@ from .compustat_correction import (
 from .config import (
     COLLECT_CHUNK_SIZE,
     CORRECTION_SPILL_COMPRESSION,
+    DHS_IR_RET_BEG,
     END_DATE,
     FF_CCM_BACKDATE_FROM,
     FF_CCM_BACKDATE_MAX_YEARS,
@@ -16740,20 +16741,34 @@ def _dhs_load_row_panel(interim_dir: Path, beg: int, end: int) -> pl.DataFrame:
     )
 
 
-def _dhs_jkp_june(interim_dir: Path, beg: int, end: int, rows: pl.Expr) -> pl.DataFrame:
+def _dhs_jkp_june(
+    interim_dir: Path, beg: int, end: int, rows: pl.Expr, ir_ret_beg: int | None
+) -> pl.DataFrame:
     """NS = log(1 + chcsho_12m) and IR = -eqnpo_60m at each June(t) from jkp's
     world_data_prelim, for the rows selected by `rows` (see _dhs_row_chars).
+    IR also requires a valid return in each of the 60 months ending at June(t)
+    (DHS's full-window rule; eqnpo_60m alone checks only the window endpoints).
+    A valid return is non-null with ret_lag_dif == 1, so 60 valid rows in a row
+    are 60 consecutive calendar months; with `ir_ret_beg` set (DHS_IR_RET_BEG),
+    returns before that year don't count, so the first IR is June(ir_ret_beg+5).
     Output: [id, gvkey, datadate, YEAR, NS, IR] with YEAR = t (not relabelled)."""
     ns_expr = pl.when((1 + pl.col("chcsho_12m")) > 0).then((1 + pl.col("chcsho_12m")).log())
+    valid = pl.col("ret").is_not_null() & (pl.col("ret_lag_dif") == 1)
+    if ir_ret_beg is not None:
+        valid = valid & (pl.col("eom").dt.year() >= ir_ret_beg)
+    valid_ret = valid.cast(pl.Int32)
+    n_valid = valid_ret.rolling_sum(window_size=60, min_samples=60).over("id")
     return (
         pl.scan_parquet(interim_dir / "world_data_prelim.parquet")
-        .filter(
-            rows & pl.col("eom").dt.year().is_between(beg, end) & (pl.col("eom").dt.month() == 6)
-        )
-        .select("id", "gvkey", "eom", "chcsho_12m", "eqnpo_60m")
+        .filter(rows & (pl.col("eom").dt.year() <= end))
+        .select("id", "gvkey", "eom", "chcsho_12m", "eqnpo_60m", "ret", "ret_lag_dif")
+        .sort(["id", "eom"])
+        # the window count needs the full history, so it runs before the June filter
+        .with_columns(n_valid=n_valid)
+        .filter((pl.col("eom").dt.year() >= beg) & (pl.col("eom").dt.month() == 6))
         .with_columns(
             NS=ns_expr.otherwise(None),
-            IR=-pl.col("eqnpo_60m"),
+            IR=pl.when(pl.col("n_valid") == 60).then(-pl.col("eqnpo_60m")),
             YEAR=pl.col("eom").dt.year().cast(pl.Int32),
             datadate=pl.col("eom"),
         )
@@ -16762,16 +16777,34 @@ def _dhs_jkp_june(interim_dir: Path, beg: int, end: int, rows: pl.Expr) -> pl.Da
     )
 
 
-def _dhs_row_chars(interim_dir: Path, beg: int, end: int) -> pl.DataFrame:
+def _dhs_be_fy(interim_dir: Path) -> pl.DataFrame:
+    """JKP book equity per (gvkey, calendar year of the fiscal year end): be_x from
+    acc_std_ann (USD, positive-only by construction), latest datadate in the year.
+    Output: [gvkey, fy, lagBE]; ROW joins it on fy = YEAR - 1, the US path on
+    fy = YEAR before lagging over the permno."""
+    return (
+        pl.scan_parquet(interim_dir / "acc_std_ann.parquet")
+        .select("gvkey", "datadate", "be_x")
+        .filter(pl.col("gvkey").is_not_null() & pl.col("be_x").is_not_null())
+        .with_columns(fy=pl.col("datadate").dt.year().cast(pl.Int32))
+        .sort(["gvkey", "fy", "datadate", "be_x"])
+        .unique(subset=["gvkey", "fy"], keep="last", maintain_order=True)
+        .select("gvkey", "fy", pl.col("be_x").alias("lagBE"))
+        .collect()
+    )
+
+
+def _dhs_row_chars(
+    interim_dir: Path, beg: int, end: int, ir_ret_beg: int | None = DHS_IR_RET_BEG
+) -> pl.DataFrame:
     """ROW (ex-US) annual FIN characteristics from jkp's world_data, in the US
     annual_chars schema [id, datadate, YEAR, lagBE, NS, IR] (excntry flows in later
     via the id join to the ROW panel). Computed at each June(t) per id:
         NS = log(1 + chcsho_12m) = log(adj_shares_June(t) / adj_shares_June(t-1))
              (reuses jkp's chcsho_12m 12-month share-change characteristic)
         IR = -eqnpo_60m = log(me_June(t) / me_June(t-5)) - log(60-month gross cumret)
-             (reuses jkp's eqnpo_60m 60-month equity-net-payout characteristic;
-             its endpoint-only ri/me guards give a coverage superset of the prior
-             in-repo 60-of-60 contiguous-window computation)
+             (reuses jkp's eqnpo_60m 60-month equity-net-payout characteristic,
+             kept only with a valid return in all 60 months, as in the US)
         lagBE = be_x for the fiscal year ending in calendar YEAR-1 (JKP standardized
                 USD book equity, positive-only, joined by gvkey; the same prior-
                 fiscal-year BE-level guard as the US branch)
@@ -16784,24 +16817,13 @@ def _dhs_row_chars(interim_dir: Path, beg: int, end: int) -> pl.DataFrame:
     # NS = log(adj_shares(t)/adj_shares(t-12)) = log(1 + chcsho_12m), sampled at the June
     # formation. Value-exact vs the prior direct computation on ROW (both use the same
     # Compustat-Global shares*adjfct); chcsho_12m carries its own 12-month/count guard.
-    june = _dhs_jkp_june(interim_dir, beg, end, pl.col("excntry") != US_EXCNTRY)
-    # lagBE = JKP standardized USD book equity (be_x, positive-only by
-    # construction) for the fiscal year ending in calendar YEAR-1, joined by
-    # gvkey after the YEAR relabel below — the same BE-level-of-prior-fiscal-
-    # year guard the US branch uses (its lagBE is BE(YEAR-1) on each row's
-    # YEAR), instead of a prior-June be_me ratio proxy. The statement is
-    # always public by the rebalance: datadate <= Dec(YEAR-1) and JKP's
-    # 4-month lag put it out by Apr(YEAR) < June(YEAR+1) (NS) / June(YEAR) (IR).
-    be_fy = (
-        pl.scan_parquet(interim_dir / "acc_std_ann.parquet")
-        .select("gvkey", "datadate", "be_x")
-        .filter(pl.col("gvkey").is_not_null() & pl.col("be_x").is_not_null())
-        .with_columns(fy=pl.col("datadate").dt.year().cast(pl.Int32))
-        .sort(["gvkey", "fy", "datadate", "be_x"])
-        .unique(subset=["gvkey", "fy"], keep="last", maintain_order=True)
-        .select("gvkey", "fy", pl.col("be_x").alias("lagBE"))
-        .collect()
-    )
+    june = _dhs_jkp_june(interim_dir, beg, end, pl.col("excntry") != US_EXCNTRY, ir_ret_beg)
+    # lagBE = be_x for the fiscal year ending in calendar YEAR-1, joined by gvkey
+    # after the YEAR relabel below (the same prior-fiscal-year guard as the US
+    # branch). The statement is always public by the rebalance: datadate <=
+    # Dec(YEAR-1) and JKP's 4-month lag put it out by Apr(YEAR) < June(YEAR+1)
+    # (NS) / June(YEAR) (IR).
+    be_fy = _dhs_be_fy(interim_dir)
     # split so fin_factor's offsets land both on the June(t) rebalance:
     #   IR-row at YEAR=t   (IR filter YEAR==cyear),  NS-row at YEAR=t-1 (NS filter YEAR+1==cyear)
     ir_rows = june.select("id", "gvkey", "datadate", "YEAR", "IR").with_columns(
@@ -16837,36 +16859,24 @@ def _dhs_ccm_link(comp: pl.LazyFrame, endfyr_col: str, raw_dir: Path) -> pl.Lazy
     )
 
 
-def _dhs_issuance_chars(msf: pl.DataFrame, raw_dir: Path, beg: int, end: int) -> pl.DataFrame:
+def _dhs_issuance_chars(
+    raw_dir: Path, interim_dir: Path, us_june: pl.DataFrame, beg: int, end: int
+) -> pl.DataFrame:
     """Annual Compustat characteristics (NS, lagBE, IR per fiscal year).
-    `msf` is the RAW unfiltered monthly file (IR is built
-    off it). Financials are screened later on the CRSP siccd, never on funda's
-    sich.
+    `us_june` is _dhs_jkp_june on the US CRSP rows (IR source). Financials are
+    screened later on the CRSP siccd, never on funda's sich.
 
     Steps:
         1) Scan comp_funda (industrial screen + fyear window), cast numerics to
            Float64, link to CRSP via CCM; keep LATEST datadate per (LPERMNO, YEAR).
-        2) NS = log(adjusted-shares ratio) with divide/nonpositive guards; BE via
-           the equity waterfall; lagged BE across a calendar gap.
-        3) IR = log(ME_June/ME_June_5yr_ago) - log(60-month gross cumret), on the
-           raw msf's June rows.
+        2) NS = log(adjusted-shares ratio) with divide/nonpositive guards.
+        3) lagBE = jkp be_x of the permno's previous fiscal-year row (any gvkey).
+        4) IR = -eqnpo_60m at June(YEAR) from jkp (60 valid returns required),
+           joined on (permno, YEAR).
 
     Output: one row per (LPERMNO, YEAR) with NS, lagBE, IR.
     """
-    funda_num = [
-        "at",
-        "csho",
-        "ajex",
-        "pstkrv",
-        "pstkl",
-        "pstk",
-        "seq",
-        "ceq",
-        "lt",
-        "txditc",
-        "txdb",
-        "itcb",
-    ]
+    funda_num = ["csho", "ajex"]
     funda = (
         pl.scan_parquet(raw_dir / "comp_funda.parquet")
         .filter(_compustat_na_filter())
@@ -16890,86 +16900,32 @@ def _dhs_issuance_chars(msf: pl.DataFrame, raw_dir: Path, beg: int, end: int) ->
     lag_adj = _lag(adj_csho)
     ratio = safe_div(adj_csho, lag_adj, "ratio")
 
-    # Book-equity waterfall; each component falls back through its alternatives.
-    # preferred: redemption value, else liquidating value, else par
-    preferred = pl.coalesce("pstkrv", "pstkl", "pstk")
-    # shareholders' equity: SEQ, else CEQ + preferred par (missing par -> 0,
-    # so CEQ-only firms don't fall out of the ladder), else AT - LT
-    shareholders_equity = (
-        pl.when(pl.col("seq").is_not_null())
-        .then(pl.col("seq"))
-        .when(pl.col("ceq").is_not_null())
-        .then(pl.col("ceq") + pl.col("pstk").fill_null(0.0))
-        .otherwise(pl.col("at") - pl.col("lt"))
-    )
-    # deferred taxes: TXDITC, else TXDB+ITCB (missing addend -> the other alone; both missing -> missing)
-    deferred_tax = (
-        pl.when(pl.col("txditc").is_not_null())
-        .then(pl.col("txditc"))
-        .when(pl.col("txdb").is_null())
-        .then(pl.col("itcb"))
-        .when(pl.col("itcb").is_null())
-        .then(pl.col("txdb"))
-        .otherwise(pl.col("txdb") + pl.col("itcb"))
-    )
-    # BE = equity + deferred_tax - preferred; missing deferred_tax/preferred -> 0, missing equity -> missing
-    be = shareholders_equity + deferred_tax.fill_null(0) - preferred.fill_null(0)
-
     chars = (
         linked.sort(["gvkey", "datadate"])  # gvkey order is the dedupe tie-break
         .with_columns(YEAR=pl.col("datadate").dt.year())  # calendar year of FY-end, NOT fyear
         # dedupe: keep LATEST datadate per (LPERMNO, YEAR)
         .sort(["LPERMNO", "YEAR", "datadate"])
         .unique(subset=["LPERMNO", "YEAR"], keep="last", maintain_order=True)
+        # be_x of each row's own fiscal year, lagged over the permno like NS, so a
+        # permno that moved to a new gvkey takes lagBE from its previous gvkey
+        .join(
+            _dhs_be_fy(interim_dir).rename({"lagBE": "be"}),
+            left_on=["gvkey", "YEAR"],
+            right_on=["gvkey", "fy"],
+            how="left",
+        )
         .sort(["LPERMNO", "YEAR"])
         .with_columns(
             NS=pl.when(ratio > 0).then(ratio.log()).otherwise(None),
-            lagBE=_lag(be),
+            lagBE=_lag(pl.col("be")),
         )
+        .drop("be")
     )
 
     # expose the firm key as the globally-unique `id` (== LPERMNO for this US
     # builder) so the concat-bound FIN path keys uniformly on id.
-    return chars.join(_dhs_us_ir(msf), on=["LPERMNO", "YEAR"], how="left").rename({"LPERMNO": "id"})
-
-
-def _dhs_us_ir(msf: pl.DataFrame) -> pl.DataFrame:
-    """US IR per (permno, June year) from the raw msf alone (no funda row needed):
-    IR = log(ME_June / ME_June_5yr_ago) - log(60-month gross cumret).
-    Output: [LPERMNO, YEAR, IR]."""
-    # IR = log_ME - log_cumret in ONE (permno,date)-sorted pass over raw msf:
-    #   log_ME     = log(ME_June / ME_June_5yr_ago), 5-yr positional June lag; ME/0 -> null
-    #   log_cumret = trailing-60-month sum of log1p(ret); nonpositive gross or any missing
-    #                window month -> invalidated. One sort serves window + shift(5); no self-join.
-    me_june = pl.when(pl.col("cap") > 0).then(pl.col("cap") / 1000).otherwise(None)  # $MM
-    log1p = pl.when((1 + pl.col("ret")) > 0).then((1 + pl.col("ret")).log()).otherwise(None)
-    n_valid = (
-        log1p.is_not_null()
-        .cast(pl.Int32)
-        .rolling_sum(window_size=60, min_samples=60)
-        .over("permno")
-    )
-    me_lag5 = pl.col("ME_June").shift(5).over("permno")
-    me_ratio = safe_div(pl.col("ME_June"), me_lag5, "me_ratio")
-    return (
-        msf.select("permno", "date", "cap", "ret")
-        .sort(["permno", "date"])
-        # ME_June + rolling sum need the full series, so compute before the June filter
-        .with_columns(
-            ME_June=me_june,
-            log_cumret=pl.when(n_valid == 60)
-            .then(log1p.rolling_sum(window_size=60, min_samples=60).over("permno"))
-            .otherwise(None),
-        )
-        .filter(pl.col("date").dt.month() == 6)
-        # the 5-year June lag is positional over the June rows, so it comes after the filter
-        .with_columns(log_ME=pl.when(me_ratio > 0).then(me_ratio.log()).otherwise(None))
-        .select(
-            pl.col("permno").alias("LPERMNO"),
-            pl.col("date").dt.year().alias("YEAR"),
-            (pl.col("log_ME") - pl.col("log_cumret")).alias("IR"),
-        )
-    )
+    us_ir = us_june.select(pl.col("id").cast(pl.Int64).alias("LPERMNO"), "YEAR", "IR")
+    return chars.join(us_ir, on=["LPERMNO", "YEAR"], how="left").rename({"LPERMNO": "id"})
 
 
 def _dhs_market_daily(interim_dir: Path) -> pl.LazyFrame:
@@ -17843,7 +17799,7 @@ def _dhs_chars_unscreened(
     - ns: annual_chars NS (US funda via CCM, ROW jkp) on the July-June year after
       its fiscal year; US Compustat-sourced rows use the jkp June NS (us_comp_june).
       NS = 0 is published.
-    - ir: US CRSP IR from msf alone (us_ir), ROW from annual_chars, US
+    - ir: US CRSP IR from the jkp June (us_ir), ROW from annual_chars, US
       Compustat-sourced rows from us_comp_june; on the July-June year of its June.
     - abr: lagged Abr aligned to the unscreened month grid (_dhs_align_abr on abr
       from _dhs_abr_unscreened).
@@ -17876,7 +17832,7 @@ def _dhs_chars_unscreened(
         ]
     )
     us_ir_keyed = us_ir.filter(pl.col("IR").is_not_null()).select(
-        pl.col("LPERMNO").cast(pl.Int64).alias("id"), cyear=year, ir=pl.col("IR")
+        pl.col("id").cast(pl.Int64), cyear=year, ir=pl.col("IR")
     )
     ir = pl.concat(
         [
@@ -17921,6 +17877,7 @@ def gen_dhs_data(
     end: int | None = None,
     beg_q: int = 1971,
     end_q: int | None = None,
+    ir_ret_beg: int | None = DHS_IR_RET_BEG,
 ) -> None:
     """Build the DHS FIN + PEAD factors (US + international) from the jkp data
     directory (no downloads).
@@ -17929,11 +17886,14 @@ def gen_dhs_data(
     behavioral factors', Review of Financial Studies 33(4), pp. 1673-1736.
 
     Reads
-    raw CRSP/Compustat from `paths.raw_tables_dir` and market_returns_daily from
-    `paths.interim_dir`. [beg, end] bound the monthly/annual sample; [beg_q, end_q]
-    the quarterly announcement sample (coverage starts ~1971). end/end_q default
-    to config.END_DATE's year so the DHS sample advances with the pipeline
-    vintage instead of truncating at a hardcoded year.
+    raw CRSP/Compustat from `paths.raw_tables_dir` and market_returns_daily,
+    world_data_prelim (US IR) and acc_std_ann (US lagBE) from
+    `paths.interim_dir`. [beg, end] bound the monthly/annual sample; [beg_q,
+    end_q] the quarterly announcement sample (coverage starts ~1971). end/end_q
+    default to config.END_DATE's year so the DHS sample advances with the pipeline
+    vintage instead of truncating at a hardcoded year. ir_ret_beg
+    (DHS_IR_RET_BEG) is the first year of returns the IR 60-month window uses;
+    None uses all history, 1966 replicates the authors' SAS (IR from June 1971).
 
     Steps:
         1) Monthly return panel from crsp_msf_v2 (read once).
@@ -17957,10 +17917,15 @@ def gen_dhs_data(
     end = END_DATE.year if end is None else end
     end_q = END_DATE.year if end_q is None else end_q
 
-    # collect once: msf is reused by the monthly panel + the IR build (has a dedupe)
-    msf = _dhs_load_msf(raw_dir, beg, end).collect()
-    monthly_panel = _dhs_monthly_panel(msf, beg, end)
-    annual_chars = _dhs_issuance_chars(msf, raw_dir, beg, end)
+    monthly_panel = _dhs_monthly_panel(_dhs_load_msf(raw_dir, beg, end).collect(), beg, end)
+    us_crsp_june = _dhs_jkp_june(
+        interim_dir,
+        beg,
+        end,
+        (pl.col("excntry") == US_EXCNTRY) & (pl.col("source_crsp") == 1),
+        ir_ret_beg,
+    )
+    annual_chars = _dhs_issuance_chars(raw_dir, interim_dir, us_crsp_june, beg, end)
     # FIN goes international: append the ROW panel + chars when the ROW inputs are present.
     # Read world_data_prelim (not the final world_data.parquet): gen_dhs_data runs inside
     # generate_factor_models, before merge_qmj_to_world_data writes world_data.parquet, so
@@ -17993,7 +17958,7 @@ def gen_dhs_data(
         annual_chars = pl.concat(
             [
                 annual_chars.select("id", "datadate", "YEAR", "lagBE", "NS", "IR"),
-                _dhs_row_chars(interim_dir, beg, end),
+                _dhs_row_chars(interim_dir, beg, end, ir_ret_beg),
             ],
             how="diagonal_relaxed",
         )
@@ -18038,13 +18003,14 @@ def gen_dhs_data(
             beg,
             end,
             (pl.col("excntry") == US_EXCNTRY) & (pl.col("source_crsp") == 0),
+            ir_ret_beg,
         )
         unscreened = _dhs_chars_unscreened(
             interim_dir,
             beg,
             end,
             annual_chars,
-            _dhs_us_ir(msf),
+            us_crsp_june,
             us_comp_june,
             _dhs_abr_unscreened(raw_dir, interim_dir, beg, end, beg_q, end_q),
         )

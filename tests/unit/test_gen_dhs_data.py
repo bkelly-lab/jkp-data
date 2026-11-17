@@ -1,8 +1,8 @@
 """
 Unit tests for DHS ROW helpers in aux_functions.py.
 
-Covers _dhs_row_chars: NS = log(1 + chcsho_12m), IR = -eqnpo_60m (both sampled
-at June rows), the YEAR relabel split (IR emitted at YEAR=t, NS at YEAR=t-1),
+Covers _dhs_row_chars: NS = log(1 + chcsho_12m), IR = -eqnpo_60m with 60 valid
+window returns (both sampled at June rows), the YEAR relabel split (IR emitted at YEAR=t, NS at YEAR=t-1),
 and the lagBE join (be_x of the fiscal year ending in calendar YEAR-1, latest
 statement per gvkey-fiscal-year). Also covers _dhs_ibes_announcements (ticker
 bridging via both security masters, SEDOL > CUSIP > ibtic link precedence,
@@ -24,6 +24,7 @@ from jkp.data.aux_functions import (
     _dhs_chars_unscreened,
     _dhs_ibes_announcements,
     _dhs_ibes_gvkey_link,
+    _dhs_issuance_chars,
     _dhs_load_row_daily,
     _dhs_load_row_panel,
     _dhs_non_financial,
@@ -34,22 +35,31 @@ from jkp.data.config import US_EXCNTRY
 
 @pytest.fixture
 def dhs_interim_dir(tmp_path):
-    """Interim dir with a toy world_data_prelim + acc_std_ann for one ROW id."""
-    months = pl.date_range(date(2000, 1, 31), date(2002, 12, 31), "1mo", eager=True)
-    prelim = pl.DataFrame(
-        {
-            "id": [10] * len(months),
-            "gvkey": ["001000"] * len(months),
-            "excntry": ["JPN"] * len(months),
-            "eom": months,
-            "chcsho_12m": [0.1] * len(months),
-            "eqnpo_60m": [-0.25] * len(months),
-        }
-    )
+    """Interim dir with a toy world_data_prelim + acc_std_ann for ROW ids 10 and 40
+    (40 misses one return inside the 60-month IR window)."""
+    months = pl.date_range(date(1996, 1, 31), date(2002, 12, 31), "1mo", eager=True).dt.month_end()
+    n = len(months)
+
+    def _firm(id_: int, gvkey: str, ret: list[float | None]) -> pl.DataFrame:
+        return pl.DataFrame(
+            {
+                "id": [id_] * n,
+                "gvkey": [gvkey] * n,
+                "excntry": ["JPN"] * n,
+                "eom": months,
+                "chcsho_12m": [0.1] * n,
+                "eqnpo_60m": [-0.25] * n,
+                "ret": ret,
+                "ret_lag_dif": [1] * n,
+            }
+        )
+
+    gap = [None if m == date(2000, 3, 31) else 0.01 for m in months]
     # A US id that must be excluded, plus a null-char ROW row.
     prelim = pl.concat(
         [
-            prelim,
+            _firm(10, "001000", [0.01] * n),
+            _firm(40, "004000", gap),
             pl.DataFrame(
                 {
                     "id": [20, 30],
@@ -58,6 +68,8 @@ def dhs_interim_dir(tmp_path):
                     "eom": [date(2001, 6, 30), date(2001, 6, 30)],
                     "chcsho_12m": [0.1, None],
                     "eqnpo_60m": [-0.25, None],
+                    "ret": [0.01, None],
+                    "ret_lag_dif": [1, 1],
                 }
             ),
         ]
@@ -97,6 +109,23 @@ class TestDhsRowChars:
         assert ir.height == 1
         assert ir["datadate"][0] == date(2001, 6, 30)
         assert math.isclose(ir["IR"][0], 0.25)
+
+    def test_ir_needs_all_60_window_returns_ns_does_not(self, dhs_interim_dir):
+        out = _dhs_row_chars(dhs_interim_dir, 2000, 2002)
+        # June 2001/2002 windows are fully observed for id 10; id 40 misses Mar-2000
+        ir = out.filter(pl.col("YEAR").is_in([2001, 2002]) & pl.col("NS").is_null())
+        assert ir.filter(pl.col("id") == 10)["IR"].null_count() == 0
+        assert ir.filter(pl.col("id") == 40)["IR"].null_count() == 2
+        assert out.filter(pl.col("id") == 40)["NS"].drop_nulls().len() == 3
+
+    def test_ir_ret_beg_drops_earlier_returns_from_the_window(self, dhs_interim_dir):
+        # From 1997 on, the first full window ends June 2002 (Jul-1997..Jun-2002)
+        def ir_years(ir_ret_beg):
+            out = _dhs_row_chars(dhs_interim_dir, 2000, 2002, ir_ret_beg)
+            return out.filter((pl.col("id") == 10) & pl.col("IR").is_not_null())["YEAR"].to_list()
+
+        assert ir_years(None) == [2001, 2002]
+        assert ir_years(1997) == [2002]
 
     def test_ns_is_log1p_chcsho_relabelled_to_prior_year(self, dhs_interim_dir):
         out = _dhs_row_chars(dhs_interim_dir, 2000, 2002)
@@ -207,6 +236,45 @@ def ibes_dirs(tmp_path):
         }
     ).write_parquet(interim / "world_data_prelim.parquet")
     return raw, interim
+
+
+class TestDhsIssuanceChars:
+    def test_lag_be_follows_the_permno_across_a_gvkey_change(self, tmp_path):
+        # permno 1 is gvkey A through 2000 and gvkey B from 2001
+        ends = [date(1999, 12, 31), date(2000, 12, 31), date(2001, 12, 31), date(2002, 12, 31)]
+        gvkeys = ["00000A", "00000A", "00000B", "00000B"]
+        pl.DataFrame(
+            {
+                "gvkey": gvkeys,
+                "datadate": ends,
+                "fyear": [1999, 2000, 2001, 2002],
+                "indfmt": ["INDL"] * 4,
+                "datafmt": ["STD"] * 4,
+                "popsrc": ["D"] * 4,
+                "consol": ["C"] * 4,
+                "csho": [10.0] * 4,
+                "ajex": [1.0] * 4,
+            }
+        ).write_parquet(tmp_path / "comp_funda.parquet")
+        pl.DataFrame(
+            {
+                "gvkey": ["00000A", "00000B"],
+                "lpermno": [1, 1],
+                "linktype": ["LC", "LC"],
+                "usedflag": [1.0, 1.0],
+                "linkdt": [date(1990, 1, 1), date(2001, 1, 1)],
+                "linkenddt": [date(2000, 12, 31), None],
+            }
+        ).write_parquet(tmp_path / "crsp_ccmxpf_linktable.parquet")
+        pl.DataFrame(
+            {"gvkey": gvkeys, "datadate": ends, "be_x": [1.0, 2.0, 3.0, 4.0]}
+        ).write_parquet(tmp_path / "acc_std_ann.parquet")
+        us_june = pl.DataFrame(
+            {"id": [1], "YEAR": [2002], "IR": [0.1]}, schema_overrides={"YEAR": pl.Int32}
+        )
+        out = _dhs_issuance_chars(tmp_path, tmp_path, us_june, 1999, 2002).sort("YEAR")
+        # 2001 is gvkey B's first year: its lagBE is gvkey A's 2000 book equity
+        assert out["lagBE"].to_list() == [None, 1.0, 2.0, 3.0]
 
 
 class TestDhsIbesAnnouncements:
@@ -461,8 +529,8 @@ class TestDhsCharsUnscreened:
             },
             schema_overrides={"IR": pl.Float64},
         )
-        # IR from msf alone for a CRSP id with no funda IR row
-        us_ir = pl.DataFrame({"LPERMNO": [1], "YEAR": [2010], "IR": [0.3]})
+        # jkp June IR for a CRSP id with no funda IR row
+        us_ir = pl.DataFrame({"id": [1], "YEAR": [2010], "IR": [0.3]})
         # US Compustat-sourced id 900: jkp June chars
         us_comp_june = pl.DataFrame(
             {
