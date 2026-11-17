@@ -20,8 +20,10 @@ code follows and where they differ from Fama and French.
 One code path serves every country. The functions appear in build order in
 aux_functions.py: the firm panel and its weights, the annual characteristics,
 the breakpoints, the portfolio assignments, the momentum signal and the factor
-returns, then `gen_ff_data`. The rules that differ between the US and other
-countries are row columns set in one place (`load_ff_universe`). Each
+returns, then `gen_ff_data`. The universe and weight rules that differ between the US and other
+countries are row columns set in `load_ff_universe`; the CRSP-only rules (the DFF
+BE and the early-link rule in `link_accounting_to_securities`, the permco unit in
+`compute_ff_annual_characteristics`) sit in those functions. Each
 characteristic is built once, in `compute_ff_annual_characteristics`, for the
 June sorts; the sample screens decide only which stocks enter a sort.
 
@@ -58,8 +60,9 @@ June sorts; the sample screens decide only which stocks enter a sort.
   America at the same datadate, the latest per calendar year
   (`select_ff_fiscal_records`). A US CRSP security reaches its record through
   the gvkey JKP attaches to it in world_msf, on its June row, with an early-link
-  rule for the June 1963-66 formations (`link_accounting_to_securities`); before
-  Compustat, the DFF BE.
+  rule for the June 1963-66 formations (`link_accounting_to_securities`). For a US
+  CRSP security the DFF BE, where it exists, takes precedence over the Compustat
+  BE and also fills years with no Compustat record (`add_dff_book_equity`).
 - **BE, every country:** JKP's `be_x` at the fiscal year t-1 record, in USD; a
   stock with BE <= 0 is not eligible for the B/M and OP sorts. Like French's, it
   has no deferred taxes for fiscal years ending in 1993 or later.

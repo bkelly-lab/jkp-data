@@ -891,8 +891,8 @@ def gen_acc_std_ann(funda: pl.DataFrame, g_funda: pl.DataFrame) -> pl.DataFrame:
     the loaders consume*:
 
       * monthly-expanded grid per (gvkey, curcd) from the firm's first to last
-        fiscal report (so the loader's ``at_x.shift(12)`` sees the prior-year
-        report exactly 12 rows back);
+        fiscal report, as the real panel is (``gen_achars_world`` builds at_gr1
+        from it);
       * ``source`` and the ``_x`` fields populated only on report months (Dec),
         null on the fill months in between — matching production, where
         ``load_jkp_annual_accounting`` filters ``source.is_not_null()``;

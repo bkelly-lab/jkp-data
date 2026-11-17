@@ -25,7 +25,7 @@ from jkp.data.aux_functions import (
 )
 
 
-def test_ff_load_world_compustat_latest_record_per_year():
+def test_select_ff_fiscal_records_latest_record_per_year():
     # A fiscal-year-end change gives two 2019 records; the latest (12-31) is kept,
     # and a year whose kept record has no BE, OP or INV drops.
     jkp_acc = pl.DataFrame(
@@ -254,7 +254,7 @@ def _write_achars_world(path, rows):
     ).write_parquet(path)
 
 
-def test_ff_load_world_compustat_op_definition(test_paths):
+def test_select_ff_fiscal_records_op_definition(test_paths):
     _write_acc_std_ann(
         test_paths.interim_dir / "acc_std_ann.parquet",
         [

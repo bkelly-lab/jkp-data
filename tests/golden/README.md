@@ -1,7 +1,11 @@
-# Golden-fixture tests
+# FF golden-fixture tests
 
-Two-layer protection for the factor-model builders (currently `gen_ff_data`;
-the other factor models add their own golden tests as they land):
+This file covers the golden suite of the Fama-French factor builder
+(`gen_ff_data`): `generate_ff_golden.py`, `test_gen_ff_data_golden.py`,
+`generate_synthetic_wrds.py` and `fixtures/ff/`. The other golden tests in this
+directory have their own generators and fixtures.
+
+Two-layer protection:
 
 - **Unit tests** (`tests/unit/test_gen_*.py`) pin stage-helper contracts on
   synthetic Polars frames so the internals can be refactored freely.
@@ -38,8 +42,9 @@ reverse-engineered to the underlying source."
 Golden tests are a **regression guard with numerical tolerance**. They
 confirm the builders reproduce a fixed output from the fixed synthetic
 input within `rtol=1e-6, atol=1e-10` (see
-`_golden_helpers.compare_factor_parquet`). Key columns (`excntry`/`eom`,
-`excntry`/`date`, `id`/`eom`) match exactly. They do NOT validate the
+`_golden_helpers.compare_factor_parquet`). Key columns (`excntry`/`eom` for
+`ff_factors_monthly.parquet`, `excntry`/`date` for `ff_factors_daily.parquet`)
+match exactly. They do NOT validate the
 factors against real-world returns.
 
 ## Workflow

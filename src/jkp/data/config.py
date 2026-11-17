@@ -248,26 +248,33 @@ ROLLING_DAILY_SPECS: list[tuple[str, int, list[str]]] = [
 # FF factor pipeline (gen_ff_data)
 # ============================================================================
 
-# ISO-3 code for the United States; sentinel for excntry-branched filters in
-# the unified FF pipeline (US-strict NYSE breakpoint pool).
+# ISO-3 code for the United States; load_ff_universe uses it to keep the US out of
+# the main-sample branch, which covers the other countries.
 US_EXCNTRY = "USA"
 
 # Minimums of the FF factor builder: min firms per (excntry,
 # formation date) for breakpoints, and per (excntry, date, bucket) for the VW
-# legs. The FF builder applies both in every country, the US included.
+# legs. Applied in every country.
 FACTOR_MIN_STOCKS_BP = 10
 FACTOR_MIN_STOCKS_PF = 3
 
-# UMD signal window lengths (trading days for daily, calendar months for monthly).
+# The June sorts of the FF builder (ff_sort_definitions keys): B/M, OP, INV.
+FF_JUNE_SORTS = ["bm", "op", "inv"]
+
+# UMD momentum window offsets, in periods before the formation period t (trading days
+# for daily, calendar months for monthly). The signal compounds the returns from t-250
+# to t-21 (daily) and from t-12 to t-2 (monthly). Daily: LOOKBACK is the offset of the
+# price that opens the window (one before the first return), SKIP the offset of the
+# last return. Monthly: LOOKBACK is the offset of the first return, SKIP the number of
+# months skipped after the last return before t-1; compute_ff_momentum_signal passes
+# LOOKBACK + 1 and SKIP + 1 as the window bounds.
 FF_UMD_DAILY_SKIP = 21
 FF_UMD_DAILY_LOOKBACK = 251
 FF_UMD_MONTHLY_LOOKBACK = 12
 FF_UMD_MONTHLY_SKIP = 1
 
-# UMD halt tolerance, every country, the US included: min rows in the momentum window (monthly
-# t-12..t-2 = 11 months; daily t-250..t-21 = 230 trading days). Endpoints stay
-# strict. In the US this departs from French, who requires the stock listed
-# throughout the window; Compustat Global records a halt as missing rows.
+# UMD minimum rows a stock needs in its momentum window (monthly t-12..t-2, daily
+# t-250..t-21), instead of a row in every period; a trading halt shows up as missing rows.
 FF_UMD_MIN_MONTHS = 6
 FF_UMD_MIN_DAYS = 115
 
@@ -275,16 +282,12 @@ FF_UMD_MIN_DAYS = 115
 # return is nulled. A monthly return may span one month.
 FF_RET_MAX_GAP_DAYS = 5
 
-# Early-link rule for the early-1960s Compustat expansion (link_accounting_to_securities).
-# Compustat added ~200 (mostly small) NYSE/AMEX firms per year around 1964-66
-# and backfilled their fy1962-64 statements, but the CCM link, and so the gvkey
-# JKP attaches to a CRSP security in world_msf, starts at coverage start, after
-# those fiscal years. French uses them (his ME x OP portfolio counts exceed ours
-# by ~200/yr in 1963-65 without the rule and match from 1966). Rule: for June
-# formations in [FROM, THROUGH], a security whose June row has no gvkey takes the
-# permno's first gvkey when it starts after the formation and within
-# FF_CCM_BACKDATE_MAX_YEARS of it (the cap stops a recycled permno from claiming
-# an old record).
+# Early-link rule (link_accounting_to_securities): for June formations in
+# [FROM, THROUGH], a US CRSP security whose June row has no gvkey takes the permno's
+# first gvkey when it starts after the formation and within FF_CCM_BACKDATE_MAX_YEARS
+# of it (the cap stops a recycled permno from claiming an old record). Reason:
+# Compustat backfilled the statements of firms added in the mid-1960s for years
+# before their CCM link begins.
 FF_CCM_BACKDATE_FROM = 1963
 FF_CCM_BACKDATE_THROUGH = 1966
 FF_CCM_BACKDATE_MAX_YEARS = 5

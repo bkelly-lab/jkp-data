@@ -4,10 +4,10 @@ link_accounting_to_securities.
 
 DFF (2000) collected Moody's BE for NYSE firms absent from Compustat; the
 splice unions the permno-keyed DFF rows with the linked Compustat rows,
-DFF-first on any (id, year) collision (be = coalesce(dff, comp); the
-sources agree where both exist). DFF be(t) is publicly
-available by June 30 of year t and pairs with Dec(t-1) ME, so the unioned
-row carries year = t - 1 (the June-frame join uses cyp1 = year + 1).
+DFF-first on any (id, year) collision (be = coalesce(dff, comp);
+the DFF BE takes precedence and fills years with no Compustat record).
+DFF be(t) pairs with Dec(t-1) ME, so the unioned row carries year = t - 1
+(the annual characteristics use port_year = year + 1).
 """
 
 from __future__ import annotations
@@ -66,7 +66,7 @@ class TestDffSplice:
         assert row["inv"][0] is None
 
     def test_year_offset_alignment(self, test_paths):
-        # DFF be(t=1930) must land as unioned year=1929 so cyp1 = 1930 = june_year,
+        # DFF be(t=1930) must land as unioned year=1929 so port_year = year + 1 = 1930,
         # pairing with Dec(1929) ME downstream.
         comp = _compustat_inputs(test_paths)
         dff = _write_dff(test_paths.raw_tables_dir / "dff.txt", [(20002, 1930, 1930, {1930: 5.0})])

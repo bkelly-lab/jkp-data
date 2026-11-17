@@ -543,7 +543,7 @@ def _annual_signals(
     return {r["id"]: r for r in out.iter_rows(named=True)}
 
 
-class TestFFAnnualSignals:
+class TestComputeFFAnnualCharacteristics:
     """compute_ff_annual_characteristics: one row per unit with the accounting of fiscal y-1 and
     the panel's December y-1 ME; a unit not in the panel that December has no ME."""
 
@@ -612,7 +612,7 @@ class TestFFAnnualSignals:
         assert r["be"] is None and r["beme"] is None
 
 
-class TestFFAnnualSignalsFirms:
+class TestComputeFFAnnualCharacteristicsFirms:
     """compute_ff_annual_characteristics keys US CRSP securities by their FF firm: a company's
     classes share one row, whichever class carries the accounting."""
 
@@ -751,7 +751,7 @@ def _write_world_dsf(test_paths, rows: list[dict]) -> None:
 # =============================================================================
 
 
-class TestFFUniverseRows:
+class TestLoadFFUniverse:
     """load_ff_universe: the rule columns, where the US and other countries differ."""
 
     @staticmethod
@@ -873,7 +873,7 @@ class TestFFUniverseRows:
 # =============================================================================
 
 
-class TestFFLoadPanel:
+class TestBuildFFFirmPanel:
     """build_ff_firm_panel: one row per FF firm and date. Class rows come from the
     world files, with usincflg (and daily primaryexch) from raw CIZ. Class returns are
     weighted by class ME at t-1; monthly ME is JKP's me_company; returns are JKP's CRSP returns, not raw CIZ."""
@@ -1068,7 +1068,7 @@ def _weights(rows: list[tuple], freq: str = "monthly") -> dict[tuple[int, date],
     return {(i, d): w for i, d, w in out.select("id", "date", "w").iter_rows()}
 
 
-class TestFFFactorRows:
+class TestAddFFBuyAndHoldWeights:
     """add_ff_buy_and_hold_weights: buy-and-hold from June in every country. The weight is
     the end-of-June ME grown by the total return since then; a null return
     compounds as 0; a listing gap nulls the weight unless the whole market skipped
@@ -1233,16 +1233,16 @@ def _june_with_bp(
     return june, breaks
 
 
-class TestFFMembership:
+class TestAssignFFPortfolios:
     """Tests for assign_ff_portfolios()."""
 
     def test_size_split_correct(self):
-        """Firms below sizemedn -> S; at or above -> B."""
+        """Firms with me <= sizemedn -> S; above -> B."""
         june, breaks = _june_with_bp(
             [1.0, 1.0, 5.0, 5.0], [1.0, 3.0, 1.0, 3.0], sizemedn=2.0, bm_lo=2.0, bm_hi=4.0
         )
         result = assign_ff_portfolios(june, breaks, ["bm"])
-        # me=1 < 2=sizemedn -> S; me=3 >= 2 -> B
+        # me=1 <= 2=sizemedn -> S; me=3 > 2 -> B
         assert [p[0] for p in result["bm_port"]] == ["S", "B", "S", "B"]
 
     def test_bm_portfolio_labels(self):
@@ -1312,7 +1312,7 @@ def _leg_frame(rows: list[dict]) -> pl.DataFrame:
     )
 
 
-class TestFFLeg:
+class TestComputeFFPortfolioReturns:
     """Tests for compute_ff_portfolio_returns() on the B/M sort."""
 
     def test_vw_return_formula(self, tolerance):
@@ -1409,9 +1409,6 @@ def _full_annual(bm: bool = True) -> list[tuple]:
 _FULL_MOM = [(0.01, "SL"), (0.01, "SH"), (0.01, "BL"), (0.01, "BH")]
 
 
-_ANNUAL = ["bm", "op", "inv"]
-
-
 def _returns(
     annual: list[tuple],
     mom: list[tuple] = _FULL_MOM,
@@ -1455,10 +1452,10 @@ def _returns(
             "mom_port": [m[1] for m in mom],
         }
     )
-    return compute_ff_factor_returns(rows, members, mom_frame, _ANNUAL, min_stocks_pf)
+    return compute_ff_factor_returns(rows, members, mom_frame, min_stocks_pf)
 
 
-class TestFFReturns:
+class TestComputeFFFactorReturns:
     """Tests for compute_ff_factor_returns()."""
 
     def test_output_columns(self):
@@ -1566,7 +1563,7 @@ class TestFFReturns:
                 {1: "SL", 2: "SH", 3: "BL", 4: "BH"}, return_dtype=pl.Utf8
             )
         )
-        out = compute_ff_factor_returns(rows, members, mom, _ANNUAL, 1)
+        out = compute_ff_factor_returns(rows, members, mom, 1)
         assert out["date"].to_list() == sorted(out["date"].to_list())
         hml = dict(out.select("date", "hml_ff").iter_rows())
         # 2020 memberships: (0.2+0.4)/2 - (0.1+0.3)/2 = 0.1; 2021 memberships: -0.1
@@ -1659,7 +1656,7 @@ def _make_monthly_panel(
     )
 
 
-class TestFFMomSignalMonthly:
+class TestComputeFFMomentumSignalMonthly:
     """Tests for compute_ff_momentum_signal() on monthly data."""
 
     def test_output_schema(self):
@@ -1855,7 +1852,7 @@ def _make_daily_panel(
     )
 
 
-class TestFFMomSignalDaily:
+class TestComputeFFMomentumSignalDaily:
     """Tests for compute_ff_momentum_signal() on daily data."""
 
     def test_output_schema(self):
