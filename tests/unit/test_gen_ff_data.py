@@ -845,7 +845,7 @@ class TestLoadFFUniverse:
                 for d, x, me in zip(months, "NXXN", (30.0, 31.0, 32.0, 33.0), strict=True)
             ],
         )
-        out = load_ff_universe(test_paths, "monthly").collect()
+        out = load_ff_universe(test_paths, "monthly").collect().sort("date")
         assert out["date"].to_list() == [months[0], months[3]]
         assert out.filter(pl.col("date") == months[3])["w_cls"].to_list() == [32.0]
 
