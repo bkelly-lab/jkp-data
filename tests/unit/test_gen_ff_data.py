@@ -679,6 +679,18 @@ class TestComputeFFAnnualCharacteristicsFirms:
         r = self._run(test_paths, monkeypatch)[60]
         assert (r["be"], r["op"]) == (6.0, 0.6)
 
+    def test_record_with_be_wins_within_firm(self, test_paths, monkeypatch):
+        """Class 81's later record has no BE; class 80's earlier one does and is kept."""
+        records = _records(
+            [
+                ("g80", 80, 30.0, 0.2, 0.1, date(2019, 6, 30)),
+                ("g81", 81, None, 0.3, 0.05, date(2019, 12, 31)),
+            ]
+        )
+        panel = _dec_panel([(US_EXCNTRY, 80, 60.0)])
+        r = _annual_signals(test_paths, monkeypatch, records, panel, {80: 80, 81: 80})[80]
+        assert (r["be"], r["op"], r["beme"]) == (30.0, 0.2, 0.5)
+
 
 # =============================================================================
 # World files for the universe and panel tests
@@ -804,6 +816,22 @@ class TestLoadFFUniverse:
         assert r["me_company"] == 44.0
         assert r["w_cls"] == 30.0  # the class's ME at t-1
         assert r["bp_pool"] is True  # NYSE
+
+    def test_us_class_weight_null_after_gap(self, test_paths):
+        """Class 1 misses April and May: on its first row back it has no weight at t-1.
+        Class 2 of the same company trades every month."""
+        months = [date(2020, 3, 31), date(2020, 4, 30), date(2020, 5, 31), date(2020, 6, 30)]
+        held = [months[0], months[3]]
+        _write_raw_msf(test_paths, [(1, d, "Y") for d in held] + [(2, d, "Y") for d in months])
+        _write_world_msf(
+            test_paths,
+            [{"id": 1, "eom": d, "primaryexch": "N", "me": 30.0, "permco": 1} for d in held]
+            + [{"id": 2, "eom": d, "primaryexch": "N", "me": 10.0, "permco": 1} for d in months],
+        )
+        out = load_ff_universe(test_paths, "monthly").collect()
+        w_cls = out.filter(pl.col("date") == months[3])["w_cls"]
+        assert w_cls.null_count() == 1
+        assert w_cls.drop_nulls().to_list() == [10.0]
 
     def test_us_bp_pool_is_nyse_only(self, test_paths):
         out = self._monthly(test_paths)

@@ -26,11 +26,13 @@ from jkp.data.aux_functions import (
 
 
 def test_select_ff_fiscal_records_latest_record_per_year():
-    # A fiscal-year-end change gives two 2019 records; the latest (12-31) is kept,
-    # and a year whose kept record has no BE, OP or INV drops.
+    # A fiscal-year-end change gives two 2019 records; the latest (12-31) is kept.
+    # A record with no BE, OP or INV drops before the pick, so 002 keeps its March
+    # 2020 record. BE <= 0 (be_x null, seq_x reported) becomes 0; missing inputs
+    # (seq_x null) stay null.
     jkp_acc = pl.DataFrame(
         {
-            "gvkey": ["001"] * 4 + ["002"] * 2,
+            "gvkey": ["001"] * 4 + ["002"] * 2 + ["003", "004"],
             "datadate": [
                 date(2018, 12, 31),
                 date(2019, 6, 30),
@@ -38,18 +40,24 @@ def test_select_ff_fiscal_records_latest_record_per_year():
                 date(2020, 12, 31),
                 date(2020, 3, 31),
                 date(2020, 12, 31),
+                date(2020, 12, 31),
+                date(2020, 12, 31),
             ],
-            "be_x": [1.0, 2.0, 3.0, 4.0, 5.0, None],
-            "op": [None] * 6,
-            "at_gr1": [None] * 6,
+            "be_x": [1.0, 2.0, 3.0, 4.0, 5.0, None, None, None],
+            "seq_x": [1.0, 2.0, 3.0, 4.0, 5.0, None, -3.0, None],
+            "op": [None] * 7 + [0.2],
+            "at_gr1": [None] * 8,
         },
-        schema_overrides=dict.fromkeys(["be_x", "op", "at_gr1"], pl.Float64),
+        schema_overrides=dict.fromkeys(["be_x", "seq_x", "op", "at_gr1"], pl.Float64),
     )
     out = select_ff_fiscal_records(jkp_acc)
     assert out.select("gvkey", "year", "be").rows() == [
         ("001", 2018, 1.0),
         ("001", 2019, 3.0),
         ("001", 2020, 4.0),
+        ("002", 2020, 5.0),
+        ("003", 2020, 0.0),
+        ("004", 2020, None),
     ]
 
 
@@ -223,7 +231,8 @@ class TestEarlyLinks:
 
 
 def _write_acc_std_ann(path, rows):
-    """rows: (gvkey, be_x, ope_x, mib, mibt, mibn) on a 2019-12-31 report row."""
+    """rows: (gvkey, be_x, ope_x, mib, mibt, mibn) on a 2019-12-31 report row;
+    seq_x = be_x."""
     pl.DataFrame(
         {
             "gvkey": [r[0] for r in rows],
@@ -231,12 +240,15 @@ def _write_acc_std_ann(path, rows):
             "datadate": [date(2019, 12, 31)] * len(rows),
             "source": ["GLOBAL"] * len(rows),
             "be_x": [r[1] for r in rows],
+            "seq_x": [r[1] for r in rows],
             "ope_x": [r[2] for r in rows],
             "mib": [r[3] for r in rows],
             "mibt": [r[4] for r in rows],
             "mibn": [r[5] for r in rows],
         },
-        schema_overrides=dict.fromkeys(["be_x", "ope_x", "mib", "mibt", "mibn"], pl.Float64),
+        schema_overrides=dict.fromkeys(
+            ["be_x", "seq_x", "ope_x", "mib", "mibt", "mibn"], pl.Float64
+        ),
     ).write_parquet(path)
 
 

@@ -278,6 +278,8 @@ FF_UMD_MIN_DAYS = 115
 # Longest gap a daily FF return may span (ret_lag_dif, calendar days); a longer
 # return is nulled. A monthly return may span one month.
 FF_RET_MAX_GAP_DAYS = 5
+# First year of book equity in the Davis-Fama-French Moody's file (load_dff_be).
+DFF_BE_FIRST_YEAR = 1926
 
 # Early-link rule (link_accounting_to_securities): for June formations in
 # [FROM, THROUGH], a US CRSP security whose June row has no gvkey takes the permno's

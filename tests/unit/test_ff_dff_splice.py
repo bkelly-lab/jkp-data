@@ -18,20 +18,17 @@ import polars as pl
 import pytest
 
 from jkp.data.aux_functions import link_accounting_to_securities
+from jkp.data.config import DFF_BE_FIRST_YEAR
 
 # Reuse the synthetic fiscal-record and world_msf builders from the dedup tests.
 from tests.unit.test_ff_compustat_dedup import _comp, _write_us_msf
 
 
 def _write_dff(path, rows):
-    """rows: list of (permno, first_year, last_year, {year: be}).
-
-    The loader derives the first BE column's year from min(first_moody_year)
-    (the real file's invariant), so columns here start at min(fy) across rows.
-    """
-    start = min(fy for _, fy, _, _ in rows)
-    end = max(max(be_by_year, default=start) for _, _, _, be_by_year in rows)
-    years = range(start, max(end, start) + 1)
+    """rows: list of (permno, first_year, last_year, {year: be}); BE columns start
+    in DFF_BE_FIRST_YEAR, as in the real file."""
+    end = max(max(be_by_year, default=DFF_BE_FIRST_YEAR) for _, _, _, be_by_year in rows)
+    years = range(DFF_BE_FIRST_YEAR, end + 1)
     lines = []
     for permno, fy, ly, be_by_year in rows:
         vals = [f"{be_by_year.get(y, -99.990):.3f}" for y in years]
@@ -103,6 +100,16 @@ class TestDffSplice:
         assert row.height == 1
         assert row["be"][0] == 55.0
         assert row["gvkey"][0] == "001"
+
+    def test_non_positive_compustat_be_not_filled(self, test_paths):
+        # Compustat BE <= 0 reaches the splice as 0 (select_ff_fiscal_records): the
+        # record has a BE, so the DFF BE doesn't replace it.
+        comp = _compustat_inputs(test_paths, years=(2018, 2019), be={2019: 0.0})
+        dff = _write_dff(test_paths.raw_tables_dir / "dff.txt", [(10001, 2020, 2020, {2020: 55.0})])
+        out = link_accounting_to_securities(test_paths, comp, dff_path=dff)
+
+        row = out.filter((pl.col("id") == 10001) & (pl.col("year") == 2019))
+        assert row["be"].to_list() == [0.0]
 
     def test_disjoint_union_row_count(self, test_paths):
         comp = _compustat_inputs(test_paths, permno=10001, years=(2018, 2019))

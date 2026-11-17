@@ -40,6 +40,7 @@ from .config import (
     CMP_SIZE_GROUPS,
     CORRECTION_SPILL_COMPRESSION,
     DAILY_TURNOVER_FIXED_POINT_SCALE,
+    DFF_BE_FIRST_YEAR,
     END_DATE,
     FACTOR_MIN_STOCKS_BP,
     FACTOR_MIN_STOCKS_PF,
@@ -7244,6 +7245,35 @@ def char_pf_rets():
     return [lms, smb]
 
 
+def country_breakpoints(
+    df: pl.DataFrame | pl.LazyFrame,
+    specs: list[tuple[str, float, str]],
+    *,
+    group_keys: list[str],
+    pool: pl.Expr,
+    min_stocks: int,
+) -> pl.DataFrame:
+    """
+    Description:
+        Per-`group_keys` QUANTILE_DISC breakpoints over the rows selected by `pool`;
+        specs = [(col, quantile, alias)]. Groups with fewer than `min_stocks` pool
+        stocks are dropped.
+    Steps:
+        1) Keep the pool rows and the columns the specs read.
+        2) One Polars SQL aggregation per group, with HAVING COUNT(*) >= min_stocks.
+    Output:
+        [*group_keys, <alias> ...], one row per group, eager or lazy as df.
+    """
+    breaks_sql = ", ".join(f"QUANTILE_DISC({c}, {q}) AS {a}" for c, q, a in specs)
+    cols = list(dict.fromkeys(c for c, _, _ in specs))
+    gk = ", ".join(group_keys)
+    return (
+        df.filter(pool)
+        .select(*group_keys, *cols)
+        .sql(f"SELECT {gk}, {breaks_sql} FROM self GROUP BY {gk} HAVING COUNT(*) >= {min_stocks}")
+    )
+
+
 def sort_ff_style(char, min_stocks_bp, min_stocks_pf, date_col, data, sf):
     """
     Description:
@@ -7271,22 +7301,16 @@ def sort_ff_style(char, min_stocks_bp, min_stocks_pf, date_col, data, sf):
         .then(pl.lit("mid"))
         .otherwise(pl.lit("low"))
     ).alias("char_pf")
-    bp_stocks = data.filter(c1).sql(f"""
-                SELECT
-                    eom,
-                    excntry_l,
-                    COUNT(*) AS n,
-                    QUANTILE_DISC({char}_l, 0.3) AS bp_p30,
-                    QUANTILE_DISC({char}_l, 0.7) AS bp_p70
-                FROM self
-                GROUP BY excntry_l, eom
-                ORDER BY excntry_l, eom
-            """)
+    bp_stocks = country_breakpoints(
+        data,
+        [(f"{char}_l", 0.3, "bp_p30"), (f"{char}_l", 0.7, "bp_p70")],
+        group_keys=["excntry_l", "eom"],
+        pool=c1,
+        min_stocks=min_stocks_bp,
+    )
     data = (
-        data.join(bp_stocks, how="left", on=["excntry_l", "eom"])
-        .filter(
-            (col("n") >= min_stocks_bp) & (col(f"{char}_l").is_not_null()) & (col("size_pf") != "")
-        )
+        data.join(bp_stocks, how="inner", on=["excntry_l", "eom"])
+        .filter((col(f"{char}_l").is_not_null()) & (col("size_pf") != ""))
         .select(
             ["excntry_l", "id", "eom", "size_pf", "me_l", "be_me_l", char_pf_exp]
         )  # This select doesn't impact performance but it helps in debugging
@@ -9886,6 +9910,39 @@ def dimsonbeta(
     )
 
 
+def _ff_max_gap(freq: Literal["monthly", "daily"]) -> int:
+    """The longest span a good FF return covers: one month, or FF_RET_MAX_GAP_DAYS days."""
+    return 1 if freq == "monthly" else FF_RET_MAX_GAP_DAYS
+
+
+def _add_ff_contiguous(
+    lf: pl.LazyFrame, freq: Literal["monthly", "daily"], by: list[str]
+) -> pl.LazyFrame:
+    """
+    Description:
+        Flags rows whose previous row in `by` is the previous period: the previous
+        calendar month (daily: at most FF_RET_MAX_GAP_DAYS days back) or the
+        country's previous date, so a market-wide closure is not a gap.
+    Steps:
+        1) Country period: the dense rank of the date within excntry.
+        2) contiguous; null on the first row in `by`. Rows must be sorted by date
+           within `by`.
+    Output:
+        lf with a `contiguous` column.
+    """
+    prev = pl.col("date").shift(1).over(by)
+    if freq == "monthly":
+        month = pl.col("date").dt.year() * 12 + pl.col("date").dt.month()
+        in_reach = month - (prev.dt.year() * 12 + prev.dt.month()) == 1
+    else:
+        in_reach = (pl.col("date") - prev).dt.total_days() <= _ff_max_gap(freq)
+    return (
+        lf.with_columns(_cp=pl.col("date").rank("dense").over("excntry"))
+        .with_columns(contiguous=in_reach | (pl.col("_cp") - pl.col("_cp").shift(1).over(by) == 1))
+        .drop("_cp")
+    )
+
+
 def load_ff_universe(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl.LazyFrame:
     """
     Description:
@@ -9897,8 +9954,9 @@ def load_ff_universe(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl.
           AMEX or NASDAQ; the raw CIZ files add only what the world files don't
           carry, usincflg and, daily, primaryexch and permco. The unit (id) is the
           company, the CRSP permco, as it is (Fama and French split some permcos
-          by hand: group stocks, tracking stocks, relistings). w_cls, the class's ME at t-1, weights
-          the classes' returns. Monthly rows carry JKP's me_company, the ME of all the
+          by hand: group stocks, tracking stocks, relistings). w_cls, the class's ME at t-1
+          (null after a gap in the class's rows, _add_ff_contiguous), weights the
+          classes' returns. Monthly rows carry JKP's me_company, the ME of all the
           company's classes; daily rows have none. NYSE-listed classes form the
           breakpoint pool. ret_lag_dif is the world file's, as in every country: JKP
           sets it to 1 on every CRSP row, so the gap rule never nulls a US return.
@@ -9968,6 +10026,7 @@ def load_ff_universe(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl.
         .filter(pl.col("primaryexch").is_in(["N", "A", "Q"]))
         .with_columns(id=pl.col("permco").cast(pl.Int64))
         .sort("permno", "date")
+        .pipe(_add_ff_contiguous, freq, ["permno"])
         .select(
             "excntry",
             "id",
@@ -9977,7 +10036,7 @@ def load_ff_universe(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl.
             "me_company",
             "prc",
             "ret_lag_dif",
-            w_cls=pl.col("me").shift(1).over("permno"),
+            w_cls=pl.when("contiguous").then(pl.col("me").shift(1).over("permno")),
             bp_pool=pl.col("primaryexch") == "N",
         )
     )
@@ -10071,38 +10130,25 @@ def add_ff_buy_and_hold_weights(
            June row.
         3) w = me_base x the year's cumulative (1 + ret) up to t-1, a null ret
            compounding as 0; null unless ME at t-1 is positive.
-        4) Listing gap: w is null when the previous row is more than a month back
-           (daily: more than FF_RET_MAX_GAP_DAYS days) and is not the country's previous trading
-           date, so a market-wide closure is not a gap.
+        4) Listing gap: w is null when the previous row is not the previous period
+           (_add_ff_contiguous).
     Output:
         Eager [excntry, id, date, ret, w, me, bp_pool].
     """
-    max_gap = 1 if freq == "monthly" else FF_RET_MAX_GAP_DAYS
     k = ["excntry", "id"]
     yp = [*k, "period"]
     year = pl.col("date").dt.year()
-    prev = pl.col("date").shift(1).over(k)
-    in_reach = (
-        (year * 12 + pl.col("date").dt.month()) - (prev.dt.year() * 12 + prev.dt.month()) == 1
-        if freq == "monthly"
-        else (pl.col("date") - prev).dt.total_days() <= max_gap
-    )
     return (
         panel.lazy()
-        .with_columns(ret=pl.when(pl.col("ret_lag_dif") <= max_gap).then(pl.col("ret")))
+        .with_columns(ret=pl.when(pl.col("ret_lag_dif") <= _ff_max_gap(freq)).then(pl.col("ret")))
         .sort([*k, "date"])
+        .pipe(_add_ff_contiguous, freq, k)
         .with_columns(
             period=pl.when(pl.col("date").dt.month() >= 7).then(year).otherwise(year - 1),
-            tday=pl.col("date").rank("dense").over("excntry"),
             lag_me=pl.col("me").shift(1).over(k),
         )
         .with_columns(
-            contiguous=in_reach | (pl.col("tday") - pl.col("tday").shift(1).over(k) == 1),
-            me_base=pl.when((pl.col("period") != pl.col("period").shift(1).over(k)).fill_null(True))
-            .then(pl.col("lag_me"))
-            .otherwise(None)
-            .forward_fill()
-            .over(yp),
+            me_base=pl.col("lag_me").first().over(yp),
             cum=(1.0 + pl.col("ret").fill_null(0.0)).cum_prod().over(yp),
         )
         .select(
@@ -10135,8 +10181,9 @@ def load_jkp_annual_accounting(paths: DataPaths) -> pl.DataFrame:
            the total.
         2) Left-join at_gr1 from achars_world at the record's first public_date.
     Output:
-        Eager [gvkey, datadate, be_x, op, at_gr1], keyed (gvkey, datadate),
-        USD (acc_std_ann is built with convert_to_usd=1).
+        Eager [gvkey, datadate, be_x, seq_x, op, at_gr1], keyed (gvkey, datadate),
+        USD (acc_std_ann is built with convert_to_usd=1). be_x is null both when
+        BE <= 0 and when its inputs are missing; seq_x is null only in the second case.
     """
     mi = pl.coalesce(pl.col("mibt"), pl.col("mib").fill_null(0.0) + pl.col("mibn").fill_null(0.0))
     at_gr1 = (
@@ -10153,6 +10200,7 @@ def load_jkp_annual_accounting(paths: DataPaths) -> pl.DataFrame:
             "gvkey",
             "datadate",
             "be_x",
+            "seq_x",
             op=pl.when(pl.col("be_x") > 0)
             .then(safe_div(pl.col("ope_x"), pl.col("be_x") + mi, "op"))
             .otherwise(None),
@@ -10171,23 +10219,31 @@ def select_ff_fiscal_records(jkp_acc: pl.DataFrame) -> pl.DataFrame:
     Steps:
         1) jkp_acc (load_jkp_annual_accounting) holds JKP's records, Global over North America
            where both report the same datadate (add_helper_vars).
-        2) One record per (gvkey, year), the latest datadate (a change of fiscal
-           year-end can give two in one calendar year); a record with no BE, OP or
-           INV drops.
+        2) be = be_x, and 0 where be_x is null but seq_x is not (BE <= 0), so the
+           record has a BE: the DFF splice doesn't fill it, and B/M and OP, which
+           need BE > 0, exclude it.
+        3) Records with no BE, OP or INV drop; then one record per (gvkey, year),
+           the latest datadate (a change of fiscal year-end can give two in one
+           calendar year).
     Output:
         Eager [gvkey, datadate, year, be, op, inv] (BE in USD, OP/INV unitless).
         Securities reach these records through link_accounting_to_securities.
     """
     return (
         jkp_acc.lazy()
-        .with_columns(year=pl.col("datadate").dt.year())
-        .sort(["gvkey", "datadate"])
-        .unique(subset=["gvkey", "year"], keep="last", maintain_order=True)
-        .rename({"be_x": "be", "at_gr1": "inv"})
+        .select(
+            "gvkey",
+            "datadate",
+            "op",
+            year=pl.col("datadate").dt.year(),
+            be=pl.when(pl.col("seq_x").is_not_null()).then(pl.col("be_x").fill_null(0.0)),
+            inv="at_gr1",
+        )
         .filter(
             pl.col("be").is_not_null() | pl.col("op").is_not_null() | pl.col("inv").is_not_null()
         )
         .sort(["gvkey", "datadate"])
+        .unique(subset=["gvkey", "year"], keep="last", maintain_order=True)
         .select("gvkey", "datadate", "year", "be", "op", "inv")
         .collect()
     )
@@ -10270,26 +10326,23 @@ def link_accounting_to_securities(
     return pl.concat([us, linked.filter(~pl.col("crsp")).drop("crsp")], how="vertical_relaxed")
 
 
-def load_dff_be(path: Path | None = None) -> pl.DataFrame:
+def load_dff_be(path: Path) -> pl.DataFrame:
     """
     Description:
         Parse the Davis-Fama-French hand-collected Moody's book equity file
         into a long Polars DataFrame. Missing values (-99.990) become null.
         Distributed via Ken French's data library:
         https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/data_library.html#BookEquity
-        The BE year range is derived from the file itself: the first BE
-        column corresponds to min(First_Moody_Year), and the number of BE
-        columns is the record field count minus the three id fields.
+        The BE columns are the years from DFF_BE_FIRST_YEAR, one per field after
+        the three id fields.
     Steps:
         1) Read each line as one string; collapse whitespace; split to a list.
-        2) Derive year range from field count and min(First_Moody_Year).
+        2) Year range from DFF_BE_FIRST_YEAR and the field count.
         3) Name fields; unpivot BE columns to long; null -99.990; cast dtypes.
     Output:
         DataFrame: permno (i64), year (i32), be (f64 nullable, $ millions).
         BE for year t is publicly available by June 30 of year t.
     """
-    if path is None:
-        path = get_dff_be_path()
     raw = pl.read_csv(path, has_header=False, separator="\x01", new_columns=["raw"]).with_columns(
         pl.col("raw").str.strip_chars().str.replace_all(r"\s+", " ").str.split(" ")
     )
@@ -10298,8 +10351,7 @@ def load_dff_be(path: Path | None = None) -> pl.DataFrame:
     if len(n_fields) != 1:
         msg = f"ragged records: field counts {sorted(n_fields)}"
         raise ValueError(msg)
-    start_year = raw.select(pl.col("raw").list.get(1).cast(pl.Int32).min()).item()
-    years = [start_year + i for i in range(n_fields[0] - 3)]
+    years = [DFF_BE_FIRST_YEAR + i for i in range(n_fields[0] - 3)]
 
     fields = ["permno", "first_moody_year", "last_moody_year", *[f"be_{y}" for y in years]]
     return (
@@ -10385,8 +10437,8 @@ def compute_ff_annual_characteristics(paths: DataPaths, panel: pl.DataFrame) -> 
         1) Fiscal year y-1 records (link_accounting_to_securities on select_ff_fiscal_records),
            mapped to the unit (the permco for a CRSP security, else the security; a
            security not in world_msf has no unit and drops). A unit-year with several
-           records keeps the Compustat record (the latest fiscal year-end, then gvkey,
-           then security), whose BE already includes its own permno's DFF BE
+           records keeps the Compustat record (one with BE, then the latest fiscal
+           year-end, then gvkey, then security), whose BE already includes its own permno's DFF BE
            (add_dff_book_equity); a DFF record on another class fills BE only when the
            Compustat BE is missing.
         2) December y-1 ME from the panel's December rows, kept when > 0. A unit
@@ -10421,10 +10473,11 @@ def compute_ff_annual_characteristics(paths: DataPaths, panel: pl.DataFrame) -> 
         .sort(
             "id",
             "year",
+            pl.col("be").is_null(),
             "datadate",
             "gvkey",
             "security",
-            descending=[False, False, True, False, False],
+            descending=[False, False, False, True, False, False],
         )
         .unique(["id", "year"], keep="first", maintain_order=True)
     )
@@ -10472,35 +10525,6 @@ def ff_sort_definitions() -> dict[str, tuple[str, list[str], pl.Expr]]:
         "inv": ("inv", ["C", "N", "A"], me_ok & dec_me_ok & pl.col("inv").is_not_null()),
         "mom": ("mom_2_12", ["L", "N", "H"], pl.col("mom_2_12").is_not_null() & me_ok),
     }
-
-
-def country_breakpoints(
-    df: pl.DataFrame,
-    specs: list[tuple[str, float, str]],
-    *,
-    group_keys: list[str],
-    pool: pl.Expr,
-    min_stocks: int,
-) -> pl.DataFrame:
-    """
-    Description:
-        Per-`group_keys` QUANTILE_DISC breakpoints over the rows selected by `pool`;
-        specs = [(col, quantile, alias)]. Groups with fewer than `min_stocks` pool
-        stocks are dropped.
-    Steps:
-        1) Keep the pool rows and the columns the specs read.
-        2) One DuckDB aggregation per group, with HAVING COUNT(*) >= min_stocks.
-    Output:
-        Eager [*group_keys, <alias> ...], one row per group.
-    """
-    breaks_sql = ", ".join(f"QUANTILE_DISC({c}, {q}) AS {a}" for c, q, a in specs)
-    cols = list(dict.fromkeys(c for c, _, _ in specs))
-    gk = ", ".join(group_keys)
-    return (
-        df.filter(pool)
-        .select(*group_keys, *cols)
-        .sql(f"SELECT {gk}, {breaks_sql} FROM self GROUP BY {gk} HAVING COUNT(*) >= {min_stocks}")
-    )
 
 
 def compute_ff_breakpoints(
@@ -10722,7 +10746,6 @@ def compute_ff_momentum_signal(
     Output:
         Eager [excntry, id, date, ret, bp_pool, me, w, mom_2_12].
     """
-    max_gap = 1 if freq == "monthly" else FF_RET_MAX_GAP_DAYS
     src = panel.lazy().select(
         "excntry",
         "id",
@@ -10730,7 +10753,7 @@ def compute_ff_momentum_signal(
         "me",
         "bp_pool",
         has_prc=pl.col("prc") > 0,
-        good_ret=pl.col("ret").is_not_null() & (pl.col("ret_lag_dif") <= max_gap),
+        good_ret=pl.col("ret").is_not_null() & (pl.col("ret_lag_dif") <= _ff_max_gap(freq)),
         log_ret=pl.when(pl.col("ret") > -1.0).then((1.0 + pl.col("ret")).log()).otherwise(0.0),
         wipe=(pl.col("ret") <= -1.0).fill_null(False).cast(pl.Int64),
     )
@@ -10743,8 +10766,7 @@ def compute_ff_momentum_signal(
         days = (
             src.select("excntry", "date")
             .unique()
-            .sort(["excntry", "date"])
-            .with_columns(idx=pl.int_range(0, pl.len()).cast(pl.Int64).over("excntry"))
+            .with_columns(idx=pl.col("date").rank("dense").over("excntry").cast(pl.Int64))
         )
         src = src.join(days, on=["excntry", "date"], how="left")
         target = target.join(days, on=["excntry", "date"], how="left")
@@ -10839,8 +10861,8 @@ def compute_ff_june_exits(monthly_return_data: pl.DataFrame) -> pl.DataFrame:
         weight. It stays out until the next June, in the monthly and daily portfolios.
         A month in which the whole country has no data is not a missing month.
     Steps:
-        1) Per stock, flag rows with a null ret or w, and rows more than a month after
-           the previous row unless the country has no date in between.
+        1) Per stock, flag rows with a null ret or w, and rows whose previous row
+           is not the previous month (_add_ff_contiguous).
         2) exit_eom per stock and July-June year: the earliest flagged month; for a
            missing month, the month after the previous row, at the earliest July.
     Output:
@@ -10848,21 +10870,18 @@ def compute_ff_june_exits(monthly_return_data: pl.DataFrame) -> pl.DataFrame:
     """
     k = ["excntry", "id"]
     year = pl.col("date").dt.year()
-    month = year * 12 + pl.col("date").dt.month()
-    country_month = pl.col("date").rank("dense").over("excntry")
-    missed = (month - month.shift(1).over(k) > 1) & (
-        country_month - country_month.shift(1).over(k) > 1
-    )
+    missed = ~pl.col("contiguous").fill_null(True)
     port_year = pl.when(pl.col("date").dt.month() >= 7).then(year).otherwise(year - 1)
     return (
         monthly_return_data.lazy()
         .sort([*k, "date"])
+        .pipe(_add_ff_contiguous, "monthly", k)
         .with_columns(
             port_year=port_year,
             exit_eom=pl.when(missed)
             .then(pl.col("date").shift(1).over(k).dt.offset_by("1mo").dt.month_end())
             .otherwise(pl.col("date")),
-            out=missed.fill_null(False) | pl.col("ret").is_null() | pl.col("w").is_null(),
+            out=missed | pl.col("ret").is_null() | pl.col("w").is_null(),
         )
         .filter("out")
         .group_by([*k, "port_year"])
@@ -10951,18 +10970,17 @@ def gen_ff_data(
         Methodology, references and the differences from Fama and French:
         documentation/ff_factors.md.
     Steps:
-        1) Portfolio assignments: June sorts on the monthly data
-           (build_ff_june_assignments), with each stock's exit month
-           (compute_ff_june_exits); momentum sorts on the monthly and on the
-           daily data (build_ff_momentum_assignments).
-        2) Monthly factor returns from the monthly return data.
-        3) Daily factor returns from the daily return data, with the same June
-           assignments.
+        1) Monthly: June sorts (build_ff_june_assignments), each stock's exit month
+           (compute_ff_june_exits), momentum sorts (build_ff_momentum_assignments),
+           then the factor returns.
+        2) Daily: momentum sorts on the daily data, then the factor returns with
+           the same June sorts and exits.
     Output:
         - <monthly_factors_path> [excntry, eom, smb_ff3, smb_ff5, hml_ff, rmw_ff, cma_ff, umd_ff]
         - <daily_factors_path> [excntry, date, smb_ff3, smb_ff5, hml_ff, rmw_ff, cma_ff, umd_ff]
     """
-    # 1) Portfolio assignments. Each panel is dropped once its sorts are formed.
+    # 1) Monthly: June sorts, exits, momentum, factor returns. Each frame is dropped
+    # once used, so the daily build runs with only the June sorts and exits.
     monthly_panel = build_ff_firm_panel(paths, "monthly")
     monthly_return_data = add_ff_buy_and_hold_weights(monthly_panel, "monthly")
     june_assignments = build_ff_june_assignments(paths, monthly_panel, monthly_return_data)
@@ -10971,14 +10989,6 @@ def gen_ff_data(
         monthly_panel, monthly_return_data, "monthly"
     )
     del monthly_panel
-    daily_panel = build_ff_firm_panel(paths, "daily")
-    daily_return_data = add_ff_buy_and_hold_weights(daily_panel, "daily")
-    daily_momentum_assignments = build_ff_momentum_assignments(
-        daily_panel, daily_return_data, "daily"
-    )
-    del daily_panel
-
-    # 2) Monthly factor returns.
     compute_ff_factor_returns(
         monthly_return_data,
         june_assignments,
@@ -10986,8 +10996,15 @@ def gen_ff_data(
         monthly_momentum_assignments,
         FACTOR_MIN_STOCKS_PF,
     ).rename({"date": "eom"}).write_parquet(monthly_factors_path)
+    del monthly_return_data, monthly_momentum_assignments
 
-    # 3) Daily factor returns.
+    # 2) Daily: momentum and factor returns, with the June sorts and exits.
+    daily_panel = build_ff_firm_panel(paths, "daily")
+    daily_return_data = add_ff_buy_and_hold_weights(daily_panel, "daily")
+    daily_momentum_assignments = build_ff_momentum_assignments(
+        daily_panel, daily_return_data, "daily"
+    )
+    del daily_panel
     compute_ff_factor_returns(
         daily_return_data,
         june_assignments,

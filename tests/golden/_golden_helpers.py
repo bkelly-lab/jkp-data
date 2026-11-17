@@ -71,6 +71,7 @@ def compare_factor_parquet(
     - Sorted by ``key_cols``; key columns must be bit-equal.
     - All other numeric columns compared with ``rtol`` / ``atol`` and
       NaN positions must match.
+    - A 0-row golden or an all-null golden column fails: it would pass vacuously.
     """
     failures: list[str] = []
     if not golden.exists():
@@ -93,6 +94,9 @@ def compare_factor_parquet(
         return [f"{golden.name}: golden has 0 rows — cannot vacuously pass, regenerate the golden"]
 
     keys = [k for k in key_cols if k in a.columns]
+    empty = [c for c in g.columns if c not in keys and g[c].null_count() == g.height]
+    if empty:
+        return [f"{golden.name}: all-null columns {empty} — cannot vacuously pass"]
     if keys:
         a = a.sort(keys)
         g = g.sort(keys)

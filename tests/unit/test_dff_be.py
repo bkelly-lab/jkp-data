@@ -31,7 +31,7 @@ class TestLoadDffBeSynthetic:
         assert df["year"].dtype == pl.Int32
         assert df["be"].dtype == pl.Float64
 
-    def test_year_range_derived_from_file(self, synthetic_dff_file):
+    def test_years_start_in_1926(self, synthetic_dff_file):
         df = load_dff_be(synthetic_dff_file)
         assert df["year"].min() == 1926
         assert df["year"].max() == 1929
@@ -59,7 +59,7 @@ class TestLoadDffBeBundled:
         assert get_dff_be_path().exists()
 
     def test_bundled_file_loads(self):
-        df = load_dff_be()
+        df = load_dff_be(get_dff_be_path())
         n_years = df["year"].max() - df["year"].min() + 1
         assert df["year"].min() == 1926
         assert df["year"].max() == 2001
@@ -67,5 +67,5 @@ class TestLoadDffBeBundled:
 
     def test_known_value(self):
         # First record of the file: permno 10006, BE 1926 = 67.743
-        df = load_dff_be()
+        df = load_dff_be(get_dff_be_path())
         assert df.filter((pl.col("permno") == 10006) & (pl.col("year") == 1926))["be"][0] == 67.743

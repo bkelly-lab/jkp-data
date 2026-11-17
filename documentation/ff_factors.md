@@ -64,12 +64,14 @@ June sorts; the sample screens decide only which stocks enter a sort.
   past years of data; their later descriptions of the factors and French's data
   library state no such rule.
 - **Fiscal records, every country:** JKP's annual records, Global over North
-  America at the same datadate, the latest per calendar year
-  (`select_ff_fiscal_records`). A US CRSP security reaches its record through
+  America at the same datadate, the latest per calendar year with a BE, OP or
+  INV (`select_ff_fiscal_records`). A US CRSP security reaches its record through
   the gvkey JKP attaches to it in world_msf, on its June row, with an early-link
   rule for the June 1963-66 formations (`link_accounting_to_securities`). For a US
   CRSP security the DFF BE fills years with no Compustat BE, as in Davis, Fama
-  and French (2000) (`add_dff_book_equity`).
+  and French (2000) (`add_dff_book_equity`); a Compustat BE <= 0 is a BE, so DFF
+  doesn't replace it. Among a US company's records for a year, one with a BE
+  comes first.
 - **BE, every country:** JKP's `be_x` at the fiscal year t-1 record, in USD; a
   stock with BE <= 0 is not eligible for the B/M and OP sorts. Like French's, it
   has no deferred taxes for fiscal years ending in 1993 or later.
