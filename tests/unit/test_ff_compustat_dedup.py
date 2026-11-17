@@ -135,6 +135,37 @@ def test_ff_link_accounting_june_row_without_gvkey(test_paths):
     )
 
 
+def test_ff_link_accounting_falls_back_to_fiscal_year_end_gvkey(test_paths):
+    # 10001: its link to 001 ends after December 2019, so June 2020 has no gvkey;
+    # fiscal 2019 links through the December row. 10002 moves from 002 to 003, which
+    # has no 2019 record; it takes 002's. 10003's June gvkey 004 has its own 2019
+    # record, which wins over 005's at the fiscal year-end.
+    dec, june = date(2019, 12, 31), date(2020, 6, 30)
+    _write_us_msf(
+        test_paths,
+        [
+            (10001, dec, "001"),
+            (10001, june, None),
+            (10002, dec, "002"),
+            (10002, june, "003"),
+            (10003, dec, "005"),
+            (10003, june, "004"),
+        ],
+    )
+    comp = _comp(
+        [
+            (g, 2019, be, None, None)
+            for g, be in [("001", 1.0), ("002", 2.0), ("004", 4.0), ("005", 5.0)]
+        ]
+    )
+    out = link_accounting_to_securities(test_paths, comp)
+    assert out.select("id", "gvkey", "be").rows() == [
+        (10001, "001", 1.0),
+        (10002, "002", 2.0),
+        (10003, "004", 4.0),
+    ]
+
+
 def test_ff_link_accounting_record_without_jkp_values_dropped(test_paths):
     # JKP has no be_x, ope_x or at_gr1 for the record, so it leaves the fiscal
     # records and the US sorts.

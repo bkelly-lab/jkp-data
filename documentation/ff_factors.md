@@ -68,8 +68,9 @@ June sorts; the sample screens decide only which stocks enter a sort.
 - **Fiscal records, every country:** JKP's annual records, Global over North
   America at the same datadate, the latest per calendar year with a BE, OP or
   INV (`select_ff_fiscal_records`). A US CRSP security reaches its record through
-  the gvkey JKP attaches to it in world_msf, on its June row, with an early-link
-  rule for the June 1963-66 formations (`link_accounting_to_securities`). For a US
+  the gvkey JKP attaches to it in world_msf, on its June row, or, when that
+  gvkey has no record, on its row in the fiscal year-end month, with an
+  early-link rule for the June 1963-66 formations (`link_accounting_to_securities`). For a US
   CRSP security the DFF BE fills years with no Compustat BE, as in Davis, Fama
   and French (2000) (`add_dff_book_equity`); a Compustat BE <= 0 is a BE, so DFF
   doesn't replace it. Among a US company's records for a year, one with a BE

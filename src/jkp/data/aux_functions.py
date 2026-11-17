@@ -10276,7 +10276,10 @@ def link_accounting_to_securities(
            statements of the early 1960s for firms whose link starts years later.
         3) Inner-join comp on (gvkey, year); the June row is unique per security and
            year, so the result is too.
-        4) With dff_path, union DFF BE (add_dff_book_equity) into the US CRSP records,
+        4) A security-year with no record from steps 1-3 takes the latest record of
+           year y-1 whose gvkey is on the security's row in the fiscal year-end
+           month: a link that ended or moved between the fiscal year-end and June.
+        5) With dff_path, union DFF BE (add_dff_book_equity) into the US CRSP records,
            to extend coverage to 1926; other records pass through.
     Output:
         Eager [gvkey, id, year, datadate, be, op, inv]; id is the security, the
@@ -10318,16 +10321,27 @@ def link_accounting_to_securities(
         [june.filter(pl.col("gvkey").is_not_null()).select("id", "year", "gvkey", "crsp"), early],
         how="vertical_relaxed",
     )
-    linked = (
-        link.join(
-            comp.lazy().with_columns(pl.col("gvkey").cast(pl.Utf8), pl.col("year").cast(pl.Int32)),
-            on=["gvkey", "year"],
+    cols = ["gvkey", "id", "year", "datadate", "be", "op", "inv", "crsp"]
+    records = comp.lazy().with_columns(pl.col("gvkey").cast(pl.Utf8), pl.col("year").cast(pl.Int32))
+    at_june = link.join(records, on=["gvkey", "year"], how="inner").select(cols)
+    at_fiscal_end = (
+        records.with_columns(eom=pl.col("datadate").dt.month_end())
+        .join(
+            msf.select(
+                pl.col("id").cast(pl.Int64),
+                "eom",
+                gvkey=pl.col("gvkey").cast(pl.Utf8),
+                crsp=pl.col("source_crsp") == 1,
+            ),
+            on=["gvkey", "eom"],
             how="inner",
         )
-        .select("gvkey", "id", "year", "datadate", "be", "op", "inv", "crsp")
-        .sort("id", "year")
-        .collect()
+        .join(at_june, on=["id", "year"], how="anti")
+        .sort("id", "year", "datadate")
+        .unique(["id", "year"], keep="last", maintain_order=True)
+        .select(cols)
     )
+    linked = pl.concat([at_june, at_fiscal_end]).sort("id", "year").collect()
     us = linked.filter("crsp").drop("crsp")
     if dff_path is not None:
         us = add_dff_book_equity(us, dff_path)
