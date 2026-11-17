@@ -1085,7 +1085,8 @@ class TestBuildFFFirmPanel:
         assert panel["id"].to_list() == [1, 2]
         assert panel["me"].to_list() == [100.0, None]
         assert panel["prc"].to_list() == [8.0, 7.0]
-        assert add_ff_buy_and_hold_weights(panel, "monthly")["id"].to_list() == [1, 2]
+        held = add_ff_buy_and_hold_weights(load_ff_universe(test_paths, "monthly"), "monthly")
+        assert held["id"].sort().to_list() == [1, 2]
 
 
 # =============================================================================
@@ -1094,7 +1095,8 @@ class TestBuildFFFirmPanel:
 
 
 def _factor_panel(rows: list[tuple]) -> pl.DataFrame:
-    """Panel rows (excntry, id, date, ret, me) with no gaps, as add_ff_buy_and_hold_weights reads."""
+    """Holding rows (excntry, id, date, ret, me), one holding per id, with no gaps, as
+    add_ff_buy_and_hold_weights reads."""
     return pl.DataFrame(
         rows,
         schema={
@@ -1105,7 +1107,7 @@ def _factor_panel(rows: list[tuple]) -> pl.DataFrame:
             "me": pl.Float64,
         },
         orient="row",
-    ).with_columns(ret_lag_dif=pl.lit(0), bp_pool=pl.lit(False))
+    ).with_columns(sec=pl.col("id"), ret_lag_dif=pl.lit(0))
 
 
 def _weights(rows: list[tuple], freq: str = "monthly") -> dict[tuple[int, date], float | None]:
@@ -1137,6 +1139,23 @@ class TestAddFFBuyAndHoldWeights:
         # August ret is null: compounds as 0
         assert w[(1, date(2020, 9, 30))] == pytest.approx(110.0)
         assert w[(1, date(2020, 10, 31))] == pytest.approx(55.0)
+
+    def test_each_class_held_from_its_june_me(self):
+        """Firm 1's classes 10 and 11 each grow their own June ME by their own return."""
+        panel = _factor_panel(
+            [
+                ("USA", 1, date(2020, 6, 30), 0.0, 100.0),
+                ("USA", 1, date(2020, 7, 31), 0.1, 110.0),
+                ("USA", 1, date(2020, 8, 31), 0.0, 110.0),
+                ("USA", 1, date(2020, 6, 30), 0.0, 50.0),
+                ("USA", 1, date(2020, 7, 31), -0.2, 40.0),
+                ("USA", 1, date(2020, 8, 31), 0.0, 40.0),
+            ]
+        ).with_columns(sec=pl.Series([10, 10, 10, 11, 11, 11]))
+        out = add_ff_buy_and_hold_weights(panel, "monthly").filter(
+            pl.col("date") == date(2020, 8, 31)
+        )
+        assert dict(out.select("sec", "w").iter_rows()) == pytest.approx({10: 110.0, 11: 40.0})
 
     def test_new_year_restarts_from_june(self):
         """The next July starts again from the June ME (row before the year)."""
@@ -1394,6 +1413,12 @@ class TestComputeFFPortfolioReturns:
         assert len(gbr) > 0
         assert gbr["bm_SH"][0] is None
 
+    def test_classes_of_one_firm_count_once(self):
+        """Two classes of firm 1 are one unit: below FACTOR_MIN_STOCKS_PF units, null."""
+        rows = [{"id": 1, "ret": 0.1, "w": 1.0}] * FACTOR_MIN_STOCKS_PF
+        result = compute_ff_portfolio_returns(_leg_frame(rows), "bm", FACTOR_MIN_STOCKS_PF)
+        assert result["bm_SH"][0] is None
+
     def test_row_at_min_stocks_not_nulled(self):
         """A bucket with n == FACTOR_MIN_STOCKS_PF passes through."""
         rows = [
@@ -1453,7 +1478,13 @@ def _full_annual(bm: bool = True) -> list[tuple]:
 
 
 _FULL_MOM = [(0.01, "SL"), (0.01, "SH"), (0.01, "BL"), (0.01, "BH")]
-_EXIT_SCHEMA = {"excntry": pl.Utf8, "id": pl.Int64, "port_year": pl.Int32, "exit_eom": pl.Date}
+_EXIT_SCHEMA = {
+    "excntry": pl.Utf8,
+    "id": pl.Int64,
+    "sec": pl.Int64,
+    "port_year": pl.Int32,
+    "exit_eom": pl.Date,
+}
 _NO_EXITS = pl.DataFrame(schema=_EXIT_SCHEMA)
 
 
@@ -1475,12 +1506,21 @@ def _returns(
         {
             "excntry": [excntry] * n,
             "id": list(range(n)),
+            "sec": list(range(n)),
             "date": [d] * n,
             "ret": [a[0] for a in annual],
             "w": [1.0] * n,
         }
     )
-    members = pl.DataFrame(
+    return compute_ff_factor_returns(
+        rows, _returns_members(annual, excntry), exits, _returns_mom(mom, d, excntry), min_stocks_pf
+    )
+
+
+def _returns_members(annual: list[tuple], excntry: str = US_EXCNTRY) -> pl.DataFrame:
+    """June 2020 memberships of stocks 0..n-1 from (ret, bm_port, op_port, inv_port)."""
+    n = len(annual)
+    return pl.DataFrame(
         {
             "excntry": [excntry] * n,
             "id": list(range(n)),
@@ -1491,7 +1531,11 @@ def _returns(
         },
         schema_overrides={"bm_port": pl.Utf8, "op_port": pl.Utf8, "inv_port": pl.Utf8},
     )
-    mom_frame = pl.DataFrame(
+
+
+def _returns_mom(mom: list[tuple], d: date, excntry: str = US_EXCNTRY) -> pl.DataFrame:
+    """UMD rows of stocks 0..n-1 on d from (ret, mom_port), weight 1."""
+    return pl.DataFrame(
         {
             "excntry": [excntry] * len(mom),
             "id": list(range(len(mom))),
@@ -1501,7 +1545,6 @@ def _returns(
             "mom_port": [m[1] for m in mom],
         }
     )
-    return compute_ff_factor_returns(rows, members, exits, mom_frame, min_stocks_pf)
 
 
 class TestComputeFFFactorReturns:
@@ -1581,6 +1624,7 @@ class TestComputeFFFactorReturns:
                     {
                         "excntry": [US_EXCNTRY] * 5,
                         "id": ids,
+                        "sec": ids,
                         "date": [d] * 5,
                         "ret": rets,
                         "w": [1.0] * 5,
@@ -1607,9 +1651,13 @@ class TestComputeFFFactorReturns:
                 )
             ]
         )
-        mom = rows.filter(pl.col("id") < 5).with_columns(
-            mom_port=pl.col("id").replace_strict(
-                {1: "SL", 2: "SH", 3: "BL", 4: "BH"}, return_dtype=pl.Utf8
+        mom = (
+            rows.filter(pl.col("id") < 5)
+            .drop("sec")
+            .with_columns(
+                mom_port=pl.col("id").replace_strict(
+                    {1: "SL", 2: "SH", 3: "BL", 4: "BH"}, return_dtype=pl.Utf8
+                )
             )
         )
         out = compute_ff_factor_returns(rows, members, _NO_EXITS, mom, 1)
@@ -1644,6 +1692,7 @@ class TestComputeFFFactorReturns:
             {
                 "excntry": [US_EXCNTRY],
                 "id": [2],
+                "sec": [2],
                 "port_year": [2020],
                 "exit_eom": [date(2020, 7, 31)],
             },
@@ -1660,12 +1709,45 @@ class TestComputeFFFactorReturns:
             {
                 "excntry": [US_EXCNTRY],
                 "id": [2],
+                "sec": [2],
                 "port_year": [2020],
                 "exit_eom": [date(2020, 8, 31)],
             },
             schema=_EXIT_SCHEMA,
         )
         assert _returns(_full_annual(), exits=exits)["hml_ff"][0] is not None
+
+    def test_exited_class_leaves_its_firm(self):
+        """Firm 2, alone in B/M SH, holds class 2 (w 3, ret 0.1) and class 21 (w 1,
+        ret 0.5); every other bucket earns 0.01. With class 21 exited, SH earns 0.1;
+        before, 0.2 (both classes, value-weighted)."""
+        annual = _full_annual()
+        rows = pl.DataFrame(
+            {
+                "excntry": [US_EXCNTRY] * (len(annual) + 1),
+                "id": [*range(len(annual)), 2],
+                "sec": [*range(len(annual)), 21],
+                "date": [date(2020, 7, 31)] * (len(annual) + 1),
+                "ret": [0.1 if i == 2 else a[0] for i, a in enumerate(annual)] + [0.5],
+                "w": [3.0 if i == 2 else 1.0 for i in range(len(annual))] + [1.0],
+            }
+        )
+        members = _returns_members(annual)
+        exits = pl.DataFrame(
+            {
+                "excntry": [US_EXCNTRY],
+                "id": [2],
+                "sec": [21],
+                "port_year": [2020],
+                "exit_eom": [date(2020, 7, 31)],
+            },
+            schema=_EXIT_SCHEMA,
+        )
+        mom = _returns_mom(_FULL_MOM, date(2020, 7, 31))
+        hml = compute_ff_factor_returns(rows, members, exits, mom, 1)["hml_ff"][0]
+        both = compute_ff_factor_returns(rows, members, _NO_EXITS, mom, 1)["hml_ff"][0]
+        assert hml == pytest.approx((0.1 + 0.01) / 2 - 0.01)
+        assert both == pytest.approx((0.2 + 0.01) / 2 - 0.01)
 
 
 # =============================================================================
@@ -1686,7 +1768,7 @@ def _exits(rows: list[tuple]) -> dict[tuple[int, int], date]:
             "w": pl.Float64,
         },
         orient="row",
-    )
+    ).with_columns(sec=pl.col("id"))
     out = compute_ff_june_exits(df)
     return {(r["id"], r["port_year"]): r["exit_eom"] for r in out.iter_rows(named=True)}
 

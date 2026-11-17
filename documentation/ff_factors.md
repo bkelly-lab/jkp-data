@@ -30,11 +30,12 @@ June sorts; the sample screens decide only which stocks enter a sort.
 ## Rules
 
 - **US:** CRSP CIZ common shares of US companies on NYSE/AMEX/NASDAQ, NYSE
-  breakpoints. The unit is the company, the CRSP permco: its share classes
-  combine as securities in a portfolio (`build_ff_firm_panel`), with ME = JKP's
-  `me_company` and the return weighted by class ME at t-1, without French's hand
-  splits of a permco. A company is NYSE if any class is. Daily weights use the
-  CIZ sum over the classes.
+  breakpoints. The unit is the company, the CRSP permco: it is sorted with ME =
+  JKP's `me_company` (`build_ff_firm_panel`), without French's hand splits of a
+  permco. A company is NYSE if any class is. The B/M, OP and INV portfolios hold
+  each of its classes, so its weight is the sum of its classes' weights; UMD
+  holds the company, with the return weighted by class ME at t-1. Daily sorts
+  use the CIZ sum over the classes.
 - **Elsewhere:** JKP's main sample, per-country breakpoints.
 - **Minimums, every country, the US included:** `FACTOR_MIN_STOCKS_BP` pool
   stocks for a breakpoint and `FACTOR_MIN_STOCKS_PF` stocks for a portfolio
@@ -42,15 +43,16 @@ June sorts; the sample screens decide only which stocks enter a sort.
 - **Returns, every country:** JKP's world_msf/world_dsf, so US returns include
   CRSP's delisting return (-30% where a bad delisting has none).
 - **Weights, every country:** buy-and-hold from June, as Fama and French hold
-  the portfolios from July to June. A stock's weight is its end-of-June ME grown
+  the portfolios from July to June. A security's weight is its end-of-June ME grown
   by its total return since then (`add_ff_buy_and_hold_weights`), so dividends
   are reinvested in the stock; UMD, re-sorted every period, weights by ME at t-1.
   Each portfolio return rescales the weights of the stocks with a return to sum
   to one.
-- **Missing months, every country:** a stock leaves its B/M, OP and INV
+- **Missing months, every country:** a security leaves its B/M, OP and INV
   portfolios from the first month after June without a monthly return (no row, a
   null return or no weight) until the next June, in the monthly and daily
-  portfolios (`compute_ff_june_exits`). A month in which the whole country has no
+  portfolios (`compute_ff_june_exits`). A US share class leaves alone, taking its
+  value out of its company's weight. A month in which the whole country has no
   data doesn't count. UMD is re-formed every period and has no such rule.
 - **Formation, every country:** June ME from the June row and Dec ME from the
   December t-1 row, with no fallback to earlier months, so a stock halted over

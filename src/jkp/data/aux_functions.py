@@ -9960,14 +9960,16 @@ def load_ff_universe(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl.
           AMEX or NASDAQ; the raw CIZ files add only what the world files don't
           carry, usincflg and, daily, primaryexch and permco. The unit (id) is the
           company, the CRSP permco, as it is (Fama and French split some permcos
-          by hand: group stocks, tracking stocks, relistings). w_cls, the class's ME at t-1
-          from its CRSP common-share rows, so a class back on N/A/Q keeps it (null
-          after a gap in CRSP, _add_ff_contiguous), weights the classes' returns. Monthly rows carry JKP's me_company, the ME of all the
+          by hand: group stocks, tracking stocks, relistings); the holding (sec) is the
+          class, the CRSP permno. w_cls, the class's ME at t-1 from its CRSP
+          common-share rows, so a class back on N/A/Q keeps it (null after a gap in
+          CRSP, _add_ff_contiguous), weights the classes' returns in the firm panel.
+          Monthly rows carry JKP's me_company, the ME of all the
           company's classes; daily rows have none. NYSE-listed classes form the
           breakpoint pool. ret_lag_dif is the world file's, as in every country: JKP
           sets it to 1 on every CRSP row, so the gap rule never nulls a US return.
         - Elsewhere: JKP's main sample (common stock, main observation, primary
-          security, main exchange); the unit is the
+          security, main exchange); the unit and the holding (sec) are the
           security. size_grp small, large or mega forms the breakpoint pool (daily
           rows take it from the previous month's world_msf row, the latest known
           on every day of the month).
@@ -9979,7 +9981,7 @@ def load_ff_universe(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl.
         2) Elsewhere: world rows in JKP's main sample.
         3) Both with the rule columns, concatenated.
     Output:
-        Lazy [excntry, id, date, ret, me, me_company, prc, ret_lag_dif, w_cls,
+        Lazy [excntry, id, sec, date, ret, me, me_company, prc, ret_lag_dif, w_cls,
         bp_pool], one row per US class or other security.
     """
     monthly = freq == "monthly"
@@ -10044,6 +10046,7 @@ def load_ff_universe(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl.
             "prc",
             "ret_lag_dif",
             "w_cls",
+            sec="permno",
             bp_pool=pl.col("primaryexch") == "N",
         )
     )
@@ -10072,6 +10075,7 @@ def load_ff_universe(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl.
         prc="prc",
         ret_lag_dif="ret_lag_dif",
         w_cls=pl.lit(None, dtype=pl.Float64),
+        sec=pl.col("id").cast(pl.Int64),
         bp_pool=pl.col("size_grp").is_in(["small", "large", "mega"]),
     )
     return pl.concat([us, other], how="vertical_relaxed")
@@ -10081,7 +10085,9 @@ def build_ff_firm_panel(paths: DataPaths, freq: Literal["monthly", "daily"]) -> 
     """
     Description:
         The FF panel: one row per unit and date in the FF universe, with the same
-        aggregation in every country. A US firm combines its share classes as
+        aggregation in every country; it forms the portfolios and holds UMD (the
+        June legs hold each class, add_ff_buy_and_hold_weights). A US firm combines
+        its share classes as
         securities in a portfolio: the return weighted by each class's ME at t-1
         over classes with a return and a positive weight, ME JKP's me_company
         where the rows carry it (US monthly) and otherwise the sum of the rows'
@@ -10118,12 +10124,14 @@ def build_ff_firm_panel(paths: DataPaths, freq: Literal["monthly", "daily"]) -> 
 
 
 def add_ff_buy_and_hold_weights(
-    panel: pl.DataFrame, freq: Literal["monthly", "daily"]
+    holdings: pl.LazyFrame | pl.DataFrame, freq: Literal["monthly", "daily"]
 ) -> pl.DataFrame:
     """
     Description:
-        The panel rows that enter the factor portfolios, with FF value weights; the same rule in
-        every country. A return spanning a gap (ret_lag_dif over one month, or
+        The rows the June portfolios hold, with FF value weights; the same rule in
+        every country. The holding is the security: a US firm's classes are held
+        separately, so the firm's weight is the sum of its classes' and a class that
+        leaves takes its value with it (compute_ff_june_exits). A return spanning a gap (ret_lag_dif over one month, or
         FF_RET_MAX_GAP_DAYS days) is nulled, not row-dropped, so the row's ME still
         serves formation and the weight lags. Fama and French hold each portfolio from
         July to June, so a stock's weight is its ME at the end of June grown by its
@@ -10132,20 +10140,19 @@ def add_ff_buy_and_hold_weights(
     Steps:
         1) Null the gap-spanning returns. A row without ME stays: weights use ME
            at t-1 and June, never ME at t.
-        2) Portfolio year: July to June of the row's date. me_base: ME on the stock's
-           row before the year's first row, the end of June when the stock has a
-           June row.
+        2) Portfolio year: July to June of the row's date. me_base: ME on the holding's
+           row before the year's first row, the end of June when it has a June row.
         3) w = me_base x the year's cumulative (1 + ret) up to t-1, a null ret
            compounding as 0; null unless ME at t-1 is positive.
         4) Listing gap: w is null when the previous row is not the previous period
            (_add_ff_contiguous).
     Output:
-        Eager [excntry, id, date, ret, w, me, bp_pool].
+        Eager [excntry, id, sec, date, ret, w].
     """
-    k = ["excntry", "id"]
+    k = ["excntry", "id", "sec"]
     yp = [*k, "period"]
     return (
-        panel.lazy()
+        holdings.lazy()
         .with_columns(ret=pl.when(pl.col("ret_lag_dif") <= _ff_max_gap(freq)).then(pl.col("ret")))
         .sort([*k, "date"])
         .pipe(_add_ff_contiguous, freq, k)
@@ -10158,15 +10165,12 @@ def add_ff_buy_and_hold_weights(
             cum=(1.0 + pl.col("ret").fill_null(0.0)).cum_prod().over(yp),
         )
         .select(
-            "excntry",
-            "id",
+            *k,
             "date",
             "ret",
             w=pl.when(pl.col("contiguous") & (pl.col("lag_me") > 0)).then(
                 pl.col("me_base") * pl.col("cum").shift(1).over(yp).fill_null(1.0)
             ),
-            me="me",
-            bp_pool="bp_pool",
         )
         .collect()
     )
@@ -10614,17 +10618,13 @@ def assign_ff_portfolios(
     )
 
 
-def build_ff_june_assignments(
-    paths: DataPaths,
-    monthly_panel: pl.DataFrame,
-    monthly_return_data: pl.DataFrame,
-) -> pl.DataFrame:
+def build_ff_june_assignments(paths: DataPaths, monthly_panel: pl.DataFrame) -> pl.DataFrame:
     """
     Description:
         The June portfolio assignments for the B/M, OP and INV sorts, formed once a
         year and held from July to June at both frequencies.
     Steps:
-        1) June rows of the monthly return data, left-joined to the annual
+        1) June rows of the monthly panel, left-joined to the annual
            characteristics (compute_ff_annual_characteristics), so stocks without
            accounting stay in the size-breakpoint pools.
         2) Breakpoints per country and June (compute_ff_breakpoints).
@@ -10634,7 +10634,7 @@ def build_ff_june_assignments(
         for each June sort.
     """
     june_characteristics = (
-        monthly_return_data.filter(pl.col("date").dt.month() == 6)
+        monthly_panel.filter(pl.col("date").dt.month() == 6)
         .with_columns(port_year=pl.col("date").dt.year())
         .join(
             compute_ff_annual_characteristics(paths, monthly_panel),
@@ -10799,22 +10799,27 @@ def compute_ff_momentum_signal(
 
 
 def build_ff_momentum_assignments(
-    panel: pl.DataFrame,
-    return_data: pl.DataFrame,
-    freq: Literal["monthly", "daily"],
+    panel: pl.DataFrame, freq: Literal["monthly", "daily"]
 ) -> pl.DataFrame:
     """
     Description:
-        The UMD portfolio assignments at one frequency, re-formed every period.
+        The UMD portfolio assignments at one frequency, re-formed every period. UMD
+        holds the panel's units, with a return spanning a gap nulled.
     Steps:
-        1) Momentum signal (compute_ff_momentum_signal).
+        1) Momentum signal (compute_ff_momentum_signal) on every panel row.
         2) Breakpoints per country and period (compute_ff_breakpoints).
         3) Assignments (assign_ff_portfolios).
     Output:
         Eager: the momentum rows in country-periods with breakpoints, plus
         mom_port.
     """
-    momentum_data = compute_ff_momentum_signal(panel, return_data, freq)
+    rows = panel.select(
+        "excntry",
+        "id",
+        "date",
+        ret=pl.when(pl.col("ret_lag_dif") <= _ff_max_gap(freq)).then(pl.col("ret")),
+    )
+    momentum_data = compute_ff_momentum_signal(panel, rows, freq)
     momentum_breakpoints = compute_ff_breakpoints(momentum_data, ["mom"], FACTOR_MIN_STOCKS_BP)
     return assign_ff_portfolios(momentum_data, momentum_breakpoints, ["mom"])
 
@@ -10825,8 +10830,8 @@ def compute_ff_portfolio_returns(
     """
     Description:
         One sort's six value-weighted portfolio returns per (excntry, date), over
-        stocks with a return and a positive weight. A portfolio with fewer than
-        min_stocks_pf stocks is null, in every country; a portfolio nobody holds
+        rows with a return and a positive weight. A portfolio with fewer than
+        min_stocks_pf units (firms in the US) is null, in every country; a portfolio nobody holds
         that date is a null column.
     Steps:
         1) Value-weighted return per (excntry, date, bucket), null below min_stocks_pf.
@@ -10842,7 +10847,7 @@ def compute_ff_portfolio_returns(
         .group_by("excntry", "date", port.alias("bucket"))
         .agg(
             vwret=safe_div((pl.col("ret") * pl.col("w")).sum(), pl.col("w").sum(), "vwret"),
-            n=pl.len(),
+            n=pl.col("id").n_unique(),
         )
         .with_columns(vwret=pl.when(pl.col("n") >= min_stocks_pf).then(pl.col("vwret")))
         .pivot(values="vwret", index=["excntry", "date"], on="bucket")
@@ -10864,20 +10869,22 @@ def _long_short_spread(sort: str, long: list[str], short: list[str]) -> pl.Expr:
 def compute_ff_june_exits(monthly_return_data: pl.DataFrame) -> pl.DataFrame:
     """
     Description:
-        The month each stock leaves its June portfolios: the first month from July in
-        which it earns no monthly return, because it has no row, a null return, or no
-        weight. It stays out until the next June, in the monthly and daily portfolios.
-        A month in which the whole country has no data is not a missing month.
+        The month each holding (a US share class, a security elsewhere) leaves its
+        June portfolios: the first month from July in which it earns no monthly
+        return, because it has no row, a null return, or no weight. It stays out
+        until the next June, in the monthly and daily portfolios; a US firm keeps
+        its other classes. A month in which the whole country has no data is not a
+        missing month.
     Steps:
-        1) Per stock, the first missing month of each flagged row: its own month for a
+        1) Per holding, the first missing month of each flagged row: its own month for a
            null ret or w, the month after the previous row when the previous row is
            not the previous month (_add_ff_contiguous).
-        2) exit_eom per stock and July-June year of that month: the earliest. A stock
-           held from June has a June row, so its gaps start in July or later.
+        2) exit_eom per holding and July-June year of that month: the earliest. A
+           holding held from June has a June row, so its gaps start in July or later.
     Output:
-        Eager [excntry, id, port_year, exit_eom].
+        Eager [excntry, id, sec, port_year, exit_eom].
     """
-    k = ["excntry", "id"]
+    k = ["excntry", "id", "sec"]
     missed = ~pl.col("contiguous").fill_null(True)
     return (
         monthly_return_data.lazy()
@@ -10910,8 +10917,8 @@ def compute_ff_factor_returns(
         form every period. SMB3 is the
         B/M sort's size spread and SMB5 averages the size spreads of the June sorts.
     Steps:
-        1) Broadcast the June assignments to the rows of the following July-June,
-           up to the stock's exit month (compute_ff_june_exits).
+        1) Broadcast each unit's June assignments to its holdings' rows of the
+           following July-June, up to each holding's exit month (compute_ff_june_exits).
         2) One leg per sort (compute_ff_portfolio_returns).
         3) Full join on (excntry, date): a country-date can pass the minimum-stock
            rules for UMD but not for FF3/FF5. Then the spreads.
@@ -10930,7 +10937,7 @@ def compute_ff_factor_returns(
             on=["excntry", "id", "port_year"],
             how="inner",
         )
-        .join(june_exits, on=["excntry", "id", "port_year"], how="left")
+        .join(june_exits, on=["excntry", "id", "sec", "port_year"], how="left")
         .filter(pl.col("exit_eom").is_null() | (pl.col("date").dt.month_end() < pl.col("exit_eom")))
     )
     legs = [compute_ff_portfolio_returns(held, s, min_stocks_pf) for s in FF_JUNE_SORTS] + [
@@ -10974,9 +10981,10 @@ def gen_ff_data(
         Methodology, references and the differences from Fama and French:
         documentation/ff_factors.md.
     Steps:
-        1) Monthly: June sorts (build_ff_june_assignments), each stock's exit month
-           (compute_ff_june_exits), momentum sorts (build_ff_momentum_assignments),
-           then the factor returns.
+        1) Monthly: June sorts (build_ff_june_assignments) and momentum sorts
+           (build_ff_momentum_assignments) on the firm panel; then the held rows
+           (add_ff_buy_and_hold_weights), each holding's exit month
+           (compute_ff_june_exits) and the factor returns.
         2) Daily: momentum sorts on the daily data, then the factor returns with
            the same June sorts and exits.
     Output:
@@ -10986,13 +10994,11 @@ def gen_ff_data(
     # 1) Monthly: June sorts, exits, momentum, factor returns. Each frame is dropped
     # once used, so the daily build runs with only the June sorts and exits.
     monthly_panel = build_ff_firm_panel(paths, "monthly")
-    monthly_return_data = add_ff_buy_and_hold_weights(monthly_panel, "monthly")
-    june_assignments = build_ff_june_assignments(paths, monthly_panel, monthly_return_data)
-    june_exits = compute_ff_june_exits(monthly_return_data)
-    monthly_momentum_assignments = build_ff_momentum_assignments(
-        monthly_panel, monthly_return_data, "monthly"
-    )
+    june_assignments = build_ff_june_assignments(paths, monthly_panel)
+    monthly_momentum_assignments = build_ff_momentum_assignments(monthly_panel, "monthly")
     del monthly_panel
+    monthly_return_data = add_ff_buy_and_hold_weights(load_ff_universe(paths, "monthly"), "monthly")
+    june_exits = compute_ff_june_exits(monthly_return_data)
     compute_ff_factor_returns(
         monthly_return_data,
         june_assignments,
@@ -11003,12 +11009,10 @@ def gen_ff_data(
     del monthly_return_data, monthly_momentum_assignments
 
     # 2) Daily: momentum and factor returns, with the June sorts and exits.
-    daily_panel = build_ff_firm_panel(paths, "daily")
-    daily_return_data = add_ff_buy_and_hold_weights(daily_panel, "daily")
     daily_momentum_assignments = build_ff_momentum_assignments(
-        daily_panel, daily_return_data, "daily"
+        build_ff_firm_panel(paths, "daily"), "daily"
     )
-    del daily_panel
+    daily_return_data = add_ff_buy_and_hold_weights(load_ff_universe(paths, "daily"), "daily")
     compute_ff_factor_returns(
         daily_return_data,
         june_assignments,

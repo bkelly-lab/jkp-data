@@ -274,7 +274,7 @@ def test_select_ff_fiscal_records_op_definition(test_paths):
             ("102", 50.0, 10.0, 2.0, 10.0, 8.0),  # mibt wins
             ("103", 50.0, 10.0, 2.0, None, 8.0),  # mib + mibn
             ("104", 50.0, 10.0, None, None, None),  # no minority interest
-            ("105", -5.0, 10.0, None, None, None),  # non-positive BE -> null
+            ("105", None, 10.0, None, None, None),  # BE <= 0 (be_x null upstream) -> null
         ],
     )
     _write_achars_world(test_paths.interim_dir / "achars_world.parquet", [])
