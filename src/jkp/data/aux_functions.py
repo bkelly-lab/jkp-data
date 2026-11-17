@@ -10276,8 +10276,8 @@ def link_accounting_to_securities(
            statements of the early 1960s for firms whose link starts years later.
         3) Inner-join comp on (gvkey, year); the June row is unique per security and
            year, so the result is too.
-        4) A security-year with no record from steps 1-3 takes the latest record of
-           year y-1 whose gvkey is on the security's row in the fiscal year-end
+        4) A security with a June y row and no record from steps 1-3 takes the
+           latest record of year y-1 whose gvkey is on its row in the fiscal year-end
            month: a link that ended or moved between the fiscal year-end and June.
         5) With dff_path, union DFF BE (add_dff_book_equity) into the US CRSP records,
            to extend coverage to 1926; other records pass through.
@@ -10336,6 +10336,7 @@ def link_accounting_to_securities(
             on=["gvkey", "eom"],
             how="inner",
         )
+        .join(june.select("id", "year"), on=["id", "year"], how="semi")
         .join(at_june, on=["id", "year"], how="anti")
         .sort("id", "year", "datadate")
         .unique(["id", "year"], keep="last", maintain_order=True)

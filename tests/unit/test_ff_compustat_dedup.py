@@ -139,7 +139,7 @@ def test_ff_link_accounting_falls_back_to_fiscal_year_end_gvkey(test_paths):
     # 10001: its link to 001 ends after December 2019, so June 2020 has no gvkey;
     # fiscal 2019 links through the December row. 10002 moves from 002 to 003, which
     # has no 2019 record; it takes 002's. 10003's June gvkey 004 has its own 2019
-    # record, which wins over 005's at the fiscal year-end.
+    # record, which wins over 005's at the fiscal year-end. 10004 has no June row.
     dec, june = date(2019, 12, 31), date(2020, 6, 30)
     _write_us_msf(
         test_paths,
@@ -150,12 +150,13 @@ def test_ff_link_accounting_falls_back_to_fiscal_year_end_gvkey(test_paths):
             (10002, june, "003"),
             (10003, dec, "005"),
             (10003, june, "004"),
+            (10004, dec, "006"),
         ],
     )
     comp = _comp(
         [
             (g, 2019, be, None, None)
-            for g, be in [("001", 1.0), ("002", 2.0), ("004", 4.0), ("005", 5.0)]
+            for g, be in [("001", 1.0), ("002", 2.0), ("004", 4.0), ("005", 5.0), ("006", 6.0)]
         ]
     )
     out = link_accounting_to_securities(test_paths, comp)
