@@ -10191,9 +10191,9 @@ def load_jkp_annual_accounting(paths: DataPaths) -> pl.DataFrame:
            the total.
         2) Left-join at_gr1 from achars_world at the record's first public_date.
     Output:
-        Eager [gvkey, datadate, be_x, seq_x, op, at_gr1], keyed (gvkey, datadate),
-        USD (acc_std_ann is built with convert_to_usd=1). be_x is null both when
-        BE <= 0 and when its inputs are missing; seq_x is null only in the second case.
+        Eager [gvkey, datadate, be_x, op, at_gr1], keyed (gvkey, datadate), USD
+        (acc_std_ann is built with convert_to_usd=1). be_x is null when BE <= 0 or
+        its inputs are missing.
     """
     mi = pl.coalesce(pl.col("mibt"), pl.col("mib").fill_null(0.0) + pl.col("mibn").fill_null(0.0))
     at_gr1 = (
@@ -10210,7 +10210,6 @@ def load_jkp_annual_accounting(paths: DataPaths) -> pl.DataFrame:
             "gvkey",
             "datadate",
             "be_x",
-            "seq_x",
             op=safe_div(pl.col("ope_x"), pl.col("be_x") + mi, "op"),
         )
         .join(at_gr1, on=["gvkey", "datadate"], how="left")
@@ -10227,9 +10226,7 @@ def select_ff_fiscal_records(jkp_acc: pl.DataFrame) -> pl.DataFrame:
     Steps:
         1) jkp_acc (load_jkp_annual_accounting) holds JKP's records, Global over North America
            where both report the same datadate (add_helper_vars).
-        2) be = be_x, and 0 where be_x is null but seq_x is not (BE <= 0), so the
-           record has a BE: the DFF splice doesn't fill it, and B/M and OP, which
-           need BE > 0, exclude it.
+        2) be = be_x: null when BE <= 0, so the DFF splice can fill that year.
         3) Records with no BE, OP or INV drop; then one record per (gvkey, year),
            the latest datadate (a change of fiscal year-end can give two in one
            calendar year).
@@ -10244,7 +10241,7 @@ def select_ff_fiscal_records(jkp_acc: pl.DataFrame) -> pl.DataFrame:
             "datadate",
             "op",
             year=pl.col("datadate").dt.year(),
-            be=pl.when(pl.col("seq_x").is_not_null()).then(pl.col("be_x").fill_null(0.0)),
+            be="be_x",
             inv="at_gr1",
         )
         .filter(

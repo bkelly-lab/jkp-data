@@ -940,7 +940,6 @@ def gen_acc_std_ann(funda: pl.DataFrame, g_funda: pl.DataFrame) -> pl.DataFrame:
             "curcd",
             source=pl.lit(source),
             be_x=pl.when(be_x > 0).then(be_x).otherwise(None),
-            seq_x=seq_x,
             ope_x=ebitda_x - pl.coalesce(pl.col("xint"), pl.lit(0.0)),
             mib=pl.col("mib"),
             mibt=pl.col("mibt"),

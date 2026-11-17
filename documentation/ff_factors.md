@@ -72,8 +72,8 @@ June sorts; the sample screens decide only which stocks enter a sort.
   gvkey has no record, on its row in the fiscal year-end month, with an
   early-link rule for the June 1963-66 formations (`link_accounting_to_securities`). For a US
   CRSP security the DFF BE fills years with no Compustat BE, as in Davis, Fama
-  and French (2000) (`add_dff_book_equity`); a Compustat BE <= 0 is a BE, so DFF
-  doesn't replace it. Among a US company's records for a year, one with a BE
+  and French (2000) (`add_dff_book_equity`), including years where JKP's `be_x`
+  is null because BE <= 0. Among a US company's records for a year, one with a BE
   comes first.
 - **BE, every country:** JKP's `be_x` at the fiscal year t-1 record, in USD; a
   stock with BE <= 0 is not eligible for the B/M and OP sorts. Like French's, it
