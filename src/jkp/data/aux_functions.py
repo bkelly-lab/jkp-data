@@ -4193,12 +4193,12 @@ def standardized_accounting_data(
     Steps:
         1) Inspect FUNDQ schemas; define target income/CF/BS/other vars; collect quarterly suffix vars (…q/…y).
         2) Load & filter raw GLOBAL and/or NA (annual/quarterly) via helper; add computed fields (e.g., ni, niq, ppegtq); drop vars as needed; apply INDFMT resolver;
-           annual: add csho_gr1 within each source (add_csho_gr1).
+           annual: compute csho_gr1 within each source (add_csho_gr1), before step 3 combines them.
         3) If world: concat NA+GLOBAL; where both report the same firm-period (annual: gvkey, datadate;
            quarterly: gvkey, fyr, fyearq, fqtr), keep the GLOBAL row.
         4) If convert_to_usd: join FX and convert listed vars (annual & quarterly).
         5) Load ME and join to annual/quarterly panels.
-        6) Quarterly: drop rows without fqtr and quarterize …y → …y_q, coalesce to …q; create ni_qtr/sale_qtr/ocf_qtr; cumulate 4Q flows with continuity checks; normalize currency codes; de-dupe to one row per (gvkey, datadate), keeping the established fiscal calendar.
+        6) Quarterly: drop rows without fqtr and quarterize …y → …y_q, coalesce to …q; create ni_qtr/sale_qtr/ocf_qtr; cumulate 4Q flows with continuity checks; normalize currency codes; de-dupe to one row per (gvkey, datadate), keeping the established fiscal calendar. Add the annual-only items (e.g., emp, csho_gr1) as nulls.
         7) Annual: add empty quarterly helpers; join ME; sort.
         8) Optionally add helper variables.
         9) Unique by (gvkey, datadate), drop row index, sort, and write 'acc_std_ann.parquet' and 'acc_std_qtr.parquet'.
@@ -4295,8 +4295,9 @@ def standardized_accounting_data(
         "mib",
         "icapt",
     ]  # Liabilities
-    # Variables in avars_other are not measured in currency units, and only available in annual data
-    avars_other = ["emp"]
+    # Variables in avars_other are not measured in currency units, and only available in annual data.
+    # csho_gr1 is not a Compustat item: add_csho_gr1 computes it within each source.
+    avars_other = ["emp", "csho_gr1"]
     avars = avars_inc + avars_cf + avars_bs
     # finding which variables of interest are available in the quarterly data
     combined_columns = g_fundq_cols + fundq_cols
@@ -4319,19 +4320,19 @@ def standardized_accounting_data(
     qvars = qvars_q + qvars_y
     if coverage in ["global", "world"]:
         # Annual global data:
-        vars_not_in_query = ["gp", "pstkrv", "pstkl", "itcb", "xad", "txbcof", "ni"]
+        vars_not_in_query = ["gp", "pstkrv", "pstkl", "itcb", "xad", "txbcof", "ni", "csho_gr1"]
         query_vars = [var for var in (avars + avars_other) if var not in vars_not_in_query]
         g_funda = load_raw_fund_table_and_filter(
             paths.raw_tables_dir / "comp_g_funda.parquet", start_date, "GLOBAL", 1
         )
         __gfunda = (
             g_funda.with_columns(
-                ni=(col("ib") + pl.coalesce("xi", 0) + pl.coalesce("do", 0)).cast(pl.Float64)
+                ni=(col("ib") + pl.coalesce("xi", 0) + pl.coalesce("do", 0)).cast(pl.Float64),
+                csho_adj=(col("cshoi") * col("ajexi")).cast(pl.Float64),
             )
             .select(
-                ["gvkey", "datadate", "n", "indfmt", "curcd", "source", "ni", "fyear"]
+                ["gvkey", "datadate", "n", "indfmt", "curcd", "source", "ni", "fyear", "csho_adj"]
                 + [fl_none().alias(i) for i in ["gp", "pstkrv", "pstkl", "itcb", "xad", "txbcof"]]
-                + [(col("cshoi") * col("ajexi")).cast(pl.Float64).alias("csho_adj")]
                 + query_vars
             )
             .pipe(apply_indfmt_filter, ["gvkey", "datadate"])
@@ -4396,17 +4397,20 @@ def standardized_accounting_data(
         )
     if coverage in ["na", "world"]:
         # Annual north american data:
-        vars_not_in_query = ["wcapt", "ltdch", "purtshr"]
+        vars_not_in_query = ["wcapt", "ltdch", "purtshr", "csho_gr1"]
         query_vars = [var for var in (avars + avars_other) if var not in vars_not_in_query]
         funda = load_raw_fund_table_and_filter(
             paths.raw_tables_dir / "comp_funda.parquet", start_date, "NA", 2
         )
-        __funda = funda.select(
-            ["gvkey", "datadate", "n", "curcd", "source", "fyear"]
-            + [fl_none().alias(i) for i in ["wcapt", "ltdch", "purtshr"]]
-            + [(col("csho") * col("ajex")).cast(pl.Float64).alias("csho_adj")]
-            + query_vars
-        ).pipe(add_csho_gr1)
+        __funda = (
+            funda.with_columns(csho_adj=(col("csho") * col("ajex")).cast(pl.Float64))
+            .select(
+                ["gvkey", "datadate", "n", "curcd", "source", "fyear", "csho_adj"]
+                + [fl_none().alias(i) for i in ["wcapt", "ltdch", "purtshr"]]
+                + query_vars
+            )
+            .pipe(add_csho_gr1)
+        )
         # Quarterly north american data:
         vars_not_in_query = [
             "dvtq",
@@ -4586,6 +4590,7 @@ def standardized_accounting_data(
                     "xad",
                     "xlr",
                     "emp",
+                    "csho_gr1",
                 ]
             ]
         )
