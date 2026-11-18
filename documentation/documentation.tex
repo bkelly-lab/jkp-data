@@ -1646,6 +1646,8 @@ The abbreviation is used to refer to the accounting variable. A suffix of '\mbox
 	\hline 
 
     Employees in Thousands & emp & Compustat item \href{https://wrds-www.wharton.upenn.edu/data-dictionary/form_metadata/comp_na_daily_all_funda_miscellaneousitems/EMP/}{EMP} \\
+
+    Shares Outstanding Growth 1 yr & csho\_gr1 & $\frac{CSHO_t \times AJEX_t}{CSHO_{t-1} \times AJEX_{t-1}} - 1$, with CSHOI and AJEXI in the global data. Computed within North America or Global before the two are combined, because they count shares in different units for some firms (ADR units in North America, home-market shares in Global). Requires the previous report from the same database to have a fiscal year exactly one lower and both share counts to be positive, so it is usually missing in the year a firm moves from North America to Global. Annual data only \\
 \end{longtable}
 }
 
