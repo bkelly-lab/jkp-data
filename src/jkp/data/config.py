@@ -275,6 +275,15 @@ FF_UMD_MONTHLY_SKIP = 1
 FF_UMD_MIN_MONTHS = 6
 FF_UMD_MIN_DAYS = 115
 
+# US NYSE breakpoint-pool screens of the FF builder (load_ff_universe), chosen to match
+# French's NYSE ME breakpoints (ME_Breakpoints.csv); French documents none of them. A class
+# leaves the pool on a date when its NAICS starts with one of FF_US_BP_EXCLUDE_NAICS (5259
+# pooled funds and trusts; 523910 miscellaneous intermediation, most SPACs) or its SIC is in
+# FF_US_BP_EXCLUDE_SIC (6799 investors n.e.c., CRSP's usual SPAC code), and, monthly, when it
+# has no price on the month's last trading day.
+FF_US_BP_EXCLUDE_NAICS = ("5259", "523910")
+FF_US_BP_EXCLUDE_SIC = (6799,)
+
 # Longest gap a daily FF return may span (ret_lag_dif, calendar days); a longer
 # return is nulled. A monthly return may span one month.
 FF_RET_MAX_GAP_DAYS = 5

@@ -55,6 +55,8 @@ from .config import (
     FF_UMD_MIN_MONTHS,
     FF_UMD_MONTHLY_LOOKBACK,
     FF_UMD_MONTHLY_SKIP,
+    FF_US_BP_EXCLUDE_NAICS,
+    FF_US_BP_EXCLUDE_SIC,
     MAIN_FILTERS,
     NI_AT_MIN_STD,
     RES_MOM_MIN_STD,
@@ -9949,6 +9951,39 @@ def _add_ff_contiguous(
     )
 
 
+def _add_ff_us_bp_screen(raw: pl.LazyFrame, paths: DataPaths) -> pl.LazyFrame:
+    """
+    Description:
+        bp_screen on raw CIZ rows: True when the class may join the US NYSE
+        breakpoint pool on that date. False when it has no price on the period's
+        last trading day (last_day_prc), its SIC is in FF_US_BP_EXCLUDE_SIC, or its
+        NAICS, from the crsp_stksecurityinfohist record in effect on caldt, starts
+        with one of FF_US_BP_EXCLUDE_NAICS. A missing SIC or NAICS passes.
+    Steps:
+        1) As-of join of the security-info records on (permno, caldt).
+        2) bp_screen from last_day_prc, siccd and naics.
+    Output:
+        raw with bp_screen; caldt, siccd and last_day_prc dropped.
+    """
+    info = pl.scan_parquet(paths.raw_tables_dir / "crsp_stksecurityinfohist.parquet").select(
+        permno=pl.col("permno").cast(pl.Int64),
+        start=pl.col("secinfostartdt").cast(pl.Date),
+        end=pl.col("secinfoenddt").cast(pl.Date),
+        naics=pl.col("naics").cast(pl.String),
+    )
+    naics = pl.when(pl.col("caldt") <= pl.col("end")).then(pl.col("naics")).fill_null("")
+    excluded = pl.any_horizontal(
+        pl.col("siccd").cast(pl.Int64).is_in(FF_US_BP_EXCLUDE_SIC).fill_null(False),
+        *[naics.str.starts_with(code) for code in FF_US_BP_EXCLUDE_NAICS],
+    )
+    return (
+        raw.sort("caldt")
+        .join_asof(info.sort("start"), left_on="caldt", right_on="start", by="permno")
+        .with_columns(bp_screen=pl.col("last_day_prc") & ~excluded)
+        .drop("caldt", "siccd", "last_day_prc", "start", "end", "naics")
+    )
+
+
 def load_ff_universe(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl.LazyFrame:
     """
     Description:
@@ -9965,9 +10000,10 @@ def load_ff_universe(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl.
           common-share rows, so a class back on N/A/Q keeps it (null after a gap in
           CRSP, _add_ff_contiguous), weights the classes' returns in the firm panel.
           Monthly rows carry JKP's me_company, the ME of all the
-          company's classes; daily rows have none. NYSE-listed classes form the
-          breakpoint pool. ret_lag_dif is the world file's, as in every country: JKP
-          sets it to 1 on every CRSP row, so the gap rule never nulls a US return.
+          company's classes; daily rows have none. NYSE-listed classes that pass
+          _add_ff_us_bp_screen form the breakpoint pool. ret_lag_dif is the world
+          file's, as in every country: JKP sets it to 1 on every CRSP row, so the
+          gap rule never nulls a US return.
         - Elsewhere: JKP's main sample (common stock, main observation, primary
           security, main exchange); the unit and the holding (sec) are the
           security. size_grp small, large or mega forms the breakpoint pool (daily
@@ -10005,7 +10041,14 @@ def load_ff_universe(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl.
             permno=pl.col("id").cast(pl.Int64),
         )
         raw = pl.scan_parquet(paths.raw_tables_dir / "crsp_msf_v2.parquet").select(
-            "usincflg", permno=permno, date=pl.col("mthcaldt").cast(pl.Date).dt.month_end()
+            "usincflg",
+            "siccd",
+            permno=permno,
+            caldt=pl.col("mthcaldt").cast(pl.Date),
+            date=pl.col("mthcaldt").cast(pl.Date).dt.month_end(),
+            last_day_prc=(
+                pl.col("mthprcdt").cast(pl.Date) == pl.col("mthcaldt").cast(pl.Date)
+            ).fill_null(False),
         )
     else:
         world = pl.scan_parquet(paths.interim_dir / "world_dsf.parquet")
@@ -10025,15 +10068,22 @@ def load_ff_universe(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl.
             "usincflg",
             "primaryexch",
             "permco",
+            "siccd",
             permno=permno,
+            caldt=pl.col("dlycaldt").cast(pl.Date),
             date=pl.col("dlycaldt").cast(pl.Date),
+            last_day_prc=pl.lit(True),
         )
     us = (
         us.filter((pl.col("source_crsp") == 1) & (pl.col("common") == 1))
         .sort("permno", "date")
         .pipe(_add_ff_contiguous, freq, ["permno"])
         .with_columns(w_cls=pl.when("contiguous").then(pl.col("me").shift(1).over("permno")))
-        .join(raw.filter(pl.col("usincflg") == "Y"), on=["permno", "date"], how="inner")
+        .join(
+            raw.filter(pl.col("usincflg") == "Y").pipe(_add_ff_us_bp_screen, paths),
+            on=["permno", "date"],
+            how="inner",
+        )
         .filter(pl.col("primaryexch").is_in(["N", "A", "Q"]))
         .with_columns(id=pl.col("permco").cast(pl.Int64))
         .select(
@@ -10047,7 +10097,7 @@ def load_ff_universe(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl.
             "ret_lag_dif",
             "w_cls",
             sec="permno",
-            bp_pool=pl.col("primaryexch") == "N",
+            bp_pool=(pl.col("primaryexch") == "N") & pl.col("bp_screen"),
         )
     )
     other = world.filter(
