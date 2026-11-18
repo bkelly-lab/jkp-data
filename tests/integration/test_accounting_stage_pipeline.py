@@ -135,3 +135,47 @@ def test_standardization_coverage_and_currency_options(
     )
     assert set(ann["source"].unique()) == sources
     assert (set(ann["curcd"].unique()) == {"USD"}) == usd_only
+
+
+def test_share_growth_is_taken_within_source(
+    outputs: dict[str, pl.DataFrame], synthetic_inputs: DataPaths
+) -> None:
+    """csho_gr1 comes from the share columns of the kept report's own source. Persona 900112
+    counts ADRs in North America (1 ADR = 20 shares) and home-market shares in Global, so its
+    first Global year has no change instead of a 20-fold one."""
+    sources = [
+        ("comp_funda", "NA", "csho", "ajex"),
+        ("comp_g_funda", "GLOBAL", "cshoi", "ajexi"),
+    ]
+    raw = (
+        pl.concat(
+            pl.read_parquet(synthetic_inputs.raw_tables_dir / f"{table}.parquet")
+            .filter(pl.col("gvkey") == "900112")
+            .select(
+                "datadate",
+                "fyear",
+                source=pl.lit(source),
+                adj=(pl.col(shares) * pl.col(ajex)).cast(pl.Float64),
+            )
+            for table, source, shares, ajex in sources
+        )
+        .sort("source", "datadate")
+        .with_columns(
+            expected=pl.when(pl.col("fyear").diff().over("source") == 1).then(
+                pl.col("adj") / pl.col("adj").shift(1).over("source") - 1
+            )
+        )
+    )
+    got = (
+        outputs["acc_std_ann"]
+        .filter(pl.col("gvkey") == "900112", pl.col("source").is_not_null())
+        .join(raw, on=["datadate", "source"], how="left")
+        .sort("datadate")
+    )
+    assert got["source"].rle().struct.field("value").to_list() == ["NA", "GLOBAL", "NA"]
+    assert got.filter(pl.col("source") == "GLOBAL")["csho_gr1"][0] is None
+    assert got["csho_gr1"].is_null().to_list() == got["expected"].is_null().to_list()
+    assert got["csho_gr1"].drop_nulls().to_list() == pytest.approx(
+        got["expected"].drop_nulls().to_list(), rel=1e-12
+    )
+    assert got["csho_gr1"].null_count() < got.height / 2

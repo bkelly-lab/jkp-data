@@ -1,4 +1,4 @@
-"""Tests for the INDFMT filter, NA/Global stacking, quarterization and one-row-per-date steps of ``standardized_accounting_data``."""
+"""Tests for the INDFMT filter, NA/Global stacking, within-source share growth, quarterization and one-row-per-date steps of ``standardized_accounting_data``."""
 
 from datetime import date, timedelta
 
@@ -6,6 +6,7 @@ import polars as pl
 import pytest
 
 from jkp.data.aux_functions import (
+    add_csho_gr1,
     apply_indfmt_filter,
     one_row_per_date,
     prefer_global,
@@ -100,6 +101,87 @@ class TestPreferGlobal:
         )
         out = prefer_global(g, na, keys).sort("datadate").collect()
         assert out.select("source", "at").rows() == [("GLOBAL", 353.8), ("NA", 357.1)]
+
+
+def _shares(rows: list[tuple], source: str) -> pl.LazyFrame:
+    """Annual report rows (gvkey, datadate, fyear, csho_adj) of one source."""
+    return pl.LazyFrame(
+        rows,
+        schema={
+            "gvkey": pl.String,
+            "datadate": pl.Date,
+            "fyear": pl.Int32,
+            "csho_adj": pl.Float64,
+        },
+        orient="row",
+    ).with_columns(source=pl.lit(source))
+
+
+@pytest.mark.unit
+class TestAddCshoGr1:
+    def test_consecutive_years(self) -> None:
+        df = _shares(
+            [("001", date(2001, 12, 31), 2001, 110.0), ("001", date(2000, 12, 31), 2000, 100.0)],
+            "NA",
+        )
+        out = add_csho_gr1(df).sort("datadate").collect()
+        assert out.columns == ["gvkey", "datadate", "source", "csho_gr1"]
+        assert out["csho_gr1"][0] is None
+        assert out["csho_gr1"][1] == pytest.approx(0.1)
+
+    def test_gap_year_and_repeated_fyear_are_null(self) -> None:
+        df = _shares(
+            [
+                ("001", date(2000, 12, 31), 2000, 100.0),
+                ("001", date(2002, 12, 31), 2002, 120.0),
+                ("001", date(2003, 6, 30), 2002, 130.0),
+            ],
+            "NA",
+        )
+        assert add_csho_gr1(df).collect()["csho_gr1"].to_list() == [None, None, None]
+
+    def test_nonpositive_or_missing_shares_are_null(self) -> None:
+        df = _shares(
+            [
+                ("001", date(2000, 12, 31), 2000, 0.0),
+                ("001", date(2001, 12, 31), 2001, 100.0),
+                ("001", date(2002, 12, 31), 2002, None),
+                ("001", date(2003, 12, 31), 2003, 100.0),
+                ("001", date(2004, 12, 31), 2004, -5.0),
+            ],
+            "NA",
+        )
+        assert add_csho_gr1(df).collect()["csho_gr1"].to_list() == [None] * 5
+
+    def test_lag_stays_within_firm(self) -> None:
+        df = _shares(
+            [("001", date(2000, 12, 31), 2000, 100.0), ("002", date(2001, 12, 31), 2001, 50.0)],
+            "NA",
+        )
+        assert add_csho_gr1(df).collect()["csho_gr1"].to_list() == [None, None]
+
+    def test_source_switch_uses_kept_report(self) -> None:
+        """ADR firm: NA counts ADRs (1 ADR = 10 shares), Global coverage starts in 2001."""
+        na = _shares(
+            [("001", date(2000, 12, 31), 2000, 100.0), ("001", date(2001, 12, 31), 2001, 105.0)],
+            "NA",
+        )
+        g = _shares(
+            [
+                ("001", date(2001, 12, 31), 2001, 1050.0),
+                ("001", date(2002, 12, 31), 2002, 1102.5),
+            ],
+            "GLOBAL",
+        )
+        out = (
+            prefer_global(add_csho_gr1(g), add_csho_gr1(na), ["gvkey", "datadate"])
+            .sort("datadate")
+            .collect()
+        )
+        assert out["source"].to_list() == ["NA", "GLOBAL", "GLOBAL"]
+        chg = out["csho_gr1"].to_list()
+        assert chg[:2] == [None, None]
+        assert chg[2] == pytest.approx(0.05)
 
 
 @pytest.mark.unit
