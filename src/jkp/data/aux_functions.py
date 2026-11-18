@@ -3906,7 +3906,7 @@ def prefer_global(
     return pl.concat([global_rows, na_only], how="diagonal_relaxed")
 
 
-def add_chcsho_fy(df: pl.LazyFrame) -> pl.LazyFrame:
+def add_csho_gr1(df: pl.LazyFrame) -> pl.LazyFrame:
     """
     Description:
         Fiscal-year change in split-adjusted shares outstanding, within one Compustat source.
@@ -3915,11 +3915,11 @@ def add_chcsho_fy(df: pl.LazyFrame) -> pl.LazyFrame:
 
     Steps:
         1) Sort by (gvkey, datadate); the previous report is the gvkey's prior row.
-        2) chcsho_fy = csho_adj / previous csho_adj - 1 when fyear is exactly one higher and
+        2) csho_gr1 = csho_adj / previous csho_adj - 1 when fyear is exactly one higher and
            both share counts are positive; otherwise null.
 
     Output:
-        df with chcsho_fy added and csho_adj, fyear dropped.
+        df with csho_gr1 added and csho_adj, fyear dropped.
     """
     return (
         df.sort("gvkey", "datadate")
@@ -3928,9 +3928,9 @@ def add_chcsho_fy(df: pl.LazyFrame) -> pl.LazyFrame:
                 pl.col("csho_adj").shift(1).over("gvkey")
             )
         )
-        .with_columns(chcsho_ratio=safe_div("csho_adj", "csho_lag", "chcsho_ratio", 8))
-        .with_columns(chcsho_fy=pl.col("chcsho_ratio") - 1)
-        .drop("csho_adj", "fyear", "csho_lag", "chcsho_ratio")
+        .with_columns(csho_ratio=safe_div("csho_adj", "csho_lag", "csho_ratio", 8))
+        .with_columns(csho_gr1=pl.col("csho_ratio") - 1)
+        .drop("csho_adj", "fyear", "csho_lag", "csho_ratio")
     )
 
 
@@ -4193,7 +4193,7 @@ def standardized_accounting_data(
     Steps:
         1) Inspect FUNDQ schemas; define target income/CF/BS/other vars; collect quarterly suffix vars (…q/…y).
         2) Load & filter raw GLOBAL and/or NA (annual/quarterly) via helper; add computed fields (e.g., ni, niq, ppegtq); drop vars as needed; apply INDFMT resolver;
-           annual: add chcsho_fy within each source (add_chcsho_fy).
+           annual: add csho_gr1 within each source (add_csho_gr1).
         3) If world: concat NA+GLOBAL; where both report the same firm-period (annual: gvkey, datadate;
            quarterly: gvkey, fyr, fyearq, fqtr), keep the GLOBAL row.
         4) If convert_to_usd: join FX and convert listed vars (annual & quarterly).
@@ -4335,7 +4335,7 @@ def standardized_accounting_data(
                 + query_vars
             )
             .pipe(apply_indfmt_filter, ["gvkey", "datadate"])
-            .pipe(add_chcsho_fy)
+            .pipe(add_csho_gr1)
         )
         # Quarterly global data:
         vars_not_in_query = [
@@ -4406,7 +4406,7 @@ def standardized_accounting_data(
             + [fl_none().alias(i) for i in ["wcapt", "ltdch", "purtshr"]]
             + [(col("csho") * col("ajex")).cast(pl.Float64).alias("csho_adj")]
             + query_vars
-        ).pipe(add_chcsho_fy)
+        ).pipe(add_csho_gr1)
         # Quarterly north american data:
         vars_not_in_query = [
             "dvtq",

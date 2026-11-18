@@ -6,7 +6,7 @@ import polars as pl
 import pytest
 
 from jkp.data.aux_functions import (
-    add_chcsho_fy,
+    add_csho_gr1,
     apply_indfmt_filter,
     one_row_per_date,
     prefer_global,
@@ -118,16 +118,16 @@ def _shares(rows: list[tuple], source: str) -> pl.LazyFrame:
 
 
 @pytest.mark.unit
-class TestAddChcshoFy:
+class TestAddCshoGr1:
     def test_consecutive_years(self) -> None:
         df = _shares(
             [("001", date(2001, 12, 31), 2001, 110.0), ("001", date(2000, 12, 31), 2000, 100.0)],
             "NA",
         )
-        out = add_chcsho_fy(df).collect()
-        assert out.columns == ["gvkey", "datadate", "source", "chcsho_fy"]
-        assert out["chcsho_fy"][0] is None
-        assert out["chcsho_fy"][1] == pytest.approx(0.1)
+        out = add_csho_gr1(df).collect()
+        assert out.columns == ["gvkey", "datadate", "source", "csho_gr1"]
+        assert out["csho_gr1"][0] is None
+        assert out["csho_gr1"][1] == pytest.approx(0.1)
 
     def test_gap_year_and_repeated_fyear_are_null(self) -> None:
         df = _shares(
@@ -138,7 +138,7 @@ class TestAddChcshoFy:
             ],
             "NA",
         )
-        assert add_chcsho_fy(df).collect()["chcsho_fy"].to_list() == [None, None, None]
+        assert add_csho_gr1(df).collect()["csho_gr1"].to_list() == [None, None, None]
 
     def test_nonpositive_or_missing_shares_are_null(self) -> None:
         df = _shares(
@@ -150,14 +150,14 @@ class TestAddChcshoFy:
             ],
             "NA",
         )
-        assert add_chcsho_fy(df).collect()["chcsho_fy"].to_list() == [None, None, None, None]
+        assert add_csho_gr1(df).collect()["csho_gr1"].to_list() == [None, None, None, None]
 
     def test_lag_stays_within_firm(self) -> None:
         df = _shares(
             [("001", date(2000, 12, 31), 2000, 100.0), ("002", date(2001, 12, 31), 2001, 50.0)],
             "NA",
         )
-        assert add_chcsho_fy(df).collect()["chcsho_fy"].to_list() == [None, None]
+        assert add_csho_gr1(df).collect()["csho_gr1"].to_list() == [None, None]
 
     def test_source_switch_uses_kept_report(self) -> None:
         """ADR firm: NA counts ADRs (1 ADR = 10 shares), Global coverage starts in 2001."""
@@ -173,12 +173,12 @@ class TestAddChcshoFy:
             "GLOBAL",
         )
         out = (
-            prefer_global(add_chcsho_fy(g), add_chcsho_fy(na), ["gvkey", "datadate"])
+            prefer_global(add_csho_gr1(g), add_csho_gr1(na), ["gvkey", "datadate"])
             .sort("datadate")
             .collect()
         )
         assert out["source"].to_list() == ["NA", "GLOBAL", "GLOBAL"]
-        chg = out["chcsho_fy"].to_list()
+        chg = out["csho_gr1"].to_list()
         assert chg[:2] == [None, None]
         assert chg[2] == pytest.approx(0.05)
 
