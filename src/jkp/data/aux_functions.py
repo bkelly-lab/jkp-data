@@ -9963,7 +9963,7 @@ def _add_ff_us_bp_screen(raw: pl.LazyFrame, paths: DataPaths) -> pl.LazyFrame:
         1) As-of join of the security-info records on (permno, caldt).
         2) bp_screen from last_day_prc, siccd and naics.
     Output:
-        raw with bp_screen; caldt, siccd and last_day_prc dropped.
+        raw with bp_screen and last_day_prc; caldt and siccd dropped.
     """
     info = pl.scan_parquet(paths.raw_tables_dir / "crsp_stksecurityinfohist.parquet").select(
         permno=pl.col("permno").cast(pl.Int64),
@@ -9980,7 +9980,7 @@ def _add_ff_us_bp_screen(raw: pl.LazyFrame, paths: DataPaths) -> pl.LazyFrame:
         raw.sort("caldt")
         .join_asof(info.sort("start"), left_on="caldt", right_on="start", by="permno")
         .with_columns(bp_screen=pl.col("last_day_prc") & ~excluded)
-        .drop("caldt", "siccd", "last_day_prc", "start", "end", "naics")
+        .drop("caldt", "siccd", "start", "end", "naics")
     )
 
 
@@ -10001,14 +10001,16 @@ def load_ff_universe(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl.
           CRSP, _add_ff_contiguous), weights the classes' returns in the firm panel.
           Monthly rows carry JKP's me_company, the ME of all the
           company's classes; daily rows have none. NYSE-listed classes that pass
-          _add_ff_us_bp_screen form the breakpoint pool. ret_lag_dif is the world
+          _add_ff_us_bp_screen form the breakpoint pool; last_day_prc, false on a
+          monthly row priced before the month's last trading day, keeps the row out
+          of portfolio formation (build_ff_firm_panel). ret_lag_dif is the world
           file's, as in every country: JKP sets it to 1 on every CRSP row, so the
           gap rule never nulls a US return.
         - Elsewhere: JKP's main sample (common stock, main observation, primary
           security, main exchange); the unit and the holding (sec) are the
-          security. size_grp small, large or mega forms the breakpoint pool (daily
-          rows take it from the previous month's world_msf row, the latest known
-          on every day of the month).
+          security; last_day_prc is true. size_grp small, large or mega forms the
+          breakpoint pool (daily rows take it from the previous month's world_msf
+          row, the latest known on every day of the month).
         Returns are JKP's: in the US, CIZ's return plus CRSP's delisting return, and
         -30% where a bad delisting has none (prepare_crsp_sf).
     Steps:
@@ -10018,7 +10020,7 @@ def load_ff_universe(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl.
         3) Both with the rule columns, concatenated.
     Output:
         Lazy [excntry, id, sec, date, ret, me, me_company, prc, ret_lag_dif, w_cls,
-        bp_pool], one row per US class or other security.
+        bp_pool, last_day_prc], one row per US class or other security.
     """
     monthly = freq == "monthly"
     permno = pl.col("permno").cast(pl.Int64)
@@ -10098,6 +10100,7 @@ def load_ff_universe(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl.
             "w_cls",
             sec="permno",
             bp_pool=(pl.col("primaryexch") == "N") & pl.col("bp_screen"),
+            last_day_prc="last_day_prc",
         )
     )
     other = world.filter(
@@ -10127,6 +10130,7 @@ def load_ff_universe(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl.
         w_cls=pl.lit(None, dtype=pl.Float64),
         sec=pl.col("id").cast(pl.Int64),
         bp_pool=pl.col("size_grp").is_in(["small", "large", "mega"]),
+        last_day_prc=pl.lit(True),
     )
     return pl.concat([us, other], how="vertical_relaxed")
 
@@ -10144,9 +10148,12 @@ def build_ff_firm_panel(paths: DataPaths, freq: Literal["monthly", "daily"]) -> 
         me, and NYSE if any row is. A unit with one row
         that date keeps that row's values, so elsewhere the panel is the security's
         own rows. Rows without ME stay in: momentum counts a priced row whose shares
-        are missing.
+        are missing. A class priced before the month's last trading day (last_day_prc
+        false) has no ME or price in the panel, so it can't form a portfolio that
+        month (the June and December sorts, UMD's t-1 ME and t-13 price); its returns
+        still count in the holdings (add_ff_buy_and_hold_weights).
     Steps:
-        1) load_ff_universe.
+        1) load_ff_universe; null me, me_company and prc where last_day_prc is false.
         2) Aggregate to (excntry, id, date).
     Output:
         Eager [excntry, id, date, ret, me, prc, ret_lag_dif, bp_pool]; prc
@@ -10159,6 +10166,7 @@ def build_ff_firm_panel(paths: DataPaths, freq: Literal["monthly", "daily"]) -> 
     )
     return (
         load_ff_universe(paths, freq)
+        .with_columns(pl.when("last_day_prc").then(pl.col("me", "me_company", "prc")))
         .group_by("excntry", "id", "date")
         .agg(
             ret=pl.when(pl.len() == 1).then(pl.col("ret").first()).otherwise(class_vw_ret),
