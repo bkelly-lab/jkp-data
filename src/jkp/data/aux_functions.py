@@ -4092,7 +4092,8 @@ def add_csho_gr1(df: pl.LazyFrame) -> pl.LazyFrame:
         Add csho_gr1, the one-year growth in split-adjusted shares outstanding (csho_adj), within
         one source's annual reports. NA and Global count shares in different units for some
         firms (ADR units vs home-market shares), so the growth is taken before prefer_global
-        combines the two sources.
+        combines the two sources. Assumes one report per (gvkey, datadate) in df: the read
+        filters fix the rest of Compustat's key, and Global keeps one format per date.
 
     Steps:
         1) Sort by [gvkey, datadate]; the previous report is used only if its fyear is exactly
