@@ -3909,28 +3909,26 @@ def prefer_global(
 def add_csho_gr1(df: pl.LazyFrame) -> pl.LazyFrame:
     """
     Description:
-        Fiscal-year change in split-adjusted shares outstanding, within one Compustat source.
-        NA and Global count shares in different units for some firms (ADR units vs home-market
-        shares), so the change is taken before prefer_global merges the two sources.
+        Add csho_gr1, the one-year growth in split-adjusted shares outstanding (csho_adj), within
+        one source's annual reports. NA and Global count shares in different units for some
+        firms (ADR units vs home-market shares), so the growth is taken before prefer_global
+        combines the two sources.
 
     Steps:
-        1) Sort by (gvkey, datadate); the previous report is the gvkey's prior row.
-        2) csho_gr1 = csho_adj / previous csho_adj - 1 when fyear is exactly one higher and
-           both share counts are positive; otherwise null.
+        1) Previous report: the gvkey's prior report by datadate, used only if its fyear is
+           exactly one lower.
+        2) csho_gr1 = csho_adj / previous csho_adj - 1 when both are positive.
+        3) Drop the inputs csho_adj and fyear.
 
     Output:
-        df with csho_gr1 added and csho_adj, fyear dropped.
+        df with csho_gr1 in place of csho_adj and fyear.
     """
+    consecutive = pl.col("fyear").diff().over("gvkey", order_by="datadate") == 1
+    csho_lag = pl.col("csho_adj").shift(1).over("gvkey", order_by="datadate")
     return (
-        df.sort("gvkey", "datadate")
-        .with_columns(
-            csho_lag=pl.when(pl.col("fyear").diff().over("gvkey") == 1).then(
-                pl.col("csho_adj").shift(1).over("gvkey")
-            )
-        )
-        .with_columns(csho_ratio=safe_div("csho_adj", "csho_lag", "csho_ratio", 8))
-        .with_columns(csho_gr1=pl.col("csho_ratio") - 1)
-        .drop("csho_adj", "fyear", "csho_lag", "csho_ratio")
+        df.with_columns(csho_lag=pl.when(consecutive).then(csho_lag))
+        .with_columns(csho_gr1=safe_div("csho_adj", "csho_lag", "csho_gr1", 8) - 1)
+        .drop("csho_adj", "fyear", "csho_lag")
     )
 
 
@@ -4193,7 +4191,7 @@ def standardized_accounting_data(
     Steps:
         1) Inspect FUNDQ schemas; define target income/CF/BS/other vars; collect quarterly suffix vars (…q/…y).
         2) Load & filter raw GLOBAL and/or NA (annual/quarterly) via helper; add computed fields (e.g., ni, niq, ppegtq); drop vars as needed; apply INDFMT resolver;
-           annual: compute csho_gr1 within each source (add_csho_gr1), before step 3 combines them.
+           add annual csho_gr1 (add_csho_gr1), which needs the same source's previous report.
         3) If world: concat NA+GLOBAL; where both report the same firm-period (annual: gvkey, datadate;
            quarterly: gvkey, fyr, fyearq, fqtr), keep the GLOBAL row.
         4) If convert_to_usd: join FX and convert listed vars (annual & quarterly).

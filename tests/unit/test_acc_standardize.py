@@ -124,7 +124,7 @@ class TestAddCshoGr1:
             [("001", date(2001, 12, 31), 2001, 110.0), ("001", date(2000, 12, 31), 2000, 100.0)],
             "NA",
         )
-        out = add_csho_gr1(df).collect()
+        out = add_csho_gr1(df).sort("datadate").collect()
         assert out.columns == ["gvkey", "datadate", "source", "csho_gr1"]
         assert out["csho_gr1"][0] is None
         assert out["csho_gr1"][1] == pytest.approx(0.1)
