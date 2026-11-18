@@ -890,7 +890,6 @@ ret\_overnight\_local & Overnight return in local currency. \\[1ex]
   \item \textbf{\texttt{annual.parquet}} and \textbf{\texttt{quarterly.parquet}} contain standardized Compustat accounting data.  Key: \texttt{(gvkey, datadate)}.  Frequency: annual/quarterly.
   \item Only rows with a non-null \texttt{source} (either \texttt{NA} for North America or \texttt{GLOBAL} for Compustat Global) are included.  All monetary values are converted to USD.
   \item Accounting variable definitions are given in Table~\ref{accounting_var}.
-  \item The annual file contains \texttt{csho\_gr1}, the fiscal-year change in split-adjusted shares outstanding: $\frac{CSHO_t \times AJEX_t}{CSHO_{t-1} \times AJEX_{t-1}} - 1$ for North America and the same with \texttt{CSHOI} and \texttt{AJEXI} for Compustat Global.  It is computed within each database before the two are combined, because they count shares in different units for some firms (ADR units in North America, home-market shares in Global).  It requires the previous report from the same database to have a fiscal year exactly one lower and both share counts to be positive.  Like every other column, it comes from the report that is kept, so it is usually missing in the year a firm switches from North America to Global.  It is a ratio and is not converted to USD.  The quarterly file has the column, always missing, like the other annual-only items.
   \item The quarterly file also contains trailing four-quarter (TTM) sums for income/cash-flow items and the annualized quarterly variants of all accounting variables.
   \item When helper variables are enabled (the default), additional derived columns with an \texttt{\_x} suffix (e.g.\ \texttt{at\_x}, \texttt{sale\_x}, \texttt{be\_x}) are included.  These are constructed in \texttt{add\_helper\_vars()} and used downstream by the characteristic calculations.
 \end{itemize}
@@ -1647,6 +1646,8 @@ The abbreviation is used to refer to the accounting variable. A suffix of '\mbox
 	\hline 
 
     Employees in Thousands & emp & Compustat item \href{https://wrds-www.wharton.upenn.edu/data-dictionary/form_metadata/comp_na_daily_all_funda_miscellaneousitems/EMP/}{EMP} \\
+
+    Shares Outstanding Growth 1 yr & csho\_gr1 & $\frac{CSHO_t \times AJEX_t}{CSHO_{t-1} \times AJEX_{t-1}} - 1$, with CSHOI and AJEXI in the global data. Computed within North America or Global before the two are combined, because they count shares in different units for some firms (ADR units in North America, home-market shares in Global). Requires the previous report from the same database to have a fiscal year exactly one lower and both share counts to be positive, so it is usually missing in the year a firm moves from North America to Global. Annual data only \\
 \end{longtable}
 }
 

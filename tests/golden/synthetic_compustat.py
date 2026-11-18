@@ -22,7 +22,8 @@ from the profitability score and the income statement is built up from it (pi = 
 sheet follows from identities (seq = at - lt - mib, ...). Quarterly flows come first; the
 year-to-date (*y) values cumulate them within the fiscal year and the annual flows are the
 fourth-quarter year-to-date values. Values are in USD and converted to the reporting currency at
-the rate the stage itself will use.
+the rate the stage itself will use. Annual reports also carry shares outstanding and the split
+adjustment factor (csho, ajex; cshoi, ajexi in Global), drawn per gvkey (share_counts).
 
 Random firms (900001 up) follow the profile: source, currency, report format, fiscal year-end and
 its changes, life, semiannual and annual-only reporting, quarterly-only months, listing, and the
@@ -41,7 +42,8 @@ Persona firms (900101 up), one case each:
     900109  a fiscal calendar that resumes after a gap over 200 days, next to a newer one (bug 5)
     900110  FS-only firm with dates on two calendars (bug 6)
     900111  INDL and FS records on the same dates and calendar (bug 6)
-    900112  in both North America and Global for 2000-2010; the Global rows win
+    900112  in both North America and Global for 2000-2010; the Global rows win. North America
+            counts ADRs (1 ADR = 20 shares), Global home-market shares
     900113  JPY firm with a March fiscal year-end and a second, non-primary security
     900114  PLN reports before the first PLN rate, across a six-month gap in the rates
     900115  annual reports only
@@ -178,6 +180,9 @@ ME_LOG_MEDIAN, ME_FIRM_SD, ME_PROF_LOADING, ME_PHI, ME_VOL = math.log(0.68), 0.8
 LISTED_SHARE, LATE_LISTING_SHARE, SECOND_SECURITY_SHARE = 0.5, 0.2, 0.1
 # Other random firms start quarterly reports in their second fiscal year, after the first annual.
 QUARTERLY_LEAD_SHARE = 0.1  # firms whose quarterly reports start 4-8 quarters before the annual
+# Split-adjusted shares outstanding: log growth per fiscal year ~ N(mean, sd), one 2-for-1 split.
+SHARES_LOG_MEDIAN, SHARES_GROWTH_MEAN, SHARES_GROWTH_SD = math.log(50.0), 0.02, 0.1
+SHARE_YEARS = range(1970, 2021)  # fiscal years covering every firm
 
 Spec = dict
 Items = dict[str, np.ndarray]
@@ -545,7 +550,33 @@ def firm_frames(
             quarterly_df = mask_random_firm(
                 quarterly_df, TABLE[(source, "quarterly")], indfmt, rng, profile, draws
             )
+    annual_df = annual_df.with_columns(share_counts(spec))
     return annual_df, quarterly_df, market_equity(spec, rng, dates, at_usd, scores["prof"])
+
+
+def share_counts(spec: Spec) -> list[pl.Expr]:
+    """
+    Description:
+        Shares outstanding and the split adjustment factor of each annual report, by fiscal year.
+    Steps:
+        1) Draw the split-adjusted path from a generator seeded by the gvkey, so the other draws
+           are unchanged and a firm in both sources has the same path in each.
+        2) One 2-for-1 split: ajex = 2 before it, 1 from it on; csho = path / ajex.
+        3) Scale csho by the spec's share_units (ADR units); Global names the items cshoi, ajexi.
+    Output:
+        Expressions for the two share columns, mapped from fyear.
+    """
+    rng = np.random.default_rng([SEED, int(spec["gvkey"])])
+    years = list(SHARE_YEARS)
+    growth = rng.normal(SHARES_GROWTH_MEAN, SHARES_GROWTH_SD, len(years))
+    adjusted = np.exp(SHARES_LOG_MEDIAN + rng.standard_normal() + np.cumsum(growth))
+    ajex = np.where(np.array(years) < int(rng.integers(1990, 2011)), 2.0, 1.0)
+    csho = np.round(adjusted / ajex * spec.get("share_units", 1.0), 3)
+    names = ("csho", "ajex") if spec["source"] == "NA" else ("cshoi", "ajexi")
+    return [
+        pl.col("fyear").replace_strict(years, values.tolist(), default=None).alias(name)
+        for name, values in zip(names, (csho, ajex), strict=True)
+    ]
 
 
 def market_equity(
@@ -807,7 +838,7 @@ def persona_specs() -> list[Spec]:
                 for f in (a, q)
             ),
         ),
-        firm(11, last_fy=2012),
+        firm(11, last_fy=2012, share_units=1 / 20),
         firm(11, source="GLOBAL", first_fy=2000, listed=None),
         firm(12, source="GLOBAL", currency="JPY", fyr=3, last_fy=2012, second_security=True),
         firm(13, source="GLOBAL", currency="PLN", first_fy=1992),

@@ -1,4 +1,4 @@
-"""Tests for the INDFMT filter, NA/Global stacking, quarterization and one-row-per-date steps of ``standardized_accounting_data``."""
+"""Tests for the INDFMT filter, NA/Global stacking, within-source share growth, quarterization and one-row-per-date steps of ``standardized_accounting_data``."""
 
 from datetime import date, timedelta
 
@@ -147,10 +147,11 @@ class TestAddCshoGr1:
                 ("001", date(2001, 12, 31), 2001, 100.0),
                 ("001", date(2002, 12, 31), 2002, None),
                 ("001", date(2003, 12, 31), 2003, 100.0),
+                ("001", date(2004, 12, 31), 2004, -5.0),
             ],
             "NA",
         )
-        assert add_csho_gr1(df).collect()["csho_gr1"].to_list() == [None, None, None, None]
+        assert add_csho_gr1(df).collect()["csho_gr1"].to_list() == [None] * 5
 
     def test_lag_stays_within_firm(self) -> None:
         df = _shares(

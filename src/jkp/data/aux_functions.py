@@ -3906,32 +3906,6 @@ def prefer_global(
     return pl.concat([global_rows, na_only], how="diagonal_relaxed")
 
 
-def add_csho_gr1(df: pl.LazyFrame) -> pl.LazyFrame:
-    """
-    Description:
-        Add csho_gr1, the one-year growth in split-adjusted shares outstanding (csho_adj), within
-        one source's annual reports. NA and Global count shares in different units for some
-        firms (ADR units vs home-market shares), so the growth is taken before prefer_global
-        combines the two sources.
-
-    Steps:
-        1) Previous report: the gvkey's prior report by datadate, used only if its fyear is
-           exactly one lower.
-        2) csho_gr1 = csho_adj / previous csho_adj - 1 when both are positive.
-        3) Drop the inputs csho_adj and fyear.
-
-    Output:
-        df with csho_gr1 in place of csho_adj and fyear.
-    """
-    consecutive = pl.col("fyear").diff().over("gvkey", order_by="datadate") == 1
-    csho_lag = pl.col("csho_adj").shift(1).over("gvkey", order_by="datadate")
-    return (
-        df.with_columns(csho_lag=pl.when(consecutive).then(csho_lag))
-        .with_columns(csho_gr1=safe_div("csho_adj", "csho_lag", "csho_gr1", 8) - 1)
-        .drop("csho_adj", "fyear", "csho_lag")
-    )
-
-
 def quarterize(df: pl.LazyFrame, var_list: list[str]) -> pl.LazyFrame:
     """
     Description:
@@ -4110,6 +4084,32 @@ def apply_indfmt_filter(df: pl.LazyFrame, keys: list[str]) -> pl.LazyFrame:
     """
     is_indl = pl.col("indfmt") == "INDL"
     return df.filter(is_indl | ~is_indl.any().over(keys)).drop("indfmt")
+
+
+def add_csho_gr1(df: pl.LazyFrame) -> pl.LazyFrame:
+    """
+    Description:
+        Add csho_gr1, the one-year growth in split-adjusted shares outstanding (csho_adj), within
+        one source's annual reports. NA and Global count shares in different units for some
+        firms (ADR units vs home-market shares), so the growth is taken before prefer_global
+        combines the two sources.
+
+    Steps:
+        1) Sort by [gvkey, datadate]; the previous report is used only if its fyear is exactly
+           one lower.
+        2) csho_gr1 = csho_adj / previous csho_adj - 1 when both are positive.
+        3) Drop the inputs csho_adj and fyear.
+
+    Output:
+        df with csho_gr1 in place of csho_adj and fyear.
+    """
+    consecutive = pl.col("fyear").diff().over("gvkey") == 1
+    return (
+        df.sort(["gvkey", "datadate"])
+        .with_columns(csho_lag=pl.when(consecutive).then(pl.col("csho_adj").shift(1).over("gvkey")))
+        .with_columns(csho_gr1=safe_div("csho_adj", "csho_lag", "csho_gr1", 8) - 1)
+        .drop(["csho_adj", "fyear", "csho_lag"])
+    )
 
 
 def add_fx_and_convert_vars(df, fx_df, vars, freq):
@@ -4293,9 +4293,8 @@ def standardized_accounting_data(
         "mib",
         "icapt",
     ]  # Liabilities
-    # Variables in avars_other are not measured in currency units, and only available in annual data.
-    # csho_gr1 is not a Compustat item: add_csho_gr1 computes it within each source.
-    avars_other = ["emp", "csho_gr1"]
+    # Variables in avars_other are not measured in currency units, and only available in annual data
+    avars_other = ["emp"]
     avars = avars_inc + avars_cf + avars_bs
     # finding which variables of interest are available in the quarterly data
     combined_columns = g_fundq_cols + fundq_cols
@@ -4318,7 +4317,7 @@ def standardized_accounting_data(
     qvars = qvars_q + qvars_y
     if coverage in ["global", "world"]:
         # Annual global data:
-        vars_not_in_query = ["gp", "pstkrv", "pstkl", "itcb", "xad", "txbcof", "ni", "csho_gr1"]
+        vars_not_in_query = ["gp", "pstkrv", "pstkl", "itcb", "xad", "txbcof", "ni"]
         query_vars = [var for var in (avars + avars_other) if var not in vars_not_in_query]
         g_funda = load_raw_fund_table_and_filter(
             paths.raw_tables_dir / "comp_g_funda.parquet", start_date, "GLOBAL", 1
@@ -4326,7 +4325,7 @@ def standardized_accounting_data(
         __gfunda = (
             g_funda.with_columns(
                 ni=(col("ib") + pl.coalesce("xi", 0) + pl.coalesce("do", 0)).cast(pl.Float64),
-                csho_adj=(col("cshoi") * col("ajexi")).cast(pl.Float64),
+                csho_adj=(pl.col("cshoi") * pl.col("ajexi")).cast(pl.Float64),
             )
             .select(
                 ["gvkey", "datadate", "n", "indfmt", "curcd", "source", "ni", "fyear", "csho_adj"]
@@ -4395,13 +4394,13 @@ def standardized_accounting_data(
         )
     if coverage in ["na", "world"]:
         # Annual north american data:
-        vars_not_in_query = ["wcapt", "ltdch", "purtshr", "csho_gr1"]
+        vars_not_in_query = ["wcapt", "ltdch", "purtshr"]
         query_vars = [var for var in (avars + avars_other) if var not in vars_not_in_query]
         funda = load_raw_fund_table_and_filter(
             paths.raw_tables_dir / "comp_funda.parquet", start_date, "NA", 2
         )
         __funda = (
-            funda.with_columns(csho_adj=(col("csho") * col("ajex")).cast(pl.Float64))
+            funda.with_columns(csho_adj=(pl.col("csho") * pl.col("ajex")).cast(pl.Float64))
             .select(
                 ["gvkey", "datadate", "n", "curcd", "source", "fyear", "csho_adj"]
                 + [fl_none().alias(i) for i in ["wcapt", "ltdch", "purtshr"]]
