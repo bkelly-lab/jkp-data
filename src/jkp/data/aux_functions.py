@@ -7717,11 +7717,6 @@ def _mp_permno_link(comp: pl.DataFrame, interim_dir: Path) -> pl.DataFrame:
     """Link standard industrial Compustat rows to CRSP permnos through the gvkey JKP puts
     on each CRSP security in world_msf (from CCM in gen_crsp_sf), in the month of
     datadate. Adds permno; a gvkey on several securities that month links to each."""
-    link = (
-        pl.scan_parquet(interim_dir / "world_msf.parquet")
-        .filter((col("source_crsp") == 1) & col("gvkey").is_not_null())
-        .select(col("gvkey").cast(pl.Utf8), "eom", permno=col("id").cast(pl.Int64))
-    )
     return (
         comp.lazy()
         .filter(
@@ -7731,9 +7726,18 @@ def _mp_permno_link(comp: pl.DataFrame, interim_dir: Path) -> pl.DataFrame:
             & (col("consol") == "C")
         )
         .with_columns(eom=col("datadate").dt.month_end())
-        .join(link, on=["gvkey", "eom"], how="inner")
+        .join(_mp_world_msf_link(interim_dir), on=["gvkey", "eom"], how="inner")
         .drop("eom")
         .collect()
+    )
+
+
+def _mp_world_msf_link(interim_dir: Path) -> pl.LazyFrame:
+    """[gvkey, eom, permno]: the gvkey JKP puts on each CRSP security in world_msf."""
+    return (
+        pl.scan_parquet(interim_dir / "world_msf.parquet")
+        .filter((col("source_crsp") == 1) & col("gvkey").is_not_null())
+        .select(col("gvkey").cast(pl.Utf8), "eom", permno=col("id").cast(pl.Int64))
     )
 
 
@@ -8047,31 +8051,25 @@ def _mp_compute_accrual(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
     return out
 
 
-def _mp_compute_gross_profit(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
+def _mp_compute_gross_profit(interim_dir: Path, jkp_interim_dir: Path) -> pl.DataFrame:
+    """GP_ADJ = jkp's gp_at (gp_x / at_x, gp_x = gp, else sale_x - cogs) from jkp's annual
+    standardized accounting (acc_std_ann), on SY's annual timing (months 5-16 after
+    datadate). Linked to permnos through world_msf; USD rows win a currency tie."""
     ca = (
-        pl.read_parquet(interim_dir / "compustat_annual.parquet")
-        .select("permno", "gvkey", "datadate", "fyear", "fyr", "at", "cogs")
-        .join(
-            _mp_load_funda(raw_dir).select("gvkey", "datadate", "revt"),
-            on=["gvkey", "datadate"],
-            how="left",
+        pl.scan_parquet(jkp_interim_dir / "acc_std_ann.parquet")
+        .select(
+            "gvkey",
+            "curcd",
+            "datadate",
+            gp_adj=safe_div(pl.coalesce("gp", col("sale_x") - col("cogs")), "at_x", "gp_adj"),
         )
-        .filter(
-            col("permno").is_not_null()
-            & col("fyear").is_not_null()
-            & col("fyr").is_not_null()
-            & (col("fyr") > 0)
-            & (col("fyear") > 0)
-            & col("at").is_not_null()
-            & (col("at") > 0)
-            & col("revt").is_not_null()
-            & col("cogs").is_not_null()
-        )
-        .with_columns(gp_adj=safe_div(col("revt") - col("cogs"), col("at"), "gp_adj"))
         .filter(col("gp_adj").is_not_null())
+        .with_columns(eom=col("datadate").dt.month_end())
+        .join(_mp_world_msf_link(jkp_interim_dir), on=["gvkey", "eom"], how="inner")
+        .sort("permno", "datadate", col("curcd") != "USD")
+        .unique(["permno", "datadate"], keep="first", maintain_order=True)
         .select("permno", "datadate", "gp_adj")
-        .sort(["permno", "datadate", "gp_adj"], nulls_last=True)
-        .unique(subset=["permno", "datadate"], keep="first", maintain_order=True)
+        .collect()
     )
     out = _mp_expand_to_crsp_window(ca, "gp_adj", interim_dir)
     out.write_parquet(interim_dir / "gp_adj.parquet")
@@ -8727,7 +8725,7 @@ def _mp_compute_anomalies(
     MOMENTUM from jkp's world_data_prelim in jkp_interim_dir.
     Returns the DISTRESS cross-sectional references used (_mp_compute_distress)."""
     _mp_compute_accrual(raw_dir, interim_dir)
-    _mp_compute_gross_profit(raw_dir, interim_dir)
+    _mp_compute_gross_profit(interim_dir, jkp_interim_dir)
     _mp_compute_oscore(raw_dir, interim_dir)
     _mp_compute_nsi_ag_inv_noa(raw_dir, interim_dir)
     _mp_compute_momentum(interim_dir, jkp_interim_dir)
