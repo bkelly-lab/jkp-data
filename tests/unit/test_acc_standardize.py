@@ -205,6 +205,29 @@ class TestQuarterize:
         out = quarterize(df, ["saley"]).collect()
         assert out["saley_q"].to_list() == [10.0, 15.0, 20.0, 25.0]
 
+    def test_flow_needs_previous_quarter_of_same_fiscal_year(self) -> None:
+        """A quarter's flow is its change from the previous fiscal quarter of the same fiscal year:
+        missing after a gap, at a fiscal year that starts after Q1, and across fiscal years."""
+        df = pl.LazyFrame(
+            {
+                "gvkey": ["001"] * 6,
+                "datadate": [
+                    date(2010, 3, 31),
+                    date(2010, 6, 30),
+                    date(2011, 9, 30),
+                    date(2011, 12, 31),
+                    date(2012, 3, 31),
+                    date(2012, 9, 30),
+                ],
+                "fyr": pl.Series([12] * 6, dtype=pl.Int16),
+                "fyearq": pl.Series([2010, 2010, 2011, 2011, 2012, 2012], dtype=pl.Int32),
+                "fqtr": pl.Series([1, 2, 3, 4, 1, 3], dtype=pl.Int16),
+                "saley": [10.0, 25.0, 60.0, 90.0, 12.0, 40.0],
+            }
+        )
+        out = quarterize(df, ["saley"]).collect()
+        assert out["saley_q"].to_list() == [10.0, 15.0, None, 30.0, 12.0, None]
+
     def test_duplicate_fiscal_quarter_keeps_earliest_datadate(self) -> None:
         """Same fiscal quarter reported twice: the earliest datadate is kept, whatever the input order."""
         df = pl.LazyFrame(
