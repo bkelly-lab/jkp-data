@@ -8076,63 +8076,52 @@ def _mp_compute_gross_profit(interim_dir: Path, jkp_interim_dir: Path) -> pl.Dat
     return out
 
 
-def _mp_compute_oscore(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
+def _mp_compute_oscore(interim_dir: Path, jkp_interim_dir: Path) -> pl.DataFrame:
+    """OSCORE = Ohlson (1980) Model 1 score with SY's leverage (lt/at) and funds term
+    (pi/lt), from jkp's annual standardized accounting (acc_std_ann: at_x, lt, ca_x,
+    cl_x, nix_x, pi_x); size = log(at_x), not price-deflated. Prior-year net income is
+    the same permno's report in the previous calendar year of datadate (SY's cyear).
+    On SY's annual timing (months 5-16 after datadate). Linked to permnos through
+    world_msf; USD rows win a currency tie."""
     base = (
-        pl.read_parquet(interim_dir / "compustat_annual.parquet")
-        .select("permno", "gvkey", "datadate", "fyear", "fyr", "at", "lt", "act", "lct")
-        .join(
-            _mp_load_funda(raw_dir).select("gvkey", "datadate", "ni", "pi"),
-            on=["gvkey", "datadate"],
-            how="left",
-        )
+        pl.scan_parquet(jkp_interim_dir / "acc_std_ann.parquet")
+        .select("gvkey", "curcd", "datadate", "at_x", "lt", "ca_x", "cl_x", "nix_x", "pi_x")
         .filter(
-            col("permno").is_not_null()
-            & col("fyear").is_not_null()
-            & col("fyr").is_not_null()
-            & (col("fyr") > 0)
-            & (col("fyear") > 0)
-            & col("at").is_not_null()
-            & (col("at") > 0)
+            (col("at_x") > 0)
             & col("lt").is_not_null()
             & (col("lt") != 0)
-            & col("act").is_not_null()
-            & (col("act") != 0)
+            & col("ca_x").is_not_null()
+            & (col("ca_x") != 0)
         )
+        .with_columns(eom=col("datadate").dt.month_end())
+        .join(_mp_world_msf_link(jkp_interim_dir), on=["gvkey", "eom"], how="inner")
+        .sort("permno", "datadate", col("curcd") != "USD")
+        .unique(["permno", "datadate"], keep="first", maintain_order=True)
+        .collect()
         .with_columns(
-            cyear=pl.when((col("fyr") > 0) & (col("fyr") <= 5))
-            .then(col("fyear") + 1)
-            .otherwise(col("fyear")),
-            oeneg=pl.when(col("lt") > col("at")).then(1).otherwise(0),
-            tlta=safe_div("lt", "at", "tlta"),
-            wcta=safe_div(col("act") - col("lct"), col("at"), "wcta"),
-            clca=safe_div("lct", "act", "clca"),
-            nita=safe_div("ni", "at", "nita"),
-            futl=safe_div("pi", "lt", "futl"),
+            cyear=col("datadate").dt.year(),
+            oeneg=pl.when(col("lt") > col("at_x")).then(1).otherwise(0),
+            size=col("at_x").log(),
+            tlta=safe_div("lt", "at_x", "tlta"),
+            wcta=safe_div(col("ca_x") - col("cl_x"), col("at_x"), "wcta"),
+            clca=safe_div("cl_x", "ca_x", "clca"),
+            nita=safe_div("nix_x", "at_x", "nita"),
+            futl=safe_div("pi_x", "lt", "futl"),
         )
     )
 
-    self_lag = base.select("permno", "cyear", col("ni").alias("lagni")).with_columns(
+    self_lag = base.select("permno", "cyear", col("nix_x").alias("lagni")).with_columns(
         cyear=col("cyear") + 1
     )
     base = base.join(self_lag, on=["permno", "cyear"], how="inner").with_columns(
         # safe_div: ni == lagni == 0 must yield null, not NaN — NaN survives
         # is_not_null() and sorts above every value in the percentile rank.
-        chin=safe_div(col("ni") - col("lagni"), col("ni").abs() + col("lagni").abs(), "chin"),
-        intwo=pl.when((col("ni") < 0) & (col("lagni") < 0)).then(1).otherwise(0),
+        chin=safe_div(col("nix_x") - col("lagni"), col("nix_x").abs() + col("lagni").abs(), "chin"),
+        intwo=pl.when((col("nix_x") < 0) & (col("lagni") < 0)).then(1).otherwise(0),
     )
 
     out = (
-        base.join(
-            pl.read_parquet(raw_dir / "crsp_a_indexes_acti.parquet")
-            .with_columns(col("cpiind").cast(pl.Float64, strict=False))
-            .filter(col("caldt").dt.month() == 12)
-            .with_columns(cyear=col("caldt").dt.year() + 1)
-            .select("cyear", "cpiind"),
-            on="cyear",
-            how="inner",
-        )
-        .with_columns(size=(100 * col("at") / col("cpiind")).log())
-        .with_columns(
+        base.with_columns(
             oscore=-1.32
             - 0.407 * col("size")
             + 6.03 * col("tlta")
@@ -8739,12 +8728,12 @@ def _mp_compute_anomalies(
 ) -> dict[str, pl.DataFrame]:
     """US SY anomalies (incl. CHS DISTRESS) from the crsp_monthly, crsp_daily and
     compustat_annual/quarterly parquets in interim_dir, one parquet each there;
-    MOMENTUM from jkp's world_data_prelim and GP_ADJ from jkp's acc_std_ann in
-    jkp_interim_dir.
+    MOMENTUM from jkp's world_data_prelim, GP_ADJ and OSCORE from jkp's acc_std_ann
+    and ROA from jkp's acc_std_qtr in jkp_interim_dir.
     Returns the DISTRESS cross-sectional references used (_mp_compute_distress)."""
     _mp_compute_accrual(raw_dir, interim_dir)
     _mp_compute_gross_profit(interim_dir, jkp_interim_dir)
-    _mp_compute_oscore(raw_dir, interim_dir)
+    _mp_compute_oscore(interim_dir, jkp_interim_dir)
     _mp_compute_nsi_ag_inv_noa(raw_dir, interim_dir)
     _mp_compute_momentum(interim_dir, jkp_interim_dir)
     _mp_compute_composite_issue(interim_dir)
