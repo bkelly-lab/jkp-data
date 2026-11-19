@@ -352,6 +352,20 @@ MP_DISTRESS_BETAS = {
     "PRICE": -0.058,
 }
 
+# Ohlson (1980) O-score coefficient set (Table 4, Model 1)
+MP_OSCORE_BETAS = {
+    "intercept": -1.32,
+    "SIZE": -0.407,
+    "TLTA": 6.03,
+    "WCTA": -1.43,
+    "CLCA": 0.076,
+    "OENEG": -1.72,
+    "NITA": -2.37,
+    "FUTL": -1.83,
+    "INTWO": 0.285,
+    "CHIN": -0.521,
+}
+
 MP_LAG_M = 4
 MP_START_FACTOR_EOM = date(1963, 1, 31)
 

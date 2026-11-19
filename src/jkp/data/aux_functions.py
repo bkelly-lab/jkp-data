@@ -67,6 +67,7 @@ from .config import (
     MP_MGMT_PCT_COLS,
     MP_MIN_OBS_PF_WORLD,
     MP_MIN_STKS_BP_WORLD,
+    MP_OSCORE_BETAS,
     MP_PERF_PCT_COLS,
     MP_POSITIVE_ANOMALIES,
     MP_START_FACTOR_EOM,
@@ -8077,72 +8078,41 @@ def _mp_compute_gross_profit(interim_dir: Path, jkp_interim_dir: Path) -> pl.Dat
 
 
 def _mp_compute_oscore(interim_dir: Path, jkp_interim_dir: Path) -> pl.DataFrame:
-    """OSCORE = Ohlson (1980) Model 1 score with SY's leverage (lt/at) and funds term
-    (pi/lt), from jkp's annual standardized accounting (acc_std_ann: at_x, lt, ca_x,
-    cl_x, nix_x, pi_x); size = log(at_x), not price-deflated. Each item counts only
-    where its raw counterpart (at, act, lct, ni, pi) is reported, as SY's raw inputs
-    require. Prior-year net income is the same permno's report in the previous
-    calendar year of datadate (SY's cyear). On SY's annual timing (months 5-16 after
-    datadate). Linked to permnos through world_msf; USD rows win a currency tie."""
-    raw_of = {"at_x": "at", "ca_x": "act", "cl_x": "lct", "nix_x": "ni", "pi_x": "pi"}
-    base = (
+    """OSCORE = Ohlson (1980) Model 1 score (MP_OSCORE_BETAS) on SY's definitions,
+    from at, lt, act, lct, ni and pi in jkp's acc_std_ann; size = log(at), not
+    price-deflated. Prior-year ni is the same permno's report in the previous
+    calendar year of datadate (SY's cyear). On SY's annual timing (months 5-16
+    after datadate). Linked to permnos through world_msf; USD rows win a currency tie."""
+    reports = (
         pl.scan_parquet(jkp_interim_dir / "acc_std_ann.parquet")
-        .select("gvkey", "curcd", "datadate", "lt", *raw_of, *raw_of.values())
-        .with_columns(
-            pl.when(col(r).is_not_null()).then(col(x)).alias(x) for x, r in raw_of.items()
-        )
-        .filter(
-            (col("at_x") > 0)
-            & col("lt").is_not_null()
-            & (col("lt") != 0)
-            & col("ca_x").is_not_null()
-            & (col("ca_x") != 0)
-        )
-        .with_columns(eom=col("datadate").dt.month_end())
-        .join(_mp_world_msf_link(jkp_interim_dir), on=["gvkey", "eom"], how="inner")
+        .filter((col("at") > 0) & (col("lt") != 0) & (col("act") != 0))
+        .with_columns(eom=col("datadate").dt.month_end(), cyear=col("datadate").dt.year())
+        .join(_mp_world_msf_link(jkp_interim_dir), on=["gvkey", "eom"])
         .sort("permno", "datadate", col("curcd") != "USD")
         .unique(["permno", "datadate"], keep="first", maintain_order=True)
-        .collect()
+    )
+    prior_ni = reports.select("permno", col("cyear") + 1, lagni=col("ni"))
+    b = MP_OSCORE_BETAS
+    oscore = (
+        reports.join(prior_ni, on=["permno", "cyear"])
         .with_columns(
-            cyear=col("datadate").dt.year(),
-            oeneg=pl.when(col("lt") > col("at_x")).then(1).otherwise(0),
-            size=col("at_x").log(),
-            tlta=safe_div("lt", "at_x", "tlta"),
-            wcta=safe_div(col("ca_x") - col("cl_x"), col("at_x"), "wcta"),
-            clca=safe_div("cl_x", "ca_x", "clca"),
-            nita=safe_div("nix_x", "at_x", "nita"),
-            futl=safe_div("pi_x", "lt", "futl"),
-        )
-    )
-
-    self_lag = base.select("permno", "cyear", col("nix_x").alias("lagni")).with_columns(
-        cyear=col("cyear") + 1
-    )
-    base = base.join(self_lag, on=["permno", "cyear"], how="inner").with_columns(
-        # safe_div: ni == lagni == 0 must yield null, not NaN — NaN survives
-        # is_not_null() and sorts above every value in the percentile rank.
-        chin=safe_div(col("nix_x") - col("lagni"), col("nix_x").abs() + col("lagni").abs(), "chin"),
-        intwo=pl.when((col("nix_x") < 0) & (col("lagni") < 0)).then(1).otherwise(0),
-    )
-
-    out = (
-        base.with_columns(
-            oscore=-1.32
-            - 0.407 * col("size")
-            + 6.03 * col("tlta")
-            - 1.43 * col("wcta")
-            + 0.076 * col("clca")
-            - 1.72 * col("oeneg")
-            - 2.37 * col("nita")
-            - 1.83 * col("futl")
-            + 0.285 * col("intwo")
-            - 0.521 * col("chin")
+            oscore=b["intercept"]
+            + b["SIZE"] * col("at").log()
+            + b["TLTA"] * safe_div("lt", "at", "tlta")
+            + b["WCTA"] * safe_div(col("act") - col("lct"), "at", "wcta")
+            + b["CLCA"] * safe_div("lct", "act", "clca")
+            + b["OENEG"] * (col("lt") > col("at")).cast(pl.Float64)
+            + b["NITA"] * safe_div("ni", "at", "nita")
+            + b["FUTL"] * safe_div("pi", "lt", "futl")
+            + b["INTWO"] * ((col("ni") < 0) & (col("lagni") < 0)).cast(pl.Float64)
+            # ni == lagni == 0 must give null, not NaN (NaN would rank above every value)
+            + b["CHIN"]
+            * safe_div(col("ni") - col("lagni"), col("ni").abs() + col("lagni").abs(), "chin")
         )
         .filter(col("oscore").is_not_null())
-        .select("permno", "datadate", "cyear", "oscore")
-        .sort(["permno", "cyear", "datadate"], descending=[False, False, True])
+        .collect()
     )
-    out = _mp_expand_to_crsp_window(out, "oscore", interim_dir)
+    out = _mp_expand_to_crsp_window(oscore, "oscore", interim_dir)
     out.write_parquet(interim_dir / "oscore.parquet")
     return out
 
