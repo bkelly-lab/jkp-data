@@ -8323,14 +8323,14 @@ def _mp_compute_roa(
 ) -> pl.DataFrame:
     """ROA = SY's rule on jkp's quarterly standardized accounting (acc_std_qtr): ni_qtr
     over the at_x of the previous linked quarterly row, null when that row is missing,
-    has zero assets or is 6+ months back; from the month after the quarter's
+    reports no assets (at, so no at_x fallback), has zero assets or is 6+ months back; from the month after the quarter's
     announcement (rdq) until the next one. USD rows win a currency tie."""
     jkp = (
         pl.scan_parquet(jkp_interim_dir / "acc_std_qtr.parquet")
-        .select("gvkey", "curcd", "datadate", "ni_qtr", "at_x")
+        .select("gvkey", "curcd", "datadate", "ni_qtr", "at_x", "at")
         .sort("gvkey", "datadate", col("curcd") != "USD")
         .unique(["gvkey", "datadate"], keep="first", maintain_order=True)
-        .select("gvkey", "datadate", "ni_qtr", "at_x")
+        .select("gvkey", "datadate", "ni_qtr", "at_x", "at")
         .collect()
     )
     cq = (
@@ -8341,11 +8341,14 @@ def _mp_compute_roa(
         .with_columns(
             lag_dt=col("datadate").shift(1).over("permno"),
             lag_at=col("at_x").shift(1).over("permno"),
+            lag_at_raw=col("at").shift(1).over("permno"),
         )
         .with_columns(lag_dt=col("lag_dt").fill_null(col("datadate")))
         .with_columns(
             gap_mo=_mp_month_diff(col("datadate"), col("lag_dt")),
-            roa=pl.when(col("lag_at").is_null() | (col("lag_at") == 0))
+            roa=pl.when(
+                col("lag_at_raw").is_null() | col("lag_at").is_null() | (col("lag_at") == 0)
+            )
             .then(None)
             .otherwise(safe_div("ni_qtr", "lag_at", "roa")),
         )
