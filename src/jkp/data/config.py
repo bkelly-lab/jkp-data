@@ -259,6 +259,14 @@ NI_AT_MIN_STD = 1e-6
 # in the published characteristics; 1e-5 would null 9 published stock-months.
 RES_MOM_MIN_STD = 1e-6
 
+# CRSP's monthly delisting flag V says MthRet includes the delisting return, but in
+# some V months MthRetX is only the price change to the delisting date, MthPrc /
+# MthPrevPrc - 1, and the delisting return is missing. prepare_crsp_sf compounds it
+# where the two differ by less than this. Our choice: on the 2026-10 data the
+# 25 V months that lack it differ by at most 5e-7 (CRSP rounds returns to six
+# decimals) and the closest V month that has it by 3e-5.
+CRSP_V_PRICE_CHANGE_TOL = 1e-6
+
 PORTFOLIO_SETTINGS = {
     "end_date": END_DATE,
     "pfs": PORTFOLIO_PFS,
