@@ -7717,11 +7717,6 @@ def _mp_permno_link(comp: pl.DataFrame, interim_dir: Path) -> pl.DataFrame:
     """Link standard industrial Compustat rows to CRSP permnos through the gvkey JKP puts
     on each CRSP security in world_msf (from CCM in gen_crsp_sf), in the month of
     datadate. Adds permno; a gvkey on several securities that month links to each."""
-    link = (
-        pl.scan_parquet(interim_dir / "world_msf.parquet")
-        .filter((col("source_crsp") == 1) & col("gvkey").is_not_null())
-        .select(col("gvkey").cast(pl.Utf8), "eom", permno=col("id").cast(pl.Int64))
-    )
     return (
         comp.lazy()
         .filter(
@@ -7731,9 +7726,18 @@ def _mp_permno_link(comp: pl.DataFrame, interim_dir: Path) -> pl.DataFrame:
             & (col("consol") == "C")
         )
         .with_columns(eom=col("datadate").dt.month_end())
-        .join(link, on=["gvkey", "eom"], how="inner")
+        .join(_mp_world_msf_link(interim_dir), on=["gvkey", "eom"], how="inner")
         .drop("eom")
         .collect()
+    )
+
+
+def _mp_world_msf_link(interim_dir: Path) -> pl.LazyFrame:
+    """[gvkey, eom, permno]: the gvkey JKP puts on each CRSP security in world_msf."""
+    return (
+        pl.scan_parquet(interim_dir / "world_msf.parquet")
+        .filter((col("source_crsp") == 1) & col("gvkey").is_not_null())
+        .select(col("gvkey").cast(pl.Utf8), "eom", permno=col("id").cast(pl.Int64))
     )
 
 
@@ -8320,25 +8324,34 @@ def _mp_compute_composite_issue(interim_dir: Path) -> pl.DataFrame:
     return out
 
 
-def _mp_compute_roa(mp_con: duckdb.DuckDBPyConnection, interim_dir: Path) -> pl.DataFrame:
-    cq = (
-        pl.read_parquet(interim_dir / "compustat_quarterly.parquet")
-        .select("permno", "datadate", "rdq", "rdq_crsp", "lead_rdq_crsp", "ibq", "atq")
-        .sort("permno", "datadate")
-        .with_columns(
-            lag_dt=col("datadate").shift(1).over("permno"),
-            lag_atq=col("atq").shift(1).over("permno"),
-        )
-        .with_columns(lag_dt=col("lag_dt").fill_null(col("datadate")))
-        .with_columns(
-            gap_mo=_mp_month_diff(col("datadate"), col("lag_dt")),
-            roa=pl.when(col("lag_atq").is_null() | (col("lag_atq") == 0))
-            .then(None)
-            .otherwise(safe_div("ibq", "lag_atq", "roa")),
-        )
-        .with_columns(roa=pl.when(col("gap_mo") >= 6).then(None).otherwise(col("roa")))
+def _mp_compute_roa(
+    mp_con: duckdb.DuckDBPyConnection, interim_dir: Path, jkp_interim_dir: Path
+) -> pl.DataFrame:
+    """ROA = jkp's niq_at (ni_qtr over the at_x of the quarter three months earlier) from
+    jkp's quarterly standardized accounting (acc_std_qtr), on SY's timing: from the month
+    after the quarter's announcement (rdq) until the next one, through the linked
+    compustat_quarterly rows. USD rows win a currency tie."""
+    q = (
+        pl.scan_parquet(jkp_interim_dir / "acc_std_qtr.parquet")
+        .select("gvkey", "curcd", "datadate", "ni_qtr", "at_x")
+        .unique(["gvkey", "curcd", "datadate"], keep="first", maintain_order=True)
+    )
+    prev = q.select(
+        "gvkey", "curcd", _mp_offset_months("datadate", 3).alias("datadate"), lag_at="at_x"
+    )
+    jkp = (
+        q.join(prev, on=["gvkey", "curcd", "datadate"], how="left")
+        .with_columns(roa=pl.when(col("lag_at") > 0).then(col("ni_qtr") / col("lag_at")))
         .filter(col("roa").is_not_null())
-        .select("permno", "datadate", "rdq", "rdq_crsp", "lead_rdq_crsp", "roa")
+        .sort("gvkey", "datadate", col("curcd") != "USD")
+        .unique(["gvkey", "datadate"], keep="first", maintain_order=True)
+        .select("gvkey", "datadate", "roa")
+    )
+    cq = (
+        pl.scan_parquet(interim_dir / "compustat_quarterly.parquet")
+        .select("permno", "gvkey", "datadate", "rdq", "rdq_crsp", "lead_rdq_crsp")
+        .join(jkp, on=["gvkey", "datadate"], how="inner")
+        .collect()
     )
 
     month_keys = pl.read_parquet(interim_dir / "crsp_monthly.parquet").select("permno", "eom")
@@ -8732,7 +8745,7 @@ def _mp_compute_anomalies(
     _mp_compute_nsi_ag_inv_noa(raw_dir, interim_dir)
     _mp_compute_momentum(interim_dir, jkp_interim_dir)
     _mp_compute_composite_issue(interim_dir)
-    _mp_compute_roa(mp_con, interim_dir)
+    _mp_compute_roa(mp_con, interim_dir, jkp_interim_dir)
     return _mp_compute_distress(mp_con, raw_dir, interim_dir, distress_refs)
 
 
