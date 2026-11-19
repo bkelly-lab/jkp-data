@@ -527,7 +527,9 @@ class TestSizeBreakpoints:
                 "be_a": pl.Float64,
             },
             orient="row",
-        ).with_columns(date=pl.lit(date(2020, 6, 30)))
+        ).with_columns(
+            date=pl.lit(date(2020, 6, 30)), size_pool_any_be=pl.col("excntry") == US_EXCNTRY
+        )
         out = size_breakpoints(frame, method, min_stocks_bp)
         return dict(zip(out["excntry"], out["sizemedn"], strict=True))
 

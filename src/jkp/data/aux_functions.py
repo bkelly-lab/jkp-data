@@ -10659,8 +10659,8 @@ def size_breakpoints(
           passes bp_screen; elsewhere size_grp), min_stocks_bp stocks in every
           country.
         - hxz: the universe's bp_pool (no FF screen) without financials (is_fin),
-          min_stocks_bp stocks in every country. In the US any BE counts;
-          elsewhere a stock needs be_a > 0.
+          min_stocks_bp stocks in every country. Stocks flagged size_pool_any_be
+          (the US) count with any BE; other stocks need be_a > 0.
     Steps:
         1) The method's pool; one country_breakpoints call over it.
     Output:
@@ -10670,8 +10670,7 @@ def size_breakpoints(
     spec = [("me", 0.50, "sizemedn")]
     pool = pl.col("bp_pool") & (pl.col("me") > 0)
     if method == "hxz":
-        us = pl.col("excntry") == US_EXCNTRY
-        pool = pool & ~pl.col("is_fin") & (us | (pl.col("be_a") > 0))
+        pool = pool & ~pl.col("is_fin") & (pl.col("size_pool_any_be") | (pl.col("be_a") > 0))
     return country_breakpoints(frame, spec, group_keys=keys, pool=pool, min_stocks=min_stocks_bp)
 
 
