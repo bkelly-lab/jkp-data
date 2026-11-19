@@ -988,6 +988,29 @@ class TestLoadFFUniverse:
         assert out.filter(pl.col("date") == months[1])["bp_pool"].to_list() == [False]
         assert out.filter(pl.col("date") == months[3])["w_cls"].to_list() == [32.0]
 
+    def test_other_country_month_kept_from_previous_month(self, test_paths):
+        """As in the US: in June, security 11 is off the main exchange and 12 no
+        longer common, each in the sample in May, so each keeps June. 13 is no
+        longer the primary security, which is the month's own: it drops. 14 is off
+        the main exchange after a gap (no May row) and 15 with no row before: both drop."""
+        apr, may, jun = date(2020, 4, 30), date(2020, 5, 31), date(2020, 6, 30)
+        _write_raw_msf(test_paths, [])
+        gbr = {"excntry": "GBR", "source_crsp": 0}
+        _write_world_msf(
+            test_paths,
+            [{"id": i, "eom": may, **gbr} for i in (11, 12, 13)]
+            + [
+                {"id": 11, "eom": jun, "exch_main": 0, **gbr},
+                {"id": 12, "eom": jun, "common": 0, **gbr},
+                {"id": 13, "eom": jun, "primary_sec": 0, **gbr},
+                {"id": 14, "eom": apr, **gbr},
+                {"id": 14, "eom": jun, "exch_main": 0, **gbr},
+                {"id": 15, "eom": jun, "exch_main": 0, **gbr},
+            ],
+        )
+        out = load_ff_universe(test_paths, "monthly").filter(pl.col("date") == jun).collect()
+        assert out["id"].sort().to_list() == [11, 12]
+
     def test_us_delisting_month_kept_from_previous_month(self, test_paths):
         """CRSP's flags are as of month end. In June, class 1 is off N/A/Q (X), class 2
         no longer US-incorporated and class 3 no longer common: each was in the sample

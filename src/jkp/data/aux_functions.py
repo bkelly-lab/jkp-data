@@ -10091,7 +10091,11 @@ def load_ff_universe(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl.
           file's, as in every country: JKP sets it to 1 on every CRSP row, so the
           gap rule never nulls a US return.
         - Elsewhere: JKP's main sample (common stock, main observation, primary
-          security, main exchange); the unit and the holding (sec) are the
+          security, main exchange). Monthly, as in the US, a security keeps a month
+          in which it was common, main observation and on the main exchange at the
+          start (in_sample_at_period_start_or_end); primary security is the
+          month's own, JKP's choice of the company's security, not a listing
+          event. The unit and the holding (sec) are the
           security; last_day_prc and bp_screen are true. size_grp small, large or
           mega forms the breakpoint pool (daily rows take it from the previous
           month's world_msf row, the latest known on every day of the month).
@@ -10101,7 +10105,9 @@ def load_ff_universe(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl.
         1) US: world CRSP common-share rows joined to raw CIZ rows with usincflg Y,
            on N, A or Q, each flag the row's or, monthly, the previous month's
            (in_sample_at_period_start_or_end); id = permco.
-        2) Elsewhere: world rows in JKP's main sample.
+        2) Elsewhere: world rows that are the primary security and common, main
+           observation and on the main exchange, each the row's or, monthly, the
+           previous month's.
         3) Both with the rule columns, concatenated.
     Output:
         Lazy [excntry, id, sec, date, ret, me, me_company, prc, ret_lag_dif, w_cls,
@@ -10196,12 +10202,11 @@ def load_ff_universe(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl.
             last_day_prc="last_day_prc",
         )
     )
-    other = world.filter(
-        (pl.col("excntry") != US_EXCNTRY)
-        & (pl.col("common") == 1)
-        & (pl.col("obs_main") == 1)
-        & (pl.col("primary_sec") == 1)
-        & (pl.col("exch_main") == 1)
+    listed = (pl.col("common") == 1) & (pl.col("obs_main") == 1) & (pl.col("exch_main") == 1)
+    other = (
+        world.filter(pl.col("excntry") != US_EXCNTRY)
+        .filter(in_sample_at_period_start_or_end(listed, freq, "id"))
+        .filter(pl.col("primary_sec") == 1)
     )
     if not monthly:
         other = other.join(
