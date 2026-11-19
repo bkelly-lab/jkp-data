@@ -36,6 +36,7 @@ from jkp.data.aux_functions import (
     _mp_add_leg_score,
     _mp_anomaly_pct_panel,
     _mp_build_comp_us_inputs,
+    _mp_compute_gross_profit,
     _mp_compute_momentum,
     _mp_daily_vw_returns,
     _mp_diff_legs,
@@ -493,32 +494,51 @@ class TestAccrualFormula:
 
 
 class TestGrossProfitFormula:
-    """Tests for gp_adj = (revt - cogs) / at."""
+    """US GP_ADJ: jkp's gp_at formula on acc_std_ann rows, SY's months 5-16 window."""
 
-    def test_gp_adj_known_values(self, tolerance):
-        """(revt=120, cogs=80, at=200) → gp_adj=0.2."""
-        df = pl.DataFrame({"revt": [120.0], "cogs": [80.0], "at": [200.0]})
-        result = df.with_columns(gp_adj=(pl.col("revt") - pl.col("cogs")) / pl.col("at"))
-        np.testing.assert_allclose(result["gp_adj"][0], 0.2, **tolerance.TIGHT)
+    def _run(self, tmp_path) -> pl.DataFrame:
+        dd = _eom(2010, 12)
+        pl.DataFrame(
+            {
+                "gvkey": ["001000", "001000", "002000", "003000"],
+                "curcd": ["USD", "CAD", "USD", "USD"],
+                "datadate": [dd] * 4,
+                "gp": [None, 900.0, 50.0, 150.0],
+                "sale_x": [500.0, 1000.0, 100.0, 500.0],
+                "cogs": [300.0, 100.0, 50.0, 300.0],
+                "at_x": [1000.0, 1000.0, 0.0, 1000.0],
+            },
+            schema_overrides={"gp": pl.Float64},
+        ).write_parquet(tmp_path / "acc_std_ann.parquet")
+        pl.DataFrame(
+            {
+                "source_crsp": [1, 1, 1],
+                "gvkey": ["001000", "002000", "003000"],
+                "eom": [dd] * 3,
+                "id": [10001, 10002, 10003],
+            }
+        ).write_parquet(tmp_path / "world_msf.parquet")
+        months = [_eom(2011, m) for m in range(4, 13)] + [_eom(2012, m) for m in range(1, 6)]
+        pl.DataFrame(
+            {"permno": [p for p in (10001, 10002, 10003) for _ in months], "eom": months * 3}
+        ).write_parquet(tmp_path / "crsp_monthly.parquet")
+        return _mp_compute_gross_profit(tmp_path, tmp_path)
 
-    def test_gp_adj_null_revt(self):
-        """Null revt propagates to null gp_adj."""
-        df = pl.DataFrame({"revt": [None], "cogs": [50.0], "at": [100.0]})
-        result = df.with_columns(gp_adj=(pl.col("revt") - pl.col("cogs")) / pl.col("at"))
-        assert result["gp_adj"][0] is None
+    def test_window_and_fallback(self, tmp_path, tolerance):
+        """No gp -> (sale_x - cogs) / at_x; the USD row wins over CAD; months 5-16."""
+        out = self._run(tmp_path).filter(pl.col("permno") == 10001)
+        vals = dict(zip(out["eom"], out["gp_adj"], strict=True))
+        assert vals[_eom(2011, 4)] is None and vals[_eom(2012, 5)] is None
+        live = [vals[_eom(2011, m)] for m in range(5, 13)] + [
+            vals[_eom(2012, m)] for m in range(1, 5)
+        ]
+        np.testing.assert_allclose(live, [0.2] * 12, **tolerance.TIGHT)
 
-    def test_gp_adj_zero_at(self):
-        """Zero at → inf or NaN gp_adj."""
-        df = pl.DataFrame({"revt": [100.0], "cogs": [50.0], "at": [0.0]})
-        result = df.with_columns(gp_adj=(pl.col("revt") - pl.col("cogs")) / pl.col("at"))
-        val = result["gp_adj"][0]
-        assert val is None or (isinstance(val, float) and not math.isfinite(val))
-
-    def test_gp_adj_negative_cogs(self, tolerance):
-        """Negative cogs (returns in SIC codes) handled correctly."""
-        df = pl.DataFrame({"revt": [100.0], "cogs": [-20.0], "at": [200.0]})
-        result = df.with_columns(gp_adj=(pl.col("revt") - pl.col("cogs")) / pl.col("at"))
-        np.testing.assert_allclose(result["gp_adj"][0], 0.6, **tolerance.TIGHT)
+    def test_gp_used_and_zero_assets_dropped(self, tmp_path, tolerance):
+        out = self._run(tmp_path).filter(pl.col("eom") == _eom(2011, 6))
+        vals = dict(zip(out["permno"], out["gp_adj"], strict=True))
+        np.testing.assert_allclose(vals[10003], 0.15, **tolerance.TIGHT)
+        assert vals[10002] is None
 
 
 # ===========================================================================
