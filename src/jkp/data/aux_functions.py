@@ -10006,25 +10006,28 @@ def _add_ff_contiguous(
     )
 
 
-def _ff_us_listed(listed: pl.Expr, freq: Literal["monthly", "daily"]) -> pl.Expr:
+def in_sample_at_period_start_or_end(
+    listed: pl.Expr, freq: Literal["monthly", "daily"], by: str
+) -> pl.Expr:
     """
     Description:
-        A US sample flag (common share, US-incorporated, on N/A/Q) as the FF universe
-        applies it. Daily, the row's own flag. Monthly, the row's or the class's
-        previous month's: CRSP sets the flags as of month end, so a class that
-        delists or leaves N/A/Q mid-month would otherwise lose the month's return,
-        which it earned from the start of the month.
+        Whether a security meets a sample condition at the start or the end of the
+        period. Daily, the row's own flag. Monthly, the row's (the month end) or the
+        security's previous month's (the month start): sample flags are set as of
+        month end, so a security that delists or leaves the sample mid-month would
+        otherwise lose the month's return, which it earned from the start of the
+        month.
     Steps:
-        1) Monthly: true when the row's flag is, or the permno's row of the previous
-           month has it.
+        1) Monthly: true when the row's flag is, or the row of the previous month
+           in `by` has it.
     Output:
         Boolean expression; a null flag counts as false.
     """
     listed = listed.fill_null(False)
     if freq == "daily":
         return listed
-    prev_month = year_month() - year_month().shift(1).over("permno", order_by="date") == 1
-    return listed | (listed.shift(1).over("permno", order_by="date") & prev_month).fill_null(False)
+    prev_month = year_month() - year_month().shift(1).over(by, order_by="date") == 1
+    return listed | (listed.shift(1).over(by, order_by="date") & prev_month).fill_null(False)
 
 
 def _add_ff_us_bp_screen(raw: pl.LazyFrame, paths: DataPaths) -> pl.LazyFrame:
@@ -10070,9 +10073,9 @@ def load_ff_universe(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl.
         - US: JKP's CRSP common-share rows of US-incorporated companies on NYSE,
           AMEX or NASDAQ; the raw CIZ files add only what the world files don't
           carry, usincflg and, daily, primaryexch and permco. Monthly, a class keeps
-          a month in which it was in the sample at the start (_ff_us_listed), so a
-          mid-month delisting keeps its last return; bp_pool reads the month-end
-          exchange. The unit (id) is the
+          a month in which it was in the sample at the start
+          (in_sample_at_period_start_or_end), so a mid-month delisting keeps its
+          last return; bp_pool reads the month-end exchange. The unit (id) is the
           company, the CRSP permco, as it is (Fama and French split some permcos
           by hand: group stocks, tracking stocks, relistings); the holding (sec) is the
           class, the CRSP permno. w_cls, the class's ME at t-1 from its CRSP
@@ -10097,7 +10100,7 @@ def load_ff_universe(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl.
     Steps:
         1) US: world CRSP common-share rows joined to raw CIZ rows with usincflg Y,
            on N, A or Q, each flag the row's or, monthly, the previous month's
-           (_ff_us_listed); id = permco.
+           (in_sample_at_period_start_or_end); id = permco.
         2) Elsewhere: world rows in JKP's main sample.
         3) Both with the rule columns, concatenated.
     Output:
@@ -10160,18 +10163,22 @@ def load_ff_universe(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl.
         )
     us = (
         us.filter(pl.col("source_crsp") == 1)
-        .filter(_ff_us_listed(pl.col("common") == 1, freq))
+        .filter(in_sample_at_period_start_or_end(pl.col("common") == 1, freq, "permno"))
         .sort("permno", "date")
         .pipe(_add_ff_contiguous, freq, ["permno"])
         .with_columns(w_cls=pl.when("contiguous").then(pl.col("me").shift(1).over("permno")))
         .join(
-            raw.filter(_ff_us_listed(pl.col("usincflg") == "Y", freq)).pipe(
-                _add_ff_us_bp_screen, paths
-            ),
+            raw.filter(
+                in_sample_at_period_start_or_end(pl.col("usincflg") == "Y", freq, "permno")
+            ).pipe(_add_ff_us_bp_screen, paths),
             on=["permno", "date"],
             how="inner",
         )
-        .filter(_ff_us_listed(pl.col("primaryexch").is_in(["N", "A", "Q"]), freq))
+        .filter(
+            in_sample_at_period_start_or_end(
+                pl.col("primaryexch").is_in(["N", "A", "Q"]), freq, "permno"
+            )
+        )
         .with_columns(id=pl.col("permco").cast(pl.Int64))
         .select(
             "excntry",
@@ -10331,7 +10338,8 @@ def build_ff_daily_holdings(paths: DataPaths, monthly_return_data: pl.DataFrame)
         at its monthly weight grown by its daily returns since the start of the
         month. The returns are the security's world_dsf rows, whatever its daily
         flags: the monthly holdings already decide what is held, and a US class kept
-        on its previous month's flags (_ff_us_listed) earns its returns to month end.
+        on its previous month's flags (in_sample_at_period_start_or_end) earns its
+        returns to month end.
         The trading days are JKP's daily market-return dates
         (market_returns, drop_non_trading_days), so the factors share the market
         factor's calendar. A return on another date compounds into the month's next
