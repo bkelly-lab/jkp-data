@@ -8079,13 +8079,18 @@ def _mp_compute_gross_profit(interim_dir: Path, jkp_interim_dir: Path) -> pl.Dat
 def _mp_compute_oscore(interim_dir: Path, jkp_interim_dir: Path) -> pl.DataFrame:
     """OSCORE = Ohlson (1980) Model 1 score with SY's leverage (lt/at) and funds term
     (pi/lt), from jkp's annual standardized accounting (acc_std_ann: at_x, lt, ca_x,
-    cl_x, nix_x, pi_x); size = log(at_x), not price-deflated. Prior-year net income is
-    the same permno's report in the previous calendar year of datadate (SY's cyear).
-    On SY's annual timing (months 5-16 after datadate). Linked to permnos through
-    world_msf; USD rows win a currency tie."""
+    cl_x, nix_x, pi_x); size = log(at_x), not price-deflated. Each item counts only
+    where its raw counterpart (at, act, lct, ni, pi) is reported, as SY's raw inputs
+    require. Prior-year net income is the same permno's report in the previous
+    calendar year of datadate (SY's cyear). On SY's annual timing (months 5-16 after
+    datadate). Linked to permnos through world_msf; USD rows win a currency tie."""
+    raw_of = {"at_x": "at", "ca_x": "act", "cl_x": "lct", "nix_x": "ni", "pi_x": "pi"}
     base = (
         pl.scan_parquet(jkp_interim_dir / "acc_std_ann.parquet")
-        .select("gvkey", "curcd", "datadate", "at_x", "lt", "ca_x", "cl_x", "nix_x", "pi_x")
+        .select("gvkey", "curcd", "datadate", "lt", *raw_of, *raw_of.values())
+        .with_columns(
+            pl.when(col(r).is_not_null()).then(col(x)).alias(x) for x, r in raw_of.items()
+        )
         .filter(
             (col("at_x") > 0)
             & col("lt").is_not_null()
