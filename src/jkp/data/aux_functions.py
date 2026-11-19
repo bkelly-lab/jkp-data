@@ -38,6 +38,7 @@ from .config import (
     CMP_MIN_STD,
     CMP_SIZE_GROUPS,
     CORRECTION_SPILL_COMPRESSION,
+    CRSP_V_PRICE_CHANGE_TOL,
     DAILY_TURNOVER_FIXED_POINT_SCALE,
     END_DATE,
     MAIN_FILTERS,
@@ -534,11 +535,13 @@ def gen_crsp_sf(paths: DataPaths, freq):
         sf = paths.interim_dir / "raw_data_dfs" / "crsp_msf_v2_aug.parquet"
         p, high, low = "mth", "mthaskhi", "mthbidlo"
         prc_open = prc_close = "NULL"
+        prc_prev = "s.mthprevprc"
     elif freq == "d":
         sf = paths.raw_tables_dir / "crsp_dsf_v2.parquet"
         p, high, low = "dly", "dlyhigh", "dlylow"
         prc_open = "CASE WHEN s.dlyprc > 0 AND s.dlyopen > 0 THEN s.dlyopen END"
         prc_close = "CASE WHEN s.dlyprc > 0 AND s.dlyclose > 0 THEN s.dlyclose END"
+        prc_prev = "NULL"
     else:
         raise ValueError(f"Unknown freq: {freq}")
     senames = (paths.raw_tables_dir / "crsp_stksecurityinfohist.parquet").as_posix()
@@ -556,6 +559,8 @@ def gen_crsp_sf(paths: DataPaths, freq):
                 s.{p}prc AS prc,
                 {prc_open} AS prc_open,
                 {prc_close} AS prc_close,
+                -- monthly: the price MthRetX starts from; tests MthDelFlg V in prepare_crsp_sf
+                {prc_prev} AS prc_prev,
                 s.shrout / 1000 AS shrout,
                 s.{p}ret AS ret,
                 s.{p}retx AS retx,
@@ -2573,6 +2578,7 @@ def prepare_crsp_sf(paths: DataPaths, freq):
                     "prc_low",
                     "prc_open",
                     "prc_close",
+                    "prc_prev",
                 ]
             ]
             + [col("vol").cast(pl.Int64)]
@@ -2620,7 +2626,10 @@ def prepare_crsp_sf(paths: DataPaths, freq):
     # CIZ flag-conditional delisting-return adjustment (Xia 2026, SSRN 7243220).
     #
     # Monthly — MthDelFlg (propagated as del_flag), per CRSP's flag metadata:
-    #   A/P/V — delisting return already included in MthRet → skip compounding
+    #   A/P/V — delisting return already included in MthRet → skip compounding,
+    #           except a V month whose MthRetX is just the price change to the
+    #           delisting date (MthPrc / MthPrevPrc - 1): the delisting return is
+    #           missing from it, so it is compounded as for G
     #   M     — excluded because the delisting return is missing → compound
     #           (+ −0.30 imputation for bad-delist buckets)
     #   G     — excluded because it is more than 10 days from the delisting
@@ -2712,7 +2721,13 @@ def prepare_crsp_sf(paths: DataPaths, freq):
 
     # Compound unless MthDelFlg says the delisting return is already in MthRet;
     # a null flag compounds (a no-op when no sedelist row joins).
-    needs_compound = ~col("del_flag").is_in(["A", "P", "V"]).fill_null(False)
+    price_change = col("prc").abs() / col("prc_prev").abs() - 1
+    v_without_delret = (col("del_flag") == "V") & (
+        (col("retx") - price_change).abs() < CRSP_V_PRICE_CHANGE_TOL
+    )
+    needs_compound = ~col("del_flag").is_in(["A", "P", "V"]).fill_null(False) | (
+        v_without_delret.fill_null(False)
+    )
     __crsp_sf = (
         __crsp_sf
         # impute missing delret to -0.30 for "bad delist" buckets
@@ -2721,7 +2736,7 @@ def prepare_crsp_sf(paths: DataPaths, freq):
         )
         # if ret missing but delret exists, set ret=0 so compounding works
         .with_columns(ret=pl.when(needs_compound & c7).then(pl.lit(0.0)).otherwise(col("ret")))
-        # compound ret with delret unless MthDelFlg is A/P/V
+        # compound ret with delret unless MthDelFlg says MthRet includes it
         .with_columns(
             ret=pl.when(needs_compound)
             .then((col("ret") + 1) * (pl.coalesce(["delret", 0.0]) + 1) - 1)
@@ -2772,6 +2787,7 @@ def prepare_crsp_sf(paths: DataPaths, freq):
         "t30ret",
         "merge_aux",
         "del_flag",
+        "prc_prev",
         "delret",
         "delreasontype",
         "delactiontype",

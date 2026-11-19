@@ -461,6 +461,37 @@ def test_monthly_flag_APV_no_double_count(test_paths: DataPaths, flag: str) -> N
     assert _val(df, 1, d, "ret") == pytest.approx(-0.40)
 
 
+def test_monthly_flag_V_without_delret_compounds(test_paths: DataPaths) -> None:
+    """A V month whose MthRetX is just the price change to the delisting date
+    (MthPrc / MthPrevPrc - 1) lacks the delisting return: it is compounded. A V
+    month whose MthRetX differs from that price change keeps MthRet."""
+    d = date(2001, 1, 31)
+    price_change = 10.0 / 9.5 - 1
+    rows = [
+        _crsp_row(
+            1,
+            1,
+            d,
+            10.0,
+            1.0,
+            price_change,
+            price_change,
+            100,
+            1.0,
+            nasdaq=False,
+            del_flag="V",
+            prc_prev=9.5,
+        ),
+        _crsp_row(
+            2, 2, d, 10.0, 1.0, -0.40, -0.40, 100, 1.0, nasdaq=False, del_flag="V", prc_prev=9.5
+        ),
+    ]
+    dels = [_del_row(p, date(2001, 1, 15), -1.0, "GDR", "VCL", "UNAV", "PRCF") for p in (1, 2)]
+    df = _run(test_paths, "m", rows, dels)
+    assert _val(df, 1, d, "ret") == pytest.approx(-1.0)
+    assert _val(df, 2, d, "ret") == pytest.approx(-0.40)
+
+
 def test_monthly_flag_G_compounds_delret(test_paths: DataPaths) -> None:
     """G flag (delisting return more than 10 days from the delisting date):
     MthRet excludes it, so it is compounded — same as M."""
