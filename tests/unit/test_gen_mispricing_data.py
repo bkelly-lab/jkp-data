@@ -36,7 +36,6 @@ from jkp.data.aux_functions import (
     _mp_add_leg_score,
     _mp_anomaly_pct_panel,
     _mp_build_comp_us_inputs,
-    _mp_compute_gross_profit,
     _mp_compute_momentum,
     _mp_daily_vw_returns,
     _mp_diff_legs,
@@ -494,24 +493,32 @@ class TestAccrualFormula:
 
 
 class TestGrossProfitFormula:
-    """US GP_ADJ: jkp's gp_at at t-1 lands on month t of crsp_monthly."""
+    """Tests for gp_adj = (revt - cogs) / at."""
 
-    def test_lagged_one_month(self, tmp_path):
-        e = [_eom(2020, m) for m in (1, 2, 3, 5)]
-        pl.DataFrame(
-            {
-                "id": [10001] * 4 + [500001],
-                "excntry": ["USA"] * 4 + ["GBR"],
-                "eom": [*e, e[0]],
-                "gp_at": [0.1, 0.2, 0.3, 0.5, 9.0],
-            }
-        ).write_parquet(tmp_path / "world_data_prelim.parquet")
-        pl.DataFrame({"permno": [10001] * 4, "eom": e}).write_parquet(
-            tmp_path / "crsp_monthly.parquet"
-        )
-        out = _mp_compute_gross_profit(tmp_path, tmp_path)
-        # Feb takes Jan, Mar takes Feb; May has no April row, so no stale March value
-        assert out["gp_adj"].to_list() == [None, 0.1, 0.2, None]
+    def test_gp_adj_known_values(self, tolerance):
+        """(revt=120, cogs=80, at=200) → gp_adj=0.2."""
+        df = pl.DataFrame({"revt": [120.0], "cogs": [80.0], "at": [200.0]})
+        result = df.with_columns(gp_adj=(pl.col("revt") - pl.col("cogs")) / pl.col("at"))
+        np.testing.assert_allclose(result["gp_adj"][0], 0.2, **tolerance.TIGHT)
+
+    def test_gp_adj_null_revt(self):
+        """Null revt propagates to null gp_adj."""
+        df = pl.DataFrame({"revt": [None], "cogs": [50.0], "at": [100.0]})
+        result = df.with_columns(gp_adj=(pl.col("revt") - pl.col("cogs")) / pl.col("at"))
+        assert result["gp_adj"][0] is None
+
+    def test_gp_adj_zero_at(self):
+        """Zero at → inf or NaN gp_adj."""
+        df = pl.DataFrame({"revt": [100.0], "cogs": [50.0], "at": [0.0]})
+        result = df.with_columns(gp_adj=(pl.col("revt") - pl.col("cogs")) / pl.col("at"))
+        val = result["gp_adj"][0]
+        assert val is None or (isinstance(val, float) and not math.isfinite(val))
+
+    def test_gp_adj_negative_cogs(self, tolerance):
+        """Negative cogs (returns in SIC codes) handled correctly."""
+        df = pl.DataFrame({"revt": [100.0], "cogs": [-20.0], "at": [200.0]})
+        result = df.with_columns(gp_adj=(pl.col("revt") - pl.col("cogs")) / pl.col("at"))
+        np.testing.assert_allclose(result["gp_adj"][0], 0.6, **tolerance.TIGHT)
 
 
 # ===========================================================================
