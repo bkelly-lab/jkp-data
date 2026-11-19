@@ -47,6 +47,20 @@ class TestCumulate4q:
         )
         assert _sale(df) == [None, None, None, 100.0]
 
+    def test_transition_quarter_gets_no_sum(self) -> None:
+        """A transition quarter (fqtr missing, alone in its fiscal year) gets no sum, and the
+        preceding Q4 keeps its sum."""
+        df = _panel(
+            [
+                (2013, 1, 10.0, 10.0),
+                (2013, 2, 20.0, 30.0),
+                (2013, 3, 30.0, 60.0),
+                (2013, 4, 40.0, 100.0),
+                (2014, None, 5.0, 5.0),
+            ]
+        )
+        assert _sale(df) == [None, None, None, 100.0, None]
+
     def test_across_fiscal_years(self) -> None:
         df = _panel(
             [
