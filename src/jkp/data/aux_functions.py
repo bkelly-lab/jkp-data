@@ -57,6 +57,7 @@ from .config import (
     FF_UMD_MONTHLY_SKIP,
     FF_US_BP_EXCLUDE_NAICS,
     FF_US_BP_EXCLUDE_SIC,
+    HXZ_US_MIN_STOCKS_BP,
     MAIN_FILTERS,
     NI_AT_MIN_STD,
     RES_MOM_MIN_STD,
@@ -10035,17 +10036,19 @@ def load_ff_universe(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl.
           common-share rows, so a class back on N/A/Q keeps it (null after a gap in
           CRSP, _add_ff_contiguous), weights the classes' returns in the firm panel.
           Monthly rows carry JKP's me_company, the ME of all the
-          company's classes; daily rows have none. NYSE-listed classes that pass
-          _add_ff_us_bp_screen form the breakpoint pool; last_day_prc, false on a
-          monthly row priced before the month's last trading day, keeps the row out
-          of portfolio formation (build_ff_firm_panel). ret_lag_dif is the world
+          company's classes; daily rows have none. bp_pool marks the NYSE-listed
+          classes and bp_screen the ones that pass _add_ff_us_bp_screen; the FF
+          breakpoint pool needs both (build_ff_firm_panel), HXZ's only bp_pool.
+          last_day_prc, false on a monthly row priced before the month's last
+          trading day, keeps the row out of portfolio formation
+          (build_ff_firm_panel). ret_lag_dif is the world
           file's, as in every country: JKP sets it to 1 on every CRSP row, so the
           gap rule never nulls a US return.
         - Elsewhere: JKP's main sample (common stock, main observation, primary
           security, main exchange); the unit and the holding (sec) are the
-          security; last_day_prc is true. size_grp small, large or mega forms the
-          breakpoint pool (daily rows take it from the previous month's world_msf
-          row, the latest known on every day of the month).
+          security; last_day_prc and bp_screen are true. size_grp small, large or
+          mega forms the breakpoint pool (daily rows take it from the previous
+          month's world_msf row, the latest known on every day of the month).
         Returns are JKP's: in the US, CIZ's return plus CRSP's delisting return, and
         -30% where a bad delisting has none (prepare_crsp_sf).
     Steps:
@@ -10055,7 +10058,7 @@ def load_ff_universe(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl.
         3) Both with the rule columns, concatenated.
     Output:
         Lazy [excntry, id, sec, date, ret, me, me_company, prc, ret_lag_dif, w_cls,
-        bp_pool, last_day_prc], one row per US class or other security.
+        bp_pool, bp_screen, last_day_prc], one row per US class or other security.
     """
     monthly = freq == "monthly"
     permno = pl.col("permno").cast(pl.Int64)
@@ -10134,7 +10137,8 @@ def load_ff_universe(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl.
             "ret_lag_dif",
             "w_cls",
             sec="permno",
-            bp_pool=(pl.col("primaryexch") == "N") & pl.col("bp_screen"),
+            bp_pool=pl.col("primaryexch") == "N",
+            bp_screen="bp_screen",
             last_day_prc="last_day_prc",
         )
     )
@@ -10165,6 +10169,7 @@ def load_ff_universe(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl.
         w_cls=pl.lit(None, dtype=pl.Float64),
         sec=pl.col("id").cast(pl.Int64),
         bp_pool=pl.col("size_grp").is_in(["small", "large", "mega"]),
+        bp_screen=pl.lit(True),
         last_day_prc=pl.lit(True),
     )
     return pl.concat([us, other], how="vertical_relaxed")
@@ -10180,7 +10185,8 @@ def build_ff_firm_panel(paths: DataPaths, freq: Literal["monthly", "daily"]) -> 
         securities in a portfolio: the return weighted by each class's ME at t-1
         over classes with a return and a positive weight, ME JKP's me_company
         where the rows carry it (US monthly) and otherwise the sum of the rows'
-        me, and NYSE if any row is. A unit with one row
+        me, and in the breakpoint pool if any row is in bp_pool and passes
+        bp_screen. A unit with one row
         that date keeps that row's values, so elsewhere the panel is the security's
         own rows. Rows without ME stay in: momentum counts a priced row whose shares
         are missing. A class priced before the month's last trading day (last_day_prc
@@ -10210,7 +10216,7 @@ def build_ff_firm_panel(paths: DataPaths, freq: Literal["monthly", "daily"]) -> 
             ),
             prc=pl.col("prc").abs().max(),
             ret_lag_dif=pl.col("ret_lag_dif").max(),
-            bp_pool=pl.col("bp_pool").any(),
+            bp_pool=(pl.col("bp_pool") & pl.col("bp_screen")).any(),
         )
         .collect()
     )
@@ -10644,6 +10650,49 @@ def ff_sort_definitions() -> dict[str, tuple[str, list[str], pl.Expr]]:
     }
 
 
+def size_breakpoints(
+    frame: pl.DataFrame, method: Literal["ff", "hxz"], min_stocks_bp: int
+) -> pl.DataFrame:
+    """
+    Description:
+        The size median per (excntry, date) over the breakpoint pool with ME > 0.
+        - ff: the FF firm panel's bp_pool (in the US, firms with a NYSE class that
+          passes bp_screen; elsewhere size_grp), min_stocks_bp stocks in every
+          country.
+        - hxz: the universe's bp_pool (no FF screen) without financials (is_fin).
+          In the US any BE counts and HXZ_US_MIN_STOCKS_BP stocks suffice;
+          elsewhere a stock needs be_a > 0 and the country min_stocks_bp stocks.
+    Steps:
+        1) ff: one country_breakpoints call over the pool.
+        2) hxz: the US and the other countries separately, concatenated.
+    Output:
+        [excntry, date, sizemedn], one row per country-date with enough stocks.
+    """
+    keys = ["excntry", "date"]
+    spec = [("me", 0.50, "sizemedn")]
+    pool = pl.col("bp_pool") & (pl.col("me") > 0)
+    if method == "ff":
+        return country_breakpoints(
+            frame, spec, group_keys=keys, pool=pool, min_stocks=min_stocks_bp
+        )
+    us = pl.col("excntry") == US_EXCNTRY
+    pool = pool & ~pl.col("is_fin")
+    return pl.concat(
+        [
+            country_breakpoints(
+                frame.filter(us), spec, group_keys=keys, pool=pool, min_stocks=HXZ_US_MIN_STOCKS_BP
+            ),
+            country_breakpoints(
+                frame.filter(~us),
+                spec,
+                group_keys=keys,
+                pool=pool & (pl.col("be_a") > 0),
+                min_stocks=min_stocks_bp,
+            ),
+        ]
+    )
+
+
 def compute_ff_breakpoints(
     frame: pl.DataFrame, sorts: list[str], min_stocks_bp: int
 ) -> pl.DataFrame:
@@ -10657,19 +10706,13 @@ def compute_ff_breakpoints(
         sorts are independent: a country-date with the size median forms each sort
         that has its own breakpoints.
     Steps:
-        1) Size median per (excntry, date).
+        1) Size median per (excntry, date) (size_breakpoints, method "ff").
         2) Each sort's 30/70 breakpoints, left-joined to the size median.
     Output:
         [excntry, date, sizemedn, <sort>_lo, <sort>_hi for each sort].
     """
     keys = ["excntry", "date"]
-    out = country_breakpoints(
-        frame,
-        [("me", 0.50, "sizemedn")],
-        group_keys=keys,
-        pool=pl.col("bp_pool") & (pl.col("me") > 0),
-        min_stocks=min_stocks_bp,
-    )
+    out = size_breakpoints(frame, "ff", min_stocks_bp)
     for sort in sorts:
         signal, _, eligible = ff_sort_definitions()[sort]
         bps = country_breakpoints(

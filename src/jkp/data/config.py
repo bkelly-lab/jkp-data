@@ -257,6 +257,8 @@ US_EXCNTRY = "USA"
 # legs. Applied in every country.
 FACTOR_MIN_STOCKS_BP = 10
 FACTOR_MIN_STOCKS_PF = 3
+# Minimum NYSE stocks for the HXZ US size median (size_breakpoints, method "hxz").
+HXZ_US_MIN_STOCKS_BP = 1
 
 # The June sorts of the FF builder (ff_sort_definitions keys): B/M, OP, INV.
 FF_JUNE_SORTS = ["bm", "op", "inv"]

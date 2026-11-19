@@ -36,6 +36,7 @@ from jkp.data.aux_functions import (
     compute_ff_portfolio_returns,
     ff_sort_definitions,
     load_ff_universe,
+    size_breakpoints,
 )
 from jkp.data.config import (
     FACTOR_MIN_STOCKS_BP,
@@ -484,6 +485,72 @@ class TestFFBreakpoints:
         bp = compute_ff_breakpoints(pl.concat([june, micro]), ["bm"], FACTOR_MIN_STOCKS_BP)
         # median (QUANTILE_DISC) of me 1..15 is 8; the B/M-eligible 1..13 give 7
         assert bp["sizemedn"][0] == 8.0
+
+
+class TestSizeBreakpoints:
+    """size_breakpoints: the FF and HXZ size-median pools."""
+
+    # (excntry, me, bp_pool, is_fin, be_a). US pool: non-financial 1, 2, 3 (BE
+    # positive, null, negative), financial 4 and 5; out of the pool: 100 and ME <= 0.
+    US = [
+        (US_EXCNTRY, 1.0, True, False, 1.0),
+        (US_EXCNTRY, 2.0, True, False, None),
+        (US_EXCNTRY, 3.0, True, False, -1.0),
+        (US_EXCNTRY, 4.0, True, True, 1.0),
+        (US_EXCNTRY, 5.0, True, True, 1.0),
+        (US_EXCNTRY, 100.0, False, False, 1.0),
+        (US_EXCNTRY, 0.0, True, False, 1.0),
+        (US_EXCNTRY, -5.0, True, False, 1.0),
+    ]
+    # DEU pool: non-financial with BE > 0: 1, 2, 3; BE null or <= 0: 10, 11, 12;
+    # financial 4; out of the pool: 100.
+    DEU = [
+        ("DEU", 1.0, True, False, 1.0),
+        ("DEU", 2.0, True, False, 1.0),
+        ("DEU", 3.0, True, False, 1.0),
+        ("DEU", 10.0, True, False, None),
+        ("DEU", 11.0, True, False, 0.0),
+        ("DEU", 12.0, True, False, -1.0),
+        ("DEU", 4.0, True, True, 1.0),
+        ("DEU", 100.0, False, False, 1.0),
+    ]
+
+    @staticmethod
+    def _medians(rows: list[tuple], method: str, min_stocks_bp: int) -> dict[str, float]:
+        frame = pl.DataFrame(
+            rows,
+            schema={
+                "excntry": pl.Utf8,
+                "me": pl.Float64,
+                "bp_pool": pl.Boolean,
+                "is_fin": pl.Boolean,
+                "be_a": pl.Float64,
+            },
+            orient="row",
+        ).with_columns(date=pl.lit(date(2020, 6, 30)))
+        out = size_breakpoints(frame, method, min_stocks_bp)
+        return dict(zip(out["excntry"], out["sizemedn"], strict=True))
+
+    def test_ff_pool_is_bp_pool_with_positive_me(self):
+        """FF keeps financials and ignores BE: pool 1..5, median 3, in every country."""
+        assert self._medians(self.US, "ff", 1) == {US_EXCNTRY: 3.0}
+        assert self._medians(self.DEU, "ff", 1) == {"DEU": 4.0}
+
+    def test_ff_min_stocks_in_every_country(self):
+        assert self._medians(self.US, "ff", 6) == {}
+        assert self._medians(self.DEU, "ff", 8) == {}
+
+    def test_hxz_us_pool_drops_financials_and_counts_any_be(self):
+        """Pool 1, 2, 3 whatever their BE; one stock suffices, whatever min_stocks_bp."""
+        assert self._medians(self.US, "hxz", 10) == {US_EXCNTRY: 2.0}
+
+    def test_hxz_other_country_pool_needs_positive_be(self):
+        """Pool 1, 2, 3 (BE > 0, non-financial), with min_stocks_bp stocks."""
+        assert self._medians(self.DEU, "hxz", 3) == {"DEU": 2.0}
+        assert self._medians(self.DEU, "hxz", 4) == {}
+
+    def test_hxz_countries_together(self):
+        assert self._medians(self.US + self.DEU, "hxz", 3) == {US_EXCNTRY: 2.0, "DEU": 2.0}
 
 
 # =============================================================================
