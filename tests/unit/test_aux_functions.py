@@ -75,6 +75,7 @@ def _write_sf_fixture(raw_tables: Path, freq: str) -> tuple[date, date]:
                 **common_columns,
                 "mthcaldt": [matched_date, unmatched_date],
                 "mthprc": [10.0, 11.0],
+                "mthprevprc": [9.0, 10.0],
                 "mthprcflg": ["TR", "TR"],
                 "mthret": [0.10, 0.02],
                 "mthretx": [0.09, 0.01],
