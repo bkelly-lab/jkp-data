@@ -3909,45 +3909,47 @@ def prefer_global(
 def quarterize(df: pl.LazyFrame, var_list: list[str]) -> pl.LazyFrame:
     """
     Description:
-        Convert quarterly Compustat levels to quarter-over-quarter flows with guardrails.
+        Convert quarterly Compustat year-to-date values to quarterly flows.
 
     Steps:
-        1) Drop rows without a fiscal quarter (fqtr missing). Compustat keeps these from a firm's old
-           fiscal calendar after it changes its fiscal year-end.
+        1) Set aside rows without a fiscal quarter (fqtr missing). Compustat keeps these from a firm's
+           old fiscal calendar after it changes its fiscal year-end. One is kept as a transition
+           quarter when it is the only row on its datadate and its fiscal year (gvkey, fyr, fyearq)
+           has no rows with a fiscal quarter; the others are dropped.
         2) Keep one row per [gvkey,fyr,fyearq,fqtr]: the earliest datadate.
-        3) Per [gvkey,fyr,fyearq], add running count and diffs var_q = Δ(var).
-        4) Build deletion mask for first obs or quarter breaks; null-out invalid diffs.
-        5) Return unique, sorted quarterly panel with *_q flows.
+        3) var_q is the year-to-date value in Q1 and the change from the previous fiscal quarter
+           when that quarter is present in the same fiscal year; otherwise missing.
+        4) Add the transition quarters with missing flows: a year-to-date value without a fiscal
+           quarter has no previous quarter to difference against.
 
     Output:
-        Quarterly panel with flow variables var_q for each input in var_list.
+        Quarterly panel with flow variables var_q for each input in var_list, sorted by
+        [gvkey,fyr,fyearq,fqtr,datadate] and unique on [gvkey,fyr,fyearq,fqtr] apart from the
+        transition quarters.
     """
-    list_aux1 = [col("gvkey").cum_count().over(["gvkey", "fyr", "fyearq"]).alias("count_aux")] + [
-        col(var).cast(pl.Float64).diff().alias(var + "_q") for var in var_list
-    ]
-    c1 = (col("fqtr") != 1).fill_null(pl.lit(True).cast(pl.Boolean))
-    c2 = (col("fqtr").diff() != 1).fill_null(pl.lit(True).cast(pl.Boolean))
-    list_aux2 = [
-        pl.when(col("count_aux") == 1).then(col(var)).otherwise(col(var + "_q")).alias(var + "_q")
-        for var in var_list
-    ] + [pl.when(col("count_aux") == 1).then(c1).otherwise(c2).alias("del")]
-    list_aux3 = [
-        pl.when(col("del")).then(fl_none()).otherwise(col(var + "_q")).alias(var + "_q")
-        for var in var_list
-    ]
-    df = (
-        df.filter(col("fqtr").is_not_null())
-        .sort(["gvkey", "fyr", "fyearq", "fqtr", "datadate"])
-        .unique(["gvkey", "fyr", "fyearq", "fqtr"], keep="first", maintain_order=True)
-        .with_columns(list_aux1)
-        .sort(["gvkey", "fyr", "fyearq", "fqtr"])
-        .with_columns(list_aux2)
-        .with_columns(list_aux3)
-        .drop(["del", "count_aux"])
-        .unique(["gvkey", "fyr", "fyearq", "fqtr"])
-        .sort(["gvkey", "fyr", "fyearq", "fqtr"])
+    fy = ["gvkey", "fyr", "fyearq"]
+    transition = (
+        col("fqtr").is_null()
+        & (pl.len().over("gvkey", "datadate") == 1)
+        & col("fqtr").is_null().all().over(fy)
     )
-    return df
+    regular = (
+        df.filter(col("fqtr").is_not_null())
+        .sort([*fy, "fqtr", "datadate"])
+        .unique([*fy, "fqtr"], keep="first", maintain_order=True)
+        .with_columns(
+            pl.when(col("fqtr") == 1)
+            .then(col(var).cast(pl.Float64))
+            .when(col("fqtr").shift(1).over(fy) == col("fqtr") - 1)
+            .then(col(var).cast(pl.Float64).diff().over(fy))
+            .alias(f"{var}_q")
+            for var in var_list
+        )
+    )
+    transition_rows = df.filter(transition).with_columns(
+        fl_none().alias(f"{var}_q") for var in var_list
+    )
+    return pl.concat([regular, transition_rows]).sort([*fy, "fqtr", "datadate"])
 
 
 def one_row_per_date(df: pl.LazyFrame) -> pl.LazyFrame:
@@ -4005,6 +4007,8 @@ def cumulate_4q(df: pl.LazyFrame, var_list: list[str]) -> pl.LazyFrame:
         Create 4-quarter cumulative (TTM) level variables and enforce continuity checks.
         Assumes df is unique on (gvkey, fyr, fyearq, fqtr) and sorted by those columns, so the
         three rows before a row are the firm's preceding fiscal quarters whenever they exist.
+        The transition quarters kept by quarterize (fqtr missing) get no sum: their fiscal year
+        has no other rows, so they never sit inside a run of four consecutive quarters.
 
     Steps:
         1) For each *q in var_list, name the TTM variable by stripping the trailing 'q'.
@@ -4197,7 +4201,7 @@ def standardized_accounting_data(
            quarterly: gvkey, fyr, fyearq, fqtr), keep the GLOBAL row.
         4) If convert_to_usd: join FX and convert listed vars (annual & quarterly).
         5) Load ME and join to annual/quarterly panels.
-        6) Quarterly: drop rows without fqtr and quarterize …y → …y_q, coalesce to …q; create ni_qtr/sale_qtr/ocf_qtr; cumulate 4Q flows with continuity checks; normalize currency codes; de-dupe to one row per (gvkey, datadate), keeping the established fiscal calendar. Add the annual-only items (e.g., emp, csho_gr1) as nulls.
+        6) Quarterly: drop rows without fqtr, except transition quarters at a fiscal year-end change, and quarterize …y → …y_q, coalesce to …q; create ni_qtr/sale_qtr/ocf_qtr; cumulate 4Q flows with continuity checks; normalize currency codes; de-dupe to one row per (gvkey, datadate), keeping the established fiscal calendar. Add the annual-only items (e.g., emp, csho_gr1) as nulls.
         7) Annual: add empty quarterly helpers; join ME; sort.
         8) Optionally add helper variables.
         9) Unique by (gvkey, datadate), drop row index, sort, and write 'acc_std_ann.parquet' and 'acc_std_qtr.parquet'.

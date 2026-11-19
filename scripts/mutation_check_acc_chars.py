@@ -79,19 +79,51 @@ MUTATIONS: list[tuple[str, str, str]] = [
     ),
     # quarterize and cumulate_4q
     (
-        "quarterize: running count per (gvkey, fyr) instead of per fiscal year",
-        'col("gvkey").cum_count().over(["gvkey", "fyr", "fyearq"])',
-        'col("gvkey").cum_count().over(["gvkey", "fyr"])',
+        "quarterize: Q2 takes its year-to-date value",
+        'pl.when(col("fqtr") == 1)',
+        'pl.when(col("fqtr") <= 2)',
     ),
     (
-        "quarterize: first obs of a year at fqtr 2 not deleted",
-        'c1 = (col("fqtr") != 1)',
-        'c1 = (col("fqtr") > 2)',
+        "quarterize: flow taken after a missing quarter",
+        '.when(col("fqtr").shift(1).over(fy) == col("fqtr") - 1)',
+        '.when(col("fqtr").shift(1).over(fy) < col("fqtr"))',
+    ),
+    (
+        "quarterize: flow taken across fiscal years",
+        """.when(col("fqtr").shift(1).over(fy) == col("fqtr") - 1)
+            .then(col(var).cast(pl.Float64).diff().over(fy))""",
+        """.when(col("fqtr").shift(1).over("gvkey", "fyr") == col("fqtr") - 1)
+            .then(col(var).cast(pl.Float64).diff().over("gvkey", "fyr"))""",
+    ),
+    (
+        "quarterize: duplicate fiscal quarter keeps the latest datadate",
+        '.unique([*fy, "fqtr"], keep="first", maintain_order=True)',
+        '.unique([*fy, "fqtr"], keep="last", maintain_order=True)',
     ),
     (
         "quarterize: rows without fqtr kept",
         'df.filter(col("fqtr").is_not_null())',
         "df.filter(pl.lit(True))",
+    ),
+    (
+        "quarterize: transition quarter kept when it shares its date",
+        '& (pl.len().over("gvkey", "datadate") == 1)',
+        "& pl.lit(True)",
+    ),
+    (
+        "quarterize: transition quarter kept inside a regular fiscal year",
+        '& col("fqtr").is_null().all().over(fy)',
+        "& pl.lit(True)",
+    ),
+    (
+        "quarterize: transition quarters dropped",
+        "df.filter(transition)",
+        "df.filter(transition & pl.lit(False))",
+    ),
+    (
+        "quarterize: transition quarter takes its year-to-date value as flow",
+        'fl_none().alias(f"{var}_q") for var in var_list',
+        'col(var).alias(f"{var}_q") for var in var_list',
     ),
     (
         "cumulate_4q: no fyr continuity check",

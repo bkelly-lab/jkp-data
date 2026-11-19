@@ -205,6 +205,29 @@ class TestQuarterize:
         out = quarterize(df, ["saley"]).collect()
         assert out["saley_q"].to_list() == [10.0, 15.0, 20.0, 25.0]
 
+    def test_flow_needs_previous_quarter_of_same_fiscal_year(self) -> None:
+        """A quarter's flow is its change from the previous fiscal quarter of the same fiscal year:
+        missing after a gap, at a fiscal year that starts after Q1, and across fiscal years."""
+        df = pl.LazyFrame(
+            {
+                "gvkey": ["001"] * 6,
+                "datadate": [
+                    date(2010, 3, 31),
+                    date(2010, 6, 30),
+                    date(2011, 9, 30),
+                    date(2011, 12, 31),
+                    date(2012, 3, 31),
+                    date(2012, 9, 30),
+                ],
+                "fyr": pl.Series([12] * 6, dtype=pl.Int16),
+                "fyearq": pl.Series([2010, 2010, 2011, 2011, 2012, 2012], dtype=pl.Int32),
+                "fqtr": pl.Series([1, 2, 3, 4, 1, 3], dtype=pl.Int16),
+                "saley": [10.0, 25.0, 60.0, 90.0, 12.0, 40.0],
+            }
+        )
+        out = quarterize(df, ["saley"]).collect()
+        assert out["saley_q"].to_list() == [10.0, 15.0, None, 30.0, 12.0, None]
+
     def test_duplicate_fiscal_quarter_keeps_earliest_datadate(self) -> None:
         """Same fiscal quarter reported twice: the earliest datadate is kept, whatever the input order."""
         df = pl.LazyFrame(
@@ -224,7 +247,8 @@ class TestQuarterize:
         ]
 
     def test_rows_without_fqtr_are_dropped(self) -> None:
-        """A leftover from the old fiscal calendar (fqtr missing) is dropped and does not break Q1's flow."""
+        """A leftover from the old fiscal calendar (fqtr missing) inside a fiscal year with regular
+        quarters is dropped and does not break Q1's flow."""
         df = pl.LazyFrame(
             {
                 "gvkey": ["001"] * 3,
@@ -240,6 +264,48 @@ class TestQuarterize:
             (date(2014, 3, 31), 10.0),
             (date(2014, 6, 30), 15.0),
         ]
+
+    @staticmethod
+    def _year_end_change(extra: list[tuple]) -> pl.LazyFrame:
+        """Year-end moves from December to March: Q3-Q4 2013, a Jan-Mar 2014 record without fqtr
+        (transition quarter), then Q1 of the new fiscal year."""
+        rows = [
+            ("001", date(2013, 9, 30), 12, 2013, 3, 30.0, 80.0),
+            ("001", date(2013, 12, 31), 12, 2013, 4, 40.0, 86.0),
+            ("001", date(2014, 3, 31), 12, 2014, None, 5.0, 84.0),
+            ("001", date(2014, 6, 30), 3, 2014, 1, 8.0, 85.0),
+        ]
+        return pl.LazyFrame(
+            rows + extra,
+            schema={
+                "gvkey": pl.String,
+                "datadate": pl.Date,
+                "fyr": pl.Int16,
+                "fyearq": pl.Int32,
+                "fqtr": pl.Int16,
+                "capxy": pl.Float64,
+                "atq": pl.Float64,
+            },
+            orient="row",
+        )
+
+    def test_lone_transition_quarter_is_kept_without_flows(self) -> None:
+        """The only record of a transition quarter keeps its levels, gets no year-to-date flow, and
+        leaves the new fiscal year's Q1 flow intact."""
+        out = quarterize(self._year_end_change([]), ["capxy"]).collect()
+        assert out.sort("datadate").select("datadate", "capxy_q", "atq").rows() == [
+            (date(2013, 9, 30), None, 80.0),
+            (date(2013, 12, 31), 10.0, 86.0),
+            (date(2014, 3, 31), None, 84.0),
+            (date(2014, 6, 30), 8.0, 85.0),
+        ]
+
+    def test_transition_quarter_sharing_a_date_is_dropped(self) -> None:
+        """A record without fqtr is dropped when another record reports the same date."""
+        regular = [("001", date(2014, 3, 31), 3, 2013, 4, 50.0, 84.5)]
+        out = quarterize(self._year_end_change(regular), ["capxy"]).collect()
+        on_date = out.filter(pl.col("datadate") == date(2014, 3, 31))
+        assert on_date.select("fqtr", "atq").rows() == [(4, 84.5)]
 
 
 @pytest.mark.unit
