@@ -568,6 +568,17 @@ def test_assign_bucket_integer_labels():
     assert out.to_list() == [1, 1, 2, 3]
 
 
+def test_long_short_spread_null_portfolio():
+    """A null portfolio makes its leg null; with ignore_nulls it drops out of the mean."""
+    df = pl.DataFrame(
+        {"x_A": [0.04], "x_B": [0.02], "x_C": [None]}, schema_overrides={"x_C": pl.Float64}
+    )
+    strict = df.select(af._long_short_spread("x", ["A"], ["B", "C"])).item()
+    loose = df.select(af._long_short_spread("x", ["A"], ["B", "C"], ignore_nulls=True)).item()
+    assert strict is None
+    assert loose == pytest.approx(0.02)
+
+
 # =============================================================================
 # TestFFAnnualSignals
 # =============================================================================

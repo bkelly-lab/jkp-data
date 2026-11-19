@@ -9958,6 +9958,11 @@ def july_june_year(date: str = "date") -> pl.Expr:
     return pl.when(pl.col(date).dt.month() >= 7).then(year).otherwise(year - 1)
 
 
+def year_month(date: str = "date") -> pl.Expr:
+    """A month index: year * 12 + month, so consecutive months differ by 1."""
+    return (pl.col(date).dt.year() * 12 + pl.col(date).dt.month()).cast(pl.Int64)
+
+
 def _add_ff_contiguous(
     lf: pl.LazyFrame, freq: Literal["monthly", "daily"], by: list[str]
 ) -> pl.LazyFrame:
@@ -9973,11 +9978,10 @@ def _add_ff_contiguous(
     Output:
         lf with a `contiguous` column.
     """
-    prev = pl.col("date").shift(1).over(by)
     if freq == "monthly":
-        month = pl.col("date").dt.year() * 12 + pl.col("date").dt.month()
-        in_reach = month - (prev.dt.year() * 12 + prev.dt.month()) == 1
+        in_reach = year_month() - year_month().shift(1).over(by) == 1
     else:
+        prev = pl.col("date").shift(1).over(by)
         in_reach = (pl.col("date") - prev).dt.total_days() <= _ff_max_gap(freq)
     return (
         lf.with_columns(_cp=pl.col("date").rank("dense").over("excntry"))
@@ -10904,7 +10908,7 @@ def compute_ff_momentum_signal(
     )
     target = rows.lazy().select("excntry", "id", "date", "ret")
     if freq == "monthly":
-        idx = (pl.col("date").dt.year() * 12 + pl.col("date").dt.month()).cast(pl.Int64)
+        idx = year_month()
         src, target = src.with_columns(idx=idx), target.with_columns(idx=idx)
         window = (FF_UMD_MONTHLY_LOOKBACK + 1, FF_UMD_MONTHLY_SKIP + 1, FF_UMD_MIN_MONTHS)
     else:
@@ -10997,11 +11001,13 @@ def compute_ff_portfolio_returns(
     )
 
 
-def _long_short_spread(sort: str, long: list[str], short: list[str]) -> pl.Expr:
+def _long_short_spread(
+    sort: str, long: list[str], short: list[str], ignore_nulls: bool = False
+) -> pl.Expr:
     """Mean of the sort's `long` portfolio returns minus the mean of its `short` ones;
-    null when any of them is null."""
-    long_mean = pl.mean_horizontal(*[f"{sort}_{b}" for b in long], ignore_nulls=False)
-    short_mean = pl.mean_horizontal(*[f"{sort}_{b}" for b in short], ignore_nulls=False)
+    a null portfolio makes its leg null, or with ignore_nulls drops out of its mean."""
+    long_mean = pl.mean_horizontal(*[f"{sort}_{b}" for b in long], ignore_nulls=ignore_nulls)
+    short_mean = pl.mean_horizontal(*[f"{sort}_{b}" for b in short], ignore_nulls=ignore_nulls)
     return long_mean - short_mean
 
 
