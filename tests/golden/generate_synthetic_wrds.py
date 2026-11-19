@@ -991,6 +991,30 @@ def gen_achars_world(acc_std_ann: pl.DataFrame) -> pl.DataFrame:
     )
 
 
+def gen_crsp_stksecurityinfohist(reg: pl.DataFrame) -> pl.DataFrame:
+    """One row per US firm spanning [inception, delisting or DATE_END]."""
+    rows: list[dict] = []
+    for r in reg.filter(pl.col("excntry") == "USA").iter_rows(named=True):
+        rows.append(
+            {
+                "permno": r["permno"],
+                "secinfostartdt": r["inception_eom"],
+                "secinfoenddt": r["delisting_eom"]
+                if r["delisting_eom"] is not None
+                else date(2099, 12, 31),
+                "siccd": r["sic"],
+                "naics": str(r["naics"]),
+            }
+        )
+    return pl.DataFrame(rows).with_columns(
+        pl.col("permno").cast(pl.Int64),
+        pl.col("secinfostartdt").cast(pl.Date),
+        pl.col("secinfoenddt").cast(pl.Date),
+        pl.col("siccd").cast(pl.Int64),
+        pl.col("naics").cast(pl.Utf8),
+    )
+
+
 def write_synthetic_wrds(out_dir: Path, seed: int = SEED) -> None:
     """Generate the synthetic WRDS-shaped parquets into ``out_dir``.
 
@@ -1002,7 +1026,15 @@ def write_synthetic_wrds(out_dir: Path, seed: int = SEED) -> None:
     nrng = np.random.default_rng(seed + 1)
     reg = build_firm_registry(rng)
 
-    msf = _apply_null_patterns(gen_crsp_msf_v2(reg, rng), "crsp_msf_v2", nrng)
+    msf = _apply_null_patterns(gen_crsp_msf_v2(reg, rng), "crsp_msf_v2", nrng).with_columns(
+        # Added after the null draws so they stay as before. Null without a price; every
+        # 40th firm-month prices before the month's last day.
+        mthprcdt=pl.when(pl.col("mthprc").is_null())
+        .then(None)
+        .when((pl.col("permno") + pl.col("mthcaldt").dt.month()) % 40 == 0)
+        .then(pl.col("mthcaldt").dt.offset_by("-3d"))
+        .otherwise(pl.col("mthcaldt"))
+    )
     _write(msf, out_dir, "crsp_msf_v2")
     dsf = _apply_null_patterns(gen_crsp_dsf_v2(reg, rng, msf), "crsp_dsf_v2", nrng)
     _write(dsf, out_dir, "crsp_dsf_v2")
@@ -1017,6 +1049,7 @@ def write_synthetic_wrds(out_dir: Path, seed: int = SEED) -> None:
     acc_std_ann = gen_acc_std_ann(funda, g_funda)
     _write(acc_std_ann, out_dir, "acc_std_ann")
     _write(gen_achars_world(acc_std_ann), out_dir, "achars_world")
+    _write(gen_crsp_stksecurityinfohist(reg), out_dir, "crsp_stksecurityinfohist")
 
 
 def main() -> None:

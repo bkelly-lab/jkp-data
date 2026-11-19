@@ -810,11 +810,54 @@ def _write_world_msf(test_paths, rows: list[dict]) -> None:
     ).write_parquet(test_paths.interim_dir / "world_msf.parquet")
 
 
-def _write_raw_msf(test_paths, rows: list[tuple[int, date, str]]) -> None:
-    """Raw CIZ monthly rows (permno, mthcaldt, usincflg)."""
-    pl.DataFrame(rows, schema=["permno", "mthcaldt", "usincflg"], orient="row").write_parquet(
-        test_paths.raw_tables_dir / "crsp_msf_v2.parquet"
-    )
+def _write_raw_msf(test_paths, rows: list[tuple]) -> None:
+    """Raw CIZ monthly rows (permno, mthcaldt, usincflg[, siccd[, mthprcdt]]): siccd
+    defaults to null and mthprcdt to mthcaldt, a price on the month's last day. Also
+    writes an empty security-info history (_write_security_info)."""
+    pl.DataFrame(
+        [(*r, *(None, r[1])[len(r) - 3 :]) for r in rows],
+        schema={
+            "permno": pl.Int64,
+            "mthcaldt": pl.Date,
+            "usincflg": pl.Utf8,
+            "siccd": pl.Int64,
+            "mthprcdt": pl.Date,
+        },
+        orient="row",
+    ).write_parquet(test_paths.raw_tables_dir / "crsp_msf_v2.parquet")
+    _write_security_info(test_paths, [])
+
+
+def _write_raw_dsf(test_paths, day: date, primaryexch: list[str]) -> None:
+    """Raw CIZ daily rows for permnos 1..n on day, usincflg Y, permco = permno, SIC
+    null; and an empty security-info history."""
+    n = len(primaryexch)
+    pl.DataFrame(
+        {
+            "permno": list(range(1, n + 1)),
+            "dlycaldt": [day] * n,
+            "usincflg": ["Y"] * n,
+            "primaryexch": primaryexch,
+            "permco": list(range(1, n + 1)),
+            "siccd": [None] * n,
+        },
+        schema_overrides={"siccd": pl.Int64},
+    ).write_parquet(test_paths.raw_tables_dir / "crsp_dsf_v2.parquet")
+    _write_security_info(test_paths, [])
+
+
+def _write_security_info(test_paths, rows: list[tuple[int, date, date, str]]) -> None:
+    """crsp_stksecurityinfohist records (permno, secinfostartdt, secinfoenddt, naics)."""
+    pl.DataFrame(
+        rows,
+        schema={
+            "permno": pl.Int64,
+            "secinfostartdt": pl.Date,
+            "secinfoenddt": pl.Date,
+            "naics": pl.Utf8,
+        },
+        orient="row",
+    ).write_parquet(test_paths.raw_tables_dir / "crsp_stksecurityinfohist.parquet")
 
 
 def _write_world_dsf(test_paths, rows: list[dict]) -> None:
@@ -940,15 +983,7 @@ class TestLoadFFUniverse:
         """Daily: the US pool is NYSE on the raw dsf primaryexch; elsewhere size_grp
         comes from the previous month's world_msf row, not the month's own."""
         day, eom, prev = date(2020, 6, 15), date(2020, 6, 30), date(2020, 5, 31)
-        pl.DataFrame(
-            {
-                "permno": [1, 2],
-                "dlycaldt": [day] * 2,
-                "usincflg": ["Y"] * 2,
-                "primaryexch": ["N", "Q"],
-                "permco": [1, 2],
-            }
-        ).write_parquet(test_paths.raw_tables_dir / "crsp_dsf_v2.parquet")
+        _write_raw_dsf(test_paths, day, ["N", "Q"])
         _write_world_dsf(
             test_paths,
             [
@@ -984,6 +1019,86 @@ class TestLoadFFUniverse:
 # =============================================================================
 # TestFFLoadPanel
 # =============================================================================
+
+
+class TestFFUSBreakpointScreen:
+    """load_ff_universe's US bp_screen (_add_ff_us_bp_screen) and the firm panel's
+    pool: bp_pool is NYSE alone; the FF pool also needs bp_screen."""
+
+    JUN = date(2020, 6, 30)
+
+    def _universe(self, test_paths) -> dict[int, dict]:
+        jun = self.JUN
+        # permno, mthcaldt, usincflg, siccd, mthprcdt; all NYSE.
+        _write_raw_msf(
+            test_paths,
+            [
+                (1, jun, "Y"),
+                (2, jun, "Y", 6799),
+                (3, jun, "Y", None, date(2020, 6, 26)),
+                (4, jun, "Y"),
+                (5, jun, "Y"),
+                (6, jun, "Y"),
+            ],
+        )
+        _write_security_info(
+            test_paths,
+            [
+                (4, date(2019, 1, 1), date(2021, 1, 1), "525990"),
+                (5, date(2019, 1, 1), date(2020, 5, 31), "523910"),
+                (5, date(2020, 6, 1), date(2021, 1, 1), "523920"),
+                (6, date(2019, 1, 1), date(2021, 1, 1), "523910"),
+            ],
+        )
+        _write_world_msf(
+            test_paths, [{"id": i, "eom": jun, "primaryexch": "N"} for i in range(1, 7)]
+        )
+        out = load_ff_universe(test_paths, "monthly").collect()
+        return {r["id"]: r for r in out.iter_rows(named=True)}
+
+    def test_bp_pool_is_nyse_without_the_screen(self, test_paths):
+        out = self._universe(test_paths)
+        assert all(out[i]["bp_pool"] for i in range(1, 7))
+
+    def test_screen(self, test_paths):
+        """1 passes; 2 is SIC 6799; 3 prices before the month's last day; 4 is NAICS
+        5259*; 5's 523910 record ended before the month, so it passes; 6 is 523910."""
+        out = self._universe(test_paths)
+        assert [out[i]["bp_screen"] for i in range(1, 7)] == [
+            True,
+            False,
+            False,
+            False,
+            True,
+            False,
+        ]
+        assert [out[i]["last_day_prc"] for i in (1, 3)] == [True, False]
+
+    def test_other_country_screen_is_true(self, test_paths):
+        jun = self.JUN
+        _write_raw_msf(test_paths, [(1, jun, "Y")])
+        _write_world_msf(
+            test_paths,
+            [{"id": 101, "eom": jun, "excntry": "GBR", "source_crsp": 0, "size_grp": "micro"}],
+        )
+        r = load_ff_universe(test_paths, "monthly").collect().row(0, named=True)
+        assert (r["bp_pool"], r["bp_screen"]) == (False, True)
+
+    def test_panel_pool_needs_a_nyse_class_that_passes(self, test_paths):
+        """Company 1: its NYSE class (1) is SIC 6799 and its NASDAQ class (2) passes,
+        so it is out of the pool. Company 3: its NYSE class passes."""
+        jun = self.JUN
+        _write_raw_msf(test_paths, [(1, jun, "Y", 6799), (2, jun, "Y"), (3, jun, "Y")])
+        _write_world_msf(
+            test_paths,
+            [
+                {"id": 1, "eom": jun, "primaryexch": "N"},
+                {"id": 2, "eom": jun, "primaryexch": "Q", "permco": 1},
+                {"id": 3, "eom": jun, "primaryexch": "N"},
+            ],
+        )
+        out = build_ff_firm_panel(test_paths, "monthly").sort("id")
+        assert out.select("id", "bp_pool").rows() == [(1, False), (3, True)]
 
 
 class TestBuildFFFirmPanel:
@@ -1083,15 +1198,7 @@ class TestBuildFFFirmPanel:
 
     def test_daily_from_world_dsf(self, test_paths):
         day = date(2020, 6, 30)
-        pl.DataFrame(
-            {
-                "permno": [1, 2],
-                "dlycaldt": [day] * 2,
-                "usincflg": ["Y"] * 2,
-                "primaryexch": ["N", "X"],
-                "permco": [1, 2],
-            }
-        ).write_parquet(test_paths.raw_tables_dir / "crsp_dsf_v2.parquet")
+        _write_raw_dsf(test_paths, day, ["N", "X"])
         _write_world_dsf(
             test_paths,
             [

@@ -28,6 +28,7 @@ if TYPE_CHECKING:
 RAW_FILES: tuple[str, ...] = (
     "crsp_msf_v2.parquet",
     "crsp_dsf_v2.parquet",
+    "crsp_stksecurityinfohist.parquet",
 )
 INTERIM_FILES: tuple[str, ...] = (
     "world_msf.parquet",
