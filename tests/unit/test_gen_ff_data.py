@@ -1509,20 +1509,18 @@ class TestBuildFFDailyHoldings:
 
     def test_held_every_trading_day_from_monthly_weight(self, test_paths):
         """GBR trades on July 1, 2 and 3. Stock 1 has no July 2 row and a July 3 return
-        over two days, kept whole; stock 2 stops after July 1 and earns 0 to month
-        end; stock 3 has no monthly return, so it isn't held (its rows only make
-        July 2 a trading day), and stock 4 has no monthly weight."""
+        over two days, kept whole, on a day it is off the main exchange; stock 2
+        stops after July 1 and earns 0 to month end; stock 3 has no monthly return,
+        so it isn't held, and stock 4 has no monthly weight."""
         jul = [date(2020, 7, d) for d in (1, 2, 3)]
         eom = date(2020, 7, 31)
         gbr = {"excntry": "GBR", "source_crsp": 0, "eom": eom}
-        _write_raw_dsf(test_paths, jul[0], ["N"])
         _write_market_days(test_paths, "GBR", jul)
-        _write_world_msf(test_paths, [{"id": 1, "eom": date(2020, 6, 30), **gbr}])
         _write_world_dsf(
             test_paths,
             [
                 {"id": 1, "date": jul[0], "ret": 0.1, **gbr},
-                {"id": 1, "date": jul[2], "ret": 0.2, "ret_lag_dif": 2, **gbr},
+                {"id": 1, "date": jul[2], "ret": 0.2, "ret_lag_dif": 2, "exch_main": 0, **gbr},
                 {"id": 2, "date": jul[0], "ret": -0.5, **gbr},
                 {"id": 3, "date": jul[1], "ret": 0.0, **gbr},
                 {"id": 4, "date": jul[2], "ret": 0.0, **gbr},
@@ -1552,9 +1550,7 @@ class TestBuildFFDailyHoldings:
         jul = [date(2020, 7, d) for d in (1, 2, 3, 6)]
         eom = date(2020, 7, 31)
         gbr = {"excntry": "GBR", "source_crsp": 0, "eom": eom}
-        _write_raw_dsf(test_paths, jul[0], ["N"])
         _write_market_days(test_paths, "GBR", [jul[0], jul[2]])
-        _write_world_msf(test_paths, [{"id": 1, "eom": date(2020, 6, 30), **gbr}])
         _write_world_dsf(
             test_paths,
             [
