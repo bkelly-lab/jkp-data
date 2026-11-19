@@ -8254,17 +8254,34 @@ def _mp_compute_nsi_ag_inv_noa(raw_dir: Path, interim_dir: Path) -> None:
         )
 
 
-def _mp_compute_momentum(interim_dir: Path) -> pl.DataFrame:
-    log_rets = (
-        pl.read_parquet(interim_dir / "crsp_monthly.parquet")
-        .select("permno", "eom", "RET")
-        .with_columns(log_1p_ret=(1 + col("RET")).log())
+def _mp_compute_momentum(interim_dir: Path, jkp_interim_dir: Path) -> pl.DataFrame:
+    """MOMENTUM(t) = jkp's ret_12_1 at t-1, the compound return over t-12..t-2, as in
+    the world branch (_mp_world_compute_momentum). Kept only when all 11 months of the
+    window have a return: ret_12_1 counts a missing month as a zero return. A return
+    spanning a gap (ret_lag_dif != 1) counts as missing. Keyed onto interim_dir's
+    crsp_monthly, whose permno column holds the jkp id."""
+    src = (
+        pl.scan_parquet(jkp_interim_dir / "world_data_prelim.parquet")
+        .filter(col("excntry") == US_EXCNTRY)
+        .select(
+            col("id").cast(pl.Int64).alias("permno"),
+            "eom",
+            "ret_12_1",
+            ret=pl.when(col("ret_lag_dif") == 1).then(col("ret")),
+        )
+        .collect()
     )
-    roll = _mp_rolling_calendar_sum(log_rets, "log_1p_ret", lag_min=2, lag_max=12, n_required=11)
+    # r is non-null only when all 11 returns over [s-11, s-1] are present
+    full = _mp_rolling_calendar_sum(src, "ret", lag_min=1, lag_max=11, n_required=11)
+    signal = (
+        src.join(full, on=["permno", "eom"], how="left")
+        .filter(col("r").is_not_null())
+        .select("permno", col("eom").alias("eom_src"), col("ret_12_1").alias("momentum"))
+    )
     out = (
-        log_rets.select("permno", "eom")
-        .join(roll, on=["permno", "eom"], how="left")
-        .with_columns(momentum=col("r").exp() - 1)
+        pl.read_parquet(interim_dir / "crsp_monthly.parquet")
+        .select("permno", "eom", eom_src=_mp_offset_months("eom", -1))
+        .join(signal, on=["permno", "eom_src"], how="left")
         .select("eom", "permno", "momentum")
         .sort("permno", "eom")
     )
@@ -8702,16 +8719,18 @@ def _mp_compute_anomalies(
     mp_con: duckdb.DuckDBPyConnection,
     raw_dir: Path,
     interim_dir: Path,
+    jkp_interim_dir: Path,
     distress_refs: dict[str, pl.DataFrame] | None = None,
 ) -> dict[str, pl.DataFrame]:
     """US SY anomalies (incl. CHS DISTRESS) from the crsp_monthly, crsp_daily and
-    compustat_annual/quarterly parquets in interim_dir, one parquet each there.
+    compustat_annual/quarterly parquets in interim_dir, one parquet each there;
+    MOMENTUM from jkp's world_data_prelim in jkp_interim_dir.
     Returns the DISTRESS cross-sectional references used (_mp_compute_distress)."""
     _mp_compute_accrual(raw_dir, interim_dir)
     _mp_compute_gross_profit(raw_dir, interim_dir)
     _mp_compute_oscore(raw_dir, interim_dir)
     _mp_compute_nsi_ag_inv_noa(raw_dir, interim_dir)
-    _mp_compute_momentum(interim_dir)
+    _mp_compute_momentum(interim_dir, jkp_interim_dir)
     _mp_compute_composite_issue(interim_dir)
     _mp_compute_roa(mp_con, interim_dir)
     return _mp_compute_distress(mp_con, raw_dir, interim_dir, distress_refs)
@@ -8789,9 +8808,9 @@ def _mp_us_outside_anomalies(
         pl.read_parquet(interim_dir / f"{name}.parquet").filter(
             col("permno").is_in(permnos.cast(pl.Int64))
         ).write_parquet(crsp_dir / f"{name}.parquet")
-    _mp_compute_anomalies(mp_con, raw_dir, crsp_dir, distress_refs)
+    _mp_compute_anomalies(mp_con, raw_dir, crsp_dir, interim_dir, distress_refs)
     _mp_build_comp_us_inputs(raw_dir, interim_dir, comp_dir)
-    _mp_compute_anomalies(mp_con, raw_dir, comp_dir, distress_refs)
+    _mp_compute_anomalies(mp_con, raw_dir, comp_dir, interim_dir, distress_refs)
 
     universe_keys = pl.read_parquet(interim_dir / "crsp_monthly.parquet").select("permno", "eom")
     out = {}
@@ -10190,7 +10209,7 @@ def gen_mispricing_data(
         # parquet each, world in memory. Securities outside the universes get
         # values from the same code on their full history, with DISTRESS filled
         # and winsorized against the universe cross-section.
-        us_refs = _mp_compute_anomalies(mp_con, raw_dir, interim_dir)
+        us_refs = _mp_compute_anomalies(mp_con, raw_dir, interim_dir, interim_dir)
         us_outside = _mp_us_outside_anomalies(mp_con, raw_dir, interim_dir, us_refs)
         fx_df = compustat_fx(paths)
         world_distress, world_refs = _mp_world_compute_distress(

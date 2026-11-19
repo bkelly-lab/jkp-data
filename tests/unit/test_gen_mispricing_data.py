@@ -36,6 +36,7 @@ from jkp.data.aux_functions import (
     _mp_add_leg_score,
     _mp_anomaly_pct_panel,
     _mp_build_comp_us_inputs,
+    _mp_compute_momentum,
     _mp_daily_vw_returns,
     _mp_diff_legs,
     _mp_distress_book_equity_mb,
@@ -973,52 +974,48 @@ class TestRollingCalendarSum:
 
 
 class TestMomentumFormula:
-    """Tests for momentum: exp(sum log(1+ret) for lags 2..12) - 1."""
+    """US momentum: jkp's ret_12_1 at t-1, kept only with all 11 window returns."""
 
-    def _momentum_via_production(self, r: float) -> float:
-        """Run 11 months of constant return r through the actual
-        _mp_rolling_calendar_sum + exp(sum)-1 pipeline used by momentum."""
-        eoms = [_eom(2020, m) for m in range(1, 14)]
-        df = pl.DataFrame({"permno": [1] * 13, "eom": eoms, "log_1p_ret": [math.log(1 + r)] * 13})
-        roll = _mp_rolling_calendar_sum(df, "log_1p_ret", lag_min=2, lag_max=12, n_required=11)
-        total_log = roll.filter(pl.col("eom") == _eom(2020, 13))["r"][0]
-        return math.exp(total_log) - 1
-
-    def test_momentum_compounded_return(self, tolerance):
-        """With 11 identical monthly returns r, momentum = (1+r)^11 - 1."""
-        r = 0.01
-        computed = self._momentum_via_production(r)
-        expected = 1.01**11 - 1  # independently hand-computed literal
-        np.testing.assert_allclose(computed, expected, **tolerance.TIGHT)
-
-    def test_momentum_negative_returns(self, tolerance):
-        """Negative returns produce negative momentum."""
-        r = -0.02
-        computed = self._momentum_via_production(r)
-        expected = 0.98**11 - 1  # independently hand-computed literal
-        np.testing.assert_allclose(computed, expected, **tolerance.TIGHT)
-
-    def test_momentum_requires_11_months(self):
-        """Only 10 non-null months in the t-2..t-12 window → momentum sum is
-        None; 11 months → non-null (n_required=11)."""
-        eoms = [_eom(2020, m) for m in range(1, 14)]
-        # Target row is month 13; window is months 1..11 (lag 2..12).
-        # Null out one month inside the window -> only 10 non-null there.
-        log_rets = [math.log(1.01)] * 13
-        log_rets[4] = None  # month 5, inside the window
-        df_10 = pl.DataFrame({"permno": [1] * 13, "eom": eoms, "log_1p_ret": log_rets})
-        roll_10 = _mp_rolling_calendar_sum(
-            df_10, "log_1p_ret", lag_min=2, lag_max=12, n_required=11
+    def _run(self, tmp_path, rets: list[float | None], lag_dif: list[int]) -> pl.DataFrame:
+        # 14 months for one security; ret_12_1 at month 13 covers months 2..12
+        # (ri ratio, a missing month counting as zero); momentum lands on month 14.
+        eoms = [_eom(2020, m) for m in range(1, 15)]
+        ri = np.cumprod([1 + (r if r is not None else 0.0) for r in rets])
+        ret_12_1 = [None] * 12 + [ri[11] / ri[0] - 1, ri[12] / ri[1] - 1]
+        pl.DataFrame(
+            {
+                "id": [10001] * 14,
+                "excntry": ["USA"] * 14,
+                "eom": eoms,
+                "ret": rets,
+                "ret_lag_dif": lag_dif,
+                "ret_12_1": ret_12_1,
+            },
+            schema_overrides={"ret": pl.Float64, "ret_12_1": pl.Float64},
+        ).write_parquet(tmp_path / "world_data_prelim.parquet")
+        pl.DataFrame({"permno": [10001] * 14, "eom": eoms}).write_parquet(
+            tmp_path / "crsp_monthly.parquet"
         )
-        r_10 = roll_10.filter(pl.col("eom") == _eom(2020, 13))["r"][0]
-        assert r_10 is None
+        return _mp_compute_momentum(tmp_path, tmp_path)
 
-        df_11 = pl.DataFrame({"permno": [1] * 13, "eom": eoms, "log_1p_ret": [math.log(1.01)] * 13})
-        roll_11 = _mp_rolling_calendar_sum(
-            df_11, "log_1p_ret", lag_min=2, lag_max=12, n_required=11
-        )
-        r_11 = roll_11.filter(pl.col("eom") == _eom(2020, 13))["r"][0]
-        assert r_11 is not None
+    def test_full_window(self, tmp_path, tolerance):
+        out = self._run(tmp_path, [0.01] * 14, [1] * 14)
+        m = out.filter(pl.col("eom") == _eom(2020, 14))["momentum"][0]
+        np.testing.assert_allclose(m, 1.01**11 - 1, **tolerance.TIGHT)
+
+    def test_missing_month_nulls(self, tmp_path):
+        """ret_12_1 exists (missing month = zero return) but the check drops it."""
+        rets = [0.01] * 14
+        rets[5] = None
+        out = self._run(tmp_path, rets, [1] * 14)
+        assert out.filter(pl.col("eom") == _eom(2020, 14))["momentum"][0] is None
+
+    def test_gap_return_nulls(self, tmp_path):
+        """A return spanning a gap (ret_lag_dif != 1) counts as missing."""
+        lag_dif = [1] * 14
+        lag_dif[5] = 2
+        out = self._run(tmp_path, [0.01] * 14, lag_dif)
+        assert out.filter(pl.col("eom") == _eom(2020, 14))["momentum"][0] is None
 
 
 # ===========================================================================
