@@ -8081,7 +8081,8 @@ def _mp_compute_oscore(interim_dir: Path, jkp_interim_dir: Path) -> pl.DataFrame
     """OSCORE = Ohlson (1980) Model 1 score (MP_OSCORE_BETAS) on SY's definitions,
     from at, lt, act, lct, ni and pi in jkp's acc_std_ann; size = log(at), not
     price-deflated. Prior-year ni is the same permno's report in the previous
-    calendar year of datadate (SY's cyear). On SY's annual timing (months 5-16
+    calendar year of datadate (SY's cyear), the later one when that year has two.
+    On SY's annual timing (months 5-16
     after datadate). Linked to permnos through world_msf; USD rows win a currency tie."""
     reports = (
         pl.scan_parquet(jkp_interim_dir / "acc_std_ann.parquet")
@@ -8091,7 +8092,10 @@ def _mp_compute_oscore(interim_dir: Path, jkp_interim_dir: Path) -> pl.DataFrame
         .sort("permno", "datadate", col("curcd") != "USD")
         .unique(["permno", "datadate"], keep="first", maintain_order=True)
     )
-    prior_ni = reports.select("permno", col("cyear") + 1, lagni=col("ni"))
+    # reports are in (permno, datadate) order: keep the year's latest report
+    prior_ni = reports.unique(["permno", "cyear"], keep="last", maintain_order=True).select(
+        "permno", col("cyear") + 1, lagni=col("ni")
+    )
     b = MP_OSCORE_BETAS
     oscore = (
         reports.join(prior_ni, on=["permno", "cyear"])
