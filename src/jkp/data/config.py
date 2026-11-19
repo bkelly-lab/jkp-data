@@ -9,6 +9,13 @@ END_DATE = date(2025, 12, 31)
 # accounting panel; rows with `datadate` before this are dropped.
 ACCOUNTING_START_DATE = pl.datetime(1949, 12, 31)
 
+# Book equity (`be_x`) adds balance-sheet deferred taxes (`txditc_x`) only for
+# fiscal periods ending before this calendar year. SFAS 109 (fiscal years from
+# 1993) books deferred taxes as a liability at enacted tax rates, and Fama and
+# French drop them from book equity from 1993 on. The same year applies in every
+# country.
+BE_DEFERRED_TAX_END_YEAR = 1993
+
 # Longest gap, in days, between two reports on one fiscal calendar before the
 # calendar's run restarts, used by `one_row_per_date` to choose between two
 # calendars on one date. Consecutive quarters are 89-92 days apart, semiannual
@@ -237,6 +244,62 @@ ROLLING_DAILY_SPECS: list[tuple[str, int, list[str]]] = [
     ("_1260d", 750, ["mktcorr"]),
 ]
 
+# ============================================================================
+# FF factor pipeline (gen_ff_data)
+# ============================================================================
+
+# ISO-3 code for the United States; load_ff_universe uses it to keep the US out of
+# the main-sample branch, which covers the other countries.
+US_EXCNTRY = "USA"
+
+# Minimums of the FF factor builder: min firms per (excntry,
+# formation date) for breakpoints, and per (excntry, date, bucket) for the VW
+# legs. Applied in every country.
+FACTOR_MIN_STOCKS_BP = 10
+FACTOR_MIN_STOCKS_PF = 3
+
+# The June sorts of the FF builder (ff_sort_definitions keys): B/M, OP, INV.
+FF_JUNE_SORTS = ["bm", "op", "inv"]
+
+# UMD signal window, in periods before the holding period t: the signal compounds the
+# returns from t-250 to t-21 (daily, trading days) and t-12 to t-2 (monthly). The daily
+# constants are the offsets of the opening price and the last return; the monthly ones
+# are one less (compute_ff_momentum_signal adds 1).
+FF_UMD_DAILY_SKIP = 21
+FF_UMD_DAILY_LOOKBACK = 251
+FF_UMD_MONTHLY_LOOKBACK = 12
+FF_UMD_MONTHLY_SKIP = 1
+
+# UMD minimum rows a stock needs in its momentum window (monthly t-12..t-2, daily
+# t-250..t-21), instead of a row in every period; a trading halt shows up as missing rows.
+FF_UMD_MIN_MONTHS = 6
+FF_UMD_MIN_DAYS = 115
+
+# US NYSE breakpoint-pool screens of the FF builder (load_ff_universe), chosen to match
+# French's NYSE ME breakpoints (ME_Breakpoints.csv); French documents none of them. A class
+# leaves the pool on a date when its NAICS starts with one of FF_US_BP_EXCLUDE_NAICS (5259
+# pooled funds and trusts; 523910 miscellaneous intermediation, most SPACs) or its SIC is in
+# FF_US_BP_EXCLUDE_SIC (6799 investors n.e.c., CRSP's usual SPAC code), and, monthly, when it
+# has no price on the month's last trading day.
+FF_US_BP_EXCLUDE_NAICS = ("5259", "523910")
+FF_US_BP_EXCLUDE_SIC = (6799,)
+
+# Longest gap a daily FF return may span (ret_lag_dif, calendar days); a longer
+# return is nulled. A monthly return may span one month.
+FF_RET_MAX_GAP_DAYS = 5
+# First year of book equity in the Davis-Fama-French Moody's file (load_dff_be).
+DFF_BE_FIRST_YEAR = 1926
+
+# Early-link rule (link_accounting_to_securities): for June formations in
+# [FROM, THROUGH], a US CRSP security whose June row has no gvkey takes the permno's
+# first gvkey when it starts after the formation and within FF_CCM_BACKDATE_MAX_YEARS
+# of it (the cap stops a recycled permno from claiming an old record). Reason:
+# Compustat backfilled the statements of firms added in the mid-1960s for years
+# before their CCM link begins.
+FF_CCM_BACKDATE_FROM = 1963
+FF_CCM_BACKDATE_THROUGH = 1966
+FF_CCM_BACKDATE_MAX_YEARS = 5
+
 # Floor on the standard deviation of raw USD `ret` over a rolling window. At or
 # below it the window counts as constant and the return-based statistics
 # (betas, residual vols and skews, correlations, residual momentum) are null.
@@ -258,6 +321,14 @@ NI_AT_MIN_STD = 1e-6
 # Our choice (#347): on the 2026-11 data it nulls 2 `resff3_6_1` windows, neither
 # in the published characteristics; 1e-5 would null 9 published stock-months.
 RES_MOM_MIN_STD = 1e-6
+
+# CRSP's monthly delisting flag V says MthRet includes the delisting return, but in
+# some V months MthRetX is only the price change to the delisting date, MthPrc /
+# MthPrevPrc - 1, and the delisting return is missing. prepare_crsp_sf compounds it
+# where the two differ by less than this. Our choice: on the 2026-10 data the
+# 25 V months that lack it differ by at most 5e-7 (CRSP rounds returns to six
+# decimals) and the closest V month that has it by 3e-5.
+CRSP_V_PRICE_CHANGE_TOL = 1e-6
 
 PORTFOLIO_SETTINGS = {
     "end_date": END_DATE,

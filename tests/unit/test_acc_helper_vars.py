@@ -215,7 +215,7 @@ class TestIncomeStatement:
         row = _one(test_paths, oibdp=10.0, xrd=2.0, xint=3.0)
         _check(row, {"op_x": 12.0, "ope_x": 7.0})  # 10 + 2; 10 - 3
         row = _one(test_paths, oibdp=10.0)
-        _check(row, {"op_x": 10.0, "ope_x": None})  # xrd missing counts as 0; xint missing
+        _check(row, {"op_x": 10.0, "ope_x": 10.0})  # xrd and xint missing count as 0
         _check(_one(test_paths), {"op_x": None, "ope_x": None})
 
     def test_pi_x_chain(self, test_paths: DataPaths) -> None:
@@ -373,11 +373,21 @@ class TestBalanceSheet:
         _check(_one(test_paths, ppegt=10.0), {"ppeinv_x": None, "lnoa_x": None})
 
     def test_be_x(self, test_paths: DataPaths) -> None:
-        # seq_x + txditc_x - pstk_x = 30 + 5 - 4
-        assert _one(test_paths, seq=30.0, txditc=5.0, pstk=4.0)["be_x"] == 31.0
+        # Periods ending in 1993 or later (JAN is 2020) leave deferred taxes out:
+        # seq_x - pstk_x = 30 - 4
+        assert _one(test_paths, seq=30.0, txditc=5.0, pstk=4.0)["be_x"] == 26.0
         assert _one(test_paths, seq=30.0)["be_x"] == 30.0  # optional terms are 0
-        assert _one(test_paths, ceq=30.0, pstk=4.0, txdb=5.0)["be_x"] == 30.0 + 4.0 + 5.0 - 4.0
+        assert _one(test_paths, ceq=30.0, pstk=4.0, txdb=5.0)["be_x"] == 30.0 + 4.0 - 4.0
         assert _one(test_paths)["be_x"] is None
+
+    def test_be_x_adds_deferred_taxes_before_1993(self, test_paths: DataPaths) -> None:
+        def be_x(day: date, **vals: float) -> float | None:
+            return _run(test_paths, [{"datadate": day, **vals}])["be_x"][0]
+
+        # seq_x + txditc_x - pstk_x = 30 + 5 - 4
+        assert be_x(date(1992, 12, 31), seq=30.0, txditc=5.0, pstk=4.0) == 31.0
+        assert be_x(date(1992, 12, 31), ceq=30.0, pstk=4.0, txdb=5.0) == 30.0 + 4.0 + 5.0 - 4.0
+        assert be_x(date(1993, 1, 31), seq=30.0, txditc=5.0, pstk=4.0) == 26.0
 
     def test_be_x_nonpositive_is_null(self, test_paths: DataPaths) -> None:
         assert _one(test_paths, seq=0.0)["be_x"] is None

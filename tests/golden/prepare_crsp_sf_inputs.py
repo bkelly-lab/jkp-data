@@ -49,6 +49,7 @@ SCHEMA_CRSP_SF: dict[str, pl.DataType] = {
     "prc": pl.Float64,
     "prc_open": pl.Float64,
     "prc_close": pl.Float64,
+    "prc_prev": pl.Float64,
     "shrout": pl.Float64,
     "ret": pl.Float64,
     "retx": pl.Float64,
@@ -98,6 +99,7 @@ def _crsp_row(
     del_flag: str | None = None,
     prc_open: float | None = None,
     prc_close: float | None = None,
+    prc_prev: float | None = None,
 ) -> dict[str, object]:
     """Build one ``__crsp_sf`` row; pass-through payload columns get stable
     deterministic fillers so golden bytes are reproducible."""
@@ -109,6 +111,7 @@ def _crsp_row(
         "prc": prc,
         "prc_open": prc_open,
         "prc_close": prc_close,
+        "prc_prev": prc_prev,
         "shrout": 1000.0,
         "ret": ret,
         "retx": retx,
