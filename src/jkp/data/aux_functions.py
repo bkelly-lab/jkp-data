@@ -8318,25 +8318,33 @@ def _mp_compute_composite_issue(interim_dir: Path) -> pl.DataFrame:
     return out
 
 
-def _mp_compute_roa(mp_con: duckdb.DuckDBPyConnection, interim_dir: Path) -> pl.DataFrame:
-    cq = (
-        pl.read_parquet(interim_dir / "compustat_quarterly.parquet")
-        .select("permno", "datadate", "rdq", "rdq_crsp", "lead_rdq_crsp", "ibq", "atq")
-        .sort("permno", "datadate")
-        .with_columns(
-            lag_dt=col("datadate").shift(1).over("permno"),
-            lag_atq=col("atq").shift(1).over("permno"),
-        )
-        .with_columns(lag_dt=col("lag_dt").fill_null(col("datadate")))
-        .with_columns(
-            gap_mo=_mp_month_diff(col("datadate"), col("lag_dt")),
-            roa=pl.when(col("lag_atq").is_null() | (col("lag_atq") == 0))
-            .then(None)
-            .otherwise(safe_div("ibq", "lag_atq", "roa")),
-        )
-        .with_columns(roa=pl.when(col("gap_mo") >= 6).then(None).otherwise(col("roa")))
+def _mp_compute_roa(
+    mp_con: duckdb.DuckDBPyConnection, interim_dir: Path, jkp_interim_dir: Path
+) -> pl.DataFrame:
+    """ROA = jkp's niq_at (ni_qtr over the at_x of the quarter three months earlier) from
+    jkp's acc_std_qtr, on SY's timing: from the month after the quarter's announcement
+    (rdq) until the next one, through the linked compustat_quarterly rows."""
+    q = (
+        pl.scan_parquet(jkp_interim_dir / "acc_std_qtr.parquet")
+        .select("gvkey", "curcd", "datadate", "ni_qtr", "at_x")
+        .unique(["gvkey", "curcd", "datadate"], keep="first", maintain_order=True)
+    )
+    prev = q.select(
+        "gvkey", "curcd", _mp_offset_months("datadate", 3).alias("datadate"), lag_at="at_x"
+    )
+    jkp = (
+        q.join(prev, on=["gvkey", "curcd", "datadate"], how="left")
+        .with_columns(roa=pl.when(col("lag_at") > 0).then(col("ni_qtr") / col("lag_at")))
         .filter(col("roa").is_not_null())
-        .select("permno", "datadate", "rdq", "rdq_crsp", "lead_rdq_crsp", "roa")
+        .sort("gvkey", "datadate", col("curcd") != "USD")
+        .unique(["gvkey", "datadate"], keep="first", maintain_order=True)
+        .select("gvkey", "datadate", "roa")
+    )
+    cq = (
+        pl.scan_parquet(interim_dir / "compustat_quarterly.parquet")
+        .select("permno", "gvkey", "datadate", "rdq", "rdq_crsp", "lead_rdq_crsp")
+        .join(jkp, on=["gvkey", "datadate"], how="inner")
+        .collect()
     )
 
     month_keys = pl.read_parquet(interim_dir / "crsp_monthly.parquet").select("permno", "eom")
@@ -8731,7 +8739,7 @@ def _mp_compute_anomalies(
     _mp_compute_nsi_ag_inv_noa(raw_dir, interim_dir)
     _mp_compute_momentum(interim_dir, jkp_interim_dir)
     _mp_compute_composite_issue(interim_dir)
-    _mp_compute_roa(mp_con, interim_dir)
+    _mp_compute_roa(mp_con, interim_dir, jkp_interim_dir)
     return _mp_compute_distress(mp_con, raw_dir, interim_dir, distress_refs)
 
 
