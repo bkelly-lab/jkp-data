@@ -8078,79 +8078,27 @@ def _mp_compute_gross_profit(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
     return out
 
 
-def _mp_compute_oscore(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
-    base = (
-        pl.read_parquet(interim_dir / "compustat_annual.parquet")
-        .select("permno", "gvkey", "datadate", "fyear", "fyr", "at", "lt", "act", "lct")
-        .join(
-            _mp_load_funda(raw_dir).select("gvkey", "datadate", "ni", "pi"),
-            on=["gvkey", "datadate"],
-            how="left",
+def _mp_compute_oscore(interim_dir: Path, jkp_interim_dir: Path) -> pl.DataFrame:
+    """OSCORE(t) = jkp's o_score at t-1, assigned to month t of interim_dir's
+    crsp_monthly (whose permno column holds the jkp id); the calendar join nulls the
+    signal across panel gaps."""
+    signal = (
+        pl.scan_parquet(jkp_interim_dir / "world_data_prelim.parquet")
+        .filter((col("excntry") == US_EXCNTRY) & col("o_score").is_not_null())
+        .select(
+            col("id").cast(pl.Int64).alias("permno"),
+            col("eom").alias("eom_src"),
+            col("o_score").alias("oscore"),
         )
-        .filter(
-            col("permno").is_not_null()
-            & col("fyear").is_not_null()
-            & col("fyr").is_not_null()
-            & (col("fyr") > 0)
-            & (col("fyear") > 0)
-            & col("at").is_not_null()
-            & (col("at") > 0)
-            & col("lt").is_not_null()
-            & (col("lt") != 0)
-            & col("act").is_not_null()
-            & (col("act") != 0)
-        )
-        .with_columns(
-            cyear=pl.when((col("fyr") > 0) & (col("fyr") <= 5))
-            .then(col("fyear") + 1)
-            .otherwise(col("fyear")),
-            oeneg=pl.when(col("lt") > col("at")).then(1).otherwise(0),
-            tlta=safe_div("lt", "at", "tlta"),
-            wcta=safe_div(col("act") - col("lct"), col("at"), "wcta"),
-            clca=safe_div("lct", "act", "clca"),
-            nita=safe_div("ni", "at", "nita"),
-            futl=safe_div("pi", "lt", "futl"),
-        )
+        .collect()
     )
-
-    self_lag = base.select("permno", "cyear", col("ni").alias("lagni")).with_columns(
-        cyear=col("cyear") + 1
-    )
-    base = base.join(self_lag, on=["permno", "cyear"], how="inner").with_columns(
-        # safe_div: ni == lagni == 0 must yield null, not NaN — NaN survives
-        # is_not_null() and sorts above every value in the percentile rank.
-        chin=safe_div(col("ni") - col("lagni"), col("ni").abs() + col("lagni").abs(), "chin"),
-        intwo=pl.when((col("ni") < 0) & (col("lagni") < 0)).then(1).otherwise(0),
-    )
-
     out = (
-        base.join(
-            pl.read_parquet(raw_dir / "crsp_a_indexes_acti.parquet")
-            .with_columns(col("cpiind").cast(pl.Float64, strict=False))
-            .filter(col("caldt").dt.month() == 12)
-            .with_columns(cyear=col("caldt").dt.year() + 1)
-            .select("cyear", "cpiind"),
-            on="cyear",
-            how="inner",
-        )
-        .with_columns(size=(100 * col("at") / col("cpiind")).log())
-        .with_columns(
-            oscore=-1.32
-            - 0.407 * col("size")
-            + 6.03 * col("tlta")
-            - 1.43 * col("wcta")
-            + 0.076 * col("clca")
-            - 1.72 * col("oeneg")
-            - 2.37 * col("nita")
-            - 1.83 * col("futl")
-            + 0.285 * col("intwo")
-            - 0.521 * col("chin")
-        )
-        .filter(col("oscore").is_not_null())
-        .select("permno", "datadate", "cyear", "oscore")
-        .sort(["permno", "cyear", "datadate"], descending=[False, False, True])
+        pl.read_parquet(interim_dir / "crsp_monthly.parquet")
+        .select("permno", "eom", eom_src=_mp_offset_months("eom", -1))
+        .join(signal, on=["permno", "eom_src"], how="left")
+        .select("eom", "permno", "oscore")
+        .sort("permno", "eom")
     )
-    out = _mp_expand_to_crsp_window(out, "oscore", interim_dir)
     out.write_parquet(interim_dir / "oscore.parquet")
     return out
 
@@ -8728,7 +8676,7 @@ def _mp_compute_anomalies(
     Returns the DISTRESS cross-sectional references used (_mp_compute_distress)."""
     _mp_compute_accrual(raw_dir, interim_dir)
     _mp_compute_gross_profit(raw_dir, interim_dir)
-    _mp_compute_oscore(raw_dir, interim_dir)
+    _mp_compute_oscore(interim_dir, jkp_interim_dir)
     _mp_compute_nsi_ag_inv_noa(raw_dir, interim_dir)
     _mp_compute_momentum(interim_dir, jkp_interim_dir)
     _mp_compute_composite_issue(interim_dir)
