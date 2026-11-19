@@ -1496,6 +1496,13 @@ class TestAddFFBuyAndHoldWeights:
         assert add_ff_buy_and_hold_weights(panel, "monthly")["id"].sort().to_list() == [1, 2, 3]
 
 
+def _write_market_days(test_paths, excntry: str, days: list[date]) -> None:
+    """market_returns_daily rows, the trading days build_ff_daily_holdings reads."""
+    pl.DataFrame({"excntry": [excntry] * len(days), "date": days}).write_parquet(
+        test_paths.interim_dir / "market_returns_daily.parquet"
+    )
+
+
 class TestBuildFFDailyHoldings:
     """build_ff_daily_holdings: the monthly holdings on every trading day of their
     country, at the monthly weight grown by the daily returns."""
@@ -1509,6 +1516,7 @@ class TestBuildFFDailyHoldings:
         eom = date(2020, 7, 31)
         gbr = {"excntry": "GBR", "source_crsp": 0, "eom": eom}
         _write_raw_dsf(test_paths, jul[0], ["N"])
+        _write_market_days(test_paths, "GBR", jul)
         _write_world_msf(test_paths, [{"id": 1, "eom": date(2020, 6, 30), **gbr}])
         _write_world_dsf(
             test_paths,
@@ -1536,6 +1544,41 @@ class TestBuildFFDailyHoldings:
         assert out["date"].to_list() == jul * 2
         assert out["ret"].to_list() == pytest.approx([0.1, 0.0, 0.2, -0.5, 0.0, 0.0])
         assert out["w"].to_list() == pytest.approx([100.0, 110.0, 110.0, 50.0, 25.0, 25.0])
+
+    def test_return_off_the_calendar_rolls_to_a_trading_day(self, test_paths):
+        """July 1 and 3 are trading days. Stock 1's July 2 return compounds into July 3,
+        and its July 6 return, after the month's last trading day, into July 3 too.
+        Stock 2 trades only on July 2: its return lands on July 3."""
+        jul = [date(2020, 7, d) for d in (1, 2, 3, 6)]
+        eom = date(2020, 7, 31)
+        gbr = {"excntry": "GBR", "source_crsp": 0, "eom": eom}
+        _write_raw_dsf(test_paths, jul[0], ["N"])
+        _write_market_days(test_paths, "GBR", [jul[0], jul[2]])
+        _write_world_msf(test_paths, [{"id": 1, "eom": date(2020, 6, 30), **gbr}])
+        _write_world_dsf(
+            test_paths,
+            [
+                {"id": 1, "date": d, "ret": r, **gbr}
+                for d, r in zip(jul, (0.1, 0.5, 0.2, 0.1), strict=True)
+            ]
+            + [{"id": 2, "date": jul[1], "ret": -0.5, **gbr}],
+        )
+        monthly = pl.DataFrame(
+            {
+                "excntry": ["GBR"] * 2,
+                "id": [1, 2],
+                "sec": [1, 2],
+                "date": [eom] * 2,
+                "ret": [1.1 * 1.5 * 1.2 * 1.1 - 1, -0.5],
+                "w": [100.0, 50.0],
+            }
+        )
+        out = build_ff_daily_holdings(test_paths, monthly).sort("id", "date")
+        assert out["date"].to_list() == [jul[0], jul[2]] * 2
+        assert out["ret"].to_list() == pytest.approx([0.1, 1.5 * 1.2 * 1.1 - 1, 0.0, -0.5])
+        assert out["w"].to_list() == pytest.approx([100.0, 110.0, 50.0, 50.0])
+        compounded = out.group_by("id").agg(ret=(1 + pl.col("ret")).product() - 1).sort("id")
+        assert compounded["ret"].to_list() == pytest.approx(monthly["ret"].to_list())
 
 
 # =============================================================================

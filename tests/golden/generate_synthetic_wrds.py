@@ -35,6 +35,7 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
+from jkp.data.aux_functions import drop_non_trading_days
 from jkp.data.config import BE_DEFERRED_TAX_END_YEAR
 
 SEED = 42
@@ -991,6 +992,35 @@ def gen_achars_world(acc_std_ann: pl.DataFrame) -> pl.DataFrame:
     )
 
 
+def gen_market_returns_daily(world_dsf: pl.DataFrame) -> pl.DataFrame:
+    """Synthesize the slice of jkp's daily market returns (``market_returns_daily``) the
+    FF daily holdings read: its country trading days. As in market_returns, a day's stock
+    count is the main-sample stocks with a return over at most 14 days and a lagged ME,
+    and drop_non_trading_days keeps the days with at least 25% of the month's highest
+    count.
+    """
+    counted = (
+        world_dsf.sort("id", "date")
+        .with_columns(me_lag1=pl.col("me").shift(1).over("id"))
+        .filter(
+            (pl.col("obs_main") == 1)
+            & (pl.col("exch_main") == 1)
+            & (pl.col("primary_sec") == 1)
+            & (pl.col("common") == 1)
+            & (pl.col("ret_lag_dif") <= 14)
+            & pl.col("me_lag1").is_not_null()
+            & pl.col("ret").is_not_null()
+        )
+        .group_by("excntry", "date", "eom")
+        .agg(stocks=pl.len())
+    )
+    return (
+        drop_non_trading_days(counted, "stocks", "date", ["excntry", "eom"], 0.25)
+        .select("excntry", "date", "stocks")
+        .sort("excntry", "date")
+    )
+
+
 def gen_crsp_stksecurityinfohist(reg: pl.DataFrame) -> pl.DataFrame:
     """One row per US firm spanning [inception, delisting or DATE_END]."""
     rows: list[dict] = []
@@ -1046,6 +1076,7 @@ def write_synthetic_wrds(out_dir: Path, seed: int = SEED) -> None:
     _write(world_msf, out_dir, "world_msf")
     world_dsf = gen_world_dsf(reg, rng, dsf, nrng)
     _write(world_dsf, out_dir, "world_dsf")
+    _write(gen_market_returns_daily(world_dsf), out_dir, "market_returns_daily")
     acc_std_ann = gen_acc_std_ann(funda, g_funda)
     _write(acc_std_ann, out_dir, "acc_std_ann")
     _write(gen_achars_world(acc_std_ann), out_dir, "achars_world")

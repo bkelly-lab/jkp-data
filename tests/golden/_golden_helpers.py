@@ -7,7 +7,8 @@ Two responsibilities:
 Synthetic input layout (generated into a temp dir by ``generate_synthetic_wrds``, not committed):
   crsp_msf_v2.parquet, crsp_dsf_v2.parquet         -> raw_tables_dir
   world_msf.parquet, world_dsf.parquet,
-  acc_std_ann.parquet, achars_world.parquet        -> interim_dir
+  acc_std_ann.parquet, achars_world.parquet,
+  market_returns_daily.parquet                     -> interim_dir
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ INTERIM_FILES: tuple[str, ...] = (
     "world_dsf.parquet",
     "acc_std_ann.parquet",
     "achars_world.parquet",
+    "market_returns_daily.parquet",
 )
 
 

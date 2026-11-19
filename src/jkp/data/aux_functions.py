@@ -10311,30 +10311,61 @@ def build_ff_daily_holdings(paths: DataPaths, monthly_return_data: pl.DataFrame)
     Description:
         The daily rows of the June portfolios: the monthly holdings, so the daily
         portfolio returns compound to the monthly ones. A holding with a monthly
-        return and weight is held on every trading day of its country that month (a
-        date with a daily FF-universe row in the country), at its monthly weight grown
-        by its daily returns since the start of the month. A day without a row or a
-        return earns 0, so a stock that stops trading mid-month is held at its last
-        price to month end, as its monthly return is; a return spanning days without
-        a row is kept whole.
+        return and weight is held on every trading day of its country that month,
+        at its monthly weight grown by its daily returns since the start of the
+        month. The trading days are JKP's daily market-return dates
+        (market_returns, drop_non_trading_days), so the factors share the market
+        factor's calendar. A return on another date compounds into the month's next
+        trading day, or its last when none follows, so no return is lost. A day
+        without a return earns 0: a stock that stops trading mid-month is held at
+        its last price to month end, as its monthly return is, and a return spanning
+        days without a row is kept whole.
     Steps:
-        1) The country's trading days of each month.
-        2) The monthly rows with a return and a positive weight, on each trading day
-           of their month, with the daily universe's return (0 when missing).
-        3) w = the monthly weight x the month's cumulative (1 + ret) up to the
-           previous day.
+        1) Map each date with a daily FF-universe row to a trading day of its
+           country and month: the date itself or the next one, else the month's last.
+        2) Daily returns compounded per holding and trading day.
+        3) The monthly rows with a return and a positive weight, on each trading day
+           of their month, with that return (0 when missing).
+        4) w = the monthly weight x the month's cumulative (1 + ret) up to the
+           previous trading day.
     Output:
         Eager [excntry, id, sec, date, ret, w].
     """
     k = ["excntry", "id", "sec"]
+    month = pl.col("date").dt.month_end()
+    days = pl.scan_parquet(paths.interim_dir / "market_returns_daily.parquet").select(
+        "excntry", "date", eom=month
+    )
     daily = load_ff_universe(paths, "daily").select(*k, "date", "ret")
-    days = daily.select("excntry", "date").unique().with_columns(eom=pl.col("date").dt.month_end())
+    trading_day = (
+        daily.select("excntry", "date")
+        .unique()
+        .with_columns(eom=month)
+        .sort("date")
+        .join_asof(
+            days.select("excntry", "eom", trading_date="date").sort("trading_date"),
+            left_on="date",
+            right_on="trading_date",
+            by=["excntry", "eom"],
+            strategy="forward",
+        )
+        .join(
+            days.group_by("excntry", "eom").agg(last=pl.col("date").max()),
+            on=["excntry", "eom"],
+        )
+        .select("excntry", "date", trading_date=pl.coalesce("trading_date", "last"))
+    )
+    rets = (
+        daily.join(trading_day, on=["excntry", "date"])
+        .group_by(*k, date="trading_date")
+        .agg(ret=(1.0 + pl.col("ret").fill_null(0.0)).product() - 1.0)
+    )
     return (
         monthly_return_data.lazy()
         .filter(pl.col("ret").is_not_null() & (pl.col("w") > 0))
         .select(*k, eom="date", w_month="w")
         .join(days, on=["excntry", "eom"])
-        .join(daily, on=[*k, "date"], how="left")
+        .join(rets, on=[*k, "date"], how="left")
         .with_columns(ret=pl.col("ret").fill_null(0.0))
         .select(
             *k,
