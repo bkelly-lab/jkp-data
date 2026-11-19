@@ -10306,6 +10306,51 @@ def add_ff_buy_and_hold_weights(
     )
 
 
+def build_ff_daily_holdings(paths: DataPaths, monthly_return_data: pl.DataFrame) -> pl.DataFrame:
+    """
+    Description:
+        The daily rows of the June portfolios: the monthly holdings, so the daily
+        portfolio returns compound to the monthly ones. A holding with a monthly
+        return and weight is held on every trading day of its country that month (a
+        date with a daily FF-universe row in the country), at its monthly weight grown
+        by its daily returns since the start of the month. A day without a row or a
+        return earns 0, so a stock that stops trading mid-month is held at its last
+        price to month end, as its monthly return is; a return spanning days without
+        a row is kept whole.
+    Steps:
+        1) The country's trading days of each month.
+        2) The monthly rows with a return and a positive weight, on each trading day
+           of their month, with the daily universe's return (0 when missing).
+        3) w = the monthly weight x the month's cumulative (1 + ret) up to the
+           previous day.
+    Output:
+        Eager [excntry, id, sec, date, ret, w].
+    """
+    k = ["excntry", "id", "sec"]
+    daily = load_ff_universe(paths, "daily").select(*k, "date", "ret")
+    days = daily.select("excntry", "date").unique().with_columns(eom=pl.col("date").dt.month_end())
+    return (
+        monthly_return_data.lazy()
+        .filter(pl.col("ret").is_not_null() & (pl.col("w") > 0))
+        .select(*k, eom="date", w_month="w")
+        .join(days, on=["excntry", "eom"])
+        .join(daily, on=[*k, "date"], how="left")
+        .with_columns(ret=pl.col("ret").fill_null(0.0))
+        .select(
+            *k,
+            "date",
+            "ret",
+            w=pl.col("w_month")
+            * (1.0 + pl.col("ret"))
+            .cum_prod()
+            .shift(1)
+            .over([*k, "eom"], order_by="date")
+            .fill_null(1.0),
+        )
+        .collect()
+    )
+
+
 def load_jkp_annual_accounting(paths: DataPaths) -> pl.DataFrame:
     """
     Description:
@@ -11158,8 +11203,9 @@ def gen_ff_data(
            (build_ff_momentum_assignments) on the firm panel; then the held rows
            (add_ff_buy_and_hold_weights), each holding's exit month
            (compute_ff_june_exits) and the factor returns.
-        2) Daily: momentum sorts on the daily data, then the factor returns with
-           the same June sorts and exits.
+        2) Daily: the monthly holdings on each trading day (build_ff_daily_holdings)
+           and momentum sorts on the daily data, then the factor returns with the
+           same June sorts and exits.
     Output:
         - <monthly_factors_path> [excntry, eom, smb_ff3, smb_ff5, hml_ff, rmw_ff, cma_ff, umd_ff]
         - <daily_factors_path> [excntry, date, smb_ff3, smb_ff5, hml_ff, rmw_ff, cma_ff, umd_ff]
@@ -11179,13 +11225,14 @@ def gen_ff_data(
         monthly_momentum_assignments,
         FACTOR_MIN_STOCKS_PF,
     ).rename({"date": "eom"}).write_parquet(monthly_factors_path)
-    del monthly_return_data, monthly_momentum_assignments
+    del monthly_momentum_assignments
+    daily_return_data = build_ff_daily_holdings(paths, monthly_return_data)
+    del monthly_return_data
 
-    # 2) Daily: momentum and factor returns, with the June sorts and exits.
+    # 2) Daily: momentum and factor returns, with the June sorts, exits and holdings.
     daily_momentum_assignments = build_ff_momentum_assignments(
         build_ff_firm_panel(paths, "daily"), "daily"
     )
-    daily_return_data = add_ff_buy_and_hold_weights(load_ff_universe(paths, "daily"), "daily")
     compute_ff_factor_returns(
         daily_return_data,
         june_assignments,

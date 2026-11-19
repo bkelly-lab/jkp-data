@@ -8,6 +8,7 @@ Covers:
   - load_ff_universe (rule columns, US vs elsewhere, monthly and daily)
   - build_ff_firm_panel (class aggregation, ME, null-ME rows kept)
   - add_ff_buy_and_hold_weights (buy-and-hold weights, gap-spanning returns, null-ME rows kept)
+  - build_ff_daily_holdings (monthly holdings on every trading day, 0 without a return)
   - assign_ff_portfolios
   - compute_ff_portfolio_returns
   - compute_ff_june_exits (first month without a monthly return, out until June)
@@ -27,6 +28,7 @@ import jkp.data.aux_functions as af
 from jkp.data.aux_functions import (
     add_ff_buy_and_hold_weights,
     assign_ff_portfolios,
+    build_ff_daily_holdings,
     build_ff_firm_panel,
     compute_breakpoints,
     compute_ff_annual_characteristics,
@@ -1492,6 +1494,48 @@ class TestAddFFBuyAndHoldWeights:
             ]
         )
         assert add_ff_buy_and_hold_weights(panel, "monthly")["id"].sort().to_list() == [1, 2, 3]
+
+
+class TestBuildFFDailyHoldings:
+    """build_ff_daily_holdings: the monthly holdings on every trading day of their
+    country, at the monthly weight grown by the daily returns."""
+
+    def test_held_every_trading_day_from_monthly_weight(self, test_paths):
+        """GBR trades on July 1, 2 and 3. Stock 1 has no July 2 row and a July 3 return
+        over two days, kept whole; stock 2 stops after July 1 and earns 0 to month
+        end; stock 3 has no monthly return, so it isn't held (its rows only make
+        July 2 a trading day), and stock 4 has no monthly weight."""
+        jul = [date(2020, 7, d) for d in (1, 2, 3)]
+        eom = date(2020, 7, 31)
+        gbr = {"excntry": "GBR", "source_crsp": 0, "eom": eom}
+        _write_raw_dsf(test_paths, jul[0], ["N"])
+        _write_world_msf(test_paths, [{"id": 1, "eom": date(2020, 6, 30), **gbr}])
+        _write_world_dsf(
+            test_paths,
+            [
+                {"id": 1, "date": jul[0], "ret": 0.1, **gbr},
+                {"id": 1, "date": jul[2], "ret": 0.2, "ret_lag_dif": 2, **gbr},
+                {"id": 2, "date": jul[0], "ret": -0.5, **gbr},
+                {"id": 3, "date": jul[1], "ret": 0.0, **gbr},
+                {"id": 4, "date": jul[2], "ret": 0.0, **gbr},
+                {"id": 3, "date": date(2020, 8, 3), "ret": 0.0, **gbr, "eom": date(2020, 8, 31)},
+            ],
+        )
+        monthly = pl.DataFrame(
+            {
+                "excntry": ["GBR"] * 4,
+                "id": [1, 2, 3, 4],
+                "sec": [1, 2, 3, 4],
+                "date": [eom] * 4,
+                "ret": [0.32, -0.5, None, 0.0],
+                "w": [100.0, 50.0, 10.0, None],
+            }
+        )
+        out = build_ff_daily_holdings(test_paths, monthly).sort("id", "date")
+        assert out["id"].to_list() == [1, 1, 1, 2, 2, 2]
+        assert out["date"].to_list() == jul * 2
+        assert out["ret"].to_list() == pytest.approx([0.1, 0.0, 0.2, -0.5, 0.0, 0.0])
+        assert out["w"].to_list() == pytest.approx([100.0, 110.0, 110.0, 50.0, 25.0, 25.0])
 
 
 # =============================================================================
