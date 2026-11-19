@@ -9952,7 +9952,7 @@ def _ff_max_gap(freq: Literal["monthly", "daily"]) -> int:
     return 1 if freq == "monthly" else FF_RET_MAX_GAP_DAYS
 
 
-def _ff_port_year(date: str = "date") -> pl.Expr:
+def july_june_year(date: str = "date") -> pl.Expr:
     """The July-June year a date falls in, named by the year of its July."""
     year = pl.col(date).dt.year()
     return pl.when(pl.col(date).dt.month() >= 7).then(year).otherwise(year - 1)
@@ -10255,7 +10255,7 @@ def add_ff_buy_and_hold_weights(
         .sort([*k, "date"])
         .pipe(_add_ff_contiguous, freq, k)
         .with_columns(
-            period=_ff_port_year(),
+            period=july_june_year(),
             lag_me=pl.col("me").shift(1).over(k),
         )
         .with_columns(
@@ -11027,7 +11027,7 @@ def compute_ff_june_exits(monthly_return_data: pl.DataFrame) -> pl.DataFrame:
             .otherwise(pl.col("date"))
         )
         .filter(missed | pl.col("ret").is_null() | pl.col("w").is_null())
-        .group_by(*k, port_year=_ff_port_year("exit_eom"))
+        .group_by(*k, port_year=july_june_year("exit_eom"))
         .agg(pl.col("exit_eom").min())
         .collect()
     )
@@ -11057,7 +11057,7 @@ def compute_ff_factor_returns(
         [excntry, date, smb_ff3, smb_ff5, hml_ff, rmw_ff, cma_ff, umd_ff].
     """
     held = (
-        return_data.with_columns(port_year=_ff_port_year())
+        return_data.with_columns(port_year=july_june_year())
         .join(
             june_assignments.select(
                 "excntry",
