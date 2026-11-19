@@ -970,8 +970,8 @@ class TestLoadFFUniverse:
         assert w_cls.drop_nulls().to_list() == [10.0]
 
     def test_us_class_weight_kept_after_months_off_exchange(self, test_paths):
-        """Class 1 is off N/A/Q in April and May but in CRSP: back in June, its weight
-        is its May ME."""
+        """Class 1 is off N/A/Q in April and May but in CRSP: April stays (on N at the
+        start of the month), May doesn't; back in June, its weight is its May ME."""
         months = [date(2020, 3, 31), date(2020, 4, 30), date(2020, 5, 31), date(2020, 6, 30)]
         _write_raw_msf(test_paths, [(1, d, "Y") for d in months])
         _write_world_msf(
@@ -982,8 +982,40 @@ class TestLoadFFUniverse:
             ],
         )
         out = load_ff_universe(test_paths, "monthly").collect().sort("date")
-        assert out["date"].to_list() == [months[0], months[3]]
+        assert out["date"].to_list() == [months[0], months[1], months[3]]
+        assert out.filter(pl.col("date") == months[1])["bp_pool"].to_list() == [False]
         assert out.filter(pl.col("date") == months[3])["w_cls"].to_list() == [32.0]
+
+    def test_us_delisting_month_kept_from_previous_month(self, test_paths):
+        """CRSP's flags are as of month end. In June, class 1 is off N/A/Q (X), class 2
+        no longer US-incorporated and class 3 no longer common: each was in the sample
+        in May, so each keeps its June return. Class 4 is off N/A/Q in June after a
+        gap (no May row), and class 5 is off in June with no row before: both drop."""
+        apr, may, jun = date(2020, 4, 30), date(2020, 5, 31), date(2020, 6, 30)
+        _write_raw_msf(
+            test_paths,
+            [(1, may, "Y"), (1, jun, "Y"), (2, may, "Y"), (2, jun, "N"), (3, may, "Y")]
+            + [(3, jun, "Y"), (4, apr, "Y"), (4, jun, "Y"), (5, jun, "Y")],
+        )
+        _write_world_msf(
+            test_paths,
+            [
+                {"id": 1, "eom": may, "primaryexch": "N"},
+                {"id": 1, "eom": jun, "primaryexch": "X", "ret": -0.4},
+                {"id": 2, "eom": may, "primaryexch": "Q"},
+                {"id": 2, "eom": jun, "primaryexch": "Q"},
+                {"id": 3, "eom": may, "primaryexch": "A"},
+                {"id": 3, "eom": jun, "primaryexch": "A", "common": 0},
+                {"id": 4, "eom": apr, "primaryexch": "N"},
+                {"id": 4, "eom": jun, "primaryexch": "X"},
+                {"id": 5, "eom": jun, "primaryexch": "X"},
+            ],
+        )
+        jun_rows = load_ff_universe(test_paths, "monthly").collect().filter(pl.col("date") == jun)
+        assert sorted(jun_rows["sec"].to_list()) == [1, 2, 3]
+        r = jun_rows.filter(pl.col("sec") == 1).row(0, named=True)
+        assert r["ret"] == -0.4
+        assert r["bp_pool"] is False  # the month-end exchange
 
     def test_us_bp_pool_is_nyse_only(self, test_paths):
         out = self._monthly(test_paths)

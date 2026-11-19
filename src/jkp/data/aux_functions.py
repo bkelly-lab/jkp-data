@@ -9990,6 +9990,27 @@ def _add_ff_contiguous(
     )
 
 
+def _ff_us_listed(listed: pl.Expr, freq: Literal["monthly", "daily"]) -> pl.Expr:
+    """
+    Description:
+        A US sample flag (common share, US-incorporated, on N/A/Q) as the FF universe
+        applies it. Daily, the row's own flag. Monthly, the row's or the class's
+        previous month's: CRSP sets the flags as of month end, so a class that
+        delists or leaves N/A/Q mid-month would otherwise lose the month's return,
+        which it earned from the start of the month.
+    Steps:
+        1) Monthly: true when the row's flag is, or the permno's row of the previous
+           month has it.
+    Output:
+        Boolean expression; a null flag counts as false.
+    """
+    listed = listed.fill_null(False)
+    if freq == "daily":
+        return listed
+    prev_month = year_month() - year_month().shift(1).over("permno", order_by="date") == 1
+    return listed | (listed.shift(1).over("permno", order_by="date") & prev_month).fill_null(False)
+
+
 def _add_ff_us_bp_screen(raw: pl.LazyFrame, paths: DataPaths) -> pl.LazyFrame:
     """
     Description:
@@ -10032,7 +10053,10 @@ def load_ff_universe(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl.
         link_accounting_to_securities and compute_ff_annual_characteristics).
         - US: JKP's CRSP common-share rows of US-incorporated companies on NYSE,
           AMEX or NASDAQ; the raw CIZ files add only what the world files don't
-          carry, usincflg and, daily, primaryexch and permco. The unit (id) is the
+          carry, usincflg and, daily, primaryexch and permco. Monthly, a class keeps
+          a month in which it was in the sample at the start (_ff_us_listed), so a
+          mid-month delisting keeps its last return; bp_pool reads the month-end
+          exchange. The unit (id) is the
           company, the CRSP permco, as it is (Fama and French split some permcos
           by hand: group stocks, tracking stocks, relistings); the holding (sec) is the
           class, the CRSP permno. w_cls, the class's ME at t-1 from its CRSP
@@ -10056,7 +10080,8 @@ def load_ff_universe(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl.
         -30% where a bad delisting has none (prepare_crsp_sf).
     Steps:
         1) US: world CRSP common-share rows joined to raw CIZ rows with usincflg Y,
-           on N, A or Q; id = permco.
+           on N, A or Q, each flag the row's or, monthly, the previous month's
+           (_ff_us_listed); id = permco.
         2) Elsewhere: world rows in JKP's main sample.
         3) Both with the rule columns, concatenated.
     Output:
@@ -10118,16 +10143,19 @@ def load_ff_universe(paths: DataPaths, freq: Literal["monthly", "daily"]) -> pl.
             last_day_prc=pl.lit(True),
         )
     us = (
-        us.filter((pl.col("source_crsp") == 1) & (pl.col("common") == 1))
+        us.filter(pl.col("source_crsp") == 1)
+        .filter(_ff_us_listed(pl.col("common") == 1, freq))
         .sort("permno", "date")
         .pipe(_add_ff_contiguous, freq, ["permno"])
         .with_columns(w_cls=pl.when("contiguous").then(pl.col("me").shift(1).over("permno")))
         .join(
-            raw.filter(pl.col("usincflg") == "Y").pipe(_add_ff_us_bp_screen, paths),
+            raw.filter(_ff_us_listed(pl.col("usincflg") == "Y", freq)).pipe(
+                _add_ff_us_bp_screen, paths
+            ),
             on=["permno", "date"],
             how="inner",
         )
-        .filter(pl.col("primaryexch").is_in(["N", "A", "Q"]))
+        .filter(_ff_us_listed(pl.col("primaryexch").is_in(["N", "A", "Q"]), freq))
         .with_columns(id=pl.col("permco").cast(pl.Int64))
         .select(
             "excntry",
