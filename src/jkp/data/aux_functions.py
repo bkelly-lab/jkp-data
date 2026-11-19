@@ -10269,16 +10269,14 @@ def build_ff_firm_panel(paths: DataPaths, freq: Literal["monthly", "daily"]) -> 
     )
 
 
-def add_ff_buy_and_hold_weights(
-    holdings: pl.LazyFrame | pl.DataFrame, freq: Literal["monthly", "daily"]
-) -> pl.DataFrame:
+def add_ff_buy_and_hold_weights(holdings: pl.LazyFrame | pl.DataFrame) -> pl.DataFrame:
     """
     Description:
-        The rows the June portfolios hold, with FF value weights; the same rule in
+        The monthly rows the June portfolios hold, with FF value weights (the daily
+        rows are these holdings, build_ff_daily_holdings); the same rule in
         every country. The holding is the security: a US firm's classes are held
         separately, so the firm's weight is the sum of its classes' and a class that
-        leaves takes its value with it (compute_ff_june_exits). A return spanning a gap (ret_lag_dif over one month, or
-        FF_RET_MAX_GAP_DAYS days) is nulled, not row-dropped, so the row's ME still
+        leaves takes its value with it (compute_ff_june_exits). A return spanning a gap (ret_lag_dif over one month) is nulled, not row-dropped, so the row's ME still
         serves formation and the weight lags. Fama and French hold each portfolio from
         July to June, so a stock's weight is its ME at the end of June grown by its
         total return since then (buy-and-hold): share issues, buybacks and share-count
@@ -10299,9 +10297,11 @@ def add_ff_buy_and_hold_weights(
     yp = [*k, "period"]
     return (
         holdings.lazy()
-        .with_columns(ret=pl.when(pl.col("ret_lag_dif") <= _ff_max_gap(freq)).then(pl.col("ret")))
+        .with_columns(
+            ret=pl.when(pl.col("ret_lag_dif") <= _ff_max_gap("monthly")).then(pl.col("ret"))
+        )
         .sort([*k, "date"])
-        .pipe(_add_ff_contiguous, freq, k)
+        .pipe(_add_ff_contiguous, "monthly", k)
         .with_columns(
             period=july_june_year(),
             lag_me=pl.col("me").shift(1).over(k),
@@ -11275,7 +11275,7 @@ def gen_ff_data(
     june_assignments = build_ff_june_assignments(paths, monthly_panel)
     monthly_momentum_assignments = build_ff_momentum_assignments(monthly_panel, "monthly")
     del monthly_panel
-    monthly_return_data = add_ff_buy_and_hold_weights(load_ff_universe(paths, "monthly"), "monthly")
+    monthly_return_data = add_ff_buy_and_hold_weights(load_ff_universe(paths, "monthly"))
     june_exits = compute_ff_june_exits(monthly_return_data)
     compute_ff_factor_returns(
         monthly_return_data,

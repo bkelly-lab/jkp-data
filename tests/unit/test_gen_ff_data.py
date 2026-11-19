@@ -1319,7 +1319,7 @@ class TestBuildFFFirmPanel:
         assert panel["id"].to_list() == [1, 2]
         assert panel["me"].to_list() == [100.0, None]
         assert panel["prc"].to_list() == [8.0, 7.0]
-        held = add_ff_buy_and_hold_weights(load_ff_universe(test_paths, "monthly"), "monthly")
+        held = add_ff_buy_and_hold_weights(load_ff_universe(test_paths, "monthly"))
         assert held["id"].sort().to_list() == [1, 2]
 
 
@@ -1344,9 +1344,9 @@ def _factor_panel(rows: list[tuple]) -> pl.DataFrame:
     ).with_columns(sec=pl.col("id"), ret_lag_dif=pl.lit(0))
 
 
-def _weights(rows: list[tuple], freq: str = "monthly") -> dict[tuple[int, date], float | None]:
+def _weights(rows: list[tuple]) -> dict[tuple[int, date], float | None]:
     """add_ff_buy_and_hold_weights on (excntry, id, date, ret, me) rows -> {(id, date): w}."""
-    out = add_ff_buy_and_hold_weights(_factor_panel(rows), freq)
+    out = add_ff_buy_and_hold_weights(_factor_panel(rows))
     return {(i, d): w for i, d, w in out.select("id", "date", "w").iter_rows()}
 
 
@@ -1386,9 +1386,7 @@ class TestAddFFBuyAndHoldWeights:
                 ("USA", 1, date(2020, 8, 31), 0.0, 40.0),
             ]
         ).with_columns(sec=pl.Series([10, 10, 10, 11, 11, 11]))
-        out = add_ff_buy_and_hold_weights(panel, "monthly").filter(
-            pl.col("date") == date(2020, 8, 31)
-        )
+        out = add_ff_buy_and_hold_weights(panel).filter(pl.col("date") == date(2020, 8, 31))
         assert dict(out.select("sec", "w").iter_rows()) == pytest.approx({10: 110.0, 11: 40.0})
 
     def test_new_year_restarts_from_june(self):
@@ -1419,20 +1417,14 @@ class TestAddFFBuyAndHoldWeights:
         assert w[(1, date(2020, 10, 31))] == pytest.approx(110.0)
 
     def test_market_closure_is_not_a_gap(self):
-        """Daily: a stock whose previous row is the market's previous trading date
-        keeps its weight even 7 days later (an exchange closure)."""
-        w = _weights(
-            [
-                ("USA", 1, date(2001, 6, 29), 0.0, 100.0),
-                ("USA", 1, date(2001, 9, 10), 0.0, 100.0),
-                ("USA", 1, date(2001, 9, 17), -0.05, 95.0),
-                ("USA", 2, date(2001, 9, 10), 0.0, 50.0),
-                ("USA", 2, date(2001, 9, 17), -0.05, 47.5),
-            ],
-            freq="daily",
+        """Daily: a row whose previous row is the market's previous trading date is
+        contiguous even 7 days later (an exchange closure)."""
+        rows = [(1, date(2001, 9, 10)), (1, date(2001, 9, 17)), (2, date(2001, 9, 17))]
+        lf = pl.LazyFrame(
+            {"excntry": "USA", "id": [i for i, _ in rows], "date": [d for _, d in rows]}
         )
-        assert w[(1, date(2001, 9, 17))] == 100.0
-        assert w[(2, date(2001, 9, 17))] is None  # no June row: first row's base is null
+        out = af._add_ff_contiguous(lf, "daily", ["id"]).collect()
+        assert out["contiguous"].to_list() == [None, True, None]
 
     def test_nonpositive_lagged_me_nulls_weight(self):
         w = _weights(
@@ -1467,20 +1459,7 @@ class TestAddFFBuyAndHoldWeights:
                 ("GBR", 1, date(2020, 8, 31), 0.1, 110.0),
             ]
         ).with_columns(ret_lag_dif=pl.Series([0, lag_dif]))
-        out = add_ff_buy_and_hold_weights(panel, "monthly")
-        assert out["id"].to_list() == [1, 1]
-        assert (out["ret"][1] is not None) is kept
-
-    @pytest.mark.parametrize(("lag_dif", "kept"), [(5, True), (6, False)])
-    def test_gap_spanning_return_nulled_daily(self, lag_dif, kept):
-        """Daily: more than 5 days nulls the return."""
-        panel = _factor_panel(
-            [
-                ("GBR", 1, date(2020, 6, 30), 0.0, 100.0),
-                ("GBR", 1, date(2020, 7, 7), 0.1, 110.0),
-            ]
-        ).with_columns(ret_lag_dif=pl.Series([0, lag_dif]))
-        out = add_ff_buy_and_hold_weights(panel, "daily")
+        out = add_ff_buy_and_hold_weights(panel)
         assert out["id"].to_list() == [1, 1]
         assert (out["ret"][1] is not None) is kept
 
@@ -1493,7 +1472,7 @@ class TestAddFFBuyAndHoldWeights:
                 ("USA", 3, date(2020, 7, 31), 0.0, None),
             ]
         )
-        assert add_ff_buy_and_hold_weights(panel, "monthly")["id"].sort().to_list() == [1, 2, 3]
+        assert add_ff_buy_and_hold_weights(panel)["id"].sort().to_list() == [1, 2, 3]
 
 
 def _write_market_days(test_paths, excntry: str, days: list[date]) -> None:
