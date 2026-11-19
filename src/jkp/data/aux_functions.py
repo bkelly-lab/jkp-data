@@ -10340,12 +10340,14 @@ def build_ff_daily_holdings(paths: DataPaths, monthly_return_data: pl.DataFrame)
         its last price to month end, as its monthly return is, and a return spanning
         days without a row is kept whole.
     Steps:
-        1) Map each world_dsf date to a trading day of its country and month: the
+        1) The monthly rows with a return and a positive weight; world_dsf rows of
+           those securities in those months.
+        2) Map each of their dates to a trading day of its country and month: the
            date itself or the next one, else the month's last.
-        2) Daily returns compounded per security and trading day.
-        3) The monthly rows with a return and a positive weight, on each trading day
-           of their month, with that return (0 when missing).
-        4) w = the monthly weight x the month's cumulative (1 + ret) up to the
+        3) Daily returns compounded per security and trading day.
+        4) The held rows on each trading day of their month, with that return (0
+           when missing).
+        5) w = the monthly weight x the month's cumulative (1 + ret) up to the
            previous trading day.
     Output:
         Eager [excntry, id, sec, date, ret, w].
@@ -10355,8 +10357,16 @@ def build_ff_daily_holdings(paths: DataPaths, monthly_return_data: pl.DataFrame)
     days = pl.scan_parquet(paths.interim_dir / "market_returns_daily.parquet").select(
         "excntry", "date", eom=month
     )
-    daily = pl.scan_parquet(paths.interim_dir / "world_dsf.parquet").select(
-        "excntry", "date", "ret", sec=pl.col("id").cast(pl.Int64)
+    held = (
+        monthly_return_data.lazy()
+        .filter(pl.col("ret").is_not_null() & (pl.col("w") > 0))
+        .select(*k, eom="date", w_month="w")
+    )
+    daily = (
+        pl.scan_parquet(paths.interim_dir / "world_dsf.parquet")
+        .select("excntry", "date", "ret", sec=pl.col("id").cast(pl.Int64), eom=month)
+        .join(held.select("excntry", "sec", "eom"), on=["excntry", "sec", "eom"], how="semi")
+        .drop("eom")
     )
     trading_day = (
         daily.select("excntry", "date")
@@ -10382,10 +10392,7 @@ def build_ff_daily_holdings(paths: DataPaths, monthly_return_data: pl.DataFrame)
         .agg(ret=(1.0 + pl.col("ret").fill_null(0.0)).product() - 1.0)
     )
     return (
-        monthly_return_data.lazy()
-        .filter(pl.col("ret").is_not_null() & (pl.col("w") > 0))
-        .select(*k, eom="date", w_month="w")
-        .join(days, on=["excntry", "eom"])
+        held.join(days, on=["excntry", "eom"])
         .join(rets, on=["excntry", "sec", "date"], how="left")
         .with_columns(ret=pl.col("ret").fill_null(0.0))
         .select(
