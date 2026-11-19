@@ -57,7 +57,6 @@ from .config import (
     FF_UMD_MONTHLY_SKIP,
     FF_US_BP_EXCLUDE_NAICS,
     FF_US_BP_EXCLUDE_SIC,
-    HXZ_US_MIN_STOCKS_BP,
     MAIN_FILTERS,
     NI_AT_MIN_STD,
     RES_MOM_MIN_STD,
@@ -10659,38 +10658,21 @@ def size_breakpoints(
         - ff: the FF firm panel's bp_pool (in the US, firms with a NYSE class that
           passes bp_screen; elsewhere size_grp), min_stocks_bp stocks in every
           country.
-        - hxz: the universe's bp_pool (no FF screen) without financials (is_fin).
-          In the US any BE counts and HXZ_US_MIN_STOCKS_BP stocks suffice;
-          elsewhere a stock needs be_a > 0 and the country min_stocks_bp stocks.
+        - hxz: the universe's bp_pool (no FF screen) without financials (is_fin),
+          min_stocks_bp stocks in every country. In the US any BE counts;
+          elsewhere a stock needs be_a > 0.
     Steps:
-        1) ff: one country_breakpoints call over the pool.
-        2) hxz: the US and the other countries separately, concatenated.
+        1) The method's pool; one country_breakpoints call over it.
     Output:
         [excntry, date, sizemedn], one row per country-date with enough stocks.
     """
     keys = ["excntry", "date"]
     spec = [("me", 0.50, "sizemedn")]
     pool = pl.col("bp_pool") & (pl.col("me") > 0)
-    if method == "ff":
-        return country_breakpoints(
-            frame, spec, group_keys=keys, pool=pool, min_stocks=min_stocks_bp
-        )
-    us = pl.col("excntry") == US_EXCNTRY
-    pool = pool & ~pl.col("is_fin")
-    return pl.concat(
-        [
-            country_breakpoints(
-                frame.filter(us), spec, group_keys=keys, pool=pool, min_stocks=HXZ_US_MIN_STOCKS_BP
-            ),
-            country_breakpoints(
-                frame.filter(~us),
-                spec,
-                group_keys=keys,
-                pool=pool & (pl.col("be_a") > 0),
-                min_stocks=min_stocks_bp,
-            ),
-        ]
-    )
+    if method == "hxz":
+        us = pl.col("excntry") == US_EXCNTRY
+        pool = pool & ~pl.col("is_fin") & (us | (pl.col("be_a") > 0))
+    return country_breakpoints(frame, spec, group_keys=keys, pool=pool, min_stocks=min_stocks_bp)
 
 
 def compute_ff_breakpoints(
@@ -10726,9 +10708,10 @@ def compute_ff_breakpoints(
     return out
 
 
-def _assign_bucket(val: str, breaks: list[str], labels: list[str]) -> pl.Expr:
-    """Ladder label: `val <= breaks[i]` -> `labels[i]`, else `labels[-1]`.
-    Requires `len(labels) == len(breaks) + 1`."""
+def _assign_bucket(val: str, breaks: list[str], labels: list[str] | list[int]) -> pl.Expr:
+    """Ladder label: `val <= breaks[i]` -> `labels[i]`, else `labels[-1]`. Labels are
+    strings (FF: "S", "L") or integers (HXZ: 1, 2, 3). Requires
+    `len(labels) == len(breaks) + 1`."""
     if len(labels) != len(breaks) + 1:
         raise ValueError("labels must have exactly one more entry than breaks")
     out = pl.when(pl.col(val) <= pl.col(breaks[0])).then(pl.lit(labels[0]))

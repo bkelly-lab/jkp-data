@@ -541,8 +541,9 @@ class TestSizeBreakpoints:
         assert self._medians(self.DEU, "ff", 8) == {}
 
     def test_hxz_us_pool_drops_financials_and_counts_any_be(self):
-        """Pool 1, 2, 3 whatever their BE; one stock suffices, whatever min_stocks_bp."""
-        assert self._medians(self.US, "hxz", 10) == {US_EXCNTRY: 2.0}
+        """Pool 1, 2, 3 whatever their BE, with min_stocks_bp stocks."""
+        assert self._medians(self.US, "hxz", 3) == {US_EXCNTRY: 2.0}
+        assert self._medians(self.US, "hxz", 4) == {}
 
     def test_hxz_other_country_pool_needs_positive_be(self):
         """Pool 1, 2, 3 (BE > 0, non-financial), with min_stocks_bp stocks."""
@@ -551,6 +552,13 @@ class TestSizeBreakpoints:
 
     def test_hxz_countries_together(self):
         assert self._medians(self.US + self.DEU, "hxz", 3) == {US_EXCNTRY: 2.0, "DEU": 2.0}
+
+
+def test_assign_bucket_integer_labels():
+    """HXZ's tercile labels: 1 at or below the 30th percentile, 3 above the 70th."""
+    df = pl.DataFrame({"v": [1.0, 3.0, 5.0, 9.0], "b30": [3.0] * 4, "b70": [7.0] * 4})
+    out = df.select(af._assign_bucket("v", ["b30", "b70"], [1, 2, 3])).to_series()
+    assert out.to_list() == [1, 1, 2, 3]
 
 
 # =============================================================================
