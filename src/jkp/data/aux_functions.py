@@ -8320,40 +8320,24 @@ def _mp_compute_composite_issue(interim_dir: Path) -> pl.DataFrame:
     return out
 
 
-def _mp_compute_roa(mp_con: duckdb.DuckDBPyConnection, interim_dir: Path) -> pl.DataFrame:
-    cq = (
-        pl.read_parquet(interim_dir / "compustat_quarterly.parquet")
-        .select("permno", "datadate", "rdq", "rdq_crsp", "lead_rdq_crsp", "ibq", "atq")
-        .sort("permno", "datadate")
-        .with_columns(
-            lag_dt=col("datadate").shift(1).over("permno"),
-            lag_atq=col("atq").shift(1).over("permno"),
+def _mp_compute_roa(interim_dir: Path, jkp_interim_dir: Path) -> pl.DataFrame:
+    """ROA(t) = jkp's niq_at at t-1, assigned to month t of interim_dir's
+    crsp_monthly (whose permno column holds the jkp id); the calendar join nulls the
+    signal across panel gaps."""
+    signal = (
+        pl.scan_parquet(jkp_interim_dir / "world_data_prelim.parquet")
+        .filter((col("excntry") == US_EXCNTRY) & col("niq_at").is_not_null())
+        .select(
+            col("id").cast(pl.Int64).alias("permno"),
+            col("eom").alias("eom_src"),
+            col("niq_at").alias("roa"),
         )
-        .with_columns(lag_dt=col("lag_dt").fill_null(col("datadate")))
-        .with_columns(
-            gap_mo=_mp_month_diff(col("datadate"), col("lag_dt")),
-            roa=pl.when(col("lag_atq").is_null() | (col("lag_atq") == 0))
-            .then(None)
-            .otherwise(safe_div("ibq", "lag_atq", "roa")),
-        )
-        .with_columns(roa=pl.when(col("gap_mo") >= 6).then(None).otherwise(col("roa")))
-        .filter(col("roa").is_not_null())
-        .select("permno", "datadate", "rdq", "rdq_crsp", "lead_rdq_crsp", "roa")
+        .collect()
     )
-
-    month_keys = pl.read_parquet(interim_dir / "crsp_monthly.parquet").select("permno", "eom")
-    mp_con.register("cq", cq)
-    mp_con.register("month_keys", month_keys)
-    df = mp_con.execute("""
-        SELECT a.permno, a.eom, b.roa, b.datadate, b.rdq
-        FROM month_keys a
-        LEFT JOIN cq b
-          ON a.permno = b.permno AND a.eom >= b.rdq_crsp AND a.eom < b.lead_rdq_crsp
-    """).pl()
-
     out = (
-        df.sort(["permno", "eom", "datadate", "rdq"], descending=[False, False, True, True])
-        .unique(subset=["permno", "eom"], keep="first", maintain_order=True)
+        pl.read_parquet(interim_dir / "crsp_monthly.parquet")
+        .select("permno", "eom", eom_src=_mp_offset_months("eom", -1))
+        .join(signal, on=["permno", "eom_src"], how="left")
         .select("eom", "permno", "roa")
         .sort("permno", "eom")
     )
@@ -8732,7 +8716,7 @@ def _mp_compute_anomalies(
     _mp_compute_nsi_ag_inv_noa(raw_dir, interim_dir)
     _mp_compute_momentum(interim_dir, jkp_interim_dir)
     _mp_compute_composite_issue(interim_dir)
-    _mp_compute_roa(mp_con, interim_dir)
+    _mp_compute_roa(interim_dir, jkp_interim_dir)
     return _mp_compute_distress(mp_con, raw_dir, interim_dir, distress_refs)
 
 
