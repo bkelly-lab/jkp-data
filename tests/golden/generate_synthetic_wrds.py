@@ -1048,6 +1048,19 @@ def _write(df: pl.DataFrame, name: str) -> None:
     )
 
 
+def gen_acc_std_qtr(fundq: pl.DataFrame) -> pl.DataFrame:
+    """Synthesize the fields of jkp's standardized quarterly accounting panel
+    (``acc_std_qtr``) that the US mispricing ROA reads: ni_qtr (= ibq) and at (= atq),
+    one USD row per (gvkey, datadate) of the US quarterly fixture."""
+    return fundq.select(
+        "gvkey",
+        "datadate",
+        curcd=pl.lit("USD"),
+        ni_qtr=pl.col("ibq").cast(pl.Float64),
+        at=pl.col("atq").cast(pl.Float64),
+    ).sort("gvkey", "datadate")
+
+
 def gen_acc_std_ann(funda: pl.DataFrame, g_funda: pl.DataFrame) -> pl.DataFrame:
     """Synthesize jkp's standardized annual accounting panel (``acc_std_ann``).
 
@@ -1178,7 +1191,8 @@ def main() -> None:
     _write(funda, "comp_funda.parquet")
 
     print("Generating comp_fundq...")
-    _write(gen_comp_fundq(reg, rng), "comp_fundq.parquet")
+    fundq = gen_comp_fundq(reg, rng)
+    _write(fundq, "comp_fundq.parquet")
 
     print("Generating comp_g_funda...")
     g_funda = gen_comp_g_funda(reg, rng)
@@ -1212,6 +1226,9 @@ def main() -> None:
 
     print("Generating acc_std_ann (jkp standardized accounting)...")
     _write(gen_acc_std_ann(funda, g_funda), "acc_std_ann.parquet")
+
+    print("Generating acc_std_qtr (jkp standardized quarterly accounting)...")
+    _write(gen_acc_std_qtr(fundq), "acc_std_qtr.parquet")
 
     total = sum((OUT_DIR / f).stat().st_size for f in OUT_DIR.iterdir() if f.is_file())
     print(f"\nTotal: {total / 1e6:.1f} MB across {len(list(OUT_DIR.iterdir()))} files")

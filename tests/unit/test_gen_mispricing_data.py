@@ -24,6 +24,7 @@ from __future__ import annotations
 import math
 from datetime import date
 
+import duckdb
 import numpy as np
 import polars as pl
 import pytest
@@ -38,6 +39,7 @@ from jkp.data.aux_functions import (
     _mp_build_comp_us_inputs,
     _mp_compute_gross_profit,
     _mp_compute_momentum,
+    _mp_compute_roa,
     _mp_daily_vw_returns,
     _mp_diff_legs,
     _mp_distress_book_equity_mb,
@@ -1083,47 +1085,64 @@ class TestCompositeIssueFormula:
 
 
 class TestRoaFormula:
-    """Tests for roa = ibq / lag_atq."""
+    """US ROA: jkp's ni_qtr over the previous quarter's raw at, on SY's quarterly rows."""
 
-    def test_roa_known_values(self, tolerance):
-        """ibq=5, lag_atq=100 → roa=0.05."""
-        df = pl.DataFrame({"ibq": [5.0], "lag_atq": [100.0]})
-        result = df.with_columns(
-            roa=pl.when(pl.col("lag_atq").is_null() | (pl.col("lag_atq") == 0))
-            .then(None)
-            .otherwise(pl.col("ibq") / pl.col("lag_atq"))
-        )["roa"][0]
-        np.testing.assert_allclose(result, 0.05, **tolerance.TIGHT)
+    def _run(self, tmp_path) -> pl.DataFrame:
+        d = [date(2010, 3, 31), date(2010, 6, 30), date(2010, 9, 30), date(2011, 6, 30)]
+        pl.DataFrame(
+            {
+                "gvkey": ["001000"] * 5 + ["002000"] * 3,
+                "curcd": ["USD", "USD", "CAD", "USD", "USD", "USD", "USD", "USD"],
+                "datadate": [d[0], d[1], d[1], d[2], d[3], d[0], d[1], d[2]],
+                "ni_qtr": [1.0, 5.0, 50.0, 2.0, 9.0, 1.0, 4.0, 3.0],
+                "at": [100.0, 110.0, 1100.0, 120.0, 130.0, None, 0.0, 90.0],
+                "at_x": [100.0, 110.0, 1100.0, 120.0, 130.0, 200.0, 0.0, 90.0],
+            }
+        ).write_parquet(tmp_path / "acc_std_qtr.parquet")
+        live = [(_eom(2010, 5), _eom(2010, 8)), (_eom(2010, 8), _eom(2010, 11))]
+        live += [(_eom(2010, 11), _eom(2011, 2)), (_eom(2011, 8), _eom(2011, 11))]
+        pl.DataFrame(
+            {
+                "permno": [10001] * 4 + [10002] * 3,
+                "gvkey": ["001000"] * 4 + ["002000"] * 3,
+                "datadate": d + d[:3],
+                "rdq": [r for r, _ in live] + [r for r, _ in live[:3]],
+                "rdq_crsp": [r for r, _ in live] + [r for r, _ in live[:3]],
+                "lead_rdq_crsp": [n for _, n in live] + [n for _, n in live[:3]],
+            }
+        ).write_parquet(tmp_path / "compustat_quarterly.parquet")
+        months = [_eom(2010, m) for m in range(5, 13)] + [_eom(2011, m) for m in range(1, 11)]
+        pl.DataFrame(
+            {"permno": [10001] * len(months) + [10002] * len(months), "eom": months * 2}
+        ).write_parquet(tmp_path / "crsp_monthly.parquet")
+        return _mp_compute_roa(duckdb.connect(), tmp_path, tmp_path)
 
-    def test_roa_null_lag_atq(self):
-        """lag_atq=None → roa=None."""
-        df = pl.DataFrame({"ibq": [5.0], "lag_atq": [None]})
-        result = df.with_columns(
-            roa=pl.when(pl.col("lag_atq").is_null() | (pl.col("lag_atq") == 0))
-            .then(None)
-            .otherwise(pl.col("ibq") / pl.col("lag_atq"))
-        )["roa"][0]
-        assert result is None
+    def _vals(self, out: pl.DataFrame, permno: int) -> dict:
+        out = out.filter(pl.col("permno") == permno)
+        return dict(zip(out["eom"], out["roa"], strict=True))
 
-    def test_roa_zero_lag_atq(self):
-        """lag_atq=0 → roa=None (guarded)."""
-        df = pl.DataFrame({"ibq": [5.0], "lag_atq": [0.0]})
-        result = df.with_columns(
-            roa=pl.when(pl.col("lag_atq").is_null() | (pl.col("lag_atq") == 0))
-            .then(None)
-            .otherwise(pl.col("ibq") / pl.col("lag_atq"))
-        )["roa"][0]
-        assert result is None
+    def test_previous_quarter_assets_and_window(self, tmp_path, tolerance):
+        """ni_qtr / previous quarter's at, live from rdq_crsp until the next quarter's;
+        the USD row wins over CAD; the first quarter has no previous assets."""
+        vals = self._vals(self._run(tmp_path), 10001)
+        assert vals[_eom(2010, 5)] is None
+        np.testing.assert_allclose(
+            [vals[_eom(2010, m)] for m in (8, 9, 10)], [5 / 100] * 3, **tolerance.TIGHT
+        )
+        np.testing.assert_allclose(
+            [vals[_eom(2010, 11)], vals[_eom(2011, 1)]], [2 / 110] * 2, **tolerance.TIGHT
+        )
 
-    def test_roa_negative_earnings(self, tolerance):
-        """Negative ibq → negative roa."""
-        df = pl.DataFrame({"ibq": [-3.0], "lag_atq": [100.0]})
-        result = df.with_columns(
-            roa=pl.when(pl.col("lag_atq").is_null() | (pl.col("lag_atq") == 0))
-            .then(None)
-            .otherwise(pl.col("ibq") / pl.col("lag_atq"))
-        )["roa"][0]
-        np.testing.assert_allclose(result, -0.03, **tolerance.TIGHT)
+    def test_previous_quarter_six_months_back_is_missing(self, tmp_path):
+        vals = self._vals(self._run(tmp_path), 10001)
+        assert vals[_eom(2011, 8)] is None and vals[_eom(2011, 10)] is None
+
+    def test_previous_quarter_without_reported_or_zero_assets_is_missing(self, tmp_path):
+        """No at in the previous quarter: no ROA, although jkp's at_x fills it (200).
+        Zero at in the previous quarter: no ROA."""
+        vals = self._vals(self._run(tmp_path), 10002)
+        assert vals[_eom(2010, 8)] is None
+        assert vals[_eom(2010, 11)] is None
 
 
 # ===========================================================================
