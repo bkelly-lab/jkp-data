@@ -1381,7 +1381,6 @@ def download_raw_data_tables(
         "comp.g_secd",
         # Mispricing factors (Stambaugh-Yuan) — CHS DISTRESS inputs.
         "crsp_a_indexes.msp500",
-        "crsp_a_indexes.acti",
         # ccmxpf_linktable has usedflag (ccmxpf_lnkhist drops it); needed for SY-parity tiebreak.
         "crsp.ccmxpf_linktable",
         # IBES international EPS actuals — anndats supplies ex-US earnings
@@ -1402,7 +1401,6 @@ def download_raw_data_tables(
         "comp.g_funda": "datadate",
         "comp.g_fundq": "datadate",
         "crsp_a_indexes.msp500": "caldt",
-        "crsp_a_indexes.acti": "caldt",
         "ibes.actu_epsint": "anndats",
     }
 
@@ -10157,7 +10155,7 @@ def gen_mispricing_data(
     Ported from the MisprProject standalone. Always runs both branches;
     outputs concatenated with `excntry` column. Reads jkp's CIZ raws from
     `paths.raw_tables_dir` ({crsp_msf_v2, crsp_dsf_v2, funda, fundq,
-    crsp_a_indexes_msp500, crsp_a_indexes_acti}.parquet) and world inputs
+    crsp_a_indexes_msp500}.parquet) and world inputs
     from `paths.interim_dir`, where world_msf also supplies the US
     Compustat-CRSP link (_mp_permno_link); raw_dir/interim_dir are threaded
     explicitly through every _mp_* helper that does IO. The 3 output paths

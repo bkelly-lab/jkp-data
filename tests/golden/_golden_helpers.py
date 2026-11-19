@@ -19,7 +19,6 @@ Fixture slice layout (committed under ``tests/golden/fixtures/synthetic_wrds/``)
   crsp_ccmxpf_lnkhist.parquet      -> raw_tables_dir
   crsp_stksecurityinfohist.parquet -> raw_tables_dir
   crsp_a_indexes_msp500.parquet    -> raw_tables_dir
-  crsp_a_indexes_acti.parquet      -> raw_tables_dir
   world_msf.parquet                -> interim_dir
   world_dsf.parquet                -> interim_dir
   world_data.parquet               -> interim_dir (also staged as world_data_prelim.parquet)
@@ -55,7 +54,6 @@ RAW_FILES: tuple[str, ...] = (
     "crsp_ccmxpf_lnkhist.parquet",
     "crsp_stksecurityinfohist.parquet",
     "crsp_a_indexes_msp500.parquet",
-    "crsp_a_indexes_acti.parquet",
 )
 INTERIM_FILES: tuple[str, ...] = (
     "world_msf.parquet",

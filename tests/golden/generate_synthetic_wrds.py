@@ -422,17 +422,6 @@ def gen_crsp_a_indexes_msp500(rng: np.random.Generator) -> pl.DataFrame:
     ).with_columns(pl.col("caldt").cast(pl.Date))
 
 
-def gen_crsp_a_indexes_acti(rng: np.random.Generator) -> pl.DataFrame:
-    """Annual CPI series (December rows + monthly). Columns: caldt, cpiind."""
-    # End-of-year + EoM rows; builders only use December rows.
-    month_ends = _month_ends(DATE_START, DATE_END)
-    n = len(month_ends)
-    cpi = 100.0 * np.exp(np.cumsum(rng.normal(0.002, 0.003, size=n)))
-    return pl.DataFrame({"caldt": month_ends, "cpiind": cpi.astype(np.float64)}).with_columns(
-        pl.col("caldt").cast(pl.Date)
-    )
-
-
 def _gen_funda(reg: pl.DataFrame, rng: np.random.Generator, is_global: bool) -> pl.DataFrame:
     """Annual Compustat (NA or Global). One row per (gvkey, fiscal_year_end)."""
     if is_global:
@@ -1183,8 +1172,9 @@ def main() -> None:
     print("Generating crsp_a_indexes_msp500...")
     _write(gen_crsp_a_indexes_msp500(rng), "crsp_a_indexes_msp500.parquet")
 
-    print("Generating crsp_a_indexes_acti...")
-    _write(gen_crsp_a_indexes_acti(rng), "crsp_a_indexes_acti.parquet")
+    # Draws of the retired CPI series (crsp_a_indexes_acti), kept so the
+    # generators below see the same random stream.
+    rng.normal(0.002, 0.003, size=len(_month_ends(DATE_START, DATE_END)))
 
     print("Generating comp_funda...")
     funda = gen_comp_funda(reg, rng)
