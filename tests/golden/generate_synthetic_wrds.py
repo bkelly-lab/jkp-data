@@ -1056,7 +1056,8 @@ def gen_acc_std_ann(funda: pl.DataFrame, g_funda: pl.DataFrame) -> pl.DataFrame:
     The ROW FF/HXZ loaders read book equity (be_x), the operating-profit inputs
     (ebitda_x, xint), minority interest (mib, mibt, mibn), assets (at_x -> asset
     growth) and net income (ni_x) from this panel via ``_jkp_annual_acc``; the US
-    mispricing GP_ADJ reads gp, sale_x and cogs. The real
+    mispricing GP_ADJ reads gp, sale_x and cogs, and OSCORE the raw at, lt, act, lct,
+    ni and pi. The real
     builder (``standardized_accounting_data``) pulls ~40 Compustat vars this synthetic
     fixture doesn't carry, so instead we reproduce the panel's *shape and the fields
     the loaders consume*:
@@ -1093,6 +1094,10 @@ def gen_acc_std_ann(funda: pl.DataFrame, g_funda: pl.DataFrame) -> pl.DataFrame:
         "mib",
         "mibt",
         "mibn",
+        "act",
+        "lct",
+        "ni",
+        "pi",
     ]
 
     def _report_rows(df: pl.DataFrame, source: str) -> pl.DataFrame:
@@ -1121,6 +1126,12 @@ def gen_acc_std_ann(funda: pl.DataFrame, g_funda: pl.DataFrame) -> pl.DataFrame:
             gp=pl.col("gp"),
             sale_x=pl.coalesce("sale", "revt"),
             cogs=pl.col("cogs"),
+            at=pl.col("at"),
+            lt=pl.col("lt"),
+            act=pl.col("act"),
+            lct=pl.col("lct"),
+            ni=pl.col("ni"),
+            pi=pl.col("pi"),
         )
 
     reports = pl.concat(

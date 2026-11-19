@@ -39,6 +39,7 @@ from jkp.data.aux_functions import (
     _mp_build_comp_us_inputs,
     _mp_compute_gross_profit,
     _mp_compute_momentum,
+    _mp_compute_oscore,
     _mp_compute_roa,
     _mp_daily_vw_returns,
     _mp_diff_legs,
@@ -74,6 +75,7 @@ from jkp.data.config import (
     MP_MGMT_IDX,
     MP_MIN_OBS_PF_WORLD,
     MP_MIN_STKS_BP_WORLD,
+    MP_OSCORE_BETAS,
     MP_PERF_IDX,
     MP_POSITIVE_ANOMALIES,
     MP_WORLD_JKP_CHAR,
@@ -549,115 +551,116 @@ class TestGrossProfitFormula:
 
 
 class TestOscoreFormula:
-    """Tests for Ohlson (1980) O-score 8-variable logit."""
+    """US OSCORE: Ohlson's Model 1 on SY's definitions from the raw items in
+    acc_std_ann, prior-year ni from the previous calendar year, months 5-16."""
 
-    def _compute_oscore(
-        self,
-        size: float,
-        tlta: float,
-        wcta: float,
-        clca: float,
-        oeneg: int,
-        nita: float,
-        futl: float,
-        intwo: int,
-        chin: float,
-    ) -> float:
-        """Compute O-score from pre-derived inputs."""
+    # gvkey -> permno; (datadate, curcd, at, lt, act, lct, ni, pi) per report
+    REPORTS = {
+        # known value; the CAD row of the same report loses to USD
+        ("001000", 10001): [
+            ((2009, 12), "USD", 900.0, 350.0, 280.0, 140.0, 50.0, 70.0),
+            ((2010, 12), "USD", 1000.0, 400.0, 300.0, 150.0, 80.0, 120.0),
+            ((2010, 12), "CAD", 2000.0, 400.0, 300.0, 150.0, 80.0, 120.0),
+        ],
+        # lt > at and two losses: OENEG = INTWO = 1
+        ("002000", 10002): [
+            ((2009, 12), "USD", 100.0, 120.0, 60.0, 80.0, -20.0, -15.0),
+            ((2010, 12), "USD", 100.0, 150.0, 60.0, 90.0, -30.0, -25.0),
+        ],
+        # raw-item filters: at <= 0, lt == 0, act == 0
+        ("003000", 10003): [
+            ((2009, 12), "USD", 100.0, 50.0, 40.0, 20.0, 5.0, 6.0),
+            ((2010, 12), "USD", 0.0, 50.0, 40.0, 20.0, 5.0, 6.0),
+        ],
+        ("004000", 10004): [
+            ((2009, 12), "USD", 100.0, 50.0, 40.0, 20.0, 5.0, 6.0),
+            ((2010, 12), "USD", 100.0, 0.0, 40.0, 20.0, 5.0, 6.0),
+        ],
+        ("005000", 10005): [
+            ((2009, 12), "USD", 100.0, 50.0, 40.0, 20.0, 5.0, 6.0),
+            ((2010, 12), "USD", 100.0, 50.0, 0.0, 20.0, 5.0, 6.0),
+        ],
+        # two reports in 2009 (fiscal year-end change): the later one is the prior year
+        ("006000", 10006): [
+            ((2009, 6), "USD", 100.0, 50.0, 40.0, 20.0, -10.0, 6.0),
+            ((2009, 12), "USD", 100.0, 50.0, 40.0, 20.0, 40.0, 6.0),
+            ((2010, 12), "USD", 100.0, 50.0, 40.0, 20.0, 80.0, 6.0),
+        ],
+        # ni == lagni == 0: CHIN undefined -> no score
+        ("007000", 10007): [
+            ((2009, 12), "USD", 100.0, 50.0, 40.0, 20.0, 0.0, 6.0),
+            ((2010, 12), "USD", 100.0, 50.0, 40.0, 20.0, 0.0, 6.0),
+        ],
+    }
+
+    @staticmethod
+    def _expected(at, lt, act, lct, ni, pi, lagni) -> float:
+        b = MP_OSCORE_BETAS
         return (
-            -1.32
-            - 0.407 * size
-            + 6.03 * tlta
-            - 1.43 * wcta
-            + 0.076 * clca
-            - 1.72 * oeneg
-            - 2.37 * nita
-            - 1.83 * futl
-            + 0.285 * intwo
-            - 0.521 * chin
+            b["intercept"]
+            + b["SIZE"] * math.log(at)
+            + b["TLTA"] * lt / at
+            + b["WCTA"] * (act - lct) / at
+            + b["CLCA"] * lct / act
+            + b["OENEG"] * (lt > at)
+            + b["NITA"] * ni / at
+            + b["FUTL"] * pi / lt
+            + b["INTWO"] * (ni < 0 and lagni < 0)
+            + b["CHIN"] * (ni - lagni) / (abs(ni) + abs(lagni))
         )
 
-    def test_oscore_known_values(self, tolerance):
-        """Check formula with a concrete set of inputs."""
-        size = math.log(100 * 500 / 120)  # at=500, cpi=120
-        tlta = 0.4
-        wcta = 0.15
-        clca = 0.3
-        oeneg = 0
-        nita = 0.05
-        futl = 0.2
-        intwo = 0
-        chin = 0.1
-
-        expected = self._compute_oscore(size, tlta, wcta, clca, oeneg, nita, futl, intwo, chin)
-
-        df = pl.DataFrame(
-            {
-                "size": [size],
-                "tlta": [tlta],
-                "wcta": [wcta],
-                "clca": [clca],
-                "oeneg": [oeneg],
-                "nita": [nita],
-                "futl": [futl],
-                "intwo": [intwo],
-                "chin": [chin],
-            }
+    def _run(self, tmp_path) -> dict[tuple[int, date], float | None]:
+        rows = [
+            (gvkey, permno, _eom(*ym), *rest)
+            for (gvkey, permno), reports in self.REPORTS.items()
+            for ym, *rest in reports
+        ]
+        acc = pl.DataFrame(
+            rows,
+            schema=["gvkey", "permno", "datadate", "curcd", "at", "lt", "act", "lct", "ni", "pi"],
+            orient="row",
         )
-        result = df.with_columns(
-            oscore=-1.32
-            - 0.407 * pl.col("size")
-            + 6.03 * pl.col("tlta")
-            - 1.43 * pl.col("wcta")
-            + 0.076 * pl.col("clca")
-            - 1.72 * pl.col("oeneg")
-            - 2.37 * pl.col("nita")
-            - 1.83 * pl.col("futl")
-            + 0.285 * pl.col("intwo")
-            - 0.521 * pl.col("chin")
-        )["oscore"][0]
-        np.testing.assert_allclose(result, expected, **tolerance.TIGHT)
+        acc.drop("permno").write_parquet(tmp_path / "acc_std_ann.parquet")
+        acc.select(
+            source_crsp=pl.lit(1), gvkey="gvkey", eom="datadate", id="permno"
+        ).unique().write_parquet(tmp_path / "world_msf.parquet")
+        months = [_eom(2011, m) for m in range(4, 13)] + [_eom(2012, m) for m in range(1, 6)]
+        permnos = [permno for _, permno in self.REPORTS]
+        pl.DataFrame(
+            {"permno": [p for p in permnos for _ in months], "eom": months * len(permnos)}
+        ).write_parquet(tmp_path / "crsp_monthly.parquet")
+        out = _mp_compute_oscore(tmp_path, tmp_path)
+        return {(p, e): v for p, e, v in out.select("permno", "eom", "oscore").iter_rows()}
 
-    def test_oscore_oeneg_when_lt_exceeds_at(self, tolerance):
-        """oeneg=1 when lt > at, adds -1.72 penalty."""
-        base = self._compute_oscore(3.0, 0.5, 0.1, 0.2, 0, 0.0, 0.1, 0, 0.0)
-        with_neg = self._compute_oscore(3.0, 0.5, 0.1, 0.2, 1, 0.0, 0.1, 0, 0.0)
-        np.testing.assert_allclose(with_neg - base, -1.72, **tolerance.TIGHT)
+    def test_known_value_window_and_usd_tie(self, tmp_path, tolerance):
+        """Score from the USD report and the prior year's ni, live in months 5-16."""
+        vals = self._run(tmp_path)
+        expected = self._expected(1000.0, 400.0, 300.0, 150.0, 80.0, 120.0, lagni=50.0)
+        assert vals[(10001, _eom(2011, 4))] is None
+        assert vals[(10001, _eom(2012, 5))] is None
+        live = [vals[(10001, _eom(2011, m))] for m in range(5, 13)] + [
+            vals[(10001, _eom(2012, m))] for m in range(1, 5)
+        ]
+        np.testing.assert_allclose(live, [expected] * 12, **tolerance.TIGHT)
 
-    def test_oscore_intwo_adds_positive(self, tolerance):
-        """intwo=1 (two consecutive losses) adds +0.285."""
-        base = self._compute_oscore(3.0, 0.5, 0.1, 0.2, 0, -0.05, 0.1, 0, 0.0)
-        with_intwo = self._compute_oscore(3.0, 0.5, 0.1, 0.2, 0, -0.05, 0.1, 1, 0.0)
-        np.testing.assert_allclose(with_intwo - base, 0.285, **tolerance.TIGHT)
+    def test_negative_equity_and_two_losses(self, tmp_path, tolerance):
+        vals = self._run(tmp_path)
+        expected = self._expected(100.0, 150.0, 60.0, 90.0, -30.0, -25.0, lagni=-20.0)
+        np.testing.assert_allclose(vals[(10002, _eom(2011, 6))], expected, **tolerance.TIGHT)
 
-    def test_oscore_null_input_propagates(self):
-        """Null in any formula input → null oscore."""
-        df = pl.DataFrame(
-            {
-                "size": [None],
-                "tlta": [0.4],
-                "wcta": [0.1],
-                "clca": [0.3],
-                "oeneg": [0],
-                "nita": [0.05],
-                "futl": [0.2],
-                "intwo": [0],
-                "chin": [0.1],
-            }
-        )
-        result = df.with_columns(
-            oscore=-1.32
-            - 0.407 * pl.col("size")
-            + 6.03 * pl.col("tlta")
-            - 1.43 * pl.col("wcta")
-            + 0.076 * pl.col("clca")
-            - 1.72 * pl.col("oeneg")
-            - 2.37 * pl.col("nita")
-            - 1.83 * pl.col("futl")
-            + 0.285 * pl.col("intwo")
-            - 0.521 * pl.col("chin")
-        )
-        assert result["oscore"][0] is None
+    @pytest.mark.parametrize("permno", [10003, 10004, 10005])
+    def test_zero_assets_liabilities_or_current_assets_dropped(self, tmp_path, permno):
+        """at <= 0, lt == 0 or act == 0 -> the report gets no score."""
+        assert self._run(tmp_path)[(permno, _eom(2011, 6))] is None
+
+    def test_later_report_is_the_prior_year(self, tmp_path, tolerance):
+        """Two reports in the prior calendar year: the later one's ni is lagni."""
+        vals = self._run(tmp_path)
+        expected = self._expected(100.0, 50.0, 40.0, 20.0, 80.0, 6.0, lagni=40.0)
+        np.testing.assert_allclose(vals[(10006, _eom(2011, 6))], expected, **tolerance.TIGHT)
+
+    def test_zero_income_both_years_has_no_score(self, tmp_path):
+        assert self._run(tmp_path)[(10007, _eom(2011, 6))] is None
 
 
 # ===========================================================================
