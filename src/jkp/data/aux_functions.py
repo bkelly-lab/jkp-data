@@ -10674,28 +10674,35 @@ def size_breakpoints(
     return country_breakpoints(frame, spec, group_keys=keys, pool=pool, min_stocks=min_stocks_bp)
 
 
-def compute_ff_breakpoints(
-    frame: pl.DataFrame, sorts: list[str], min_stocks_bp: int
+def _ff_breakpoint_sorts(sorts: list[str]) -> dict[str, tuple[str, pl.Expr]]:
+    """compute_breakpoints' sorts for the named FF sorts: name -> (signal, eligible)."""
+    return {s: (ff_sort_definitions()[s][0], ff_sort_definitions()[s][2]) for s in sorts}
+
+
+def compute_breakpoints(
+    frame: pl.DataFrame,
+    method: Literal["ff", "hxz"],
+    sorts: dict[str, tuple[str, pl.Expr]],
+    min_stocks_bp: int,
 ) -> pl.DataFrame:
     """
     Description:
-        Per-country breakpoints at each formation date, over the breakpoint pool
-        (bp_pool), in every country: the size median over every pool stock with
-        ME > 0, whatever its sort eligibility (DFF 2000: no BE requirement), and
-        the 30th and 70th percentiles of each sort's signal over the pool stocks
-        eligible for that sort. A breakpoint needs min_stocks_bp pool stocks. The
-        sorts are independent: a country-date with the size median forms each sort
-        that has its own breakpoints.
+        Per-country breakpoints at each formation date: the size median over the
+        method's size pool (size_breakpoints), whatever the stock's sort
+        eligibility, and the 30th and 70th percentiles of each sort's signal over
+        the bp_pool stocks eligible for that sort. sorts maps a sort name to its
+        signal column and eligibility expression. A breakpoint needs min_stocks_bp
+        pool stocks. The sorts are independent: a country-date with the size
+        median forms each sort that has its own breakpoints.
     Steps:
-        1) Size median per (excntry, date) (size_breakpoints, method "ff").
+        1) Size median per (excntry, date) (size_breakpoints).
         2) Each sort's 30/70 breakpoints, left-joined to the size median.
     Output:
         [excntry, date, sizemedn, <sort>_lo, <sort>_hi for each sort].
     """
     keys = ["excntry", "date"]
-    out = size_breakpoints(frame, "ff", min_stocks_bp)
-    for sort in sorts:
-        signal, _, eligible = ff_sort_definitions()[sort]
+    out = size_breakpoints(frame, method, min_stocks_bp)
+    for sort, (signal, eligible) in sorts.items():
         bps = country_breakpoints(
             frame,
             [(signal, 0.30, f"{sort}_lo"), (signal, 0.70, f"{sort}_hi")],
@@ -10757,7 +10764,7 @@ def build_ff_june_assignments(paths: DataPaths, monthly_panel: pl.DataFrame) -> 
         1) June rows of the monthly panel, left-joined to the annual
            characteristics (compute_ff_annual_characteristics), so stocks without
            accounting stay in the size-breakpoint pools.
-        2) Breakpoints per country and June (compute_ff_breakpoints).
+        2) Breakpoints per country and June (compute_breakpoints).
         3) Assignments (assign_ff_portfolios).
     Output:
         Eager: the June rows in country-years with breakpoints, plus <sort>_port
@@ -10772,8 +10779,8 @@ def build_ff_june_assignments(paths: DataPaths, monthly_panel: pl.DataFrame) -> 
             how="left",
         )
     )
-    june_breakpoints = compute_ff_breakpoints(
-        june_characteristics, FF_JUNE_SORTS, FACTOR_MIN_STOCKS_BP
+    june_breakpoints = compute_breakpoints(
+        june_characteristics, "ff", _ff_breakpoint_sorts(FF_JUNE_SORTS), FACTOR_MIN_STOCKS_BP
     )
     return assign_ff_portfolios(june_characteristics, june_breakpoints, FF_JUNE_SORTS)
 
@@ -10937,7 +10944,7 @@ def build_ff_momentum_assignments(
         holds the panel's units, with a return spanning a gap nulled.
     Steps:
         1) Momentum signal (compute_ff_momentum_signal) on every panel row.
-        2) Breakpoints per country and period (compute_ff_breakpoints).
+        2) Breakpoints per country and period (compute_breakpoints).
         3) Assignments (assign_ff_portfolios).
     Output:
         Eager: the momentum rows in country-periods with breakpoints, plus
@@ -10950,7 +10957,9 @@ def build_ff_momentum_assignments(
         ret=pl.when(pl.col("ret_lag_dif") <= _ff_max_gap(freq)).then(pl.col("ret")),
     )
     momentum_data = compute_ff_momentum_signal(panel, rows, freq)
-    momentum_breakpoints = compute_ff_breakpoints(momentum_data, ["mom"], FACTOR_MIN_STOCKS_BP)
+    momentum_breakpoints = compute_breakpoints(
+        momentum_data, "ff", _ff_breakpoint_sorts(["mom"]), FACTOR_MIN_STOCKS_BP
+    )
     return assign_ff_portfolios(momentum_data, momentum_breakpoints, ["mom"])
 
 

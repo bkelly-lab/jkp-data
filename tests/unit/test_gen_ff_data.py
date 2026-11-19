@@ -3,7 +3,7 @@ Unit tests for the FF3/FF5/UMD factor builder helpers in aux_functions.py.
 
 Covers:
   - ff_sort_definitions (eligibility of each sort)
-  - compute_ff_breakpoints (breakpoint pool, minimum stocks, size median, sort joins)
+  - compute_breakpoints, method "ff" (breakpoint pool, minimum stocks, size median, sort joins)
   - compute_ff_annual_characteristics (accounting records, December ME from the panel)
   - load_ff_universe (rule columns, US vs elsewhere, monthly and daily)
   - build_ff_firm_panel (class aggregation, ME, null-ME rows kept)
@@ -28,8 +28,8 @@ from jkp.data.aux_functions import (
     add_ff_buy_and_hold_weights,
     assign_ff_portfolios,
     build_ff_firm_panel,
+    compute_breakpoints,
     compute_ff_annual_characteristics,
-    compute_ff_breakpoints,
     compute_ff_factor_returns,
     compute_ff_june_exits,
     compute_ff_momentum_signal,
@@ -328,12 +328,17 @@ def _june(
     )
 
 
+def _ff_breakpoints(frame: pl.DataFrame, sorts: list[str], min_stocks_bp: int) -> pl.DataFrame:
+    """compute_breakpoints with method "ff" and the named FF sorts."""
+    return compute_breakpoints(frame, "ff", af._ff_breakpoint_sorts(sorts), min_stocks_bp)
+
+
 class TestFFBreakpoints:
-    """Tests for compute_ff_breakpoints()."""
+    """Tests for compute_breakpoints() with the FF sorts."""
 
     def test_us_30_70_quantiles(self):
         """30/70 quantiles of the pool's B/M match the expected values."""
-        bp = compute_ff_breakpoints(_june(10, [float(i) for i in range(1, 11)]), ["bm"], 1)
+        bp = _ff_breakpoints(_june(10, [float(i) for i in range(1, 11)]), ["bm"], 1)
         assert len(bp) == 1
         row = bp.row(0, named=True)
         # QUANTILE_DISC at 0.30 of [1..10] => 3, at 0.70 => 7
@@ -342,26 +347,26 @@ class TestFFBreakpoints:
 
     def test_us_below_min_stocks_suppressed(self):
         """The US is gated like every country: 1 pool stock yields no breakpoints."""
-        bp = compute_ff_breakpoints(_june(1, [5.0]), ["bm"], FACTOR_MIN_STOCKS_BP)
+        bp = _ff_breakpoints(_june(1, [5.0]), ["bm"], FACTOR_MIN_STOCKS_BP)
         assert len(bp) == 0
 
     def test_row_below_min_stocks_suppressed(self):
         """A country with fewer than FACTOR_MIN_STOCKS_BP pool stocks has no row."""
         n = FACTOR_MIN_STOCKS_BP - 1
         june = _june(n, [float(i) for i in range(1, n + 1)], excntry="GBR")
-        assert len(compute_ff_breakpoints(june, ["bm"], FACTOR_MIN_STOCKS_BP)) == 0
+        assert len(_ff_breakpoints(june, ["bm"], FACTOR_MIN_STOCKS_BP)) == 0
 
     def test_row_at_min_stocks_emits_breakpoints(self):
         """A country with exactly FACTOR_MIN_STOCKS_BP pool stocks gets breakpoints."""
         n = FACTOR_MIN_STOCKS_BP
         june = _june(n, [float(i) for i in range(1, n + 1)], excntry="GBR")
-        assert len(compute_ff_breakpoints(june, ["bm"], FACTOR_MIN_STOCKS_BP)) == 1
+        assert len(_ff_breakpoints(june, ["bm"], FACTOR_MIN_STOCKS_BP)) == 1
 
     def test_stocks_outside_pool_excluded(self):
         """Stocks with bp_pool False (e.g. micro caps) never form breakpoints."""
         n = FACTOR_MIN_STOCKS_BP + 5
         june = _june(n, [float(i) for i in range(1, n + 1)], excntry="DEU", bp_pool=False)
-        assert len(compute_ff_breakpoints(june, ["bm"], FACTOR_MIN_STOCKS_BP)) == 0
+        assert len(_ff_breakpoints(june, ["bm"], FACTOR_MIN_STOCKS_BP)) == 0
 
     def test_empty_input_returns_empty(self):
         """Empty input produces empty output."""
@@ -375,11 +380,11 @@ class TestFFBreakpoints:
                 "bp_pool": pl.Boolean,
             }
         )
-        assert len(compute_ff_breakpoints(june, ["bm"], FACTOR_MIN_STOCKS_BP)) == 0
+        assert len(_ff_breakpoints(june, ["bm"], FACTOR_MIN_STOCKS_BP)) == 0
 
     def test_output_schema(self):
         """Output is [excntry, date, sizemedn, <sort>_lo, <sort>_hi]."""
-        bp = compute_ff_breakpoints(_june(10, [float(i) for i in range(1, 11)]), ["bm"], 1)
+        bp = _ff_breakpoints(_june(10, [float(i) for i in range(1, 11)]), ["bm"], 1)
         assert bp.columns == ["excntry", "date", "sizemedn", "bm_lo", "bm_hi"]
 
     def test_op_sort_returns_op_lo_hi(self):
@@ -396,7 +401,7 @@ class TestFFBreakpoints:
                 "bp_pool": [True] * 20,
             }
         )
-        bp = compute_ff_breakpoints(june, ["op"], 1)
+        bp = _ff_breakpoints(june, ["op"], 1)
         assert bp.columns == ["excntry", "date", "sizemedn", "op_lo", "op_hi"]
         assert bp["op_lo"][0] < bp["op_hi"][0]
 
@@ -413,7 +418,7 @@ class TestFFBreakpoints:
                 "bp_pool": [True] * 20,
             }
         )
-        bp = compute_ff_breakpoints(june, ["inv"], 1)
+        bp = _ff_breakpoints(june, ["inv"], 1)
         assert bp.columns == ["excntry", "date", "sizemedn", "inv_lo", "inv_hi"]
 
     def test_sorts_are_independent(self):
@@ -422,7 +427,7 @@ class TestFFBreakpoints:
         june = _june(10, [None] * 10).with_columns(
             inv=pl.Series([float(i) for i in range(1, 11)]), dec_me=pl.lit(1.0)
         )
-        bp = compute_ff_breakpoints(june, ["bm", "inv"], 1)
+        bp = _ff_breakpoints(june, ["bm", "inv"], 1)
         assert bp.height == 1
         row = bp.row(0, named=True)
         assert row["bm_lo"] is None and row["bm_hi"] is None
@@ -459,14 +464,14 @@ class TestFFBreakpoints:
             pool=pl.col("bp_pool") & ff_sort_definitions()["bm"][2],
             min_stocks=1,
         )
-        wide = compute_ff_breakpoints(june, ["bm"], 1)
+        wide = _ff_breakpoints(june, ["bm"], 1)
         assert strict["sizemedn"][0] == 20.0  # B/M-eligible pool: 10/20/30
         assert wide["sizemedn"][0] == 30.0  # pool with me > 0: 10/20/30/40/50
 
     def test_value_breaks_use_eligible_pool(self):
         """30/70 breakpoints keep the sort-eligible pool, whatever the (wider)
         size-median pool: the pool B/M values are 1, 2, 3."""
-        bp = compute_ff_breakpoints(self._june_size_pool(), ["bm"], 1)
+        bp = _ff_breakpoints(self._june_size_pool(), ["bm"], 1)
         assert (bp["bm_lo"][0], bp["bm_hi"][0]) == (1.0, 3.0)
 
     def test_row_size_median_excludes_non_pool_stocks(self):
@@ -482,7 +487,7 @@ class TestFFBreakpoints:
         micro = june.head(3).with_columns(
             id=pl.int_range(n, n + 3), me=pl.lit(1e6), bp_pool=pl.lit(False)
         )
-        bp = compute_ff_breakpoints(pl.concat([june, micro]), ["bm"], FACTOR_MIN_STOCKS_BP)
+        bp = _ff_breakpoints(pl.concat([june, micro]), ["bm"], FACTOR_MIN_STOCKS_BP)
         # median (QUANTILE_DISC) of me 1..15 is 8; the B/M-eligible 1..13 give 7
         assert bp["sizemedn"][0] == 8.0
 
