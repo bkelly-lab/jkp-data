@@ -52,6 +52,7 @@ from jkp.data.aux_functions import (
     _mp_load_funda,
     _mp_load_fundq,
     _mp_percentile_rank,
+    _mp_permno_link,
     _mp_place_percentile,
     _mp_rolling_calendar_sum,
     _mp_spread_per_size_then_diff,
@@ -2286,6 +2287,39 @@ class TestMpDistressUniverseRefs:
         )
         out = _mp_world_distress_lagged_inputs(panel, sigma, sigma_mean).sort("id")
         assert out["SIGMA"].to_list() == [0.1, 0.2]
+
+
+class TestMpPermnoLink:
+    """US Compustat rows link to the CRSP securities carrying their gvkey in world_msf."""
+
+    def test_link(self, tmp_path):
+        e = _eom(1999, 12)
+        pl.DataFrame(
+            {
+                "id": [10001, 10002, 500001, 10003],
+                "gvkey": ["001234", "001234", "005555", "007777"],
+                "source_crsp": [1, 1, 0, 1],
+                "eom": [e, e, e, _eom(2000, 1)],
+            }
+        ).write_parquet(tmp_path / "world_msf.parquet")
+        comp = pl.DataFrame(
+            {
+                # 001234: two share classes; 005555: only a Compustat-source security;
+                # 007777: no CRSP row in the datadate month; last row: non-standard format
+                "gvkey": ["001234", "005555", "007777", "001234"],
+                "datadate": [date(1999, 12, 31), date(1999, 12, 31), date(1999, 12, 31), e],
+                "indfmt": ["INDL"] * 4,
+                "datafmt": ["STD", "STD", "STD", "SUMM_STD"],
+                "popsrc": ["D"] * 4,
+                "consol": ["C"] * 4,
+                "at": [1.0, 2.0, 3.0, 4.0],
+            }
+        )
+        out = _mp_permno_link(comp, tmp_path).sort("permno")
+        assert out.select("gvkey", "permno", "at").to_dicts() == [
+            {"gvkey": "001234", "permno": 10001, "at": 1.0},
+            {"gvkey": "001234", "permno": 10002, "at": 1.0},
+        ]
 
 
 class TestMpBuildCompUsInputs:

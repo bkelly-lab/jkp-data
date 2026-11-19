@@ -363,9 +363,6 @@ MP_MIN_OBS_PF_WORLD = 3  # min stocks per (excntry, eom, bucket) for portfolio V
 MP_MGMT_PCT_COLS = [f"pct_{MP_ANOMALY_LIST[i - 1]}" for i in MP_MGMT_IDX]
 MP_PERF_PCT_COLS = [f"pct_{MP_ANOMALY_LIST[i - 1]}" for i in MP_PERF_IDX]
 
-# CCM link types accepted by the SY US fundamental join (SAS-parity baseline).
-MP_CCM_LINKTYPES = ["LU", "LC", "LD", "LF", "LN", "LO", "LS", "LX"]
-
 # CHS distress geometric weight (annual half-life ~3 quarters).
 MP_CHS_DECAY = 2.0 ** (-1.0 / 3.0)
 

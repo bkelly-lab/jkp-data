@@ -61,7 +61,6 @@ from .config import (
     HXZ_MIN_STOCKS_PF,
     MAIN_FILTERS,
     MP_ANOMALY_LIST,
-    MP_CCM_LINKTYPES,
     MP_CHS_DECAY,
     MP_DISTRESS_BETAS,
     MP_LAG_M,
@@ -7714,63 +7713,27 @@ def _mp_build_crsp_daily(
     )
 
 
-def _mp_load_ccm(raw_dir: Path) -> pl.DataFrame:
-    """Load CCM link table (ccmxpf_linktable preferred — has usedflag for tiebreak;
-    falls back to ccmxpf_lnkhist with synthesized usedflag=1 if linktable absent).
-    8-link-type filter matches MisprProject SY-parity baseline."""
-    lt_path = raw_dir / "crsp_ccmxpf_linktable.parquet"
-    src_path = lt_path if lt_path.exists() else raw_dir / "crsp_ccmxpf_lnkhist.parquet"
-    df = pl.read_parquet(src_path).rename(str.lower)
-    if "usedflag" not in df.columns:
-        df = df.with_columns(usedflag=pl.lit(1).cast(pl.Int64))
-    return df.filter(
-        col("linktype").is_in(MP_CCM_LINKTYPES)
-        & (col("linkenddt").is_null() | (col("linkenddt").dt.year() >= 1960))
+def _mp_permno_link(comp: pl.DataFrame, interim_dir: Path) -> pl.DataFrame:
+    """Link standard industrial Compustat rows to CRSP permnos through the gvkey JKP puts
+    on each CRSP security in world_msf (from CCM in gen_crsp_sf), in the month of
+    datadate. Adds permno; a gvkey on several securities that month links to each."""
+    link = (
+        pl.scan_parquet(interim_dir / "world_msf.parquet")
+        .filter((col("source_crsp") == 1) & col("gvkey").is_not_null())
+        .select(col("gvkey").cast(pl.Utf8), "eom", permno=col("id").cast(pl.Int64))
     )
-
-
-def _mp_ccm_compustat_join(
-    fa: pl.DataFrame, lnk: pl.DataFrame, mp_con: duckdb.DuckDBPyConnection
-) -> pl.DataFrame:
-    mp_con.register("fa", fa)
-    mp_con.register("lnk", lnk)
-    sql = f"""
-    SELECT CAST(a.lpermno AS BIGINT) AS permno, a.linkprim, a.linktype, a.usedflag,
-           a.linkdt, a.linkenddt, b.*
-    FROM lnk a
-    JOIN fa b
-      ON a.gvkey = b.gvkey
-     AND a.linktype IN ({",".join(repr(x) for x in MP_CCM_LINKTYPES)})
-     AND a.linkprim IN ('P','C')
-     AND (a.linkdt IS NULL OR a.linkdt <= b.datadate)
-     AND (a.linkenddt IS NULL OR b.datadate <= a.linkenddt)
-    WHERE b.indfmt='INDL' AND b.datafmt='STD' AND b.popsrc='D' AND b.consol='C'
-    """
-    return mp_con.execute(sql).pl()
-
-
-def _mp_ccm_tiebreak_dedup(df: pl.DataFrame) -> pl.DataFrame:
     return (
-        df.with_columns(
-            _lp=pl.when(col("linkprim") == "P").then(0).otherwise(1),
-            _used=pl.when(col("usedflag") == 1).then(0).otherwise(1),
-            # CCM link-type quality rank: lower = preferred. SAS tiebreak ordering.
-            _lt=col("linktype").replace_strict(
-                {"LU": 0, "LC": 1, "LD": 2, "LN": 3, "LX": 4, "LF": 5, "LO": 6, "LS": 7},
-                default=99,
-            ),
-            _span=(
-                col("linkenddt").fill_null(date(9999, 12, 31))
-                - col("linkdt").fill_null(date(1900, 1, 1))
-            ).dt.total_days(),
+        comp.lazy()
+        .filter(
+            (col("indfmt") == "INDL")
+            & (col("datafmt") == "STD")
+            & (col("popsrc") == "D")
+            & (col("consol") == "C")
         )
-        .sort(
-            ["datadate", "permno", "_lp", "_used", "_lt", "_span", "linkdt", "linkenddt", "gvkey"],
-            descending=[False, False, False, False, False, True, False, False, False],
-            nulls_last=True,
-        )
-        .unique(subset=["datadate", "permno"], keep="first", maintain_order=True)
-        .drop("_lp", "_used", "_lt", "_span", "linktype", "usedflag", "linkdt", "linkenddt")
+        .with_columns(eom=col("datadate").dt.month_end())
+        .join(link, on=["gvkey", "eom"], how="inner")
+        .drop("eom")
+        .collect()
     )
 
 
@@ -7839,9 +7802,7 @@ def _mp_annual_dedup(df: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def _mp_build_compustat_annual(
-    mp_con: duckdb.DuckDBPyConnection, raw_dir: Path, interim_dir: Path
-) -> pl.DataFrame:
+def _mp_build_compustat_annual(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
     fa_cols = [
         "gvkey",
         "datadate",
@@ -7876,9 +7837,7 @@ def _mp_build_compustat_annual(
     ]
     funda = _mp_load_funda(raw_dir)
     fa = funda.select([c for c in fa_cols if c in funda.columns])
-    df = _mp_annual_dedup(
-        _mp_ccm_tiebreak_dedup(_mp_ccm_compustat_join(fa, _mp_load_ccm(raw_dir), mp_con))
-    )
+    df = _mp_annual_dedup(_mp_permno_link(fa, interim_dir))
     df.write_parquet(interim_dir / "compustat_annual.parquet")
     return df
 
@@ -7932,9 +7891,7 @@ def _mp_quarterly_dedup(df: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def _mp_build_compustat_quarterly(
-    mp_con: duckdb.DuckDBPyConnection, raw_dir: Path, interim_dir: Path
-) -> pl.DataFrame:
+def _mp_build_compustat_quarterly(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
     fq_cols = [
         "gvkey",
         "datadate",
@@ -7964,10 +7921,7 @@ def _mp_build_compustat_quarterly(
     ]
     fundq = _mp_load_fundq(raw_dir)
     fq = fundq.select([c for c in fq_cols if c in fundq.columns])
-    joined = _mp_ccm_compustat_join(fq, _mp_load_ccm(raw_dir), mp_con).filter(
-        col("permno").is_not_null() & col("datadate").is_not_null()
-    )
-    df = _mp_quarterly_dedup(_mp_ccm_tiebreak_dedup(joined))
+    df = _mp_quarterly_dedup(_mp_permno_link(fq, interim_dir))
     df.write_parquet(interim_dir / "compustat_quarterly.parquet")
     return df
 
@@ -10199,9 +10153,10 @@ def gen_mispricing_data(
 
     Ported from the MisprProject standalone. Always runs both branches;
     outputs concatenated with `excntry` column. Reads jkp's CIZ raws from
-    `paths.raw_tables_dir` ({crsp_msf_v2, crsp_dsf_v2, ccmxpf_lnkhist, funda,
-    fundq, crsp_a_indexes_msp500, crsp_a_indexes_acti}.parquet) and world
-    inputs from `paths.interim_dir`; raw_dir/interim_dir are threaded
+    `paths.raw_tables_dir` ({crsp_msf_v2, crsp_dsf_v2, funda, fundq,
+    crsp_a_indexes_msp500, crsp_a_indexes_acti}.parquet) and world inputs
+    from `paths.interim_dir`, where world_msf also supplies the US
+    Compustat-CRSP link (_mp_permno_link); raw_dir/interim_dir are threaded
     explicitly through every _mp_* helper that does IO. The 3 output paths
     are passed in explicitly:
       <monthly_factors_path>  — eom, excntry, smb_mispricing, mispricing_mgmt, mispricing_perf
@@ -10227,9 +10182,9 @@ def gen_mispricing_data(
         world_daily = _mp_world_load_world_dsf(interim_dir)
         market_monthly = _mp_world_load_market(interim_dir, daily=False)
 
-        # 2. US fundamentals (CCM-linked) to interim parquets
-        _mp_build_compustat_annual(mp_con, raw_dir, interim_dir)
-        _mp_build_compustat_quarterly(mp_con, raw_dir, interim_dir)
+        # 2. US fundamentals (linked through world_msf gvkeys) to interim parquets
+        _mp_build_compustat_annual(raw_dir, interim_dir)
+        _mp_build_compustat_quarterly(raw_dir, interim_dir)
 
         # 3. Anomaly characteristics (11 anomalies + CHS DISTRESS): US one interim
         # parquet each, world in memory. Securities outside the universes get
