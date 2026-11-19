@@ -8047,33 +8047,18 @@ def _mp_compute_accrual(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
     return out
 
 
-def _mp_compute_gross_profit(raw_dir: Path, interim_dir: Path) -> pl.DataFrame:
-    ca = (
-        pl.read_parquet(interim_dir / "compustat_annual.parquet")
-        .select("permno", "gvkey", "datadate", "fyear", "fyr", "at", "cogs")
-        .join(
-            _mp_load_funda(raw_dir).select("gvkey", "datadate", "revt"),
-            on=["gvkey", "datadate"],
-            how="left",
-        )
-        .filter(
-            col("permno").is_not_null()
-            & col("fyear").is_not_null()
-            & col("fyr").is_not_null()
-            & (col("fyr") > 0)
-            & (col("fyear") > 0)
-            & col("at").is_not_null()
-            & (col("at") > 0)
-            & col("revt").is_not_null()
-            & col("cogs").is_not_null()
-        )
-        .with_columns(gp_adj=safe_div(col("revt") - col("cogs"), col("at"), "gp_adj"))
-        .filter(col("gp_adj").is_not_null())
-        .select("permno", "datadate", "gp_adj")
-        .sort(["permno", "datadate", "gp_adj"], nulls_last=True)
-        .unique(subset=["permno", "datadate"], keep="first", maintain_order=True)
+def _mp_compute_gross_profit(interim_dir: Path, jkp_interim_dir: Path) -> pl.DataFrame:
+    """GP_ADJ(t) = jkp's gp_at at t-1: gross profit over total assets, public four months
+    after the fiscal period end (refreshed by quarterly TTM statements when more recent),
+    which matches SY's use of annual data from the fifth month. Keyed onto interim_dir's
+    crsp_monthly, whose permno column holds the jkp id."""
+    signal = (
+        pl.scan_parquet(jkp_interim_dir / "world_data_prelim.parquet")
+        .filter((col("excntry") == US_EXCNTRY) & col("gp_at").is_not_null())
+        .select(col("id").cast(pl.Int64).alias("permno"), "eom", col("gp_at").alias("gp_adj"))
+        .collect()
     )
-    out = _mp_expand_to_crsp_window(ca, "gp_adj", interim_dir)
+    out = _mp_lag_onto_crsp_months(interim_dir, signal, "gp_adj")
     out.write_parquet(interim_dir / "gp_adj.parquet")
     return out
 
@@ -8276,17 +8261,24 @@ def _mp_compute_momentum(interim_dir: Path, jkp_interim_dir: Path) -> pl.DataFra
     signal = (
         src.join(full, on=["permno", "eom"], how="left")
         .filter(col("r").is_not_null())
-        .select("permno", col("eom").alias("eom_src"), col("ret_12_1").alias("momentum"))
+        .select("permno", "eom", col("ret_12_1").alias("momentum"))
     )
-    out = (
-        pl.read_parquet(interim_dir / "crsp_monthly.parquet")
-        .select("permno", "eom", eom_src=_mp_offset_months("eom", -1))
-        .join(signal, on=["permno", "eom_src"], how="left")
-        .select("eom", "permno", "momentum")
-        .sort("permno", "eom")
-    )
+    out = _mp_lag_onto_crsp_months(interim_dir, signal, "momentum")
     out.write_parquet(interim_dir / "momentum.parquet")
     return out
+
+
+def _mp_lag_onto_crsp_months(interim_dir: Path, signal: pl.DataFrame, name: str) -> pl.DataFrame:
+    """[eom, permno, name]: signal [permno, eom, name] at t-1 assigned to month t of
+    interim_dir's crsp_monthly, since the month-t sort may only use information public
+    by the end of t-1. The calendar join nulls the signal across panel gaps."""
+    return (
+        pl.read_parquet(interim_dir / "crsp_monthly.parquet")
+        .select("permno", "eom", eom_src=_mp_offset_months("eom", -1))
+        .join(signal.rename({"eom": "eom_src"}), on=["permno", "eom_src"], how="left")
+        .select("eom", "permno", name)
+        .sort("permno", "eom")
+    )
 
 
 def _mp_compute_composite_issue(interim_dir: Path) -> pl.DataFrame:
@@ -8724,10 +8716,10 @@ def _mp_compute_anomalies(
 ) -> dict[str, pl.DataFrame]:
     """US SY anomalies (incl. CHS DISTRESS) from the crsp_monthly, crsp_daily and
     compustat_annual/quarterly parquets in interim_dir, one parquet each there;
-    MOMENTUM from jkp's world_data_prelim in jkp_interim_dir.
+    MOMENTUM and GP_ADJ from jkp's world_data_prelim in jkp_interim_dir.
     Returns the DISTRESS cross-sectional references used (_mp_compute_distress)."""
     _mp_compute_accrual(raw_dir, interim_dir)
-    _mp_compute_gross_profit(raw_dir, interim_dir)
+    _mp_compute_gross_profit(interim_dir, jkp_interim_dir)
     _mp_compute_oscore(raw_dir, interim_dir)
     _mp_compute_nsi_ag_inv_noa(raw_dir, interim_dir)
     _mp_compute_momentum(interim_dir, jkp_interim_dir)
