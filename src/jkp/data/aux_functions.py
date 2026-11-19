@@ -8318,21 +8318,36 @@ def _mp_compute_composite_issue(interim_dir: Path) -> pl.DataFrame:
     return out
 
 
-def _mp_compute_roa(mp_con: duckdb.DuckDBPyConnection, interim_dir: Path) -> pl.DataFrame:
+def _mp_compute_roa(
+    mp_con: duckdb.DuckDBPyConnection, interim_dir: Path, jkp_interim_dir: Path
+) -> pl.DataFrame:
+    """ROA = SY's rule on jkp's quarterly standardized accounting (acc_std_qtr): ni_qtr
+    over the at_x of the previous linked quarterly row, null when that row is missing,
+    has zero assets or is 6+ months back; from the month after the quarter's
+    announcement (rdq) until the next one. USD rows win a currency tie."""
+    jkp = (
+        pl.scan_parquet(jkp_interim_dir / "acc_std_qtr.parquet")
+        .select("gvkey", "curcd", "datadate", "ni_qtr", "at_x")
+        .sort("gvkey", "datadate", col("curcd") != "USD")
+        .unique(["gvkey", "datadate"], keep="first", maintain_order=True)
+        .select("gvkey", "datadate", "ni_qtr", "at_x")
+        .collect()
+    )
     cq = (
         pl.read_parquet(interim_dir / "compustat_quarterly.parquet")
-        .select("permno", "datadate", "rdq", "rdq_crsp", "lead_rdq_crsp", "ibq", "atq")
+        .select("permno", "gvkey", "datadate", "rdq", "rdq_crsp", "lead_rdq_crsp")
+        .join(jkp, on=["gvkey", "datadate"], how="left")
         .sort("permno", "datadate")
         .with_columns(
             lag_dt=col("datadate").shift(1).over("permno"),
-            lag_atq=col("atq").shift(1).over("permno"),
+            lag_at=col("at_x").shift(1).over("permno"),
         )
         .with_columns(lag_dt=col("lag_dt").fill_null(col("datadate")))
         .with_columns(
             gap_mo=_mp_month_diff(col("datadate"), col("lag_dt")),
-            roa=pl.when(col("lag_atq").is_null() | (col("lag_atq") == 0))
+            roa=pl.when(col("lag_at").is_null() | (col("lag_at") == 0))
             .then(None)
-            .otherwise(safe_div("ibq", "lag_atq", "roa")),
+            .otherwise(safe_div("ni_qtr", "lag_at", "roa")),
         )
         .with_columns(roa=pl.when(col("gap_mo") >= 6).then(None).otherwise(col("roa")))
         .filter(col("roa").is_not_null())
@@ -8731,7 +8746,7 @@ def _mp_compute_anomalies(
     _mp_compute_nsi_ag_inv_noa(raw_dir, interim_dir)
     _mp_compute_momentum(interim_dir, jkp_interim_dir)
     _mp_compute_composite_issue(interim_dir)
-    _mp_compute_roa(mp_con, interim_dir)
+    _mp_compute_roa(mp_con, interim_dir, jkp_interim_dir)
     return _mp_compute_distress(mp_con, raw_dir, interim_dir, distress_refs)
 
 
