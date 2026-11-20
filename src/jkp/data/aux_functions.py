@@ -9121,10 +9121,13 @@ def merge_qmj_to_world_data(paths: DataPaths):
     """
     a = pl.scan_parquet(paths.interim_dir / "world_data_-1.parquet")
     b = pl.scan_parquet(paths.interim_dir / "qmj.parquet")
-    result = (
-        a.join(b, how="left", on=["excntry", "id", "eom"]).unique(["id", "eom"]).sort(["id", "eom"])
+    (
+        a.join(b, how="left", on=["excntry", "id", "eom"])
+        # dedup on the key columns only; unique() would hash every one of the ~450 columns
+        .filter(pl.struct("id", "eom").is_first_distinct())
+        .sort(["id", "eom"])
+        .sink_parquet(paths.interim_dir / "world_data.parquet")
     )
-    result.collect().write_parquet(paths.interim_dir / "world_data.parquet")
 
 
 @measure_time
