@@ -266,9 +266,18 @@ class TestMonthlyScreen:
         np.testing.assert_allclose(_factors(d), np.where(np.arange(N_MONTHS) < 30, 0.1, 1.0))
 
     def test_china_shares_jump_needs_the_looser_bound(self):
-        cshoc = np.where(np.arange(N_MONTHS) < 30, 5.0, 50.0)
-        target = _monthly_security(59, cshoc=cshoc, excntry=["CHN"] * N_MONTHS)
-        assert (_factors(_screen(_panel(target))) == 1.0).all()
+        # shares x10 with market value x3: a shares jump outside China (>= 5x, >= 2.5x),
+        # inside China's 50x / 25x bounds; too small for the market-value rule (> 10x)
+        after = np.arange(N_MONTHS) >= 30
+        cols = {
+            "prc": np.where(after, 3.0, 10.0),
+            "cshoc": np.where(after, 50.0, 5.0),
+            "ri": np.full(N_MONTHS, 10.0),
+        }
+        other = _screen(_panel(_monthly_security(59, **cols)))
+        np.testing.assert_allclose(_factors(other), np.where(after, 0.1, 1.0))
+        china = _monthly_security(59, excntry=["CHN"] * N_MONTHS, **cols)
+        assert (_factors(_screen(_panel(china))) == 1.0).all()
 
     def test_paired_shares_jump_takes_the_smaller_end(self):
         cshoc = np.full(N_MONTHS, 5.0)
