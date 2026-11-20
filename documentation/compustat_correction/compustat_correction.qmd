@@ -64,17 +64,29 @@ Flagged decimal-shift errors are rescaled rather than discarded. The affected
 observation is divided or multiplied by the detected factor — 10, 100, or
 1000 — so the price and the adjacent returns are repaired directly.
 
-The second part of the correction removes problematic observations outright.
-These include:
+The second part of the correction screens stock-months, as in Section 8 of
+the paper's Internet Data Appendix. Each rule is evaluated on the month-end
+observation, and the daily observations of a month follow that month's
+decision. The screen:
 
-* exact-zero prices;
-* implausible jumps in shares outstanding;
-* implausible jumps in market equity;
-* implausible prices relative to market equity;
-* problematic first or last observations in a security's time series.
+* drops securities with very low trading volume, a zero adjustment factor, or
+  a change in the price unit (QUNIT) that moves the split-adjusted price by
+  more than 50% without a currency change;
+* drops every month after the first month-end with a price or market value
+  below the paper's thresholds (the breach month keeps its return);
+* drops the first month after a gap of more than 11 months;
+* drops the history up to an implausible jump in split-adjusted shares
+  outstanding or market value when the jump falls in the security's first
+  24 months or first 20% of months, whichever is shorter;
+* repairs later jumps: a jump that reverses within 12 months is smoothed to
+  the lower of the two levels, and a jump that does not reverse is removed by
+  rescaling the months after an upward jump, or the months before a downward
+  jump, so that market value grows with the stock's return;
+* drops months whose return disagrees with the change in market value, and
+  first observations whose price or market value ratios are implausible.
 
-These observations are dropped rather than repaired, so this step can also
-change the underlying stock universe.
+Removed months can change the underlying stock universe; repaired months stay
+in it with rescaled shares outstanding and market value.
 
 As an additional safeguard, we exclude daily returns greater than 1,000%
 (`ret` > 10). Any return exceeding this threshold after the price
