@@ -552,7 +552,7 @@ class TestGrossProfitFormula:
 
 class TestOscoreFormula:
     """US OSCORE: Ohlson's Model 1 on SY's definitions from the raw items in
-    acc_std_ann, prior-year ni from the report 12 months earlier, months 5-16."""
+    acc_std_ann, prior-year ni from the previous calendar year, months 5-16."""
 
     # gvkey -> permno; (datadate, curcd, at, lt, act, lct, ni, pi) per report
     REPORTS = {
@@ -580,16 +580,11 @@ class TestOscoreFormula:
             ((2009, 12), "USD", 100.0, 50.0, 40.0, 20.0, 5.0, 6.0),
             ((2010, 12), "USD", 100.0, 50.0, 0.0, 20.0, 5.0, 6.0),
         ],
-        # two reports in 2009 (fiscal year-end change): Dec 2009 is 12 months earlier
+        # two reports in 2009 (fiscal year-end change): the later one is the prior year
         ("006000", 10006): [
             ((2009, 6), "USD", 100.0, 50.0, 40.0, 20.0, -10.0, 6.0),
             ((2009, 12), "USD", 100.0, 50.0, 40.0, 20.0, 40.0, 6.0),
             ((2010, 12), "USD", 100.0, 50.0, 40.0, 20.0, 80.0, 6.0),
-        ],
-        # fiscal year-end change without a transition report: nothing 12 months earlier
-        ("008000", 10008): [
-            ((2009, 6), "USD", 100.0, 50.0, 40.0, 20.0, 5.0, 6.0),
-            ((2010, 12), "USD", 100.0, 50.0, 40.0, 20.0, 8.0, 6.0),
         ],
         # ni == lagni == 0: CHIN undefined -> no score
         ("007000", 10007): [
@@ -658,14 +653,11 @@ class TestOscoreFormula:
         """at <= 0, lt == 0 or act == 0 -> the report gets no score."""
         assert self._run(tmp_path)[(permno, _eom(2011, 6))] is None
 
-    def test_report_12_months_earlier_is_the_prior_year(self, tmp_path, tolerance):
-        """Two reports in the prior calendar year: the one 12 months earlier gives lagni."""
+    def test_later_report_is_the_prior_year(self, tmp_path, tolerance):
+        """Two reports in the prior calendar year: the later one's ni is lagni."""
         vals = self._run(tmp_path)
         expected = self._expected(100.0, 50.0, 40.0, 20.0, 80.0, 6.0, lagni=40.0)
         np.testing.assert_allclose(vals[(10006, _eom(2011, 6))], expected, **tolerance.TIGHT)
-
-    def test_no_report_12_months_earlier_has_no_score(self, tmp_path):
-        assert self._run(tmp_path)[(10008, _eom(2011, 6))] is None
 
     def test_zero_income_both_years_has_no_score(self, tmp_path):
         assert self._run(tmp_path)[(10007, _eom(2011, 6))] is None
