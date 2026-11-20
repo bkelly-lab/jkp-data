@@ -184,10 +184,6 @@ on the US factor returns is small.
 
 ## Factor-Level Impact
 
-The factor comparisons in this section and the correlations in the conclusion
-come from the first version of the correction, which applied the filters to
-daily observations; they have not been rerun for the monthly screen.
-
 We evaluate the correction using the `hml.parquet` output from the JKP
 portfolio pipeline. This file contains the long-short, or high-minus-low,
 return for each characteristic by country and month, under three weighting
@@ -203,7 +199,7 @@ The two outputs are joined on month-end date, country, and characteristic:
 (VEN), since their returns are dominated by hyperinflation-era distortions. We
 also keep only country–characteristic pairs with more than 12 overlapping
 monthly observations. The resulting overlap window runs from January 1926
-through December 2025 and covers 153 characteristics across 71 countries.
+through December 2025 and covers 402 characteristics across 69 countries.
 
 ```{python}
 #| label: setup
@@ -279,13 +275,19 @@ display(HTML(bc.corr_stats(stats, scope="exus").to_pandas().to_html(index=False)
 
 :::
 
-The US results confirm that the correction has almost no effect on the United
-States. Across all three weighting schemes, the correlations are essentially 1.
-This is expected, since US factors rely primarily on CRSP rather than Compustat.
+In the United States, the equal-weighted and capped value-weighted factors are
+essentially unchanged (median correlations 0.9992 and 0.9999), since US factors
+rely primarily on CRSP rather than Compustat. The value-weighted factors move
+more (median 0.951) because of one firm. In 1971–1974 a Compustat-sourced firm
+(gvkey 002176) reports shares outstanding about 1,550 times too high, which puts
+its market value at $100–128 billion and gives it up to 18% of the US value
+weights. The jump repair rescales it to about $70 million. The capped weights
+limit that firm's weight, so the capped factors barely move.
 
-For World ex-US, the median correlation sits slightly below 1. This is where the
-correction matters more, because the affected markets rely more directly on
-Compustat daily security data.
+For World ex-US, the median correlations are 0.952 (equal-weighted), 0.987
+(value-weighted) and 0.987 (capped value-weighted). This is where the correction
+matters more, because the affected markets rely more directly on Compustat
+security data.
 
 ### Annualized Moments
 
@@ -318,15 +320,17 @@ thousand price corrections and 8.8 million jump-repaired observations — and th
 removals of classified stocks fall overwhelmingly on nano- and micro-cap
 stocks, leaving mega- and large-caps almost untouched.
 
-US long-short returns are essentially unchanged — the median country–characteristic
-correlation with the uncorrected series is 0.999 to 1.000 across all three
-weighting schemes — because the US series draw primarily on CRSP rather than
-Compustat.
+US long-short returns are essentially unchanged in the equal-weighted and capped
+value-weighted series — median country–characteristic correlations with the
+uncorrected series of 0.9992 and 0.9999 — because the US series draw primarily on
+CRSP rather than Compustat. The uncapped value-weighted series move more (median
+0.951), almost entirely because the repair removes a 1971–1974 shares error that
+gave one Compustat-sourced firm up to 18% of the US market weight.
 
 Non-US markets rely on Compustat directly, so the corrections pass through to
 their factors. The value-weighted factors barely move (median correlation
-0.998), since the errors sit in the smallest stocks that carry little weight; the
-equal-weighted factors shift more (median 0.955), reflecting the cleanup of
+0.987), since the errors sit in the smallest stocks that carry little weight; the
+equal-weighted factors shift more (median 0.952), reflecting the cleanup of
 small-cap noise. Of the 41.4 million non-US removals, 8.4 million are nano- and
 micro-cap observations and 32.8 million fall in months without a JKP size group.
 
