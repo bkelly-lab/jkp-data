@@ -8119,7 +8119,7 @@ def _mp_compute_oscore(interim_dir: Path, jkp_interim_dir: Path) -> pl.DataFrame
     return out
 
 
-def _mp_compute_nsi_ag_inv_noa(raw_dir: Path, interim_dir: Path) -> None:
+def _mp_compute_nsi_noa(raw_dir: Path, interim_dir: Path) -> None:
     base = (
         pl.read_parquet(interim_dir / "compustat_annual.parquet")
         .filter(
@@ -8134,8 +8134,6 @@ def _mp_compute_nsi_ag_inv_noa(raw_dir: Path, interim_dir: Path) -> None:
             "gvkey",
             "datadate",
             "csho",
-            "ppegt",
-            "invt",
             "at",
             "che",
             "dlc",
@@ -8154,8 +8152,6 @@ def _mp_compute_nsi_ag_inv_noa(raw_dir: Path, interim_dir: Path) -> None:
         .with_columns(
             lag_csho=col("csho").shift(1).over("permno"),
             lag_adjexc=col("adjex_c").shift(1).over("permno"),
-            lag_ppegt=col("ppegt").shift(1).over("permno"),
-            lag_invt=col("invt").shift(1).over("permno"),
             lag_at=col("at").shift(1).over("permno"),
         )
         .with_columns(col("mib").fill_null(0.0), col("pstk").fill_null(0.0))
@@ -8174,23 +8170,6 @@ def _mp_compute_nsi_ag_inv_noa(raw_dir: Path, interim_dir: Path) -> None:
             .otherwise(
                 (col("csho") * col("adjex_c") / (col("lag_csho") * col("lag_adjexc"))).log()
             ),
-            inv=pl.when(
-                col("lag_ppegt").is_null()
-                | col("lag_invt").is_null()
-                | col("lag_at").is_null()
-                | (col("lag_at") == 0)
-            )
-            .then(None)
-            .otherwise(
-                safe_div(
-                    col("ppegt") - col("lag_ppegt") + col("invt") - col("lag_invt"),
-                    col("lag_at"),
-                    "inv",
-                )
-            ),
-            ag=pl.when(col("lag_at") > 0)
-            .then(safe_div(col("at") - col("lag_at"), col("lag_at"), "ag"))
-            .otherwise(None),
             noa=pl.when(col("lag_at") > 0)
             .then(
                 safe_div(
@@ -8206,16 +8185,47 @@ def _mp_compute_nsi_ag_inv_noa(raw_dir: Path, interim_dir: Path) -> None:
         )
     )
 
-    for src_col, name in [
-        ("nsi", "stock_issue"),
-        ("ag", "asset_growth"),
-        ("inv", "invasset"),
-        ("noa", "noa"),
-    ]:
+    for src_col, name in [("nsi", "stock_issue"), ("noa", "noa")]:
         slice_df = base.select("permno", "datadate", col(src_col).alias(name))
         _mp_expand_to_crsp_window(slice_df, name, interim_dir).write_parquet(
             interim_dir / f"{name}.parquet"
         )
+
+
+def _mp_compute_ag_inv(interim_dir: Path, jkp_interim_dir: Path) -> None:
+    """ASSET_GROWTH = jkp's at_gr1 (at_x over at_x 12 months earlier, minus 1) and
+    INVASSET = jkp's ppeinv_gr1a (change in ppeinv_x = ppegt + invt over 12 months, over
+    at_x 12 months earlier) from jkp's acc_std_ann, the lag taken on its monthly grid
+    within (gvkey, curcd); on SY's annual timing (months 5-16 after datadate). Linked to
+    permnos through world_msf; USD rows win a currency tie."""
+    acc = pl.scan_parquet(jkp_interim_dir / "acc_std_ann.parquet")
+    lag = acc.select(
+        "gvkey",
+        "curcd",
+        col("datadate").dt.offset_by("12mo").dt.month_end(),
+        at_lag="at_x",
+        ppeinv_lag="ppeinv_x",
+    )
+    reports = (
+        acc.filter(col("source").is_not_null())
+        .join(lag, on=["gvkey", "curcd", "datadate"], how="left")
+        .select(
+            "gvkey",
+            "curcd",
+            "datadate",
+            asset_growth=safe_div("at_x", "at_lag", "asset_growth", 3) - 1,
+            invasset=safe_div(col("ppeinv_x") - col("ppeinv_lag"), "at_lag", "invasset", 3),
+        )
+        .with_columns(eom=col("datadate").dt.month_end())
+        .join(_mp_world_msf_link(jkp_interim_dir), on=["gvkey", "eom"])
+        .sort("permno", "datadate", col("curcd") != "USD")
+        .unique(["permno", "datadate"], keep="first", maintain_order=True)
+        .collect()
+    )
+    for name in ["asset_growth", "invasset"]:
+        _mp_expand_to_crsp_window(
+            reports.select("permno", "datadate", name), name, interim_dir
+        ).write_parquet(interim_dir / f"{name}.parquet")
 
 
 def _mp_compute_momentum(interim_dir: Path, jkp_interim_dir: Path) -> pl.DataFrame:
@@ -8253,30 +8263,24 @@ def _mp_compute_momentum(interim_dir: Path, jkp_interim_dir: Path) -> pl.DataFra
     return out
 
 
-def _mp_compute_composite_issue(interim_dir: Path) -> pl.DataFrame:
-    log_rets = (
-        pl.read_parquet(interim_dir / "crsp_monthly.parquet")
-        .select("permno", "eom", "me", "RET")
-        .with_columns(log_1p_ret=(1 + col("RET")).log())
-    )
-    cumret = _mp_rolling_calendar_sum(log_rets, "log_1p_ret", lag_min=0, lag_max=11, n_required=12)
-    me_lag12 = log_rets.select("permno", "eom", col("me").alias("me_lag12")).with_columns(
-        eom=_mp_offset_months("eom", 12)
-    )
-    composite_t = (
-        log_rets.select("permno", "eom", "me")
-        .join(me_lag12, on=["permno", "eom"], how="left")
-        .join(cumret, on=["permno", "eom"], how="left")
+def _mp_compute_composite_issue(interim_dir: Path, jkp_interim_dir: Path) -> pl.DataFrame:
+    """COMPOSITE_ISSUE(t) = -eqnpo_12m at t-5 from jkp's world_data_prelim (12-month
+    growth in market equity minus the 12-month log return), as in the world branch.
+    Keyed onto interim_dir's crsp_monthly, whose permno column holds the jkp id."""
+    src = (
+        pl.scan_parquet(jkp_interim_dir / "world_data_prelim.parquet")
+        .filter(col("excntry") == US_EXCNTRY)
         .select(
-            "permno",
+            col("id").cast(pl.Int64).alias("permno"),
             col("eom").alias("eom_src"),
-            composite_issue=(col("me") / col("me_lag12")).log() - col("r"),
+            composite_issue=-col("eqnpo_12m"),
         )
+        .collect()
     )
     out = (
-        log_rets.select("permno", "eom")
-        .with_columns(eom_src=_mp_offset_months("eom", -5))
-        .join(composite_t, on=["permno", "eom_src"], how="left")
+        pl.read_parquet(interim_dir / "crsp_monthly.parquet")
+        .select("permno", "eom", eom_src=_mp_offset_months("eom", -5))
+        .join(src, on=["permno", "eom_src"], how="left")
         .select("eom", "permno", "composite_issue")
         .sort("permno", "eom")
     )
@@ -8705,15 +8709,17 @@ def _mp_compute_anomalies(
 ) -> dict[str, pl.DataFrame]:
     """US SY anomalies (incl. CHS DISTRESS) from the crsp_monthly, crsp_daily and
     compustat_annual/quarterly parquets in interim_dir, one parquet each there;
-    MOMENTUM from jkp's world_data_prelim, GP_ADJ and OSCORE from jkp's acc_std_ann
-    and ROA from jkp's acc_std_qtr in jkp_interim_dir.
+    MOMENTUM and COMPOSITE_ISSUE from jkp's world_data_prelim, GP_ADJ, OSCORE,
+    ASSET_GROWTH and INVASSET from jkp's acc_std_ann and ROA from jkp's acc_std_qtr in
+    jkp_interim_dir.
     Returns the DISTRESS cross-sectional references used (_mp_compute_distress)."""
     _mp_compute_accrual(raw_dir, interim_dir)
     _mp_compute_gross_profit(interim_dir, jkp_interim_dir)
     _mp_compute_oscore(interim_dir, jkp_interim_dir)
-    _mp_compute_nsi_ag_inv_noa(raw_dir, interim_dir)
+    _mp_compute_nsi_noa(raw_dir, interim_dir)
+    _mp_compute_ag_inv(interim_dir, jkp_interim_dir)
     _mp_compute_momentum(interim_dir, jkp_interim_dir)
-    _mp_compute_composite_issue(interim_dir)
+    _mp_compute_composite_issue(interim_dir, jkp_interim_dir)
     _mp_compute_roa(mp_con, interim_dir, jkp_interim_dir)
     return _mp_compute_distress(mp_con, raw_dir, interim_dir, distress_refs)
 

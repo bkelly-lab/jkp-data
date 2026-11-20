@@ -4,7 +4,7 @@ Unit tests for Stambaugh-Yuan mispricing builder helpers in aux_functions.py.
 Covers helpers in the range ~7000-9456:
   - _mp_truncate_thin, _mp_filter_full_buckets
   - _mp_add_leg_score
-  - Per-anomaly computations: accrual, gross_profit, oscore, nsi_ag_inv_noa,
+  - Per-anomaly computations: accrual, gross_profit, oscore, nsi_noa, ag_inv,
     momentum, composite_issue, roa
   - CHS DISTRESS chain: market_inputs, book_equity_mb, quarterly_inputs,
     nimtaavg, exretavg, sigma, final_score
@@ -37,6 +37,8 @@ from jkp.data.aux_functions import (
     _mp_add_leg_score,
     _mp_anomaly_pct_panel,
     _mp_build_comp_us_inputs,
+    _mp_compute_ag_inv,
+    _mp_compute_composite_issue,
     _mp_compute_gross_profit,
     _mp_compute_momentum,
     _mp_compute_oscore,
@@ -664,12 +666,12 @@ class TestOscoreFormula:
 
 
 # ===========================================================================
-# TestNsiFormula  (part of _mp_compute_nsi_ag_inv_noa)
+# TestNsiFormula  (part of _mp_compute_nsi_noa)
 # ===========================================================================
 
 
-class TestNsiAgInvNoaFormulas:
-    """Tests for the 4 formulas inside _mp_compute_nsi_ag_inv_noa."""
+class TestNsiNoaFormulas:
+    """Tests for the 2 formulas inside _mp_compute_nsi_noa."""
 
     def test_nsi_log_share_growth(self, tolerance):
         """NSI = log(csho * adjex_c / lag_csho / lag_adjexc)."""
@@ -749,52 +751,6 @@ class TestNsiAgInvNoaFormulas:
         )["nsi"][0]
         assert result is None
 
-    def test_ag_formula(self, tolerance):
-        """ASSET_GROWTH = (at - lag_at) / lag_at."""
-        df = pl.DataFrame({"at": [110.0], "lag_at": [100.0]})
-        result = df.with_columns(
-            ag=pl.when(pl.col("lag_at") > 0)
-            .then((pl.col("at") - pl.col("lag_at")) / pl.col("lag_at"))
-            .otherwise(None)
-        )["ag"][0]
-        np.testing.assert_allclose(result, 0.1, **tolerance.TIGHT)
-
-    def test_ag_zero_lag_at_returns_none(self):
-        """lag_at <= 0 → ag=None."""
-        df = pl.DataFrame({"at": [100.0], "lag_at": [0.0]})
-        result = df.with_columns(
-            ag=pl.when(pl.col("lag_at") > 0)
-            .then((pl.col("at") - pl.col("lag_at")) / pl.col("lag_at"))
-            .otherwise(None)
-        )["ag"][0]
-        assert result is None
-
-    def test_inv_formula(self, tolerance):
-        """INVASSET = (ppegt - lag_ppegt + invt - lag_invt) / lag_at."""
-        df = pl.DataFrame(
-            {
-                "ppegt": [60.0],
-                "lag_ppegt": [50.0],
-                "invt": [30.0],
-                "lag_invt": [25.0],
-                "lag_at": [100.0],
-            }
-        )
-        result = df.with_columns(
-            inv=pl.when(
-                pl.col("lag_ppegt").is_null()
-                | pl.col("lag_invt").is_null()
-                | pl.col("lag_at").is_null()
-                | (pl.col("lag_at") == 0)
-            )
-            .then(None)
-            .otherwise(
-                (pl.col("ppegt") - pl.col("lag_ppegt") + pl.col("invt") - pl.col("lag_invt"))
-                / pl.col("lag_at")
-            )
-        )["inv"][0]
-        np.testing.assert_allclose(result, 0.15, **tolerance.TIGHT)
-
     def test_noa_formula(self, tolerance):
         """NOA = [(at - che) - (at - dlc - dltt - mib - pstk - ceq)] / lag_at."""
         at, che = 200.0, 20.0
@@ -835,6 +791,77 @@ class TestNsiAgInvNoaFormulas:
             .otherwise(None)
         )["noa"][0]
         np.testing.assert_allclose(result, expected, **tolerance.TIGHT)
+
+
+class TestAgInvJkp:
+    """US ASSET_GROWTH (at_gr1) and INVASSET (ppeinv_gr1a) from acc_std_ann, the lag
+    12 months earlier on its monthly grid, months 5-16."""
+
+    # gvkey -> permno; (datadate, curcd, source, at_x, ppeinv_x) per grid row
+    ROWS = {
+        # known values; a grid month without a report; the CAD row loses to USD
+        ("001000", 10001): [
+            ((2009, 12), "USD", "NA", 100.0, 50.0),
+            ((2010, 6), "USD", None, None, None),
+            ((2010, 12), "USD", "NA", 110.0, 65.0),
+            ((2010, 12), "CAD", "NA", 300.0, 200.0),
+        ],
+        # at_x 12 months earlier is zero: no value
+        ("002000", 10002): [
+            ((2009, 12), "USD", "NA", 0.0, 50.0),
+            ((2010, 12), "USD", "NA", 110.0, 65.0),
+        ],
+        # no report 12 months earlier: no value
+        ("003000", 10003): [
+            ((2009, 6), "USD", "NA", 100.0, 50.0),
+            ((2010, 12), "USD", "NA", 110.0, 65.0),
+        ],
+    }
+
+    def _run(self, tmp_path) -> dict[tuple[str, int, date], float | None]:
+        rows = [
+            (gvkey, permno, _eom(*ym), *rest)
+            for (gvkey, permno), grid in self.ROWS.items()
+            for ym, *rest in grid
+        ]
+        acc = pl.DataFrame(
+            rows,
+            schema=["gvkey", "permno", "datadate", "curcd", "source", "at_x", "ppeinv_x"],
+            orient="row",
+        )
+        acc.drop("permno").write_parquet(tmp_path / "acc_std_ann.parquet")
+        acc.select(
+            source_crsp=pl.lit(1), gvkey="gvkey", eom="datadate", id="permno"
+        ).unique().write_parquet(tmp_path / "world_msf.parquet")
+        months = [_eom(2011, m) for m in range(4, 13)] + [_eom(2012, m) for m in range(1, 6)]
+        permnos = [permno for _, permno in self.ROWS]
+        pl.DataFrame(
+            {"permno": [p for p in permnos for _ in months], "eom": months * len(permnos)}
+        ).write_parquet(tmp_path / "crsp_monthly.parquet")
+        _mp_compute_ag_inv(tmp_path, tmp_path)
+        return {
+            (name, p, e): v
+            for name in ["asset_growth", "invasset"]
+            for p, e, v in pl.read_parquet(tmp_path / f"{name}.parquet")
+            .select("permno", "eom", name)
+            .iter_rows()
+        }
+
+    def test_known_values_window_and_usd_tie(self, tmp_path, tolerance):
+        vals = self._run(tmp_path)
+        for name, expected in [("asset_growth", 0.1), ("invasset", 0.15)]:
+            assert vals[(name, 10001, _eom(2011, 4))] is None
+            assert vals[(name, 10001, _eom(2012, 5))] is None
+            live = [vals[(name, 10001, _eom(2011, m))] for m in range(5, 13)] + [
+                vals[(name, 10001, _eom(2012, m))] for m in range(1, 5)
+            ]
+            np.testing.assert_allclose(live, [expected] * 12, **tolerance.TIGHT)
+
+    @pytest.mark.parametrize("permno", [10002, 10003])
+    def test_zero_or_missing_lagged_assets_has_no_value(self, tmp_path, permno):
+        vals = self._run(tmp_path)
+        assert vals[("asset_growth", permno, _eom(2011, 6))] is None
+        assert vals[("invasset", permno, _eom(2011, 6))] is None
 
 
 # ===========================================================================
@@ -1049,37 +1076,28 @@ class TestMomentumFormula:
 
 
 class TestCompositeIssueFormula:
-    """Tests for composite_issue: log(me/me_lag12) - sum_log_ret_12."""
+    """US COMPOSITE_ISSUE: -eqnpo_12m from world_data_prelim at t-5."""
 
-    def test_composite_issue_known_values(self, tolerance):
-        """composite_issue = log(me/me_lag12) - cum_log_ret_12, where
-        cum_log_ret_12 comes from the same _mp_rolling_calendar_sum helper
-        the production code uses (lag_min=0, lag_max=11, n_required=12)."""
-        r = 0.08
-        eoms = [_eom(2020, m) for m in range(1, 13)]
-        df = pl.DataFrame({"permno": [1] * 12, "eom": eoms, "log_1p_ret": [r / 12] * 12})
-        cumret = _mp_rolling_calendar_sum(df, "log_1p_ret", lag_min=0, lag_max=11, n_required=12)
-        cum_log_ret_12 = cumret.filter(pl.col("eom") == _eom(2020, 12))["r"][0]
-
-        me, me_lag12 = 110.0, 100.0
-        computed = math.log(me / me_lag12) - cum_log_ret_12
-        expected = math.log(1.10) - 0.08  # independently hand-computed literal
-        np.testing.assert_allclose(computed, expected, **tolerance.TIGHT)
-
-    def test_composite_issue_zero_me_lag(self):
-        """me_lag12=0 → log division by zero = -inf or NaN."""
-        math.log(100.0 / 0.0) if False else float("nan")  # conceptual check
-        # In practice Polars propagates None or inf — here we test the column behavior
-        df = pl.DataFrame({"me": [100.0], "me_lag12": [0.0]})
-        result = df.with_columns(ratio=(pl.col("me") / pl.col("me_lag12")).log())["ratio"][0]
-        # Should be inf or NaN (not finite)
-        assert result is None or (isinstance(result, float) and not math.isfinite(result))
-
-    def test_composite_issue_null_me_lag(self):
-        """me_lag12=None → composite_issue=None (null propagation)."""
-        df = pl.DataFrame({"me": [100.0], "me_lag12": [None]})
-        result = df.with_columns(ratio=(pl.col("me") / pl.col("me_lag12")).log())["ratio"][0]
-        assert result is None
+    def test_value_from_five_months_earlier(self, tmp_path, tolerance):
+        eoms = [_eom(2020, m) for m in range(1, 9)]
+        eqnpo = [0.01 * m for m in range(1, 9)]
+        pl.DataFrame(
+            {
+                "id": [10001] * 8 + [20001],
+                "excntry": ["USA"] * 8 + ["GBR"],
+                "eom": eoms + [eoms[0]],
+                "eqnpo_12m": eqnpo + [9.0],
+            }
+        ).write_parquet(tmp_path / "world_data_prelim.parquet")
+        pl.DataFrame({"permno": [10001] * 8 + [20001], "eom": eoms + [eoms[5]]}).write_parquet(
+            tmp_path / "crsp_monthly.parquet"
+        )
+        out = _mp_compute_composite_issue(tmp_path, tmp_path)
+        us = out.filter(pl.col("permno") == 10001).sort("eom")["composite_issue"].to_list()
+        assert us[:5] == [None] * 5
+        np.testing.assert_allclose(us[5:], [-0.01, -0.02, -0.03], **tolerance.TIGHT)
+        # a non-US jkp row never feeds the US anomaly
+        assert out.filter(pl.col("permno") == 20001)["composite_issue"][0] is None
 
 
 # ===========================================================================
