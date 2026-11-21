@@ -30,8 +30,9 @@ import numpy as np
 from numba import get_num_threads, njit, prange
 
 from .compustat_correction import (
+    apply_monthly_screen,
     correct_decimal_errors,
-    drop_unreliable_observations,
+    screen_observations,
 )
 from .config import (
     CALENDAR_RUN_MAX_GAP_DAYS,
@@ -1541,8 +1542,11 @@ def gen_comp_dsf(
         8) Compute USD variables: prc, prc_high, prc_low, market cap (me), USD turnover (dolvol),
         USD return index (ri), dividends (split into total/cash/special); derive month-end eom.
         Keep one row per security-date (drop_duplicate_security_dates).
-        9) If apply_correction, drop unreliable observations from the USD data.
-        10) Drop intermediates and write __comp_dsf.parquet.
+        9) Build SECM monthly records (gen_secm_data).
+        10) If apply_correction, screen stock-months (_comp_monthly_panel,
+        screen_observations): drop unreliable months and rescale shares and market value
+        at jumps, in the daily data and in secm_data.parquet alike.
+        11) Drop intermediates and write __comp_dsf.parquet.
 
     Args:
         apply_correction: Whether to apply the Compustat return corrections
@@ -1552,7 +1556,8 @@ def gen_comp_dsf(
             or 'interpolation' geometric mean of clean endpoints).
 
     Output:
-        Parquet: __comp_dsf.parquet (daily Compustat security observations in USD).
+        Parquet: __comp_dsf.parquet (daily Compustat security observations in USD) and
+        secm_data.parquet.
     """
     # Repair decimal-shift errors in the raw data (local currency)
     if apply_correction:
@@ -1639,7 +1644,7 @@ def gen_comp_dsf(
                      COALESCE(div, 0) > 0 OR COALESCE(divd, 0) > 0 OR COALESCE(divsp, 0) > 0
                  ) OVER (PARTITION BY gvkey, iid)
                  THEN 1 ELSE NULL END) AS ri_local,
-        curcddv, div, divd, divsp
+        curcddv, div, divd, divsp, qunit
     FROM comp_g_secd;
 
     CREATE VIEW __comp_dsf_na AS
@@ -1733,22 +1738,26 @@ def gen_comp_dsf(
         else:
             merged_path = paths.interim_dir / "__comp_dsf.parquet"
             con.execute(f"""
-        COPY (SELECT * FROM __comp_dsf3) TO '{merged_path.as_posix()}' (FORMAT PARQUET);
+        COPY (SELECT * EXCLUDE (qunit) FROM __comp_dsf3) TO '{merged_path.as_posix()}' (FORMAT PARQUET);
             """)
 
     drop_duplicate_security_dates(paths, merged_path)
+    gen_secm_data(paths)
 
-    # Drop unreliable observations from the USD-converted data
+    # Screen stock-months; daily rows and SECM rows follow their month's decision
     if apply_correction:
-        df = drop_unreliable_observations(
-            pl.scan_parquet(unfiltered_path),
-            group_cols=["gvkey", "iid"],
-            sort_col="datadate",
-            country_col="excntry",
-            spill_dir=paths.interim_dir,
-        )
-
-        df.sink_parquet(paths.interim_dir / "__comp_dsf.parquet")
+        decisions_path = paths.interim_dir / "__corr_screen.parquet"
+        screen_observations(
+            pl.scan_parquet(unfiltered_path), _comp_monthly_panel(paths, unfiltered_path)
+        ).write_parquet(decisions_path)
+        decisions = pl.scan_parquet(decisions_path)
+        apply_monthly_screen(pl.scan_parquet(unfiltered_path), decisions).drop(
+            "qunit"
+        ).sink_parquet(paths.interim_dir / "__comp_dsf.parquet")
+        secm_path = paths.interim_dir / "secm_data.parquet"
+        screened_secm = paths.interim_dir / "__corr_secm_screened.parquet"
+        apply_monthly_screen(pl.scan_parquet(secm_path), decisions).sink_parquet(screened_secm)
+        screened_secm.replace(secm_path)
 
         # Clean up temp files
         for f in paths.interim_dir.glob("__corr_*.parquet"):
@@ -1827,14 +1836,16 @@ def drop_duplicate_security_dates(paths: DataPaths, file_path: Path) -> None:
     deduped.replace(file_path)
 
 
-def gen_secd_data(paths: DataPaths):
+def gen_secd_data(
+    paths: DataPaths, dsf_path: Path | None = None, out_path: Path | None = None
+) -> None:
     """
     Description:
         Aggregate daily Compustat (__comp_dsf) to month-end security data (SECD-like monthly),
         resolving multiple daily rows and computing monthly highs/lows/divs/volume.
 
     Steps:
-        1) Read __comp_dsf.parquet in place with DuckDB.
+        1) Read dsf_path (default __comp_dsf.parquet) in place with DuckDB.
         2) Compute monthly aggregates per {gvkey, iid, eom} over all daily rows, at adjusted units:
         - prc_highm/prc_lowm: month max/min using pre-adjusted local price with ajexdi.
         - div_*m: sum of monthly dividends (by type) adjusted.
@@ -1842,13 +1853,13 @@ def gen_secd_data(paths: DataPaths):
         3) Keep valid rows (local price/currency present, prcstd in {3,4,10}) on the last valid
         datadate in the month; scale the aggregates by each row's ajexdi.
         - source=1 to mark SECD pipeline.
-        4) Write to secd_data.parquet, sorted by gvkey, iid, eom.
+        4) Write to out_path (default secd_data.parquet), sorted by gvkey, iid, eom.
 
     Output:
         Parquet: secd_data.parquet (monthly aggregates from daily Compustat pipeline).
     """
-    dsf = (paths.interim_dir / "__comp_dsf.parquet").as_posix()
-    out = (paths.interim_dir / "secd_data.parquet").as_posix()
+    dsf = (dsf_path or paths.interim_dir / "__comp_dsf.parquet").as_posix()
+    out = (out_path or paths.interim_dir / "secd_data.parquet").as_posix()
     valid = "prc_local IS NOT NULL AND curcdd IS NOT NULL AND prcstd IN (3, 4, 10)"
     with _duckdb_connect(paths) as con:
         con.execute(f"""
@@ -1971,19 +1982,37 @@ def gen_comp_msf(paths: DataPaths):
         Prefer SECD (source=1) when both sources exist for the same {gvkey,iid,eom}.
 
     Steps:
-        1) Ensure secd_data.parquet and secm_data.parquet exist (run gen_secd_data/gen_secm_data).
-        2) Read both in place; select a common column set and cast types consistently.
-        3) UNION the two sources; for each {gvkey,iid,eom} window count n rows.
-        4) Keep either the single row (n=1) or, if n=2, prefer source=1 (SECD).
-        5) Drop helper columns and deduplicate on {gvkey, iid, eom}, keeping the
-           row with the latest datadate (closest to month-end), then the highest prcstd.
-        6) Write to __comp_msf.parquet.
+        1) Build secd_data.parquet from the daily data (gen_secd_data); secm_data.parquet
+           comes from gen_comp_dsf.
+        2) Merge the two (_merge_secd_secm).
 
     Output:
         Parquet: __comp_msf.parquet (monthly Compustat security master in USD).
     """
     gen_secd_data(paths)
-    gen_secm_data(paths)
+    _merge_secd_secm(
+        paths,
+        paths.interim_dir / "secd_data.parquet",
+        paths.interim_dir / "secm_data.parquet",
+        paths.interim_dir / "__comp_msf.parquet",
+    )
+
+
+def _merge_secd_secm(paths: DataPaths, secd_path: Path, secm_path: Path, out_path: Path) -> None:
+    """
+    Description:
+        Merge SECD-based and SECM-based monthly records, one row per {gvkey, iid, eom}.
+
+    Steps:
+        1) Read both in place; select a common column set and cast types consistently.
+        2) UNION the two sources; for each {gvkey,iid,eom} window count n rows.
+        3) Keep either the single row (n=1) or, if n=2, prefer source=1 (SECD).
+        4) Drop helper columns and deduplicate on {gvkey, iid, eom}, keeping the
+           row with the latest datadate (closest to month-end), then the highest prcstd.
+
+    Output:
+        Parquet at out_path.
+    """
     common_vars = [
         "gvkey",
         "iid",
@@ -2013,9 +2042,9 @@ def gen_comp_msf(paths: DataPaths):
     cols = ", ".join(
         f"CAST({c} AS DOUBLE) AS {c}" if c in ("ajexdi", "prc_local") else c for c in common_vars
     )
-    secd = (paths.interim_dir / "secd_data.parquet").as_posix()
-    secm = (paths.interim_dir / "secm_data.parquet").as_posix()
-    out = (paths.interim_dir / "__comp_msf.parquet").as_posix()
+    secd = secd_path.as_posix()
+    secm = secm_path.as_posix()
+    out = out_path.as_posix()
     # Deterministic dedup (issue #69): keep the latest datadate per {gvkey, iid, eom},
     # then the highest prcstd, the prepare_comp_sf rule.
     with _duckdb_connect(paths) as con:
@@ -2037,6 +2066,38 @@ def gen_comp_msf(paths: DataPaths):
             ) = 1
         ) TO '{out}' (FORMAT PARQUET)
         """)
+
+
+def _comp_monthly_panel(paths: DataPaths, daily_path: Path) -> pl.LazyFrame:
+    """
+    Description:
+        The stock-months the Compustat screen runs on: the month-end rows comp_msf would
+        hold if daily_path were the daily data, with QUNIT and the exchange country.
+
+    Steps:
+        1) Month-end rows of daily_path (gen_secd_data), merged with secm_data.parquet
+           (_merge_secd_secm).
+        2) Attach QUNIT from the daily month-end row (null for SECM rows and North
+           America) and excntry from the exchange.
+
+    Output:
+        LazyFrame over interim scratch files (removed with the __corr_* spill files).
+    """
+    secd = paths.interim_dir / "__corr_monthly_secd.parquet"
+    merged = paths.interim_dir / "__corr_monthly_panel.parquet"
+    gen_secd_data(paths, daily_path, secd)
+    _merge_secd_secm(paths, secd, paths.interim_dir / "secm_data.parquet", merged)
+    keys = ["gvkey", "iid", "datadate"]
+    return (
+        pl.scan_parquet(merged)
+        .join(pl.scan_parquet(secd).select(*keys, "qunit"), on=keys, how="left", nulls_equal=True)
+        .with_columns(pl.col("exchg").cast(pl.Int64))
+        .join(
+            comp_exchanges(paths).lazy().select(pl.col("exchg").cast(pl.Int64), "excntry"),
+            on="exchg",
+            how="left",
+        )
+    )
 
 
 def comp_exchanges(paths: DataPaths):
@@ -9060,10 +9121,13 @@ def merge_qmj_to_world_data(paths: DataPaths):
     """
     a = pl.scan_parquet(paths.interim_dir / "world_data_-1.parquet")
     b = pl.scan_parquet(paths.interim_dir / "qmj.parquet")
-    result = (
-        a.join(b, how="left", on=["excntry", "id", "eom"]).unique(["id", "eom"]).sort(["id", "eom"])
+    (
+        a.join(b, how="left", on=["excntry", "id", "eom"])
+        # unique() on this ~450-column join peaks near 450 GiB; this filter reads only the keys
+        .filter(pl.struct("id", "eom").is_first_distinct())
+        .sort(["id", "eom"])
+        .sink_parquet(paths.interim_dir / "world_data.parquet")
     )
-    result.collect().write_parquet(paths.interim_dir / "world_data.parquet")
 
 
 @measure_time

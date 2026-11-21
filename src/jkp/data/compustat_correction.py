@@ -1,13 +1,14 @@
 """
 Compustat return corrections.
 
-Repairs decimal-shift price errors and drops unreliable daily observations in
-the Compustat security files before returns are computed, following the data
-corrections of Bessembinder et al. (2023).
+Repairs decimal-shift price errors in the daily Compustat security files, then
+screens stock-months (drops unreliable months, repairs jumps in shares and market
+value) before returns are computed, following the data corrections of
+Bessembinder et al. (2023). Daily rows follow their month's decision.
 
-Layering: the public `correct_decimal_errors` / `drop_unreliable_observations`
-functions are domain-level orchestrators (sort -> build typed inputs -> run ->
-reattach). A dedicated adapter converts the Polars panel to NumPy once, the
+Layering: the public `correct_decimal_errors` / `screen_observations` /
+`apply_monthly_screen` functions are domain-level orchestrators (sort -> build
+typed inputs -> run -> reattach). A dedicated adapter converts the Polars panel to NumPy once, the
 numba kernels (at the bottom of this file) do the per-security work, and the
 result is reattached lazily. NumPy is only the kernel boundary, not the whole
 design.
@@ -24,8 +25,12 @@ from .config import (
     CORRECTION_SPILL_COMPRESSION,
     DECIMAL_CORRECTION_METHODS,
     DECIMAL_DETECTION_WINDOWS,
-    FILTER_GAP_TRADING_DAYS,
+    EARLY_JUMP_MONTHS,
+    EARLY_JUMP_SHARE,
+    FILTER_GAP_MONTHS,
+    JUMP_PAIR_MAX_MONTHS,
     LOW_PRICE_COUNTRIES,
+    QUNIT_PRICE_CHANGE_BOUND,
 )
 
 
@@ -39,23 +44,6 @@ class DecimalCorrectionState:
     window_size: np.ndarray  # detection window, -1 = null
     left_endpoint: np.ndarray  # clean value to the left of a flagged spike
     right_endpoint: np.ndarray  # clean value to the right
-
-
-@dataclass(frozen=True)
-class FilterInputs:
-    """Typed NumPy view of one filter panel, ready for `run_all_filters`."""
-
-    starts: np.ndarray  # group-boundary offsets
-    remove_low_volume: np.ndarray  # per-security bottom-2%-volume decision
-    ajexdi: np.ndarray
-    prc: np.ndarray
-    me: np.ndarray
-    ri: np.ndarray
-    cshoc: np.ndarray
-    dates: np.ndarray  # physical int32 days
-    low: np.ndarray  # $0.001 price-threshold country flag
-    chn: np.ndarray  # China flag (looser jump bounds)
-    gap_days: int  # data-gap calendar-day bound
 
 
 def _group_starts(df: pl.DataFrame, group_cols: list[str]) -> np.ndarray:
@@ -273,135 +261,278 @@ def correct_decimal_errors(
     return _reattach_corrected(df, data["_row"], corrected, spill_dir)
 
 
-# Observation filters
-def _load_filter_inputs(
-    df: pl.LazyFrame, group_cols: list[str], sort_col: str, country_col: str
+# Observation filters (Section 8), run on stock-months
+def _month_index(eom: pl.Expr) -> pl.Expr:
+    """Months since year 0, so consecutive months differ by 1."""
+    return (eom.dt.year() * 12 + eom.dt.month()).cast(pl.Int32)
+
+
+def _load_monthly_panel(
+    monthly: pl.LazyFrame, group_cols: list[str], country_col: str
 ) -> pl.DataFrame:
-    """Collect kernel inputs in one pass, sorted by security and date: f64 values, int32
-    date, country flags; _row is each row's position in df."""
-    value_cols = ["ajexdi", "prc", "me", "ri", "cshoc", "dolvol"]
+    """Collect the monthly kernel columns sorted by security and month: f64 values, month
+    index, currency code (0 = missing) and country flags."""
     return (
-        df.with_row_index("_row")
-        .select(
-            ["_row"]
-            + group_cols
-            + [sort_col]
-            + [pl.col(c).cast(pl.Float64) for c in value_cols]
-            + [
-                # named to match the FilterInputs fields (see _build_filter_inputs)
-                pl.col(sort_col).cast(pl.Date).to_physical().cast(pl.Int32).alias("dates"),
-                pl.col(country_col).is_in(LOW_PRICE_COUNTRIES).fill_null(False).alias("low"),
-                (pl.col(country_col) == "CHN").fill_null(False).alias("chn"),
-            ]
+        monthly.select(
+            *group_cols,
+            "eom",
+            *[pl.col(c).cast(pl.Float64) for c in ["prc", "me", "ri", "cshoc", "ajexdi", "qunit"]],
+            mi=_month_index(pl.col("eom")),
+            curcd=pl.col("curcdd").rank("dense").fill_null(0).cast(pl.Int64),
+            low=pl.col(country_col).is_in(LOW_PRICE_COUNTRIES).fill_null(False),
+            chn=(pl.col(country_col) == "CHN").fill_null(False),
         )
-        .sort(group_cols + [sort_col])
+        .sort([*group_cols, "eom"])
         .collect()
     )
 
 
-def _low_volume_decision(data: pl.DataFrame, group_cols: list[str]) -> np.ndarray:
+def _security_flags(
+    daily: pl.LazyFrame, panel: pl.DataFrame, group_cols: list[str]
+) -> pl.DataFrame:
     """
-    Global cross-security low-volume decision: per-security mean of positive
-    volume, dropping the bottom 2% (scalar quantile, nulls ignored). Securities
-    with no positive volume (null mean) are KEPT. One row per group, in
-    group_starts (sorted) order.
+    Description:
+        Security-level removal decisions that use the whole history (Section 8a-b, AJEXDI).
+    Steps:
+        1) Low volume: mean positive daily dollar volume per security; the bottom 2% of
+           securities are removed. Securities without positive volume are kept.
+        2) Zero AJEXDI: any daily or monthly AJEXDI equal to zero.
+    Output:
+        DataFrame [group_cols, remove_low_volume, zero_ajexdi], one row per panel
+        security, in panel order.
     """
     avg_vol = (
-        data.lazy()
-        .filter(pl.col("dolvol") > 0)
+        daily.filter(pl.col("dolvol") > 0)
         .group_by(group_cols)
-        .agg(pl.mean("dolvol").alias("_avg_vol"))
+        .agg(_avg_vol=pl.col("dolvol").cast(pl.Float64).mean())
         .collect()
     )
     cutoff = avg_vol["_avg_vol"].quantile(0.02)
+    zero_ajexdi = pl.concat(
+        [
+            daily.filter(pl.col("ajexdi") == 0).select(group_cols).unique().collect(),
+            panel.filter(pl.col("ajexdi") == 0).select(group_cols).unique(),
+        ]
+    ).unique()
     return (
-        data.select(group_cols)
-        .unique()
-        .join(avg_vol, on=group_cols, how="left")
-        .sort(group_cols)
-        .get_column("_avg_vol")
-        .le(cutoff)
-        .fill_null(False)
-        .to_numpy()
+        panel.select(group_cols)
+        .unique(maintain_order=True)
+        .join(avg_vol, on=group_cols, how="left", nulls_equal=True, maintain_order="left")
+        .join(
+            zero_ajexdi.with_columns(_zero=pl.lit(True)),
+            on=group_cols,
+            how="left",
+            nulls_equal=True,
+            maintain_order="left",
+        )
+        .select(
+            *group_cols,
+            remove_low_volume=pl.col("_avg_vol").le(cutoff).fill_null(False),
+            zero_ajexdi=pl.col("_zero").fill_null(False),
+        )
     )
 
 
-def _build_filter_inputs(data: pl.DataFrame, group_cols: list[str]) -> FilterInputs:
-    """Adapter: the collected filter panel -> typed NumPy kernel inputs. The
-    per-row array columns are named to match the FilterInputs fields."""
-    array_fields = ("ajexdi", "prc", "me", "ri", "cshoc", "dates", "low", "chn")
-    return FilterInputs(
-        starts=_group_starts(data, group_cols),
-        remove_low_volume=_low_volume_decision(data, group_cols),
-        gap_days=int(FILTER_GAP_TRADING_DAYS * 365 / 252),  # trading -> calendar days
-        **{f: data[f].to_numpy() for f in array_fields},
-    )
-
-
-def _reattach_reason(
-    df: pl.LazyFrame, row: pl.Series, reason: np.ndarray, spill_dir: Path
-) -> pl.LazyFrame:
-    """Attach the kernel's keep/remove decision in df's row order and keep the kept rows."""
-    reason_path = spill_dir / "__corr_filter_reason.parquet"
-    (
-        pl.DataFrame({"_reason": reason, "_row": row})
-        .sort("_row")
-        .drop("_row")
-        .write_parquet(reason_path, compression=CORRECTION_SPILL_COMPRESSION)
-    )
+def _event_dates(daily: pl.LazyFrame, events: pl.DataFrame, group_cols: list[str]) -> pl.DataFrame:
+    """
+    Description:
+        Place each repaired monthly jump on a trading day, so daily rows before the jump
+        keep the previous month's multiplier.
+    Steps:
+        1) Daily rows of securities with a jump, with the step from the previous trading
+           day in split-adjusted shares (shares jumps) or in market value net of the
+           return (market-value jumps).
+        2) In each jump month, the day with the largest absolute log step.
+    Output:
+        DataFrame [group_cols, eom, event_date].
+    """
+    prev = lambda c: pl.col(c).shift(1).over(group_cols)  # noqa: E731
     return (
-        pl.concat([df, pl.scan_parquet(reason_path)], how="horizontal")
-        .filter(pl.col("_reason") == 0)
-        .drop("_reason")
+        daily.join(events.lazy().select(group_cols).unique(), on=group_cols, how="semi")
+        .select(
+            *group_cols,
+            "eom",
+            pl.col("datadate").cast(pl.Date),
+            adj=(pl.col("cshoc") * pl.col("ajexdi")).cast(pl.Float64),
+            me=pl.col("me").cast(pl.Float64),
+            ri=pl.col("ri").cast(pl.Float64),
+        )
+        .sort([*group_cols, "datadate"])
+        .with_columns(
+            shares_step=(pl.col("adj") / prev("adj")).log().abs().fill_nan(None),
+            value_step=((pl.col("me") / prev("me")) / (pl.col("ri") / prev("ri")))
+            .log()
+            .abs()
+            .fill_nan(None),
+        )
+        .join(events.lazy(), on=[*group_cols, "eom"], how="inner", nulls_equal=True)
+        .with_columns(
+            step=pl.when(pl.col("event") == 2)
+            .then(pl.col("value_step"))
+            .otherwise(pl.col("shares_step"))
+        )
+        .group_by([*group_cols, "eom"])
+        .agg(
+            event_date=pl.col("datadate")
+            .sort_by(["step", "datadate"], descending=[True, False], nulls_last=True)
+            .first()
+        )
+        .collect()
     )
 
 
-def drop_unreliable_observations(
-    df: pl.LazyFrame,
+def screen_observations(
+    daily: pl.LazyFrame,
+    monthly: pl.LazyFrame,
     group_cols: list[str] | None = None,
-    sort_col: str = "datadate",
     country_col: str = "excntry",
-    spill_dir: Path | None = None,
+    pair_max_months: int = JUMP_PAIR_MAX_MONTHS,
+) -> pl.DataFrame:
+    """
+    Description:
+        Observation filters and jump repairs of Section 8 of Bessembinder et al. (2023)
+        Data Appendix, run on stock-months as in the paper. Returns a keep decision and a
+        shares multiplier for every security-month of daily and monthly, so daily and
+        monthly rows follow one decision (apply_monthly_screen).
+    Steps:
+        1) Load the monthly panel (one row per security-month) and the security-level
+           low-volume and zero-AJEXDI decisions.
+        2) run_monthly_screen, one numba pass per security: low volume, zero AJEXDI,
+           QUNIT changes, low price or market value (months after the breach month),
+           gaps, shares and market-value jumps (early jumps delete the history through
+           the jump; later jumps are repaired), return/market-value mismatches, initial
+           ratio errors.
+        3) Place each repaired jump on a trading day (_event_dates).
+        4) Spread the decisions over every security-month of daily and monthly: months
+           without a panel row take the security-level cuts and the previous kept
+           month's multiplier.
+    Output:
+        DataFrame [group_cols, eom, keep, factor, factor_prev, event_date]. factor applies
+        to shares and market value from event_date on, factor_prev before it.
+    """
+    group_cols = group_cols or ["gvkey", "iid"]
+    panel = _load_monthly_panel(monthly, group_cols, country_col)
+    flags = _security_flags(daily, panel, group_cols)
+    starts = _group_starts(panel, group_cols)
+    n, n_sec = panel.height, len(starts) - 1
+    reason = np.zeros(n, dtype=np.int8)
+    factor = np.ones(n, dtype=np.float64)
+    event = np.zeros(n, dtype=np.int8)
+    killed = np.zeros(n_sec, dtype=np.bool_)
+    start_cut = np.full(n_sec, -1, dtype=np.int64)
+    end_cut = np.full(n_sec, -1, dtype=np.int64)
+    mi = panel["mi"].to_numpy()
+    run_monthly_screen(
+        starts,
+        reason,
+        factor,
+        event,
+        killed,
+        start_cut,
+        end_cut,
+        flags["remove_low_volume"].to_numpy(),
+        flags["zero_ajexdi"].to_numpy(),
+        *[panel[c].to_numpy() for c in ["prc", "me", "ri", "cshoc", "ajexdi", "qunit"]],
+        panel["curcd"].to_numpy(),
+        mi,
+        panel["low"].to_numpy(),
+        panel["chn"].to_numpy(),
+        FILTER_GAP_MONTHS + 1,
+        float(EARLY_JUMP_MONTHS),
+        EARLY_JUMP_SHARE,
+        pair_max_months,
+        QUNIT_PRICE_CHANGE_BOUND,
+    )
+    cut_mi = lambda idx: pl.Series(np.where(idx >= 0, mi[np.maximum(idx, 0)], -1)).replace(  # noqa: E731
+        -1, None
+    )
+    cuts = flags.select(group_cols).with_columns(
+        killed=pl.Series(killed), start_cut=cut_mi(start_cut), end_cut=cut_mi(end_cut)
+    )
+    alive = (
+        panel.select(*group_cols, "eom")
+        .with_columns(reason=pl.Series(reason), factor=pl.Series(factor), event=pl.Series(event))
+        .filter(pl.col("reason") == 0)
+        .with_columns(factor_prev=pl.col("factor").shift(1).over(group_cols).fill_null(1.0))
+    )
+    events = alive.filter(pl.col("event") > 0).select(*group_cols, "eom", "event")
+    removed = panel.select(*group_cols, "eom").filter(pl.Series(reason) != 0)
+    months = pl.concat(
+        [daily.select(*group_cols, "eom").unique().collect(), panel.select(*group_cols, "eom")]
+    ).unique()
+    return (
+        months.join(
+            alive.drop("reason", "event"), on=[*group_cols, "eom"], how="left", nulls_equal=True
+        )
+        .join(
+            _event_dates(daily, events, group_cols),
+            on=[*group_cols, "eom"],
+            how="left",
+            nulls_equal=True,
+        )
+        .join(
+            removed.with_columns(_removed=pl.lit(True)),
+            on=[*group_cols, "eom"],
+            how="left",
+            nulls_equal=True,
+        )
+        .join(cuts, on=group_cols, how="left", nulls_equal=True)
+        .sort([*group_cols, "eom"])
+        .with_columns(
+            mi=_month_index(pl.col("eom")),
+            _filled=pl.col("factor").forward_fill().over(group_cols).fill_null(1.0),
+        )
+        .select(
+            *group_cols,
+            "eom",
+            keep=~pl.col("killed").fill_null(False)
+            & ~pl.col("_removed").fill_null(False)
+            & (pl.col("start_cut").is_null() | (pl.col("mi") > pl.col("start_cut")))
+            & (pl.col("end_cut").is_null() | (pl.col("mi") <= pl.col("end_cut"))),
+            factor=pl.col("_filled"),
+            factor_prev=pl.coalesce("factor_prev", "_filled"),
+            event_date="event_date",
+        )
+    )
+
+
+def apply_monthly_screen(
+    df: pl.LazyFrame, decisions: pl.LazyFrame, group_cols: list[str] | None = None
 ) -> pl.LazyFrame:
     """
     Description:
-        Drop unreliable daily observations, implementing the observation filters
-        of Section 8 of Bessembinder et al. (2023) Data Appendix. Runs the full
-        filter chain as one numba pass per security, preserving
-        sequential-survivor semantics. Memory-bounded array path.
-        df is read twice, once to collect the kernel columns and once inside
-        the returned plan to filter by row position, so it must yield the same
-        rows in the same order both times (e.g. a scan of a file that is not
-        overwritten before the result is collected or sunk).
+        Apply the security-month decisions of screen_observations to daily or monthly rows.
     Steps:
-        1) Collect the kernel columns, sorted by security and date.
-        2) Build typed NumPy inputs (kernel arrays + low-volume decision).
-        3) Run run_all_filters -> per-row keep/remove; filter df lazily, in its row order.
+        1) Join the decision of each row's security-month; keep the kept months.
+        2) Multiply shares (cshoc) and market value (me) by factor, or by factor_prev
+           before the month's event_date.
     Output:
-        Filtered LazyFrame in df's row order.
+        LazyFrame with df's columns.
     """
     group_cols = group_cols or ["gvkey", "iid"]
-    if spill_dir is None:
-        raise ValueError("drop_unreliable_observations requires spill_dir")
-
-    data = _load_filter_inputs(df, group_cols, sort_col, country_col)
-    inp = _build_filter_inputs(data, group_cols)
-    reason = np.zeros(data.height, dtype=np.int8)
-    run_all_filters(
-        inp.starts,
-        reason,
-        inp.remove_low_volume,
-        inp.ajexdi,
-        inp.prc,
-        inp.me,
-        inp.ri,
-        inp.cshoc,
-        inp.dates,
-        inp.low,
-        inp.chn,
-        inp.gap_days,
+    f = (
+        pl.when(pl.col("_event_date").is_not_null() & (pl.col("datadate") < pl.col("_event_date")))
+        .then(pl.col("_factor_prev"))
+        .otherwise(pl.col("_factor"))
     )
-    return _reattach_reason(df, data["_row"], reason, spill_dir)
+    return (
+        df.join(
+            decisions.select(
+                *group_cols,
+                "eom",
+                _keep="keep",
+                _factor="factor",
+                _factor_prev="factor_prev",
+                _event_date="event_date",
+            ),
+            on=[*group_cols, "eom"],
+            how="left",
+            nulls_equal=True,
+        )
+        .filter(pl.col("_keep"))
+        .with_columns(cshoc=pl.col("cshoc") * f, me=pl.col("me") * f)
+        .drop("_keep", "_factor", "_factor_prev", "_event_date")
+    )
 
 
 # Numba kernels: per-security loops over date-sorted array slices, parallelized
@@ -641,155 +772,195 @@ def _kill_all(reason):
 
 
 @njit(cache=True, error_model="numpy")
-def _early_jump_stage(reason, jump_series, confirm_series, return_based, chn):
-    """
-    Shared early-jump stage for the adjCSHO and ME filters. A jump in
-    jump_series (confirmed by confirm_series) within the early period deletes
-    alive rows 0..max-jump-obs. The return-based variant reads confirm_series as
-    a return; the adjCSHO variant uses looser CHN bounds. NaN operands fail all
-    tests (like polars).
-    """
-    n = reason.size
-    total = 0
-    for i in range(n):
+def _alive_rows(reason):
+    """Positions of the rows still alive, in date order."""
+    n = 0
+    for i in range(reason.size):
         if reason[i] == 0:
-            total += 1
-    if total == 0:
-        return
-    delete_through = -1
-    obs = -1
-    prev = -1
-    for i in range(n):
-        if reason[i] != 0:
+            n += 1
+    idx = np.empty(n, dtype=np.int64)
+    k = 0
+    for i in range(reason.size):
+        if reason[i] == 0:
+            idx[k] = i
+            k += 1
+    return idx
+
+
+@njit(cache=True, error_model="numpy")
+def _jump_direction(x_prev, x_cur, c_prev, c_cur, return_based, chn):
+    """
+    +1 / -1 for an up / down jump in x between two months, 0 otherwise. The shares
+    test (return_based False) needs the market value c to move with x (looser CHN
+    bounds); the market-value test (True) needs the return from c (a return index) not
+    to explain the move. NaN operands fail every test.
+    """
+    jump = x_cur / x_prev
+    if return_based:
+        ret = c_cur / c_prev - 1.0
+        if jump > 10.0 and ret < 2.0:
+            return 1
+        if jump < 0.1 and ret > -0.5:
+            return -1
+        return 0
+    confirm = c_cur / c_prev
+    if chn:
+        up = jump >= 50.0 and confirm >= 25.0
+    else:
+        up = jump >= 5.0 and confirm >= 2.5
+    if up:
+        return 1
+    if jump <= 0.2 and confirm <= 0.4:
+        return -1
+    return 0
+
+
+@njit(cache=True, error_model="numpy")
+def _early_jump_stage(reason, x, confirm, return_based, chn, early_months, early_share):
+    """
+    A jump within the lesser of the first early_months months or the first early_share
+    of the security's months deletes the alive rows through the last such jump. Returns
+    the position of that jump, -1 if none.
+    """
+    idx = _alive_rows(reason)
+    window = min(early_months, early_share * idx.size)
+    last = -1
+    for k in range(1, idx.size):
+        if k >= window:
+            break
+        i, p = idx[k], idx[k - 1]
+        if _jump_direction(x[p], x[i], confirm[p], confirm[i], return_based, chn[i]) != 0:
+            last = k
+    for k in range(last + 1):
+        reason[idx[k]] = 1
+    return idx[last] if last >= 0 else -1
+
+
+@njit(cache=True, error_model="numpy")
+def _repair_jumps(reason, x, confirm, return_based, chn, mi, pair_max_months, factor, event, code):
+    """
+    Repair the jumps left after the early stage, rescaling x in place and multiplying
+    factor by the same amount; marks repaired jump months in event with code.
+    - Paired (the next jump is the opposite one, within pair_max_months): the months
+      from the jump to before the reversal get min(x before the jump, x at the reversal),
+      each end net of its month's return (market-value test only).
+    - Unpaired up-jump: x from the jump on is scaled down to the level before it.
+    - Unpaired down-jump: x before the jump is scaled down to the level after it.
+    """
+    idx = _alive_rows(reason)
+    m = idx.size
+    k = 1
+    while k < m:
+        i, p = idx[k], idx[k - 1]
+        d = 0
+        if x[p] > 0.0 and x[i] > 0.0:
+            d = _jump_direction(x[p], x[i], confirm[p], confirm[i], return_based, chn[i])
+        if d == 0:
+            k += 1
             continue
-        obs += 1
-        if prev >= 0:
-            jump = jump_series[i] / jump_series[prev]
-            if return_based:
-                # ME jump not backed by a commensurate return
-                ret = confirm_series[i] / confirm_series[prev] - 1.0
-                up = jump > 10.0 and ret < 2.0
-                down = jump < 0.1 and ret > -0.5
-            else:
-                # adjCSHO jump vs ME (CHN gets looser bounds)
-                confirm = confirm_series[i] / confirm_series[prev]
-                if chn[i]:
-                    up = jump >= 50.0 and confirm >= 25.0
-                else:
-                    up = jump >= 5.0 and confirm >= 2.5
-                down = jump <= 0.2 and confirm <= 0.4
-            # early period: first ~24 months (obs < 504) or 20% of the history
-            in_early_period = obs < 504.0 or obs < 0.2 * total
-            if (up or down) and in_early_period:
-                delete_through = obs
-        prev = i
-    if delete_through < 0:
-        return
-    obs = -1
-    for i in range(n):
-        if reason[i] != 0:
+        growth = confirm[i] / confirm[p] if return_based else 1.0
+        pair = -1
+        for q in range(k + 1, m):
+            j, jp = idx[q], idx[q - 1]
+            if mi[j] - mi[i] > pair_max_months:
+                break
+            if not (x[jp] > 0.0 and x[j] > 0.0):
+                continue
+            dj = _jump_direction(x[jp], x[j], confirm[jp], confirm[j], return_based, chn[j])
+            if dj == -d:
+                pair = q
+                break
+            if dj == d:
+                break
+        if pair >= 0:
+            j, jp = idx[pair], idx[pair - 1]
+            growth_s = confirm[j] / confirm[jp] if return_based else 1.0
+            level = min(x[p] * growth, x[j] / growth_s)
+            for r in range(k, pair):
+                u = idx[r]
+                factor[u] *= level / x[u]
+                x[u] = level
+            event[i] = code
+            event[j] = code
+            k = pair + 1
             continue
-        obs += 1
-        if obs <= delete_through:
-            reason[i] = 1
+        if d == 1:
+            scale = x[p] * growth / x[i]
+            lo, hi = k, m
+        else:
+            scale = x[i] / (x[p] * growth)
+            lo, hi = 0, k
+        for r in range(lo, hi):
+            u = idx[r]
+            x[u] *= scale
+            factor[u] *= scale
+        event[i] = code
+        k += 1
 
 
 # Each filter reads the rows still alive at its start (sequential survivor) and
-# marks removals in `reason`. Those that can void the whole security (the
-# low-volume, zero-AJEXDI, and initial low-price/ME filters) return True to stop
-# the chain.
+# marks removals in `reason`. Those that can void the whole security return True
+# to stop the chain.
 
 
 @njit(cache=True, error_model="numpy")
-def _filter_low_volume(reason, remove_low_volume):
-    """Drop the whole security if it is in the bottom 2% by average positive volume."""
-    if remove_low_volume:
-        _kill_all(reason)
-        return True
+def _filter_qunit_changes(reason, qunit, curcd, prc, ajexdi, max_change):
+    """
+    A change in the quote unit QUNIT without a change in currency, together with a
+    split-adjusted price change beyond +-max_change, removes the whole security.
+    """
+    idx = _alive_rows(reason)
+    for k in range(1, idx.size):
+        i, p = idx[k], idx[k - 1]
+        unit_changed = qunit[i] == qunit[i] and qunit[p] == qunit[p] and qunit[i] != qunit[p]
+        same_currency = curcd[i] > 0 and curcd[i] == curcd[p]
+        if unit_changed and same_currency:
+            change = (prc[i] / ajexdi[i]) / (prc[p] / ajexdi[p]) - 1.0
+            if change > max_change or change < -max_change:
+                _kill_all(reason)
+                return True
     return False
 
 
 @njit(cache=True, error_model="numpy")
-def _filter_zero_ajexdi(reason, ajexdi):
-    """Any AJEXDI == 0 removes the whole security."""
-    for i in range(reason.size):
-        if ajexdi[i] == 0.0:
-            _kill_all(reason)
-            return True
-    return False
-
-
-@njit(cache=True, error_model="numpy")
-def _filter_low_price_or_me(reason, prc, me, dates, low_thr):
+def _filter_low_price_or_me(reason, prc, me, low_thr):
     """
-    Price below threshold ($0.01, or $0.001 in low_thr countries) or ME < $1M.
-    A breach on the first alive date voids the security; a later breach removes
-    all history from the breach date onward.
+    Price below threshold ($0.01, or $0.001 in low_thr countries) or market value below
+    $1M at a month-end. A breach in the first month voids the security; a later breach
+    removes the months after it. Returns the breach position, -2 if the security is
+    voided, -1 if there is no breach.
     """
-    n = reason.size
-    first = -1
-    for i in range(n):
-        if reason[i] == 0:
-            first = i
-            break
-    if first < 0:
-        return True
-    breach_idx = -1
-    for i in range(first, n):
-        if reason[i] != 0:
-            continue
+    idx = _alive_rows(reason)
+    for k in range(idx.size):
+        i = idx[k]
         thr = 0.001 if low_thr[i] else 0.01
         if me[i] < 1.0 or prc[i] < thr:
-            breach_idx = i
-            break
-    if breach_idx < 0:
-        return False
-    initial = False
-    for i in range(first, n):
-        if reason[i] != 0 or dates[i] != dates[first]:
-            break
-        thr = 0.001 if low_thr[i] else 0.01
-        if me[i] < 1.0 or prc[i] < thr:
-            initial = True
-            break
-    if initial:
-        _kill_all(reason)
-        return True
-    for i in range(n):
-        if reason[i] == 0 and dates[i] >= dates[breach_idx]:
-            reason[i] = 1
-    return False
+            if k == 0:
+                _kill_all(reason)
+                return -2
+            for r in range(k + 1, idx.size):
+                reason[idx[r]] = 1
+            return i
+    return -1
 
 
 @njit(cache=True, error_model="numpy")
-def _filter_data_gaps(reason, dates, gap_days):
-    """Drop the observation after a calendar gap wider than gap_days."""
+def _filter_data_gaps(reason, mi, max_step):
+    """Drop the month after a step of more than max_step months."""
     prev = -1
     for i in range(reason.size):
         if reason[i] != 0:
             continue
-        if prev >= 0 and dates[i] - dates[prev] > gap_days:
+        if prev >= 0 and mi[i] - mi[prev] > max_step:
             reason[i] = 1
-        # prev advances even past a removed row: polars measures gaps against
-        # the pre-stage frame, so a removed row is still the next row's reference
+        # prev advances even past a removed row: gaps are measured against the
+        # pre-stage rows, so a removed row is still the next row's reference
         prev = i
-
-
-@njit(cache=True, error_model="numpy")
-def _filter_adjcsho_jumps(reason, cshoc, ajexdi, me, chn):
-    """Early adjCSHO (= cshoc*ajexdi) jump not matched by ME (looser CHN bounds)."""
-    _early_jump_stage(reason, cshoc * ajexdi, me, False, chn)
-
-
-@njit(cache=True, error_model="numpy")
-def _filter_me_jumps(reason, me, ri, chn):
-    """Early ME jump not backed by a commensurate return (ri)."""
-    _early_jump_stage(reason, me, ri, True, chn)
 
 
 @njit(cache=True, error_model="numpy")
 def _filter_return_me_mismatch(reason, ri, me):
-    """|return| > 80% with |ME change| < 50%."""
+    """|return| > 80% with |market-value change| < 50%."""
     prev = -1
     for i in range(reason.size):
         if reason[i] != 0:
@@ -799,24 +970,24 @@ def _filter_return_me_mismatch(reason, ri, me):
             me_chg = me[i] / me[prev] - 1.0
             if abs(ret) > 0.8 and abs(me_chg) < 0.5:
                 reason[i] = 1
-        # a flagged row still advances prev, staying the shift source for the
-        # next row (matching the polars stage-input shift)
+        # a flagged row still advances prev, staying the reference for the next row
         prev = i
 
 
 @njit(cache=True, error_model="numpy")
-def _filter_initial_ratio_errors(reason, prc, me):
-    """A price or ME ratio outside [0.1, 10] among the first 3 observations."""
+def _filter_initial_ratio_errors(reason, adj_prc, me):
+    """A split-adjusted price or market-value ratio outside [0.1, 10] among the first
+    3 observations."""
     prev = -1
     obs = -1
     for i in range(reason.size):
         if reason[i] != 0:
             continue
         obs += 1
-        if obs > 2.0:  # only the first 3 observations (0-indexed)
+        if obs > 2:  # only the first 3 observations (0-indexed)
             break
         if prev >= 0:
-            pr = prc[i] / prc[prev]
+            pr = adj_prc[i] / adj_prc[prev]
             mr = me[i] / me[prev]
             if pr > 10.0 or pr < 0.1 or mr > 10.0 or mr < 0.1:
                 reason[i] = 1
@@ -824,40 +995,123 @@ def _filter_initial_ratio_errors(reason, prc, me):
 
 
 @njit(cache=True, error_model="numpy")
-def _run_filters_one_security(
-    reason, remove_low_volume, ajexdi, prc, me, ri, cshoc, dates, low_thr, chn, gap_days
+def _screen_one_security(
+    reason,
+    factor,
+    event,
+    remove_low_volume,
+    zero_ajexdi,
+    prc,
+    me,
+    ri,
+    cshoc,
+    ajexdi,
+    qunit,
+    curcd,
+    mi,
+    low_thr,
+    chn,
+    max_step,
+    early_months,
+    early_share,
+    pair_max_months,
+    qunit_max_change,
 ):
-    """Run the filter chain in order on one security's date-sorted slice."""
-    if _filter_low_volume(reason, remove_low_volume):
-        return
-    if _filter_zero_ajexdi(reason, ajexdi):
-        return
-    if _filter_low_price_or_me(reason, prc, me, dates, low_thr):
-        return
-    _filter_data_gaps(reason, dates, gap_days)
-    _filter_adjcsho_jumps(reason, cshoc, ajexdi, me, chn)
-    _filter_me_jumps(reason, me, ri, chn)
-    _filter_return_me_mismatch(reason, ri, me)
-    _filter_initial_ratio_errors(reason, prc, me)
+    """
+    Run the Section 8 chain in order on one security's month-sorted slice. Returns
+    (killed, start_cut, end_cut): start_cut is the position of the last early jump
+    (rows through it deleted), end_cut the breach month (rows after it deleted), -1 if
+    none.
+    """
+    if remove_low_volume or zero_ajexdi:
+        _kill_all(reason)
+        return True, -1, -1
+    if _filter_qunit_changes(reason, qunit, curcd, prc, ajexdi, qunit_max_change):
+        return True, -1, -1
+    breach = _filter_low_price_or_me(reason, prc, me, low_thr)
+    if breach == -2:
+        return True, -1, -1
+    _filter_data_gaps(reason, mi, max_step)
+    # the breach month only carries its return: held out of the jump stages, so its
+    # drop never rescales the history before it
+    held_out = breach >= 0 and reason[breach] == 0
+    if held_out:
+        reason[breach] = 2
+    # shares jumps: adjCSHO against market value, then market value is rebuilt
+    adj = cshoc * ajexdi
+    cut_shares = _early_jump_stage(reason, adj, me, False, chn, early_months, early_share)
+    _repair_jumps(reason, adj, me, False, chn, mi, pair_max_months, factor, event, 1)
+    # market-value jumps on the rebuilt market value, against the return
+    value = me * factor
+    cut_value = _early_jump_stage(reason, value, ri, True, chn, early_months, early_share)
+    _repair_jumps(reason, value, ri, True, chn, mi, pair_max_months, factor, event, 2)
+    if held_out:
+        reason[breach] = 0
+        # the breach month follows the multiplier of the month before it
+        k = breach - 1
+        while k >= 0 and reason[k] != 0:
+            k -= 1
+        if k >= 0:
+            factor[breach] = factor[k]
+            value[breach] = me[breach] * factor[k]
+    _filter_return_me_mismatch(reason, ri, value)
+    _filter_initial_ratio_errors(reason, prc / ajexdi, value)
+    return False, max(cut_shares, cut_value), breach
 
 
 @njit(parallel=True, cache=True, error_model="numpy")
-def run_all_filters(
-    starts, reason, remove_low_volume, ajexdi, prc, me, ri, cshoc, dates, low_thr, chn, gap_days
+def run_monthly_screen(
+    starts,
+    reason,
+    factor,
+    event,
+    killed,
+    start_cut,
+    end_cut,
+    remove_low_volume,
+    zero_ajexdi,
+    prc,
+    me,
+    ri,
+    cshoc,
+    ajexdi,
+    qunit,
+    curcd,
+    mi,
+    low_thr,
+    chn,
+    max_step,
+    early_months,
+    early_share,
+    pair_max_months,
+    qunit_max_change,
 ):
-    """Run the filter chain over all securities in parallel."""
+    """Run the Section 8 chain over all securities in parallel; start_cut and end_cut
+    hold absolute row positions."""
     for g in prange(len(starts) - 1):
         s, e = starts[g], starts[g + 1]
-        _run_filters_one_security(
+        k, c0, c1 = _screen_one_security(
             reason[s:e],
+            factor[s:e],
+            event[s:e],
             remove_low_volume[g],
-            ajexdi[s:e],
+            zero_ajexdi[g],
             prc[s:e],
             me[s:e],
             ri[s:e],
             cshoc[s:e],
-            dates[s:e],
+            ajexdi[s:e],
+            qunit[s:e],
+            curcd[s:e],
+            mi[s:e],
             low_thr[s:e],
             chn[s:e],
-            gap_days,
+            max_step,
+            early_months,
+            early_share,
+            pair_max_months,
+            qunit_max_change,
         )
+        killed[g] = k
+        start_cut[g] = s + c0 if c0 >= 0 else -1
+        end_cut[g] = s + c1 if c1 >= 0 else -1
