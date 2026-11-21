@@ -9123,7 +9123,7 @@ def merge_qmj_to_world_data(paths: DataPaths):
     b = pl.scan_parquet(paths.interim_dir / "qmj.parquet")
     (
         a.join(b, how="left", on=["excntry", "id", "eom"])
-        # unordered unique() works like a group-by that holds every column per key (3-4x the memory)
+        # unique() on this ~450-column join peaks near 450 GiB; this filter reads only the keys
         .filter(pl.struct("id", "eom").is_first_distinct())
         .sort(["id", "eom"])
         .sink_parquet(paths.interim_dir / "world_data.parquet")
