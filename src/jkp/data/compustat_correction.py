@@ -837,7 +837,15 @@ def _early_jump_stage(reason, x, confirm, return_based, chn, early_months, early
 
 
 @njit(cache=True, error_model="numpy")
-def _rescale_unpaired(idx, x, confirm, return_based, factor, k, d):
+def _rescale_unpaired(
+    idx: np.ndarray,
+    x: np.ndarray,
+    confirm: np.ndarray,
+    return_based: bool,
+    factor: np.ndarray,
+    k: int,
+    d: int,
+) -> None:
     """
     Remove the jump at alive position k in place: an up-jump (d = 1) scales x from k on
     down to the level before it, a down-jump (d = -1) scales x before k down to the
@@ -900,26 +908,32 @@ def _repair_jumps(reason, x, confirm, return_based, chn, mi, pair_max_months, fa
             if return_based:
                 growth = confirm[i] / confirm[p]
                 growth_s = confirm[j] / confirm[jp]
-                scale = min(x[p] * growth / x[i], x[j] / growth_s / x[jp])
+                s_jump = x[p] * growth / x[i]
+                s_rev = x[j] / growth_s / x[jp]
+                scale = min(s_jump, s_rev)
                 for r in range(k, pair):
                     u = idx[r]
                     x[u] *= scale
                     factor[u] *= scale
+                # the window now meets the end whose multiplier was the smaller; any
+                # step is left at the other end, tested with that month's return
+                q = pair if s_jump <= s_rev else k
+                a, b = idx[q - 1], idx[q]
+                dn = _jump_direction(x[a], x[b], confirm[a], confirm[b], True, chn[b])
             else:
                 level = min(x[p], x[j])
                 for r in range(k, pair):
                     u = idx[r]
                     factor[u] *= level / x[u]
                     x[u] = level
+                # the window sits at the lower end, any step is left at the higher one;
+                # market value is not yet repaired, so the step is tested end to end
+                q = pair if x[p] <= x[j] else k
+                dn = _jump_direction(x[p], x[j], confirm[p], confirm[j], False, chn[j])
             event[i] = code
             event[j] = code
-            # the window sits at the lower end; a jump between the two ends is left at
-            # the higher one: at the jump (down) or at the reversal (up)
-            dn = _jump_direction(x[p], x[j], confirm[p], confirm[j], return_based, chn[j])
             if dn != 0:
-                _rescale_unpaired(
-                    idx, x, confirm, return_based, factor, k if dn == -1 else pair, dn
-                )
+                _rescale_unpaired(idx, x, confirm, return_based, factor, q, dn)
             k = pair + 1
             continue
         _rescale_unpaired(idx, x, confirm, return_based, factor, k, d)
