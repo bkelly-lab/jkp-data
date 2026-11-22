@@ -308,6 +308,18 @@ class TestMonthlyScreen:
         expected = np.where(np.arange(N_MONTHS) < 30, 1.0, 1.0 / 20.0)
         np.testing.assert_allclose(_factors(d), expected, rtol=1e-12)
 
+    def test_paired_market_value_jump_keeps_the_window_returns(self):
+        # returns alternate +2% / -1%; market value x20 in months 30-34 with flat shares
+        prc = 10.0 * np.exp(np.cumsum(np.where(np.arange(N_MONTHS) % 2 == 0, 0.02, -0.01)))
+        me = prc * 5.0
+        me[30:35] *= 20.0
+        d = _screen(_panel(_monthly_security(59, prc=prc, me=me)))
+        assert all(_kept(d))
+        # one multiplier for the window, so the repaired market value keeps the returns
+        expected = np.ones(N_MONTHS)
+        expected[30:35] = 1.0 / 20.0
+        np.testing.assert_allclose(_factors(d), expected, rtol=1e-12)
+
     def test_initial_ratio_uses_split_adjusted_price(self):
         # a 20:1 split in month 2: raw price ratio 0.05, split-adjusted ratio 1
         prc = np.full(N_MONTHS, 10.0)

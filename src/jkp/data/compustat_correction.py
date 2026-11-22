@@ -842,8 +842,9 @@ def _repair_jumps(reason, x, confirm, return_based, chn, mi, pair_max_months, fa
     Repair the jumps left after the early stage, rescaling x in place and multiplying
     factor by the same amount; marks repaired jump months in event with code.
     - Paired (the next jump is the opposite one, within pair_max_months): the months
-      from the jump to before the reversal get min(x before the jump, x at the reversal),
-      each end net of its month's return (market-value test only).
+      from the jump to before the reversal are brought to the lower of the two ends.
+      Shares get that level flat; market value is scaled by one multiplier, so the
+      window keeps its returns, each end net of its month's return.
     - Unpaired up-jump: x from the jump on is scaled down to the level before it.
     - Unpaired down-jump: x before the jump is scaled down to the level after it.
     """
@@ -875,11 +876,18 @@ def _repair_jumps(reason, x, confirm, return_based, chn, mi, pair_max_months, fa
         if pair >= 0:
             j, jp = idx[pair], idx[pair - 1]
             growth_s = confirm[j] / confirm[jp] if return_based else 1.0
-            level = min(x[p] * growth, x[j] / growth_s)
-            for r in range(k, pair):
-                u = idx[r]
-                factor[u] *= level / x[u]
-                x[u] = level
+            if return_based:
+                scale = min(x[p] * growth / x[i], x[j] / growth_s / x[jp])
+                for r in range(k, pair):
+                    u = idx[r]
+                    x[u] *= scale
+                    factor[u] *= scale
+            else:
+                level = min(x[p], x[j])
+                for r in range(k, pair):
+                    u = idx[r]
+                    factor[u] *= level / x[u]
+                    x[u] = level
             event[i] = code
             event[j] = code
             k = pair + 1

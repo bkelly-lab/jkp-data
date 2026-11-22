@@ -78,8 +78,10 @@ decision. The screen:
 * drops the history up to an implausible jump in split-adjusted shares
   outstanding or market value when the jump falls in the security's first
   24 months or first 20% of months, whichever is shorter;
-* repairs later jumps: a jump that reverses within 12 months is smoothed to
-  the lower of the two levels, and a jump that does not reverse is removed by
+* repairs later jumps: a jump that reverses within 12 months is brought to
+  the lower of the two levels (market value by one multiplier for the whole
+  window, so it keeps the window's returns), and a jump that does not reverse
+  is removed by
   rescaling the months after an upward jump, or the months before a downward
   jump, so that market value grows with the stock's return;
 * drops months whose return disagrees with the change in market value, and
