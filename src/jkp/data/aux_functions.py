@@ -8195,31 +8195,35 @@ def _mp_compute_nsi_noa(raw_dir: Path, interim_dir: Path) -> None:
 def _mp_compute_ag_inv(interim_dir: Path, jkp_interim_dir: Path) -> None:
     """ASSET_GROWTH = jkp's at_gr1 (at_x over at_x 12 months earlier, minus 1) and
     INVASSET = jkp's ppeinv_gr1a (change in ppeinv_x = ppegt + invt over 12 months, over
-    at_x 12 months earlier) from jkp's acc_std_ann, the lag taken on its monthly grid
-    within (gvkey, curcd); on SY's annual timing (months 5-16 after datadate). Linked to
-    permnos through world_msf; USD rows win a currency tie."""
-    acc = pl.scan_parquet(jkp_interim_dir / "acc_std_ann.parquet")
-    lag = acc.select(
-        "gvkey",
+    at_x 12 months earlier) from jkp's acc_std_ann reports linked to permnos through
+    world_msf, USD rows winning a currency tie; the report 12 months earlier must be linked
+    to the same permno too (as OSCORE's prior-year report), so a pre-listing year is no lag.
+    On SY's annual timing (months 5-16 after datadate)."""
+    linked = (
+        pl.scan_parquet(jkp_interim_dir / "acc_std_ann.parquet")
+        .filter(pl.col("source").is_not_null())
+        .select(
+            "gvkey", "curcd", "datadate", "at_x", "ppeinv_x", eom=pl.col("datadate").dt.month_end()
+        )
+        .join(_mp_world_msf_link(jkp_interim_dir), on=["gvkey", "eom"])
+        .sort("permno", "datadate", pl.col("curcd") != "USD")
+        .unique(["permno", "datadate"], keep="first", maintain_order=True)
+    )
+    lag = linked.select(
+        "permno",
         "curcd",
-        col("datadate").dt.offset_by("12mo").dt.month_end(),
+        pl.col("datadate").dt.offset_by("12mo").dt.month_end(),
         at_lag="at_x",
         ppeinv_lag="ppeinv_x",
     )
     reports = (
-        acc.filter(col("source").is_not_null())
-        .join(lag, on=["gvkey", "curcd", "datadate"], how="left")
+        linked.join(lag, on=["permno", "curcd", "datadate"], how="left")
         .select(
-            "gvkey",
-            "curcd",
+            "permno",
             "datadate",
             asset_growth=safe_div("at_x", "at_lag", "asset_growth", 3) - 1,
-            invasset=safe_div(col("ppeinv_x") - col("ppeinv_lag"), "at_lag", "invasset", 3),
+            invasset=safe_div(pl.col("ppeinv_x") - pl.col("ppeinv_lag"), "at_lag", "invasset", 3),
         )
-        .with_columns(eom=col("datadate").dt.month_end())
-        .join(_mp_world_msf_link(jkp_interim_dir), on=["gvkey", "eom"])
-        .sort("permno", "datadate", col("curcd") != "USD")
-        .unique(["permno", "datadate"], keep="first", maintain_order=True)
         .collect()
     )
     for name in ["asset_growth", "invasset"]:

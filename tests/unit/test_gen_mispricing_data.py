@@ -816,7 +816,14 @@ class TestAgInvJkp:
             ((2009, 6), "USD", "NA", 100.0, 50.0),
             ((2010, 12), "USD", "NA", 110.0, 65.0),
         ],
+        # report 12 months earlier is before the stock is in world_msf: no value
+        ("004000", 10004): [
+            ((2009, 12), "USD", "NA", 100.0, 50.0),
+            ((2010, 12), "USD", "NA", 110.0, 65.0),
+        ],
     }
+    # (gvkey, datadate) grid rows with no world_msf month (stock not yet listed)
+    UNLISTED = {("004000", date(2009, 12, 31))}
 
     def _run(self, tmp_path) -> dict[tuple[str, int, date], float | None]:
         rows = [
@@ -830,9 +837,10 @@ class TestAgInvJkp:
             orient="row",
         )
         acc.drop("permno").write_parquet(tmp_path / "acc_std_ann.parquet")
-        acc.select(
-            source_crsp=pl.lit(1), gvkey="gvkey", eom="datadate", id="permno"
-        ).unique().write_parquet(tmp_path / "world_msf.parquet")
+        unlisted = pl.DataFrame(list(self.UNLISTED), schema=["gvkey", "eom"], orient="row")
+        acc.select(source_crsp=pl.lit(1), gvkey="gvkey", eom="datadate", id="permno").unique().join(
+            unlisted, on=["gvkey", "eom"], how="anti"
+        ).write_parquet(tmp_path / "world_msf.parquet")
         months = [_eom(2011, m) for m in range(4, 13)] + [_eom(2012, m) for m in range(1, 6)]
         permnos = [permno for _, permno in self.ROWS]
         pl.DataFrame(
@@ -857,8 +865,8 @@ class TestAgInvJkp:
             ]
             np.testing.assert_allclose(live, [expected] * 12, **tolerance.TIGHT)
 
-    @pytest.mark.parametrize("permno", [10002, 10003])
-    def test_zero_or_missing_lagged_assets_has_no_value(self, tmp_path, permno):
+    @pytest.mark.parametrize("permno", [10002, 10003, 10004])
+    def test_zero_missing_or_unlisted_lag_has_no_value(self, tmp_path, permno):
         vals = self._run(tmp_path)
         assert vals[("asset_growth", permno, _eom(2011, 6))] is None
         assert vals[("invasset", permno, _eom(2011, 6))] is None
