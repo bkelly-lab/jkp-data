@@ -320,6 +320,30 @@ class TestMonthlyScreen:
         expected[30:35] = 1.0 / 20.0
         np.testing.assert_allclose(_factors(d), expected, rtol=1e-12)
 
+    def test_reversal_to_a_lower_level_repairs_the_step_left(self):
+        # shares 5 -> 50 -> 0.25: the window goes to 0.25, leaving 5 -> 0.25 at the jump
+        cshoc = np.full(N_MONTHS, 5.0)
+        cshoc[30:35] = 50.0
+        cshoc[35:] = 0.25
+        d = _screen(_panel(_monthly_security(59, cshoc=cshoc)))
+        assert all(_kept(d))
+        expected = np.ones(N_MONTHS)
+        expected[:30] = 0.05
+        expected[30:35] = 0.005
+        np.testing.assert_allclose(_factors(d), expected)
+
+    def test_reversal_to_a_higher_level_repairs_the_step_left(self):
+        # shares 0.5 -> 50 -> 5: the window goes to 0.5, leaving 0.5 -> 5 at the reversal
+        cshoc = np.full(N_MONTHS, 0.5)
+        cshoc[30:35] = 50.0
+        cshoc[35:] = 5.0
+        d = _screen(_panel(_monthly_security(59, cshoc=cshoc)))
+        assert all(_kept(d))
+        expected = np.ones(N_MONTHS)
+        expected[30:35] = 0.01
+        expected[35:] = 0.1
+        np.testing.assert_allclose(_factors(d), expected)
+
     def test_initial_ratio_uses_split_adjusted_price(self):
         # a 20:1 split in month 2: raw price ratio 0.05, split-adjusted ratio 1
         prc = np.full(N_MONTHS, 10.0)

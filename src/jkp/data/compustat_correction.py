@@ -837,6 +837,27 @@ def _early_jump_stage(reason, x, confirm, return_based, chn, early_months, early
 
 
 @njit(cache=True, error_model="numpy")
+def _rescale_unpaired(idx, x, confirm, return_based, factor, k, d):
+    """
+    Remove the jump at alive position k in place: an up-jump (d = 1) scales x from k on
+    down to the level before it, a down-jump (d = -1) scales x before k down to the
+    level at k; market value keeps the month's return. factor takes the same multiplier.
+    """
+    i, p = idx[k], idx[k - 1]
+    growth = confirm[i] / confirm[p] if return_based else 1.0
+    if d == 1:
+        scale = x[p] * growth / x[i]
+        lo, hi = k, idx.size
+    else:
+        scale = x[i] / (x[p] * growth)
+        lo, hi = 0, k
+    for r in range(lo, hi):
+        u = idx[r]
+        x[u] *= scale
+        factor[u] *= scale
+
+
+@njit(cache=True, error_model="numpy")
 def _repair_jumps(reason, x, confirm, return_based, chn, mi, pair_max_months, factor, event, code):
     """
     Repair the jumps left after the early stage, rescaling x in place and multiplying
@@ -844,7 +865,9 @@ def _repair_jumps(reason, x, confirm, return_based, chn, mi, pair_max_months, fa
     - Paired (the next jump is the opposite one, within pair_max_months): the months
       from the jump to before the reversal are brought to the lower of the two ends.
       Shares get that level flat; market value is scaled by one multiplier, so the
-      window keeps its returns, each end net of its month's return.
+      window keeps its returns, each end net of its month's return. If the ends differ
+      by a jump (the step from before the jump to the reversal fails the jump test), the
+      step left at the higher end is repaired as an unpaired jump.
     - Unpaired up-jump: x from the jump on is scaled down to the level before it.
     - Unpaired down-jump: x before the jump is scaled down to the level after it.
     """
@@ -859,7 +882,6 @@ def _repair_jumps(reason, x, confirm, return_based, chn, mi, pair_max_months, fa
         if d == 0:
             k += 1
             continue
-        growth = confirm[i] / confirm[p] if return_based else 1.0
         pair = -1
         for q in range(k + 1, m):
             j, jp = idx[q], idx[q - 1]
@@ -875,8 +897,9 @@ def _repair_jumps(reason, x, confirm, return_based, chn, mi, pair_max_months, fa
                 break
         if pair >= 0:
             j, jp = idx[pair], idx[pair - 1]
-            growth_s = confirm[j] / confirm[jp] if return_based else 1.0
             if return_based:
+                growth = confirm[i] / confirm[p]
+                growth_s = confirm[j] / confirm[jp]
                 scale = min(x[p] * growth / x[i], x[j] / growth_s / x[jp])
                 for r in range(k, pair):
                     u = idx[r]
@@ -890,18 +913,16 @@ def _repair_jumps(reason, x, confirm, return_based, chn, mi, pair_max_months, fa
                     x[u] = level
             event[i] = code
             event[j] = code
+            # the window sits at the lower end; a jump between the two ends is left at
+            # the higher one: at the jump (down) or at the reversal (up)
+            dn = _jump_direction(x[p], x[j], confirm[p], confirm[j], return_based, chn[j])
+            if dn != 0:
+                _rescale_unpaired(
+                    idx, x, confirm, return_based, factor, k if dn == -1 else pair, dn
+                )
             k = pair + 1
             continue
-        if d == 1:
-            scale = x[p] * growth / x[i]
-            lo, hi = k, m
-        else:
-            scale = x[i] / (x[p] * growth)
-            lo, hi = 0, k
-        for r in range(lo, hi):
-            u = idx[r]
-            x[u] *= scale
-            factor[u] *= scale
+        _rescale_unpaired(idx, x, confirm, return_based, factor, k, d)
         event[i] = code
         k += 1
 
