@@ -30,9 +30,9 @@ import numpy as np
 from numba import get_num_threads, njit, prange
 
 from .compustat_correction import (
-    apply_monthly_screen,
+    apply_screen,
     correct_decimal_errors,
-    screen_observations,
+    screen_stock_months,
 )
 from .config import (
     CALENDAR_RUN_MAX_GAP_DAYS,
@@ -1543,8 +1543,8 @@ def gen_comp_dsf(
         USD return index (ri), dividends (split into total/cash/special); derive month-end eom.
         Keep one row per security-date (drop_duplicate_security_dates).
         9) Build SECM monthly records (gen_secm_data).
-        10) If apply_correction, screen stock-months (_comp_monthly_panel,
-        screen_observations): drop unreliable months and rescale shares and market value
+        10) If apply_correction, screen stock-months (_screen_panel,
+        screen_stock_months): drop unreliable months and rescale shares and market value
         at jumps, in the daily data and in secm_data.parquet alike.
         11) Drop intermediates and write __comp_dsf.parquet.
 
@@ -1747,16 +1747,16 @@ def gen_comp_dsf(
     # Screen stock-months; daily rows and SECM rows follow their month's decision
     if apply_correction:
         decisions_path = paths.interim_dir / "__corr_screen.parquet"
-        screen_observations(
-            pl.scan_parquet(unfiltered_path), _comp_monthly_panel(paths, unfiltered_path)
+        screen_stock_months(
+            pl.scan_parquet(unfiltered_path), _screen_panel(paths, unfiltered_path)
         ).write_parquet(decisions_path)
         decisions = pl.scan_parquet(decisions_path)
-        apply_monthly_screen(pl.scan_parquet(unfiltered_path), decisions).drop(
-            "qunit"
-        ).sink_parquet(paths.interim_dir / "__comp_dsf.parquet")
+        apply_screen(pl.scan_parquet(unfiltered_path), decisions).drop("qunit").sink_parquet(
+            paths.interim_dir / "__comp_dsf.parquet"
+        )
         secm_path = paths.interim_dir / "secm_data.parquet"
         screened_secm = paths.interim_dir / "__corr_secm_screened.parquet"
-        apply_monthly_screen(pl.scan_parquet(secm_path), decisions).sink_parquet(screened_secm)
+        apply_screen(pl.scan_parquet(secm_path), decisions).sink_parquet(screened_secm)
         screened_secm.replace(secm_path)
 
         # Clean up temp files
@@ -2068,10 +2068,10 @@ def _merge_secd_secm(paths: DataPaths, secd_path: Path, secm_path: Path, out_pat
         """)
 
 
-def _comp_monthly_panel(paths: DataPaths, daily_path: Path) -> pl.LazyFrame:
+def _screen_panel(paths: DataPaths, daily_path: Path) -> pl.LazyFrame:
     """
     Description:
-        The stock-months the Compustat screen runs on: the month-end rows comp_msf would
+        The stock-months the Compustat correction screens: the month-end rows comp_msf would
         hold if daily_path were the daily data, with QUNIT and the exchange country.
 
     Steps:

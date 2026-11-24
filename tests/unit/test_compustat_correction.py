@@ -10,9 +10,9 @@ import polars as pl
 import pytest
 
 from jkp.data.compustat_correction import (
-    apply_monthly_screen,
+    apply_screen,
     correct_decimal_errors,
-    screen_observations,
+    screen_stock_months,
 )
 
 GROUP = ["gvkey", "iid"]
@@ -146,7 +146,7 @@ def _panel(target: pl.DataFrame) -> pl.DataFrame:
 def _screen(monthly: pl.DataFrame, daily: pl.DataFrame | None = None, **kwargs) -> pl.DataFrame:
     """Decisions for the target; daily defaults to one row per month (the month-end)."""
     daily = monthly if daily is None else daily
-    out = screen_observations(daily.lazy(), monthly.lazy(), **kwargs)
+    out = screen_stock_months(daily.lazy(), monthly.lazy(), **kwargs)
     return out.filter(pl.col("gvkey") == TARGET).sort("eom")
 
 
@@ -166,7 +166,7 @@ class TestMonthlyScreen:
 
     def test_low_volume_drops_lowest_volume_security(self):
         panel = _panel(_monthly_security(59))
-        d = screen_observations(panel.lazy(), panel.lazy()).filter(pl.col("gvkey") == "000000")
+        d = screen_stock_months(panel.lazy(), panel.lazy()).filter(pl.col("gvkey") == "000000")
         assert not any(_kept(d))
 
     def test_zero_ajexdi_in_daily_drops_security(self):
@@ -422,9 +422,9 @@ class TestMonthlyScreen:
             .with_columns(me=pl.col("prc") * pl.col("cshoc"))
         )
         daily = pl.concat([monthly, before])
-        decisions = screen_observations(daily.lazy(), monthly.lazy())
+        decisions = screen_stock_months(daily.lazy(), monthly.lazy())
         out = (
-            apply_monthly_screen(daily.lazy(), decisions.lazy())
+            apply_screen(daily.lazy(), decisions.lazy())
             .filter((pl.col("gvkey") == TARGET) & (pl.col("eom") == jump_month))
             .sort("datadate")
             .collect()
@@ -437,14 +437,14 @@ class TestMonthlyScreen:
         cshoc = np.full(N_MONTHS, 5.0)
         cshoc[40] = 0.01
         monthly = _panel(_monthly_security(59, cshoc=cshoc))
-        decisions = screen_observations(monthly.lazy(), monthly.lazy())
-        out = apply_monthly_screen(monthly.lazy(), decisions.lazy()).collect()
+        decisions = screen_stock_months(monthly.lazy(), monthly.lazy())
+        out = apply_screen(monthly.lazy(), decisions.lazy()).collect()
         assert out.filter(pl.col("gvkey") == TARGET).height == 41
 
     def test_determinism_rerun(self):
         cshoc = np.full(N_MONTHS, 5.0)
         cshoc[30:35] = 50.0
         panel = _panel(_monthly_security(59, cshoc=cshoc))
-        a = screen_observations(panel.lazy(), panel.lazy()).sort(GROUP + ["eom"])
-        b = screen_observations(panel.lazy(), panel.lazy()).sort(GROUP + ["eom"])
+        a = screen_stock_months(panel.lazy(), panel.lazy()).sort(GROUP + ["eom"])
+        b = screen_stock_months(panel.lazy(), panel.lazy()).sort(GROUP + ["eom"])
         assert a.equals(b)

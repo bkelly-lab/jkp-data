@@ -22,8 +22,8 @@ jupyter: python3
 
 ## Overview
 
-To improve the database, we apply the data correction from
-Bessembinder et al. (2023). The correction is applied to the
+To improve the database, we apply the Compustat correction, which we base on
+the methodology of Bessembinder et al. (2023). The correction is applied to the
 Compustat daily security files and removes erroneous price observations
 before returns are calculated.
 
@@ -64,8 +64,7 @@ Flagged decimal-shift errors are rescaled rather than discarded. The affected
 observation is divided or multiplied by the detected factor — 10, 100, or
 1000 — so the price and the adjacent returns are repaired directly.
 
-The second part of the correction screens stock-months, as in Section 8 of
-the paper's Internet Data Appendix. Each rule is evaluated on the month-end
+The second part of the correction screens stock-months. Each rule is evaluated on the month-end
 observation, and the daily observations of a month follow that month's
 decision. The screen:
 
@@ -73,7 +72,8 @@ decision. The screen:
   a change in the price unit (QUNIT) that moves the split-adjusted price by
   more than 50% without a currency change;
 * drops every month after the first month-end with a price or market value
-  below the paper's thresholds (the breach month keeps its return);
+  below the minimum (a price of \$0.01, or \$0.001 in low-price countries, or a
+  market value of \$1 million; the breach month keeps its return);
 * drops the first month after a gap of more than 11 months;
 * drops the history up to the last implausible jump in split-adjusted shares
   outstanding or market value within one early window, the security's first

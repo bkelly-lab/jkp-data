@@ -278,7 +278,7 @@ PORTFOLIO_SETTINGS = {
     "ind_pf": True,
 }
 
-# Compustat return corrections (Bessembinder et al. 2023 Data Appendix)
+# Compustat correction
 
 # Compression for the scratch spill files written during the correction array
 # passes; read once then deleted, so favor encode speed over size.
@@ -299,13 +299,13 @@ LOW_PRICE_COUNTRIES = ["BRA", "IDN", "NGA", "TUR"]
 FILTER_GAP_MONTHS = 11
 
 # A shares or market-value jump within the lesser of the first EARLY_JUMP_MONTHS
-# months or the first EARLY_JUMP_SHARE of a security's months deletes the history
-# through the jump; later jumps are repaired.
+# months or the first EARLY_JUMP_SHARE of a security's months drops the history
+# through the last such jump; later jumps are repaired.
 EARLY_JUMP_MONTHS = 24
 EARLY_JUMP_SHARE = 0.2
 
 # A later jump counts as reversed (paired) when the opposite jump follows within this
-# many months. Our choice: the paper sets no limit.
+# many months (our choice).
 JUMP_PAIR_MAX_MONTHS = 12
 
 # A quote-unit (QUNIT) change without a currency change removes the security when the

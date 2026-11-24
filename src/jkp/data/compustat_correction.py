@@ -1,17 +1,17 @@
 """
-Compustat return corrections.
+The Compustat correction, based on the methodology of Bessembinder, Chen, Choi and Wei
+(2023), 'Long-Term Shareholder Returns: Evidence from 64,000 Global Stocks', Financial
+Analysts Journal, Internet Data Appendix.
 
-Repairs decimal-shift price errors in the daily Compustat security files, then
-screens stock-months (drops unreliable months, repairs jumps in shares and market
-value) before returns are computed, following the data corrections of
-Bessembinder et al. (2023). Daily rows follow their month's decision.
+Repairs decimal-shift price errors in the daily Compustat security files, then screens
+stock-months before returns are computed: drops unreliable months and repairs jumps in
+shares outstanding and market value. Daily rows follow their month's decision.
 
-Layering: the public `correct_decimal_errors` / `screen_observations` /
-`apply_monthly_screen` functions are domain-level orchestrators (sort -> build
-typed inputs -> run -> reattach). A dedicated adapter converts the Polars panel to NumPy once, the
-numba kernels (at the bottom of this file) do the per-security work, and the
-result is reattached lazily. NumPy is only the kernel boundary, not the whole
-design.
+Layering: the public `correct_decimal_errors` / `screen_stock_months` / `apply_screen`
+functions are domain-level orchestrators (sort -> build typed inputs -> run ->
+reattach). The Polars panel is converted to NumPy once, the numba kernels (at the bottom
+of this file) do the per-security work, and the result is reattached lazily. NumPy is
+only the kernel boundary, not the whole design.
 """
 
 from dataclasses import dataclass
@@ -225,9 +225,8 @@ def correct_decimal_errors(
 ) -> pl.LazyFrame:
     """
     Description:
-        Repair decimal-shift errors in the price/shares/return-factor columns,
-        implementing the decimal-error corrections of Section 6 of Bessembinder
-        et al. (2023) Data Appendix. Correct TRFD, QUNIT and (NA only) ADRRC
+        Repair decimal-shift errors in the price/shares/return-factor columns, the
+        first step of the Compustat correction. Correct TRFD, QUNIT and (NA only) ADRRC
         independently, then adjPRC = PRCCD/AJEXDI and adjCSHO = CSHOC*AJEXDI,
         and reconstruct PRCCD/CSHOC. Only the keys and value columns are
         sorted and collected; spill files go to spill_dir (required).
@@ -261,45 +260,60 @@ def correct_decimal_errors(
     return _reattach_corrected(df, data["_row"], corrected, spill_dir)
 
 
-# Observation filters (Section 8), run on stock-months
-def _month_index(eom: pl.Expr) -> pl.Expr:
+# Stock-month screen. In the kernels, each row of a security's month-sorted slice has a
+# status, and each repaired jump month a kind.
+_KEPT, _DROPPED, _HELD_OUT = 0, 1, 2
+_SHARES_JUMP, _VALUE_JUMP = 1, 2
+
+
+def _month_number(eom: pl.Expr) -> pl.Expr:
     """Months since year 0, so consecutive months differ by 1."""
     return (eom.dt.year() * 12 + eom.dt.month()).cast(pl.Int32)
 
 
-def _load_monthly_panel(
+def _load_screen_panel(
     monthly: pl.LazyFrame, group_cols: list[str], country_col: str
 ) -> pl.DataFrame:
-    """Collect the monthly kernel columns sorted by security and month: f64 values, month
-    index, currency code (0 = missing) and country flags."""
+    """
+    Description:
+        The monthly panel the screen kernels read, one row per security-month.
+    Steps:
+        1) Values as f64, the month number, the currency as a code (0 = missing), and
+           whether the country has the low minimum price or is China.
+        2) Sort by security and month.
+    Output:
+        DataFrame [group_cols, eom, prc, me, ri, cshoc, ajexdi, qunit, month, currency,
+        low_price_country, is_china].
+    """
     return (
         monthly.select(
             *group_cols,
             "eom",
             *[pl.col(c).cast(pl.Float64) for c in ["prc", "me", "ri", "cshoc", "ajexdi", "qunit"]],
-            mi=_month_index(pl.col("eom")),
-            curcd=pl.col("curcdd").rank("dense").fill_null(0).cast(pl.Int64),
-            low=pl.col(country_col).is_in(LOW_PRICE_COUNTRIES).fill_null(False),
-            chn=(pl.col(country_col) == "CHN").fill_null(False),
+            month=_month_number(pl.col("eom")),
+            currency=pl.col("curcdd").rank("dense").fill_null(0).cast(pl.Int64),
+            low_price_country=pl.col(country_col).is_in(LOW_PRICE_COUNTRIES).fill_null(False),
+            is_china=(pl.col(country_col) == "CHN").fill_null(False),
         )
         .sort([*group_cols, "eom"])
         .collect()
     )
 
 
-def _security_flags(
+def _security_removals(
     daily: pl.LazyFrame, panel: pl.DataFrame, group_cols: list[str]
 ) -> pl.DataFrame:
     """
     Description:
-        Security-level removal decisions that use the whole history (Section 8a-b, AJEXDI).
+        The removals that judge a security on its whole history: low trading volume and
+        a zero adjustment factor.
     Steps:
         1) Low volume: mean positive daily dollar volume per security; the bottom 2% of
            securities are removed. Securities without positive volume are kept.
         2) Zero AJEXDI: any daily or monthly AJEXDI equal to zero.
     Output:
-        DataFrame [group_cols, remove_low_volume, zero_ajexdi], one row per panel
-        security, in panel order.
+        DataFrame [group_cols, low_volume, zero_ajexdi], one row per panel security, in
+        panel order.
     """
     avg_vol = (
         daily.filter(pl.col("dolvol") > 0)
@@ -327,13 +341,13 @@ def _security_flags(
         )
         .select(
             *group_cols,
-            remove_low_volume=pl.col("_avg_vol").le(cutoff).fill_null(False),
+            low_volume=pl.col("_avg_vol").le(cutoff).fill_null(False),
             zero_ajexdi=pl.col("_zero").fill_null(False),
         )
     )
 
 
-def _event_dates(daily: pl.LazyFrame, events: pl.DataFrame, group_cols: list[str]) -> pl.DataFrame:
+def _jump_days(daily: pl.LazyFrame, jumps: pl.DataFrame, group_cols: list[str]) -> pl.DataFrame:
     """
     Description:
         Place each repaired monthly jump on a trading day, so daily rows before the jump
@@ -346,9 +360,12 @@ def _event_dates(daily: pl.LazyFrame, events: pl.DataFrame, group_cols: list[str
     Output:
         DataFrame [group_cols, eom, event_date].
     """
-    prev = lambda c: pl.col(c).shift(1).over(group_cols)  # noqa: E731
+
+    def growth(c: str) -> pl.Expr:
+        return pl.col(c) / pl.col(c).shift(1).over(group_cols)
+
     return (
-        daily.join(events.lazy().select(group_cols).unique(), on=group_cols, how="semi")
+        daily.join(jumps.lazy().select(group_cols).unique(), on=group_cols, how="semi")
         .select(
             *group_cols,
             "eom",
@@ -359,15 +376,12 @@ def _event_dates(daily: pl.LazyFrame, events: pl.DataFrame, group_cols: list[str
         )
         .sort([*group_cols, "datadate"])
         .with_columns(
-            shares_step=(pl.col("adj") / prev("adj")).log().abs().fill_nan(None),
-            value_step=((pl.col("me") / prev("me")) / (pl.col("ri") / prev("ri")))
-            .log()
-            .abs()
-            .fill_nan(None),
+            shares_step=growth("adj").log().abs().fill_nan(None),
+            value_step=(growth("me") / growth("ri")).log().abs().fill_nan(None),
         )
-        .join(events.lazy(), on=[*group_cols, "eom"], how="inner", nulls_equal=True)
+        .join(jumps.lazy(), on=[*group_cols, "eom"], how="inner", nulls_equal=True)
         .with_columns(
-            step=pl.when(pl.col("event") == 2)
+            step=pl.when(pl.col("jump") == _VALUE_JUMP)
             .then(pl.col("value_step"))
             .otherwise(pl.col("shares_step"))
         )
@@ -381,7 +395,7 @@ def _event_dates(daily: pl.LazyFrame, events: pl.DataFrame, group_cols: list[str
     )
 
 
-def screen_observations(
+def screen_stock_months(
     daily: pl.LazyFrame,
     monthly: pl.LazyFrame,
     group_cols: list[str] | None = None,
@@ -390,19 +404,17 @@ def screen_observations(
 ) -> pl.DataFrame:
     """
     Description:
-        Observation filters and jump repairs of Section 8 of Bessembinder et al. (2023)
-        Data Appendix, run on stock-months as in the paper. Returns a keep decision and a
-        shares multiplier for every security-month of daily and monthly, so daily and
-        monthly rows follow one decision (apply_monthly_screen).
+        The stock-month screen of the Compustat correction: a keep decision and a shares
+        multiplier for every security-month of daily and monthly, so daily and monthly
+        rows follow one decision (apply_screen).
     Steps:
         1) Load the monthly panel (one row per security-month) and the security-level
-           low-volume and zero-AJEXDI decisions.
-        2) run_monthly_screen, one numba pass per security: low volume, zero AJEXDI,
+           low-volume and zero-AJEXDI removals.
+        2) screen_all_securities, one numba pass per security: low volume, zero AJEXDI,
            QUNIT changes, low price or market value (months after the breach month),
-           gaps, shares and market-value jumps (early jumps delete the history through
-           the jump; later jumps are repaired), return/market-value mismatches, initial
-           ratio errors.
-        3) Place each repaired jump on a trading day (_event_dates).
+           gaps, early jumps (the history through the last one is dropped), later jumps
+           (repaired), return/market-value mismatches, initial ratio errors.
+        3) Place each repaired jump on a trading day (_jump_days).
         4) Spread the decisions over every security-month of daily and monthly: months
            without a panel row take the security-level cuts and the previous kept
            month's multiplier.
@@ -411,84 +423,79 @@ def screen_observations(
         to shares and market value from event_date on, factor_prev before it.
     """
     group_cols = group_cols or ["gvkey", "iid"]
-    panel = _load_monthly_panel(monthly, group_cols, country_col)
-    flags = _security_flags(daily, panel, group_cols)
+    panel = _load_screen_panel(monthly, group_cols, country_col)
+    removals = _security_removals(daily, panel, group_cols)
     starts = _group_starts(panel, group_cols)
     n, n_sec = panel.height, len(starts) - 1
-    reason = np.zeros(n, dtype=np.int8)
+    status = np.zeros(n, dtype=np.int8)
     factor = np.ones(n, dtype=np.float64)
-    event = np.zeros(n, dtype=np.int8)
-    killed = np.zeros(n_sec, dtype=np.bool_)
-    start_cut = np.full(n_sec, -1, dtype=np.int64)
-    end_cut = np.full(n_sec, -1, dtype=np.int64)
-    mi = panel["mi"].to_numpy()
-    run_monthly_screen(
+    jump = np.zeros(n, dtype=np.int8)
+    dropped = np.zeros(n_sec, dtype=np.bool_)
+    early_cut = np.full(n_sec, -1, dtype=np.int64)
+    breach = np.full(n_sec, -1, dtype=np.int64)
+    screen_all_securities(
         starts,
-        reason,
+        status,
         factor,
-        event,
-        killed,
-        start_cut,
-        end_cut,
-        flags["remove_low_volume"].to_numpy(),
-        flags["zero_ajexdi"].to_numpy(),
+        jump,
+        dropped,
+        early_cut,
+        breach,
+        removals["low_volume"].to_numpy(),
+        removals["zero_ajexdi"].to_numpy(),
         *[panel[c].to_numpy() for c in ["prc", "me", "ri", "cshoc", "ajexdi", "qunit"]],
-        panel["curcd"].to_numpy(),
-        mi,
-        panel["low"].to_numpy(),
-        panel["chn"].to_numpy(),
+        *[panel[c].to_numpy() for c in ["currency", "month", "low_price_country", "is_china"]],
         FILTER_GAP_MONTHS + 1,
         float(EARLY_JUMP_MONTHS),
         EARLY_JUMP_SHARE,
         pair_max_months,
         QUNIT_PRICE_CHANGE_BOUND,
     )
-    cut_mi = lambda idx: pl.Series(np.where(idx >= 0, mi[np.maximum(idx, 0)], -1)).replace(  # noqa: E731
-        -1, None
+    security_cuts = removals.select(group_cols).with_columns(
+        dropped=pl.Series(dropped),
+        early_cut=pl.Series(early_cut).replace(-1, None),
+        breach=pl.Series(breach).replace(-1, None),
     )
-    cuts = flags.select(group_cols).with_columns(
-        killed=pl.Series(killed), start_cut=cut_mi(start_cut), end_cut=cut_mi(end_cut)
-    )
-    alive = (
+    kept = (
         panel.select(*group_cols, "eom")
-        .with_columns(reason=pl.Series(reason), factor=pl.Series(factor), event=pl.Series(event))
-        .filter(pl.col("reason") == 0)
+        .with_columns(status=pl.Series(status), factor=pl.Series(factor), jump=pl.Series(jump))
+        .filter(pl.col("status") == _KEPT)
         .with_columns(factor_prev=pl.col("factor").shift(1).over(group_cols).fill_null(1.0))
     )
-    events = alive.filter(pl.col("event") > 0).select(*group_cols, "eom", "event")
-    removed = panel.select(*group_cols, "eom").filter(pl.Series(reason) != 0)
+    jumps = kept.filter(pl.col("jump") > 0).select(*group_cols, "eom", "jump")
+    dropped_months = panel.select(*group_cols, "eom").filter(pl.Series(status) != _KEPT)
     months = pl.concat(
         [daily.select(*group_cols, "eom").unique().collect(), panel.select(*group_cols, "eom")]
     ).unique()
     return (
         months.join(
-            alive.drop("reason", "event"), on=[*group_cols, "eom"], how="left", nulls_equal=True
+            kept.drop("status", "jump"), on=[*group_cols, "eom"], how="left", nulls_equal=True
         )
         .join(
-            _event_dates(daily, events, group_cols),
+            _jump_days(daily, jumps, group_cols),
             on=[*group_cols, "eom"],
             how="left",
             nulls_equal=True,
         )
         .join(
-            removed.with_columns(_removed=pl.lit(True)),
+            dropped_months.with_columns(_dropped_month=pl.lit(True)),
             on=[*group_cols, "eom"],
             how="left",
             nulls_equal=True,
         )
-        .join(cuts, on=group_cols, how="left", nulls_equal=True)
+        .join(security_cuts, on=group_cols, how="left", nulls_equal=True)
         .sort([*group_cols, "eom"])
         .with_columns(
-            mi=_month_index(pl.col("eom")),
+            month=_month_number(pl.col("eom")),
             _filled=pl.col("factor").forward_fill().over(group_cols).fill_null(1.0),
         )
         .select(
             *group_cols,
             "eom",
-            keep=~pl.col("killed").fill_null(False)
-            & ~pl.col("_removed").fill_null(False)
-            & (pl.col("start_cut").is_null() | (pl.col("mi") > pl.col("start_cut")))
-            & (pl.col("end_cut").is_null() | (pl.col("mi") <= pl.col("end_cut"))),
+            keep=~pl.col("dropped").fill_null(False)
+            & ~pl.col("_dropped_month").fill_null(False)
+            & (pl.col("early_cut").is_null() | (pl.col("month") > pl.col("early_cut")))
+            & (pl.col("breach").is_null() | (pl.col("month") <= pl.col("breach"))),
             factor=pl.col("_filled"),
             factor_prev=pl.coalesce("factor_prev", "_filled"),
             event_date="event_date",
@@ -496,12 +503,13 @@ def screen_observations(
     )
 
 
-def apply_monthly_screen(
+def apply_screen(
     df: pl.LazyFrame, decisions: pl.LazyFrame, group_cols: list[str] | None = None
 ) -> pl.LazyFrame:
     """
     Description:
-        Apply the security-month decisions of screen_observations to daily or monthly rows.
+        Apply the security-month decisions of screen_stock_months to daily or monthly
+        rows.
     Steps:
         1) Join the decision of each row's security-month; keep the kept months.
         2) Multiply shares (cshoc) and market value (me) by factor, or by factor_prev
@@ -535,13 +543,12 @@ def apply_monthly_screen(
     )
 
 
-# Numba kernels: per-security loops over date-sorted array slices, parallelized
+# Decimal-correction kernels: per-security loops over date-sorted array slices, parallelized
 # with prange over group boundaries; kernels mutate preallocated arrays in place.
 #
 # Detection-kernel outputs: factor = correction multiplier (1.0 = clean),
 # wsize = detection window (-1 = null), ep_l/ep_r = clean endpoints (used by
-# interpolation). The filter kernels mark removed rows in `reason` (0 = kept,
-# 1 = removed).
+# interpolation).
 #
 # Equivalence notes (load-bearing — do not "simplify"):
 #   - Out-of-range endpoint factor counts as clean (1.0) but its VALUE is NaN,
@@ -760,51 +767,49 @@ def validate_cascading_all(starts, factor, wsize):
         _validate_one(factor[s:e], wsize[s:e], scratch)
 
 
-# Observation-filter kernels (thresholds from Bessembinder et al. 2023 Data Appendix)
+# Stock-month screen kernels. Each works on one security's month-sorted slice, in
+# the order of _screen_one_security, and reads only the rows still kept when it starts.
 
 
 @njit(cache=True, error_model="numpy")
-def _kill_all(reason):
-    """Remove every still-alive row of the security."""
-    for i in range(reason.size):
-        if reason[i] == 0:
-            reason[i] = 1
+def _drop_security(status: np.ndarray) -> None:
+    """Drop every row of the security still kept."""
+    for i in range(status.size):
+        if status[i] == _KEPT:
+            status[i] = _DROPPED
 
 
 @njit(cache=True, error_model="numpy")
-def _alive_rows(reason):
-    """Positions of the rows still alive, in date order."""
-    n = 0
-    for i in range(reason.size):
-        if reason[i] == 0:
-            n += 1
-    idx = np.empty(n, dtype=np.int64)
-    k = 0
-    for i in range(reason.size):
-        if reason[i] == 0:
-            idx[k] = i
-            k += 1
-    return idx
+def _kept_rows(status: np.ndarray) -> np.ndarray:
+    """Positions of the rows still kept, in month order."""
+    return np.flatnonzero(status == _KEPT)
 
 
 @njit(cache=True, error_model="numpy")
-def _jump_direction(x_prev, x_cur, c_prev, c_cur, return_based, chn):
+def _jump_direction(
+    x_prev: float,
+    x_cur: float,
+    confirm_prev: float,
+    confirm_cur: float,
+    return_based: bool,
+    is_china: bool,
+) -> int:
     """
     +1 / -1 for an up / down jump in x between two months, 0 otherwise. The shares
-    test (return_based False) needs the market value c to move with x (looser CHN
-    bounds); the market-value test (True) needs the return from c (a return index) not
-    to explain the move. NaN operands fail every test.
+    test (return_based False) needs market value (confirm) to move with x, with looser
+    bounds in China; the market-value test (True) needs the return from the return index
+    (confirm) not to explain the move. NaN operands fail every test.
     """
     jump = x_cur / x_prev
     if return_based:
-        ret = c_cur / c_prev - 1.0
+        ret = confirm_cur / confirm_prev - 1.0
         if jump > 10.0 and ret < 2.0:
             return 1
         if jump < 0.1 and ret > -0.5:
             return -1
         return 0
-    confirm = c_cur / c_prev
-    if chn:
+    confirm = confirm_cur / confirm_prev
+    if is_china:
         up = jump >= 50.0 and confirm >= 25.0
     else:
         up = jump >= 5.0 and confirm >= 2.5
@@ -816,72 +821,83 @@ def _jump_direction(x_prev, x_cur, c_prev, c_cur, return_based, chn):
 
 
 @njit(cache=True, error_model="numpy")
-def _early_jumps(
-    reason: np.ndarray,
+def _drop_early_history(
+    status: np.ndarray,
     adj: np.ndarray,
     me: np.ndarray,
     ri: np.ndarray,
-    chn: np.ndarray,
+    is_china: np.ndarray,
     early_months: float,
     early_share: float,
 ) -> int:
     """
-    A shares jump (adj against me) or a market-value jump (me against the return index
-    ri) within the lesser of the first early_months months or the first early_share of
-    the security's months deletes the alive rows through the last such jump. Returns
-    the position of that jump, -1 if none.
+    A shares jump (split-adjusted shares adj against market value me) or a market-value
+    jump (me against the return index ri) within the lesser of the first early_months
+    months or the first early_share of the kept months drops the history through the
+    last such jump. Returns the position of that jump, -1 if none.
     """
-    idx = _alive_rows(reason)
-    window = min(early_months, early_share * idx.size)
+    rows = _kept_rows(status)
+    window = min(early_months, early_share * rows.size)
     last = -1
-    for k in range(1, idx.size):
+    for k in range(1, rows.size):
         if k >= window:
             break
-        i, p = idx[k], idx[k - 1]
+        i, p = rows[k], rows[k - 1]
         if (
-            _jump_direction(adj[p], adj[i], me[p], me[i], False, chn[i]) != 0
-            or _jump_direction(me[p], me[i], ri[p], ri[i], True, chn[i]) != 0
+            _jump_direction(adj[p], adj[i], me[p], me[i], False, is_china[i]) != 0
+            or _jump_direction(me[p], me[i], ri[p], ri[i], True, is_china[i]) != 0
         ):
             last = k
     for k in range(last + 1):
-        reason[idx[k]] = 1
-    return idx[last] if last >= 0 else -1
+        status[rows[k]] = _DROPPED
+    return rows[last] if last >= 0 else -1
 
 
 @njit(cache=True, error_model="numpy")
-def _rescale_unpaired(
-    idx: np.ndarray,
+def _rescale_across_jump(
+    rows: np.ndarray,
     x: np.ndarray,
     confirm: np.ndarray,
     return_based: bool,
     factor: np.ndarray,
     k: int,
-    d: int,
+    direction: int,
 ) -> None:
     """
-    Remove the jump at alive position k in place: an up-jump (d = 1) scales x from k on
-    down to the level before it, a down-jump (d = -1) scales x before k down to the
-    level at k; market value keeps the month's return. factor takes the same multiplier.
+    Remove the jump at kept position k in place: an up-jump scales x from k on down to
+    the level before it, a down-jump scales x before k down to the level at k; market
+    value keeps the month's return. factor takes the same multiplier.
     """
-    i, p = idx[k], idx[k - 1]
+    i, p = rows[k], rows[k - 1]
     growth = confirm[i] / confirm[p] if return_based else 1.0
-    if d == 1:
+    if direction == 1:
         scale = x[p] * growth / x[i]
-        lo, hi = k, idx.size
+        lo, hi = k, rows.size
     else:
         scale = x[i] / (x[p] * growth)
         lo, hi = 0, k
     for r in range(lo, hi):
-        u = idx[r]
+        u = rows[r]
         x[u] *= scale
         factor[u] *= scale
 
 
 @njit(cache=True, error_model="numpy")
-def _repair_jumps(reason, x, confirm, return_based, chn, mi, pair_max_months, factor, event, code):
+def _repair_later_jumps(
+    status: np.ndarray,
+    x: np.ndarray,
+    confirm: np.ndarray,
+    return_based: bool,
+    is_china: np.ndarray,
+    month: np.ndarray,
+    pair_max_months: int,
+    factor: np.ndarray,
+    jump: np.ndarray,
+    kind: int,
+) -> None:
     """
-    Repair the jumps left after the early stage, rescaling x in place and multiplying
-    factor by the same amount; marks repaired jump months in event with code.
+    Repair the jumps left after the early cut, rescaling x in place and multiplying
+    factor by the same amount; marks each repaired jump month in jump with kind.
     - Paired (the next jump is the opposite one, within pair_max_months): the months
       from the jump to before the reversal are brought to the lower of the two ends.
       Shares get that level flat; market value is scaled by one multiplier, so the
@@ -892,265 +908,277 @@ def _repair_jumps(reason, x, confirm, return_based, chn, mi, pair_max_months, fa
     - Unpaired up-jump: x from the jump on is scaled down to the level before it.
     - Unpaired down-jump: x before the jump is scaled down to the level after it.
     """
-    idx = _alive_rows(reason)
-    m = idx.size
+    rows = _kept_rows(status)
+    m = rows.size
     k = 1
     while k < m:
-        i, p = idx[k], idx[k - 1]
-        d = 0
+        # i: the jump month, p: the month before it
+        i, p = rows[k], rows[k - 1]
+        direction = 0
         if x[p] > 0.0 and x[i] > 0.0:
-            d = _jump_direction(x[p], x[i], confirm[p], confirm[i], return_based, chn[i])
-        if d == 0:
+            direction = _jump_direction(
+                x[p], x[i], confirm[p], confirm[i], return_based, is_china[i]
+            )
+        if direction == 0:
             k += 1
             continue
-        pair = -1
+        reversal = -1
         for q in range(k + 1, m):
-            j, jp = idx[q], idx[q - 1]
-            if mi[j] - mi[i] > pair_max_months:
+            j, jp = rows[q], rows[q - 1]
+            if month[j] - month[i] > pair_max_months:
                 break
             if not (x[jp] > 0.0 and x[j] > 0.0):
                 continue
-            dj = _jump_direction(x[jp], x[j], confirm[jp], confirm[j], return_based, chn[j])
-            if dj == -d:
-                pair = q
+            next_direction = _jump_direction(
+                x[jp], x[j], confirm[jp], confirm[j], return_based, is_china[j]
+            )
+            if next_direction == -direction:
+                reversal = q
                 break
-            if dj == d:
+            if next_direction == direction:
                 break
-        if pair >= 0:
-            j, jp = idx[pair], idx[pair - 1]
-            if return_based:
-                growth = confirm[i] / confirm[p]
-                growth_s = confirm[j] / confirm[jp]
-                s_jump = x[p] * growth / x[i]
-                s_rev = x[j] / growth_s / x[jp]
-                scale = min(s_jump, s_rev)
-                for r in range(k, pair):
-                    u = idx[r]
-                    x[u] *= scale
-                    factor[u] *= scale
-                # the window now meets the end whose multiplier was the smaller; any
-                # step is left at the other end, tested with that month's return
-                side = pair if s_jump <= s_rev else k
-                a, b = idx[side - 1], idx[side]
-                dn = _jump_direction(x[a], x[b], confirm[a], confirm[b], True, chn[b])
-            else:
-                level = min(x[p], x[j])
-                for r in range(k, pair):
-                    u = idx[r]
-                    factor[u] *= level / x[u]
-                    x[u] = level
-                # the window sits at the lower end, any step is left at the higher one;
-                # market value is not yet repaired, so the step is tested end to end
-                side = pair if x[p] <= x[j] else k
-                dn = _jump_direction(x[p], x[j], confirm[p], confirm[j], False, chn[j])
-            event[i] = code
-            event[j] = code
-            if dn != 0:
-                _rescale_unpaired(idx, x, confirm, return_based, factor, side, dn)
-            k = pair + 1
+        if reversal < 0:
+            _rescale_across_jump(rows, x, confirm, return_based, factor, k, direction)
+            jump[i] = kind
+            k += 1
             continue
-        _rescale_unpaired(idx, x, confirm, return_based, factor, k, d)
-        event[i] = code
-        k += 1
-
-
-# Each filter reads the rows still alive at its start (sequential survivor) and
-# marks removals in `reason`. Those that can void the whole security return True
-# to stop the chain.
+        # j: the reversal month, jp: the month before it
+        j, jp = rows[reversal], rows[reversal - 1]
+        if return_based:
+            to_before = x[p] * (confirm[i] / confirm[p]) / x[i]
+            to_after = x[j] / (confirm[j] / confirm[jp]) / x[jp]
+            scale = min(to_before, to_after)
+            for r in range(k, reversal):
+                u = rows[r]
+                x[u] *= scale
+                factor[u] *= scale
+            # the window now meets the end whose multiplier was the smaller; any step is
+            # left at the other end, tested with that month's return
+            side = reversal if to_before <= to_after else k
+            a, b = rows[side - 1], rows[side]
+            leftover = _jump_direction(x[a], x[b], confirm[a], confirm[b], True, is_china[b])
+        else:
+            level = min(x[p], x[j])
+            for r in range(k, reversal):
+                u = rows[r]
+                factor[u] *= level / x[u]
+                x[u] = level
+            # the window sits at the lower end, any step is left at the higher one; market
+            # value is not yet repaired, so the step is tested end to end
+            side = reversal if x[p] <= x[j] else k
+            leftover = _jump_direction(x[p], x[j], confirm[p], confirm[j], False, is_china[j])
+        jump[i] = kind
+        jump[j] = kind
+        if leftover != 0:
+            _rescale_across_jump(rows, x, confirm, return_based, factor, side, leftover)
+        k = reversal + 1
 
 
 @njit(cache=True, error_model="numpy")
-def _filter_qunit_changes(reason, qunit, curcd, prc, ajexdi, max_change):
+def _drop_on_qunit_change(
+    status: np.ndarray,
+    qunit: np.ndarray,
+    currency: np.ndarray,
+    prc: np.ndarray,
+    ajexdi: np.ndarray,
+    max_change: float,
+) -> bool:
     """
     A change in the quote unit QUNIT without a change in currency, together with a
-    split-adjusted price change beyond +-max_change, removes the whole security.
+    split-adjusted price change beyond +-max_change, drops the whole security. Returns
+    whether it did.
     """
-    idx = _alive_rows(reason)
-    for k in range(1, idx.size):
-        i, p = idx[k], idx[k - 1]
+    rows = _kept_rows(status)
+    for k in range(1, rows.size):
+        i, p = rows[k], rows[k - 1]
         unit_changed = qunit[i] == qunit[i] and qunit[p] == qunit[p] and qunit[i] != qunit[p]
-        same_currency = curcd[i] > 0 and curcd[i] == curcd[p]
+        same_currency = currency[i] > 0 and currency[i] == currency[p]
         if unit_changed and same_currency:
             change = (prc[i] / ajexdi[i]) / (prc[p] / ajexdi[p]) - 1.0
             if change > max_change or change < -max_change:
-                _kill_all(reason)
+                _drop_security(status)
                 return True
     return False
 
 
 @njit(cache=True, error_model="numpy")
-def _filter_low_price_or_me(reason, prc, me, low_thr):
+def _drop_after_low_price_or_me(
+    status: np.ndarray, prc: np.ndarray, me: np.ndarray, low_price_country: np.ndarray
+) -> int:
     """
-    Price below threshold ($0.01, or $0.001 in low_thr countries) or market value below
-    $1M at a month-end. A breach in the first month voids the security; a later breach
-    removes the months after it. Returns the breach position, -2 if the security is
-    voided, -1 if there is no breach.
+    A month-end price below the minimum ($0.01, or $0.001 in low_price_country) or a
+    market value below $1M. A breach in the first month drops the security; a later
+    breach drops the months after it. Returns the breach position, -2 if the security is
+    dropped, -1 if there is no breach.
     """
-    idx = _alive_rows(reason)
-    for k in range(idx.size):
-        i = idx[k]
-        thr = 0.001 if low_thr[i] else 0.01
-        if me[i] < 1.0 or prc[i] < thr:
+    rows = _kept_rows(status)
+    for k in range(rows.size):
+        i = rows[k]
+        min_price = 0.001 if low_price_country[i] else 0.01
+        if me[i] < 1.0 or prc[i] < min_price:
             if k == 0:
-                _kill_all(reason)
+                _drop_security(status)
                 return -2
-            for r in range(k + 1, idx.size):
-                reason[idx[r]] = 1
+            for r in range(k + 1, rows.size):
+                status[rows[r]] = _DROPPED
             return i
     return -1
 
 
 @njit(cache=True, error_model="numpy")
-def _filter_data_gaps(reason, mi, max_step):
+def _drop_month_after_gap(status: np.ndarray, month: np.ndarray, max_step: int) -> None:
     """Drop the month after a step of more than max_step months."""
     prev = -1
-    for i in range(reason.size):
-        if reason[i] != 0:
+    for i in range(status.size):
+        if status[i] != _KEPT:
             continue
-        if prev >= 0 and mi[i] - mi[prev] > max_step:
-            reason[i] = 1
-        # prev advances even past a removed row: gaps are measured against the
-        # pre-stage rows, so a removed row is still the next row's reference
+        if prev >= 0 and month[i] - month[prev] > max_step:
+            status[i] = _DROPPED
+        # prev advances past a dropped month too: each gap is measured between the
+        # months kept when the step starts
         prev = i
 
 
 @njit(cache=True, error_model="numpy")
-def _filter_return_me_mismatch(reason, ri, me):
-    """|return| > 80% with |market-value change| < 50%."""
+def _drop_return_me_mismatches(status: np.ndarray, ri: np.ndarray, me: np.ndarray) -> None:
+    """Drop a month whose |return| is above 80% while |market-value change| is below 50%."""
     prev = -1
-    for i in range(reason.size):
-        if reason[i] != 0:
+    for i in range(status.size):
+        if status[i] != _KEPT:
             continue
         if prev >= 0:
             ret = ri[i] / ri[prev] - 1.0
             me_chg = me[i] / me[prev] - 1.0
             if abs(ret) > 0.8 and abs(me_chg) < 0.5:
-                reason[i] = 1
-        # a flagged row still advances prev, staying the reference for the next row
+                status[i] = _DROPPED
+        # a dropped month still advances prev, staying the reference for the next month
         prev = i
 
 
 @njit(cache=True, error_model="numpy")
-def _filter_initial_ratio_errors(reason, adj_prc, me):
-    """A split-adjusted price or market-value ratio outside [0.1, 10] among the first
-    3 observations."""
+def _drop_initial_ratio_errors(status: np.ndarray, adj_prc: np.ndarray, me: np.ndarray) -> None:
+    """Among the first 3 kept months, drop a month whose split-adjusted price or market
+    value ratio to the month before is outside [0.1, 10]."""
     prev = -1
     obs = -1
-    for i in range(reason.size):
-        if reason[i] != 0:
+    for i in range(status.size):
+        if status[i] != _KEPT:
             continue
         obs += 1
-        if obs > 2:  # only the first 3 observations (0-indexed)
+        if obs > 2:
             break
         if prev >= 0:
             pr = adj_prc[i] / adj_prc[prev]
             mr = me[i] / me[prev]
             if pr > 10.0 or pr < 0.1 or mr > 10.0 or mr < 0.1:
-                reason[i] = 1
-        prev = i  # flagged rows still advance prev (see _filter_return_me_mismatch)
+                status[i] = _DROPPED
+        prev = i  # a dropped month still advances prev, as in _drop_return_me_mismatches
 
 
 @njit(cache=True, error_model="numpy")
 def _screen_one_security(
-    reason,
-    factor,
-    event,
-    remove_low_volume,
-    zero_ajexdi,
-    prc,
-    me,
-    ri,
-    cshoc,
-    ajexdi,
-    qunit,
-    curcd,
-    mi,
-    low_thr,
-    chn,
-    max_step,
-    early_months,
-    early_share,
-    pair_max_months,
-    qunit_max_change,
-):
+    status: np.ndarray,
+    factor: np.ndarray,
+    jump: np.ndarray,
+    low_volume: bool,
+    zero_ajexdi: bool,
+    prc: np.ndarray,
+    me: np.ndarray,
+    ri: np.ndarray,
+    cshoc: np.ndarray,
+    ajexdi: np.ndarray,
+    qunit: np.ndarray,
+    currency: np.ndarray,
+    month: np.ndarray,
+    low_price_country: np.ndarray,
+    is_china: np.ndarray,
+    max_step: int,
+    early_months: float,
+    early_share: float,
+    pair_max_months: int,
+    qunit_max_change: float,
+) -> tuple[bool, int, int]:
     """
-    Run the Section 8 chain in order on one security's month-sorted slice. Returns
-    (killed, start_cut, end_cut): start_cut is the position of the last early jump
-    (rows through it deleted), end_cut the breach month (rows after it deleted), -1 if
-    none.
+    Screen one security's month-sorted slice, step by step. Returns (dropped, early_cut,
+    breach): early_cut is the position of the last early jump (rows through it dropped),
+    breach the breach month (rows after it dropped), -1 if none.
     """
-    if remove_low_volume or zero_ajexdi:
-        _kill_all(reason)
+    if low_volume or zero_ajexdi:
+        _drop_security(status)
         return True, -1, -1
-    if _filter_qunit_changes(reason, qunit, curcd, prc, ajexdi, qunit_max_change):
+    if _drop_on_qunit_change(status, qunit, currency, prc, ajexdi, qunit_max_change):
         return True, -1, -1
-    breach = _filter_low_price_or_me(reason, prc, me, low_thr)
+    breach = _drop_after_low_price_or_me(status, prc, me, low_price_country)
     if breach == -2:
         return True, -1, -1
-    _filter_data_gaps(reason, mi, max_step)
-    # the breach month only carries its return: held out of the jump stages, so its
-    # drop never rescales the history before it
-    held_out = breach >= 0 and reason[breach] == 0
+    _drop_month_after_gap(status, month, max_step)
+    # the breach month only carries its return: held out of the jump steps, so its drop
+    # never rescales the history before it
+    held_out = breach >= 0 and status[breach] == _KEPT
     if held_out:
-        reason[breach] = 2
-    # one early window for both kinds of jump, then the later jumps are repaired:
-    # shares (adjCSHO against market value) first, then market value is rebuilt and
-    # repaired against the return
+        status[breach] = _HELD_OUT
+    # one early window for both kinds of jump, then the later jumps are repaired: shares
+    # (split-adjusted shares against market value) first, then market value is rebuilt
+    # and repaired against the return
     adj = cshoc * ajexdi
-    cut = _early_jumps(reason, adj, me, ri, chn, early_months, early_share)
-    _repair_jumps(reason, adj, me, False, chn, mi, pair_max_months, factor, event, 1)
+    early_cut = _drop_early_history(status, adj, me, ri, is_china, early_months, early_share)
+    _repair_later_jumps(
+        status, adj, me, False, is_china, month, pair_max_months, factor, jump, _SHARES_JUMP
+    )
     value = me * factor
-    _repair_jumps(reason, value, ri, True, chn, mi, pair_max_months, factor, event, 2)
+    _repair_later_jumps(
+        status, value, ri, True, is_china, month, pair_max_months, factor, jump, _VALUE_JUMP
+    )
     if held_out:
-        reason[breach] = 0
+        status[breach] = _KEPT
         # the breach month follows the multiplier of the month before it
         k = breach - 1
-        while k >= 0 and reason[k] != 0:
+        while k >= 0 and status[k] != _KEPT:
             k -= 1
         if k >= 0:
             factor[breach] = factor[k]
             value[breach] = me[breach] * factor[k]
-    _filter_return_me_mismatch(reason, ri, value)
-    _filter_initial_ratio_errors(reason, prc / ajexdi, value)
-    return False, cut, breach
+    _drop_return_me_mismatches(status, ri, value)
+    _drop_initial_ratio_errors(status, prc / ajexdi, value)
+    return False, early_cut, breach
 
 
 @njit(parallel=True, cache=True, error_model="numpy")
-def run_monthly_screen(
-    starts,
-    reason,
-    factor,
-    event,
-    killed,
-    start_cut,
-    end_cut,
-    remove_low_volume,
-    zero_ajexdi,
-    prc,
-    me,
-    ri,
-    cshoc,
-    ajexdi,
-    qunit,
-    curcd,
-    mi,
-    low_thr,
-    chn,
-    max_step,
-    early_months,
-    early_share,
-    pair_max_months,
-    qunit_max_change,
-):
-    """Run the Section 8 chain over all securities in parallel; start_cut and end_cut
-    hold absolute row positions."""
+def screen_all_securities(
+    starts: np.ndarray,
+    status: np.ndarray,
+    factor: np.ndarray,
+    jump: np.ndarray,
+    dropped: np.ndarray,
+    early_cut: np.ndarray,
+    breach: np.ndarray,
+    low_volume: np.ndarray,
+    zero_ajexdi: np.ndarray,
+    prc: np.ndarray,
+    me: np.ndarray,
+    ri: np.ndarray,
+    cshoc: np.ndarray,
+    ajexdi: np.ndarray,
+    qunit: np.ndarray,
+    currency: np.ndarray,
+    month: np.ndarray,
+    low_price_country: np.ndarray,
+    is_china: np.ndarray,
+    max_step: int,
+    early_months: float,
+    early_share: float,
+    pair_max_months: int,
+    qunit_max_change: float,
+) -> None:
+    """Screen every security in parallel. Per security, dropped, early_cut and breach
+    take _screen_one_security's result, the two cuts as month numbers (-1 if none)."""
     for g in prange(len(starts) - 1):
         s, e = starts[g], starts[g + 1]
-        k, c0, c1 = _screen_one_security(
-            reason[s:e],
+        is_dropped, cut_row, breach_row = _screen_one_security(
+            status[s:e],
             factor[s:e],
-            event[s:e],
-            remove_low_volume[g],
+            jump[s:e],
+            low_volume[g],
             zero_ajexdi[g],
             prc[s:e],
             me[s:e],
@@ -1158,16 +1186,16 @@ def run_monthly_screen(
             cshoc[s:e],
             ajexdi[s:e],
             qunit[s:e],
-            curcd[s:e],
-            mi[s:e],
-            low_thr[s:e],
-            chn[s:e],
+            currency[s:e],
+            month[s:e],
+            low_price_country[s:e],
+            is_china[s:e],
             max_step,
             early_months,
             early_share,
             pair_max_months,
             qunit_max_change,
         )
-        killed[g] = k
-        start_cut[g] = s + c0 if c0 >= 0 else -1
-        end_cut[g] = s + c1 if c1 >= 0 else -1
+        dropped[g] = is_dropped
+        early_cut[g] = month[s + cut_row] if cut_row >= 0 else -1
+        breach[g] = month[s + breach_row] if breach_row >= 0 else -1
