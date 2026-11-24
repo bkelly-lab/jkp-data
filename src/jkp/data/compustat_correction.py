@@ -477,13 +477,14 @@ def _spread_to_all_months(
         Turn the screen's panel rows and security-level cuts into one decision for every
         security-month of the daily data and the panel. Months without a panel row
         (daily rows with no valid month-end) follow the security-level cuts and the
-        previous kept month's multiplier.
+        multiplier of the nearest kept month, the previous one where there is one.
     Steps:
         1) Kept panel months: their multiplier and the previous kept month's multiplier.
         2) Place each repaired jump on a trading day (_jump_days).
         3) For every security-month: keep unless the security is dropped, the panel
            month is dropped, the month is at or before the early cut, or after the
-           breach month; the multiplier is the last kept month's (1 before any).
+           breach month; the multiplier is the last kept month's, or the first kept
+           month's before it (1 if none).
     Output:
         DataFrame [group_cols, eom, keep, factor, factor_prev, event_date].
     """
@@ -504,7 +505,7 @@ def _spread_to_all_months(
         .sort(keys)
         .with_columns(
             month=_month_number(pl.col("eom")),
-            _filled=pl.col("factor").forward_fill().over(group_cols).fill_null(1.0),
+            _filled=pl.col("factor").forward_fill().backward_fill().over(group_cols).fill_null(1.0),
         )
         .select(
             *keys,
@@ -811,10 +812,15 @@ def _jump_direction(
     is_china: bool,
 ) -> int:
     """
-    +1 / -1 for an up / down jump in x between two months, 0 otherwise. The shares
-    test (return_based False) needs market value (confirm) to move with x, with looser
-    bounds in China; the market-value test (True) needs the return from the return index
-    (confirm) not to explain the move. NaN operands fail every test.
+    Description:
+        Whether x jumps between two months, confirmed by a second series.
+    Steps:
+        1) Shares (return_based False): x up 5x with market value (confirm) up 2.5x
+           (50x and 25x in China), or x down to 0.2x with market value down to 0.4x.
+        2) Market value (True): x up 10x with a return from the return index (confirm)
+           below 200%, or x down to 0.1x with a return above -50%.
+    Output:
+        +1 / -1 for an up / down jump, 0 otherwise; NaN operands fail every test.
     """
     jump = x_cur / x_prev
     if return_based:
@@ -847,10 +853,16 @@ def _drop_early_history(
     early_share: float,
 ) -> int:
     """
-    A shares jump (split-adjusted shares adj against market value me) or a market-value
-    jump (me against the return index ri) within the lesser of the first early_months
-    months or the first early_share of the kept months drops the history through the
-    last such jump. Returns the position of that jump, -1 if none.
+    Description:
+        Drop the history through the last jump early in the security's life.
+    Steps:
+        1) The window is the lesser of early_months and early_share of the kept months.
+        2) Within it, find the last month with a shares jump (split-adjusted shares adj
+           against market value me) or a market-value jump (me against the return
+           index ri).
+        3) Drop the kept rows through that month.
+    Output:
+        status updated in place. Returns the row of the last early jump, -1 if none.
     """
     rows = _kept_rows(status)
     window = min(early_months, early_share * rows.size)
@@ -880,9 +892,14 @@ def _rescale_across_jump(
     direction: int,
 ) -> None:
     """
-    Remove the jump at kept position k in place: an up-jump scales x from k on down to
-    the level before it, a down-jump scales x before k down to the level at k; market
-    value keeps the month's return. factor takes the same multiplier.
+    Description:
+        Remove an unpaired jump at kept position k.
+    Steps:
+        1) Up-jump: scale x from k on down to the level before the jump.
+        2) Down-jump: scale x before k down to the level at k.
+        3) Market value (return_based) keeps the month's return across the jump.
+    Output:
+        x and factor multiplied in place by the same amount.
     """
     i, p = rows[k], rows[k - 1]
     growth = confirm[i] / confirm[p] if return_based else 1.0
@@ -1011,9 +1028,14 @@ def _drop_on_qunit_change(
     max_change: float,
 ) -> bool:
     """
-    A change in the quote unit QUNIT without a change in currency, together with a
-    split-adjusted price change beyond +-max_change, drops the whole security. Returns
-    whether it did.
+    Description:
+        Drop a security whose quote unit (QUNIT) changes with a large price move.
+    Steps:
+        1) Between consecutive kept months, a QUNIT change without a currency change.
+        2) A split-adjusted price change beyond +-max_change at that step drops the
+           security.
+    Output:
+        status updated in place. Returns whether the security was dropped.
     """
     rows = _kept_rows(status)
     for k in range(1, rows.size):
@@ -1033,10 +1055,15 @@ def _drop_after_low_price_or_me(
     status: np.ndarray, prc: np.ndarray, me: np.ndarray, low_price_country: np.ndarray
 ) -> int:
     """
-    A month-end price below the minimum ($0.01, or $0.001 in low_price_country) or a
-    market value below $1M. A breach in the first month drops the security; a later
-    breach drops the months after it. Returns the breach position, -2 if the security is
-    dropped, -1 if there is no breach.
+    Description:
+        Cut the history at the first month-end with a price below the minimum ($0.01,
+        or $0.001 in low_price_country) or a market value below $1M.
+    Steps:
+        1) A breach in the first kept month drops the security.
+        2) A later breach drops the months after it; the breach month is kept.
+    Output:
+        status updated in place. Returns the breach row, -2 if the security was dropped,
+        -1 if there is no breach.
     """
     rows = _kept_rows(status)
     for k in range(rows.size):
@@ -1054,7 +1081,15 @@ def _drop_after_low_price_or_me(
 
 @njit(cache=True, error_model="numpy")
 def _drop_month_after_gap(status: np.ndarray, month: np.ndarray, max_step: int) -> None:
-    """Drop the month after a step of more than max_step months."""
+    """
+    Description:
+        Drop the month after a gap.
+    Steps:
+        1) Between consecutive kept months, a step of more than max_step months drops
+           the later month.
+    Output:
+        status updated in place.
+    """
     prev = -1
     for i in range(status.size):
         if status[i] != _KEPT:
@@ -1068,7 +1103,15 @@ def _drop_month_after_gap(status: np.ndarray, month: np.ndarray, max_step: int) 
 
 @njit(cache=True, error_model="numpy")
 def _drop_return_me_mismatches(status: np.ndarray, ri: np.ndarray, me: np.ndarray) -> None:
-    """Drop a month whose |return| is above 80% while |market-value change| is below 50%."""
+    """
+    Description:
+        Drop months whose return is not reflected in market value.
+    Steps:
+        1) Between consecutive kept months, an absolute return above 80% with an
+           absolute market-value change below 50% drops the later month.
+    Output:
+        status updated in place.
+    """
     prev = -1
     for i in range(status.size):
         if status[i] != _KEPT:
@@ -1084,8 +1127,15 @@ def _drop_return_me_mismatches(status: np.ndarray, ri: np.ndarray, me: np.ndarra
 
 @njit(cache=True, error_model="numpy")
 def _drop_initial_ratio_errors(status: np.ndarray, adj_prc: np.ndarray, me: np.ndarray) -> None:
-    """Among the first 3 kept months, drop a month whose split-adjusted price or market
-    value ratio to the month before is outside [0.1, 10]."""
+    """
+    Description:
+        Drop implausible moves among the first kept months.
+    Steps:
+        1) Among the first 3 kept months, a split-adjusted price or market-value ratio
+           to the month before outside [0.1, 10] drops the month.
+    Output:
+        status updated in place.
+    """
     prev = -1
     obs = -1
     for i in range(status.size):

@@ -75,7 +75,7 @@ decision. The screen:
   below the minimum (a price of \$0.01, or \$0.001 in low-price countries, or a
   market value of \$1 million; the breach month keeps its return);
 * drops the first month after a gap of more than 11 months;
-* drops the history up to the last implausible jump in split-adjusted shares
+* drops the history through the last implausible jump in split-adjusted shares
   outstanding or market value within one early window, the security's first
   24 months or first 20% of months, whichever is shorter;
 * repairs later jumps: a jump that reverses within 12 months is brought to

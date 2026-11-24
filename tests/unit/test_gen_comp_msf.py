@@ -53,7 +53,6 @@ def test_same_datadate_keeps_highest_prcstd(
 ) -> None:
     """Two SECD rows on the same datadate: the higher prcstd wins, as in prepare_comp_sf."""
     monkeypatch.setattr(af, "gen_secd_data", lambda paths: None)
-    monkeypatch.setattr(af, "gen_secm_data", lambda paths: None)
     _monthly([3, 10], [30.0, 100.0], source=1).write_parquet(
         test_paths.interim_dir / "secd_data.parquet"
     )

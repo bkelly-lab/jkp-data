@@ -287,6 +287,18 @@ class TestMonthlyScreen:
         d = _screen(_panel(_monthly_security(59, cshoc=cshoc)))
         np.testing.assert_allclose(_factors(d), np.where(np.arange(N_MONTHS) < 30, 0.1, 1.0))
 
+    def test_daily_only_month_before_the_panel_takes_the_first_kept_multiplier(self):
+        # December 1999 has daily rows but no month-end row; the down-jump in month 30
+        # scales the history before it, December included
+        cshoc = np.where(np.arange(N_MONTHS) < 30, 50.0, 5.0)
+        monthly = _panel(_monthly_security(59, cshoc=cshoc))
+        dec = date(1999, 12, 31)
+        lead = monthly.filter(pl.col("gvkey") == TARGET).head(1)
+        daily = pl.concat([lead.with_columns(eom=pl.lit(dec), datadate=pl.lit(dec)), monthly])
+        d = _screen(monthly, daily)
+        assert d["eom"][0] == dec and d["keep"][0]
+        np.testing.assert_allclose(_factors(d)[:2], [0.1, 0.1])
+
     def test_china_shares_jump_needs_the_looser_bound(self):
         # shares x10 with market value x3: a shares jump outside China (>= 5x, >= 2.5x),
         # inside China's 50x / 25x bounds; too small for the market-value rule (> 10x)
