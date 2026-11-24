@@ -170,13 +170,21 @@ class TestMonthlyScreen:
         assert not any(_kept(d))
 
     def test_zero_ajexdi_in_daily_drops_security(self):
-        monthly = _panel(_monthly_security(59))
+        # the drop is per security: the company's other share class (iid 02) is kept
+        sibling = _monthly_security(59).with_columns(iid=pl.lit("02"))
+        monthly = pl.concat([_panel(_monthly_security(59)), sibling], how="diagonal")
         daily = monthly.with_columns(
-            ajexdi=pl.when((pl.col("gvkey") == TARGET) & (pl.col("eom") == _months(5)[4]))
+            ajexdi=pl.when(
+                (pl.col("gvkey") == TARGET)
+                & (pl.col("iid") == "01")
+                & (pl.col("eom") == _months(5)[4])
+            )
             .then(0.0)
             .otherwise(pl.col("ajexdi"))
         )
-        assert not any(_kept(_screen(monthly, daily)))
+        d = _screen(monthly, daily)
+        assert not any(_kept(d.filter(pl.col("iid") == "01")))
+        assert all(_kept(d.filter(pl.col("iid") == "02")))
 
     def test_qunit_change_with_price_jump_drops_security(self):
         qunit = np.where(np.arange(N_MONTHS) < 30, 1.0, 100.0)

@@ -356,13 +356,19 @@ def _jump_days(daily: pl.LazyFrame, jumps: pl.DataFrame, group_cols: list[str]) 
         1) Daily rows of securities with a jump, with the step from the previous trading
            day in split-adjusted shares (shares jumps) or in market value net of the
            return (market-value jumps).
-        2) In each jump month, the day with the largest absolute log step.
+        2) In each jump month, the day with the largest absolute log step; days where
+           either value is zero or missing have no step.
     Output:
         DataFrame [group_cols, eom, event_date].
     """
 
     def growth(c: str) -> pl.Expr:
         return pl.col(c) / pl.col(c).shift(1).over(group_cols)
+
+    def log_step(ratio: pl.Expr) -> pl.Expr:
+        # a zero or missing value on either day gives no step
+        step = ratio.log().abs()
+        return pl.when(step.is_finite()).then(step)
 
     return (
         daily.join(jumps.lazy().select(group_cols).unique(), on=group_cols, how="semi")
@@ -376,8 +382,8 @@ def _jump_days(daily: pl.LazyFrame, jumps: pl.DataFrame, group_cols: list[str]) 
         )
         .sort([*group_cols, "datadate"])
         .with_columns(
-            shares_step=growth("adj").log().abs().fill_nan(None),
-            value_step=(growth("me") / growth("ri")).log().abs().fill_nan(None),
+            shares_step=log_step(growth("adj")),
+            value_step=log_step(growth("me") / growth("ri")),
         )
         .join(jumps.lazy(), on=[*group_cols, "eom"], how="inner", nulls_equal=True)
         .with_columns(
@@ -896,17 +902,28 @@ def _repair_later_jumps(
     kind: int,
 ) -> None:
     """
-    Repair the jumps left after the early cut, rescaling x in place and multiplying
-    factor by the same amount; marks each repaired jump month in jump with kind.
-    - Paired (the next jump is the opposite one, within pair_max_months): the months
-      from the jump to before the reversal are brought to the lower of the two ends.
-      Shares get that level flat; market value is scaled by one multiplier, so the
-      window keeps its returns, each end net of its month's return. A jump left at the
-      other end is repaired as an unpaired jump: shares test the step from before the
-      jump to the reversal, as market value is not yet repaired; market value tests the
-      one-month step at that end with its own return.
-    - Unpaired up-jump: x from the jump on is scaled down to the level before it.
-    - Unpaired down-jump: x before the jump is scaled down to the level after it.
+    Description:
+        Repair the jumps left after the early cut in x: split-adjusted shares tested
+        against market value (return_based False), or market value tested against the
+        return index (True).
+    Steps:
+        1) Walk the kept months; skip a step where either month has no positive x.
+        2) At a jump, look for the opposite jump within pair_max_months, stopping at a
+           jump in the same direction.
+        3) Repair it.
+           - Paired (the opposite jump follows within pair_max_months): the months
+             from the jump to before the reversal are brought to the lower of the two
+             ends. Shares get that level flat; market value is scaled by one
+             multiplier, so the window keeps its returns, each end net of its month's
+             return. A jump left at the other end is repaired as an unpaired jump:
+             shares test the step from before the jump to the reversal, as market value
+             is not yet repaired; market value tests the one-month step at that end
+             with its own return.
+           - Unpaired up-jump: x from the jump on is scaled down to the level before it.
+           - Unpaired down-jump: x before the jump is scaled down to the level after it.
+    Output:
+        x and factor rescaled in place by the same multiplier; each repaired jump month
+        (both ends of a pair) marked kind in jump.
     """
     rows = _kept_rows(status)
     m = rows.size
@@ -1099,9 +1116,22 @@ def _screen_one_security(
     qunit_max_change: float,
 ) -> tuple[bool, int, int]:
     """
-    Screen one security's month-sorted slice, step by step. Returns (dropped, early_cut,
-    breach): early_cut is the position of the last early jump (rows through it dropped),
-    breach the breach month (rows after it dropped), -1 if none.
+    Description:
+        Screen one security's month-sorted slice.
+    Steps:
+        1) Drop the security for low volume, a zero AJEXDI or a QUNIT change, or when
+           its first month breaches the minimum price or market value.
+        2) Drop the months after a later breach and the month after each gap.
+        3) Hold the breach month out of the jump steps.
+        4) Drop the history through the last early jump, then repair later shares
+           jumps and, on market value rebuilt with the shares multiplier, later
+           market-value jumps.
+        5) Restore the breach month with the multiplier of the month before it.
+        6) Drop return/market-value mismatches and initial ratio errors.
+    Output:
+        status, factor and jump filled in place. Returns (dropped, early_cut, breach):
+        early_cut is the row of the last early jump (rows through it dropped), breach the
+        breach row (rows after it dropped), -1 if none.
     """
     if low_volume or zero_ajexdi:
         _drop_security(status)
@@ -1170,8 +1200,16 @@ def screen_all_securities(
     pair_max_months: int,
     qunit_max_change: float,
 ) -> None:
-    """Screen every security in parallel. Per security, dropped, early_cut and breach
-    take _screen_one_security's result, the two cuts as month numbers (-1 if none)."""
+    """
+    Description:
+        Screen every security in parallel (_screen_one_security on each slice).
+    Steps:
+        1) For each security, the rows starts[g]:starts[g + 1].
+        2) Store its result, with the two cut rows converted to month numbers.
+    Output:
+        status, factor and jump filled in place per row; dropped, early_cut and breach
+        per security (cuts as month numbers, -1 if none).
+    """
     for g in prange(len(starts) - 1):
         s, e = starts[g], starts[g + 1]
         is_dropped, cut_row, breach_row = _screen_one_security(
