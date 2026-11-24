@@ -873,9 +873,10 @@ def _repair_jumps(reason, x, confirm, return_based, chn, mi, pair_max_months, fa
     - Paired (the next jump is the opposite one, within pair_max_months): the months
       from the jump to before the reversal are brought to the lower of the two ends.
       Shares get that level flat; market value is scaled by one multiplier, so the
-      window keeps its returns, each end net of its month's return. If the ends differ
-      by a jump (the step from before the jump to the reversal fails the jump test), the
-      step left at the higher end is repaired as an unpaired jump.
+      window keeps its returns, each end net of its month's return. A jump left at the
+      other end is repaired as an unpaired jump: shares test the step from before the
+      jump to the reversal, as market value is not yet repaired; market value tests the
+      one-month step at that end with its own return.
     - Unpaired up-jump: x from the jump on is scaled down to the level before it.
     - Unpaired down-jump: x before the jump is scaled down to the level after it.
     """
@@ -917,8 +918,8 @@ def _repair_jumps(reason, x, confirm, return_based, chn, mi, pair_max_months, fa
                     factor[u] *= scale
                 # the window now meets the end whose multiplier was the smaller; any
                 # step is left at the other end, tested with that month's return
-                q = pair if s_jump <= s_rev else k
-                a, b = idx[q - 1], idx[q]
+                side = pair if s_jump <= s_rev else k
+                a, b = idx[side - 1], idx[side]
                 dn = _jump_direction(x[a], x[b], confirm[a], confirm[b], True, chn[b])
             else:
                 level = min(x[p], x[j])
@@ -928,12 +929,12 @@ def _repair_jumps(reason, x, confirm, return_based, chn, mi, pair_max_months, fa
                     x[u] = level
                 # the window sits at the lower end, any step is left at the higher one;
                 # market value is not yet repaired, so the step is tested end to end
-                q = pair if x[p] <= x[j] else k
+                side = pair if x[p] <= x[j] else k
                 dn = _jump_direction(x[p], x[j], confirm[p], confirm[j], False, chn[j])
             event[i] = code
             event[j] = code
             if dn != 0:
-                _rescale_unpaired(idx, x, confirm, return_based, factor, q, dn)
+                _rescale_unpaired(idx, x, confirm, return_based, factor, side, dn)
             k = pair + 1
             continue
         _rescale_unpaired(idx, x, confirm, return_based, factor, k, d)

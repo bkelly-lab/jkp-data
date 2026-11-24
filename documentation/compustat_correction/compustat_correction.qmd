@@ -80,8 +80,8 @@ decision. The screen:
   24 months or first 20% of months, whichever is shorter;
 * repairs later jumps: a jump that reverses within 12 months is brought to
   the lower of the two levels (market value by one multiplier for the whole
-  window, so it keeps the window's returns; if the two levels themselves differ
-  by a jump, that step is then removed like one that does not reverse), and a
+  window, so it keeps the window's returns; if a jump is left at one end, that
+  step is then removed like one that does not reverse), and a
   jump that does not reverse is removed by rescaling the months after an upward
   jump, or the months before a downward jump, so that market value grows with
   the stock's return;

@@ -375,6 +375,20 @@ class TestMonthlyScreen:
         expected[35:] = 0.02
         np.testing.assert_allclose(_factors(d), expected, rtol=1e-12)
 
+    def test_reversal_step_is_found_at_the_jump_when_the_window_drifts_up(self):
+        # market value x1000 in month 30, drifting up x100 inside the window with no
+        # return, then x0.00005: the window meets the reversal and leaves a x0.05 drop
+        # with no return at the jump, although end to end (50 to 250) is only x5
+        me = np.full(N_MONTHS, 50.0)
+        me[30:35] = 50_000.0 * 100.0 ** (np.arange(5) / 4)
+        me[35:] = 250.0
+        d = _screen(_panel(_monthly_security(59, prc=np.full(N_MONTHS, 10.0), me=me)))
+        assert all(_kept(d))
+        expected = np.ones(N_MONTHS)
+        expected[:30] = 0.05
+        expected[30:35] = 5e-5
+        np.testing.assert_allclose(_factors(d), expected, rtol=1e-12)
+
     def test_initial_ratio_uses_split_adjusted_price(self):
         # a 20:1 split in month 2: raw price ratio 0.05, split-adjusted ratio 1
         prc = np.full(N_MONTHS, 10.0)
