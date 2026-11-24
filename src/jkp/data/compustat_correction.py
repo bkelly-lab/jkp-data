@@ -816,10 +816,19 @@ def _jump_direction(x_prev, x_cur, c_prev, c_cur, return_based, chn):
 
 
 @njit(cache=True, error_model="numpy")
-def _early_jump_stage(reason, x, confirm, return_based, chn, early_months, early_share):
+def _early_jumps(
+    reason: np.ndarray,
+    adj: np.ndarray,
+    me: np.ndarray,
+    ri: np.ndarray,
+    chn: np.ndarray,
+    early_months: float,
+    early_share: float,
+) -> int:
     """
-    A jump within the lesser of the first early_months months or the first early_share
-    of the security's months deletes the alive rows through the last such jump. Returns
+    A shares jump (adj against me) or a market-value jump (me against the return index
+    ri) within the lesser of the first early_months months or the first early_share of
+    the security's months deletes the alive rows through the last such jump. Returns
     the position of that jump, -1 if none.
     """
     idx = _alive_rows(reason)
@@ -829,7 +838,10 @@ def _early_jump_stage(reason, x, confirm, return_based, chn, early_months, early
         if k >= window:
             break
         i, p = idx[k], idx[k - 1]
-        if _jump_direction(x[p], x[i], confirm[p], confirm[i], return_based, chn[i]) != 0:
+        if (
+            _jump_direction(adj[p], adj[i], me[p], me[i], False, chn[i]) != 0
+            or _jump_direction(me[p], me[i], ri[p], ri[i], True, chn[i]) != 0
+        ):
             last = k
     for k in range(last + 1):
         reason[idx[k]] = 1
@@ -1081,13 +1093,13 @@ def _screen_one_security(
     held_out = breach >= 0 and reason[breach] == 0
     if held_out:
         reason[breach] = 2
-    # shares jumps: adjCSHO against market value, then market value is rebuilt
+    # one early window for both kinds of jump, then the later jumps are repaired:
+    # shares (adjCSHO against market value) first, then market value is rebuilt and
+    # repaired against the return
     adj = cshoc * ajexdi
-    cut_shares = _early_jump_stage(reason, adj, me, False, chn, early_months, early_share)
+    cut = _early_jumps(reason, adj, me, ri, chn, early_months, early_share)
     _repair_jumps(reason, adj, me, False, chn, mi, pair_max_months, factor, event, 1)
-    # market-value jumps on the rebuilt market value, against the return
     value = me * factor
-    cut_value = _early_jump_stage(reason, value, ri, True, chn, early_months, early_share)
     _repair_jumps(reason, value, ri, True, chn, mi, pair_max_months, factor, event, 2)
     if held_out:
         reason[breach] = 0
@@ -1100,7 +1112,7 @@ def _screen_one_security(
             value[breach] = me[breach] * factor[k]
     _filter_return_me_mismatch(reason, ri, value)
     _filter_initial_ratio_errors(reason, prc / ajexdi, value)
-    return False, max(cut_shares, cut_value), breach
+    return False, cut, breach
 
 
 @njit(parallel=True, cache=True, error_model="numpy")

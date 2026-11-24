@@ -254,6 +254,20 @@ class TestMonthlyScreen:
         assert all(_kept(d))
         np.testing.assert_allclose(_factors(d), np.where(np.arange(N_MONTHS) < 15, 1.0, 0.1))
 
+    def test_one_early_window_for_shares_and_market_value_jumps(self):
+        # 60 months: the window is the first 12. A shares jump in month 10 deletes months
+        # 0-10; the market-value jump in month 15 (x1000, no return) is outside the
+        # window, so it is repaired, not deleted, although it falls within 20% of the
+        # months left after the cut
+        cshoc = np.where(np.arange(N_MONTHS) < 10, 5.0, 50.0)
+        sec = _monthly_security(59, cshoc=cshoc)
+        me = sec["me"].to_numpy() * np.where(np.arange(N_MONTHS) < 15, 1.0, 1000.0)
+        d = _screen(_panel(_monthly_security(59, cshoc=cshoc, me=me)))
+        assert _kept(d) == [False] * 11 + [True] * (N_MONTHS - 11)
+        np.testing.assert_allclose(
+            _factors(d)[11:], np.where(np.arange(11, N_MONTHS) < 15, 1.0, 1e-3), rtol=1e-12
+        )
+
     def test_unpaired_shares_up_jump_scales_the_months_after(self):
         cshoc = np.where(np.arange(N_MONTHS) < 30, 5.0, 50.0)
         d = _screen(_panel(_monthly_security(59, cshoc=cshoc)))

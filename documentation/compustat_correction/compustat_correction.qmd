@@ -75,8 +75,8 @@ decision. The screen:
 * drops every month after the first month-end with a price or market value
   below the paper's thresholds (the breach month keeps its return);
 * drops the first month after a gap of more than 11 months;
-* drops the history up to an implausible jump in split-adjusted shares
-  outstanding or market value when the jump falls in the security's first
+* drops the history up to the last implausible jump in split-adjusted shares
+  outstanding or market value within one early window, the security's first
   24 months or first 20% of months, whichever is shorter;
 * repairs later jumps: a jump that reverses within 12 months is brought to
   the lower of the two levels (market value by one multiplier for the whole
@@ -122,9 +122,10 @@ horizons—1, 2, 3, 5, 10, and 21 trading days—covering intervals from one day
 approximately one trading month. These horizons capture the vast majority of
 multi-period scaling errors while substantially reducing computation.
 
-All other aspects of the procedure—including the single-period detection
-algorithm, the rescaling factors, and the observation removal criteria—are
-identical to those of Bessembinder et al. (2023).
+The single-period detection algorithm and the rescaling factors are otherwise
+unchanged. In the stock-month screen, one choice is ours: a jump and the
+opposite jump after it count as a reversal only when they are at most 12 months
+apart.
 
 ## Scope of the change
 
