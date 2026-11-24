@@ -420,10 +420,8 @@ def screen_stock_months(
            QUNIT changes, low price or market value (months after the breach month),
            gaps, early jumps (the history through the last one is dropped), later jumps
            (repaired), return/market-value mismatches, initial ratio errors.
-        3) Place each repaired jump on a trading day (_jump_days).
-        4) Spread the decisions over every security-month of daily and monthly: months
-           without a panel row take the security-level cuts and the previous kept
-           month's multiplier.
+        3) Spread the decisions over every security-month of daily and monthly
+           (_spread_to_all_months).
     Output:
         DataFrame [group_cols, eom, keep, factor, factor_prev, event_date]. factor applies
         to shares and market value from event_date on, factor_prev before it.
@@ -457,47 +455,59 @@ def screen_stock_months(
         pair_max_months,
         QUNIT_PRICE_CHANGE_BOUND,
     )
+    screened = panel.select(*group_cols, "eom").with_columns(
+        status=pl.Series(status), factor=pl.Series(factor), jump=pl.Series(jump)
+    )
     security_cuts = removals.select(group_cols).with_columns(
         dropped=pl.Series(dropped),
         early_cut=pl.Series(early_cut).replace(-1, None),
         breach=pl.Series(breach).replace(-1, None),
     )
-    kept = (
-        panel.select(*group_cols, "eom")
-        .with_columns(status=pl.Series(status), factor=pl.Series(factor), jump=pl.Series(jump))
-        .filter(pl.col("status") == _KEPT)
-        .with_columns(factor_prev=pl.col("factor").shift(1).over(group_cols).fill_null(1.0))
+    return _spread_to_all_months(daily, screened, security_cuts, group_cols)
+
+
+def _spread_to_all_months(
+    daily: pl.LazyFrame,
+    screened: pl.DataFrame,
+    security_cuts: pl.DataFrame,
+    group_cols: list[str],
+) -> pl.DataFrame:
+    """
+    Description:
+        Turn the screen's panel rows and security-level cuts into one decision for every
+        security-month of the daily data and the panel. Months without a panel row
+        (daily rows with no valid month-end) follow the security-level cuts and the
+        previous kept month's multiplier.
+    Steps:
+        1) Kept panel months: their multiplier and the previous kept month's multiplier.
+        2) Place each repaired jump on a trading day (_jump_days).
+        3) For every security-month: keep unless the security is dropped, the panel
+           month is dropped, the month is at or before the early cut, or after the
+           breach month; the multiplier is the last kept month's (1 before any).
+    Output:
+        DataFrame [group_cols, eom, keep, factor, factor_prev, event_date].
+    """
+    keys = [*group_cols, "eom"]
+    kept = screened.filter(pl.col("status") == _KEPT).with_columns(
+        factor_prev=pl.col("factor").shift(1).over(group_cols).fill_null(1.0)
     )
-    jumps = kept.filter(pl.col("jump") > 0).select(*group_cols, "eom", "jump")
-    dropped_months = panel.select(*group_cols, "eom").filter(pl.Series(status) != _KEPT)
-    months = pl.concat(
-        [daily.select(*group_cols, "eom").unique().collect(), panel.select(*group_cols, "eom")]
-    ).unique()
+    jumps = kept.filter(pl.col("jump") > 0).select(*keys, "jump")
+    dropped_months = screened.filter(pl.col("status") != _KEPT).select(
+        *keys, _dropped_month=pl.lit(True)
+    )
+    months = pl.concat([daily.select(*keys).unique().collect(), screened.select(keys)]).unique()
     return (
-        months.join(
-            kept.drop("status", "jump"), on=[*group_cols, "eom"], how="left", nulls_equal=True
-        )
-        .join(
-            _jump_days(daily, jumps, group_cols),
-            on=[*group_cols, "eom"],
-            how="left",
-            nulls_equal=True,
-        )
-        .join(
-            dropped_months.with_columns(_dropped_month=pl.lit(True)),
-            on=[*group_cols, "eom"],
-            how="left",
-            nulls_equal=True,
-        )
+        months.join(kept.drop("status", "jump"), on=keys, how="left", nulls_equal=True)
+        .join(_jump_days(daily, jumps, group_cols), on=keys, how="left", nulls_equal=True)
+        .join(dropped_months, on=keys, how="left", nulls_equal=True)
         .join(security_cuts, on=group_cols, how="left", nulls_equal=True)
-        .sort([*group_cols, "eom"])
+        .sort(keys)
         .with_columns(
             month=_month_number(pl.col("eom")),
             _filled=pl.col("factor").forward_fill().over(group_cols).fill_null(1.0),
         )
         .select(
-            *group_cols,
-            "eom",
+            *keys,
             keep=~pl.col("dropped").fill_null(False)
             & ~pl.col("_dropped_month").fill_null(False)
             & (pl.col("early_cut").is_null() | (pl.col("month") > pl.col("early_cut")))
