@@ -7,13 +7,13 @@ Repairs decimal-shift price errors in the daily Compustat security files, then s
 stock-months before returns are computed: drops unreliable months and repairs jumps in
 shares outstanding and market value. Daily rows follow their month's decision.
 
-Layering: the public `correct_decimal_errors` / `screen_stock_months` / `apply_screen`
-functions are domain-level orchestrators (sort -> build typed inputs -> run ->
-reattach). The Polars panel is converted to NumPy once, the numba kernels (at the bottom
-of this file) do the per-security work, and the result is reattached lazily. NumPy is
-only the kernel boundary, not the whole design.
+`correct_decimal_errors` and `screen_stock_months` sort the data into one Polars panel,
+convert it to NumPy arrays once and run numba kernels (at the bottom of this file) that
+loop over one security at a time; the results are joined back onto the data.
+`apply_screen` applies the screen's decisions in Polars.
 """
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -445,22 +445,30 @@ def screen_stock_months(
     early_cut = np.full(n_sec, -1, dtype=np.int64)
     breach = np.full(n_sec, -1, dtype=np.int64)
     screen_all_securities(
-        starts,
-        status,
-        factor,
-        jump,
-        dropped,
-        early_cut,
-        breach,
-        removals["low_volume"].to_numpy(),
-        removals["zero_ajexdi"].to_numpy(),
-        *[panel[c].to_numpy() for c in ["prc", "me", "ri", "cshoc", "ajexdi", "qunit"]],
-        *[panel[c].to_numpy() for c in ["currency", "month", "low_price_country", "is_china"]],
-        FILTER_GAP_MONTHS + 1,
-        float(EARLY_JUMP_MONTHS),
-        EARLY_JUMP_SHARE,
-        pair_max_months,
-        QUNIT_PRICE_CHANGE_BOUND,
+        starts=starts,
+        status=status,
+        factor=factor,
+        jump=jump,
+        dropped=dropped,
+        early_cut=early_cut,
+        breach=breach,
+        low_volume=removals["low_volume"].to_numpy(),
+        zero_ajexdi=removals["zero_ajexdi"].to_numpy(),
+        prc=panel["prc"].to_numpy(),
+        me=panel["me"].to_numpy(),
+        ri=panel["ri"].to_numpy(),
+        cshoc=panel["cshoc"].to_numpy(),
+        ajexdi=panel["ajexdi"].to_numpy(),
+        qunit=panel["qunit"].to_numpy(),
+        currency=panel["currency"].to_numpy(),
+        month=panel["month"].to_numpy(),
+        low_price_country=panel["low_price_country"].to_numpy(),
+        is_china=panel["is_china"].to_numpy(),
+        max_step=FILTER_GAP_MONTHS + 1,
+        early_months=float(EARLY_JUMP_MONTHS),
+        early_share=EARLY_JUMP_SHARE,
+        pair_max_months=pair_max_months,
+        qunit_max_change=QUNIT_PRICE_CHANGE_BOUND,
     )
     screened = panel.select(*group_cols, "eom").with_columns(
         status=pl.Series(status), factor=pl.Series(factor), jump=pl.Series(jump)
@@ -512,7 +520,11 @@ def _spread_to_all_months(
         .sort(keys)
         .with_columns(
             month=_month_number(pl.col("eom")),
-            _filled=pl.col("factor").forward_fill().backward_fill().over(group_cols).fill_null(1.0),
+            _nearest_factor=pl.col("factor")
+            .forward_fill()
+            .backward_fill()
+            .over(group_cols)
+            .fill_null(1.0),
         )
         .select(
             *keys,
@@ -520,8 +532,8 @@ def _spread_to_all_months(
             & ~pl.col("_dropped_month").fill_null(False)
             & (pl.col("early_cut").is_null() | (pl.col("month") > pl.col("early_cut")))
             & (pl.col("breach").is_null() | (pl.col("month") <= pl.col("breach"))),
-            factor=pl.col("_filled"),
-            factor_prev=pl.coalesce("factor_prev", "_filled"),
+            factor=pl.col("_nearest_factor"),
+            factor_prev=pl.coalesce("factor_prev", "_nearest_factor"),
             event_date="event_date",
         )
     )
@@ -888,9 +900,7 @@ def _drop_early_history(
     rows = _kept_rows(status)
     window = min(early_months, early_share * rows.size)
     last = -1
-    for k in range(1, rows.size):
-        if k >= window:
-            break
+    for k in range(1, min(rows.size, math.ceil(window))):
         i, p = rows[k], rows[k - 1]
         if (
             _jump_direction(adj[p], adj[i], me[p], me[i], False, is_china[i]) != 0
@@ -937,6 +947,103 @@ def _rescale_across_jump(
 
 
 @njit(cache=True, error_model="numpy")
+def _find_reversal(
+    rows: np.ndarray,
+    x: np.ndarray,
+    confirm: np.ndarray,
+    return_based: bool,
+    is_china: np.ndarray,
+    month: np.ndarray,
+    pair_max_months: int,
+    k: int,
+    direction: int,
+) -> int:
+    """
+    Description:
+        The opposite jump that pairs with the jump at kept position k.
+    Steps:
+        1) Walk the kept months after k, up to pair_max_months after the jump month.
+           A step where either month has no positive x is skipped, so a reversal
+           across such a month is not seen.
+        2) Stop at the first jump: in the opposite direction it is the reversal, in the
+           same direction it ends the search.
+    Output:
+        Kept position of the reversal, -1 if none.
+    """
+    jump_month = month[rows[k]]
+    for q in range(k + 1, rows.size):
+        cur, prev = rows[q], rows[q - 1]
+        if month[cur] - jump_month > pair_max_months:
+            break
+        if not (x[prev] > 0.0 and x[cur] > 0.0):
+            continue
+        found = _jump_direction(
+            x[prev], x[cur], confirm[prev], confirm[cur], return_based, is_china[cur]
+        )
+        if found == -direction:
+            return q
+        if found == direction:
+            break
+    return -1
+
+
+@njit(cache=True, error_model="numpy")
+def _repair_pair(
+    rows: np.ndarray,
+    x: np.ndarray,
+    confirm: np.ndarray,
+    return_based: bool,
+    is_china: np.ndarray,
+    factor: np.ndarray,
+    k: int,
+    reversal: int,
+) -> None:
+    """
+    Description:
+        Repair a jump at kept position k together with its reversal at kept position
+        reversal.
+    Steps:
+        1) Bring the months from k to before the reversal to the lower of the two ends.
+           Shares get that level flat; market value is scaled by one multiplier, so the
+           window keeps its returns, each end net of its month's return.
+        2) Repair a jump left at the other end as an unpaired jump. Shares test the
+           step from before the jump to the reversal, as market value is not yet
+           repaired; market value tests the one-month step at that end with its own
+           return.
+    Output:
+        x and factor rescaled in place by the same multiplier.
+    """
+    # i: the jump month, p: the month before it; j: the reversal month, jp: the month before it
+    i, p = rows[k], rows[k - 1]
+    j, jp = rows[reversal], rows[reversal - 1]
+    if return_based:
+        to_before = x[p] * (confirm[i] / confirm[p]) / x[i]
+        to_after = x[j] / (confirm[j] / confirm[jp]) / x[jp]
+        scale = min(to_before, to_after)
+        for r in range(k, reversal):
+            u = rows[r]
+            x[u] *= scale
+            factor[u] *= scale
+        # the window now meets the end whose multiplier was the smaller; any step is
+        # left at the other end, tested with that month's return
+        side = reversal if to_before <= to_after else k
+        a, b = rows[side - 1], rows[side]
+        leftover = _jump_direction(x[a], x[b], confirm[a], confirm[b], True, is_china[b])
+    else:
+        level = min(x[p], x[j])
+        for r in range(k, reversal):
+            u = rows[r]
+            factor[u] *= level / x[u]
+            x[u] = level
+        # the window sits at the lower end, any step is left at the higher one; market
+        # value is not yet repaired, so the step is tested end to end
+        side = reversal if x[p] <= x[j] else k
+        leftover = _jump_direction(x[p], x[j], confirm[p], confirm[j], False, is_china[j])
+    if leftover != 0:
+        _rescale_across_jump(rows, x, confirm, return_based, factor, side, leftover)
+
+
+@njit(cache=True, error_model="numpy")
 def _repair_later_jumps(
     status: np.ndarray,
     x: np.ndarray,
@@ -956,17 +1063,9 @@ def _repair_later_jumps(
         return index (True).
     Steps:
         1) Walk the kept months; skip a step where either month has no positive x.
-        2) At a jump, look for the opposite jump within pair_max_months, stopping at a
-           jump in the same direction.
+        2) At a jump, look for its reversal (_find_reversal).
         3) Repair it.
-           - Paired (the opposite jump follows within pair_max_months): the months
-             from the jump to before the reversal are brought to the lower of the two
-             ends. Shares get that level flat; market value is scaled by one
-             multiplier, so the window keeps its returns, each end net of its month's
-             return. A jump left at the other end is repaired as an unpaired jump:
-             shares test the step from before the jump to the reversal, as market value
-             is not yet repaired; market value tests the one-month step at that end
-             with its own return.
+           - Paired: the jump and its reversal together (_repair_pair).
            - Unpaired up-jump: x from the jump on is scaled down to the level before it.
            - Unpaired down-jump: x before the jump is scaled down to the level after it.
     Output:
@@ -974,9 +1073,8 @@ def _repair_later_jumps(
         (both ends of a pair) marked kind in jump.
     """
     rows = _kept_rows(status)
-    m = rows.size
     k = 1
-    while k < m:
+    while k < rows.size:
         # i: the jump month, p: the month before it
         i, p = rows[k], rows[k - 1]
         direction = 0
@@ -987,56 +1085,17 @@ def _repair_later_jumps(
         if direction == 0:
             k += 1
             continue
-        reversal = -1
-        for q in range(k + 1, m):
-            j, jp = rows[q], rows[q - 1]
-            if month[j] - month[i] > pair_max_months:
-                break
-            if not (x[jp] > 0.0 and x[j] > 0.0):
-                continue
-            next_direction = _jump_direction(
-                x[jp], x[j], confirm[jp], confirm[j], return_based, is_china[j]
-            )
-            if next_direction == -direction:
-                reversal = q
-                break
-            if next_direction == direction:
-                break
+        jump[i] = kind
+        reversal = _find_reversal(
+            rows, x, confirm, return_based, is_china, month, pair_max_months, k, direction
+        )
         if reversal < 0:
             _rescale_across_jump(rows, x, confirm, return_based, factor, k, direction)
-            jump[i] = kind
             k += 1
-            continue
-        # j: the reversal month, jp: the month before it
-        j, jp = rows[reversal], rows[reversal - 1]
-        if return_based:
-            to_before = x[p] * (confirm[i] / confirm[p]) / x[i]
-            to_after = x[j] / (confirm[j] / confirm[jp]) / x[jp]
-            scale = min(to_before, to_after)
-            for r in range(k, reversal):
-                u = rows[r]
-                x[u] *= scale
-                factor[u] *= scale
-            # the window now meets the end whose multiplier was the smaller; any step is
-            # left at the other end, tested with that month's return
-            side = reversal if to_before <= to_after else k
-            a, b = rows[side - 1], rows[side]
-            leftover = _jump_direction(x[a], x[b], confirm[a], confirm[b], True, is_china[b])
         else:
-            level = min(x[p], x[j])
-            for r in range(k, reversal):
-                u = rows[r]
-                factor[u] *= level / x[u]
-                x[u] = level
-            # the window sits at the lower end, any step is left at the higher one; market
-            # value is not yet repaired, so the step is tested end to end
-            side = reversal if x[p] <= x[j] else k
-            leftover = _jump_direction(x[p], x[j], confirm[p], confirm[j], False, is_china[j])
-        jump[i] = kind
-        jump[j] = kind
-        if leftover != 0:
-            _rescale_across_jump(rows, x, confirm, return_based, factor, side, leftover)
-        k = reversal + 1
+            _repair_pair(rows, x, confirm, return_based, is_china, factor, k, reversal)
+            jump[rows[reversal]] = kind
+            k = reversal + 1
 
 
 @njit(cache=True, error_model="numpy")
@@ -1061,7 +1120,7 @@ def _drop_on_qunit_change(
     rows = _kept_rows(status)
     for k in range(1, rows.size):
         i, p = rows[k], rows[k - 1]
-        unit_changed = qunit[i] == qunit[i] and qunit[p] == qunit[p] and qunit[i] != qunit[p]
+        unit_changed = not np.isnan(qunit[i]) and not np.isnan(qunit[p]) and qunit[i] != qunit[p]
         same_currency = currency[i] > 0 and currency[i] == currency[p]
         if unit_changed and same_currency:
             change = (prc[i] / ajexdi[i]) / (prc[p] / ajexdi[p]) - 1.0
