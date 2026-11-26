@@ -22,10 +22,10 @@ jupyter: python3
 
 ## Overview
 
-To improve the database, we apply the data correction from
-Bessembinder et al. (2023). The correction is applied to the
-Compustat daily security files and removes erroneous price observations
-before returns are calculated.
+To improve the database, we apply the Compustat correction, which we base on
+the methodology of Bessembinder et al. (2023). The correction is applied to the
+Compustat daily security files and to the North American monthly security file
+(SECM), and removes erroneous price observations before returns are calculated.
 
 Since the correction is applied to Compustat, it can affect factors across
 the full database. The United States is affected much less, however, because
@@ -64,17 +64,32 @@ Flagged decimal-shift errors are rescaled rather than discarded. The affected
 observation is divided or multiplied by the detected factor — 10, 100, or
 1000 — so the price and the adjacent returns are repaired directly.
 
-The second part of the correction removes problematic observations outright.
-These include:
+The second part of the correction screens stock-months. Each rule is evaluated on the month-end
+observation, and the daily observations of a month follow that month's
+decision. The screen:
 
-* exact-zero prices;
-* implausible jumps in shares outstanding;
-* implausible jumps in market equity;
-* implausible prices relative to market equity;
-* problematic first or last observations in a security's time series.
+* drops securities with very low trading volume, a zero adjustment factor, or
+  a change in the price unit (QUNIT) that moves the split-adjusted price by
+  more than 50% without a currency change;
+* drops every month after the first month-end with a price or market value
+  below the minimum (a price of \$0.01, or \$0.001 in low-price countries, or a
+  market value of \$1 million; the breach month keeps its return);
+* drops the first month after a gap of more than 11 months;
+* drops the history through the last implausible jump in split-adjusted shares
+  outstanding or market value within one early window, the security's first
+  24 months or first 20% of months, whichever is shorter;
+* repairs later jumps: a jump that reverses within 12 months is brought to
+  the lower of the two levels (market value by one multiplier for the whole
+  window, so it keeps the window's returns; if a jump is left at one end, that
+  step is then removed like one that does not reverse), and a
+  jump that does not reverse is removed by rescaling the months after an upward
+  jump, or the months before a downward jump, so that market value grows with
+  the stock's return;
+* drops months whose return disagrees with the change in market value, and
+  first observations whose price or market value ratios are implausible.
 
-These observations are dropped rather than repaired, so this step can also
-change the underlying stock universe.
+Removed months can change the underlying stock universe; repaired months stay
+in it with rescaled shares outstanding and market value.
 
 As an additional safeguard, we exclude daily returns greater than 1,000%
 (`ret` > 10). Any return exceeding this threshold after the price
@@ -107,16 +122,16 @@ horizons—1, 2, 3, 5, 10, and 21 trading days—covering intervals from one day
 approximately one trading month. These horizons capture the vast majority of
 multi-period scaling errors while substantially reducing computation.
 
-All other aspects of the procedure—including the single-period detection
-algorithm, the rescaling factors, and the observation removal criteria—are
-identical to those of Bessembinder et al. (2023).
+The single-period detection algorithm and the rescaling factors are otherwise
+unchanged. In the stock-month screen, one choice is ours: a jump and the
+opposite jump after it count as a reversal only when they are at most 12 months
+apart.
 
 ## Scope of the change
 
-The tables below show how the Compustat daily universe changes in the latest
-full pipeline run, split by JKP size group and reported separately for the
-United States and the rest of the world. We run the pipeline until December
-2025.
+The tables below show how the Compustat daily universe changes, split by JKP
+size group and reported separately for the United States and the rest of the
+world. Data run until December 2025.
 
 Each count is a security-day observation:
 
@@ -124,39 +139,47 @@ Each count is a security-day observation:
   correction.
 * Corrections: decimal-shift errors that are rescaled in place. These
   observations are repaired, not removed.
-* Removals: unreliable observations dropped by the correction's data filters.
+* Removals: observations in months the screen drops.
+* Rescaled: kept observations whose shares outstanding and market value are
+  rescaled by a jump repair.
 * Total Post-Correction: surviving observations after the correction, equal
   to Total Current minus Removals.
+
+The size group is the security's JKP size group in the same month; observations
+in months without one (for example, secondary listings outside the JKP
+universe) are unclassified.
 
 ### United States
 
 |                       |       TOTAL |      MEGA |      LARGE |      SMALL |      MICRO |       NANO | UNCLASSIFIED |
 | --------------------- | ----------: | --------: | ---------: | ---------: | ---------: | ---------: | -----------: |
-| Total Current         | 129,799,940 | 9,046,916 | 11,876,257 | 18,200,954 | 41,441,052 | 43,407,719 |    5,827,042 |
-| Corrections           |     130,689 |        82 |         50 |        167 |      1,349 |    123,469 |        5,572 |
-| Removals              |  27,862,424 |   152,900 |    223,937 |    522,989 |  2,623,871 | 23,297,277 |    1,041,450 |
-| Total Post-Correction | 101,937,516 | 8,894,016 | 11,652,320 | 17,677,965 | 38,817,181 | 20,110,442 |    4,785,592 |
+| Total Current         | 129,885,338 | 7,768,757 | 11,535,410 | 18,434,385 | 42,540,337 | 42,270,785 |    7,335,664 |
+| Corrections           |     132,144 |        99 |        102 |        215 |      1,726 |     97,938 |       32,064 |
+| Removals              |  26,309,595 |    45,927 |    200,371 |    488,122 |  2,416,753 | 20,215,054 |    2,943,368 |
+| Rescaled              |   3,428,877 |   605,411 |    367,356 |    481,158 |  1,080,048 |    702,443 |      192,461 |
+| Total Post-Correction | 103,575,743 | 7,722,830 | 11,335,039 | 17,946,263 | 40,123,584 | 22,055,731 |    4,392,296 |
 
 ### World ex-US
 
 |                       |       TOTAL |       MEGA |      LARGE |      SMALL |       MICRO |       NANO | UNCLASSIFIED |
 | --------------------- | ----------: | ---------: | ---------: | ---------: | ----------: | ---------: | -----------: |
-| Total Current         | 328,310,834 | 12,265,017 | 26,805,567 | 53,916,378 | 113,827,459 | 104,460,568 |   17,035,845 |
-| Corrections           |       9,764 |        101 |         61 |        135 |         617 |       7,859 |          991 |
-| Removals              |  44,881,965 |    104,699 |    302,973 |  1,017,353 |   6,589,972 |  36,120,208 |      746,760 |
-| Total Post-Correction | 283,428,869 | 12,160,318 | 26,502,594 | 52,899,025 | 107,237,487 |  68,340,360 |   16,289,085 |
+| Total Current         | 328,824,842 | 11,685,676 | 25,824,164 | 51,468,959 | 105,035,792 | 72,807,260 |   62,002,991 |
+| Corrections           |      14,319 |        148 |        157 |        447 |       1,235 |      2,165 |       10,167 |
+| Removals              |  41,441,247 |     24,731 |     61,094 |    189,176 |     965,650 |  7,442,327 |   32,758,269 |
+| Rescaled              |   5,342,162 |    283,276 |    518,481 |    873,285 |   2,026,655 |    993,430 |      647,035 |
+| Total Post-Correction | 287,383,595 | 11,660,945 | 25,763,070 | 51,279,783 | 104,070,142 | 65,364,933 |   29,244,722 |
 
 Region is assigned from the raw pre-correction daily files. As a result,
 essentially every observation can be attributed to either the United States or
 the rest of the world; the omitted residual with no mappable exchange is
 negligible, at less than 0.1%.
 
-The main takeaway is that the correction is mostly a filtering step, not a
-rescaling step. Across both regions, there are 72.7 million removals compared
-with only 140 thousand rescaled observations. The removals are heavily
-concentrated among the smallest stocks: nano- and micro-cap observations
-account for most of the dropped observations, while mega- and large-cap
-observations are barely affected.
+The main takeaway is that the correction is mostly a filtering step. Across
+both regions, there are 67.8 million removals, compared with 146 thousand
+decimal-shift corrections and 8.8 million observations rescaled by jump
+repairs. Removals of classified stocks are concentrated among the smallest:
+nano- and micro-cap observations account for most of them, while mega- and
+large-cap observations are barely affected.
 
 For the United States, this does not translate into a large change in the
 factor series, because US factors draw primarily on CRSP rather than Compustat.
@@ -180,7 +203,7 @@ The two outputs are joined on month-end date, country, and characteristic:
 (VEN), since their returns are dominated by hyperinflation-era distortions. We
 also keep only country–characteristic pairs with more than 12 overlapping
 monthly observations. The resulting overlap window runs from January 1926
-through December 2025 and covers 153 characteristics across 71 countries.
+through December 2025 and covers 402 characteristics across 69 countries.
 
 ```{python}
 #| label: setup
@@ -256,13 +279,19 @@ display(HTML(bc.corr_stats(stats, scope="exus").to_pandas().to_html(index=False)
 
 :::
 
-The US results confirm that the correction has almost no effect on the United
-States. Across all three weighting schemes, the correlations are essentially 1.
-This is expected, since US factors rely primarily on CRSP rather than Compustat.
+In the United States, the equal-weighted and capped value-weighted factors are
+essentially unchanged (median correlations 0.9992 and 0.9999), since US factors
+rely primarily on CRSP rather than Compustat. The value-weighted factors move
+more (median 0.951) because of one firm. In 1971–1974 a Compustat-sourced firm
+(gvkey 002176) reports shares outstanding about 1,550 times too high, which puts
+its market value at $100–128 billion and gives it up to 18% of the US value
+weights. The jump repair rescales it to about $70 million. The capped weights
+limit that firm's weight, so the capped factors barely move.
 
-For World ex-US, the median correlation sits slightly below 1. This is where the
-correction matters more, because the affected markets rely more directly on
-Compustat daily security data.
+For World ex-US, the median correlations are 0.952 (equal-weighted), 0.987
+(value-weighted) and 0.987 (capped value-weighted). This is where the correction
+matters more, because the affected markets rely more directly on Compustat
+security data.
 
 ### Annualized Moments
 
@@ -290,21 +319,24 @@ show(bc.moment_scatter(stats), top_pad=0.5)
 ## Conclusion
 
 The correction is primarily a filtering step: it removes far more
-observations than it rescales — roughly 72.7 million removals against 140
-thousand price corrections — and those removals fall overwhelmingly on nano- and
-micro-cap stocks, leaving mega- and large-caps almost untouched.
+observations than it rescales — roughly 67.8 million removals against 146
+thousand price corrections and 8.8 million jump-repaired observations — and the
+removals of classified stocks fall overwhelmingly on nano- and micro-cap
+stocks, leaving mega- and large-caps almost untouched.
 
-US long-short returns are essentially unchanged — the median country–characteristic
-correlation with the uncorrected series is 0.999 to 1.000 across all three
-weighting schemes — because the US series draw primarily on CRSP rather than
-Compustat.
+US long-short returns are essentially unchanged in the equal-weighted and capped
+value-weighted series — median country–characteristic correlations with the
+uncorrected series of 0.9992 and 0.9999 — because the US series draw primarily on
+CRSP rather than Compustat. The uncapped value-weighted series move more (median
+0.951), almost entirely because the repair removes a 1971–1974 shares error that
+gave one Compustat-sourced firm up to 18% of the US market weight.
 
 Non-US markets rely on Compustat directly, so the corrections pass through to
 their factors. The value-weighted factors barely move (median correlation
-0.998), since the errors sit in the smallest stocks that carry little weight; the
-equal-weighted factors shift more (median 0.955), reflecting the cleanup of
-small-cap noise. About 95% of the 44.9 million non-US removals are nano- and
-micro-cap observations.
+0.987), since the errors sit in the smallest stocks that carry little weight; the
+equal-weighted factors shift more (median 0.952), reflecting the cleanup of
+small-cap noise. Of the 41.4 million non-US removals, 8.4 million are nano- and
+micro-cap observations and 32.8 million fall in months without a JKP size group.
 
 Overall, the correction improves data quality while leaving the economic drivers
 of the factors intact. For portfolios dominated by larger firms, the effect is

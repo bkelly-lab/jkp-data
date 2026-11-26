@@ -278,7 +278,7 @@ PORTFOLIO_SETTINGS = {
     "ind_pf": True,
 }
 
-# Compustat return corrections (Bessembinder et al. 2023 Data Appendix)
+# Compustat correction
 
 # Compression for the scratch spill files written during the correction array
 # passes; read once then deleted, so favor encode speed over size.
@@ -295,6 +295,19 @@ DECIMAL_DETECTION_WINDOWS = [1, 2, 3, 5, 10, 21]
 # Countries with a $0.001 minimum-price threshold instead of $0.01.
 LOW_PRICE_COUNTRIES = ["BRA", "IDN", "NGA", "TUR"]
 
-# Drop the first observation after a calendar gap wider than this many trading
-# days (~11 months; converted to calendar days at 365/252).
-FILTER_GAP_TRADING_DAYS = 231
+# Drop the first month after a gap of more than this many months.
+FILTER_GAP_MONTHS = 11
+
+# A shares or market-value jump within the lesser of the first EARLY_JUMP_MONTHS
+# months or the first EARLY_JUMP_SHARE of a security's months drops the history
+# through the last such jump; later jumps are repaired.
+EARLY_JUMP_MONTHS = 24
+EARLY_JUMP_SHARE = 0.2
+
+# A later jump counts as reversed (paired) when the opposite jump follows within this
+# many months (our choice).
+JUMP_PAIR_MAX_MONTHS = 12
+
+# A quote-unit (QUNIT) change without a currency change removes the security when the
+# split-adjusted price changes by more than this fraction in either direction.
+QUNIT_PRICE_CHANGE_BOUND = 0.5

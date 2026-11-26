@@ -1,10 +1,10 @@
-"""Equivalence test: the narrow-sort correction and filter steps must reproduce the legacy
+"""Equivalence test: the narrow-sort decimal correction must reproduce the legacy
 full-width-sort output.
 
-correct_decimal_errors and drop_unreliable_observations used to sort every column of their
-input to a spill parquet and run the kernels on that file. They now sort only the keys and
+correct_decimal_errors used to sort every column of its input to a spill parquet and run
+the kernels on that file. They now sort only the keys and
 kernel columns (plus a row index) and splice the result back onto the unsorted input. The
-legacy orchestrators are copied here verbatim and run on the same shuffled panels; the
+legacy orchestrator is copied here verbatim and run on the same shuffled panels; the
 outputs must be equal row for row after sorting by key (row order is the input's now).
 """
 
@@ -18,18 +18,14 @@ import pytest
 from polars.testing import assert_frame_equal
 
 from jkp.data.compustat_correction import (
-    _build_filter_inputs,
     _group_starts,
     _run_decimal_correction,
     correct_decimal_errors,
-    drop_unreliable_observations,
-    run_all_filters,
 )
 from jkp.data.config import (
     CORRECTION_SPILL_COMPRESSION,
     DECIMAL_CORRECTION_METHODS,
     DECIMAL_DETECTION_WINDOWS,
-    LOW_PRICE_COUNTRIES,
 )
 
 GROUP = ["gvkey", "iid"]
@@ -81,63 +77,6 @@ def _legacy_correct_decimal_errors(
         data, starts, DECIMAL_DETECTION_WINDOWS, has_adrrc, correction_method, 1.3
     )
     return _legacy_reattach_corrected(sorted_path, corrected, spill_dir)
-
-
-def _legacy_load_filter_inputs(
-    sorted_path: Path, group_cols: list[str], sort_col: str, country_col: str
-) -> pl.DataFrame:
-    """Collect kernel inputs in one pass: f64 values, int32 date, country flags."""
-    value_cols = ["ajexdi", "prc", "me", "ri", "cshoc", "dolvol"]
-    return (
-        pl.scan_parquet(sorted_path)
-        .select(
-            group_cols
-            + [sort_col]
-            + [pl.col(c).cast(pl.Float64) for c in value_cols]
-            + [
-                pl.col(sort_col).cast(pl.Date).to_physical().cast(pl.Int32).alias("dates"),
-                pl.col(country_col).is_in(LOW_PRICE_COUNTRIES).fill_null(False).alias("low"),
-                (pl.col(country_col) == "CHN").fill_null(False).alias("chn"),
-            ]
-        )
-        .collect()
-    )
-
-
-def _legacy_reattach_reason(sorted_path: Path, reason: np.ndarray, spill_dir: Path) -> pl.LazyFrame:
-    """Attach the kernel's keep/remove decision and filter to the kept rows."""
-    reason_path = spill_dir / "__corr_filter_reason.parquet"
-    pl.DataFrame({"_reason": reason}).write_parquet(
-        reason_path, compression=CORRECTION_SPILL_COMPRESSION
-    )
-    return (
-        pl.concat([pl.scan_parquet(sorted_path), pl.scan_parquet(reason_path)], how="horizontal")
-        .filter(pl.col("_reason") == 0)
-        .drop("_reason")
-    )
-
-
-def _legacy_drop_unreliable_observations(df: pl.LazyFrame, spill_dir: Path) -> pl.LazyFrame:
-    sorted_path = spill_dir / "__corr_filter_sorted.parquet"
-    _legacy_sort_to_spill(df, GROUP + [SORT], sorted_path)
-    data = _legacy_load_filter_inputs(sorted_path, GROUP, SORT, "excntry")
-    inp = _build_filter_inputs(data, GROUP)
-    reason = np.zeros(data.height, dtype=np.int8)
-    run_all_filters(
-        inp.starts,
-        reason,
-        inp.remove_low_volume,
-        inp.ajexdi,
-        inp.prc,
-        inp.me,
-        inp.ri,
-        inp.cshoc,
-        inp.dates,
-        inp.low,
-        inp.chn,
-        inp.gap_days,
-    )
-    return _legacy_reattach_reason(sorted_path, reason, spill_dir)
 
 
 def _shuffled_scan(frames: list[pl.DataFrame], path: Path) -> pl.LazyFrame:
@@ -220,63 +159,3 @@ def test_correct_decimal_errors_matches_legacy(
     # the panel exercises the correction, not only the pass-through
     before = lf.sort(GROUP + [SORT]).collect()["prccd"]
     assert (before != new.sort(GROUP + [SORT])["prccd"]).sum() > 0
-
-
-def _filter_security(g: int, n: int = 40, iid: str = "01", **cols) -> pl.DataFrame:
-    """A clean security whose volume rises with g, so the low-volume cut takes g = 0."""
-    prc = 10.0 * np.exp(np.cumsum(np.full(n, 0.001)))
-    base = {
-        "gvkey": [f"{g:06d}"] * n,
-        "iid": [iid] * n,
-        "datadate": pl.Series(np.arange(n, dtype=np.int64) * 2).cast(pl.Date),
-        "ajexdi": np.ones(n),
-        "cshoc": np.full(n, 5.0),
-        "prc": prc,
-        "ri": prc.copy(),
-        "dolvol": prc * 1000.0 * (g + 1),
-        "excntry": ["USA"] * n,
-        "exchg": [11] * n,
-    }
-    base.update(cols)
-    base["me"] = base["prc"] * base["cshoc"]
-    return pl.DataFrame(base)
-
-
-def _filter_panel() -> list[pl.DataFrame]:
-    """One defect per filter on high-volume securities, low-price-country and CHN rows,
-    and a second iid under the zero-ajexdi gvkey."""
-    n = 40
-    prc = 10.0 * np.exp(np.cumsum(np.full(n, 0.001)))
-    days = np.arange(n, dtype=np.int64) * 2
-    sub_cent_from_30 = _edited(prc, dict.fromkeys(range(30, n), 0.005))
-    defects = {
-        59: {"ajexdi": _edited(np.ones(n), {5: 0.0})},
-        58: {"prc": _edited(prc, {0: 0.004})},
-        # a sub-cent price from day 30 is a breach in the USA, not in Brazil
-        57: {"prc": sub_cent_from_30, "cshoc": np.full(n, 1000.0)},
-        56: {"prc": sub_cent_from_30, "cshoc": np.full(n, 1000.0), "excntry": ["BRA"] * n},
-        55: {"datadate": pl.Series(np.where(np.arange(n) >= 20, days + 400, days)).cast(pl.Date)},
-        54: {"ri": _edited(prc, {25: prc[25] * 2.0})},
-        53: {"prc": _edited(prc, {1: prc[1] * 20.0})},
-        52: {"cshoc": _edited(np.full(n, 5.0), {3: 50.0})},
-        51: {"cshoc": _edited(np.full(n, 5.0), {3: 50.0}), "excntry": ["CHN"] * n},
-        50: {"prc": _edited(prc, {10: np.nan})},
-    }
-    return [_filter_security(g, n, **defects.get(g, {})) for g in range(60)] + [
-        _filter_security(59, n, iid="02")
-    ]
-
-
-def test_drop_unreliable_observations_matches_legacy(tmp_path: Path) -> None:
-    lf = _shuffled_scan(_filter_panel(), tmp_path / "input.parquet")
-    legacy_dir, new_dir = _spill_dirs(tmp_path)
-
-    legacy = _legacy_drop_unreliable_observations(lf, legacy_dir).collect()
-    new = drop_unreliable_observations(lf, GROUP, SORT, "excntry", spill_dir=new_dir).collect()
-
-    assert_frame_equal(new.sort(GROUP + [SORT]), legacy.sort(GROUP + [SORT]))
-    # the filters removed some rows but not all; zero ajexdi drops only its own iid
-    assert 0 < new.height < lf.select(pl.len()).collect().item()
-    kept = new.group_by(GROUP).len()
-    assert kept.filter(pl.col("gvkey") == "000059")["iid"].to_list() == ["02"]
-    assert kept.filter(pl.col("gvkey") == "000000").is_empty()
