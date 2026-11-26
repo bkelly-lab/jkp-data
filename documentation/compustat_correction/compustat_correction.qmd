@@ -24,8 +24,8 @@ jupyter: python3
 
 To improve the database, we apply the Compustat correction, which we base on
 the methodology of Bessembinder et al. (2023). The correction is applied to the
-Compustat daily security files and removes erroneous price observations
-before returns are calculated.
+Compustat daily security files and to the North American monthly security file
+(SECM), and removes erroneous price observations before returns are calculated.
 
 Since the correction is applied to Compustat, it can affect factors across
 the full database. The United States is affected much less, however, because

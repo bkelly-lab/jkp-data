@@ -267,7 +267,14 @@ _SHARES_JUMP, _VALUE_JUMP = 1, 2
 
 
 def _month_number(eom: pl.Expr) -> pl.Expr:
-    """Months since year 0, so consecutive months differ by 1."""
+    """
+    Description:
+        A month counter for measuring steps between months.
+    Steps:
+        1) year * 12 + month.
+    Output:
+        Int32 expression; consecutive months differ by 1.
+    """
     return (eom.dt.year() * 12 + eom.dt.month()).cast(pl.Int32)
 
 
@@ -790,7 +797,14 @@ def validate_cascading_all(starts, factor, wsize):
 
 @njit(cache=True, error_model="numpy")
 def _drop_security(status: np.ndarray) -> None:
-    """Drop every row of the security still kept."""
+    """
+    Description:
+        Drop the whole security.
+    Steps:
+        1) Mark every row still kept as dropped.
+    Output:
+        status updated in place.
+    """
     for i in range(status.size):
         if status[i] == _KEPT:
             status[i] = _DROPPED
@@ -798,7 +812,14 @@ def _drop_security(status: np.ndarray) -> None:
 
 @njit(cache=True, error_model="numpy")
 def _kept_rows(status: np.ndarray) -> np.ndarray:
-    """Positions of the rows still kept, in month order."""
+    """
+    Description:
+        The rows the next screen step sees.
+    Steps:
+        1) Positions of the rows still kept.
+    Output:
+        Array of row positions, in month order.
+    """
     return np.flatnonzero(status == _KEPT)
 
 
